@@ -1709,10 +1709,7 @@ impl Checker {
                 invalid = true;
                 continue;
             };
-            let Some(return_type) = resolved_fn_sigs
-                .get(self.defs.path(entry))
-                .map(|signature| signature.return_type.clone())
-            else {
+            let Some(signature) = resolved_fn_sigs.get(self.defs.path(entry)) else {
                 self.errors.push(TypeError::new(
                     TypeErrorKind::TestSignature,
                     span.clone(),
@@ -1722,7 +1719,11 @@ impl Checker {
                 continue;
             };
             let error_mark = self.errors.len();
-            let action = self.classify_entry_exit_action(return_type, span, resolved_fn_sigs);
+            let action = self.classify_entry_exit_action(
+                signature.return_type.clone(),
+                span,
+                resolved_fn_sigs,
+            );
             let Some(action) = action else {
                 for error in &mut self.errors[error_mark..] {
                     error.kind = TypeErrorKind::TestSignature;
@@ -1738,51 +1739,15 @@ impl Checker {
                 invalid = true;
                 continue;
             };
-            let signature = resolved_fn_sigs
-                .get(self.defs.path(entry))
-                .expect("selected test signature was checked above");
-            let arguments = signature
-                .params
-                .iter()
-                .map(|ty| ResolvedTy::from_ty(&self.normalize_for_use(&self.subst.resolve(ty))))
-                .collect::<Result<Vec<_>, _>>();
-            let Ok(arguments) = arguments else {
-                self.errors.push(TypeError::new(
-                    TypeErrorKind::TestSignature,
-                    span.clone(),
-                    "property parameters must have concrete types",
-                ));
-                invalid = true;
-                continue;
-            };
             let benchmark = declaration
                 .attributes
                 .iter()
                 .any(|attribute| attribute.name == "bench");
-            if benchmark {
-                let valid = matches!(arguments.as_slice(), [ty] if ty.nominal_instance(&self.defs)
-                    .is_some_and(|instance| self.defs.path(instance.nominal.declaration()) == "std.bench.Bencher"));
-                if !valid {
-                    self.errors.push(TypeError::new(
-                        TypeErrorKind::TestSignature,
-                        span.clone(),
-                        "benchmark must take exactly one std.bench.Bencher parameter",
-                    ));
-                    invalid = true;
-                    continue;
-                }
-            } else if let Some(ty) = arguments.iter().find(|ty| !self.is_generatable(ty)) {
-                self.errors.push(TypeError::new(
-                    TypeErrorKind::TestSignature,
-                    span.clone(),
-                    format!(
-                        "property parameter `{}` has no structural generator",
-                        ty.user_facing()
-                    ),
-                ));
+            let Some(arguments) = self.classify_test_entry_arguments(signature, benchmark, span)
+            else {
                 invalid = true;
                 continue;
-            }
+            };
             plans.push(TestEntryPlan {
                 benchmark,
                 entry,
@@ -1795,6 +1760,50 @@ impl Checker {
         } else {
             plans
         }
+    }
+
+    fn classify_test_entry_arguments(
+        &mut self,
+        signature: &FnSig,
+        benchmark: bool,
+        span: &Span,
+    ) -> Option<Vec<ResolvedTy>> {
+        let arguments = signature
+            .params
+            .iter()
+            .map(|ty| ResolvedTy::from_ty(&self.normalize_for_use(&self.subst.resolve(ty))))
+            .collect::<Result<Vec<_>, _>>();
+        let Ok(arguments) = arguments else {
+            self.errors.push(TypeError::new(
+                TypeErrorKind::TestSignature,
+                span.clone(),
+                "property parameters must have concrete types",
+            ));
+            return None;
+        };
+        if benchmark {
+            let valid = matches!(arguments.as_slice(), [ty] if ty.nominal_instance(&self.defs)
+                .is_some_and(|instance| self.defs.path(instance.nominal.declaration()) == "std.bench.Bencher"));
+            if !valid {
+                self.errors.push(TypeError::new(
+                    TypeErrorKind::TestSignature,
+                    span.clone(),
+                    "benchmark must take exactly one std.bench.Bencher parameter",
+                ));
+                return None;
+            }
+        } else if let Some(ty) = arguments.iter().find(|ty| !self.is_generatable(ty)) {
+            self.errors.push(TypeError::new(
+                TypeErrorKind::TestSignature,
+                span.clone(),
+                format!(
+                    "property parameter `{}` has no structural generator",
+                    ty.user_facing()
+                ),
+            ));
+            return None;
+        }
+        Some(arguments)
     }
 
     #[expect(

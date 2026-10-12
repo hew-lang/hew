@@ -133,7 +133,7 @@ impl fmt::Display for DecodeError {
 impl std::error::Error for DecodeError {}
 
 impl DecodeError {
-    /// Represent this error as the source-language DecodeError value.
+    /// Represent this error as the source-language `DecodeError` value.
     #[must_use]
     pub fn into_value(self) -> crate::Value {
         use crate::Value;

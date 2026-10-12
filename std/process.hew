@@ -281,31 +281,24 @@ fn collect_output(consume output: stream.Stream<bytes>) -> string {
     utf8.decode_lossy(data)
 }
 
-fn capture(consume child: Child) -> Result<CommandOutput, ProcessError> {
-    let stdout = match child.stdout() {
-        .Ok(output) => output,
-        .Err(error) => return .Err(error),
-    };
-    let stderr = match child.stderr() {
-        .Ok(output) => output,
-        .Err(error) => return .Err(error),
-    };
-    let result: Result<CommandOutput, ProcessError> = scope {
+fn capture(consume child: Child) -> CommandOutput fails ProcessError {
+    let stdout = child.stdout()?;
+    let stderr = child.stderr()?;
+    scope {
         let stdout_task = fork collect_output(stdout);
         let stderr_task = fork collect_output(stderr);
         let stdout = await stdout_task;
         let stderr = await stderr_task;
-        match child.wait() {
-            .Ok(status) => .Ok(CommandOutput { status, stdout, stderr }),
-            .Err(error) => .Err(ProcessError.LaunchFailed(to_string(error))),
-        }
+        let status = child.wait() handle error {
+            return error ProcessError.LaunchFailed(to_string(error));
+        };
+        CommandOutput { status, stdout, stderr }
     } handle failure {
         match failure {
-            .Fault { message } => .Err(ProcessError.LaunchFailed(message)),
-            .Deadline { message } => .Err(ProcessError.LaunchFailed(message)),
+            .Fault { message } => return error ProcessError.LaunchFailed(message),
+            .Deadline { message } => return error ProcessError.LaunchFailed(message),
         }
-    };
-    result
+    }
 }
 
 // ── Module-level functions ────────────────────────────────────────────

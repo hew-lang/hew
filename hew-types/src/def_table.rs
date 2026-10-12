@@ -396,7 +396,6 @@ pub enum KnownDecl {
     RejectSend,
     WaitSend,
     DropNewestSend,
-    ReplaceLatestSend,
     ActorRequest,
     ActorRequestOwner,
     ActorRequestAdmission,
@@ -407,7 +406,7 @@ pub enum KnownDecl {
 }
 
 impl KnownDecl {
-    pub const ALL: [Self; 19] = [
+    pub const ALL: [Self; 18] = [
         Self::ActorError,
         Self::Never,
         Self::ActorMailbox,
@@ -419,7 +418,6 @@ impl KnownDecl {
         Self::RejectSend,
         Self::WaitSend,
         Self::DropNewestSend,
-        Self::ReplaceLatestSend,
         Self::ActorRequest,
         Self::ActorRequestOwner,
         Self::ActorRequestAdmission,
@@ -444,7 +442,6 @@ impl KnownDecl {
             Self::RejectSend => "std.builtins.RejectSend",
             Self::WaitSend => "std.builtins.WaitSend",
             Self::DropNewestSend => "std.builtins.DropNewestSend",
-            Self::ReplaceLatestSend => "std.builtins.ReplaceLatestSend",
             Self::ActorRequest => "std.builtins.ActorRequest",
             Self::ActorRequestOwner => "std.builtins.ActorRequestOwner",
             Self::ActorRequestAdmission => "std.builtins.ActorRequestAdmission",
@@ -468,7 +465,6 @@ impl KnownDecl {
             Self::RejectSend => "RejectSend",
             Self::WaitSend => "WaitSend",
             Self::DropNewestSend => "DropNewestSend",
-            Self::ReplaceLatestSend => "ReplaceLatestSend",
             Self::ActorRequest => "ActorRequest",
             Self::ActorRequestOwner => "ActorRequestOwner",
             Self::ActorRequestAdmission => "ActorRequestAdmission",

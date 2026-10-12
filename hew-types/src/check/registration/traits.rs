@@ -121,15 +121,6 @@ impl Checker {
     /// identity so two same-named actors from different modules occupy
     /// distinct entries instead of last-write-wins clobbering.
     pub(in crate::check) fn register_actor_decl_as(&mut self, ad: &ActorDecl, identity: &str) {
-        if ad.mailbox_capacity.is_some() {
-            self.actor_overflow_policies.insert(
-                identity.to_string(),
-                ad.overflow_policy
-                    .clone()
-                    .unwrap_or(hew_parser::ast::OverflowPolicy::Block),
-            );
-        }
-
         // Extract type-param names from the declaration so the TypeDef's
         // positional `type_params` vector and ordinary nominal bounds share
         // one declaration authority. Actor arguments must also be Send.

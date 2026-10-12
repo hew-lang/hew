@@ -141,7 +141,7 @@ pub fn dump_hir(module: &HirModule) -> String {
                     actor.name,
                     actor.is_isolated,
                     actor.max_heap_bytes,
-                    actor.mailbox_capacity,
+                    actor.protocol_descriptor.mailbox.capacity(),
                     actor.cycle_capable
                 )
                 .expect("write to string");

@@ -8,9 +8,9 @@
 pub use hew_sir::{
     ActorId, ActorIngressAdapter, ActorOperation, LifecycleTarget, LocalObservationKind,
     RemoteObservationKind, SemActor, SemActorCoalesce, SemActorField, SemActorHandler,
-    SemActorOverflow, SemCoalesceFallback, SemCoalesceKey, SemCoalesceKeyKind, SemFailureDisplay,
-    SemRestartPolicy, SemRestartStrategy, SemStopDeadline, SemSupervisedRole, SemSupervisor,
-    SemVariantKind, SupervisorId, TaskScopeJoinMode, TaskSelectionOrder,
+    SemActorOverflow, SemCoalesceFallback, SemCoalesceKey, SemFailureDisplay, SemRestartPolicy,
+    SemRestartStrategy, SemStopDeadline, SemSupervisedRole, SemSupervisor, SemVariantKind,
+    SupervisorId, TaskScopeJoinMode, TaskSelectionOrder,
 };
 use hew_types::runtime_call::{sequence_element_type, ArrayValueOp};
 

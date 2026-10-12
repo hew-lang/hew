@@ -20,9 +20,10 @@ impl InstanceService<'_> {
                 }
                 actor
                     .protocol_descriptor
-                    .as_ref()
-                    .filter(|protocol| protocol.handlers.iter().any(|handler| handler.remote_codec))
-                    .map(|_| ResolvedTy::Named {
+                    .handlers
+                    .iter()
+                    .any(|handler| handler.remote_codec)
+                    .then(|| ResolvedTy::Named {
                         head: hew_types::TypeHead::Actor(hew_types::NominalHead::new(
                             hew_types::NominalId::of_declaration(actor.declaration),
                             self.module.defs.path(actor.declaration),

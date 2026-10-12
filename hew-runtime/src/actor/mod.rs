@@ -1071,8 +1071,8 @@ pub struct HewActor {
     /// Size of the initial state.
     pub init_state_size: usize,
 
-    /// Optional coalesce key function for message coalescing.
-    pub coalesce_key_fn: Option<unsafe extern "C" fn(i32, *mut c_void, usize) -> u64>,
+    /// Optional exact key matcher for message coalescing.
+    pub coalesce_match_fn: Option<mailbox::HewCoalesceMatchFn>,
 
     /// Optional cleanup function called when the actor is freed.
     /// Generated from the actor's `#[on(stop)]` lifecycle hooks: codegen

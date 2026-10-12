@@ -15,7 +15,6 @@ pub const DECLARATIONS: &[KnownDecl] = &[
     KnownDecl::RejectSend,
     KnownDecl::WaitSend,
     KnownDecl::DropNewestSend,
-    KnownDecl::ReplaceLatestSend,
     KnownDecl::ActorRequest,
     KnownDecl::ActorRequestOwner,
     KnownDecl::ActorRequestAdmission,
@@ -27,7 +26,6 @@ pub enum SendPolicy {
     Reject,
     Wait,
     DropNewest,
-    ReplaceLatest,
 }
 
 impl SendPolicy {
@@ -38,7 +36,6 @@ impl SendPolicy {
             Self::Reject => KnownDecl::RejectSend,
             Self::Wait => KnownDecl::WaitSend,
             Self::DropNewest => KnownDecl::DropNewestSend,
-            Self::ReplaceLatest => KnownDecl::ReplaceLatestSend,
         }
     }
 
@@ -50,14 +47,9 @@ impl SendPolicy {
         if !args.is_empty() {
             return None;
         }
-        [
-            Self::Reject,
-            Self::Wait,
-            Self::DropNewest,
-            Self::ReplaceLatest,
-        ]
-        .into_iter()
-        .find(|policy| policy.witness().head() == *head)
+        [Self::Reject, Self::Wait, Self::DropNewest]
+            .into_iter()
+            .find(|policy| policy.witness().head() == *head)
     }
 
     #[must_use]

@@ -1044,7 +1044,6 @@ struct LowerCtx {
     /// receiver types.
     actor_method_dispatch: HashMap<SpanKey, ActorMethodKind>,
     actor_delivery_calls: HashMap<SpanKey, hew_types::actor_delivery::ActorDeliveryCall>,
-    actor_coalesce_keys: HashMap<hew_types::DefId, Vec<(hew_types::DefId, u32)>>,
     /// Checker-owned machine method dispatch decisions keyed by method-call span.
     /// HIR checks this before `method_call_rewrites` to produce `MachineStep` /
     /// `MachineStateName` nodes rather than falling through to `MethodCallNoRewrite`.
@@ -1258,11 +1257,8 @@ struct LowerCtx {
     cycle_capable_actors: HashSet<String>,
     /// Per-actor protocol descriptors lifted from the checker
     /// (`TypeCheckOutput.actor_protocol_descriptors`). Consumed by
-    /// `lower_actor` to populate `HirActorDecl.protocol_descriptor`. An
-    /// actor missing from this map either declares no receive handlers or
-    /// the checker emitted an `ActorProtocolCollision` for it; either way
-    /// the lowered HIR carries `protocol_descriptor: None` and downstream
-    /// MIR fails closed when it tries to derive a `msg_id`.
+    /// `lower_actor` to populate `HirActorDecl.protocol_descriptor`. Every
+    /// accepted actor has a descriptor; a missing one fails the HIR boundary.
     actor_protocol_descriptors: HashMap<String, hew_types::ActorProtocolDescriptor>,
     /// Resolver-minted identities for each `actor |msg| { .. }` expression,
     /// keyed by its span. See `TypeCheckOutput::lambda_actor_declarations`.

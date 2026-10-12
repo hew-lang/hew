@@ -268,14 +268,15 @@ The destination's declaration is the authority on a full queue: it answers
 before the sender's `on_full` is consulted, and the sender's view only decides
 what happens when the declaration did not resolve the submission. A declared
 discarding policy — `drop_new`, `drop_old`, `coalesce(k)` — governs one-way
-submission only. A completion call parks for admission whether or not it
-returns a value, because superseding or discarding it would leave its caller
-waiting for a reply no handler will send; `drop_old` therefore never evicts a
-queued completion call, and refuses when it has nothing else to discard. An
-actor may not declare a coalesce key on a value-returning handler.
+submission only. Completion calls and stream starts remain obligated work:
+they wait for admission, and `drop_old` never evicts them. It refuses when
+there is no queued submission it may discard. An actor may not declare a
+coalesce key on a value-returning or streaming handler.
 
 A submission the declaration discarded is gone: it reports
 `Ok(Delivery.Discarded)` and carries no message back, so it is not retryable.
+Replacing an older queued submission reports `Ok(Delivery.Accepted)` for the
+incoming message; it does not promise that the handler will execute.
 Only a refusal — `fail`, or `block` with a `.Reject` sender — returns the
 unaccepted request.
 
@@ -395,8 +396,6 @@ language contracts:
 - Generic `frames` / `framed` codec adapters are not lowered; the `Codec`
   trait, `lines()` and the shipped codecs are separate from that gap
   (§6.4.6).
-- Native coalescing and ReplaceLatest realization require a checked key
-  projection and remain pending (§6.3).
 - Native supervision supports declared children and pools of them; a literal
   `count:` is required, and sibling wiring and parts of the shutdown-deadline
   contract remain incomplete (§5).
@@ -6198,15 +6197,13 @@ queue's permitted behaviour; public delivery outcomes follow §2.1.1.
 | `mailbox(actor, on_full: .Wait)` | wait for admission | submission envelope |
 | `mailbox(actor, on_full: .Reject)` | refuse without accepting the request | submission envelope |
 | `mailbox(actor, on_full: .DropNewest)` | explicitly discard this submission | `Delivery.Discarded` on that disposition |
-| `mailbox(actor, on_full: .ReplaceLatest)` | use the actor's opted-in coalescing protocol | submission envelope |
 | `mailbox(actor)`, `policy(actor)` | the destination's declared admission: `overflow fail` refuses, every other declaration waits | as for the derived policy |
 
 Completion views admit only Wait and Reject: a caller cannot wait for the
 completion of a request the policy intentionally discards, and no declared
-discarding policy applies to one. A sender cannot
-unilaterally evict other senders' work. ReplaceLatest requires actor-declared
-coalescing support. Write `on_full` to override the destination's declared
-admission; omit it to take that declaration.
+discarding policy applies to one. A sender cannot unilaterally evict other
+senders' work. The destination applies its declared overflow policy first;
+`on_full` selects the sender's action only when that policy refuses admission.
 
 Waiting for capacity suspends the calling execution context. It must not
 silently become dropping or a blocking wait on a scheduler worker. A terminal
@@ -6215,27 +6212,36 @@ removes the Full condition, not lifecycle or transport failures.
 
 ### 6.3 Coalesce Overflow Policy
 
-Coalescing is an actor-owned protocol for replacing queued work with a newer
-message of the same handler and key. An example declaration is
-`mailbox 100 overflow coalesce(request_id),`. The actor must define the key
-on the relevant payload; a sender view cannot invent a key or replacement
-policy for an unrelated protocol.
+Coalescing replaces queued submissions with newer work for the same handler
+and exactly equal key. The actor declares the policy:
 
-A coalesce key on a value-returning handler is refused: such a call waits for
-a reply, so it is never superseded or discarded and the key could never take
-effect.
+```hew
+actor LatestReading {
+    mailbox 100 overflow coalesce(sensor) fallback drop_new;
+    receive fn update(sensor: string, reading: i64) {
+        println(reading);
+    }
+}
+```
 
-Matching work is replaced in its queue position and the old payload is
-released. With no match, the declared fallback governs admission exactly as a
-declared policy of its own kind does; the default fallback is `drop_new`.
-`drop_old` and `fail` are explicit alternatives.
-Replacement or discard must be represented as a policy disposition, not
-misreported as handler completion. Submission and completion retain the
-result envelopes defined in §2.1.1.
+The key names a receive parameter of integer, `bool` or `string` type.
+Strings compare by value. Every handler declaring that parameter must use a
+supported key type; a handler without it never coalesces. Keys on
+value-returning or streaming handlers are rejected. Completion calls and
+stream-start requests are never superseded, discarded or evicted.
 
-Current native coalescing requires a checked key-projection contract and is
-not yet realized. See the implementation limitations in §2.1.1; this section
-specifies its intended queue behaviour, not a passing execution claim.
+Coalescing runs only when the bounded queue is full. It replaces the oldest
+queued submission with the same handler and key in its existing position.
+The incoming submission reports `Delivery.Accepted`; acceptance does not
+promise handler execution. The destination owns cleanup of the displaced
+payload, including any cleanup fault.
+
+With no match, the fallback governs admission. The default `drop_new`
+discards the incoming submission and reports `Delivery.Discarded`.
+`drop_old` evicts the oldest non-obligated submission and accepts the new
+one; if every queued request is obligated, admission is refused. `fail`
+refuses admission. `block` is not a coalescing fallback. A refusal preserves
+the sender's request and lets its `on_full` policy decide what happens next.
 
 ### 6.4 Pipes: `Stream<T>` and `Sink<T>`
 

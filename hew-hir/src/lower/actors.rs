@@ -402,6 +402,21 @@ impl LowerCtx {
         self.current_fn_type_params = previous_type_params;
         self.current_actor_nominal = previous_actor_nominal;
 
+        let Some(protocol_descriptor) = protocol_descriptor else {
+            self.diagnostics.push(
+                HirDiagnostic::new(
+                    HirDiagnosticKind::CheckerBoundaryViolation {
+                        name: actor_identity,
+                        reason: "actor lacks its checked mailbox protocol".to_string(),
+                    },
+                    span,
+                    "actor mailbox contracts must survive checker resolution",
+                )
+                .with_source_module(self.current_module_name.clone()),
+            );
+            return None;
+        };
+
         Some(HirActorDecl {
             id: self.ids.item(),
             node: self.ids.node(),
@@ -420,17 +435,10 @@ impl LowerCtx {
             state_fields,
             init,
             receive_handlers,
-            coalesce_keys: self
-                .actor_coalesce_keys
-                .get(&declaration)
-                .cloned()
-                .unwrap_or_default(),
             methods,
             lifecycle_hooks,
             max_heap_bytes: decl.max_heap_bytes,
             is_isolated: decl.is_isolated,
-            mailbox_capacity: decl.mailbox_capacity,
-            overflow_policy: decl.overflow_policy.clone(),
             cycle_capable,
             protocol_descriptor,
             lambda_handle_ty: None,

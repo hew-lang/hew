@@ -1,10 +1,5 @@
-// A coalescing mailbox resolves a full queue under its own declaration: a
-// same-key submission supersedes the queued one, and a submission whose key
-// matches nothing meets the `drop_new` fallback. Neither loss was the sender's
-// choice, and neither is retryable, so both report `Delivery.Discarded` rather
-// than acceptance. The sender is itself an actor handler: with one worker, that
-// handler occupies the only thread that could activate Cache, so the
-// capacity-one queue stays full across all three submissions.
+// Same-key replacement accepts the incoming submission; a fallback discard
+// reports Discarded. One worker keeps the destination queue full while Driver runs.
 actor Cache {
     mailbox 1 overflow coalesce(channel) fallback drop_new;
     receive fn update(channel: i64, reading: i64) {}
@@ -19,8 +14,8 @@ actor Driver {
             .Err(_) => println("FIRST_REFUSED"),
         }
         match intake.update(1, 11) {
-            .Ok(Delivery.Discarded) => println("superseded"),
-            .Ok(Delivery.Accepted) => println("SUPERSEDED_HIDDEN"),
+            .Ok(Delivery.Accepted) => println("superseded"),
+            .Ok(Delivery.Discarded) => println("SUPERSEDED_DISCARDED"),
             .Err(_) => println("SUPERSEDED_REFUSED"),
         }
         match intake.update(2, 20) {

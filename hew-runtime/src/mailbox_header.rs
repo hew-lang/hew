@@ -174,7 +174,7 @@ pub(crate) fn header_validate(bits: u32) -> u32 {
 /// fallback policy.
 pub(crate) fn normalize_coalesce_fallback(policy: HewOverflowPolicy) -> HewOverflowPolicy {
     match policy {
-        HewOverflowPolicy::Coalesce => HewOverflowPolicy::DropOld,
+        HewOverflowPolicy::Coalesce => HewOverflowPolicy::DropNew,
         other => other,
     }
 }

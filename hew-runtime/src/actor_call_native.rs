@@ -450,7 +450,8 @@ mod tests {
                         &*mailbox,
                         7,
                         envelope,
-                        channel.cast()
+                        channel.cast(),
+                        true
                     ),
                     crate::mailbox::SendOutcome::Enqueued
                 ));

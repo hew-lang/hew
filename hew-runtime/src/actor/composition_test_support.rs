@@ -51,7 +51,7 @@ fn idle_actor(mailbox: *mut HewMailbox) -> *mut HewActor {
         budget: AtomicI32::new(HEW_MSG_BUDGET),
         init_state: ptr::null_mut(),
         init_state_size: 0,
-        coalesce_key_fn: None,
+        coalesce_match_fn: None,
         terminate_fn: None,
         state_drop_fn: None,
         state_clone_fn: None,

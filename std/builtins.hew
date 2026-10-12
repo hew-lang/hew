@@ -184,7 +184,6 @@ pub enum OnFull {
     Reject;
     Wait;
     DropNewest;
-    ReplaceLatest;
 }
 
 // Compiler-selected immutable policy witnesses. They contain no runtime state.
@@ -195,9 +194,6 @@ pub type WaitSend {
 }
 
 pub type DropNewestSend {
-}
-
-pub type ReplaceLatestSend {
 }
 
 /// Error returned when a send cannot be completed.

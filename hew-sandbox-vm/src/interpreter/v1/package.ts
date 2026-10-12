@@ -546,7 +546,7 @@ export interface EntryPlan {
 export interface ActorProtocol {
   actor: number;
   message: number;
-  policy: "reject" | "wait" | "drop_newest" | "replace_latest";
+  policy: "reject" | "wait" | "drop_newest";
   sealed: boolean;
 }
 
@@ -606,7 +606,7 @@ export interface ActorShape {
   overflow: string;
   coalesce?: {
     fallback: string;
-    keys: Array<{ message: number; param: number; kind: string }>;
+    keys: Array<{ message: number; param: number }>;
   };
   max_heap_bytes?: number;
 }

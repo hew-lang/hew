@@ -57,7 +57,6 @@ impl LowerCtx {
             try_width_cast_lowerings: tc_output.try_width_cast_lowerings.clone(),
             actor_method_dispatch: tc_output.actor_method_dispatch.clone(),
             actor_delivery_calls: tc_output.actor_delivery_calls.clone(),
-            actor_coalesce_keys: tc_output.actor_coalesce_keys.clone(),
             machine_method_dispatch: tc_output.machine_method_dispatch.clone(),
             tail_ok_coercions: tc_output.tail_ok_coercions.clone(),
             yield_ok_coercions: tc_output.yield_ok_coercions.clone(),
@@ -300,10 +299,6 @@ impl LowerCtx {
                 tc_output.actor_delivery_calls.clone(),
             ),
             std::mem::replace(
-                &mut self.actor_coalesce_keys,
-                tc_output.actor_coalesce_keys.clone(),
-            ),
-            std::mem::replace(
                 &mut self.machine_method_dispatch,
                 tc_output.machine_method_dispatch.clone(),
             ),
@@ -374,7 +369,6 @@ impl LowerCtx {
             self.try_width_cast_lowerings,
             self.actor_method_dispatch,
             self.actor_delivery_calls,
-            self.actor_coalesce_keys,
             self.machine_method_dispatch,
             self.method_call_receiver_kinds,
             self.dyn_trait_coercions,

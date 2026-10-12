@@ -22,6 +22,14 @@ impl Checker {
             Item::Function(fd) => self.check_function(fd),
             Item::Actor(ad) => {
                 if !crate::ty::is_reserved_type_name(ad.name.name.as_str()) {
+                    if ad.overflow_policy.is_some() && ad.mailbox_capacity.is_none() {
+                        self.report_error(
+                            TypeErrorKind::InvalidOperation,
+                            span,
+                            "an overflow policy requires a bounded `mailbox N` declaration"
+                                .to_string(),
+                        );
+                    }
                     if matches!(
                         ad.overflow_policy.as_ref(),
                         Some(hew_parser::ast::OverflowPolicy::Coalesce {
@@ -192,13 +200,18 @@ impl Checker {
                 .return_type
                 .as_ref()
                 .is_some_and(|ret| !matches!(self.resolve_type_expr(ret), Ty::Unit | Ty::Error));
-            if returns_value {
+            if returns_value || rf.is_generator {
+                let obligation = if rf.is_generator {
+                    "streams values"
+                } else {
+                    "returns a value"
+                };
                 self.report_error(
                     TypeErrorKind::InvalidOperation,
                     span,
                     format!(
                         "coalesce key `{key_field}` is declared on `receive fn {}`, which \
-                         returns a value; a call that waits for a reply is never superseded \
+                         {obligation}; a call that waits for a reply is never superseded \
                          or discarded, so the key can never take effect. Remove the parameter \
                          from this handler or coalesce on a one-way handler",
                         rf.name
@@ -262,7 +275,20 @@ impl Checker {
             );
         }
         if let Some(actor) = actor {
-            self.actor_coalesce_keys.insert(actor, selected);
+            if let Some(protocol) = self
+                .actor_protocol_descriptors
+                .get_mut(self.defs.path(actor))
+            {
+                for (declaration, param) in selected {
+                    if let Some(handler) = protocol
+                        .handlers
+                        .iter_mut()
+                        .find(|handler| handler.declaration == declaration)
+                    {
+                        handler.coalesce_key = Some(param);
+                    }
+                }
+            }
         }
     }
 

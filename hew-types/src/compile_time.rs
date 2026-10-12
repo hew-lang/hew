@@ -63,6 +63,15 @@ pub struct InputError {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ConstantValue {
+    Integer(i128),
+    Float(f64),
     String(String),
     Bytes(Vec<u8>),
+    Record(Vec<(String, TypedConstant)>),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct TypedConstant {
+    pub ty: crate::ResolvedTy,
+    pub value: ConstantValue,
 }

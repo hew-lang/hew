@@ -1158,13 +1158,13 @@ fn main_function_body(output: &LowerOutput) -> &HirBlock {
     &function.body
 }
 
-fn const_value_named<'a>(output: &'a LowerOutput, name: &str) -> &'a crate::node::HirConstValue {
+fn const_value_named<'a>(output: &'a LowerOutput, name: &str) -> &'a HirExprKind {
     output
         .module
         .items
         .iter()
         .find_map(|item| match item {
-            HirItem::Const(item) if item.name == name => Some(&item.value),
+            HirItem::Const(item) if item.name == name => Some(&item.value.kind),
             _ => None,
         })
         .unwrap_or_else(|| panic!("expected lowered const `{name}`"))
@@ -1265,7 +1265,7 @@ fn fold_const_expr_resolves_prior_const_ref() {
     );
     assert_eq!(
         const_value_named(&lowered, "B"),
-        &crate::node::HirConstValue::Integer(11)
+        &HirExprKind::Literal(HirLiteral::Integer(11))
     );
 }
 

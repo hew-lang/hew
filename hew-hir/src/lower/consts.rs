@@ -1,8 +1,51 @@
 //! Constant declaration lowering and folding.
 
 use super::*;
+use hew_types::compile_time::ConstantValue as HirConstValue;
 
 impl LowerCtx {
+    pub(super) fn lower_constant_value(
+        &mut self,
+        value: &HirConstValue,
+        ty: &ResolvedTy,
+        span: &Span,
+        intent: IntentKind,
+    ) -> HirExpr {
+        let kind = match value {
+            HirConstValue::Integer(value) => HirExprKind::Literal(HirLiteral::Integer(*value)),
+            HirConstValue::Float(value) => HirExprKind::Literal(HirLiteral::Float(*value)),
+            HirConstValue::String(value) => HirExprKind::Literal(HirLiteral::String(value.clone())),
+            HirConstValue::Bytes(value) => HirExprKind::Literal(HirLiteral::Bytes(value.clone())),
+            HirConstValue::Record(fields) => HirExprKind::StructInit {
+                name: ty.user_facing().to_string(),
+                type_args: Vec::new(),
+                fields: fields
+                    .iter()
+                    .map(|(name, field)| {
+                        (
+                            name.clone(),
+                            self.lower_constant_value(
+                                &field.value,
+                                &field.ty,
+                                span,
+                                IntentKind::Consume,
+                            ),
+                        )
+                    })
+                    .collect(),
+                base: None,
+            },
+        };
+        HirExpr {
+            node: self.ids.node(),
+            site: self.ids.site(),
+            ty: ty.clone(),
+            intent,
+            span: span.clone(),
+            kind,
+        }
+    }
+
     /// First-pass registration of a module-level `const`. Allocates a stable
     /// `ItemId` and records the declared (checker-resolved) type so const
     /// references resolve regardless of source order. The folded value is
@@ -28,13 +71,7 @@ impl LowerCtx {
         }
     }
 
-    /// Emit-pass lowering of a module-level `const NAME: T = <expr>;`.
-    ///
-    /// Reuses the `ItemId` allocated in the first pass and constant-folds the
-    /// initializer into a [`HirConstValue`]. Fail-closed: any initializer the
-    /// fold cannot evaluate to a concrete integer/string emits a
-    /// `HirDiagnosticKind::NotYetImplemented` and lowers to a placeholder value
-    /// (never silently fabricated semantics).
+    /// Fold a module constant and project it into ordinary typed HIR.
     pub(super) fn lower_const(
         &mut self,
         decl: &ConstDecl,
@@ -55,19 +92,15 @@ impl LowerCtx {
         let (id, ty) = (entry.id, entry.ty.clone());
 
         let value = match self.compile_time_values.get(&self.mk_key(&decl.value.1)) {
-            Some(hew_types::compile_time::ConstantValue::String(text)) => {
-                crate::node::HirConstValue::String(text.clone())
-            }
-            Some(hew_types::compile_time::ConstantValue::Bytes(bytes)) => {
-                crate::node::HirConstValue::Bytes(bytes.clone())
-            }
+            Some(value) => value.clone(),
             None => self.fold_const_expr(&decl.value.0, &ty, span.clone()),
         };
-        if let crate::node::HirConstValue::Integer(value) = &value {
+        if let HirConstValue::Integer(value) = &value {
             self.folded_integer_consts
                 .insert(decl.name.to_string(), *value);
         }
 
+        let value = self.lower_constant_value(&value, &ty, &decl.value.1, IntentKind::Consume);
         Some(crate::node::HirConst {
             id,
             node: self.ids.node(),
@@ -100,9 +133,9 @@ impl LowerCtx {
         expr: &Expr,
         declared_ty: &ResolvedTy,
         span: std::ops::Range<usize>,
-    ) -> crate::node::HirConstValue {
+    ) -> HirConstValue {
         if let Expr::ByteStringLiteral(bytes) | Expr::ByteArrayLiteral(bytes) = expr {
-            return crate::node::HirConstValue::Bytes(bytes.clone());
+            return HirConstValue::Bytes(bytes.clone());
         }
         // Dispatch on the initializer shape rather than the declared type:
         // the string primitive spells out as either `ResolvedTy::String` or
@@ -110,17 +143,17 @@ impl LowerCtx {
         // and the checker has already proven value/type agreement upstream.
         if let Expr::Literal(lit) = expr {
             match lit {
-                Literal::String(s) => return crate::node::HirConstValue::String(s.clone()),
+                Literal::String(s) => return HirConstValue::String(s.clone()),
                 Literal::Float(value) if Self::is_float_ty(declared_ty) => {
                     if Self::float_literal_fits_declared_ty(*value, declared_ty) {
-                        return crate::node::HirConstValue::Float(*value);
+                        return HirConstValue::Float(*value);
                     }
                     self.unsupported(
                         span,
                         "float const initializer exceeds the declared float range",
                         "const-fold",
                     );
-                    return crate::node::HirConstValue::Float(0.0);
+                    return HirConstValue::Float(0.0);
                 }
                 _ => {}
             }
@@ -135,14 +168,14 @@ impl LowerCtx {
                 if Self::is_float_ty(declared_ty) {
                     let negated = -*value;
                     if Self::float_literal_fits_declared_ty(negated, declared_ty) {
-                        return crate::node::HirConstValue::Float(negated);
+                        return HirConstValue::Float(negated);
                     }
                     self.unsupported(
                         span,
                         "negative float const initializer exceeds the declared float range",
                         "const-fold",
                     );
-                    return crate::node::HirConstValue::Float(0.0);
+                    return HirConstValue::Float(0.0);
                 }
             }
         }
@@ -169,7 +202,7 @@ impl LowerCtx {
             // The const evaluator and the HIR carrier are both `i128`, and the
             // evaluator has already range-checked the value against the
             // declared type, so the folded value passes through exactly.
-            Some(Ok(value)) => return crate::node::HirConstValue::Integer(value),
+            Some(Ok(value)) => return HirConstValue::Integer(value),
             Some(Err(hew_types::check::const_eval::ConstEvalError::UnknownConst(_))) => {
                 self.unsupported(
                     span,
@@ -215,11 +248,11 @@ impl LowerCtx {
         // the declared type's value shape so downstream structural invariants
         // hold.
         if Self::is_string_ty(declared_ty) {
-            crate::node::HirConstValue::String(String::new())
+            HirConstValue::String(String::new())
         } else if Self::is_float_ty(declared_ty) {
-            crate::node::HirConstValue::Float(0.0)
+            HirConstValue::Float(0.0)
         } else {
-            crate::node::HirConstValue::Integer(0)
+            HirConstValue::Integer(0)
         }
     }
 

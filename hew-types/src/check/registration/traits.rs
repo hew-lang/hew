@@ -1073,6 +1073,10 @@ impl Checker {
     /// that is not declared on the trait. The trait is the declaration the
     /// written path resolves to in the impl's scope. Per-method signature
     /// equivalence is enforced separately by `check_impl_method_against_trait`.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "keeps resolved identity, cumulative methods and missing/extra diagnostics together"
+    )]
     pub(in crate::check) fn check_impl_method_set_against_trait(
         &mut self,
         type_name: &str,

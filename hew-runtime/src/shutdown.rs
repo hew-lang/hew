@@ -21,6 +21,8 @@
 
 use std::ffi::c_int;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Condvar, Mutex, MutexGuard};
+use std::thread::{JoinHandle, ThreadId};
 use std::time::{Duration, Instant};
 
 use crate::reactor;
@@ -28,6 +30,118 @@ use crate::reactor;
 use crate::runtime::rt_current_opt;
 use crate::runtime::{rt_current, rt_default};
 use crate::scheduler;
+use crate::util::{CondvarExt, MutexExt};
+
+static INITIATION: Mutex<()> = Mutex::new(());
+
+pub(crate) fn initiation_guard() -> MutexGuard<'static, ()> {
+    INITIATION.lock_or_recover()
+}
+
+pub(crate) fn request_from_signal() {
+    if !crate::driver::active() {
+        hew_shutdown_initiate(0);
+        return;
+    }
+    let _initiation = initiation_guard();
+    if rt_default()
+        .is_some_and(|runtime| runtime.shutdown_control.state.lock_or_recover().accepting)
+    {
+        crate::driver::publish_shutdown();
+    }
+}
+
+enum Orchestration {
+    Idle,
+    Inline(ThreadId),
+    Background(JoinHandle<()>),
+    Joining,
+}
+
+struct ControlState {
+    accepting: bool,
+    orchestration: Orchestration,
+}
+
+pub(crate) struct ShutdownControl {
+    state: Mutex<ControlState>,
+    settled: Condvar,
+}
+
+impl Default for ShutdownControl {
+    fn default() -> Self {
+        Self {
+            state: Mutex::new(ControlState {
+                accepting: true,
+                orchestration: Orchestration::Idle,
+            }),
+            settled: Condvar::new(),
+        }
+    }
+}
+
+struct InlineShutdown<'a>(&'a ShutdownControl);
+
+impl Drop for InlineShutdown<'_> {
+    fn drop(&mut self) {
+        let mut state = self.0.state.lock_or_recover();
+        state.orchestration = Orchestration::Idle;
+        self.0.settled.notify_all();
+    }
+}
+
+/// Close admission and finish existing shutdown work before runtime cleanup.
+/// A timeout retains the thread and runtime for a later cleanup attempt.
+pub(crate) fn finish_for_cleanup() -> bool {
+    let initiation = initiation_guard();
+    let Some(runtime) = rt_default() else {
+        return true;
+    };
+    let control = &runtime.shutdown_control;
+    let mut state = control.state.lock_or_recover();
+    state.accepting = false;
+    crate::driver::discard_shutdown_requests();
+    drop(initiation);
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while matches!(
+        state.orchestration,
+        Orchestration::Inline(_) | Orchestration::Joining
+    ) {
+        if matches!(state.orchestration, Orchestration::Inline(id) if id == std::thread::current().id())
+        {
+            return false;
+        }
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return false;
+        }
+        (state, _) = control.settled.wait_timeout_or_recover(state, left);
+    }
+    let Orchestration::Background(thread) =
+        std::mem::replace(&mut state.orchestration, Orchestration::Idle)
+    else {
+        return true;
+    };
+    state.orchestration = Orchestration::Joining;
+    drop(state);
+    let is_current = thread.thread().id() == std::thread::current().id();
+    while !is_current && !thread.is_finished() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    let finished = !is_current && thread.is_finished();
+    let remaining = if finished {
+        if let Err(payload) = thread.join() {
+            crate::util::quarantine_panic_payload(payload);
+        }
+        None
+    } else {
+        Some(thread)
+    };
+    let mut state = control.state.lock_or_recover();
+    state.orchestration = remaining.map_or(Orchestration::Idle, Orchestration::Background);
+    control.settled.notify_all();
+    finished
+}
 
 // ---------------------------------------------------------------------------
 // Shutdown phases
@@ -350,7 +464,12 @@ fn shutdown_initiate(drain_timeout_ms: i64, cancel_parked_waits: bool) {
     // No runtime installed → nothing to shut down. The implicit actor-drain
     // epilogue emits the implicit entry point for every program that declares an
     // actor type, but `hew_sched_init` only runs at an actual spawn site.
-    if rt_default().is_none() {
+    let initiation = initiation_guard();
+    let Some(runtime) = rt_default() else {
+        return;
+    };
+    let mut control = runtime.shutdown_control.state.lock_or_recover();
+    if !control.accepting {
         return;
     }
 
@@ -383,13 +502,17 @@ fn shutdown_initiate(drain_timeout_ms: i64, cancel_parked_waits: bool) {
     // the caller orchestrates inline, stepping the driver where the threaded
     // runtime waits for its workers.
     if crate::driver::active() {
+        control.orchestration = Orchestration::Inline(std::thread::current().id());
+        drop(control);
+        drop(initiation);
+        let _running = InlineShutdown(&runtime.shutdown_control);
         shutdown_orchestrate_mode(timeout, cancel_parked_waits);
         return;
     }
 
     // Spawn a background thread to orchestrate the shutdown phases
     // so the caller is not blocked.
-    match std::thread::Builder::new()
+    if let Ok(thread) = std::thread::Builder::new()
         .name("hew-shutdown".into())
         .spawn(move || {
             if let Err(panic_payload) = run_shutdown_with_panic_handling(|| {
@@ -397,21 +520,23 @@ fn shutdown_initiate(drain_timeout_ms: i64, cancel_parked_waits: bool) {
             }) {
                 std::panic::resume_unwind(panic_payload);
             }
+        })
+    {
+        control.orchestration = Orchestration::Background(thread);
+    } else {
+        // Spawn failed — run shutdown synchronously on current thread.
+        // This ensures shutdown completes even if thread spawning fails.
+        control.orchestration = Orchestration::Inline(std::thread::current().id());
+        drop(control);
+        drop(initiation);
+        let _running = InlineShutdown(&runtime.shutdown_control);
+        if let Err(panic_payload) = run_shutdown_with_panic_handling(|| {
+            shutdown_orchestrate_mode(timeout, cancel_parked_waits);
         }) {
-        Ok(_) => {
-            // Shutdown orchestration thread started successfully.
-        }
-        Err(_) => {
-            // Spawn failed — run shutdown synchronously on current thread.
-            // This ensures shutdown completes even if thread spawning fails.
-            if let Err(panic_payload) = run_shutdown_with_panic_handling(|| {
-                shutdown_orchestrate_mode(timeout, cancel_parked_waits);
-            }) {
-                // The synchronous fallback is reached from an extern "C"
-                // entry point, so unlike the worker-thread path it cannot
-                // deliberately resume the unwind across its caller.
-                crate::util::quarantine_panic_payload(panic_payload);
-            }
+            // The synchronous fallback is reached from an extern "C"
+            // entry point, so unlike the worker-thread path it cannot
+            // deliberately resume the unwind across its caller.
+            crate::util::quarantine_panic_payload(panic_payload);
         }
     }
 }

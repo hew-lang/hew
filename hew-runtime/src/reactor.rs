@@ -451,7 +451,7 @@ impl Slot {
         self: &Arc<Self>,
         direction: Direction,
         operation: &Arc<HewAsyncIo>,
-    ) -> Result<(), IoFailure> {
+    ) -> Result<bool, IoFailure> {
         let poller = poller().map_err(|error| IoFailure::from_io("start I/O reactor", &error))?;
         if !ensure_reactor_started() {
             return Err(IoFailure::from_io(
@@ -463,6 +463,13 @@ impl Slot {
         if state.closed {
             return Err(cancelled_failure("wait on closed I/O handle"));
         }
+        // Completion publishes the terminal operation state before withdrawing
+        // from this slot. Checking it under the slot lock closes the only gap
+        // where a deadline could finish after the syscall attempt but before
+        // waiter publication.
+        if !operation.is_pending() {
+            return Ok(false);
+        }
         if self.is_stdin() {
             // Only the turn holder waits here; it keeps its place at the front.
             if state.readers.queue.is_empty() {
@@ -473,7 +480,8 @@ impl Slot {
             // An arm failure completes the reader, and `forget` passes its turn.
             return self
                 .arm(poller, &mut state)
-                .map_err(|error| IoFailure::from_io("arm standard input readiness", &error));
+                .map_err(|error| IoFailure::from_io("arm standard input readiness", &error))
+                .map(|()| true);
         }
         match state.waiter(direction) {
             Some(current) if !Arc::ptr_eq(current, operation) => return Err(busy()),
@@ -489,7 +497,7 @@ impl Slot {
             }
             return Err(IoFailure::from_io("arm I/O readiness", &error));
         }
-        Ok(())
+        Ok(true)
     }
 
     #[cfg(unix)]
@@ -512,7 +520,7 @@ impl Slot {
     fn arm(self: &Arc<Self>, poller: &Poller, state: &mut SlotState) -> io::Result<()> {
         if self.is_stdin() {
             // The reader thread reports readiness through `report_stdin_ready`.
-            crate::async_io::ensure_stdin_reader();
+            // Its fallible startup runs before the stdin and slot locks.
             return Ok(());
         }
         let interest = state.interest();
@@ -564,6 +572,9 @@ impl Slot {
     /// or it holds the turn. Otherwise it joins the back of the queue.
     pub(crate) fn take_turn(&self, operation: &Arc<HewAsyncIo>) -> bool {
         let mut state = self.state.lock_or_recover();
+        if !operation.is_pending() {
+            return false;
+        }
         match state.readers.queue.front() {
             None => true,
             Some(front) if Arc::ptr_eq(front, operation) => {

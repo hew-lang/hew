@@ -243,6 +243,8 @@ enum Participant {
     /// children finish, but its source-level requester has already returned.
     #[cfg(not(target_arch = "wasm32"))]
     SupervisorStop(crate::supervisor::QueuedSupervisorStop),
+    #[cfg(not(target_arch = "wasm32"))]
+    Shutdown,
 }
 
 // SAFETY: the ready list is the only holder of the actor queue reference while
@@ -321,6 +323,20 @@ pub(crate) fn publish_supervisor_stop(stop: crate::supervisor::QueuedSupervisorS
     publish(Participant::SupervisorStop(stop));
 }
 
+/// Deliver a host termination request on the process thread.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn publish_shutdown() {
+    publish(Participant::Shutdown);
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn discard_shutdown_requests() {
+    READY
+        .lock_or_recover()
+        .entries
+        .retain(|entry| !matches!(entry, Participant::Shutdown));
+}
+
 /// Whether any participant is waiting to run.
 pub(crate) fn has_queued_work() -> bool {
     !READY.lock_or_recover().entries.is_empty()
@@ -369,6 +385,8 @@ fn run_participant(participant: Participant) {
         Participant::Root(readiness) => readiness.picked(),
         #[cfg(not(target_arch = "wasm32"))]
         Participant::SupervisorStop(stop) => stop.run(),
+        #[cfg(not(target_arch = "wasm32"))]
+        Participant::Shutdown => crate::shutdown::hew_shutdown_initiate(0),
     }
 }
 

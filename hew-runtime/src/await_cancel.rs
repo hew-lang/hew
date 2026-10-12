@@ -11,15 +11,18 @@
 
 use std::ffi::c_void;
 use std::ptr;
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicI32, AtomicUsize, Ordering};
+use std::sync::Mutex;
 
 use crate::actor::HewActor;
 use crate::cancel_token::{
     hew_cancel_token_release, hew_cancel_token_retain, HewCancellationToken,
 };
 use crate::lifetime::live_actors::ActorIncarnation;
-use crate::timer_wheel::{hew_timer_wheel_cancel, hew_timer_wheel_schedule_handle};
-use crate::timer_wheel::{HewTimerEntry, HewTimerWheel};
+use crate::timer_wheel::{
+    hew_timer_wheel_remove, hew_timer_wheel_schedule_handle, HewTimerHandle, HewTimerWheel,
+};
+use crate::util::MutexExt;
 
 /// Terminal state for an internal suspended await registration.
 ///
@@ -46,6 +49,12 @@ impl AwaitCancelStatus {
 
 pub type HewAwaitCleanup = Option<unsafe extern "C" fn(*mut c_void, i32)>;
 
+#[derive(Debug)]
+struct AwaitTimer {
+    wheel: *mut HewTimerWheel,
+    handle: HewTimerHandle,
+}
+
 /// Shared cancellation/deadline registration for a suspended wait source.
 #[repr(C)]
 #[derive(Debug)]
@@ -53,10 +62,7 @@ pub struct HewAwaitCancel {
     refs: AtomicUsize,
     state: AtomicI32,
     cancel_token: *mut HewCancellationToken,
-    timer_wheel: AtomicPtr<HewTimerWheel>,
-    timer_entry: AtomicPtr<HewTimerEntry>,
-    timer_generation: AtomicU64,
-    timer_ref_held: AtomicBool,
+    timer: Mutex<Option<AwaitTimer>>,
     /// The waiting actor's incarnation, set once at registration and never
     /// rewritten. `ActorIncarnation::NONE` means the wait has no resumable
     /// continuation (a sleep, or a foreign-thread waiter).
@@ -79,37 +85,25 @@ unsafe fn await_cancel_retain(reg: *mut HewAwaitCancel) {
     unsafe { (*reg).refs.fetch_add(1, Ordering::Relaxed) };
 }
 
-unsafe fn release_timer_ref_if_held(reg: *mut HewAwaitCancel) {
-    if reg.is_null() {
-        return;
-    }
-    // SAFETY: caller holds a live reference while testing the timer-ref latch.
-    if unsafe { (*reg).timer_ref_held.swap(false, Ordering::AcqRel) } {
-        // SAFETY: consumes the timer-owned reference.
-        unsafe { hew_await_cancel_free(reg) };
-    }
-}
-
 unsafe fn cancel_timer(reg: *mut HewAwaitCancel) {
     if reg.is_null() {
         return;
     }
     // SAFETY: caller holds a live reference.
-    let r = unsafe { &*reg };
-    let entry = r.timer_entry.swap(ptr::null_mut(), Ordering::AcqRel);
-    let generation = r.timer_generation.swap(0, Ordering::AcqRel);
-    let wheel = r.timer_wheel.swap(ptr::null_mut(), Ordering::AcqRel);
-    if !entry.is_null() && !wheel.is_null() && generation != 0 {
-        // SAFETY: the entry was scheduled on this wheel and has not been
-        // detached by this registration yet.
-        unsafe { hew_timer_wheel_cancel(wheel, entry, generation) };
-    }
-    // If the timer was cancelled before it fired, release the ref retained for
-    // the callback.  If it already fired, the callback's own release wins this
-    // latch and this is a no-op.
-    if !entry.is_null() {
-        // SAFETY: caller holds a live reference while cancelling the timer.
-        unsafe { release_timer_ref_if_held(reg) };
+    let timer = unsafe { &*reg }.timer.lock_or_recover().take();
+    if let Some(timer) = timer {
+        // Removal is the ownership claim. A non-null payload means the wheel
+        // had not collected the callback, so cancellation now owns its retained
+        // registration reference. Once collected, only the callback releases it.
+        // SAFETY: the live registration owns this timer handle and wheel.
+        let payload = unsafe {
+            hew_timer_wheel_remove(timer.wheel, timer.handle.entry, timer.handle.generation)
+        };
+        if !payload.is_null() {
+            debug_assert_eq!(payload, reg.cast());
+            // SAFETY: successful removal transfers the retained reference here.
+            unsafe { hew_await_cancel_free(reg) };
+        }
     }
 }
 
@@ -118,16 +112,11 @@ unsafe extern "C" fn await_cancel_timer_cb(data: *mut c_void) {
     if reg.is_null() {
         return;
     }
-    // This callback is running because the timer entry fired and is about to be
-    // freed by the timer wheel, so this registration no longer owns an entry
-    // pointer that can be cancelled.
     // SAFETY: the timer retained `reg` before scheduling this callback.
     unsafe {
-        (*reg).timer_entry.store(ptr::null_mut(), Ordering::Release);
-        (*reg).timer_generation.store(0, Ordering::Release);
-        (*reg).timer_wheel.store(ptr::null_mut(), Ordering::Release);
+        (*reg).timer.lock_or_recover().take();
         let _ = await_cancel_finish(reg, AwaitCancelStatus::TimedOut, true);
-        release_timer_ref_if_held(reg);
+        hew_await_cancel_free(reg);
     }
 }
 
@@ -217,10 +206,7 @@ pub unsafe extern "C" fn hew_await_cancel_new(
         refs: AtomicUsize::new(1),
         state: AtomicI32::new(AwaitCancelStatus::Pending as i32),
         cancel_token: token,
-        timer_wheel: AtomicPtr::new(ptr::null_mut()),
-        timer_entry: AtomicPtr::new(ptr::null_mut()),
-        timer_generation: AtomicU64::new(0),
-        timer_ref_held: AtomicBool::new(false),
+        timer: Mutex::new(None),
         // SAFETY: `actor`, when non-null, is the registering actor and is
         // live for this call.
         actor: unsafe { ActorIncarnation::of(actor) },
@@ -331,10 +317,8 @@ pub unsafe extern "C" fn hew_await_cancel_schedule_deadline_ms(
     }
     // SAFETY: caller holds a live reference.
     let r = unsafe { &*reg };
-    if r.state.load(Ordering::Acquire) != AwaitCancelStatus::Pending as i32 {
-        return -1;
-    }
-    if r.timer_ref_held.swap(true, Ordering::AcqRel) {
+    let mut timer = r.timer.lock_or_recover();
+    if r.state.load(Ordering::Acquire) != AwaitCancelStatus::Pending as i32 || timer.is_some() {
         return -1;
     }
     // SAFETY: the timer callback owns this retained reference until it fires or
@@ -344,15 +328,11 @@ pub unsafe extern "C" fn hew_await_cancel_schedule_deadline_ms(
     let handle =
         unsafe { hew_timer_wheel_schedule_handle(tw, delay_ms, await_cancel_timer_cb, reg.cast()) };
     if handle.entry.is_null() {
-        r.timer_ref_held.store(false, Ordering::Release);
         // SAFETY: undo the callback ref retained above.
         unsafe { hew_await_cancel_free(reg) };
         return -1;
     }
-    r.timer_wheel.store(tw, Ordering::Release);
-    r.timer_generation
-        .store(handle.generation, Ordering::Release);
-    r.timer_entry.store(handle.entry, Ordering::Release);
+    *timer = Some(AwaitTimer { wheel: tw, handle });
     0
 }
 
@@ -425,12 +405,10 @@ mod tests {
     ///    retaining a second ref for the timer callback (refs = 2) and
     ///    allocating the timer entry node.
     /// 3. Abandon: `hew_await_cancel_cancel(Cancelled, no_wake)` wins the
-    ///    one-shot transition, cancels the armed timer (marking the entry so it
-    ///    cannot fire), and releases the timer's retained ref (refs = 1).
+    ///    one-shot transition, removes the armed timer and releases its retained
+    ///    ref (refs = 1).
     /// 4. `hew_await_cancel_free` drops the last ref (refs = 0 → box freed).
-    /// 5. Ticking the wheel past the deadline collects the cancelled entry and
-    ///    frees its node WITHOUT firing the callback — so the callback never
-    ///    dereferences the already-freed registration.
+    /// 5. Ticking the wheel past the deadline has no entry left to fire.
     ///
     /// Under `ASan` this proves single-free of the registration and the timer
     /// node and the absence of a use-after-free wake. The `no_wake` cancel matches the
@@ -460,9 +438,7 @@ mod tests {
             // (4): release the codegen-held registration ref.
             hew_await_cancel_free(reg);
 
-            // (5): advance the wheel past the deadline. The cancelled entry must
-            // be reclaimed without firing — a fired callback here would be a
-            // use-after-free against the freed registration.
+            // (5): advance the wheel past the removed deadline.
             let fired = crate::timer_wheel::timer_wheel_tick_to(
                 tw,
                 crate::clock::hew_now_ms().saturating_add(5),

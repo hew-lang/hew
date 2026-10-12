@@ -174,7 +174,7 @@ pub unsafe extern "C" fn hew_blocking_pool_new() -> *mut HewBlockingPool {
 
 impl PoolInner {
     /// Start a thread already counted in `threads`.
-    fn spawn_worker(self: &Arc<Self>) {
+    fn spawn_worker(self: &Arc<Self>, queue: &mut Queue) -> bool {
         let shared = Arc::clone(self);
         let spawned = std::thread::Builder::new()
             .name("hew-blocking".into())
@@ -184,21 +184,23 @@ impl PoolInner {
         let (finished, live): (Vec<_>, Vec<_>) =
             workers.drain(..).partition(JoinHandle::is_finished);
         *workers = live;
-        match spawned {
-            Ok(handle) => workers.push(handle),
+        let started = match spawned {
+            Ok(handle) => {
+                workers.push(handle);
+                true
+            }
             Err(error) => {
-                // The job stays queued for an existing thread; undo the count.
-                let mut queue = self.queue.lock_or_recover();
                 queue.threads -= 1;
                 crate::observe::record_pool_threads(queue.threads);
-                drop(queue);
                 eprintln!("hew: blocking pool could not start a thread: {error}");
+                false
             }
-        }
+        };
         drop(workers);
         for handle in finished {
             let _ = handle.join();
         }
+        started
     }
 
     /// Count a new thread if queued work has no idle thread and the cap
@@ -234,7 +236,7 @@ impl HewBlockingPool {
 
 /// Submit a blocking task to the pool.
 ///
-/// Returns 0 on success, -1 if the pool is null or has been stopped.
+/// Returns 0 on success, -1 if the pool is unavailable or cannot start a worker.
 ///
 /// # Safety
 ///
@@ -261,7 +263,7 @@ pub unsafe extern "C" fn hew_blocking_pool_submit(
 /// runtime-owned state when it finishes, and by the time the pool stops its
 /// caller has stopped waiting for it.
 ///
-/// Returns 0 on success, -1 if the pool is null or has been stopped.
+/// Returns 0 on success, -1 if the pool is unavailable or cannot start a worker.
 ///
 /// # Safety
 ///
@@ -302,13 +304,15 @@ unsafe fn submit(pool: *mut HewBlockingPool, task: Task) -> i32 {
         return 0;
     }
     queue.tasks.push_back(task);
-    // More queued jobs than waiting threads: grow, or record saturation.
     let grow = p.inner.should_grow(&mut queue);
+    // Keep admission and thread creation under the same lock: a reservation
+    // must not look like an available worker to a concurrent submitter.
+    if grow && !p.inner.spawn_worker(&mut queue) {
+        queue.tasks.pop_back();
+        return -1;
+    }
     drop(queue);
     p.inner.work.notify_one();
-    if grow {
-        p.inner.spawn_worker();
-    }
     0
 }
 
@@ -367,9 +371,11 @@ impl Detach {
         running.detached = true;
         queue.detached += 1;
         let grow = queue.running && inner.should_grow(&mut queue);
-        drop(queue);
-        if grow {
-            inner.spawn_worker();
+        if grow && !inner.spawn_worker(&mut queue) {
+            if let Some(running) = queue.running_job(self.job) {
+                running.detached = false;
+                queue.detached -= 1;
+            }
         }
     }
 }

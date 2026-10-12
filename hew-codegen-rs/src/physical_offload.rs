@@ -240,6 +240,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         result: Option<StorageId>,
         normal: &PhysicalEdge,
         cancel: &PhysicalEdge,
+        unwind: &PhysicalEdge,
     ) -> CodegenResult<()> {
         let frame = self.frame.as_ref().ok_or_else(|| {
             CodegenError::FailClosed("an offloaded call requires a resumable body".into())
@@ -328,8 +329,31 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         self.builder.position_at_end(completed);
         let taken = self.ctx.append_basic_block(self.value, "offload.taken");
         let invalid = self.ctx.append_basic_block(self.value, "offload.invalid");
+        let success = self.ctx.append_basic_block(self.value, "offload.success");
+        let failed = self.ctx.append_basic_block(self.value, "offload.failed");
         // Restore the carried error slot before the take consumes the result.
-        self.state_value("hew_async_io_restore_error", request)?;
+        let status = self.state_value("hew_async_io_restore_error", request)?;
+        self.builder
+            .build_switch(
+                status,
+                invalid,
+                &[
+                    (self.ctx.i32_type().const_int(1, false), success),
+                    (self.ctx.i32_type().const_int(2, false), failed),
+                ],
+            )
+            .llvm_ctx("select offload result")?;
+        self.builder.position_at_end(failed);
+        let fault = get_or_declare_external(
+            self.llvm,
+            "hew_stream_take_error_fault",
+            pointer.fn_type(&[], false),
+        )?;
+        let fault = suspend::call_value(&self.builder, fault, &[], "offload.fault")?;
+        self.store_active_fault(fault, HEW_TRAP_USER_PANIC)?;
+        self.free_handle("hew_async_io_free", request)?;
+        self.emit_edge(unwind)?;
+        self.builder.position_at_end(success);
         let (output, offset, length) = match result {
             Some(result) => {
                 let index = u32::try_from(args.len())

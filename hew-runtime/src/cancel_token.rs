@@ -75,22 +75,16 @@ unsafe fn hew_cancel_token_retain_impl(token: *mut HewCancellationToken) {
     }
 }
 
-unsafe fn hew_cancel_token_release_impl(token: *mut HewCancellationToken) {
-    if token.is_null() {
-        return;
-    }
-
-    // SAFETY: caller guarantees `token` is a live token pointer.
-    if unsafe { (*token).refs.fetch_sub(1, Ordering::Release) } != 1 {
-        return;
-    }
-
-    std::sync::atomic::fence(Ordering::Acquire);
-    // SAFETY: this was the last reference, so reclaim the Box allocation.
-    let boxed = unsafe { Box::from_raw(token) };
-    if !boxed.parent.is_null() {
-        // SAFETY: child construction retained the parent for this token.
-        unsafe { hew_cancel_token_release_impl(boxed.parent) };
+unsafe fn hew_cancel_token_release_impl(mut token: *mut HewCancellationToken) {
+    while !token.is_null() {
+        // SAFETY: the caller or the child being freed owns this reference.
+        if unsafe { (*token).refs.fetch_sub(1, Ordering::Release) } != 1 {
+            return;
+        }
+        std::sync::atomic::fence(Ordering::Acquire);
+        // SAFETY: this was the last reference, so reclaim the allocation.
+        let boxed = unsafe { Box::from_raw(token) };
+        token = boxed.parent;
     }
 }
 
@@ -117,7 +111,7 @@ pub unsafe extern "C" fn hew_cancel_token_retain(token: *mut HewCancellationToke
 /// Decrement the reference count on `token`, freeing it when it reaches zero.
 ///
 /// Null is accepted and treated as a no-op. When the last reference is dropped,
-/// the parent's reference count is decremented recursively.
+/// ancestor references are released until a retained ancestor is reached.
 ///
 /// # Safety
 ///
@@ -206,19 +200,16 @@ pub unsafe extern "C" fn hew_cancel_token_cancel(token: *mut HewCancellationToke
     }
 }
 
-unsafe fn cancel_token_is_requested_raw(token: *mut HewCancellationToken) -> bool {
-    if token.is_null() {
-        return false;
+unsafe fn cancel_token_is_requested_raw(mut token: *mut HewCancellationToken) -> bool {
+    while !token.is_null() {
+        // SAFETY: the caller retains the token and each token retains its parent.
+        let current = unsafe { &*token };
+        if token_state(current).is_requested() {
+            return true;
+        }
+        token = current.parent;
     }
-
-    // SAFETY: caller guarantees `token` is valid.
-    let t = unsafe { &*token };
-    if token_state(t).is_requested() {
-        return true;
-    }
-
-    // SAFETY: token construction retained the parent for this child.
-    unsafe { cancel_token_is_requested_raw(t.parent) }
+    false
 }
 
 /// Return whether `token` or any ancestor has requested cancellation.

@@ -52,6 +52,8 @@ type TlsInner = Arc<TlsShared>;
 
 pub struct TlsShared {
     stream: Mutex<Option<rustls::StreamOwned<rustls::ClientConnection, TcpStream>>>,
+    /// Independent handle used to interrupt a blocking rustls read before join.
+    shutdown: Option<TcpStream>,
     closed: AtomicBool,
     /// Join handle for the background reader spawned by [`hew_tls_attach_native`].
     ///
@@ -105,9 +107,11 @@ impl HewTlsStream {
     fn from_stream(
         stream: rustls::StreamOwned<rustls::ClientConnection, TcpStream>,
     ) -> *mut HewTlsStream {
+        let shutdown = stream.sock.try_clone().expect("clone test TLS socket");
         Box::into_raw(Box::new(HewTlsStream {
             inner: Arc::new(TlsShared {
                 stream: Mutex::new(Some(stream)),
+                shutdown: Some(shutdown),
                 closed: AtomicBool::new(false),
                 reader: Mutex::new(None),
                 reader_exited: AtomicBool::new(false),
@@ -320,9 +324,13 @@ fn connect_tls(
     tcp.set_read_timeout(timeout)
         .and_then(|()| tcp.set_write_timeout(timeout))
         .map_err(|err| ConnectFailure::from_io("socket timeout", &err))?;
+    let shutdown = tcp
+        .try_clone()
+        .map_err(|err| ConnectFailure::from_io("clone socket for shutdown", &err))?;
     Ok(HewTlsStream {
         inner: Arc::new(TlsShared {
             stream: Mutex::new(Some(rustls::StreamOwned::new(connection, tcp))),
+            shutdown: Some(shutdown),
             closed: AtomicBool::new(false),
             reader: Mutex::new(None),
             reader_exited: AtomicBool::new(false),
@@ -743,10 +751,10 @@ fn take_tls_reader(inner: &TlsShared) -> Option<JoinHandle<()>> {
 
 /// Reap the background reader thread, blocking until it exits.
 ///
-/// The reader observes `closed` at its next loop boundary and exits within at
-/// most `TLS_READER_TIMEOUT` (the underlying socket read timeout). Joining here
-/// guarantees the reader has stopped calling into the runtime before
-/// `hew_tls_close` returns — mirroring `websocket.rs::join_reader`.
+/// The close path shuts down the independent socket handle before joining, so
+/// a read inside rustls is interrupted even when a peer keeps an incomplete TLS
+/// record active across repeated socket reads. Joining here guarantees the
+/// reader has stopped calling into the runtime before `hew_tls_close` returns.
 ///
 /// Returns `true` if a reader was attached (and joined), `false` if none was.
 fn join_tls_reader(inner: &TlsShared) -> bool {
@@ -760,11 +768,9 @@ fn join_tls_reader(inner: &TlsShared) -> bool {
 
 /// Close the TLS connection and free the stream handle.
 ///
-/// Sets the `closed` flag so any attached reader thread exits at its next loop
-/// boundary, then joins the reader before returning so it is deterministically
-/// reaped (it can otherwise call into the runtime for up to `TLS_READER_TIMEOUT`
-/// after close — the #1963 reader-lifetime hazard). Drops the inner stream,
-/// which closes the underlying TCP socket.
+/// Sets the `closed` flag, shuts down the socket to interrupt a blocked read,
+/// then joins the reader before returning so it is deterministically reaped.
+/// Drops the inner stream, which closes the underlying TCP socket.
 ///
 /// # Safety
 ///
@@ -781,9 +787,14 @@ pub unsafe extern "C" fn hew_tls_close(stream: *mut HewTlsStream) {
     // Clone the Arc first so the reader handle and stream guard outlive `s`.
     let inner = Arc::clone(&s.inner);
     drop(s);
-    // Reap the reader BEFORE freeing the connection: once `closed` is set the
-    // reader exits within `TLS_READER_TIMEOUT`, and joining it here ensures it
-    // is no longer touching the runtime when this returns.
+    // Interrupt any in-flight rustls read without taking its shared stream
+    // mutex. A peer can otherwise keep `complete_io` inside one read forever by
+    // trickling partial or empty TLS records before each socket timeout.
+    if let Some(socket) = &inner.shutdown {
+        let _ = socket.shutdown(std::net::Shutdown::Both);
+    }
+    // Reap the reader before freeing the connection, ensuring it is no longer
+    // touching the runtime when this returns.
     //
     // The reader drops the inner stream on exit (`reader_exited` is set first,
     // then the stream is dropped — see `spawn_tls_attach_reader`). If no reader
@@ -1716,6 +1727,7 @@ pub(crate) mod tests {
         // Construct a minimal live stream so the null-stream guard does not fire.
         let shared = Arc::new(TlsShared {
             stream: Mutex::new(None),
+            shutdown: None,
             closed: AtomicBool::new(false),
             reader: Mutex::new(None),
             reader_exited: AtomicBool::new(false),
@@ -1737,6 +1749,7 @@ pub(crate) mod tests {
         // Verify that after close, the stream mutex yields None.
         let shared = Arc::new(TlsShared {
             stream: Mutex::new(None),
+            shutdown: None,
             closed: AtomicBool::new(true),
             reader: Mutex::new(None),
             reader_exited: AtomicBool::new(false),

@@ -82,8 +82,8 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 result,
                 normal,
                 cancel,
-                ..
-            } => self.emit_offload(*function, args, *result, normal, cancel),
+                unwind,
+            } => self.emit_offload(*function, args, *result, normal, cancel, unwind),
             PhysicalTerminator::Sleep {
                 duration,
                 normal,

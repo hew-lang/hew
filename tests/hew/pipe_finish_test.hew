@@ -166,3 +166,51 @@ fn feed(consume tx: stream.Sink<i64>, value: i64) -> i64 {
     tx.close();
     1
 }
+
+fn send_after_ready(consume tx: stream.Sink<i64>, consume ready: stream.Sink<i64>) -> i64 {
+    ready.send(1).expect("ready");
+    ready.close();
+    tx.send(22).expect("send after capacity");
+    tx.close();
+    22
+}
+
+/// A checked producer parked on a full pipe resumes when `try_recv` frees the
+/// slot. After the producer announces itself, main sleeps to let its full send
+/// park before consuming from the data pipe.
+#[test]
+fn test_try_recv_wakes_a_checked_producer() {
+    let (tx, rx): (stream.Sink<i64>, stream.Stream<i64>) = stream.pipe(1).expect("pipe");
+    tx.send(11).expect("fill pipe");
+    let (ready_tx, ready): (stream.Sink<i64>, stream.Stream<i64>) = stream.pipe(1).expect("ready");
+    let producer = fork send_after_ready(tx, ready_tx);
+    assert(ready.recv().expect("producer started") == 1);
+    ready.close();
+    sleep(10ms);
+    assert(rx.try_recv().expect("first item") == 11);
+    assert(await producer == 22);
+    assert(rx.recv().expect("parked item") == 22);
+    rx.close();
+}
+
+fn receive_after_ready(consume rx: stream.Stream<i64>, consume ready: stream.Sink<i64>) -> i64 {
+    ready.send(1).expect("ready");
+    ready.close();
+    let value = rx.recv().expect("blocking producer item");
+    rx.close();
+    value
+}
+
+/// A root-thread send wakes a checked consumer parked in a forked task.
+#[test]
+fn test_blocking_send_wakes_a_checked_consumer() {
+    let (tx, rx): (stream.Sink<i64>, stream.Stream<i64>) = stream.pipe(1).expect("pipe");
+    let (ready_tx, ready): (stream.Sink<i64>, stream.Stream<i64>) = stream.pipe(1).expect("ready");
+    let consumer = fork receive_after_ready(rx, ready_tx);
+    assert(ready.recv().expect("consumer started") == 1);
+    ready.close();
+    sleep(10ms);
+    tx.send(33).expect("root send");
+    tx.close();
+    assert(await consumer == 33);
+}

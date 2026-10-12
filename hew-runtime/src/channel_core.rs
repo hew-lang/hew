@@ -245,6 +245,14 @@ impl ChannelCore {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
+    fn wake_native(registrations: Vec<NativeRegistration>) {
+        for registration in registrations {
+            if let Some(waker) = registration.into_waker() {
+                waker.wake();
+            }
+        }
+    }
+
     /// Stamp the element layout witness for a layout-managed element type.
     /// Called by every `*_send_layout` entry BEFORE the envelope is enqueued so
     /// any later discard exit (queue drop, post-close send, `close_stream`)
@@ -356,11 +364,7 @@ impl ChannelCore {
             // SAFETY: removed under the lock; we own its in-flight ref.
             unsafe { Self::wake(w) };
         }
-        for producer in native_producers {
-            if let Some(producer) = producer.into_waker() {
-                producer.wake();
-            }
-        }
+        Self::wake_native(native_producers);
         self.cv.notify_all();
         (1, Some(item))
     }
@@ -502,6 +506,7 @@ impl ChannelCore {
     #[must_use]
     pub fn pop(&self) -> Option<Vec<u8>> {
         let producer_wake;
+        let native_producers;
         let item;
         let fault_actor_id;
         {
@@ -517,12 +522,18 @@ impl ChannelCore {
             } else {
                 None
             };
+            native_producers = if item.is_some() {
+                std::mem::take(&mut inner.native_producers)
+            } else {
+                Vec::new()
+            };
         }
         if let Some(w) = producer_wake {
             // SAFETY: the waiter was removed from `producers` under the lock; we
             // own its in-flight ref.
             unsafe { Self::wake(w) };
         }
+        Self::wake_native(native_producers);
         if item.is_some() {
             self.cv.notify_all();
         }
@@ -537,6 +548,7 @@ impl ChannelCore {
     #[must_use]
     pub fn blocking_recv(&self) -> Option<Vec<u8>> {
         let producer_wake;
+        let native_producers;
         let item;
         let mut fault_actor_id: Option<u64> = None;
         {
@@ -567,11 +579,17 @@ impl ChannelCore {
             } else {
                 None
             };
+            native_producers = if item.is_some() {
+                std::mem::take(&mut inner.native_producers)
+            } else {
+                Vec::new()
+            };
         }
         if let Some(w) = producer_wake {
             // SAFETY: removed under the lock; we own its in-flight ref.
             unsafe { Self::wake(w) };
         }
+        Self::wake_native(native_producers);
         if item.is_some() {
             self.cv.notify_all();
         }
@@ -673,6 +691,7 @@ impl ChannelCore {
         item: Vec<u8>,
     ) -> i32 {
         let consumer_wake;
+        let native_consumer;
         {
             let mut inner = self.locked();
             if inner.stream_closed || inner.sink_closed || inner.sink_fault {
@@ -689,6 +708,10 @@ impl ChannelCore {
             if inner.queue.len() < inner.capacity {
                 inner.queue.push_back(item);
                 consumer_wake = inner.consumer.take();
+                native_consumer = inner
+                    .native_consumer
+                    .take()
+                    .and_then(NativeRegistration::into_waker);
             } else {
                 // Full ring: park the producer; it owns `item` across the suspend.
                 // SAFETY: caller holds the creator ref, so the slot is live.
@@ -707,6 +730,9 @@ impl ChannelCore {
         if let Some(w) = consumer_wake {
             // SAFETY: removed under the lock; we own its in-flight ref.
             unsafe { Self::wake(w) };
+        }
+        if let Some(consumer) = native_consumer {
+            consumer.wake();
         }
         self.cv.notify_all();
         STREAM_AWAIT_READY
@@ -729,6 +755,7 @@ impl ChannelCore {
     /// runtime is running or quiescing is untouched.
     pub fn blocking_send(&self, item: Vec<u8>) {
         let consumer_wake;
+        let native_consumer;
         {
             let mut inner = self.locked();
             loop {
@@ -744,6 +771,10 @@ impl ChannelCore {
                 if inner.queue.len() < inner.capacity {
                     inner.queue.push_back(item);
                     consumer_wake = inner.consumer.take();
+                    native_consumer = inner
+                        .native_consumer
+                        .take()
+                        .and_then(NativeRegistration::into_waker);
                     break;
                 }
                 if send_abandoned_by_shutdown() {
@@ -781,6 +812,9 @@ impl ChannelCore {
         if let Some(w) = consumer_wake {
             // SAFETY: removed under the lock; we own its in-flight ref.
             unsafe { Self::wake(w) };
+        }
+        if let Some(consumer) = native_consumer {
+            consumer.wake();
         }
         self.cv.notify_all();
     }
@@ -924,11 +958,7 @@ impl ChannelCore {
                 wakes.push(w);
             }
         }
-        for producer in native_producers {
-            if let Some(producer) = producer.into_waker() {
-                producer.wake();
-            }
-        }
+        Self::wake_native(native_producers);
         for w in wakes {
             // SAFETY: removed under the lock; we own each in-flight ref. The
             // pending item was taken above so the witness drop below runs on

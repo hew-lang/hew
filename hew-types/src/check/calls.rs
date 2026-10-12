@@ -2763,12 +2763,21 @@ impl Checker {
             .map(|(_, _, binding)| binding.as_str())
             .collect();
         let local_names: Vec<&str> = self.env.all_names().map(Symbol::as_str).collect();
+        let scoped_functions: Vec<&str> = self
+            .current_declaration_module()
+            .into_iter()
+            .flat_map(|module| self.scopes.items(self.scopes.namespace_of(module)))
+            .filter_map(|(name, binding)| {
+                matches!(binding, scope::Binding::Fn(_)).then_some(name.as_str())
+            })
+            .collect();
         let mut similar = crate::error::find_similar(
             &func_name,
             self.sigs()
                 .entries()
                 .map(|(key, _)| key)
                 .filter(|key| !foreign_bindings.contains(key))
+                .chain(scoped_functions)
                 .chain(local_names.iter().copied()),
         );
         similar.extend(module_qualified_intrinsic_spellings(&func_name));

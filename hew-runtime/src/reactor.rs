@@ -1050,11 +1050,11 @@ pub(crate) fn cancel_all() -> usize {
     cancel_waiters(|_| true)
 }
 
-/// Resolve every wait that was parked when shutdown began. A process-exit
-/// watch is left waiting: the child's exit ends it, on every platform, so
-/// `Child.wait` is never interrupted by a termination request.
+/// Resolve waits parked when shutdown began, preserving existing child
+/// process pipes and exit watches. Capture must drain the child's output to
+/// EOF alongside its exit; cancelling either pipe would fault an admitted run.
 pub(crate) fn reactor_cancel_parked_waits_for_shutdown() -> usize {
-    cancel_waiters(|slot| !slot.is_child_exit())
+    cancel_waiters(|slot| !matches!(slot.object, IoObject::Pipe(_)) && !slot.is_child_exit())
 }
 
 /// Stop and join the reactor thread, then cancel what still waits. Runtime

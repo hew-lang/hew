@@ -225,6 +225,17 @@ const UNIT_FAMILY_SHIMS: Record<string, RuntimeShim | undefined> = {
   StringContains: (_host, args) => bool(text(args, 0).includes(text(args, 1))),
   // Native string length counts codepoints, not bytes.
   StringLen: (_host, args) => int(BigInt([...text(args, 0)].length)),
+  StringIndex: (_host, args) => {
+    const chars = [...text(args, 0)];
+    const at = index(args, 1);
+    if (at < 0 || at >= chars.length) {
+      throw new ShimFault(
+        "vector_bounds",
+        `string index ${at} out of bounds for length ${chars.length}`,
+      );
+    }
+    return str(chars[at]!);
+  },
   StringReplace: (_host, args) =>
     str(text(args, 0).split(text(args, 1)).join(text(args, 2))),
   // Native slicing is by codepoint and clamps rather than trapping.

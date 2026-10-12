@@ -38,6 +38,8 @@ fn main() -> i64 {
     assert(chained(user) == Option.Some(6));
     let missing: Option<User> = .None;
     assert((missing?.address?.city[absent_index()]).is_none());
+    let unicode: Option<Address> = .Some(Address { city: "éλ", postcode: .None });
+    assert(unicode?.city[1] == Option.Some('λ'));
     assert((user?.address).is_some());
     assert(present?.len() == Option.Some(4));
     assert(present?.len() == Option.Some(4));

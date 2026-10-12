@@ -222,18 +222,21 @@ is via owned messages and actor state.
 
 ### 2.4 `DoubleEndedIterator`
 
-**[Target: v0.6; implementation outstanding]**
+**[Target: v0.6; implemented]**
 
 Edition 2026 ships the lazy `Iterator`/`IntoIterator` trait hierarchy
 (`std/builtins.hew`) with chainable adapter types — `Map`, `Filter`,
 `Take`, `Skip` (`std/iter.hew`) — and terminals (`fold`, `count`,
 `collect`, `any`, `all`, `sum`, `product`) over `Vec`, `HashMap`,
 `Generator`. The earlier eager per-type helper
-table (`map_int`, `filter_int`, `fold_int`, ...) has been retired. The
-trait-based double-ended hierarchy, including `DoubleEndedIterator`,
-`next_back()` and `.rev()` for general iterators, remains unimplemented.
-Range-loop reversal already works; it does not supply this trait surface.
-The general iterator surface remains an open v0.6 commitment.
+table (`map_int`, `filter_int`, `fold_int`, ...) has been retired.
+`DoubleEndedIterator: Iterator` inherits `Item` and adds `next_back()`.
+Vector iterators preserve independent front and back cursors; `Map`, `Filter`
+and `Rev` support both directions when their source does. `.rev()` composes
+with ordinary adapters, while range-loop reversal retains its existing
+behaviour. `Take` and `Skip` do not promise reverse traversal without an exact
+remaining length, and unordered collections and generators need not implement
+the double-ended trait.
 
 ### 2.5 Generic `HashMap<K, V>` over arbitrary `K`
 

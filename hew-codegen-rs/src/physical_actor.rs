@@ -959,14 +959,9 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         let ptr = self.ctx.ptr_type(AddressSpace::default());
         let message_ty = message_type(self.module, self.ctx, handler)?;
         if handler.params.iter().any(|ty| {
-            self.module
-                .actor_recipes
-                .get(ty)
-                .and_then(|recipe| recipe.destroy)
-                .is_some_and(|action| {
-                    self.module.releases.suspends(action)
-                        || self.module.releases.raises_fault(action)
-                })
+            self.module.actor_recipes[ty].destroy.is_some_and(|action| {
+                self.module.releases.suspends(action) || self.module.releases.raises_fault(action)
+            })
         }) {
             release::custom(
                 self.ctx,
@@ -1002,12 +997,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                         .build_store(payload, self.ctx.i8_type().const_zero())
                         .llvm_ctx("consume queued payload ownership")?;
                     for (index, ty) in handler.params.iter().enumerate().rev() {
-                        if let Some(action) = self
-                            .module
-                            .actor_recipes
-                            .get(ty)
-                            .and_then(|recipe| recipe.destroy)
-                        {
+                        if let Some(action) = self.module.actor_recipes[ty].destroy {
                             let field = builder
                                 .build_struct_gep(
                                     message_ty,
@@ -1060,12 +1050,8 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
             .build_store(payload, self.ctx.i8_type().const_zero())
             .llvm_ctx("consume queued message owner")?;
         for (index, ty) in handler.params.iter().enumerate().rev() {
-            if let Some(action) = self
-                .module
-                .actor_recipes
-                .get(ty)
-                .and_then(|recipe| recipe.destroy)
-            {
+            let recipe = &self.module.actor_recipes[ty];
+            if let Some(action) = recipe.destroy {
                 let layout = self.module.target.layout(ty).ok_or_else(|| {
                     CodegenError::FailClosed("message drop lacks field layout".into())
                 })?;

@@ -183,8 +183,8 @@ impl Checker {
             receiver = &object.0;
         }
         if matches!(receiver, Expr::ChainValue) {
-            if let Some((_, _, consumed)) = self.chain_values.last_mut() {
-                *consumed = true;
+            if let Some(context) = self.chain_values.last_mut() {
+                context.consumed = true;
             }
             return;
         }
@@ -379,7 +379,7 @@ impl Checker {
             Expr::ChainValue => self
                 .chain_values
                 .last()
-                .and_then(|(_, place, _)| place.clone()),
+                .and_then(|context| context.place.clone()),
             Expr::Ident(name) => Some((name.to_string(), PlacePath::new())),
             Expr::FieldAccess { object, field } => {
                 // `self.count` in an actor body denotes the state binding

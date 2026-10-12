@@ -1774,6 +1774,13 @@ pub enum SpawnSlot {
     Default,
 }
 
+#[derive(Debug, Clone)]
+pub(in crate::check) struct ChainValueContext {
+    pub(in crate::check) ty: Ty,
+    pub(in crate::check) place: Option<(String, crate::env::PlacePath)>,
+    pub(in crate::check) consumed: bool,
+}
+
 /// Semantic authority for one checked `handle` or `??` expression.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RecoveryKind {
@@ -3411,7 +3418,7 @@ pub struct Checker {
     pub(super) file_import_const_exports: HashMap<String, BTreeSet<String>>,
     /// Per-call target facts for ordinary `Expr::Call` expressions.
     pub(super) recovery_kinds: HashMap<SpanKey, RecoveryKind>,
-    pub(super) chain_values: Vec<(Ty, Option<(String, crate::env::PlacePath)>, bool)>,
+    pub(super) chain_values: Vec<ChainValueContext>,
     /// See [`TypeCheckOutput::call_argument_slots`].
     pub(super) call_argument_slots: HashMap<SpanKey, Vec<usize>>,
     /// See [`TypeCheckOutput::spawn_argument_slots`].

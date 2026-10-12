@@ -1,4 +1,4 @@
-use super::*;
+use super::{BTreeMap, CallTarget, Checker, HashMap, SpanKey, Symbol, Ty};
 
 #[derive(Debug, Clone, Default)]
 /// Implicit declaration-owned binders for associated types in generic bodies.

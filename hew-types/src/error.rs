@@ -1628,21 +1628,10 @@ impl TypeErrorKind {
         }
     }
 
-    /// Which of the three diagnostic channels this kind reports on.
-    ///
-    /// Every checker-authored `TypeError` was `DiagChannel::User` until
-    /// V060-DIAG-1 gave HIR/MIR diagnostics a real channel split; this is
-    /// the checker's own first Limitation-channel kind, so the default arm
-    /// covers every pre-existing variant unchanged (each is a genuine
-    /// program error, not a compiler gap) and only the one new case is
-    /// singled out. Mirrors `hew_hir::HirDiagnosticKind::channel` and
-    /// `hew_mir::MirDiagnosticKind::channel`, the HIR/MIR authorities for
-    /// the same three-way split.
+    /// Checker errors describe source violations; stage limitations use HIR/MIR diagnostics.
     #[must_use]
     pub const fn channel(&self) -> DiagChannel {
-        match self {
-            _ => DiagChannel::User,
-        }
+        DiagChannel::User
     }
 }
 

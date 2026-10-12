@@ -1014,6 +1014,16 @@ impl Checker {
         &self,
         trait_id: crate::DefId,
     ) -> Option<(HashSet<String>, HashSet<String>)> {
+        if matches!(
+            crate::DefTable::as_predicate(trait_id),
+            Some(crate::Predicate::Ord | crate::Predicate::PartialOrd)
+        ) {
+            let methods = ["ge", "gt", "le", "lt"]
+                .into_iter()
+                .map(str::to_string)
+                .collect::<HashSet<_>>();
+            return Some((methods.clone(), methods));
+        }
         let info = self.trait_info(trait_id)?;
         let mut required = HashSet::new();
         let mut known = HashSet::new();
@@ -1082,24 +1092,17 @@ impl Checker {
                 declaration,
             );
         }
-        let ordering_predicate = trait_id.is_some_and(|id| {
-            matches!(
-                crate::DefTable::as_predicate(id),
-                Some(crate::Predicate::Ord | crate::Predicate::PartialOrd)
-            )
-        });
-        let method_set = if ordering_predicate {
-            let methods = ["ge", "gt", "le", "lt"]
-                .into_iter()
-                .map(str::to_string)
-                .collect::<HashSet<_>>();
-            Some((methods.clone(), methods))
-        } else if trait_id.is_some_and(|id| crate::DefTable::as_predicate(id).is_some()) {
+        let ordering_predicate = matches!(
+            trait_id.and_then(crate::DefTable::as_predicate),
+            Some(crate::Predicate::Ord | crate::Predicate::PartialOrd)
+        );
+        if !ordering_predicate
+            && trait_id.is_some_and(|id| crate::DefTable::as_predicate(id).is_some())
+        {
             // The remaining compiler predicates carry no user method set.
             return;
-        } else {
-            trait_id.and_then(|id| self.trait_required_and_known_methods(id))
-        };
+        }
+        let method_set = trait_id.and_then(|id| self.trait_required_and_known_methods(id));
         let Some((required, known)) = method_set else {
             // D429: no declaration in scope defines this trait, so there is no
             // method set to check the impl against. Accepting it would register
@@ -1267,10 +1270,10 @@ impl Checker {
                 )
                 && self.subst.resolve(&impl_sig.return_type) == Ty::Bool;
             if !valid {
-                let report_span = if method.decl_span.start != method.decl_span.end {
-                    &method.decl_span
-                } else {
+                let report_span = if method.decl_span.start == method.decl_span.end {
                     &method.fn_span
+                } else {
+                    &method.decl_span
                 };
                 self.report_error(
                     TypeErrorKind::TraitImplSignatureMismatch {

@@ -565,7 +565,7 @@ impl Checker {
             Expr::ChainValue => self
                 .chain_values
                 .last()
-                .map_or(Ty::Error, |(ty, _, _)| ty.clone()),
+                .map_or(Ty::Error, |context| context.ty.clone()),
             Expr::OptionalChain { receiver, body } => {
                 self.check_optional_chain(receiver, body, span)
             }
@@ -956,7 +956,12 @@ impl Checker {
         };
         let entry = self.env.ownership_snapshot();
         let place = self.expr_place(&receiver.0);
-        self.chain_values.push((payload, place, false));
+        self.chain_values
+            .push(crate::check::types::ChainValueContext {
+                ty: payload,
+                place,
+                consumed: false,
+            });
         let body_ty = self.synthesize(&body.0, &body.1);
         if self.parameter_clone_kind(&body_ty) == Some(crate::CloneKind::None) {
             self.mark_expr_moved(&body.0, &body.1);
@@ -964,7 +969,7 @@ impl Checker {
         let consumes_receiver = self
             .chain_values
             .pop()
-            .is_some_and(|(_, _, consumed)| consumed);
+            .is_some_and(|context| context.consumed);
         if consumes_receiver {
             self.mark_expr_moved(&receiver.0, &receiver.1);
         }

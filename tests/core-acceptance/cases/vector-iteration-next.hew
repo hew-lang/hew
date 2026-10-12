@@ -78,7 +78,7 @@ fn main() -> i64 {
     assert(single.next_back().expect("single item") == 7);
     assert(single.next().is_none());
     assert(single.next_back().is_none());
-    assert(last([8, 9].into_iter()).expect("generic last item") == 9);
+    assert(last<VecIter<i64>>([8, 9].into_iter()).expect("generic last item") == 9);
     assert(forwarded_last(["left", "right"].into_iter()).expect("owned generic item") == "right");
     assert(first([8, 9].into_iter()).expect("generic first item") == 8);
     var mixed = [1, 2, 3, 4].into_iter();

@@ -51,6 +51,7 @@ mod error_display;
 mod exhaustiveness;
 mod expressions;
 mod generic_schema;
+pub use generic_schema::AssociatedTypeSchemas;
 mod generics;
 mod items;
 mod lints;
@@ -3697,7 +3698,8 @@ impl Checker {
         let shorthand_field_labels = self.scopes.take_shorthand_labels();
         let contexts = self.scopes.contexts().clone();
         let mut output = TypeCheckOutput {
-            declaration_type_parameters: self.associated_schema_declarations(),
+            declaration_type_parameters: self.scopes.declaration_parameter_facts(),
+            associated_type_schemas: self.associated_schema_parameters.clone(),
             resolved_annotation_types,
             normalized_program: normalized_program.cloned(),
             select_sources: std::mem::take(&mut self.select_sources),

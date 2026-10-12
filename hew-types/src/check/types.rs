@@ -489,6 +489,7 @@ pub struct TypeCheckOutput {
     /// Resolved source annotations, keyed by their defining file and span.
     pub declaration_type_parameters:
         HashMap<crate::DefId, (crate::ModuleId, Span, Vec<crate::ParamHead>)>,
+    pub associated_type_schemas: super::AssociatedTypeSchemas,
     pub resolved_annotation_types: HashMap<SpanKey, ResolvedTy>,
     /// The one authority for a substituted type's ownership and capability
     /// facts (`docs/internal/ir-ladder.md` §6.3), keyed structurally by §6.2's
@@ -4092,8 +4093,7 @@ pub struct Checker {
     /// stack used for `Self::Bar` lookup during impl-body checking.
     pub(super) impl_assoc_type_bindings:
         HashMap<(ResolvedTy, crate::DefId, Symbol), ImplAssociatedType>,
-    pub(super) associated_schema_parameters:
-        BTreeMap<(crate::ParamHead, crate::DefId, Symbol), crate::ParamHead>,
+    pub(super) associated_schema_parameters: super::AssociatedTypeSchemas,
     /// Whether warnings for WASM-only builds should be emitted.
     pub(super) wasm_target: bool,
     /// Whether the program under check is a synthetic `hew eval` REPL fragment.
@@ -4616,7 +4616,7 @@ impl Checker {
             impl_alias_scopes: Vec::new(),
             current_trait_for_self_projection: None,
             impl_assoc_type_bindings: HashMap::new(),
-            associated_schema_parameters: BTreeMap::new(),
+            associated_schema_parameters: super::AssociatedTypeSchemas::default(),
             wasm_target: false,
             repl_fragment: false,
             is_stdlib_source: false,

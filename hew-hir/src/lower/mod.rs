@@ -1164,6 +1164,7 @@ struct LowerCtx {
     declaration_type_parameters:
         HashMap<hew_types::DefId, (hew_types::ModuleId, Span, Vec<hew_types::ParamHead>)>,
     resolved_annotation_types: HashMap<SpanKey, ResolvedTy>,
+    associated_type_schemas: hew_types::AssociatedTypeSchemas,
     /// Checker-authoritative RHS spans for accepted `lhs is TypeName`
     /// patterns. When present, the RHS identifier is a type pattern, not a
     /// value expression to lower through lexical bindings.

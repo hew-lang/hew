@@ -1276,7 +1276,6 @@ impl Checker {
 
     pub(super) fn resolve_fn_sig(&self, sig: &FnSig) -> FnSig {
         FnSig {
-            type_params: self.associated_schema_binders(&sig.type_params),
             params: sig
                 .params
                 .iter()

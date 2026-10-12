@@ -96,6 +96,7 @@ impl LowerCtx {
             resolved_expr_types: tc_output.resolved_expr_types.clone(),
             declaration_type_parameters: tc_output.declaration_type_parameters.clone(),
             resolved_annotation_types: tc_output.resolved_annotation_types.clone(),
+            associated_type_schemas: tc_output.associated_type_schemas.clone(),
             is_type_patterns: tc_output.is_type_patterns.clone(),
             closure_capture_facts: tc_output.closure_capture_facts.clone(),
             closure_escape_facts: tc_output.closure_escape_facts.clone(),
@@ -335,6 +336,10 @@ impl LowerCtx {
                 &mut self.declaration_type_parameters,
                 tc_output.declaration_type_parameters.clone(),
             ),
+            std::mem::replace(
+                &mut self.associated_type_schemas,
+                tc_output.associated_type_schemas.clone(),
+            ),
             std::mem::replace(&mut self.recovery_kinds, tc_output.recovery_kinds.clone()),
             std::mem::replace(
                 &mut self.call_argument_slots,
@@ -379,6 +384,7 @@ impl LowerCtx {
             self.resolved_expr_types,
             self.resolved_annotation_types,
             self.declaration_type_parameters,
+            self.associated_type_schemas,
             self.recovery_kinds,
             self.call_argument_slots,
             self.spawn_argument_slots,

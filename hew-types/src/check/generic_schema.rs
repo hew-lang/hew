@@ -1,5 +1,30 @@
 use super::*;
 
+#[derive(Debug, Clone, Default)]
+/// Implicit declaration-owned binders for associated types in generic bodies.
+pub struct AssociatedTypeSchemas {
+    parameters: BTreeMap<(crate::ParamHead, crate::DefId, Symbol), crate::ParamHead>,
+}
+
+impl AssociatedTypeSchemas {
+    /// Expand source binders into the body's checked substitution schema.
+    #[must_use]
+    pub fn binders(&self, parameters: &[crate::ParamHead]) -> Vec<crate::ParamHead> {
+        let mut expanded = Vec::new();
+        for parameter in parameters {
+            if !expanded.contains(parameter) {
+                expanded.push(*parameter);
+            }
+            for ((base, _, _), binder) in &self.parameters {
+                if base == parameter && !expanded.contains(binder) {
+                    expanded.push(*binder);
+                }
+            }
+        }
+        expanded
+    }
+}
+
 impl Checker {
     pub(super) fn prepare_associated_schema_parameters(&mut self) {
         let mut projections = std::collections::BTreeSet::new();
@@ -29,7 +54,9 @@ impl Checker {
                 Symbol::intern(&format!("{}.{}", parameter.spelling, associated)),
             );
             *index += 1;
-            self.associated_schema_parameters.insert(key, binder);
+            self.associated_schema_parameters
+                .parameters
+                .insert(key, binder);
         }
     }
 
@@ -77,44 +104,11 @@ impl Checker {
     pub(super) fn bind_associated_schema_type(&self, ty: &Ty) -> Ty {
         if let Some(parameter) = self
             .associated_schema_key(ty)
-            .and_then(|key| self.associated_schema_parameters.get(&key))
+            .and_then(|key| self.associated_schema_parameters.parameters.get(&key))
         {
             return Ty::param(*parameter);
         }
         ty.map_children_pub(&|child| self.bind_associated_schema_type(child))
-    }
-
-    pub(super) fn associated_schema_binders(
-        &self,
-        parameters: &[crate::ParamHead],
-    ) -> Vec<crate::ParamHead> {
-        let mut expanded = Vec::new();
-        for parameter in parameters {
-            if !expanded.contains(parameter) {
-                expanded.push(*parameter);
-            }
-            for ((base, _, _), binder) in &self.associated_schema_parameters {
-                if base == parameter && !expanded.contains(binder) {
-                    expanded.push(*binder);
-                }
-            }
-        }
-        expanded
-    }
-
-    pub(super) fn associated_schema_declarations(
-        &self,
-    ) -> HashMap<crate::DefId, (crate::ModuleId, Span, Vec<crate::ParamHead>)> {
-        self.scopes
-            .declaration_parameter_facts()
-            .into_iter()
-            .map(|(id, (module, span, parameters))| {
-                (
-                    id,
-                    (module, span, self.associated_schema_binders(&parameters)),
-                )
-            })
-            .collect()
     }
 
     pub(super) fn complete_associated_schema_arguments(
@@ -133,7 +127,9 @@ impl Checker {
             let mut expanded = Vec::new();
             for (parameter, argument) in signature.type_params.iter().zip(arguments.iter()) {
                 expanded.push(argument.clone());
-                for ((base, trait_id, associated), _) in &self.associated_schema_parameters {
+                for (base, trait_id, associated) in
+                    self.associated_schema_parameters.parameters.keys()
+                {
                     if base == parameter {
                         let projected =
                             self.project_associated_type(argument, *trait_id, *associated);

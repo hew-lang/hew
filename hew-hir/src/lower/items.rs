@@ -882,6 +882,7 @@ impl LowerCtx {
         // its body so lowering can recognise abstract-`T` operands (the
         // checker represents `T` as `ResolvedTy::Named { args: [] }`). Restored
         // on every return path below.
+        type_parameters = self.associated_type_schemas.binders(&type_parameters);
         let prior_fn_type_params = std::mem::replace(
             &mut self.current_fn_type_params,
             type_parameters.clone().into_iter().collect(),

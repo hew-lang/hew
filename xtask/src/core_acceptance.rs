@@ -1393,8 +1393,15 @@ fn run_command(command: &mut Command, timeout: Duration) -> Result<CommandResult
 }
 
 fn read_capture(path: &Path, stream: &str) -> Result<String> {
-    fs::read_to_string(path)
-        .map_err(|err| format!("read command {stream} capture {}: {err}", path.display()))
+    let bytes = fs::read(path)
+        .map_err(|err| format!("read command {stream} capture {}: {err}", path.display()))?;
+    String::from_utf8(bytes).map_err(|err| {
+        format!(
+            "read command {stream} capture {}: {err}; captured bytes: {}",
+            path.display(),
+            err.as_bytes().escape_ascii()
+        )
+    })
 }
 
 /// The slice of `hew check --format json`'s `JsonDiagnostic` this runner

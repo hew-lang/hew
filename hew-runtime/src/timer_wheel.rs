@@ -1129,16 +1129,18 @@ mod tests {
     fn zero_delay_fires_on_next_tick_without_l0_wrap() {
         let fire_count = AtomicI32::new(0);
         let data = (&raw const fire_count).cast::<c_void>().cast_mut();
-        let tw = make_timer_wheel(1_000);
 
-        // SAFETY: `tw` is test-owned and `data` outlives every tick below.
+        // SAFETY: the wheel is test-owned and `data` outlives every tick below.
         unsafe {
+            let tw = hew_timer_wheel_new();
             let handle = hew_timer_wheel_schedule_handle(tw, 0, test_cb, data);
             assert!(!handle.entry.is_null());
 
-            assert_eq!(timer_wheel_tick_to(tw, 1_001), 1);
+            let now = now_ms_for_wheel();
+            assert!((*handle.entry).deadline_ms <= now);
+            assert_eq!(timer_wheel_tick_to(tw, now), 1);
             assert_eq!(fire_count.load(Ordering::SeqCst), 1);
-            assert_eq!(timer_wheel_tick_to(tw, 1_255), 0);
+            assert_eq!(timer_wheel_tick_to(tw, now.saturating_add(255)), 0);
             assert_eq!(fire_count.load(Ordering::SeqCst), 1);
 
             hew_timer_wheel_free(tw);
@@ -1443,14 +1445,14 @@ mod tests {
         free_wheel(&mut w);
     }
 
-    // ── C ABI: schedule + next_deadline (controlled time) ─────────────
+    // ── Absolute schedule + next_deadline (controlled time) ─────────────
 
     #[test]
-    fn schedule_via_cabi_lands_in_l0() {
+    fn schedule_at_lands_in_l0() {
         // SAFETY: using make_timer_wheel for deterministic time.
         unsafe {
             let tw = make_timer_wheel(1000);
-            hew_timer_wheel_schedule(tw, 50, test_cb, ptr::null_mut());
+            timer_wheel_schedule_at_handle(tw, 1_050, test_cb, ptr::null_mut());
             // deadline = 1050, slot = 1050 & 255 = 26
             let w = (*tw).inner.lock().unwrap();
             assert_eq!(count_list(w.l0[26]), 1);
@@ -1460,11 +1462,11 @@ mod tests {
     }
 
     #[test]
-    fn schedule_via_cabi_lands_in_l1() {
+    fn schedule_at_lands_in_l1() {
         // SAFETY: using make_timer_wheel for deterministic time.
         unsafe {
             let tw = make_timer_wheel(1000);
-            hew_timer_wheel_schedule(tw, 500, test_cb, ptr::null_mut());
+            timer_wheel_schedule_at_handle(tw, 1_500, test_cb, ptr::null_mut());
             // deadline = 1500, delta = 500 → L1 slot = (1500 / 256) % 64 = 5
             let w = (*tw).inner.lock().unwrap();
             assert_eq!(count_list(w.l1[5]), 1);
@@ -1478,9 +1480,9 @@ mod tests {
         // SAFETY: using make_timer_wheel for deterministic time.
         unsafe {
             let tw = make_timer_wheel(1000);
-            hew_timer_wheel_schedule(tw, 100, test_cb, ptr::null_mut());
-            hew_timer_wheel_schedule(tw, 50, test_cb, ptr::null_mut());
-            hew_timer_wheel_schedule(tw, 200, test_cb, ptr::null_mut());
+            timer_wheel_schedule_at_handle(tw, 1_100, test_cb, ptr::null_mut());
+            timer_wheel_schedule_at_handle(tw, 1_050, test_cb, ptr::null_mut());
+            timer_wheel_schedule_at_handle(tw, 1_200, test_cb, ptr::null_mut());
             assert_eq!(hew_timer_wheel_next_deadline_ms(tw), 50);
             hew_timer_wheel_free(tw);
         }
@@ -1491,8 +1493,8 @@ mod tests {
         // SAFETY: using make_timer_wheel for deterministic time.
         unsafe {
             let tw = make_timer_wheel(1000);
-            let h = hew_timer_wheel_schedule_handle(tw, 10, test_cb, ptr::null_mut());
-            hew_timer_wheel_schedule(tw, 100, test_cb, ptr::null_mut());
+            let h = timer_wheel_schedule_at_handle(tw, 1_010, test_cb, ptr::null_mut());
+            timer_wheel_schedule_at_handle(tw, 1_100, test_cb, ptr::null_mut());
             hew_timer_wheel_cancel(tw, h.entry, h.generation);
             assert_eq!(hew_timer_wheel_next_deadline_ms(tw), 100);
             hew_timer_wheel_free(tw);
@@ -1504,8 +1506,8 @@ mod tests {
         // SAFETY: using make_timer_wheel for deterministic time.
         unsafe {
             let tw = make_timer_wheel(0);
-            let h1 = hew_timer_wheel_schedule_handle(tw, 10, test_cb, ptr::null_mut());
-            let h2 = hew_timer_wheel_schedule_handle(tw, 500, test_cb, ptr::null_mut());
+            let h1 = timer_wheel_schedule_at_handle(tw, 10, test_cb, ptr::null_mut());
+            let h2 = timer_wheel_schedule_at_handle(tw, 500, test_cb, ptr::null_mut());
             hew_timer_wheel_cancel(tw, h1.entry, h1.generation);
             hew_timer_wheel_cancel(tw, h2.entry, h2.generation);
             assert_eq!(hew_timer_wheel_next_deadline_ms(tw), -1);
@@ -1518,7 +1520,7 @@ mod tests {
         // SAFETY: using make_timer_wheel for deterministic time.
         unsafe {
             let tw = make_timer_wheel(1000);
-            hew_timer_wheel_schedule(tw, 500, test_cb, ptr::null_mut());
+            timer_wheel_schedule_at_handle(tw, 1_500, test_cb, ptr::null_mut());
             assert_eq!(hew_timer_wheel_next_deadline_ms(tw), 500);
             hew_timer_wheel_free(tw);
         }
@@ -1529,7 +1531,7 @@ mod tests {
         // SAFETY: using make_timer_wheel for deterministic time.
         unsafe {
             let tw = make_timer_wheel(1000);
-            hew_timer_wheel_schedule(tw, 20_000, test_cb, ptr::null_mut());
+            timer_wheel_schedule_at_handle(tw, 21_000, test_cb, ptr::null_mut());
             assert_eq!(hew_timer_wheel_next_deadline_ms(tw), 20_000);
             hew_timer_wheel_free(tw);
         }
@@ -1541,9 +1543,9 @@ mod tests {
         // SAFETY: standard lifecycle; leak would be caught by Miri/ASAN.
         unsafe {
             let tw = make_timer_wheel(0);
-            hew_timer_wheel_schedule(tw, 10, test_cb, ptr::null_mut());
-            hew_timer_wheel_schedule(tw, 500, test_cb, ptr::null_mut());
-            hew_timer_wheel_schedule(tw, 20_000, test_cb, ptr::null_mut());
+            timer_wheel_schedule_at_handle(tw, 10, test_cb, ptr::null_mut());
+            timer_wheel_schedule_at_handle(tw, 500, test_cb, ptr::null_mut());
+            timer_wheel_schedule_at_handle(tw, 20_000, test_cb, ptr::null_mut());
             hew_timer_wheel_free(tw);
         }
     }
@@ -1553,7 +1555,7 @@ mod tests {
         // SAFETY: double-cancel must not panic.
         unsafe {
             let tw = make_timer_wheel(0);
-            let h = hew_timer_wheel_schedule_handle(tw, 100, test_cb, ptr::null_mut());
+            let h = timer_wheel_schedule_at_handle(tw, 100, test_cb, ptr::null_mut());
             hew_timer_wheel_cancel(tw, h.entry, h.generation);
             hew_timer_wheel_cancel(tw, h.entry, h.generation);
             hew_timer_wheel_free(tw);
@@ -1625,7 +1627,7 @@ mod tests {
         // already captured the timer entry before the deadline thread fired it.
         unsafe {
             let tw = make_timer_wheel(0);
-            let h = hew_timer_wheel_schedule_handle(tw, 1, test_cb, data);
+            let h = timer_wheel_schedule_at_handle(tw, 1, test_cb, data);
 
             assert_eq!(timer_wheel_tick_to(tw, 1), 1);
             assert_eq!(fire_count.load(Ordering::SeqCst), 1);
@@ -1641,8 +1643,8 @@ mod tests {
         // SAFETY: using make_timer_wheel for deterministic time.
         unsafe {
             let tw = make_timer_wheel(500);
-            // Schedule with 0 delay → deadline = 500. Wheel is at 500.
-            hew_timer_wheel_schedule(tw, 0, test_cb, ptr::null_mut());
+            // An elapsed deadline is clamped to the wheel cursor.
+            timer_wheel_schedule_at_handle(tw, 499, test_cb, ptr::null_mut());
             // earliest == current_ms → remaining = 0
             assert_eq!(hew_timer_wheel_next_deadline_ms(tw), 0);
             hew_timer_wheel_free(tw);

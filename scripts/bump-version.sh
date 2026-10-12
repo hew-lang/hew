@@ -22,6 +22,7 @@ sed -i "s/$old/$new/g" hew-sandbox-vm/package.json hew-sandbox-vm/package-lock.j
     hew-sandbox-vm/bytecode/package-v1.md hew-sandbox-vm/test/*.mjs
 
 cargo metadata --format-version 1 >/dev/null # refreshes the workspace entries in Cargo.lock
-make baselines                               # fixtures and manifests that embed the version
+cargo metadata --manifest-path hew-parser/fuzz/Cargo.toml --format-version 1 >/dev/null
+make baselines # fixtures and manifests that embed the version
 
 echo "bumped $old -> $new; add docs/releases/v$new.md before tagging"

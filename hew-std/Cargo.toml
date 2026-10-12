@@ -81,5 +81,8 @@ uuid = { version = "1.23.3", features = ["v4", "v7"] }
 webpki-roots = "1"
 zeroize = { version = "1.9.0", features = ["zeroize_derive"] }
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_Networking_WinSock"] }
+
 [lints]
 workspace = true

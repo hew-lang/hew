@@ -301,7 +301,17 @@ fn spawn_child(
     command.stdin(stdin).stdout(stdout).stderr(stderr);
     // An inheriting child shares stdout and stderr: queued output goes first.
     crate::output::flush();
-    match command.spawn() {
+    let spawned = {
+        // macOS creates stdio pipes with pipe() followed by FD_CLOEXEC.
+        // Keep another spawn from inheriting an end before that flag is set.
+        // Remove this guard once supported Rust/macOS creates them atomically.
+        #[cfg(target_os = "macos")]
+        static SPAWN_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        #[cfg(target_os = "macos")]
+        let _spawn_guard = SPAWN_LOCK.lock_or_recover();
+        command.spawn()
+    };
+    match spawned {
         Ok(child) => {
             crate::hew_clear_error();
             Box::into_raw(Box::new(HewProcess {

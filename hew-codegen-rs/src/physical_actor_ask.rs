@@ -211,9 +211,11 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                     .builder
                     .build_struct_gep(wrapper_ty, wrapper, (index + 1) as u32, "ask.request.field")
                     .llvm_ctx("address request field")?;
-                self.builder
-                    .build_store(field, self.load(*source, "ask.argument")?)
-                    .llvm_ctx("transfer request field")?;
+                self.value_emitter().store_value(
+                    field,
+                    &self.storage(*source)?.layout,
+                    self.load(*source, "ask.argument")?,
+                )?;
             }
             self.builder
                 .build_unconditional_branch(start)
@@ -720,10 +722,7 @@ impl<'ctx> ValueEmitter<'_, 'ctx> {
                     .ok_or_else(|| {
                         CodegenError::FailClosed("reply lacks its target layout".into())
                     })?;
-                let value = self
-                    .builder
-                    .build_load(llvm_type(self.ctx, &layout.repr)?, reply, "ask.reply.value")
-                    .llvm_ctx("take typed reply")?;
+                let value = self.load_value(reply, layout, "ask.reply.value")?;
                 self.write_variant_value(out, 0, &[value], glue.id)?;
                 self.builder
                     .build_unconditional_branch(done)

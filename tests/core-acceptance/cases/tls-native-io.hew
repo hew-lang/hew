@@ -5,6 +5,8 @@ import std.fs;
 
 import std.process;
 
+import std.os;
+
 actor Probe {
     receive fn ping() -> bool {
         true
@@ -52,7 +54,11 @@ actor Client {
 fn main() {
     let probe = spawn Probe;
     let client = spawn Client;
-    var command = process.command("python3", ["server.py"]);
+    let python = match os.env("PYTHON") {
+        .Some(path) => path,
+        .None => "python3",
+    };
+    var command = process.command(python, ["server.py"]);
     command.stdout = process.Stdio.Piped;
     let peer = process.start(command).expect("TLS peer");
     let ready = peer.stdout().expect("peer stdout");

@@ -631,15 +631,6 @@ mod tests {
     }
 
     #[test]
-    fn depth_scan_rejects_ext32_length_overflow() {
-        let malformed = [0xc9, 0xff, 0xff, 0xff, 0xff, 0x00];
-        assert_eq!(
-            check_depth(&malformed),
-            Err(MALFORMED_MSGPACK_ERROR.to_string())
-        );
-    }
-
-    #[test]
     fn to_json_truncated_msgpack_returns_null() {
         // Encode a valid value, then truncate it.
         let full = rmp_serde::to_vec(&serde_json::json!({"key": "value"})).unwrap();

@@ -61,6 +61,15 @@ fn test_try_to_json_empty_surfaces_reason() {
 }
 
 #[test]
+fn test_try_to_json_rejects_overflowing_ext32_length() {
+    let result = msgpack.to_json(bytes [201, 255, 255, 255, 255, 0]);
+    match result {
+        .Ok(_) => panic("expected overflowing ext32 length to fail"),
+        .Err(msg) => assert(f"{msg}".contains("malformed input")),
+    }
+}
+
+#[test]
 fn test_try_from_json_valid_ok() {
     let result = msgpack.from_json("{\"n\": 42}");
     match result {

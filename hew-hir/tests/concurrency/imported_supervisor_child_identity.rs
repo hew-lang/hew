@@ -238,10 +238,7 @@ fn file_imported_supervisor_child_and_protocol_share_full_actor_identity() {
     let imported = actor(&output, "ImportedWorker");
     let expected = format!("{WORKER_MODULE}.ImportedWorker");
     assert_eq!(imported.qualified_name(), expected);
-    let descriptor = imported
-        .protocol_descriptor
-        .as_ref()
-        .expect("file-imported handler must retain its checker descriptor");
+    let descriptor = &imported.protocol_descriptor;
     assert_eq!(descriptor.actor_name, expected);
 
     let pool = supervisor(&output, "ImportedWorkerPool");

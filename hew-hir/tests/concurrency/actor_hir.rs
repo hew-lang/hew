@@ -5,8 +5,11 @@ use hew_hir::{
     dump_hir, lower_program, HirActorDecl, HirActorStateGuard, HirDiagnosticKind, HirItem,
     HirLifecycleHookKind, ResolutionCtx,
 };
-use hew_parser::ast::OverflowPolicy;
-use hew_types::{module_registry::ModuleRegistry, Checker};
+use hew_types::{
+    actor_protocol::{MailboxContract, OverflowContract},
+    module_registry::ModuleRegistry,
+    Checker,
+};
 
 fn lower(source: &str) -> hew_hir::LowerOutput {
     let parsed = hew_parser::parse(source);
@@ -140,8 +143,10 @@ fn main() {}
     assert!(actor.lifecycle_hooks.is_empty());
     assert!(!actor.is_isolated);
     assert_eq!(actor.max_heap_bytes, None);
-    assert_eq!(actor.mailbox_capacity, None);
-    assert!(actor.overflow_policy.is_none());
+    assert_eq!(
+        actor.protocol_descriptor.mailbox,
+        MailboxContract::Unbounded
+    );
     assert!(!actor.cycle_capable);
 }
 
@@ -293,8 +298,13 @@ fn main() {}
         output.diagnostics
     );
     let actor = find_actor(&output, "Bounded");
-    assert_eq!(actor.mailbox_capacity, Some(16));
-    assert_eq!(actor.overflow_policy, Some(OverflowPolicy::DropOld));
+    assert_eq!(
+        actor.protocol_descriptor.mailbox,
+        MailboxContract::Bounded {
+            capacity: 16,
+            overflow: OverflowContract::DropOld,
+        }
+    );
 }
 
 #[test]

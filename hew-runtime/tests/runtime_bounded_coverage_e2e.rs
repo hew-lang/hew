@@ -230,7 +230,7 @@ fn single_worker_message_budget_and_restart_budget_bound_execution() {
             restart_policy: 0,
             mailbox_capacity: -1,
             overflow: 1,
-            coalesce_key_fn: None,
+            coalesce_match_fn: None,
             coalesce_fallback: 1,
             message_drop_fn: None,
             sys_dispatch: None,

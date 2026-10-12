@@ -94,7 +94,7 @@ fn start_one_child_supervisor(name: &str) -> (TestSupervisor, CString) {
             restart_policy: RESTART_PERMANENT,
             mailbox_capacity: -1,
             overflow: OVERFLOW_DROP_NEW,
-            coalesce_key_fn: None,
+            coalesce_match_fn: None,
             coalesce_fallback: OVERFLOW_DROP_NEW,
             message_drop_fn: None,
             sys_dispatch: None,

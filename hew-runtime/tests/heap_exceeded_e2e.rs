@@ -227,7 +227,7 @@ fn max_heap_actor_crash_routes_through_heap_exceeded_supervisor_exit() {
             restart_policy: RESTART_PERMANENT,
             mailbox_capacity: -1,
             overflow: OVERFLOW_DROP_NEW,
-            coalesce_key_fn: None,
+            coalesce_match_fn: None,
             coalesce_fallback: OVERFLOW_DROP_NEW,
             message_drop_fn: None,
             sys_dispatch: None,

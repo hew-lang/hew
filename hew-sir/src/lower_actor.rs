@@ -1,5 +1,7 @@
 //! Checked actor declarations and exclusive state bindings.
 
+use hew_types::actor_protocol::OverflowContract;
+
 use super::{
     function_source_origin, lower_initial_value_transfer, Binding, BindingTarget, BlockArg,
     BodySource, Builder, CallResult, CallUnwind, CallableId, CallableInstance, CallableState,
@@ -159,7 +161,6 @@ impl InstanceService<'_> {
             self.require_type_facts(argument)?;
         }
         let protocol = &source.protocol_descriptor;
-        use hew_types::actor_protocol::OverflowContract;
         let overflow = match protocol.mailbox.overflow() {
             OverflowContract::Block => crate::SemActorOverflow::Block,
             OverflowContract::DropNew => crate::SemActorOverflow::DropNew,

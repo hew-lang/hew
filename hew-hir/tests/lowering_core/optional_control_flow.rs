@@ -1,6 +1,6 @@
 use hew_hir::{
-    lower_program_host_target, verify_hir, HirExprKind, HirItem, HirMatchArmPredicate, HirStmtKind,
-    ResolutionCtx, ResolvedRef,
+    lower_program_host_target, verify_hir, HirExpr, HirExprKind, HirItem, HirMatchArmPredicate,
+    HirStmtKind, ResolutionCtx, ResolvedRef,
 };
 use hew_types::{module_registry::ModuleRegistry, Checker, ResolvedTy};
 
@@ -215,7 +215,13 @@ fn propagation_inside_handler_operand_retains_its_lexical_return_edge() {
     let HirExprKind::Block(failure) = &arms[1].body.kind else {
         panic!("propagation failure block");
     };
-    assert!(matches!(failure.statements[0].kind, HirStmtKind::Return(_)));
+    assert!(matches!(
+        failure.statements[0].kind,
+        HirStmtKind::Expr(HirExpr {
+            kind: HirExprKind::Return { .. },
+            ..
+        })
+    ));
 }
 
 #[test]

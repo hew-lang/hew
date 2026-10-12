@@ -13,8 +13,8 @@ impl Hash for Key {
 
 fn main() -> i64 {
     let caller = "caller".to_upper();
-    var values: HashMap<Key, Vec<string>> = HashMap.new();
-    values.insert(Key { label: "key".to_upper(), divisor: 0 }, ["payload".to_upper()]);
+    var values: HashMap<Vec<Key>, Vec<string>> = HashMap.new();
+    values.insert([Key { label: "key".to_upper(), divisor: 0 }], ["payload".to_upper()]);
     println(caller);
     0
 }

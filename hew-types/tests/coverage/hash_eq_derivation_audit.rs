@@ -1,46 +1,17 @@
-//! W4.001 Stage A substrate test: `implements_marker` Hash/Eq derivation audit.
+//! Type-level `MarkerTrait::Hash` and `MarkerTrait::Eq` derivation audit.
 //!
-//! This test pins down the type-level `MarkerTrait::Hash` and
-//! `MarkerTrait::Eq` derivation for every K class enumerated in the
-//! checker's layout-key hash-eligibility table
-//! (`hew-types/src/hash_eligibility.rs:64-104`). It is the DI-008-prep
-//! gate: every type the checker today accepts as a layout-key K (or
-//! whose ineligibility is structurally encoded) must be classified by
-//! the marker substrate consistently, so that Stage C can replace the
-//! per-K-class allowlists in `admissibility.rs:804-942` with the
-//! resolver's `K: Hash + Eq` bound-satisfaction predicate.
+//! `TypeFactService` is the authority that selects an executable Hash or Eq
+//! operation for a concrete type. This test pins the broader marker substrate
+//! used while resolving generic bounds. A positive marker remains necessary;
+//! concrete selection may still fail for an unresolved or unsupported shape.
 //!
-//! # Audit shape
+//! In particular:
 //!
-//! `hash_eligibility` answers a stricter question than `implements_marker`:
-//! "is K eligible as a **layout** hash-map key?" — which adds codegen
-//! constraints (fixed width, no padding, no heap pointer). At the
-//! **type-level** marker substrate, the answer is "does K implement
-//! Hash/Eq?" — which is the necessary (but not sufficient) condition
-//! the Stage C bounds-form admission gate will evaluate.
-//!
-//! Concretely the relationships this test pins are:
-//!
-//! - **layout-eligible ⇒ Hash + Eq at the type level.** Every K that
-//!   `hash_eligibility` admits today must be a `MarkerTrait::Hash` and
-//!   `MarkerTrait::Eq` member; otherwise Stage C's replacement gate
-//!   would reject what the legacy gate accepted.
 //! - **Floats ARE Hash + Eq (bitwise/total).** `f32`/`f64` implement Hash and
 //!   Eq via their bit pattern (NaN==NaN when bits match, reflexive; +0.0 != -0.0).
-//!   Ord stays IEEE-partial. `hash_eligibility` also admits float-bearing
-//!   records as layout keys.
-//! - **Heap-eligible at type level but layout-ineligible.** `String`
-//!   and `Bytes` ARE Hash + Eq at the type level (Stage C will admit
-//!   `HashMap<String, _>` via the bounds predicate), but
-//!   `hash_eligibility` rejects them as layout keys because layout
-//!   hashing operates on the fixed-size stack blob. This is the
-//!   documented gap, NOT a failure — the layout-key constraint stays
-//!   in codegen.
-//!
-//! Any future divergence — e.g. someone adding a new K class to
-//! `hash_eligibility` without updating `implements_marker`, or
-//! vice-versa — flips an assertion here and blocks Stage A close.
-//! Per §7 risk #9 of the design notes.
+//!   Ord stays IEEE-partial.
+//! - **Owned structural values remain Hash + Eq at the type level.** String,
+//!   bytes, tuples and vectors rely on their selected component operations.
 
 use hew_types::traits::{MarkerTrait, TraitRegistry};
 use hew_types::ty::Ty;
@@ -109,13 +80,7 @@ fn floats_are_hash_and_eq_bitwise() {
     assert!(!reg.implements_marker(&Ty::F64, MarkerTrait::Ord));
 }
 
-// ---- Heap-eligible-at-type-level but layout-ineligible (documented gap) ----
-//
-// Stage C's admission gate will accept `HashMap<String, _>` because String
-// implements Hash + Eq at the type level. The layout-key restriction in
-// `hash_eligibility` reflects a codegen choice (layout hashes the stack
-// blob, not the heap contents) and stays in codegen. The audit pins this
-// asymmetry so a future refactor cannot silently realign them.
+// ---- Heap-backed structural values ----
 
 #[test]
 fn string_is_hash_and_eq_at_type_level() {
@@ -158,16 +123,7 @@ fn record_containing_float_is_hash_and_eq() {
     assert_hash_eq_pos(&reg, &fpoint, "record<f64, f64>");
 }
 
-// ---- Layout-tracked-but-rejected: tuples (documented gap) ----
-//
-// `hash_eligibility` rejects tuple layout-keys outright (IneligibleTuple)
-// for codegen reasons. At the type level, `implements_marker` says a tuple
-// of Hash+Eq components IS Hash+Eq (this is structurally correct — Rust
-// derives this exactly the same way). Stage C will admit
-// `HashMap<(i64, bool), _>` via the bounds predicate when codegen catches
-// up; today the codegen gap is preserved by `admissibility.rs`. We pin
-// the type-level positive verdict here so the substrate does not
-// regress.
+// ---- Structural tuples ----
 
 #[test]
 fn tuple_of_hash_eligible_components_is_hash_and_eq_at_type_level() {
@@ -185,10 +141,6 @@ fn tuple_containing_float_is_hash_and_eq() {
 }
 
 // ---- Unresolved / platform-dependent / non-record reject paths ----
-//
-// `hash_eligibility` rejects: `Ty::Var` (unresolved), `Ty::Error`,
-// `Ty::Isize` / `Ty::Usize` (platform-dependent width),
-// `Ty::IntLiteral` / `Ty::FloatLiteral` (still unresolved).
 //
 // At the type level: `implements_marker` accepts Isize/Usize/IntLiteral
 // and FloatLiteral as Hash+Eq (they're primitives in the type system;
@@ -225,10 +177,8 @@ fn int_literal_is_hash_and_eq() {
 fn isize_usize_are_hash_and_eq_at_type_level() {
     // Platform-dependent integers ARE Hash+Eq at the type level
     // (`implements_marker` treats them as integer primitives). The
-    // layout-key codegen constraint that rejects them lives in
-    // `hash_eligibility`, not in the type substrate. The audit pins
-    // this so the type substrate doesn't grow a parallel layout-key
-    // check by accident.
+    // Concrete capability selection separately requires a resolved supported
+    // representation.
     let reg = r();
     assert_hash_eq_pos(&reg, &Ty::Isize, "isize");
     assert_hash_eq_pos(&reg, &Ty::Usize, "usize");

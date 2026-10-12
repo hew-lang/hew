@@ -743,7 +743,7 @@ fn key_descriptors_require_construction_and_complete_selected_plans() {
 }
 
 #[test]
-fn selected_vector_and_variant_equality_walks_live_elements_and_active_fields() {
+fn selected_vector_hash_and_equality_walk_live_elements_and_active_fields() {
     for optimized in [false, true] {
         let physical = physical(
             r"
@@ -763,7 +763,15 @@ fn selected_vector_and_variant_equality_walks_live_elements_and_active_fields() 
             &physical,
             "vector_eq",
             ValueCapability::Eq,
-            |emitter, lhs, rhs| emitter.vector(&ResolvedTy::I64, lhs, rhs.unwrap()),
+            |emitter, lhs, rhs| emitter.vector(&ResolvedTy::I64, lhs, rhs),
+        );
+        let llvm = add_recipe_callback(
+            &ctx,
+            llvm,
+            &physical,
+            "vector_hash",
+            ValueCapability::Hash,
+            |emitter, lhs, rhs| emitter.vector(&ResolvedTy::I64, lhs, rhs),
         );
         let llvm = add_recipe_callback(
             &ctx,
@@ -777,6 +785,8 @@ fn selected_vector_and_variant_equality_walks_live_elements_and_active_fields() 
         let engine = engine(&llvm, optimized);
         // SAFETY: both wrappers have the slot/slot/bool-out/fault-out ABI.
         let vec_eq = unsafe { engine.get_function::<EqCallback>("vector_eq").unwrap() };
+        // SAFETY: the wrapper has the slot/hash-out/fault-out ABI.
+        let vec_hash = unsafe { engine.get_function::<HashCallback>("vector_hash").unwrap() };
         // SAFETY: the wrapper consumes the exact Option slot representation.
         let variant_eq = unsafe { engine.get_function::<EqCallback>("variant_eq").unwrap() };
         let layout = hew_runtime::vec::HewValueLayout {
@@ -794,6 +804,7 @@ fn selected_vector_and_variant_equality_walks_live_elements_and_active_fields() 
             let b = hew_runtime::vec::hew_vec_new_with_elem_layout(&raw const layout);
             let c = hew_runtime::vec::hew_vec_new_with_elem_layout(&raw const layout);
             assert!(equal(&vec_eq, &a, &b));
+            assert_eq!(hash(&vec_hash, &a), hash(&vec_hash, &b));
             for value in [1i64, 2, 3] {
                 hew_runtime::vec::hew_vec_push_owned(a, std::ptr::from_ref(&value).cast());
                 hew_runtime::vec::hew_vec_push_owned(b, std::ptr::from_ref(&value).cast());
@@ -802,7 +813,9 @@ fn selected_vector_and_variant_equality_walks_live_elements_and_active_fields() 
                 hew_runtime::vec::hew_vec_push_owned(c, std::ptr::from_ref(&value).cast());
             }
             assert!(equal(&vec_eq, &a, &b));
+            assert_eq!(hash(&vec_hash, &a), hash(&vec_hash, &b));
             assert!(!equal(&vec_eq, &a, &c));
+            assert_ne!(hash(&vec_hash, &a), hash(&vec_hash, &c));
             let last = 4i64;
             hew_runtime::vec::hew_vec_push_owned(b, std::ptr::from_ref(&last).cast());
             assert!(!equal(&vec_eq, &a, &b));

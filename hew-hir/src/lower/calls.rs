@@ -922,9 +922,8 @@ impl LowerCtx {
                 })
                 .cloned()
             {
-                let method_id = self.actor_method_id(method);
-                let (kind, ty) = self
-                    .lower_lambda_actor_call(function, args, &method_id, &reply_ty, policy, &span);
+                let (kind, ty) =
+                    self.lower_lambda_actor_call(function, args, method, &reply_ty, policy, &span);
                 return Err(Box::new(HirExpr {
                     node: self.ids.node(),
                     site,
@@ -945,9 +944,8 @@ impl LowerCtx {
                 })
                 .cloned()
             {
-                let method_id = self.actor_method_id(method);
                 let (kind, ty) =
-                    self.lower_lambda_actor_submission(function, args, &method_id, policy, &span);
+                    self.lower_lambda_actor_submission(function, args, method, policy, &span);
                 return Err(Box::new(HirExpr {
                     node: self.ids.node(),
                     site,

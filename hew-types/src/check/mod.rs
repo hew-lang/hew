@@ -448,9 +448,9 @@ pub(crate) fn class_is_non_owning(
 
 /// Whether a declaration walk rooted at `ty` reaches no cycle.
 ///
-/// The eligibility walks in `hash_eligibility` and `eq_eligibility` descend
-/// through `type_defs` without a visited set, so a self-recursive nominal makes
-/// them diverge. This answers, fail-closed, whether it is safe to ask them.
+/// Structural capability selection descends through declarations, so a
+/// self-recursive nominal has no finite derived operation. This answers,
+/// fail-closed, whether it is safe to start that walk.
 #[expect(
     clippy::too_many_lines,
     reason = "the walk enumerates every Ty and VariantDef shape it descends through"

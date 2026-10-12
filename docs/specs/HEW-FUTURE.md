@@ -237,18 +237,15 @@ The general iterator surface remains an open v0.6 commitment.
 
 ### 2.5 Generic `HashMap<K, V>` over arbitrary `K`
 
-**[Remaining target: v0.6]**
+**[Target: v0.6; implemented]**
 
 Edition 2026 admits `HashMap<K, V>`/`HashSet<K>` keys for any
 structural-hash-eligible `K`, including fixed-width scalars, strings, bytes,
-floats and plain records whose fields are hash-eligible. Bytes use their
-payload rather than a heap address; float hashing follows the selected
-bitwise structural equality. The source acceptance corpus includes bytes-key
-map overwrite/removal and set deduplication.
-
-Keys containing an owned `Vec` field remain rejected; admitting them is an
-open v0.6 commitment. This does not promise that arbitrary resource,
-indirect or tuple keys are eligible: the checker still refuses those shapes.
+floats, tuples, owned vectors and plain records whose fields are hash-eligible.
+Bytes use their payload rather than a heap address; float hashing follows the
+selected bitwise structural equality. Vector hashing includes length, order and
+the selected operation for every element, recursively. Resource and indirect
+keys remain ineligible.
 
 ---
 

@@ -283,8 +283,8 @@ fn main() -> i64 {
     assert!(
         exprs.iter().any(|expr| matches!(
             &expr.kind,
-            HirExprKind::ActorAsk { method_id, reply_ty: hew_types::ResolvedTy::Unit, .. }
-                if method_id == "Counter::increment"
+            HirExprKind::ActorAsk { handler, reply_ty: hew_types::ResolvedTy::Unit, .. }
+                if output.module.defs.path(*handler) == "Counter::increment"
         )),
         "c.increment(10) should lower to HirExprKind::ActorAsk with a Unit reply: {:#?}",
         main.body
@@ -292,7 +292,8 @@ fn main() -> i64 {
     assert!(
         exprs.iter().any(|expr| matches!(
             &expr.kind,
-            HirExprKind::ActorAsk { method_id, .. } if method_id == "Counter::print_total"
+            HirExprKind::ActorAsk { handler, .. }
+                if output.module.defs.path(*handler) == "Counter::print_total"
         )),
         "c.print_total() should lower to HirExprKind::ActorAsk: {:#?}",
         main.body
@@ -351,18 +352,17 @@ fn actor_ask_let_value_lowers_to_actor_ask_hir_node() {
         &value.ty,
         hew_types::ResolvedTy::Named { head: hew_types::TypeHead::Builtin(hew_types::BuiltinType::Result), args, .. } if args.len() == 2 && matches!(args[0], hew_types::ResolvedTy::I64)
     ));
-    let (method_id, reply_ty) = match &value.kind {
+    let (handler, reply_ty) = match &value.kind {
         HirExprKind::ActorAsk {
-            method_id,
-            reply_ty,
-            ..
-        } => (method_id.as_str(), reply_ty),
+            handler, reply_ty, ..
+        } => (*handler, reply_ty),
         other => panic!("an actor ask should lower to HirExprKind::ActorAsk, got {other:#?}"),
     };
 
     assert_eq!(
-        method_id, "Getter::get",
-        "ActorAsk method_id should be fully qualified handler name"
+        output.module.defs.path(handler),
+        "Getter::get",
+        "ActorAsk should carry the exact handler declaration"
     );
     assert_eq!(
         reply_ty.user_facing().to_string(),

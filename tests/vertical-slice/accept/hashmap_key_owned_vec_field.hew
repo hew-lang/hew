@@ -1,0 +1,58 @@
+type Bag {
+    items: Vec<i64>;
+    id: i64;
+}
+
+type Segment {
+    value: i64;
+}
+
+impl Hash for Segment {
+    fn hash(self) -> i64 {
+        self.value % 10
+    }
+}
+
+impl Eq for Segment {
+    fn eq(self, other: Segment) -> bool {
+        self.value % 10 == other.value % 10
+    }
+}
+
+fn main() -> i64 {
+    var values: HashMap<Bag, string> = HashMap.new();
+    var source = [1, 2];
+    values.insert(Bag { items: source, id: 1 }, "initial");
+    source.push(3);
+    values.insert(Bag { items: [1, 2], id: 1 }, "replacement");
+    values.insert(Bag { items: [2, 1], id: 1 }, "reversed");
+    println(values.len());
+    println(values[Bag { items: [1, 2], id: 1 }]);
+    println(values[Bag { items: [2, 1], id: 1 }]);
+
+    var empty: HashMap<Vec<i64>, string> = HashMap.new();
+    let no_items: Vec<i64> = Vec.new();
+    empty.insert(no_items, "empty");
+    println(empty[Vec.new()]);
+
+    var nested: HashMap<Vec<Vec<i64>>, string> = HashMap.new();
+    nested.insert([[1, 2], []], "nested");
+    println(nested[[[1, 2], []]]);
+
+    var tuples: HashMap<Vec<(i64, bool)>, string> = HashMap.new();
+    tuples.insert([(7, true)], "tuples");
+    println(tuples[[(7, true)]]);
+
+    var floats: HashMap<Vec<f64>, string> = HashMap.new();
+    floats.insert([1.5, -0.0], "floats");
+    println(floats[[1.5, -0.0]]);
+
+    var blobs: HashMap<Vec<bytes>, string> = HashMap.new();
+    blobs.insert(["A\0B".to_bytes()], "bytes");
+    println(blobs[["A\0B".to_bytes()]]);
+
+    var selected: HashMap<Vec<Segment>, string> = HashMap.new();
+    selected.insert([Segment { value: 1 }], "selected");
+    println(selected[[Segment { value: 11 }]]);
+    0
+}

@@ -581,10 +581,10 @@ impl TraitRegistry {
                         return false;
                     }
                 }
-                // Canonical JSON/YAML values own boxed serde trees. Reads borrow
-                // the tree immutably; mutation requires exclusive access; cloning
-                // allocates an independent tree. This contract supplies Send/Sync
-                // and automatic destruction, independent of opaque handle rules.
+                // Canonical JSON/YAML values own managed serde trees. Reads borrow
+                // the tree immutably; mutation preserves independent logical copies.
+                // This contract supplies Send/Sync and automatic destruction,
+                // independent of opaque handle rules.
                 if builtin.is_some_and(BuiltinType::is_encoding_value) {
                     return matches!(
                         marker,

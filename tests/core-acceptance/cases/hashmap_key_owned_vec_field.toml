@@ -1,13 +1,10 @@
 [[case]]
 id = "hashmap_key_owned_vec_field"
-intent = "Reject ratchet (boundary): a record key whose field is an owned `Vec<T>` is NOT hash-eligible."
-source = "../vertical-slice/reject/hashmap_key_owned_vec_field.hew"
-suites = ["acceptance"]
+intent = "Owned Vec keys and record fields hash by length, order and selected element operations; insertion preserves independent key storage across source mutation, replacement and cleanup."
+source = "../vertical-slice/accept/hashmap_key_owned_vec_field.hew"
+suites = ["acceptance", "safety"]
 timeout_seconds = 30
-kind = "reject"
 
-[[case.expected.diagnostics]]
-code = "BoundsNotSatisfied"
-line = 12
-column = 5
-message = "`Bag` does not satisfy the required bounds for `Map.insert` (K: Hash)"
+[case.expected]
+stdout = "2\nreplacement\nreversed\nempty\nnested\ntuples\nfloats\nbytes\nselected\n"
+exit = 0

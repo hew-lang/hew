@@ -8019,8 +8019,7 @@ current compiler stages and their responsibilities are described in §8.1.
 - **Deferred to next edition.** Generators (`Lazy<T>` / `#[prefetch(N)]`),
   closures with captured
   environment, user-facing `Arc<T>`, `dyn Trait`, `DoubleEndedIterator`,
-  generic `HashMap<K, V>` over owned-aggregate/float keys, cancellation
-  tokens, actor await + read-after-send barrier, and the self-hosting
+  cancellation tokens, actor await + read-after-send barrier, and the self-hosting
   roadmap. See HEW-FUTURE.md for the surface and version targets.
   Pipes (`std.stream`, §6.4) and the rest of the `Iterator`/`IntoIterator`
   trait hierarchy shipped in this edition (§2.4, §2.5). Cross-node actor

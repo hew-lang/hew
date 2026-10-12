@@ -16,6 +16,18 @@ fn duplicate(source: &Source<'_>) -> Bridge {
     json!([path, key])
 }
 
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "f32 codec values narrow to the declared IEEE width"
+)]
+fn float(bits: u8, value: f64) -> Result<f64, DecodeError> {
+    match bits {
+        32 => Ok(f64::from(value as f32)),
+        64 => Ok(value),
+        _ => Err(invalid("invalid float width")),
+    }
+}
+
 fn invalid(reason: impl Into<String>) -> DecodeError {
     DecodeError::Invalid {
         path: String::new(),
@@ -35,6 +47,7 @@ impl<'a> Walk<'a> {
             || shape.names.len() != count
             || shape.aggregates.len() != count
             || shape.variants.len() != count
+            || shape.grouped_payloads.len() != count
         {
             return Err(invalid("typed shape metadata is incomplete"));
         }
@@ -144,7 +157,10 @@ impl<'a> Walk<'a> {
                 }
                 sink.u64(n);
             }
-            Node::Float => sink.f64(text()?.parse().map_err(|_| invalid("invalid float"))?),
+            Node::Float { bits } => sink.f64(float(
+                *bits,
+                text()?.parse().map_err(|_| invalid("invalid float"))?,
+            )?),
             Node::Char | Node::String => sink.str(text()?),
             Node::Bytes => {
                 let bytes: Result<Vec<u8>, _> = array()?
@@ -306,7 +322,7 @@ impl<'a> Walk<'a> {
             Node::Bool => json!(source.read_bool()?),
             Node::Signed { min, max } => json!(source.read_i64(*min, *max)?.to_string()),
             Node::Unsigned { max } => json!(source.read_u64(*max)?.to_string()),
-            Node::Float => json!(source.read_f64()?.to_string()),
+            Node::Float { bits } => json!(float(*bits, source.read_f64()?)?.to_string()),
             Node::Char => json!(source.read_char()?.to_string()),
             Node::String => json!(source.read_str()?),
             Node::Bytes => json!(source.read_bytes()?),

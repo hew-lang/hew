@@ -501,8 +501,6 @@ export type TermV1 =
         result_shape: number | null;
         error_shape: number | null;
       })
-  | (TermBase &
-      CallShape & { op: "wire.codec"; direction: string; plan: number })
   | (TermBase & {
       op: "panic";
       message: BoundaryOperand;

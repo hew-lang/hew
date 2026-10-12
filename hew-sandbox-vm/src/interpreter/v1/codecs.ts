@@ -5,6 +5,7 @@ import { collectionOperation, type ValueProgram } from "./value-operations.js";
 type Key = { name: string; tag: number | null; flags: number };
 type Node =
   | string
+  | { Float: { bits: number } }
   | { Signed: { min: number; max: number } }
   | { Unsigned: { max: number } }
   | { Tuple: number[] }
@@ -21,6 +22,7 @@ interface Shape {
   names: string[];
   aggregates: (number | null)[];
   variants: (number | null)[];
+  grouped_payloads: boolean[];
 }
 type Bridge =
   | null
@@ -60,14 +62,18 @@ function toBridge(
   if (node === "Bool" && value.kind === "bool") return value.value;
   if ((node === "Char" || node === "String") && value.kind === "string")
     return value.value;
-  if (node === "Float" && value.kind === "f64")
-    return Object.is(value.value, -0) ? "-0" : String(value.value);
+
   if (node === "Bytes")
     return fields(value).map((byte) => {
       if (byte.kind !== "i64") throw new Error("invalid byte");
       return Number(byte.value);
     });
   if (typeof node === "string") throw new Error(`invalid codec scalar ${node}`);
+  if ("Float" in node) {
+    if (value.kind !== "f64") throw new Error("codec float has wrong VM kind");
+    const number = value.value;
+    return Object.is(number, -0) ? "-0" : String(number);
+  }
   if ("Signed" in node || "Unsigned" in node) {
     if (value.kind !== "i64")
       throw new Error("codec integer has wrong VM kind");
@@ -97,10 +103,9 @@ function toBridge(
     if (value.kind !== "enum") throw new Error("codec enum is not a variant");
     const child = node.Variant[value.tag]![1];
     if (child === null) return [value.tag, null];
-    const payload =
-      shape.names[child] === ""
-        ? { kind: "record" as const, typeId: "", fields: value.payload }
-        : value.payload[0]!;
+    const payload = shape.grouped_payloads[child]
+      ? { kind: "record" as const, typeId: "", fields: value.payload }
+      : value.payload[0]!;
     return [value.tag, toBridge(pkg, shape, child, payload)];
   }
   if (value.kind !== "map") throw new Error("codec collection is not a map");
@@ -120,7 +125,7 @@ function* fromBridge(
   shape: Shape,
   id: number,
   value: Bridge,
-  callbacks: Record<string, number[]>,
+  context: { callbacks: Record<string, number[]>; propertyInput: boolean },
 ): ValueProgram {
   if (
     value !== null &&
@@ -137,14 +142,7 @@ function* fromBridge(
   if (node === "Bool") return { kind: "bool", value: Boolean(value) };
   if (node === "Char" || node === "String")
     return { kind: "string", value: String(value) };
-  if (node === "Float") {
-    const number =
-      value === "inf" ? Infinity : value === "-inf" ? -Infinity : Number(value);
-    return {
-      kind: "f64",
-      value: name === "f32" ? Math.fround(number) : number,
-    };
-  }
+
   if (node === "Bytes")
     return {
       kind: "vector",
@@ -155,6 +153,11 @@ function* fromBridge(
       })),
     };
   if (typeof node === "string") throw new Error(`invalid codec scalar ${node}`);
+  if ("Float" in node) {
+    const number =
+      value === "inf" ? Infinity : value === "-inf" ? -Infinity : Number(value);
+    return { kind: "f64", value: number };
+  }
   if ("Signed" in node || "Unsigned" in node)
     return { kind: "i64", value: BigInt.asIntN(64, BigInt(String(value))) };
   if ("Option" in node) {
@@ -177,7 +180,7 @@ function* fromBridge(
                 shape,
                 node.Option,
                 array(value)[0]!,
-                callbacks,
+                context,
               ),
             ],
     };
@@ -190,8 +193,8 @@ function* fromBridge(
       child = node.Variant[tag]![1];
     let payload: VmValue[] = [];
     if (child !== null) {
-      const decoded = yield* fromBridge(pkg, shape, child, pair[1]!, callbacks);
-      payload = shape.names[child] === "" ? fields(decoded) : [decoded];
+      const decoded = yield* fromBridge(pkg, shape, child, pair[1]!, context);
+      payload = shape.grouped_payloads[child] ? fields(decoded) : [decoded];
     }
     return { kind: "enum", typeId: name, shape: variant, tag, payload };
   }
@@ -206,11 +209,11 @@ function* fromBridge(
         shape,
         "Map" in node ? node.Map.key : node.Set,
         pair[0]!,
-        callbacks,
+        context,
       );
       const member =
         "Map" in node
-          ? yield* fromBridge(pkg, shape, node.Map.value, pair[1]!, callbacks)
+          ? yield* fromBridge(pkg, shape, node.Map.value, pair[1]!, context)
           : UNIT;
       if (map.kind !== "map")
         throw new Error("codec collection has no map storage");
@@ -220,10 +223,10 @@ function* fromBridge(
         family,
         "Insert",
         [map, key, member],
-        callbacks[id] ?? [],
+        context.callbacks[id] ?? [],
         null,
       );
-      if (map.entries.size === size)
+      if (!context.propertyInput && map.entries.size === size)
         throw new Duplicate(itemFields["Map" in node ? 2 : 1]!);
     }
     return map;
@@ -238,7 +241,7 @@ function* fromBridge(
           : "Array" in node
             ? node.Array.element
             : node.Sequence;
-    values.push(yield* fromBridge(pkg, shape, child, item, callbacks));
+    values.push(yield* fromBridge(pkg, shape, child, item, context));
   }
   return "Array" in node || "Sequence" in node
     ? { kind: "vector", elementType: "", items: values }
@@ -299,9 +302,13 @@ export function* executeCodec(
         };
   }
   const root = result.ok ? shape.root : term.decoded!.error_root;
+  const context = {
+    callbacks: term.callbacks,
+    propertyInput: term.direction === "test_input",
+  };
   let decoded: VmValue;
   try {
-    decoded = yield* fromBridge(pkg, shape, root, result.value, term.callbacks);
+    decoded = yield* fromBridge(pkg, shape, root, result.value, context);
   } catch (error) {
     if (!term.decoded) throw error;
     if (error instanceof DecodeFailure && result.error !== undefined) {
@@ -326,7 +333,7 @@ export function* executeCodec(
       shape,
       term.decoded.error_root,
       result.value,
-      term.callbacks,
+      context,
     );
   }
   if (!term.decoded) return decoded;

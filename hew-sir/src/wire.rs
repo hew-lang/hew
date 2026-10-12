@@ -123,7 +123,7 @@ impl SemWirePlan {
 }
 
 impl SemWirePlans {
-    /// Project the checked codec walk into the runner's generator vocabulary.
+    /// Project the checked codec walk into the shared generator and VM value vocabulary.
     pub fn property_shape(&self) -> Result<hew_codec::property::Shape, String> {
         use hew_codec::property::{Key, Node, Shape};
         let ids: BTreeMap<_, _> = self
@@ -156,6 +156,7 @@ impl SemWirePlans {
             .collect::<Vec<_>>();
         let mut aggregates = vec![None; self.plans.len()];
         let mut variant_shapes = vec![None; self.plans.len()];
+        let mut grouped_payloads = vec![false; self.plans.len()];
         for (ty, plan) in &self.plans {
             match plan.kind {
                 SemWireKind::Record { shape, .. } => aggregates[child(ty)?] = Some(shape.0),
@@ -246,6 +247,7 @@ impl SemWirePlans {
                             SemWirePayload::Tuple(fields) => {
                                 let index = nodes.len();
                                 names.push(String::new());
+                                grouped_payloads.push(true);
                                 aggregates.push(None);
                                 variant_shapes.push(None);
                                 nodes.push(Node::Tuple(
@@ -256,6 +258,7 @@ impl SemWirePlans {
                             SemWirePayload::Record { table, fields } => {
                                 let index = nodes.len();
                                 names.push(String::new());
+                                grouped_payloads.push(true);
                                 aggregates.push(None);
                                 variant_shapes.push(None);
                                 nodes.push(Node::Record(
@@ -285,6 +288,7 @@ impl SemWirePlans {
             names,
             aggregates,
             variants: variant_shapes,
+            grouped_payloads,
         })
     }
 

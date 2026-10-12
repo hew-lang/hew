@@ -1,4 +1,4 @@
-//! Portable property-input shapes supplied by the compiler codec plan.
+//! Portable typed data shapes supplied by the compiler codec plan.
 
 use serde::{Deserialize, Serialize};
 
@@ -10,6 +10,8 @@ pub struct Shape {
     pub names: Vec<String>,
     pub aggregates: Vec<Option<u32>>,
     pub variants: Vec<Option<u32>>,
+    /// Synthetic tuple or record groups expand into separate enum payload fields.
+    pub grouped_payloads: Vec<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

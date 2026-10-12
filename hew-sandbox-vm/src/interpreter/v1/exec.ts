@@ -1546,8 +1546,10 @@ class ExecutorV1 {
 
       case "unreachable":
         throw new Error(`${act.fn.name}: reached an unreachable endpoint`);
-      default:
-        throw new Error(`terminator ${term.op} has no sequential executor`);
+      default: {
+        const exhaustive: never = term;
+        throw new Error(`unhandled terminator: ${String(exhaustive)}`);
+      }
     }
   }
 
@@ -1613,7 +1615,7 @@ class ExecutorV1 {
     act: Activation,
     term: Extract<
       TermV1,
-      { op: "runtime.call" | "extern.call" | "value.call" }
+      { op: "runtime.call" | "extern.call" | "value.call" | "wire.codec" }
     >,
     args: VmValue[],
   ): void {

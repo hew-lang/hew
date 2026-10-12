@@ -3,12 +3,23 @@ import std.encoding.cbor;
 import std.encoding.yaml;
 import std.encoding.toml;
 import std.encoding.msgpack;
-import std.encoding.wire;
 
 type Sample {
     exact: i64;
     payload: bytes;
     label: string;
+}
+
+type GeneratedFields {
+    #[serial(skip)]
+    transient: Option<i64>;
+    nested: Option<Option<i64>>;
+}
+
+enum Layered {
+    Absent;
+    PresentEmpty;
+    Present(i64);
 }
 
 fn check(back: Sample) {
@@ -31,32 +42,39 @@ fn formats_preserve_typed_values_and_errors() {
     let set = cbor.decode<HashSet<i64>>(cbor.encode([4, 5])).expect("set");
     assert(set.contains(5));
     match json.decode<Sample>("{") {
-        .Err(wire.DecodeError.Syntax { offset, line, column, reason }) => {
+        .Err(.Syntax { offset, line, column, reason }) => {
             assert(offset == 1);
-            assert(line == .Some(1));
-            assert(column == .Some(2));
-            assert(reason.len() > 0);
+            assert(line.expect("line") == 1);
+            assert(column.expect("column") == 2);
+            assert(!reason.is_empty());
         }
         _ => panic("expected a syntax location"),
     }
     match json.decode<i8>("128") {
-        .Err(wire.DecodeError.Range { path, value, target }) => {
+        .Err(.Range { path, value: decoded_value, target }) => {
             assert(path == "");
-            assert(value == "128");
+            assert(decoded_value == "128");
             assert(target == "i8");
         }
         _ => panic("expected a typed range error"),
     }
     match json.decode<Sample>("{}") {
-        .Err(wire.DecodeError.Missing { path }) => assert(path == ".exact"),
+        .Err(.Missing { path }) => assert(path == ".exact"),
         _ => panic("expected a missing field"),
     }
 }
 
 #[test]
-fn generated_input_uses_the_typed_codec_bridge(value: Sample) {
+fn generated_input_uses_the_typed_codec_bridge(value: Sample, fields: GeneratedFields) {
     let back = cbor.decode<Sample>(cbor.encode(value)).expect("generated round-trip");
     assert(back.exact == value.exact);
     assert(back.payload == value.payload);
     assert(back.label == value.label);
+    let layered: Layered = match fields.nested {
+        .None => .Absent,
+        .Some(.None) => .PresentEmpty,
+        .Some(.Some(number)) => .Present(number),
+    };
+    assert(cbor.decode<Layered>(cbor.encode(layered)).expect("nested input") == layered);
+    assert(cbor.decode<Option<i64>>(cbor.encode(fields.transient)).expect("generated field") == fields.transient);
 }

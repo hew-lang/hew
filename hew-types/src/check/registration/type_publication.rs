@@ -504,7 +504,7 @@ impl Checker {
 
     /// Register type declarations, trait declarations, and impl blocks from
     /// stdlib modules that have Hew source files. This makes trait methods
-    /// (e.g. bench.Suite.add) visible to the type checker.
+    /// (e.g. bench.Bencher.iter) visible to the type checker.
     pub(in crate::check) fn register_stdlib_hew_items(
         &mut self,
         module_short: &str,

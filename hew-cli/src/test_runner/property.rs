@@ -34,7 +34,11 @@ fn at(shape: &Shape, id: usize, depth: usize) -> Result<BoxedStrategy<Value>, St
             .prop_map(|n| Value::Int(i128::from(n)))
             .boxed(),
         Node::Unsigned { max } => (0..=*max).prop_map(|n| Value::Int(i128::from(n))).boxed(),
-        Node::Float => any::<f64>().prop_map(Value::Float).boxed(),
+        Node::Float { bits: 32 } => any::<f32>()
+            .prop_map(|value| Value::Float(f64::from(value)))
+            .boxed(),
+        Node::Float { bits: 64 } => any::<f64>().prop_map(Value::Float).boxed(),
+        Node::Float { .. } => return Err("property shape has an invalid float width".into()),
         Node::Char => any::<char>()
             .prop_map(|ch| Value::Str(ch.to_string()))
             .boxed(),

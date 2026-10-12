@@ -170,7 +170,8 @@ impl SemWirePlans {
                     ResolvedTy::Char => Node::Char,
                     ResolvedTy::String => Node::String,
                     ResolvedTy::Bytes => Node::Bytes,
-                    ResolvedTy::F32 | ResolvedTy::F64 => Node::Float,
+                    ResolvedTy::F32 => Node::Float { bits: 32 },
+                    ResolvedTy::F64 => Node::Float { bits: 64 },
                     ResolvedTy::I8 => Node::Signed {
                         min: i64::from(i8::MIN),
                         max: i64::from(i8::MAX),

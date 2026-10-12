@@ -18,7 +18,7 @@ pub enum Node {
     Bool,
     Signed { min: i64, max: i64 },
     Unsigned { max: u64 },
-    Float,
+    Float { bits: u8 },
     Char,
     String,
     Bytes,

@@ -10,7 +10,8 @@ use serde::{Deserialize, Serialize};
 pub enum BuiltinType {
     /// Exact shipped `std::encoding::json::Value`, owning a boxed serde tree.
     JsonValue,
-    /// Exact shipped `std::encoding::yaml::Value`, owning a boxed serde tree.
+    /// Exact shipped `std::encoding::yaml::Value`.
+    /// Runtime values own an Arc-backed serde tree handle.
     YamlValue,
     Option,
     Result,

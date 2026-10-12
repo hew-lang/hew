@@ -39,16 +39,6 @@ static DISPATCH_TYPE_REGISTRY: PoisonSafe<Option<HashMap<usize, String>>> = Pois
 /// Used at `drain_events_json` time on native profiler builds to resolve handler names
 /// for trace events — keyed by `(dispatch_fn, msg_type)` to correctly disambiguate
 /// between actor types that share the same `msg_type` integer.
-///
-/// # SHIM
-///
-/// WHY: WASM uses a flat `msg_type → name` map in bridge.rs (last-registered wins),
-///      which is ambiguous for programs with multiple actor types sharing `msg_type` values.
-///      This table uses a compound key to be unambiguous.
-/// WHEN: Remove the WASM flat-map ambiguity when WASM codegen calls
-///       `hew_register_handler_name` instead of (or alongside)
-///       `hew_wasm_register_actor_meta`.  Tracked in #1259.
-/// REAL: Unify WASM and native paths onto this compound-key registry.
 static HANDLER_NAME_REGISTRY: PoisonSafe<Option<HashMap<(usize, i32), String>>> =
     PoisonSafe::new(None);
 

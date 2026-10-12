@@ -7,10 +7,15 @@ enum Choice {
     Second(i64);
 }
 
+fn inferred_order(left: _, right: Point) -> bool {
+    left < right
+}
+
 fn main() {
     let a = Point { x: 1, y: 2 };
     let b = Point { x: 2, y: 1 };
     assert(a < b);
+    assert(inferred_order(a, b));
     assert(a <= b);
     assert(b > a);
     assert(b >= a);

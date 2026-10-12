@@ -271,8 +271,8 @@ impl Checker {
                 TypeErrorKind::InvalidOperation,
                 &span,
                 format!(
-                    "`{op}` is not available for `{type_name}` because the type does not \
-                     derive `PartialOrd`; provide a user `impl Ord` or `impl PartialOrd`"
+                    "`{op}` requires `PartialOrd` for `{type_name}`; its components must \
+                     support ordering or the type must provide `impl Ord` or `impl PartialOrd`"
                 ),
             );
             return;

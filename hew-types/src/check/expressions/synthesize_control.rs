@@ -2115,6 +2115,8 @@ impl Checker {
                     // types agree — a mismatch already produced the more
                     // precise error above.
                     if self.errors.len() == errors_before {
+                        let left_resolved = self.subst.resolve(&left_ty);
+                        let right_resolved = self.subst.resolve(&right_ty);
                         self.reject_unbounded_generic_ordering(
                             op,
                             &left_resolved,

@@ -10,4 +10,4 @@ kind = "reject"
 code = "InvalidOperation"
 line = 6
 column = 13
-message = "`<` is not available for `Bag` because the type does not derive `PartialOrd`; provide a user `impl Ord` or `impl PartialOrd`"
+message = "`<` requires `PartialOrd` for `Bag`; its components must support ordering or the type must provide `impl Ord` or `impl PartialOrd`"

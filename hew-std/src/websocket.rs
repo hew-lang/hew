@@ -1670,7 +1670,7 @@ mod tests {
     use super::*;
     use crate::net_error_slot_test_support::NetErrorSlotRuntimeGuard;
     use crate::test_string::ManagedString;
-    use hew_runtime::{actor, transport};
+    use hew_runtime::actor;
     use std::collections::HashMap;
     #[cfg(unix)]
     use std::os::fd::AsRawFd;
@@ -1994,9 +1994,12 @@ mod tests {
     }
 
     fn wait_for_actor_dead(actor: *mut actor::HewActor) {
-        // SAFETY: tests call this only for actors they spawned and still own.
-        let actor_ref = unsafe { transport::hew_actor_ref_local(actor) };
-        wait_until(|| unsafe { transport::hew_actor_ref_is_alive(&raw const actor_ref) == 0 });
+        use hew_runtime::internal::types::HewActorState;
+        wait_until(|| {
+            // SAFETY: tests retain the actor allocation until this wait returns.
+            let state = unsafe { (*actor).actor_state.load(Ordering::Acquire) };
+            state == HewActorState::Stopped as i32 || state == HewActorState::Crashed as i32
+        });
     }
 
     fn recv_event(rx: &Receiver<ActorEvent>) -> ActorEvent {

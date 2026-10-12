@@ -152,17 +152,20 @@ fn encode_node_control_frame(ctrl_kind: u64, payload: Vec<u8>) -> Option<Vec<u8>
 unsafe fn send_control_frame_on_connection(
     conn_mgr: *mut HewConnMgr,
     conn_id: c_int,
+    recipient: Location,
     ctrl_kind: u64,
     payload: Vec<u8>,
 ) -> c_int {
+    // SAFETY: the caller pins the node's manager for this call.
+    let Some(claim) =
+        (unsafe { connection::claim_send_to_location(&*conn_mgr, conn_id, recipient) })
+    else {
+        return -1;
+    };
     let Some(bytes) = encode_node_control_frame(ctrl_kind, payload) else {
         return -1;
     };
-    // SAFETY: caller pins the manager and connection for this call; send copies
-    // the complete encoded frame.
-    unsafe {
-        connection::hew_connmgr_send_preencoded(conn_mgr, conn_id, bytes.as_ptr(), bytes.len())
-    }
+    claim.send(&bytes)
 }
 
 unsafe fn send_control_frame_on_claimed_connection(
@@ -495,7 +498,9 @@ unsafe fn send_observation_notice(
         Err(error) => return error,
     };
     // SAFETY: node pins the manager for this call.
-    unsafe { send_control_frame_on_connection(node.conn_mgr, conn_id, ctrl_kind, payload) }
+    unsafe {
+        send_control_frame_on_connection(node.conn_mgr, conn_id, recipient, ctrl_kind, payload)
+    }
 }
 
 /// Apply a notice this node addressed to itself.

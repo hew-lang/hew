@@ -160,7 +160,7 @@ block-beta
     block:L5["<b>L5: Networking & Distribution</b>"]
         columns 5
         wire["envelope.rs<br/>CBOR EnvelopeFrame<br/>ControlFrame"]
-        transport["transport.rs<br/>HewTransportOps vtable<br/>HewActorRef (local/remote)"]
+        transport["transport.rs<br/>HewTransportOps vtable<br/>Protected channels"]
         connection["connection.rs<br/>Connection Manager<br/>MAX_CONNS=64"]
         hew_node["hew_node.rs<br/>HewNode<br/>HewRegistry"]
         remote_sup["remote_sup.rs<br/>Remote Supervisor"]
@@ -273,7 +273,7 @@ stateDiagram-v2
 - `HewRegistry` — maps string discovery names to exact `Location` values
 - `PeerBindings` — maps receiver-local non-zero route slots one-to-one with credentials
 - `HewTransportOps` — vtable: `connect`, `listen`, `accept`, `send`, `recv`, `close_conn`, `destroy`
-- `HewActorRef` — discriminated union: `ACTOR_REF_LOCAL(0)` or `ACTOR_REF_REMOTE(1)`
+- `SendClaim` — manager-issued authenticated peer, route slot and protected channel lease
 - `MonitorState` — single watcher-side monitor/link observation authority
 
 ---

@@ -550,9 +550,12 @@ impl FunctionLowerer<'_> {
                     glue: self.variant_id(&self.storage[source.0 as usize].ty)?,
                 })
             }
-            SemOpKind::StrEq { .. } | SemOpKind::BytesEq { .. } => Err(PhysicalError::new(
-                format!("SIR op {} is not admitted by physical MIR", operation.id.0),
-            )),
+            SemOpKind::StrEq { .. } | SemOpKind::BytesEq { .. } => {
+                Err(PhysicalError::new(format!(
+                    "SIR op {} is not yet admitted by physical MIR",
+                    operation.id.0
+                )))
+            }
         }
     }
 
@@ -1240,7 +1243,7 @@ impl FunctionLowerer<'_> {
                 SnapshotDecision::Share | SnapshotDecision::DeepCopy | SnapshotDecision::Transfer,
             ) => {
                 return Err(PhysicalError::new(
-                    "snapshot boundaries are not admitted by physical MIR",
+                    "snapshot boundaries are not yet admitted by physical MIR",
                 ));
             }
         })
@@ -1266,7 +1269,7 @@ impl FunctionLowerer<'_> {
             },
             BoundaryDecision::Snapshot(_) => {
                 return Err(PhysicalError::new(
-                    "snapshot returns are not admitted by physical MIR",
+                    "snapshot returns are not yet admitted by physical MIR",
                 ));
             }
         })

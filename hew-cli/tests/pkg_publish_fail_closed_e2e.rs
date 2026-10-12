@@ -427,6 +427,8 @@ fn publish_local_flag_exits_zero_and_writes_local_copy() {
 
     fs::remove_file(project.path().join("main.hew")).unwrap();
     fs::write(project.path().join("replacement.hew"), "fn main() {}\n").unwrap();
+    let manifest = fs::read_to_string(&manifest_path).unwrap();
+    fs::write(&manifest_path, manifest + "main = \"replacement.hew\"\n").unwrap();
     let replacement = run_publish(project.path(), home.path(), &["--local"]);
     assert!(
         replacement.status.success(),

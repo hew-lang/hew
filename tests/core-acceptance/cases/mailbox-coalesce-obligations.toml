@@ -10,4 +10,5 @@ HEW_WORKERS = "1"
 
 [case.expected]
 stdout = "2040\n100\nreceiver fault\n"
+stderr = "hew: failure: UserPanic (212): displaced close failed\n"
 exit = 0

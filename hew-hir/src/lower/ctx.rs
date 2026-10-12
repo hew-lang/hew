@@ -81,6 +81,7 @@ impl LowerCtx {
             trait_object_layouts: std::sync::Arc::new(tc_output.trait_object_layouts.clone()),
             resolved_calls: tc_output.resolved_calls.clone(),
             expr_types: tc_output.expr_types.clone(),
+            compile_time_values: tc_output.compile_time_values.clone(),
             type_facts: tc_output.type_facts.clone(),
             type_declarations: tc_output.type_fact_context.declarations().clone(),
             display_facts: hew_types::TypeFactService::new(

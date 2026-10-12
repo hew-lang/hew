@@ -17,8 +17,8 @@ use hew_types::{
 };
 
 use crate::{
-    configured_stdlib_roots, path_is_below, read_source, DeterministicAdmission, DocumentSet,
-    FrontendDiagnostic, FrontendOptions,
+    configured_stdlib_roots, path_is_below, read_source, DeterministicAdmission,
+    FrontendDiagnostic, FrontendOptions, SourceSet,
 };
 
 type Operation = hew_types::DeterministicOperation;
@@ -419,7 +419,7 @@ fn site_for_call(
     program: &Program,
     root_source: &str,
     root_label: &str,
-    documents: &DocumentSet,
+    documents: &SourceSet,
     span: &SpanKey,
 ) -> Option<(SourceSite, String, String)> {
     let path = (span.module_idx != 0)

@@ -82,6 +82,7 @@ impl From<io::Error> for TarballError {
 /// Result of packing a tarball.
 #[derive(Debug)]
 pub struct PackResult {
+    pub files: Vec<PathBuf>,
     /// The compressed tarball bytes.
     pub data: Vec<u8>,
     /// SHA-256 checksum in `"sha256:{hex}"` format.
@@ -144,6 +145,7 @@ pub fn pack(
     }
 
     Ok(PackResult {
+        files: files.iter().map(|file| PathBuf::from(&file.path)).collect(),
         checksum: crate::package_fs::sha256_prefixed(&compressed),
         data: compressed,
     })

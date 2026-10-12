@@ -99,6 +99,9 @@ impl Checker {
     pub(in crate::check) fn synthesize_inner(&mut self, expr: &Expr, span: &Span) -> Ty {
         self.reject_if_wasm_incompatible_expr(expr, span);
         let ty = match expr {
+            Expr::MacroInvocation { name, args } => {
+                self.check_macro_invocation(name.name.as_str(), args, span)
+            }
             // Literals
             Expr::Literal(Literal::Float(_)) => Ty::FloatLiteral,
             Expr::Literal(Literal::String(_)) => Ty::String,

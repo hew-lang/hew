@@ -29,6 +29,15 @@ pub fn hover(
     let simple_word = crate::util::simple_word_at_offset(source, offset);
 
     let type_output = type_output?;
+    if let Some((span, input)) = type_output.source_input_at(0, offset) {
+        return Some(HoverResult {
+            contents: format!("`{}` ({} bytes)", input.display_path, input.size),
+            span: Some(crate::OffsetSpan {
+                start: span.start,
+                end: span.end,
+            }),
+        });
+    }
 
     if let Some((word, word_span)) = &simple_word {
         if let Some(result) =

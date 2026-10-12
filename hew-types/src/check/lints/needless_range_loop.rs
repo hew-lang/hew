@@ -562,6 +562,7 @@ impl BodyScan<'_> {
             | Expr::Literal(_)
             | Expr::RegexLiteral(_)
             | Expr::ByteStringLiteral(_)
+            | Expr::MacroInvocation { .. }
             | Expr::ByteArrayLiteral(_) => {}
             Expr::ContextVariant(context) => {
                 if let Some(record) = &context.record {

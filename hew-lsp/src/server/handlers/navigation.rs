@@ -72,6 +72,18 @@ pub(crate) fn goto_definition(
     let doc = server.documents.get(uri)?;
 
     let offset = position_to_offset(&doc.source, &doc.line_offsets, position);
+    if let Some((_, input)) = doc
+        .type_output
+        .as_ref()
+        .and_then(|output| output.source_input_at(0, offset))
+    {
+        use super::super::uri::FileUriExt;
+        let uri = tower_lsp_server::ls_types::Uri::from_checked_file_path(&input.path)?;
+        return Some(GotoDefinitionResponse::Scalar(Location {
+            uri,
+            range: Default::default(),
+        }));
+    }
     if let Some(location) =
         super::super::navigation::identity_definition_location(uri, &doc, offset, &server.documents)
     {

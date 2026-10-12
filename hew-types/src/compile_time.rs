@@ -1,0 +1,60 @@
+use std::path::{Path, PathBuf};
+
+/// Host-provided compilation inputs; the checker never reads the filesystem.
+pub trait InputProvider: std::fmt::Debug + Send + Sync {
+    fn root_source(&self) -> &Path;
+    fn include(&self, source: &Path, path: &str) -> Result<InputFile, InputError>;
+    fn inputs(&self) -> Vec<CompilationInput>;
+    fn read(&self, path: &Path) -> std::io::Result<Vec<u8>>;
+    fn exists(&self, path: &Path) -> bool;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompilationInput {
+    pub path: PathBuf,
+    pub display_path: String,
+    pub sha256: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct InputFile {
+    pub path: PathBuf,
+    pub display_path: String,
+    pub bytes: Vec<u8>,
+}
+
+#[derive(Debug, Clone)]
+pub struct InputReference {
+    pub path: PathBuf,
+    pub display_path: String,
+    pub size: usize,
+}
+
+impl crate::TypeCheckOutput {
+    #[must_use]
+    pub fn source_input_at(
+        &self,
+        file: u32,
+        offset: usize,
+    ) -> Option<(crate::SpanKey, &InputReference)> {
+        self.input_references
+            .iter()
+            .filter(|(span, _)| {
+                span.module_idx == file && span.start <= offset && offset < span.end
+            })
+            .min_by_key(|(span, _)| span.end - span.start)
+            .map(|(span, input)| (span.clone(), input))
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct InputError {
+    pub code: &'static str,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ConstantValue {
+    String(String),
+    Bytes(Vec<u8>),
+}

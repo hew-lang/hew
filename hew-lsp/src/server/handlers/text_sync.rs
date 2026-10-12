@@ -86,6 +86,15 @@ pub(crate) fn initialize(
     server: &HewLanguageServer,
     params: &InitializeParams,
 ) -> Result<InitializeResult> {
+    if let Ok(mut supported) = server.watched_files_supported.write() {
+        *supported = params
+            .capabilities
+            .workspace
+            .as_ref()
+            .and_then(|workspace| workspace.did_change_watched_files.as_ref())
+            .and_then(|watching| watching.dynamic_registration)
+            .unwrap_or(false);
+    }
     if let Ok(mut roots) = server.workspace_roots.write() {
         *roots = extract_workspace_roots(params);
     }
@@ -103,6 +112,26 @@ pub(crate) fn initialize(
 }
 
 pub(crate) async fn initialized(server: &HewLanguageServer) {
+    let supported = server
+        .watched_files_supported
+        .read()
+        .is_ok_and(|supported| *supported);
+    if supported {
+        let registration = tower_lsp_server::ls_types::Registration {
+            id: "hew-compilation-inputs".into(),
+            method: "workspace/didChangeWatchedFiles".into(),
+            register_options: Some(serde_json::json!({ "watchers": [{ "globPattern": "**/*" }] })),
+        };
+        if let Err(error) = server.client.register_capability(vec![registration]).await {
+            server
+                .client
+                .log_message(
+                    MessageType::WARNING,
+                    format!("Cannot watch compilation inputs: {error}"),
+                )
+                .await;
+        }
+    }
     server
         .client
         .log_message(MessageType::INFO, "Hew language server initialized")

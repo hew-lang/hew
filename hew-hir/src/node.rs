@@ -235,6 +235,7 @@ pub enum HirConstValue {
     Integer(i128),
     /// Folded string literal value (UTF-8, as written in source).
     String(String),
+    Bytes(Vec<u8>),
     /// Folded float literal value. The declared width lives in [`HirConst::ty`]
     /// (`F32`/`F64`); this carries the parser value as `f64`, and downstream
     /// codegen rounds to `f32` when the declared type is `f32`.

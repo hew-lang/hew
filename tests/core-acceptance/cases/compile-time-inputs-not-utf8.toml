@@ -1,0 +1,14 @@
+[[case]]
+id = "compile-time-inputs-not-utf8"
+intent = "Text includes report the first invalid UTF-8 byte during compilation."
+source = "cases/compile-time-inputs-not-utf8.hew"
+kind = "check"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "InvalidOperation"
+line = 2
+column = 13
+message = "E_INCLUDE_NOT_UTF8: compile-time-inputs-data/invalid.bin is not UTF-8 at byte 0"

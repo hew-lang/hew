@@ -36,6 +36,7 @@ interface CompileOutput {
 type SandboxCompiler = (
   source: string,
   profile?: string,
+  files?: Map<string, string | Uint8Array>,
 ) => string | CompileOutput;
 
 declare global {
@@ -44,8 +45,12 @@ declare global {
   var compileToSandboxBytecode: SandboxCompiler | undefined;
 }
 
-export function runProgram(source: string, stdin: string): RunProgramResult {
-  const compileOutput = compileSource(source);
+export function runProgram(
+  source: string,
+  stdin: string,
+  files?: Map<string, string | Uint8Array>,
+): RunProgramResult {
+  const compileOutput = compileSource(source, files);
   if (
     hasErrorDiagnostics(compileOutput.diagnostics) ||
     compileOutput.bytecode === null
@@ -80,7 +85,10 @@ export function runProgram(source: string, stdin: string): RunProgramResult {
   };
 }
 
-function compileSource(source: string): CompileOutput {
+function compileSource(
+  source: string,
+  files?: Map<string, string | Uint8Array>,
+): CompileOutput {
   const compiler =
     globalThis.__hewSandboxCompileToSandboxBytecode ??
     globalThis.compileToSandboxBytecode;
@@ -89,7 +97,7 @@ function compileSource(source: string): CompileOutput {
       "compile_to_sandbox_bytecode WASM bridge is not initialized",
     );
   }
-  const output = compiler(source, SANDBOX_PROFILE);
+  const output = compiler(source, SANDBOX_PROFILE, files);
   const parsed =
     typeof output === "string" ? (JSON.parse(output) as unknown) : output;
   if (!isCompileOutput(parsed)) {

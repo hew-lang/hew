@@ -404,6 +404,9 @@ pub enum RaceOperandKind {
 /// Result of type-checking a program.
 #[derive(Debug, Clone, Default)]
 pub struct TypeCheckOutput {
+    pub input_references: HashMap<SpanKey, crate::compile_time::InputReference>,
+    pub inputs: Vec<crate::compile_time::CompilationInput>,
+    pub compile_time_values: HashMap<SpanKey, crate::compile_time::ConstantValue>,
     /// Ordinary checked program produced by machine normalization, when present.
     pub normalized_program: Option<std::sync::Arc<super::machine_normalize::NormalizedProgram>>,
     pub select_sources: HashMap<SpanKey, Vec<CheckedSelectSource>>,
@@ -3179,6 +3182,9 @@ pub(super) enum BareActorResolution {
     reason = "checker state flags are independent booleans"
 )]
 pub struct Checker {
+    pub(super) input_references: HashMap<SpanKey, crate::compile_time::InputReference>,
+    pub(super) input_provider: Option<std::sync::Arc<dyn crate::compile_time::InputProvider>>,
+    pub(super) compile_time_values: HashMap<SpanKey, crate::compile_time::ConstantValue>,
     /// Exact declarations whose values require an explicit disposition.
     pub(super) must_use_types: HashSet<crate::DefId>,
     pub(super) env: TypeEnv,
@@ -4383,6 +4389,9 @@ impl Checker {
     )]
     pub fn new(module_registry: ModuleRegistry) -> Self {
         Self {
+            input_provider: None,
+            input_references: HashMap::new(),
+            compile_time_values: HashMap::new(),
             env: TypeEnv::new(),
             subst: Substitution::new(),
             registry: TraitRegistry::new(),

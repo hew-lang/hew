@@ -10,6 +10,7 @@ keywords = ["hew", "package-manager"]
 categories = ["command-line-utilities"]
 
 [dependencies]
+hew-compile = { path = "../hew-compile" }
 clap.workspace = true
 semver = "1"
 toml.workspace = true

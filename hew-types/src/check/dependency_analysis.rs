@@ -130,6 +130,11 @@ impl DependencyAnalysisCache {
         }
 
         let mut fork = seed.checker.fork_dependency_state();
+        fork.input_provider = checker.input_provider.clone();
+        if let Some(provider) = &fork.input_provider {
+            fork.module_registry
+                .set_input_provider(std::sync::Arc::clone(provider));
+        }
         // Each real root owns fresh lint text and a new root identity. Existing
         // dependency IDs remain a stable prefix *within this fork*, never an
         // identity authority between separate outputs/source snapshots.

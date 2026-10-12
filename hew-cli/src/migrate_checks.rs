@@ -3,7 +3,7 @@ use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use hew_compile::{DocumentFrontendState, DocumentSet, FrontendOptions};
+use hew_compile::{DocumentFrontendState, FrontendOptions, SourceSet};
 use hew_parser::ast::Item;
 use hew_parser::module::FileSpanIndices;
 
@@ -95,7 +95,7 @@ impl CheckUnits {
         unit.members.dedup();
     }
 
-    pub fn check(&mut self, root: &Path, documents: &DocumentSet) -> DocumentFrontendState {
+    pub fn check(&mut self, root: &Path, documents: &SourceSet) -> DocumentFrontendState {
         self.checks += 1;
         let measure = std::env::var_os("HEW_MEASURE_TIMINGS").is_some();
         let started = Instant::now();

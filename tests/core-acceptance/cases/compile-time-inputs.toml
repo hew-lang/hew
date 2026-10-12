@@ -1,0 +1,10 @@
+[[case]]
+id = "compile-time-inputs"
+source = "cases/compile-time-inputs.hew"
+intent = "Compile-time text and byte inputs are package-confined constants; stringify renders an expression without resolving or evaluating it."
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "Hew café\n10\nunknown_value + 1\n"
+exit = 0

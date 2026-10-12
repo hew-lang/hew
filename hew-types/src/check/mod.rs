@@ -2615,6 +2615,9 @@ impl Checker {
     )]
     fn fork_dependency_state(&self) -> Self {
         Self {
+            input_provider: self.input_provider.clone(),
+            input_references: self.input_references.clone(),
+            compile_time_values: self.compile_time_values.clone(),
             must_use_types: self.must_use_types.clone(),
             env: self.env.clone(),
             subst: self.subst.clone(),
@@ -3755,6 +3758,13 @@ impl Checker {
         let shorthand_field_labels = self.scopes.take_shorthand_labels();
         let contexts = self.scopes.contexts().clone();
         let mut output = TypeCheckOutput {
+            input_references: std::mem::take(&mut self.input_references),
+            inputs: self
+                .input_provider
+                .as_ref()
+                .map(|provider| provider.inputs())
+                .unwrap_or_default(),
+            compile_time_values: std::mem::take(&mut self.compile_time_values),
             declaration_type_parameters: self.scopes.declaration_parameter_facts(),
             associated_type_schemas: self.associated_schema_parameters.clone(),
             resolved_annotation_types,
@@ -4846,6 +4856,7 @@ impl Checker {
             | Expr::ChainValue
             | Expr::RegexLiteral(_)
             | Expr::ByteStringLiteral(_)
+            | Expr::MacroInvocation { .. }
             | Expr::ByteArrayLiteral(_) => {}
         }
     }
@@ -5285,6 +5296,7 @@ fn collect_lambda_spans_in_expr(
         | Expr::ChainValue
         | Expr::RegexLiteral(_)
         | Expr::ByteStringLiteral(_)
+        | Expr::MacroInvocation { .. }
         | Expr::ByteArrayLiteral(_) => {}
     }
 }

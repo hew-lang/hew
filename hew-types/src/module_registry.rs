@@ -11,7 +11,7 @@ use std::sync::Arc;
 use hew_parser::ast::Item;
 use hew_parser::module::ModulePath;
 
-use crate::stdlib_loader::{load_module_checked, ModuleInfo};
+use crate::stdlib_loader::{load_module_with_inputs, ModuleInfo};
 
 /// Parsed module data that may be reused across checker runs.
 ///
@@ -48,6 +48,7 @@ struct ProgramModuleState {
 /// by searching the filesystem and parsing `.hew` files at user compile time.
 #[derive(Debug, Clone)]
 pub struct ModuleRegistry {
+    input_provider: Option<Arc<dyn crate::compile_time::InputProvider>>,
     cache: ModuleParseCache,
     configured: ProgramModuleState,
     active: ProgramModuleState,
@@ -781,9 +782,10 @@ impl ModuleRegistry {
             return Some(canonical_source_module_identity(&module_id, &source_paths).dotted());
         }
         self.search_paths.iter().find_map(|search_path| {
-            let info = load_module_checked(&loader_path, search_path)
-                .ok()
-                .flatten()?;
+            let info =
+                load_module_with_inputs(&loader_path, search_path, self.input_provider.as_deref())
+                    .ok()
+                    .flatten()?;
             if !Self::module_info_declares_nominal(&info, leaf) {
                 return None;
             }
@@ -885,6 +887,7 @@ impl ModuleRegistry {
     #[must_use]
     pub fn new(search_paths: Vec<PathBuf>) -> Self {
         Self {
+            input_provider: None,
             cache: ModuleParseCache::default(),
             configured: ProgramModuleState::default(),
             active: ProgramModuleState::default(),
@@ -893,10 +896,16 @@ impl ModuleRegistry {
         }
     }
 
+    pub fn set_input_provider(&mut self, provider: Arc<dyn crate::compile_time::InputProvider>) {
+        self.input_provider = Some(provider);
+        self.cache.modules.clear();
+    }
+
     /// Retain parsed module data while discarding every resolution surface from
     /// the completed program. Explicit caller configuration is re-seeded.
     pub(crate) fn for_new_program(self) -> Self {
         let Self {
+            input_provider,
             cache,
             configured,
             active: _,
@@ -905,6 +914,7 @@ impl ModuleRegistry {
         } = self;
         let active = configured.clone();
         Self {
+            input_provider,
             cache,
             configured,
             active,
@@ -999,8 +1009,11 @@ impl ModuleRegistry {
                 module_path: module_path.to_string(),
             }
         })?;
-        let Some(source) = crate::stdlib_loader::resolve_hew_path(&loader_path, &compiler_root)
-        else {
+        let Some(source) = crate::stdlib_loader::resolve_hew_path_with_inputs(
+            &loader_path,
+            &compiler_root,
+            self.input_provider.as_deref(),
+        ) else {
             return Err(ModuleError::NotFound {
                 module_path: module_path.to_string(),
                 searched: vec![compiler_root],
@@ -1012,7 +1025,12 @@ impl ModuleRegistry {
         let info = if let Some(info) = cached {
             info
         } else {
-            let Some(info) = load_module_checked(&loader_path, &compiler_root)? else {
+            let Some(info) = load_module_with_inputs(
+                &loader_path,
+                &compiler_root,
+                self.input_provider.as_deref(),
+            )?
+            else {
                 return Err(ModuleError::NotFound {
                     module_path: module_path.to_string(),
                     searched: vec![compiler_root],
@@ -1084,8 +1102,11 @@ impl ModuleRegistry {
 
         let search_paths = self.search_paths.clone();
         for search_path in &search_paths {
-            let Some(source) = crate::stdlib_loader::resolve_hew_path(&loader_path, search_path)
-            else {
+            let Some(source) = crate::stdlib_loader::resolve_hew_path_with_inputs(
+                &loader_path,
+                search_path,
+                self.input_provider.as_deref(),
+            ) else {
                 continue;
             };
             let cache_key = parse_cache_key(&source);
@@ -1093,7 +1114,12 @@ impl ModuleRegistry {
             let info = if let Some(info) = cached {
                 info
             } else {
-                let Some(info) = load_module_checked(&loader_path, search_path)? else {
+                let Some(info) = load_module_with_inputs(
+                    &loader_path,
+                    search_path,
+                    self.input_provider.as_deref(),
+                )?
+                else {
                     continue;
                 };
                 let info = Arc::new(info);
@@ -1115,7 +1141,11 @@ impl ModuleRegistry {
     /// configured search paths, if that source has already been parsed.
     fn cached_module_for_spelling(&self, loader_path: &str) -> Option<&ModuleInfo> {
         self.search_paths.iter().find_map(|search_path| {
-            let source = crate::stdlib_loader::resolve_hew_path(loader_path, search_path)?;
+            let source = crate::stdlib_loader::resolve_hew_path_with_inputs(
+                loader_path,
+                search_path,
+                self.input_provider.as_deref(),
+            )?;
             self.cache
                 .modules
                 .get(&parse_cache_key(&source))

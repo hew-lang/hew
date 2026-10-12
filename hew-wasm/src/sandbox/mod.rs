@@ -68,14 +68,6 @@ pub fn embedded_standard_library_paths() -> Vec<&'static str> {
         .collect()
 }
 
-fn embedded_standard_library_documents() -> hew_compile::DocumentSet {
-    let mut documents = hew_compile::DocumentSet::new();
-    for (path, source) in std_sources::STD_SOURCES {
-        documents.insert(*path, *source);
-    }
-    documents
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DiagnosticSpan {
     pub start: usize,
@@ -175,11 +167,23 @@ pub fn compile_to_sandbox_bytecode(
     source: &str,
     profile: Option<&str>,
 ) -> Result<CompileOutput, CompileError> {
+    compile_to_sandbox_bytecode_with_inputs(source, profile, hew_compile::SourceSet::in_memory())
+}
+
+pub fn compile_to_sandbox_bytecode_with_inputs(
+    source: &str,
+    profile: Option<&str>,
+    inputs: hew_compile::SourceSet,
+) -> Result<CompileOutput, CompileError> {
     compile_from_semantics(
         source,
         profile,
         SANDBOX_BUFFER_LABEL,
-        hew_compile::FrontendOptions::default(),
+        hew_compile::FrontendOptions {
+            documents: inputs,
+            project_dir: Some(".".into()),
+            ..Default::default()
+        },
         &mut Vec::new(),
         None,
     )
@@ -362,8 +366,19 @@ pub fn compile_tests_to_sandbox_bytecode_js(source: &str, file: &str) -> String 
 /// An unrecognised profile is reported as a diagnostic with `bytecode: null`.
 #[must_use]
 #[wasm_bindgen::prelude::wasm_bindgen(js_name = compileToSandboxBytecode)]
-pub fn compile_to_sandbox_bytecode_js(source: &str, profile: &str) -> String {
-    compile_to_sandbox_bytecode_json(source, profile)
+pub fn compile_to_sandbox_bytecode_js(
+    source: &str,
+    profile: &str,
+    files: Option<js_sys::Map>,
+) -> String {
+    let inputs = match crate::inputs::from_js(files) {
+        Ok(inputs) => inputs,
+        Err(error) => return serde_json::json!({ "error": error }).to_string(),
+    };
+    match compile_to_sandbox_bytecode_with_inputs(source, Some(profile), inputs) {
+        Ok(output) => serde_json::to_string(&output).expect("sandbox output is serializable"),
+        Err(error) => serde_json::json!({ "error": error.message }).to_string(),
+    }
 }
 
 /// Serialize the result of [`compile_to_sandbox_bytecode`] as a JSON string.
@@ -413,7 +428,9 @@ fn compile_from_semantics(
     // The shared frontend, not a second one: it resolves this buffer's imports
     // into the module graph, so an imported declaration reaches HIR with a
     // body instead of an unresolved binding.
-    options.documents = embedded_standard_library_documents();
+    for (path, text) in embedded_standard_library() {
+        options.documents.insert(*path, *text);
+    }
     let state = hew_compile::run_source_frontend(source, source_label, &options);
     let mut diagnostics = state
         .parse_result

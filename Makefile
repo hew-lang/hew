@@ -395,6 +395,13 @@ hew-debug: hew-native
 	@echo "compiler path: $(DEBUG_HEW)"
 	@test -f "$(DEBUG_HEW)"
 
+check-frontend: ## Develop: type-check the compiler and shared frontend consumers
+	cargo check -p hew-cli -p hew-lsp
+
+LSP_PROTOCOL_ARGS ?=
+test-lsp-protocol: ## Test: drive the language server over its stdio protocol
+	cargo test -p hew-lsp --test protocol_smoke $(LSP_PROTOCOL_ARGS)
+
 # Shared assertion recipe, run by `all` after `assemble` so a later assembly
 # step cannot silently replace the launcher with another profile.
 define ASSERT_RELEASE_LIB_HEW_PROFILE
@@ -665,8 +672,10 @@ sandbox-vm-test: sandbox-vm-deps
 
 # Native Hew <-> sandbox VM parity harness. The browser compiler package is
 # excluded from generic nextest runs and owned here with Node provisioned.
-sandbox-parity: wasm-runtime hew-native sandbox-vm-test
-	$(TEST_RUN_ENV) cargo test -p hew-wasm
+SANDBOX_PARITY_ARGS ?=
+sandbox-parity: hew-native sandbox-vm-deps
+	npm --prefix hew-sandbox-vm run build
+	$(TEST_RUN_ENV) cargo test -p hew-wasm $(SANDBOX_PARITY_ARGS)
 
 # Browser analysis and source-to-VM execution need Node and the built VM, but
 # not LLVM. Native comparisons run with the complete package in sandbox-parity.
@@ -710,7 +719,7 @@ ci-shard-2: libhew-link-race-test test \
 	test-obligation-site-diff stdlib-user-build-clean stdlib-errno-gate \
 	test-extern-bytes test-host-client
 
-ci-shard-3: mqtt-broker-e2e sandbox-parity \
+ci-shard-3: mqtt-broker-e2e sandbox-vm-test sandbox-parity \
 	test-package-install \
 	hew-check-all
 

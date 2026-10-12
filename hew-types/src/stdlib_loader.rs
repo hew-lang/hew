@@ -126,10 +126,22 @@ pub(crate) fn load_module_checked(
     module_path: &str,
     root: &Path,
 ) -> Result<Option<ModuleInfo>, ModuleError> {
-    let Some(hew_path) = resolve_hew_path(module_path, root) else {
+    load_module_with_inputs(module_path, root, None)
+}
+
+pub(crate) fn load_module_with_inputs(
+    module_path: &str,
+    root: &Path,
+    inputs: Option<&dyn crate::compile_time::InputProvider>,
+) -> Result<Option<ModuleInfo>, ModuleError> {
+    let Some(hew_path) = resolve_hew_path_with_inputs(module_path, root, inputs) else {
         return Ok(None);
     };
-    let Ok(source) = std::fs::read_to_string(&hew_path) else {
+    let bytes = inputs.map_or_else(|| std::fs::read(&hew_path), |inputs| inputs.read(&hew_path));
+    let Ok(source) = bytes.and_then(|bytes| {
+        String::from_utf8(bytes)
+            .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))
+    }) else {
         return Ok(None);
     };
     let result = parse(&source);
@@ -167,7 +179,16 @@ pub(crate) fn load_module_checked(
 ///
 /// For ecosystem modules (e.g. `ecosystem::db::postgres`), the root is
 /// `ecosystem/` instead of `std/`.
+#[cfg(test)]
 pub(crate) fn resolve_hew_path(module_path: &str, root: &Path) -> Option<std::path::PathBuf> {
+    resolve_hew_path_with_inputs(module_path, root, None)
+}
+
+pub(crate) fn resolve_hew_path_with_inputs(
+    module_path: &str,
+    root: &Path,
+    inputs: Option<&dyn crate::compile_time::InputProvider>,
+) -> Option<std::path::PathBuf> {
     let segments: Vec<&str> = module_path.split("::").collect();
     if segments.is_empty() {
         return None;
@@ -180,14 +201,14 @@ pub(crate) fn resolve_hew_path(module_path: &str, root: &Path) -> Option<std::pa
     let last = segments.last()?;
     let dir_form = rel.join(format!("{last}.hew"));
     let candidate = root.join(&dir_form);
-    if candidate.exists() {
+    if inputs.map_or_else(|| candidate.exists(), |inputs| inputs.exists(&candidate)) {
         return Some(candidate);
     }
 
     // Try flat form: std/encoding/json.hew
     let flat_form = rel.with_extension("hew");
     let candidate = root.join(&flat_form);
-    if candidate.exists() {
+    if inputs.map_or_else(|| candidate.exists(), |inputs| inputs.exists(&candidate)) {
         return Some(candidate);
     }
 

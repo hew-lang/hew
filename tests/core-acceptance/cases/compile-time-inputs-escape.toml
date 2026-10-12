@@ -1,0 +1,14 @@
+[[case]]
+id = "compile-time-inputs-escape"
+intent = "A compile-time include cannot escape its package root."
+source = "cases/compile-time-inputs-escape.hew"
+kind = "check"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "InvalidOperation"
+line = 2
+column = 13
+message = "E_INCLUDE_OUTSIDE_PACKAGE"

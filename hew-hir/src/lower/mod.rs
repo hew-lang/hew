@@ -923,6 +923,7 @@ type TraitMethodBindingKey = (Option<String>, u32, String, String);
 
 #[derive(Debug)]
 struct LowerCtx {
+    compile_time_values: HashMap<SpanKey, hew_types::compile_time::ConstantValue>,
     ids: IdGen,
     /// Binding metadata for capture analysis; keyed by the HIR binding id.
     binding_scopes: Vec<HashMap<BindingId, OuterClosureBinding>>,

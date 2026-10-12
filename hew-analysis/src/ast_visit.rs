@@ -943,6 +943,7 @@ impl<'src, 'ast, V: AstVisitor<'ast>> AstWalker<'src, 'ast, V> {
             | Expr::Return(None)
             | Expr::RegexLiteral(_)
             | Expr::ByteStringLiteral(_)
+            | Expr::MacroInvocation { .. }
             | Expr::ByteArrayLiteral(_) => {}
         }
     }

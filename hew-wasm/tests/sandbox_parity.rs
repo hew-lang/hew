@@ -7,7 +7,7 @@ use std::sync::OnceLock;
 #[cfg(unix)]
 use assert_cmd::Command;
 #[cfg(unix)]
-use hew_wasm::sandbox::{compile_to_sandbox_bytecode, Diagnostic};
+use hew_wasm::sandbox::{compile_to_sandbox_bytecode_with_inputs, Diagnostic};
 
 #[cfg(unix)]
 const SANDBOX_PROFILE: &str = "sandbox-vm-export";
@@ -729,6 +729,48 @@ fn identity_w7_record_resource_does_not_join_runtime_admission() {
 
 #[cfg(unix)]
 fn assert_case(case: &ParityCase, stdin: &str) {
+    assert_case_with_inputs(case, stdin, hew_compile::SourceSet::in_memory());
+}
+
+#[cfg(unix)]
+#[test]
+fn compile_time_inputs_native_and_vm() {
+    set_test_hewpath();
+    ensure_native_toolchain();
+    ensure_parity_runner_built();
+    let mut inputs = hew_compile::SourceSet::in_memory();
+    inputs.insert_bytes(
+        "compile-time-inputs-data/message.txt",
+        b"Hew caf\xc3\xa9\n".to_vec(),
+    );
+    assert_case_with_inputs(
+        &ParityCase {
+            test_name: "compile_time_inputs",
+            source_rel: "tests/core-acceptance/cases/compile-time-inputs.hew",
+        },
+        "",
+        inputs,
+    );
+    let mut inputs = hew_compile::SourceSet::in_memory();
+    inputs.insert(
+        "hew.toml",
+        "[package]\nname = \"future\"\nhew = \">=999.0.0\"\n",
+    );
+    let refused =
+        compile_to_sandbox_bytecode_with_inputs("fn main() {}", Some(SANDBOX_PROFILE), inputs)
+            .expect("frontend diagnostic output");
+    assert!(
+        refused
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("requires Hew >=999.0.0")),
+        "{:?}",
+        refused.diagnostics
+    );
+}
+
+#[cfg(unix)]
+fn assert_case_with_inputs(case: &ParityCase, stdin: &str, inputs: hew_compile::SourceSet) {
     let repo_root = repo_root();
     let source_path = repo_root.join(case.source_rel);
     let native = run_native(&source_path, stdin);
@@ -739,8 +781,9 @@ fn assert_case(case: &ParityCase, stdin: &str) {
             case.test_name
         )
     });
-    let sandbox_compile = compile_to_sandbox_bytecode(&source, Some(SANDBOX_PROFILE))
-        .unwrap_or_else(|err| panic!("sandbox compile threw for {}: {err}", case.test_name));
+    let sandbox_compile =
+        compile_to_sandbox_bytecode_with_inputs(&source, Some(SANDBOX_PROFILE), inputs)
+            .unwrap_or_else(|err| panic!("sandbox compile threw for {}: {err}", case.test_name));
 
     assert_no_error_diagnostics(case, &sandbox_compile.diagnostics);
     let bytecode = sandbox_compile.bytecode.unwrap_or_else(|| {

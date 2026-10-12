@@ -1,0 +1,8 @@
+const MESSAGE: string = include_str!("compile-time-inputs-data/message.txt");
+const RAW: bytes = include_bytes!("compile-time-inputs-data/message.txt");
+
+fn main() {
+    println(MESSAGE.trim());
+    println(RAW.len());
+    println(stringify!(unknown_value + 1));
+}

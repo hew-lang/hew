@@ -285,6 +285,7 @@ fn eval_inner(
         | Expr::Await(_)
         | Expr::RegexLiteral(_)
         | Expr::ByteStringLiteral(_)
+        | Expr::MacroInvocation { .. }
         | Expr::ByteArrayLiteral(_)
         | Expr::Is { .. }
         | Expr::MachineEmit { .. }

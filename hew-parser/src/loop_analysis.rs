@@ -478,6 +478,7 @@ fn ast_expr_has_break(expr: &Expr, query: BreakQuery, depth: usize) -> bool {
         | Expr::ChainValue
         | Expr::RegexLiteral(_)
         | Expr::ByteStringLiteral(_)
+        | Expr::MacroInvocation { .. }
         | Expr::ByteArrayLiteral(_) => false,
     }
 }

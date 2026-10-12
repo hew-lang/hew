@@ -40,6 +40,21 @@ and size, and go-to-definition opens the file. Publishing checks the package
 through the same frontend and rejects an archive that excludes a consumed
 input.
 
+`location!()` returns a `SourceLocation` record with `file: string`,
+`line: i64` and `column: i64`. Its file is relative to the package root;
+line and column start at one, and columns count Unicode characters. A
+constant retains its definition's location when used elsewhere.
+`SourceLocation` keeps source positions distinct from distributed actor
+`Location` values.
+
+```hew
+fn main() {
+    let here = location!();
+    println(here.file);
+    println(here.line);
+}
+```
+
 Set `[package] hew` in `hew.toml` to the compiler version requirement your
 package needs, for example `hew = ">=0.6.1"`. The shared frontend checks this
 requirement before parsing source, including manifests supplied to browser

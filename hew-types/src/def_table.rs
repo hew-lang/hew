@@ -403,10 +403,11 @@ pub enum KnownDecl {
     HashMapIter,
     NodeConfig,
     PartitionPolicy,
+    SourceLocation,
 }
 
 impl KnownDecl {
-    pub const ALL: [Self; 18] = [
+    pub const ALL: [Self; 19] = [
         Self::ActorError,
         Self::Never,
         Self::ActorMailbox,
@@ -425,12 +426,14 @@ impl KnownDecl {
         Self::HashMapIter,
         Self::NodeConfig,
         Self::PartitionPolicy,
+        Self::SourceLocation,
     ];
 
     /// The declaration's canonical path in `std.builtins`.
     #[must_use]
     pub const fn path(self) -> &'static str {
         match self {
+            Self::SourceLocation => "std.builtins.SourceLocation",
             Self::ActorError => "std.builtins.ActorError",
             Self::Never => "std.builtins.Never",
             Self::ActorMailbox => "std.builtins.ActorMailbox",
@@ -454,6 +457,7 @@ impl KnownDecl {
 
     const fn leaf(self) -> &'static str {
         match self {
+            Self::SourceLocation => "SourceLocation",
             Self::ActorError => "ActorError",
             Self::Never => "Never",
             Self::ActorMailbox => "ActorMailbox",

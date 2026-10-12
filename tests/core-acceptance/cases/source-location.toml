@@ -1,0 +1,10 @@
+[[case]]
+id = "source-location"
+source = "cases/source-location.hew"
+intent = "Compile-time source locations retain their invocation positions through constant references and ordinary record lowering."
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "true\n1\n36\n4\n16\n"
+exit = 0

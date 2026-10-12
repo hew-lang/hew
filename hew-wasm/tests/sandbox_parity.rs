@@ -751,6 +751,13 @@ fn compile_time_inputs_native_and_vm() {
         "",
         inputs,
     );
+    assert_case(
+        &ParityCase {
+            test_name: "source_location",
+            source_rel: "tests/core-acceptance/cases/source-location.hew",
+        },
+        "",
+    );
     let mut inputs = hew_compile::SourceSet::in_memory();
     inputs.insert(
         "hew.toml",

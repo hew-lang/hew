@@ -1,5 +1,5 @@
-use super::super::{Checker, Expr, Literal, Span, SpanKey, Spanned, Ty, TypeErrorKind};
-use crate::compile_time::{ConstantValue, InputProvider};
+use super::super::{Checker, Expr, Literal, ResolvedTy, Span, SpanKey, Spanned, Ty, TypeErrorKind};
+use crate::compile_time::{ConstantValue, InputProvider, TypedConstant};
 use std::sync::Arc;
 
 impl Checker {
@@ -16,6 +16,12 @@ impl Checker {
         span: &Span,
     ) -> Ty {
         let result = (|| {
+            if name == "location" {
+                if !args.is_empty() {
+                    return Err(("E_MACRO_ARGUMENTS", "location! expects no arguments".into()));
+                }
+                return self.source_location_constant(span);
+            }
             if name == "stringify" {
                 let [arg] = args else {
                     return Err((
@@ -88,5 +94,79 @@ impl Checker {
                 Ty::Error
             }
         }
+    }
+
+    fn source_location_constant(
+        &self,
+        span: &Span,
+    ) -> Result<(ConstantValue, Ty), (&'static str, String)> {
+        let provider = self.input_provider.as_ref().ok_or_else(|| {
+            (
+                "E_INCLUDE_NOT_FOUND",
+                "compilation inputs are unavailable".into(),
+            )
+        })?;
+        let source = self
+            .current_item_source
+            .as_deref()
+            .unwrap_or_else(|| provider.root_source());
+        let filename = source
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| {
+                (
+                    "E_SOURCE_LOCATION",
+                    "source file has no usable filename".into(),
+                )
+            })?;
+        let file = provider
+            .include(source, filename)
+            .map_err(|error| (error.code, error.message))?;
+        let text = std::str::from_utf8(&file.bytes)
+            .map_err(|_| ("E_SOURCE_LOCATION", "source file is not UTF-8".into()))?;
+        let prefix = text.get(..span.start).ok_or_else(|| {
+            (
+                "E_SOURCE_LOCATION",
+                "invocation position is outside the source file".into(),
+            )
+        })?;
+        let line = prefix.bytes().filter(|byte| *byte == b'\n').count() + 1;
+        let column = prefix
+            .rsplit('\n')
+            .next()
+            .unwrap_or_default()
+            .chars()
+            .count()
+            + 1;
+        let fields = vec![
+            (
+                "file".into(),
+                TypedConstant {
+                    ty: ResolvedTy::String,
+                    value: ConstantValue::String(file.display_path),
+                },
+            ),
+            (
+                "line".into(),
+                TypedConstant {
+                    ty: ResolvedTy::I64,
+                    value: ConstantValue::Integer(line as i128),
+                },
+            ),
+            (
+                "column".into(),
+                TypedConstant {
+                    ty: ResolvedTy::I64,
+                    value: ConstantValue::Integer(column as i128),
+                },
+            ),
+        ];
+        Ok((
+            ConstantValue::Record(fields),
+            Ty::Named {
+                head: crate::KnownDecl::SourceLocation.head(),
+                args: Vec::new(),
+            },
+        ))
     }
 }

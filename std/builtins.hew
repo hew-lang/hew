@@ -38,6 +38,13 @@ pub type NodeId {
 pub type Location {
 }
 
+/// Source position of a compile-time invocation.
+pub type SourceLocation {
+    file: string;
+    line: i64;
+    column: i64;
+}
+
 pub enum NodeTransport {
     Tcp;
     QuicMesh;

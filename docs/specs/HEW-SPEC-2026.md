@@ -8006,6 +8006,12 @@ compiled value; subsequent changes to those files do not affect an existing
 executable. A published package must contain every package file consumed by
 its frontend check.
 
+`location!()` takes no arguments and produces a constant `SourceLocation`
+record with `file: string`, `line: i64` and `column: i64`. The file is
+package-relative using `/` separators. Line and column are one-based;
+columns count Unicode characters. A constant initializer records its own
+invocation, rather than the place where the constant is later used.
+
 ## 13. Self-Hosting Roadmap
 
 > See HEW-FUTURE.md §6.1 for the self-hosting roadmap — targeted for

@@ -1063,7 +1063,7 @@ impl Checker {
                             })
                             .collect();
                         let msg_ty = match param_types.len() {
-                            0 => Ty::Unit,
+                            0 => Ty::Tuple(Vec::new()),
                             1 => param_types.into_iter().next().unwrap(),
                             _ => Ty::Tuple(param_types),
                         };

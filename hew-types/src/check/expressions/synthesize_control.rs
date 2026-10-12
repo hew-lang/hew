@@ -253,7 +253,7 @@ impl Checker {
                         let param_types: Vec<Ty> =
                             params.iter().map(|ty| self.subst.resolve(ty)).collect();
                         match param_types.len() {
-                            0 => Ty::Unit,
+                            0 => Ty::Tuple(Vec::new()),
                             1 => param_types.into_iter().next().unwrap(),
                             _ => Ty::Tuple(param_types),
                         }

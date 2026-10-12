@@ -716,3 +716,123 @@ fn a_path_dependency_installs_imports_and_links_its_native_code() {
     assert_ok(&run, "hew run with a path dependency");
     assert_eq!(stdout(&run), "9\n");
 }
+
+#[cfg(all(target_arch = "x86_64", target_os = "linux"))]
+fn write_assembly_package(lib: &Path) {
+    write(&lib.join("hew.toml"), &manifest("acme.assembly",
+        "sources = [\"raw.s\", \"preprocessed.S\", \"bridge.c\"]\ninclude-dirs = [\"include\"]\ndefines = [\"EXTRA=2\"]\ncflags = [\"-std=c11\", \"-Werror\"]\nasflags = [\"-Wa,--noexecstack\"]\n"));
+    write(&lib.join("assembly.hew"),
+        "extern \"C\" { fn raw_value() -> i32; fn cpp_value() -> i32; fn c_value() -> i32; }\npub fn value() -> i32 { unsafe { raw_value() + cpp_value() + c_value() } }\n");
+    write(
+        &lib.join("bridge.c"),
+        "int c_value(void) { return EXTRA; }\n",
+    );
+    write(&lib.join("raw.s"),
+        ".include \"raw.inc\"\n.text\n.globl raw_value\n.type raw_value,@function\nraw_value: mov $RAW_VALUE,%eax\nret\n.section .note.GNU-stack,\"\",@progbits\n");
+    write(&lib.join("include/raw.inc"), ".equ RAW_VALUE,19\n");
+    write(&lib.join("preprocessed.S"),
+        "#include \"value.h\"\n.text\n.globl cpp_value\n.type cpp_value,@function\ncpp_value: mov $(CPP_VALUE+EXTRA),%eax\nret\n.section .note.GNU-stack,\"\",@progbits\n");
+    write(&lib.join("include/value.h"), "#define CPP_VALUE 19\n");
+}
+
+/// GNU assembler fixtures target the host used by this test, not every CPU.
+#[cfg(all(target_arch = "x86_64", target_os = "linux"))]
+#[test]
+fn assembly_path_package_runs_and_rebuilds_included_inputs() {
+    require_codegen();
+    let dir = workspace();
+    let lib = dir.path().join("lib");
+    let app = dir.path().join("app");
+    write_assembly_package(&lib);
+    write(&app.join("hew.toml"),
+        "[package]\nname=\"app\"\nversion=\"0.1.0\"\nedition=\"2026\"\n[dependencies]\n\"acme.assembly\"={path=\"../lib\"}\n");
+    write(
+        &app.join("main.hew"),
+        "import acme.assembly;\nfn main() { println(assembly.value()); }\n",
+    );
+    let mut install = Command::new(hew_binary());
+    install
+        .args(["install", "--offline"])
+        .current_dir(&app)
+        .env("HEW_HOME", dir.path().join("cache"));
+    assert_ok(
+        &run_bounded_command(install, "install assembly path dependency"),
+        "hew install",
+    );
+    for (profile, extra) in [("o0", &[][..]), ("o2", &["--release"][..])] {
+        let out = binary(&app, profile);
+        let mut args = vec![
+            "build",
+            "main.hew",
+            "-o",
+            out.to_str().unwrap(),
+            "--emit-deps",
+            "app.d",
+        ];
+        args.extend_from_slice(extra);
+        assert_ok(&hew(&app, &args), "assembly package build");
+        let run = run_binary(&out);
+        assert_ok(&run, "assembly package executable");
+        assert_eq!(stdout(&run), "42\n", "{profile}");
+    }
+    let deps = std::fs::read_to_string(app.join("app.d")).unwrap();
+    for input in ["raw.s", "preprocessed.S", "include/value.h"] {
+        assert!(deps.contains(input), "missing {input}: {deps}");
+    }
+    // Both assembler `.include` and preprocessor `#include` changes must be
+    // observed even though integrated assemblers omit raw include depfiles.
+    write(&lib.join("include/raw.inc"), ".equ RAW_VALUE,20\n");
+    write(&lib.join("include/value.h"), "#define CPP_VALUE 20\n");
+    let run = hew(&app, &["run", "main.hew"]);
+    assert_ok(&run, "assembly rebuild after included inputs change");
+    assert_eq!(stdout(&run), "44\n");
+
+    // Upstream projects sometimes ship CPP assembly under lowercase `.s`.
+    // The package can select preprocessing explicitly without renaming it.
+    std::fs::rename(lib.join("preprocessed.S"), lib.join("preprocessed.s")).unwrap();
+    let manifest_path = lib.join("hew.toml");
+    let text = std::fs::read_to_string(&manifest_path)
+        .unwrap()
+        .replace("preprocessed.S", "preprocessed.s")
+        .replace(
+            "asflags = [\"-Wa,--noexecstack\"]",
+            "asflags = [\"-x\", \"assembler-with-cpp\"]",
+        );
+    write(&manifest_path, &text);
+    let run = hew(&app, &["run", "main.hew"]);
+    assert_ok(&run, "explicit preprocessing of lowercase assembly");
+    assert_eq!(stdout(&run), "44\n");
+    assert_ok(
+        &hew(
+            &app,
+            &[
+                "build",
+                "main.hew",
+                "--emit-deps",
+                "forced.d",
+                "-o",
+                "forced",
+            ],
+        ),
+        "forced preprocessing deps",
+    );
+    assert!(std::fs::read_to_string(app.join("forced.d"))
+        .unwrap()
+        .contains("include/value.h"));
+
+    // Joined -x overrides also permit an uppercase file to be raw assembly.
+    std::fs::rename(lib.join("raw.s"), lib.join("raw.S")).unwrap();
+    write(&lib.join("preprocessed.s"),
+        ".text\n.globl cpp_value\n.type cpp_value,@function\ncpp_value: mov $22,%eax\nret\n.section .note.GNU-stack,\"\",@progbits\n");
+    let text = std::fs::read_to_string(&manifest_path)
+        .unwrap()
+        .replace("raw.s", "raw.S")
+        .replace(
+            "asflags = [\"-x\", \"assembler-with-cpp\"]",
+            "asflags = [\"-xassembler\"]",
+        );
+    write(&manifest_path, &text);
+    let run = hew(&app, &["run", "main.hew"]);
+    assert_ok(&run, "explicit raw mode for uppercase assembly");
+    assert_eq!(stdout(&run), "44\n");
+}

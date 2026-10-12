@@ -2857,7 +2857,8 @@ fn is_initial_scalar(ty: &ResolvedTy) -> bool {
 }
 
 fn is_initial_call_value(ty: &ResolvedTy) -> bool {
-    crate::generator_parts(ty).is_some()
+    matches!(ty, ResolvedTy::Unit)
+        || crate::generator_parts(ty).is_some()
         || is_initial_scalar(ty)
         // A lambda actor handle is an addressable pid like any other actor
         // handle: it has no source declaration to match against

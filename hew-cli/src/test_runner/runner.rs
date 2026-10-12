@@ -1030,7 +1030,16 @@ fn run_compiled_test(
                 return result;
             }
             if let TestOutcome::Failed(failure) = &mut result.outcome {
-                let _ = write!(failure.message, "\nminimal counterexample: {values:?}\nproperty seed: {seed:#x}\nreproduce: hew test {} --seed {seed:#x} --cases {}", super::test_selector(test), options.cases);
+                let engine = match options.engine {
+                    crate::args::TestEngine::Native => "native",
+                    crate::args::TestEngine::Vm => "vm",
+                };
+                let _ = write!(failure.message, "\nminimal counterexample: {values:?}\nproperty seed: {seed:#x}\nreproduce: hew test {}{} --engine {engine} --seed {seed:#x} --cases {} --schedule {} --schedules {} --step-budget {} --timeout {}ms{}",
+                    if test.doc.is_some() { "--doc " } else { "" },
+                    super::test_selector(test), options.cases,
+                    options.schedules.schedule.as_str(), options.schedules.explore,
+                    options.step_budget, options.timeout.as_millis(),
+                    if options.include_ignored { " --include-ignored" } else { "" });
             }
             result
         }
@@ -1181,7 +1190,9 @@ fn run_compiled_test_input(
                     runs.len()
                 );
             }
-            if test.doc.is_some() {
+            if property.is_some() {
+                let _ = write!(message, "\nschedule {}, seed {seed:#x}", schedule.as_str());
+            } else if test.doc.is_some() {
                 let _ = write!(
                     message,
                     "\nschedule {}, seed {seed:#x}\nreproduce: hew test --doc {} --schedule {} --seed {seed:#x}",

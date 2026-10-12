@@ -1563,6 +1563,9 @@ impl<'ctx> DecodeEmitter<'_, 'ctx> {
     }
     /// A key the collection already holds by its own `Eq` is a duplicate.
     fn refuse_duplicate(&self, unique: IntValue<'ctx>) -> CodegenResult<()> {
+        if self.plans.property_input {
+            return Ok(());
+        }
         let accepted = self
             .values
             .ctx

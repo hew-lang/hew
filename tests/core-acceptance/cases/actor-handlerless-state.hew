@@ -1,0 +1,35 @@
+actor Empty {}
+
+actor Scalar {
+    var count: i64 = 42;
+}
+
+#[resource]
+type Ticket {
+    id: i64;
+}
+
+impl Ticket {
+    fn close(consume self) {
+        println(self.id);
+    }
+}
+
+actor Owner {
+    var ticket: Ticket;
+}
+
+fn main() {
+    let empty = spawn Empty;
+    stop(empty);
+    stopped(empty);
+    println("empty stopped");
+    let scalar = spawn Scalar;
+    stop(scalar);
+    stopped(scalar);
+    println("scalar stopped");
+    let owner = spawn Owner { ticket: Ticket { id: 7 } };
+    stop(owner);
+    stopped(owner);
+    println("owner stopped");
+}

@@ -1216,6 +1216,7 @@ fn project_type_facts(
     callables: &[SemCallable],
     templates: &[SemGenericTemplate],
     functions: &[SemFunction],
+    actors: &[crate::SemActor],
     aggregate_shapes: &[SemAggregateShape],
     variant_shapes: &[SemVariantShape],
     vtables: &[crate::SemVtable],
@@ -1225,6 +1226,10 @@ fn project_type_facts(
     >,
 ) -> TypeFactTable {
     let mut mentioned: Vec<ResolvedTy> = Vec::new();
+    for actor in actors {
+        mentioned.push(actor.handle_ty.clone());
+        mentioned.push(actor.state_ty.clone());
+    }
     // A selected value capability is a module fact the verifier keys on, so the
     // projection is closed over it like every other. A body that registers a
     // map's key capabilities and then refuses to lower leaves its plans behind;

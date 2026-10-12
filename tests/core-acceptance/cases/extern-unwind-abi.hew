@@ -1,0 +1,5 @@
+extern "C-unwind" {
+    fn foreign_failure();
+}
+
+fn main() {}

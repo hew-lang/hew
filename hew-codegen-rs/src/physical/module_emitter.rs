@@ -644,6 +644,11 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
     pub(super) fn declare_functions(&mut self) -> CodegenResult<()> {
         let ptr = self.ctx.ptr_type(AddressSpace::default());
         for callable in &self.module.callables {
+            if callable.failure_domain != hew_types::CallableFailureDomain::HewFault {
+                return Err(CodegenError::FailClosed(
+                    "Hew bodies require the explicit recoverable fault ABI".into(),
+                ));
+            }
             let mut params = callable
                 .params
                 .iter()

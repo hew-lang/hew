@@ -52,6 +52,7 @@ pub fn skeleton(params: Vec<ResolvedTy>, return_ty: ResolvedTy) -> sir::SemModul
         symbol: "encoding_probe".into(),
         source_origin: sir::FunctionSourceOrigin::Unknown,
         signature: sir::SemSignature {
+            failure_domain: hew_types::CallableFailureDomain::HewFault,
             params: params
                 .iter()
                 .map(|ty| sir::SemAbiParam {

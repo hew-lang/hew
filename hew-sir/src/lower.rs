@@ -1363,6 +1363,7 @@ fn generic_template_admission(function: &HirFn) -> Result<(), String> {
 fn generic_template_signature(function: &HirFn) -> Result<SemSignature, String> {
     generic_template_admission(function)?;
     Ok(SemSignature {
+        failure_domain: function.failure_domain,
         params: function
             .params
             .iter()
@@ -1438,7 +1439,11 @@ fn callable_signature_with_substitution(
             return_ty.user_facing()
         ));
     }
-    Ok(SemSignature { params, return_ty })
+    Ok(SemSignature {
+        failure_domain: function.failure_domain,
+        params,
+        return_ty,
+    })
 }
 
 /// How one argument crosses an erased dispatch boundary.

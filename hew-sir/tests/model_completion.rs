@@ -355,6 +355,7 @@ fn indirect_callee_rewrites_without_shifting_arguments_or_result_edges() {
         id: hew_sir::OpId(4),
         callee: boundary(ValueId(9), BoundaryDecision::Borrow),
         signature: hew_sir::SemSignature {
+            failure_domain: hew_types::CallableFailureDomain::HewFault,
             params: vec![hew_sir::SemAbiParam {
                 ty: ResolvedTy::I64,
                 passing: hew_sir::SemParamPassing::ReadOnly,

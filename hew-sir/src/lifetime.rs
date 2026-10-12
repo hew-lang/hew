@@ -2637,6 +2637,7 @@ mod tests {
                             decision,
                         },
                         signature: crate::SemSignature {
+                            failure_domain: hew_types::CallableFailureDomain::HewFault,
                             params: vec![],
                             return_ty: ResolvedTy::Unit,
                         },
@@ -3175,6 +3176,7 @@ mod tests {
                 decision: BoundaryDecision::BorrowMut,
             },
             signature: crate::SemSignature {
+                failure_domain: hew_types::CallableFailureDomain::HewFault,
                 params: vec![],
                 return_ty: ResolvedTy::Unit,
             },

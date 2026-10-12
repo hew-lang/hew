@@ -185,6 +185,7 @@ pub fn module(case: Case) -> sir::SemModule {
         symbol: "partial_storage".into(),
         source_origin: sir::FunctionSourceOrigin::Unknown,
         signature: sir::SemSignature {
+            failure_domain: hew_types::CallableFailureDomain::HewFault,
             params: vec![
                 sir::SemAbiParam {
                     ty: root_ty(),

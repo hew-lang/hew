@@ -73,6 +73,7 @@ fn callable_for(function: &SemFunction) -> SemCallable {
         symbol: function.name.clone(),
         source_origin: function.source_origin.clone(),
         signature: SemSignature {
+            failure_domain: hew_types::CallableFailureDomain::HewFault,
             params: function
                 .params
                 .iter()
@@ -713,6 +714,7 @@ fn the_function_index_reports_a_bodyless_callable_as_absent() {
         symbol: "headerless".to_string(),
         source_origin: FunctionSourceOrigin::Unknown,
         signature: SemSignature {
+            failure_domain: hew_types::CallableFailureDomain::HewFault,
             params: Vec::new(),
             return_ty: ResolvedTy::Unit,
         },
@@ -2250,6 +2252,7 @@ fn verifier_refuses_a_generic_template_parameter_carrying_a_borrow_slot() {
             hew_parser::ast::Symbol::intern("T"),
         )],
         signature: SemSignature {
+            failure_domain: hew_types::CallableFailureDomain::HewFault,
             params: vec![SemAbiParam {
                 ty: ResolvedTy::I64,
                 passing: SemParamPassing::Borrow,
@@ -2283,6 +2286,7 @@ fn verifier_admits_a_generic_template_parameter_with_a_read_only_slot() {
             hew_parser::ast::Symbol::intern("T"),
         )],
         signature: SemSignature {
+            failure_domain: hew_types::CallableFailureDomain::HewFault,
             params: vec![SemAbiParam {
                 ty: ResolvedTy::I64,
                 passing: SemParamPassing::ReadOnly,

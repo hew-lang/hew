@@ -20,3 +20,23 @@ pub enum ClosureCaptureConsumption {
     Retained,
     Consumed,
 }
+
+/// How failure crosses a callable boundary. Native unwinding is not a Hew ABI.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CallableFailureDomain {
+    /// Recoverable Hew failure carried by the explicit status and fault result.
+    HewFault,
+    /// No recoverable failure crosses this boundary; a host failure is fatal.
+    Abort,
+}
+
+impl CallableFailureDomain {
+    /// Resolve a supported source foreign ABI without guessing from its symbol.
+    #[must_use]
+    pub fn for_extern_abi(abi: &str) -> Option<Self> {
+        match abi {
+            "C" | "rt" => Some(Self::Abort),
+            _ => None,
+        }
+    }
+}

@@ -337,6 +337,7 @@ fn counter_module(
         symbol: "make_counter".into(),
         source_origin: sir::FunctionSourceOrigin::Unknown,
         signature: sir::SemSignature {
+            failure_domain: hew_types::CallableFailureDomain::HewFault,
             params: vec![],
             return_ty: if invoke {
                 ResolvedTy::I64
@@ -353,6 +354,7 @@ fn counter_module(
         symbol: "counter_body".into(),
         kind: sir::SemCallableKind::HewClosure,
         signature: sir::SemSignature {
+            failure_domain: hew_types::CallableFailureDomain::HewFault,
             params: vec![
                 sir::SemAbiParam {
                     ty: ty.clone(),

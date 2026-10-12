@@ -568,7 +568,8 @@ fn verify_vtables(module: &SemModule, diagnostics: &mut Vec<SirDiagnostic>) {
                 ));
                 continue;
             };
-            if receiver.ty != vtable.concrete_ty
+            if callee.signature.failure_domain != slot.signature.failure_domain
+                || receiver.ty != vtable.concrete_ty
                 || arguments.iter().map(|param| &param.ty).ne(slot
                     .signature
                     .params
@@ -1699,6 +1700,12 @@ fn verify_callable_table<'a>(
     let mut actor_members = HashSet::new();
     let mut symbols = HashSet::new();
     for (index, callable) in module.callables.iter().enumerate() {
+        if callable.signature.failure_domain != hew_types::CallableFailureDomain::HewFault {
+            diagnostics.push(module_diag(SirDiagnosticKind::InvalidCallable {
+                callable: callable.id,
+                reason: "Hew bodies require the explicit recoverable fault ABI".into(),
+            }));
+        }
         let expected = CallableId(
             u32::try_from(index).expect("SIR callable count exceeds the module-local ID range"),
         );
@@ -2066,6 +2073,12 @@ fn verify_generic_template_headers<'a>(
     let mut templates = BTreeMap::new();
     for template in &module.generic_templates {
         let name = module.defs.path(template.id.declaration).to_string();
+        if template.signature.failure_domain != hew_types::CallableFailureDomain::HewFault {
+            diagnostics.push(module_diag(SirDiagnosticKind::InvalidGenericTemplate {
+                template: name.clone(),
+                reason: "Hew templates require the explicit recoverable fault ABI".into(),
+            }));
+        }
         if template.type_params.is_empty() {
             diagnostics.push(module_diag(SirDiagnosticKind::InvalidGenericTemplate {
                 template: name.clone(),
@@ -2223,6 +2236,7 @@ fn substitute_template_signature(
     facts: &TypeFactTable,
 ) -> Result<SemSignature, String> {
     Ok(SemSignature {
+        failure_domain: template.signature.failure_domain,
         params: template
             .signature
             .params
@@ -2640,6 +2654,9 @@ fn verify_dyn_call(
     else {
         unreachable!()
     };
+    if signature.failure_domain != hew_types::CallableFailureDomain::HewFault {
+        return Err("dynamic dispatch requires the recoverable fault ABI".into());
+    }
     if !matches!(unwind, crate::CallUnwind::Cleanup(edge) if failure_cfg_matches_exit(edge, None, blocks))
     {
         return Err(
@@ -4202,6 +4219,14 @@ fn verify_extern_call_terminator(
     diagnostics: &mut Vec<SirDiagnostic>,
 ) {
     let symbol = &signature.symbol;
+    if signature.failure_domain != hew_types::CallableFailureDomain::Abort {
+        invalid_operation(
+            function,
+            id,
+            "foreign calls cannot propagate Hew faults or host unwinds".into(),
+            diagnostics,
+        );
+    }
     if !matches!(unwind, crate::CallUnwind::NotApplicable) {
         invalid_operation(
             function,
@@ -5613,7 +5638,8 @@ fn verify_terminator_shape(
                     .and_then(|context| context.offloads.get(usize::try_from(function.0).ok()?))
                     .is_some_and(|signature| {
                         let owns = |ty: &ResolvedTy| OwnKind::of_ty(ty, variants.facts);
-                        resumes.len() == 1
+                        signature.failure_domain == hew_types::CallableFailureDomain::Abort
+                            && resumes.len() == 1
                             && inputs.len() == signature.params.len()
                             && inputs
                                 .iter()
@@ -6212,6 +6238,7 @@ mod parameter_own_kind_tests {
             symbol: function.name.clone(),
             source_origin: function.source_origin.clone(),
             signature: SemSignature {
+                failure_domain: hew_types::CallableFailureDomain::HewFault,
                 params: function
                     .params
                     .iter()

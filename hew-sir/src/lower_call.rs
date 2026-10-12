@@ -714,6 +714,7 @@ impl Builder<'_, '_> {
             });
         }
         Ok(SemSignature {
+            failure_domain: hew_types::CallableFailureDomain::HewFault,
             params,
             return_ty: return_ty.clone(),
         })
@@ -2292,6 +2293,7 @@ impl Builder<'_, '_> {
                 };
                 (function.declaration == declaration && function.name == endpoint).then(|| {
                     crate::ExternSignature {
+                        failure_domain: function.failure_domain,
                         declaration: function.declaration,
                         symbol: function.name.clone(),
                         params: function.param_tys.clone(),

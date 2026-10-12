@@ -254,13 +254,21 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 failure,
             } => self.emit_runtime_call(*action, args, *result, normal, failure.as_ref()),
             PhysicalTerminator::ExternCall {
+                failure_domain,
                 symbol,
                 args,
                 result,
                 result_abi,
                 normal,
                 ..
-            } => self.emit_extern_call(symbol, args, *result, result_abi, normal),
+            } => {
+                if *failure_domain != hew_types::CallableFailureDomain::Abort {
+                    return Err(CodegenError::FailClosed(
+                        "foreign calls cannot propagate Hew faults or host unwinds".into(),
+                    ));
+                }
+                self.emit_extern_call(symbol, args, *result, result_abi, normal)
+            }
             PhysicalTerminator::Panic {
                 message,
                 assertion,

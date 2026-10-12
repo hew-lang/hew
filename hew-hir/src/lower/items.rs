@@ -910,6 +910,7 @@ impl LowerCtx {
             self.pop_scope();
             self.current_fn_type_params = prior_fn_type_params;
             return Some(HirFn {
+                failure_domain: hew_types::CallableFailureDomain::HewFault,
                 id,
                 node: self.ids.node(),
                 declaration,
@@ -962,6 +963,7 @@ impl LowerCtx {
             .filter(|_| self.consuming_inherent_methods.contains(&declaration))
             .map(|parameter| parameter.id);
         Some(HirFn {
+            failure_domain: hew_types::CallableFailureDomain::HewFault,
             id,
             node: self.ids.node(),
             declaration,

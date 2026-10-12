@@ -85,6 +85,7 @@ pub fn lower_physical_module(
                 Some(required_layout(&target, &callable.signature.return_ty)?.clone())
             };
             Ok(PhysicalCallable {
+                failure_domain: callable.signature.failure_domain,
                 id: callable.id,
                 declaration: callable.declaration,
                 instance: callable.instance.clone(),
@@ -188,6 +189,7 @@ pub fn lower_physical_module(
                         method: slot.method,
                         callee: slot.callee,
                         signature: PhysicalCallSignature {
+                            failure_domain: slot.signature.failure_domain,
                             params,
                             return_ty: slot.signature.return_ty.clone(),
                             return_layout,
@@ -219,6 +221,7 @@ pub fn lower_physical_module(
                 })
             };
             Ok(PhysicalOffload {
+                failure_domain: signature.failure_domain,
                 symbol: signature.symbol.clone(),
                 params: signature
                     .params

@@ -55,6 +55,7 @@ pub enum ResourceRelease {
 /// stages read it; none of them re-derive a mode from the symbol spelling.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExternSignature {
+    pub failure_domain: hew_types::CallableFailureDomain,
     pub declaration: hew_types::DefId,
     pub symbol: String,
     pub params: Vec<ResolvedTy>,
@@ -204,6 +205,7 @@ pub(crate) fn resource_release_from_hir(
                     return None;
                 };
                 (&function.declaration == declaration).then(|| ResourceExtern {
+                    failure_domain: function.failure_domain,
                     declaration: function.declaration,
                     symbol: function.name.clone(),
                     params: function.param_tys.clone(),

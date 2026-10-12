@@ -308,14 +308,14 @@ impl ExternProvenance {
 /// Lowered extern function declaration — see [`HirItem::ExternFn`].
 #[derive(Debug, Clone, PartialEq)]
 pub struct HirExternFn {
+    pub failure_domain: hew_types::CallableFailureDomain,
     pub id: ItemId,
     pub node: HirNodeId,
     /// Checker-owned source declaration identity.  `name` is the C/linker
     /// endpoint and can be shared by declarations from distinct modules.
     pub declaration: DefId,
     pub name: String,
-    /// `"rt"`, `"C"`, etc. The checker validates `"rt"` against the JIT-stable
-    /// symbol allowlist; other ABIs pass through unchanged.
+    /// The checked foreign ABI: `"C"` or the stable runtime boundary `"rt"`.
     pub abi: String,
     /// Parameter types in declaration order. Names are dropped — extern fns
     /// have no body, so there is no scope to bind names into.
@@ -1026,6 +1026,7 @@ pub struct HirField {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct HirFn {
+    pub failure_domain: hew_types::CallableFailureDomain,
     pub id: ItemId,
     pub node: HirNodeId,
     /// Checker-owned identity of the source declaration this body implements.

@@ -1494,7 +1494,7 @@ fn load_project_context(
     let source = if let Some(source) = source_override {
         source.to_string()
     } else {
-        if Path::new(input).is_dir() {
+        if documents.filesystem && Path::new(input).is_dir() {
             return Err(FrontendFailure::message_only(format!(
                 "Error: {input} is a directory, not a .hew source file\n  \
                  hint: a package directory is built with `hew build {input}`"
@@ -2175,6 +2175,7 @@ fn package_module_path(name: &str) -> ModulePath {
 fn anchor_for(
     file: &Path,
     std_roots: &[PathBuf],
+    documents: &SourceSet,
 ) -> Result<hew_types::module_registry::ModuleAnchor, FrontendFailure> {
     use hew_types::module_registry::ModuleAnchor;
     if let Some(anchor) = hew_types::module_registry::std_anchor_for(file, std_roots) {
@@ -2183,11 +2184,14 @@ fn anchor_for(
     let Some(dir) = file
         .parent()
         .filter(|_| file.is_absolute())
-        .and_then(|dir| dir.ancestors().find(|dir| dir.join("hew.toml").is_file()))
+        .and_then(|dir| {
+            dir.ancestors()
+                .find(|dir| documents.is_file(&dir.join("hew.toml")))
+        })
     else {
         return Ok(ModuleAnchor::Loose);
     };
-    let name = load_manifest(dir)?
+    let name = load_manifest_from(dir, documents)?
         .and_then(|manifest| manifest.package)
         .map(|package| package_module_path(&package.name));
     Ok(ModuleAnchor::Package {
@@ -2205,7 +2209,7 @@ fn importer_anchor(
     std_roots: &[PathBuf],
 ) -> Result<hew_types::module_registry::ModuleAnchor, FrontendFailure> {
     use hew_types::module_registry::ModuleAnchor;
-    match anchor_for(file, std_roots)? {
+    match anchor_for(file, std_roots, ctx.documents)? {
         ModuleAnchor::Loose => Ok(match ctx.package_name {
             Some(name) => ModuleAnchor::Package {
                 dir: ctx.project_dir.to_path_buf(),
@@ -2224,7 +2228,7 @@ fn membership_of(
     std_roots: &[PathBuf],
     documents: &SourceSet,
 ) -> Result<hew_types::module_registry::ModuleMembership, FrontendFailure> {
-    let anchor = anchor_for(file, std_roots)?;
+    let anchor = anchor_for(file, std_roots, documents)?;
     let list_dir = |dir: &Path| {
         let mut files = if documents.filesystem {
             hew_types::module_registry::filesystem_dir_listing(dir)
@@ -2276,12 +2280,13 @@ pub fn resolve_module_import(
     let project_dir = options.project_dir.clone().unwrap_or_else(|| {
         let dir = importer.parent().unwrap_or(Path::new("."));
         dir.ancestors()
-            .find(|dir| dir.join("hew.toml").is_file())
+            .find(|dir| options.documents.is_file(&dir.join("hew.toml")))
             .unwrap_or(dir)
             .to_path_buf()
     });
-    let (manifest_deps, package_name) = load_manifest_metadata(&project_dir).ok()?;
-    let locked_versions = load_lockfile(&project_dir).ok()?;
+    let (manifest_deps, package_name) =
+        load_manifest_metadata_from(&project_dir, &options.documents).ok()?;
+    let locked_versions = load_lockfile_from(&project_dir, &options.documents).ok()?;
     let ctx = ImportResolutionContext {
         in_progress_imports: HashSet::new(),
         resolved_imports: HashMap::new(),
@@ -2294,7 +2299,7 @@ pub fn resolve_module_import(
         documents: &options.documents,
     };
     let std_roots = stdlib_roots(ctx.module_search_paths);
-    let anchor = anchor_for(&importer, &std_roots).ok()?;
+    let anchor = anchor_for(&importer, &std_roots, &options.documents).ok()?;
     let mut resolved = module_candidates(path, &importer, &anchor, &ctx, &std_roots)
         .candidates
         .iter()
@@ -2482,7 +2487,7 @@ fn cycle_error_to_frontend_failure(
         && locations
             .windows(2)
             .all(|pair| pair[0].0.parent() == pair[1].0.parent());
-    let anchor = anchor_for(&locations[0].0, std_roots)
+    let anchor = anchor_for(&locations[0].0, std_roots, documents)
         .unwrap_or(hew_types::module_registry::ModuleAnchor::Loose);
     let below_anchor = anchor.dir().is_some_and(|dir| {
         shared_dir.is_some_and(|shared| shared != dir && shared.starts_with(dir))
@@ -3460,7 +3465,7 @@ fn resolve_file_imports_internal(
                             .iter()
                             .find(|(locked_candidate, _)| locked_candidate == candidate)
                         {
-                            verify_locked_project_package(check)?;
+                            verify_locked_project_package(check, ctx.documents)?;
                         }
                         // One file reached by both shapes is a directory module
                         // named by its directory: the directory candidate wins.
@@ -4421,8 +4426,11 @@ fn load_manifest_from(
     Ok(manifest)
 }
 
-fn verify_locked_project_package(check: &LockedPackageCheck) -> Result<(), FrontendFailure> {
-    let Some(manifest) = load_manifest(&check.package_dir)? else {
+fn verify_locked_project_package(
+    check: &LockedPackageCheck,
+    sources: &SourceSet,
+) -> Result<(), FrontendFailure> {
+    let Some(manifest) = load_manifest_from(&check.package_dir, sources)? else {
         return Err(FrontendFailure::message_only(format!(
             "Error: locked package `{}` resolved through `{}` is missing hew.toml\n  hint: run `hew install` to refresh .hew/packages",
             check.name,
@@ -4452,6 +4460,7 @@ fn verify_locked_project_package(check: &LockedPackageCheck) -> Result<(), Front
     Ok(())
 }
 
+#[cfg(test)]
 fn load_manifest_metadata(
     dir: &Path,
 ) -> Result<(Option<Vec<String>>, Option<String>), FrontendFailure> {
@@ -4474,6 +4483,7 @@ fn load_manifest_metadata_from(
     }
 }
 
+#[cfg(test)]
 fn load_lockfile(dir: &Path) -> Result<Option<Vec<(String, String)>>, FrontendFailure> {
     load_lockfile_from(dir, &EMPTY_DOCUMENTS)
 }

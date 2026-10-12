@@ -7972,6 +7972,40 @@ breaking change for callers that name it.
 
 ---
 
+### 12.8 Compile-time inputs
+
+The compiler-provided invocations `include_str!(path)`, `include_bytes!(path)`
+and `stringify!(expression)` are expressions. Their names remain ordinary
+identifiers outside invocation syntax. Invocations accept a trailing comma.
+
+`include_str!` and `include_bytes!` take exactly one string literal path and
+produce a constant `string` or `bytes` value. The path is relative to the
+file containing the invocation. After normalization and symbolic-link
+resolution it must stay inside that file's package: the nearest ancestor
+containing `hew.toml`, or the file's own directory for a standalone source.
+Absolute paths are rejected. Dependencies can include their own package
+files. Missing files and invalid UTF-8 in `include_str!` are compile errors;
+`include_bytes!` accepts arbitrary bytes.
+
+```hew
+const SCHEMA: string = include_str!("sql/schema.sql");
+const ICON: bytes = include_bytes!("assets/icon.png");
+
+fn main() {
+    println(ICON.len());
+    println(stringify!(unknown_value + 1));
+}
+```
+
+`stringify!` takes one expression and returns its canonical Hew source as a
+constant string. It neither resolves nor evaluates that expression. In the
+example, `unknown_value` therefore need not be declared.
+
+Included files are compilation inputs. Their contents become part of the
+compiled value; subsequent changes to those files do not affect an existing
+executable. A published package must contain every package file consumed by
+its frontend check.
+
 ## 13. Self-Hosting Roadmap
 
 > See HEW-FUTURE.md §6.1 for the self-hosting roadmap — targeted for

@@ -1859,19 +1859,10 @@ fn typecheck_program_with_dependency_cache(
     }
 
     let mut checker = hew_types::Checker::new(module_registry);
-    let mut inputs = options.documents.clone();
-    let root_module = program
-        .module_graph
-        .as_ref()
-        .and_then(|graph| graph.modules.get(&graph.root));
-    if root_module.is_none_or(|module| !module.source_paths.is_empty()) {
-        let root_path = root_module
-            .and_then(|module| module.source_paths.first())
-            .map_or(Path::new(input), PathBuf::as_path);
-        inputs.insert(root_path, source);
-        let _ = inputs.read_bytes(root_path);
-    }
-    checker.set_input_provider(Arc::new(compile_time::Inputs::new(input, inputs)));
+    checker.set_input_provider(Arc::new(compile_time::Inputs::new(
+        input,
+        options.documents.clone(),
+    )));
     if options.enable_wasm_target {
         checker.enable_wasm_target();
     }
@@ -1945,6 +1936,10 @@ pub fn typecheck_program(
     input: &str,
     options: &FrontendOptions,
 ) -> Result<TypeCheckResult, FrontendFailure> {
+    let mut options = options.clone();
+    options.documents.insert(input, source);
+    let _ = options.documents.read_bytes(Path::new(input));
+    let options = &options;
     require_deterministic_typecheck(options)?;
     let (result, mut diagnostics) =
         typecheck_program_with_diagnostics(program, source, input, options, None);
@@ -1992,6 +1987,10 @@ pub fn check_program(
     source_label: &str,
     options: &FrontendOptions,
 ) -> Result<CheckOutput, FrontendFailure> {
+    let mut options = options.clone();
+    options.documents.insert(source_label, source);
+    let _ = options.documents.read_bytes(Path::new(source_label));
+    let options = &options;
     require_deterministic_typecheck(options)?;
     let project = project_context_for_program(source, options)?;
     let mut diagnostics = Vec::new();
@@ -2365,6 +2364,7 @@ fn run_directory_module_frontend(
     let source = match source_override {
         Some(source) => {
             options.documents.insert(input, source);
+            let _ = options.documents.read_bytes(Path::new(input));
             source.to_string()
         }
         None => match read_source(&options.documents, Path::new(input)) {
@@ -3990,6 +3990,15 @@ fn run_document_frontend_with_dependency_cache(
     roots: RootSelection,
     cache: Option<&mut hew_types::check::DependencyAnalysisCache>,
 ) -> DocumentFrontendState {
+    let mut supplied_options;
+    let options = if let Some(source) = source_override {
+        supplied_options = options.clone();
+        supplied_options.documents.insert(input, source);
+        let _ = supplied_options.documents.read_bytes(Path::new(input));
+        &supplied_options
+    } else {
+        options
+    };
     if roots == RootSelection::Module {
         if let Some(membership) = module_membership(Path::new(input), options)
             .filter(|m| m.checks_as_directory_module() || m.is_package_root_module())
@@ -4379,6 +4388,7 @@ fn load_optional_toml_from<T: DeserializeOwned>(
     })
 }
 
+#[cfg(test)]
 fn load_manifest(dir: &Path) -> Result<Option<TomlManifest>, FrontendFailure> {
     load_manifest_from(dir, &EMPTY_DOCUMENTS)
 }

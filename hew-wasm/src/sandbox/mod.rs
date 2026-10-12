@@ -68,6 +68,19 @@ pub fn embedded_standard_library_paths() -> Vec<&'static str> {
         .collect()
 }
 
+pub(crate) fn add_embedded_standard_library(options: &mut hew_compile::FrontendOptions) {
+    let roots = options
+        .module_search_paths
+        .clone()
+        .unwrap_or_else(hew_types::module_registry::stdlib_search_paths);
+    for (path, text) in embedded_standard_library() {
+        let relative = path.strip_prefix("./").unwrap_or(path);
+        for root in &roots {
+            options.documents.insert(root.join(relative), *text);
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DiagnosticSpan {
     pub start: usize,
@@ -428,9 +441,7 @@ fn compile_from_semantics(
     // The shared frontend, not a second one: it resolves this buffer's imports
     // into the module graph, so an imported declaration reaches HIR with a
     // body instead of an unresolved binding.
-    for (path, text) in embedded_standard_library() {
-        options.documents.insert(*path, *text);
-    }
+    add_embedded_standard_library(&mut options);
     let state = hew_compile::run_source_frontend(source, source_label, &options);
     let mut diagnostics = state
         .parse_result

@@ -23,7 +23,11 @@ pub(super) fn normalize(path: &Path) -> PathBuf {
         match part {
             Component::CurDir => {}
             Component::ParentDir => {
-                result.pop();
+                if matches!(result.components().next_back(), Some(Component::Normal(_))) {
+                    result.pop();
+                } else {
+                    result.push("..");
+                }
             }
             _ => result.push(part.as_os_str()),
         }
@@ -75,7 +79,12 @@ impl InputProvider for Inputs {
         } else {
             normalize(&candidate)
         };
-        if !resolved.starts_with(&root) {
+        if !resolved.starts_with(&root)
+            || (!self.documents.filesystem
+                && resolved
+                    .components()
+                    .any(|part| part == Component::ParentDir))
+        {
             return Err(error(
                 "E_INCLUDE_OUTSIDE_PACKAGE",
                 format!("`{path}` resolves outside its package"),

@@ -767,6 +767,22 @@ fn compile_time_inputs_native_and_vm() {
         "{:?}",
         refused.diagnostics
     );
+    let mut inputs = hew_compile::SourceSet::in_memory();
+    inputs.insert("README.md", "outside the standalone source");
+    let escaped = compile_to_sandbox_bytecode_with_inputs(
+        "fn main() { println(include_str!(\"../README.md\")); }",
+        Some(SANDBOX_PROFILE),
+        inputs,
+    )
+    .expect("frontend diagnostic output");
+    assert!(
+        escaped
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("E_INCLUDE_OUTSIDE_PACKAGE")),
+        "{:?}",
+        escaped.diagnostics
+    );
 }
 
 #[cfg(unix)]

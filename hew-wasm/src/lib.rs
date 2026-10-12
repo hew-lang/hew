@@ -588,16 +588,14 @@ fn parse_and_type_check(source: &str) -> AnalyzedSource {
 
 fn parse_and_type_check_with_inputs(
     source: &str,
-    mut inputs: hew_compile::SourceSet,
+    inputs: hew_compile::SourceSet,
 ) -> AnalyzedSource {
-    for (path, text) in sandbox::embedded_standard_library() {
-        inputs.insert(*path, *text);
-    }
-    let options = hew_compile::FrontendOptions {
+    let mut options = hew_compile::FrontendOptions {
         documents: inputs,
         project_dir: Some(".".into()),
         ..Default::default()
     };
+    sandbox::add_embedded_standard_library(&mut options);
     let mut state = hew_compile::run_source_frontend(source, "playground.hew", &options);
     let mut parse_result = state
         .parse_result

@@ -40,6 +40,11 @@ and size, and go-to-definition opens the file. Publishing checks the package
 through the same frontend and rejects an archive that excludes a consumed
 input.
 
+Set `[package] hew` in `hew.toml` to the compiler version requirement your
+package needs, for example `hew = ">=0.6.1"`. The shared frontend checks this
+requirement before parsing source, including manifests supplied to browser
+analysis and compilation.
+
 Browser analysis and sandbox compilation accept an optional
 `Map<string, string | Uint8Array>` of package-relative files. They use the
 same frontend and include rules as native compilation. Browser inputs never

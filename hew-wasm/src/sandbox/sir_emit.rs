@@ -1345,13 +1345,6 @@ impl<'m> Walker<'m> {
                 "from": self.value_ty(value)?,
                 "to": to.user_facing().to_string(),
             }),
-            SemOpKind::StrEq { lhs, rhs } => serde_json::json!({
-                "op": "str.eq", "lhs": operand(lhs), "rhs": operand(rhs),
-            }),
-            SemOpKind::BytesEq { lhs, rhs } => serde_json::json!({
-                "op": "bytes.eq", "lhs": operand(lhs), "rhs": operand(rhs),
-            }),
-
             SemOpKind::FunctionMake { callable } => serde_json::json!({
                 "op": "function.make",
                 "callable": self.function_id(*callable)?,

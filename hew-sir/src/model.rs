@@ -1433,18 +1433,6 @@ pub enum SemOpKind {
     /// A `bytes` literal, interned in [`SemModule::bytes_literals`].
     ConstBytes(BytesLiteralId),
 
-    // --- P1 structural equality (matrix Legend `str.eq`, `bytes.eq`)
-    /// Structural equality over two borrowed `string` operands.
-    StrEq {
-        lhs: Operand,
-        rhs: Operand,
-    },
-    /// Structural equality over two borrowed `bytes` operands.
-    BytesEq {
-        lhs: Operand,
-        rhs: Operand,
-    },
-
     // --- §1.3 ownership operations
     /// `copy_value %v` - a new obligation over the same value. Legal only when
     /// the type's clone kind is not `None` (rule 6b).
@@ -1591,9 +1579,7 @@ impl SemOpKind {
             Self::Unary { value, .. } | Self::Cast { value, .. } => {
                 visit(OperandSlot(0), value);
             }
-            Self::Binary { lhs, rhs, .. }
-            | Self::StrEq { lhs, rhs }
-            | Self::BytesEq { lhs, rhs } => {
+            Self::Binary { lhs, rhs, .. } => {
                 visit(OperandSlot(0), lhs);
                 visit(OperandSlot(1), rhs);
             }
@@ -1689,9 +1675,7 @@ impl SemOpKind {
             Self::Unary { value, .. } | Self::Cast { value, .. } => {
                 visit(OperandSlot(0), value);
             }
-            Self::Binary { lhs, rhs, .. }
-            | Self::StrEq { lhs, rhs }
-            | Self::BytesEq { lhs, rhs } => {
+            Self::Binary { lhs, rhs, .. } => {
                 visit(OperandSlot(0), lhs);
                 visit(OperandSlot(1), rhs);
             }
@@ -1768,8 +1752,6 @@ impl SemOpKind {
             | Self::ConstDuration(..)
             | Self::ConstStr(..)
             | Self::ConstBytes(..)
-            | Self::StrEq { .. }
-            | Self::BytesEq { .. }
             | Self::CopyValue { .. }
             | Self::DestroyValue { .. }
             | Self::BeginBorrow { .. }
@@ -1853,8 +1835,6 @@ impl SemOpKind {
             | Self::ConstDuration(_)
             | Self::ConstStr(_)
             | Self::ConstBytes(_)
-            | Self::StrEq { .. }
-            | Self::BytesEq { .. }
             | Self::TupleMake { .. }
             | Self::TupleGet { .. }
             | Self::VariantIs { .. }

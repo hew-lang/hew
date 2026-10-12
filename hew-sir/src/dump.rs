@@ -346,12 +346,6 @@ fn dump_op(out: &mut String, op: &crate::SemOp) {
         SemOpKind::ConstBytes(id) => {
             writeln!(out, "const.bytes #{}", id.0).expect("write to String");
         }
-        SemOpKind::StrEq { lhs, rhs } => {
-            writeln!(out, "str.eq {}, {}", operand(lhs), operand(rhs)).expect("write to String");
-        }
-        SemOpKind::BytesEq { lhs, rhs } => {
-            writeln!(out, "bytes.eq {}, {}", operand(lhs), operand(rhs)).expect("write to String");
-        }
         SemOpKind::CopyValue { source } => {
             writeln!(out, "copy_value {}", operand(source)).expect("write to String");
         }

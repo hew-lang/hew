@@ -3936,8 +3936,6 @@ fn verify_operation_shape(
         // complete semantic validation land together.
         SemOpKind::FinishLinearReceiver
         | SemOpKind::LoadBorrow { .. }
-        | SemOpKind::StrEq { .. }
-        | SemOpKind::BytesEq { .. }
         | SemOpKind::EndBorrow { .. }
         | SemOpKind::DestroyValue { .. }
         | SemOpKind::Fork { .. }

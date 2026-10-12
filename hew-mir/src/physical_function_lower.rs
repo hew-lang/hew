@@ -550,12 +550,6 @@ impl FunctionLowerer<'_> {
                     glue: self.variant_id(&self.storage[source.0 as usize].ty)?,
                 })
             }
-            SemOpKind::StrEq { .. } | SemOpKind::BytesEq { .. } => {
-                Err(PhysicalError::new(format!(
-                    "SIR op {} is not yet admitted by physical MIR",
-                    operation.id.0
-                )))
-            }
         }
     }
 

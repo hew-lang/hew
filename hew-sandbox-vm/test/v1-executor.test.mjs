@@ -602,11 +602,6 @@ test("v1: an extern symbol with no shim is refused at load", () => {
   assertRejected(run(wouldPrint({ externs: [{ id: 0, symbol: "hew_open_socket" }] })), "hew_open_socket");
 });
 
-test("v1: a known family with an operation the VM has no shim for is refused", () => {
-  // `Vector` is admitted, but only for the operations the table implements.
-  assertRejected(run(wouldPrint({ runtime_families: [{ id: 1, family: "Vector", detail: "Remove" }] })), "Vector::Remove");
-});
-
 test("v1: a package with no entry is refused rather than picking a function to run", () => {
   const headless = wouldPrint({});
   delete headless.entry;

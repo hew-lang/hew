@@ -1,0 +1,40 @@
+type Point { x: i64; y: i64; }
+
+type Reading { value: f64; label: string; }
+
+enum Choice {
+    First(i64);
+    Second(i64);
+}
+
+fn main() {
+    let a = Point { x: 1, y: 2 };
+    let b = Point { x: 2, y: 1 };
+    assert(a < b);
+    assert(a <= b);
+    assert(b > a);
+    assert(b >= a);
+    assert(!(a > b));
+    let negative = Point { x: -1, y: 9 };
+    assert(negative < a);
+
+    assert((1, "a") < (1, "b"));
+    assert(Choice.First(9) < Choice.Second(0));
+    assert(Choice.First(1) < Choice.First(2));
+    let absent: Option<i64> = .None;
+    let present: Option<i64> = .Some(0);
+    assert(present < absent);
+
+    let negative_zero = Reading { value: -0.0, label: "a" };
+    let positive_zero = Reading { value: 0.0, label: "b" };
+    assert(negative_zero < positive_zero);
+
+    let nan = 0.0 / 0.0;
+    let unordered = Reading { value: nan, label: "a" };
+    let finite = Reading { value: 1.0, label: "b" };
+    assert(!(unordered < finite));
+    assert(!(unordered <= finite));
+    assert(!(unordered > finite));
+    assert(!(unordered >= finite));
+    println("ordered");
+}

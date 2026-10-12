@@ -1747,7 +1747,7 @@ pub(crate) fn verify_terminator(
             }
             let (arity, result_ty) = match capability {
                 ValueCapability::Hash => (1, ResolvedTy::I64),
-                ValueCapability::Eq => (2, ResolvedTy::Bool),
+                _ => (2, ResolvedTy::Bool),
             };
             if args.len() != arity {
                 return Err(PhysicalError::new(

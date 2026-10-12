@@ -260,17 +260,17 @@ impl Builder<'_, '_> {
         Ok(operand)
     }
 
-    pub(super) fn lower_value_equality(
+    pub(super) fn lower_value_comparison(
         &mut self,
         expr: &HirExpr,
         args: [&HirExpr; 2],
+        capability: hew_types::ValueCapability,
     ) -> Result<ValueId, String> {
         let ty = self.ty(&args[0].ty);
         if self.ty(&args[1].ty) != ty || self.ty(&expr.ty) != ResolvedTy::Bool {
-            return Err("selected equality requires matching operands and a bool result".into());
+            return Err("selected comparison requires matching operands and a bool result".into());
         }
-        self.service
-            .require_value_capability(&ty, hew_types::ValueCapability::Eq)?;
+        self.service.require_value_capability(&ty, capability)?;
         let live_before_arguments: std::collections::HashSet<_> =
             self.owned_live.keys().copied().collect();
         let mut loans = Vec::new();
@@ -309,7 +309,7 @@ impl Builder<'_, '_> {
         self.set_terminator(SemTerminator::ValueCall {
             id,
             ty,
-            capability: hew_types::ValueCapability::Eq,
+            capability,
             args: lowered_args,
             result: CallResult::Value(ValueDef {
                 id: raw,

@@ -2065,6 +2065,11 @@ impl PointRenderer for Point {
 `impl` is allowed and is what `==`, the ordering operators, and hashing dispatch
 to for that type.
 
+An `Ord` or `PartialOrd` override supplies `lt`, `le`, `gt`, and `ge`, each
+with `(self, other: Self) -> bool`. Keeping the four predicates explicit lets a
+partial order preserve incomparability instead of defining a non-strict result
+by negating the reverse strict comparison.
+
 - Records and enums are `Eq` and `Hash` structurally: field by field, variant by
   variant, with no declaration.
 - `bytes` is ordinary data and carries `Eq` and `Hash` like `string` (D451):
@@ -2085,12 +2090,10 @@ to for that type.
 - Derived comparison is structural, so it never observes handle identity; `is`
   is the operator that does (§12.2).
 
-> **Limitation at edition 2026 (`E_LIMIT_DERIVED_ORD`, Limitation channel).**
-> A record, enum, or tuple whose members derive ordering is legal, but its
-> lexicographic comparison lowering is not implemented yet. Direct ordering
-> reports `E_LIMIT_DERIVED_ORD`; use an explicit comparator (`sort_by`) or a
-> user `impl Ord`/`impl PartialOrd`. A shape with an unordered member does not
-> derive ordering and receives an ordinary type error instead.
+Records, enums, tuples, `Option` and `Result` compare lexicographically when
+their members derive ordering. Every predicate preserves partial-order
+incomparability; in particular, a NaN member makes `<`, `<=`, `>` and `>=`
+false at the first field where it is encountered.
 
 **The three receivers (normative):**
 

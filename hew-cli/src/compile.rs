@@ -99,10 +99,8 @@ pub(crate) fn frontend_options_for_check(options: &CompileOptions) -> FrontendOp
 }
 
 fn render_frontend_type_diagnostic(diagnostic: &FrontendDiagnostic, error: &hew_types::TypeError) {
-    // `channel.prefix()` is `""` for every pre-existing User-channel kind
-    // (today's rendering, byte-identical); only a Limitation-channel kind
-    // (currently `DerivedOrdUnavailable`) gains the `compiler limitation:`
-    // lead-in, matching `render_hir_diagnostic`'s equivalent prefix.
+    // `channel.prefix()` is empty for User diagnostics; Limitation diagnostics
+    // gain the same `compiler limitation:` lead-in as HIR diagnostics.
     let message = format!("{}{}", error.kind.channel().prefix(), error.message);
     let (Some(source), Some(filename)) =
         (diagnostic.source.as_deref(), diagnostic.filename.as_deref())
@@ -158,9 +156,8 @@ fn render_frontend_type_diagnostic(diagnostic: &FrontendDiagnostic, error: &hew_
 /// (`None` when `diagnostics` is empty). Parse errors are always User; a
 /// free-form `Message` diagnostic is always User (see
 /// [`crate::diagnostic_json::message_diagnostic`]); a type error's channel is
-/// `kind.channel()` (User for every pre-existing kind, Limitation for the
-/// checker's own `DerivedOrdUnavailable`); an HIR diagnostic's channel is
-/// `kind.channel()`. Computed once here — callers propagate the returned
+/// `kind.channel()`; an HIR diagnostic's channel is `kind.channel()`. Computed
+/// once here — callers propagate the returned
 /// channel rather than re-deriving it from the diagnostics list.
 #[allow(
     clippy::too_many_lines,

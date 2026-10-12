@@ -727,8 +727,7 @@ impl NodeVisitor for EffectVisitor<'_> {
         self.releases(&key, span);
         if let Some(dispatch) = self.output.user_comparison_dispatch.get(&key) {
             let (UserComparisonDispatch::Eq { method }
-            | UserComparisonDispatch::Ord { method }
-            | UserComparisonDispatch::PartialOrd { method }) = dispatch;
+            | UserComparisonDispatch::Ordering { method }) = dispatch;
             self.summary.calls.push((*method, span.clone()));
         }
         match expr {

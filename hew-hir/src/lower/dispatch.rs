@@ -14,10 +14,8 @@ impl LowerCtx {
     /// pinning these method names or the derived-order convention below;
     /// this lowering is their sole producer and so is the one place that
     /// convention is decided: `Eq` calls `<type>::eq(left, right)`, negated
-    /// for `!=`; `Ord`/`PartialOrd` calls `<type>::lt`, permuting/negating
-    /// the operands so every ordering operator reduces to one user-provided
-    /// `lt` — `<` is `lt(a,b)`, `>` is `lt(b,a)`, `<=` is `!lt(b,a)`, `>=` is
-    /// `!lt(a,b)`.
+    /// for `!=`; ordering calls the exact selected predicate so partial-order
+    /// incomparability is never turned into `<=` or `>=` by negation.
     pub(super) fn lower_user_comparison_dispatch(
         &mut self,
         dispatch: &UserComparisonDispatch,
@@ -30,15 +28,7 @@ impl LowerCtx {
             UserComparisonDispatch::Eq { method } => {
                 (method, vec![left, right], op == BinaryOp::NotEqual)
             }
-            UserComparisonDispatch::Ord { method }
-            | UserComparisonDispatch::PartialOrd { method } => match op {
-                BinaryOp::Greater => (method, vec![right, left], false),
-                BinaryOp::LessEqual => (method, vec![right, left], true),
-                BinaryOp::GreaterEqual => (method, vec![left, right], true),
-                // `Less`, and any op the checker never records `Ord`
-                // dispatch for, share the direct `lt(left, right)` shape.
-                _ => (method, vec![left, right], false),
-            },
+            UserComparisonDispatch::Ordering { method } => (method, vec![left, right], false),
         };
         let Some(symbol) = self.registered_impl_method_symbol(*method) else {
             let name = self.defs.path(*method).to_string();

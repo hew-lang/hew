@@ -257,9 +257,24 @@ pub struct ValueCapabilityPlan {
     pub ty: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub callable: Option<u32>,
-    pub components: Vec<u32>,
+    pub components: Vec<ValueComponentCapabilities>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub variants: Option<Vec<Vec<u32>>>,
+    pub variants: Option<Vec<Vec<ValueComponentCapabilities>>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ValueComponentCapabilities {
+    pub selected: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ordering: Option<ValueOrderingCapabilities>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ValueOrderingCapabilities {
+    pub less: u32,
+    pub less_equal: u32,
+    pub greater: u32,
+    pub greater_equal: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -598,7 +613,7 @@ impl<'m> Walker<'m> {
                         )
                         .map_err(EmitError::new)?
                         .iter()
-                        .map(|component| self.capability_id(component, *capability))
+                        .map(|component| self.component_capabilities(component, *capability))
                         .collect::<Result<Vec<_>, _>>()?
                     } else {
                         Vec::new()
@@ -614,7 +629,9 @@ impl<'m> Walker<'m> {
                                         variant
                                             .fields
                                             .iter()
-                                            .map(|field| self.capability_id(&field.ty, *capability))
+                                            .map(|field| {
+                                                self.component_capabilities(&field.ty, *capability)
+                                            })
                                             .collect::<Result<Vec<_>, _>>()
                                     })
                                     .collect::<Result<Vec<_>, _>>()
@@ -992,6 +1009,28 @@ impl<'m> Walker<'m> {
                     ty.user_facing()
                 ))
             })
+    }
+
+    fn component_capabilities(
+        &self,
+        ty: &hew_types::ResolvedTy,
+        capability: hew_types::ValueCapability,
+    ) -> Result<ValueComponentCapabilities, EmitError> {
+        use hew_types::ValueCapability as C;
+        Ok(ValueComponentCapabilities {
+            selected: self.capability_id(ty, capability)?,
+            ordering: capability
+                .is_ordering()
+                .then(|| {
+                    Ok(ValueOrderingCapabilities {
+                        less: self.capability_id(ty, C::Less)?,
+                        less_equal: self.capability_id(ty, C::LessEqual)?,
+                        greater: self.capability_id(ty, C::Greater)?,
+                        greater_equal: self.capability_id(ty, C::GreaterEqual)?,
+                    })
+                })
+                .transpose()?,
+        })
     }
 
     fn collection_callbacks(
@@ -2076,6 +2115,10 @@ const fn capability_name(capability: hew_types::ValueCapability) -> &'static str
     match capability {
         hew_types::ValueCapability::Hash => "Hash",
         hew_types::ValueCapability::Eq => "Eq",
+        hew_types::ValueCapability::Less => "Less",
+        hew_types::ValueCapability::LessEqual => "LessEqual",
+        hew_types::ValueCapability::Greater => "Greater",
+        hew_types::ValueCapability::GreaterEqual => "GreaterEqual",
     }
 }
 

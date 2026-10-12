@@ -337,6 +337,7 @@ fn exhaustive_choice_switch() -> SemModule {
             send: SendFact::Known(true),
             hash: false,
             eq: false,
+            partial_ord: false,
         },
     );
     module

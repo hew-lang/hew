@@ -4546,7 +4546,7 @@ fn verify_value_call_terminator(
     };
     let (arity, result_ty) = match capability {
         hew_types::ValueCapability::Hash => (1, ResolvedTy::I64),
-        hew_types::ValueCapability::Eq => (2, ResolvedTy::Bool),
+        _ => (2, ResolvedTy::Bool),
     };
     if args.len() != arity
         || args.iter().any(|arg| {

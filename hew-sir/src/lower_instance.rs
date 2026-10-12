@@ -140,7 +140,9 @@ impl<'a> InstanceService<'a> {
             )
             .and_then(|components| {
                 for component in components {
-                    self.require_value_capability(&component, capability)?;
+                    for component_capability in capability.component_capabilities() {
+                        self.require_value_capability(&component, *component_capability)?;
+                    }
                 }
                 Ok(())
             });

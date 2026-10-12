@@ -1082,14 +1082,25 @@ impl Checker {
                 declaration,
             );
         }
-        // Compiler predicates (`Eq`, `Hash`, `Copy`, ...) carry no declared
-        // method set.
-        if trait_id.is_some_and(|id| crate::DefTable::as_predicate(id).is_some()) {
+        let ordering_predicate = trait_id.is_some_and(|id| {
+            matches!(
+                crate::DefTable::as_predicate(id),
+                Some(crate::Predicate::Ord | crate::Predicate::PartialOrd)
+            )
+        });
+        let method_set = if ordering_predicate {
+            let methods = ["ge", "gt", "le", "lt"]
+                .into_iter()
+                .map(str::to_string)
+                .collect::<HashSet<_>>();
+            Some((methods.clone(), methods))
+        } else if trait_id.is_some_and(|id| crate::DefTable::as_predicate(id).is_some()) {
+            // The remaining compiler predicates carry no user method set.
             return;
-        }
-        let Some((required, known)) =
+        } else {
             trait_id.and_then(|id| self.trait_required_and_known_methods(id))
-        else {
+        };
+        let Some((required, known)) = method_set else {
             // D429: no declaration in scope defines this trait, so there is no
             // method set to check the impl against. Accepting it would register
             // the impl's methods under a contract that does not exist.
@@ -1110,13 +1121,15 @@ impl Checker {
         // Split trait surfaces are cumulative on one exact nominal identity.
         // This is how a subtrait that redeclares inherited methods is satisfied
         // by the already-registered supertrait impl for the same type.
-        if let Some(key) = self
-            .current_impl_target()
-            .and_then(|target| Self::impl_self_key(&target))
-        {
-            for ((implemented_type, _), methods) in &self.trait_impl_method_names {
-                if *implemented_type == key {
-                    provided.extend(methods.iter().map(ToString::to_string));
+        if !ordering_predicate {
+            if let Some(key) = self
+                .current_impl_target()
+                .and_then(|target| Self::impl_self_key(&target))
+            {
+                for ((implemented_type, _), methods) in &self.trait_impl_method_names {
+                    if *implemented_type == key {
+                        provided.extend(methods.iter().map(ToString::to_string));
+                    }
                 }
             }
         }
@@ -1134,7 +1147,9 @@ impl Checker {
         // inherited methods behaving identically; the per-method signature check
         // (`declaring_trait_of`) still validates any inline copy.
         let mut inherited: HashSet<String> = HashSet::new();
-        self.collect_super_trait_method_names(trait_id, &mut inherited);
+        if !ordering_predicate {
+            self.collect_super_trait_method_names(trait_id, &mut inherited);
+        }
 
         // Missing: a required (bodyless) trait method the impl never provided AND
         // that is not inherited from a supertrait (the supertrait's own impl
@@ -1232,6 +1247,47 @@ impl Checker {
         let Some(primary) = self.resolve_trait_path(&trait_bound.path) else {
             return;
         };
+        if matches!(
+            crate::DefTable::as_predicate(primary),
+            Some(crate::Predicate::Ord | crate::Predicate::PartialOrd)
+        ) {
+            let Some(receiver) = self.current_impl_target() else {
+                return;
+            };
+            let receiver = self.subst.resolve(&receiver);
+            let valid = !impl_sig.associated
+                && !impl_sig.requires_mutable_receiver
+                && !impl_sig.consumes_receiver
+                && impl_sig.type_params.is_empty()
+                && impl_sig.params.len() == 1
+                && self.subst.resolve(&impl_sig.params[0]) == receiver
+                && matches!(
+                    impl_sig.param_ownership.as_slice(),
+                    [crate::env::ParameterOwnership::Borrow]
+                )
+                && self.subst.resolve(&impl_sig.return_type) == Ty::Bool;
+            if !valid {
+                let report_span = if method.decl_span.start != method.decl_span.end {
+                    &method.decl_span
+                } else {
+                    &method.fn_span
+                };
+                self.report_error(
+                    TypeErrorKind::TraitImplSignatureMismatch {
+                        trait_name: trait_name.clone(),
+                        method_name: method.name.to_string(),
+                        detail: "ordering predicate signature",
+                    },
+                    report_span,
+                    format!(
+                        "impl method `{type_name}.{}` must have signature \
+                         `(self, other: Self) -> bool`",
+                        method.name
+                    ),
+                );
+            }
+            return;
+        }
         // An `impl Sub for T` (where `trait Sub: Base`) may provide an inherited
         // SUPERTRAIT method (`base`) inline. Key the signature check off the
         // trait that actually DECLARES the method; skipping inherited methods
@@ -1599,8 +1655,18 @@ impl Checker {
                 Some(ImplMethodSlot::Value(ValueCapability::Hash))
             }
             (Some(crate::Predicate::Eq), "eq") => Some(ImplMethodSlot::Value(ValueCapability::Eq)),
-            (Some(crate::Predicate::Ord), "lt") => Some(ImplMethodSlot::OrdLt),
-            (Some(crate::Predicate::PartialOrd), "lt") => Some(ImplMethodSlot::PartialOrdLt),
+            (Some(crate::Predicate::Ord | crate::Predicate::PartialOrd), "lt") => {
+                Some(ImplMethodSlot::Value(ValueCapability::Less))
+            }
+            (Some(crate::Predicate::Ord | crate::Predicate::PartialOrd), "le") => {
+                Some(ImplMethodSlot::Value(ValueCapability::LessEqual))
+            }
+            (Some(crate::Predicate::Ord | crate::Predicate::PartialOrd), "gt") => {
+                Some(ImplMethodSlot::Value(ValueCapability::Greater))
+            }
+            (Some(crate::Predicate::Ord | crate::Predicate::PartialOrd), "ge") => {
+                Some(ImplMethodSlot::Value(ValueCapability::GreaterEqual))
+            }
             _ => self
                 .trait_method_ids_of(trait_id, method_name)
                 .map(|(_, method)| ImplMethodSlot::Declared(method)),

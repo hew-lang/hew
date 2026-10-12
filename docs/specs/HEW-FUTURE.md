@@ -338,9 +338,8 @@ native cutover PR is open and the surface lanes are integrated. The full text wi
   `macro`, `!(` and `$`.
 - Not planned: procedural macros, derive and reflection. `Eq` and `Hash`
   have compiler-provided structural support for eligible types. Derived
-  aggregate `Ord`/`PartialOrd` lowering is still a compiler gap, reported as
-  `E_LIMIT_DERIVED_ORD`; a user `impl Ord` or `impl PartialOrd` supplies the
-  comparison today. No derive attribute exists (D438). Idea only: a structural
+  aggregate `Ord`/`PartialOrd` lowering is implemented lexicographically.
+  No derive attribute exists (D438). Idea only: a structural
   inspect rendering for debugging output, distinct from `Display`.
 
 ## 6. Long-horizon

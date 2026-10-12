@@ -21,7 +21,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         for (index, (key, selected)) in self.module.value_capabilities.iter().enumerate() {
             let arity = match key.1 {
                 ValueCapability::Hash => 3,
-                ValueCapability::Eq => 4,
+                _ => 4,
             };
             let function = self.llvm.add_function(
                 &format!("__hew_value_callback_{index}"),
@@ -185,7 +185,7 @@ impl<'a, 'ctx, 'm> SelectedValueEmitter<'a, 'ctx, 'm> {
     ) -> CodegenResult<Self> {
         let output_index = match capability {
             ValueCapability::Hash => 1,
-            ValueCapability::Eq => 2,
+            _ => 2,
         };
         let parameter = |index| {
             function
@@ -228,14 +228,25 @@ impl<'a, 'ctx, 'm> SelectedValueEmitter<'a, 'ctx, 'm> {
 
     fn emit(self, ty: &ResolvedTy, selection: &PhysicalValueCapability) -> CodegenResult<()> {
         let lhs = self.parameter(0)?;
-        let rhs = if self.capability == ValueCapability::Eq {
-            Some(self.parameter(1)?)
-        } else {
+        let rhs = if self.capability == ValueCapability::Hash {
             None
+        } else {
+            Some(self.parameter(1)?)
         };
         match selection.method {
             PhysicalValueMethod::User(id) => self.user(id, lhs, rhs),
             PhysicalValueMethod::Scalar => {
+                if self.capability.is_ordering() {
+                    return self.scalar_ordering(
+                        ty,
+                        lhs,
+                        rhs.ok_or_else(|| {
+                            CodegenError::FailClosed(
+                                "ordering callback lacks its right operand".into(),
+                            )
+                        })?,
+                    );
+                }
                 let left = self.scalar_bits(ty, lhs)?;
                 let result = if let Some(rhs) = rhs {
                     self.equal(left, self.scalar_bits(ty, rhs)?)?
@@ -253,7 +264,9 @@ impl<'a, 'ctx, 'm> SelectedValueEmitter<'a, 'ctx, 'm> {
                 self.fields(&layout.repr, &glue.fields, lhs, rhs)
             }
             PhysicalValueMethod::Variant(id) => {
-                let rhs = self.require_eq(rhs, "variant")?;
+                let rhs = rhs.ok_or_else(|| {
+                    CodegenError::FailClosed("variant comparison lacks its right operand".into())
+                })?;
                 self.variant(id, lhs, rhs)
             }
             PhysicalValueMethod::Vector(id) => {
@@ -449,7 +462,7 @@ impl<'a, 'ctx, 'm> SelectedValueEmitter<'a, 'ctx, 'm> {
     }
 
     fn finish(&self, value: IntValue<'ctx>) -> CodegenResult<()> {
-        let value = if self.capability == ValueCapability::Eq {
+        let value = if self.capability != ValueCapability::Hash {
             self.builder
                 .build_int_z_extend(self.truth(value)?, self.parent.ctx.i8_type(), "key.bool")
                 .llvm_ctx("store C boolean key result")?
@@ -503,18 +516,28 @@ impl<'a, 'ctx, 'm> SelectedValueEmitter<'a, 'ctx, 'm> {
         lhs: PointerValue<'ctx>,
         rhs: Option<PointerValue<'ctx>>,
     ) -> CodegenResult<IntValue<'ctx>> {
+        self.component_as(self.capability, ty, lhs, rhs)
+    }
+
+    fn component_as(
+        &self,
+        capability: ValueCapability,
+        ty: &ResolvedTy,
+        lhs: PointerValue<'ctx>,
+        rhs: Option<PointerValue<'ctx>>,
+    ) -> CodegenResult<IntValue<'ctx>> {
         let selected = self
             .callbacks
-            .get(&(ty.clone(), self.capability))
+            .get(&(ty.clone(), capability))
             .copied()
             .ok_or_else(|| {
                 CodegenError::FailClosed(format!(
                     "selected {:?} component `{}` has no callback",
-                    self.capability,
+                    capability,
                     ty.user_facing()
                 ))
             })?;
-        let result_ty = self.result_type();
+        let result_ty = self.result_type_for(capability);
         let output = self.scratch(result_ty.into(), "key.component.result")?;
         let mut args = vec![lhs.into()];
         if let Some(rhs) = rhs {
@@ -523,16 +546,16 @@ impl<'a, 'ctx, 'm> SelectedValueEmitter<'a, 'ctx, 'm> {
         args.push(output.into());
         args.push(self.fault.into());
         let resumable =
-            self.parent.module.value_capabilities[&(ty.clone(), self.capability)].is_resumable;
+            self.parent.module.value_capabilities[&(ty.clone(), capability)].is_resumable;
         let status = self.invoke_selected(selected, resumable, &args)?;
         self.status(status)?;
         Ok(self.load(result_ty.into(), output)?.into_int_value())
     }
 
-    fn result_type(&self) -> IntType<'ctx> {
-        match self.capability {
+    fn result_type_for(&self, capability: ValueCapability) -> IntType<'ctx> {
+        match capability {
             ValueCapability::Hash => self.parent.ctx.i64_type(),
-            ValueCapability::Eq => self.parent.ctx.i8_type(),
+            _ => self.parent.ctx.i8_type(),
         }
     }
 
@@ -624,6 +647,72 @@ impl<'a, 'ctx, 'm> SelectedValueEmitter<'a, 'ctx, 'm> {
             .llvm_ctx("widen key scalar bits")
     }
 
+    fn scalar_ordering(
+        &self,
+        ty: &ResolvedTy,
+        lhs: PointerValue<'ctx>,
+        rhs: PointerValue<'ctx>,
+    ) -> CodegenResult<()> {
+        let ctx = self.parent.ctx;
+        if *ty == ResolvedTy::Unit {
+            return self.finish(ctx.bool_type().const_int(
+                u64::from(matches!(
+                    self.capability,
+                    ValueCapability::LessEqual | ValueCapability::GreaterEqual
+                )),
+                false,
+            ));
+        }
+        let repr = llvm_type(ctx, &self.layout(ty)?.repr)?;
+        let left = self.load(repr, lhs)?;
+        let right = self.load(repr, rhs)?;
+        let result = match (left, right) {
+            (BasicValueEnum::FloatValue(left), BasicValueEnum::FloatValue(right)) => {
+                let predicate = match self.capability {
+                    ValueCapability::Less => FloatPredicate::OLT,
+                    ValueCapability::LessEqual => FloatPredicate::OLE,
+                    ValueCapability::Greater => FloatPredicate::OGT,
+                    ValueCapability::GreaterEqual => FloatPredicate::OGE,
+                    _ => unreachable!(),
+                };
+                self.builder
+                    .build_float_compare(predicate, left, right, "value.order")
+                    .llvm_ctx("compare ordered floating values")?
+            }
+            (BasicValueEnum::IntValue(left), BasicValueEnum::IntValue(right)) => {
+                let signed = matches!(
+                    ty,
+                    ResolvedTy::I8
+                        | ResolvedTy::I16
+                        | ResolvedTy::I32
+                        | ResolvedTy::I64
+                        | ResolvedTy::Isize
+                        | ResolvedTy::Duration
+                );
+                let predicate = match (self.capability, signed) {
+                    (ValueCapability::Less, true) => IntPredicate::SLT,
+                    (ValueCapability::LessEqual, true) => IntPredicate::SLE,
+                    (ValueCapability::Greater, true) => IntPredicate::SGT,
+                    (ValueCapability::GreaterEqual, true) => IntPredicate::SGE,
+                    (ValueCapability::Less, false) => IntPredicate::ULT,
+                    (ValueCapability::LessEqual, false) => IntPredicate::ULE,
+                    (ValueCapability::Greater, false) => IntPredicate::UGT,
+                    (ValueCapability::GreaterEqual, false) => IntPredicate::UGE,
+                    _ => unreachable!(),
+                };
+                self.builder
+                    .build_int_compare(predicate, left, right, "value.order")
+                    .llvm_ctx("compare ordered integer values")?
+            }
+            _ => {
+                return Err(CodegenError::FailClosed(
+                    "ordered scalar has incompatible physical operands".into(),
+                ))
+            }
+        };
+        self.finish(result)
+    }
+
     /// Equal carriers have equal words; the hash mixes each 64-bit word.
     fn identity(
         &self,
@@ -675,6 +764,35 @@ impl<'a, 'ctx, 'm> SelectedValueEmitter<'a, 'ctx, 'm> {
         let ctx = self.parent.ctx;
         let ptr = ctx.ptr_type(AddressSpace::default());
         let lhs = self.handle(lhs)?;
+        if self.capability.is_ordering() {
+            let rhs = self.handle(rhs.ok_or_else(|| {
+                CodegenError::FailClosed("string ordering lacks its right operand".into())
+            })?)?;
+            let ordering = self
+                .runtime(
+                    "hew_string_compare",
+                    ctx.i32_type().fn_type(&[ptr.into(), ptr.into()], false),
+                    &[lhs.into(), rhs.into()],
+                )?
+                .into_int_value();
+            let predicate = match self.capability {
+                ValueCapability::Less => IntPredicate::SLT,
+                ValueCapability::LessEqual => IntPredicate::SLE,
+                ValueCapability::Greater => IntPredicate::SGT,
+                ValueCapability::GreaterEqual => IntPredicate::SGE,
+                _ => unreachable!(),
+            };
+            let result = self
+                .builder
+                .build_int_compare(
+                    predicate,
+                    ordering,
+                    ctx.i32_type().const_zero(),
+                    "value.order",
+                )
+                .llvm_ctx("compare string ordering result")?;
+            return self.finish(result);
+        }
         let value = if let Some(rhs) = rhs {
             self.runtime(
                 "hew_string_equals",
@@ -830,6 +948,16 @@ impl<'a, 'ctx, 'm> SelectedValueEmitter<'a, 'ctx, 'm> {
         lhs: PointerValue<'ctx>,
         rhs: Option<PointerValue<'ctx>>,
     ) -> CodegenResult<()> {
+        if self.capability.is_ordering() {
+            return self.ordering_fields(
+                repr,
+                fields,
+                lhs,
+                rhs.ok_or_else(|| {
+                    CodegenError::FailClosed("aggregate ordering lacks its right operand".into())
+                })?,
+            );
+        }
         let structure = llvm_type(self.parent.ctx, repr)?.into_struct_type();
         let mut state = self.parent.ctx.i64_type().const_int(FNV_OFFSET, false);
         if let Some(frame) = &self.frame {
@@ -884,6 +1012,79 @@ impl<'a, 'ctx, 'm> SelectedValueEmitter<'a, 'ctx, 'm> {
         })
     }
 
+    fn ordering_fields(
+        &self,
+        repr: &PhysicalRepr,
+        fields: &[PhysicalValueRecipe],
+        lhs: PointerValue<'ctx>,
+        rhs: PointerValue<'ctx>,
+    ) -> CodegenResult<()> {
+        let ctx = self.parent.ctx;
+        let structure = llvm_type(ctx, repr)?.into_struct_type();
+        if let Some(frame) = &self.frame {
+            frame.carry(ctx, &self.builder, lhs, "order.fields.left.slot")?;
+            frame.carry(ctx, &self.builder, rhs, "order.fields.right.slot")?;
+        }
+        for (index, field) in fields.iter().enumerate() {
+            let index = u32::try_from(index).map_err(|_| {
+                CodegenError::FailClosed("ordered field index exceeds LLVM range".into())
+            })?;
+            let left = self
+                .builder
+                .build_struct_gep(structure, lhs, index, "order.field.left")
+                .llvm_ctx("address ordered left field")?;
+            let right = self
+                .builder
+                .build_struct_gep(structure, rhs, index, "order.field.right")
+                .llvm_ctx("address ordered right field")?;
+
+            let less = self.component_as(ValueCapability::Less, &field.ty, left, Some(right))?;
+            let check_greater = self.block("order.field.check.greater");
+            let left_decides = self.block("order.field.left.decides");
+            self.branch(self.truth(less)?, left_decides, check_greater)?;
+            self.builder.position_at_end(left_decides);
+            self.finish(ctx.bool_type().const_int(
+                u64::from(matches!(
+                    self.capability,
+                    ValueCapability::Less | ValueCapability::LessEqual
+                )),
+                false,
+            ))?;
+
+            self.builder.position_at_end(check_greater);
+            let greater =
+                self.component_as(ValueCapability::Greater, &field.ty, left, Some(right))?;
+            let check_equal = self.block("order.field.check.equal");
+            let right_decides = self.block("order.field.right.decides");
+            self.branch(self.truth(greater)?, right_decides, check_equal)?;
+            self.builder.position_at_end(right_decides);
+            self.finish(ctx.bool_type().const_int(
+                u64::from(matches!(
+                    self.capability,
+                    ValueCapability::Greater | ValueCapability::GreaterEqual
+                )),
+                false,
+            ))?;
+
+            self.builder.position_at_end(check_equal);
+            let comparable =
+                self.component_as(ValueCapability::LessEqual, &field.ty, left, Some(right))?;
+            let next = self.block("order.field.next");
+            let unordered = self.block("order.field.unordered");
+            self.branch(self.truth(comparable)?, next, unordered)?;
+            self.builder.position_at_end(unordered);
+            self.finish(ctx.bool_type().const_zero())?;
+            self.builder.position_at_end(next);
+        }
+        self.finish(ctx.bool_type().const_int(
+            u64::from(matches!(
+                self.capability,
+                ValueCapability::LessEqual | ValueCapability::GreaterEqual
+            )),
+            false,
+        ))
+    }
+
     fn variant(
         &self,
         id: PhysicalVariantId,
@@ -911,7 +1112,43 @@ impl<'a, 'ctx, 'm> SelectedValueEmitter<'a, 'ctx, 'm> {
             .get_field_type_at_index(0)
             .ok_or_else(|| CodegenError::FailClosed("variant key has no tag".into()))?;
         let tag = self.load(tag_ty, left_tag)?.into_int_value();
-        self.continue_equal(self.equal(tag, self.load(tag_ty, right_tag)?.into_int_value())?)?;
+        let right_tag = self.load(tag_ty, right_tag)?.into_int_value();
+        if self.capability.is_ordering() {
+            let less = self
+                .builder
+                .build_int_compare(IntPredicate::ULT, tag, right_tag, "order.variant.less")
+                .llvm_ctx("compare variant tags")?;
+            let check_greater = self.block("order.variant.check.greater");
+            let left_decides = self.block("order.variant.left.decides");
+            self.branch(less, left_decides, check_greater)?;
+            self.builder.position_at_end(left_decides);
+            self.finish(self.parent.ctx.bool_type().const_int(
+                u64::from(matches!(
+                    self.capability,
+                    ValueCapability::Less | ValueCapability::LessEqual
+                )),
+                false,
+            ))?;
+            self.builder.position_at_end(check_greater);
+            let greater = self
+                .builder
+                .build_int_compare(IntPredicate::UGT, tag, right_tag, "order.variant.greater")
+                .llvm_ctx("compare variant tags")?;
+            let equal = self.block("order.variant.equal");
+            let right_decides = self.block("order.variant.right.decides");
+            self.branch(greater, right_decides, equal)?;
+            self.builder.position_at_end(right_decides);
+            self.finish(self.parent.ctx.bool_type().const_int(
+                u64::from(matches!(
+                    self.capability,
+                    ValueCapability::Greater | ValueCapability::GreaterEqual
+                )),
+                false,
+            ))?;
+            self.builder.position_at_end(equal);
+        } else {
+            self.continue_equal(self.equal(tag, right_tag)?)?;
+        }
         let invalid = self.block("key.variant.invalid");
         let cases = glue
             .variants

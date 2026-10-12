@@ -2059,16 +2059,14 @@ pub enum MethodCallRewrite {
 /// overrides the derived implementation"). HIR lowering consults
 /// [`crate::TypeCheckOutput::user_comparison_dispatch`] at `Expr::Binary`
 /// and emits a call to the resolved impl method — `<type>::eq` for `Eq`,
-/// negated for `!=`; `<type>::lt` for `Ord`/`PartialOrd`, permuted/negated
-/// per operator — rather than the structural comparison codegen path.
+/// negated for `!=`, or the exact ordering predicate — rather than the
+/// structural comparison codegen path.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UserComparisonDispatch {
     /// Dispatch `==`/`!=` to the selected `Eq::eq` implementation.
     Eq { method: crate::DefId },
-    /// Dispatch `<`/`<=`/`>`/`>=` to the selected `Ord::lt` implementation.
-    Ord { method: crate::DefId },
-    /// Dispatch `<`/`<=`/`>`/`>=` to the selected `PartialOrd::lt` implementation.
-    PartialOrd { method: crate::DefId },
+    /// Dispatch one ordering predicate to its exact selected implementation.
+    Ordering { method: crate::DefId },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

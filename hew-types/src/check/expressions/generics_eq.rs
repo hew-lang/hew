@@ -219,6 +219,13 @@ impl Checker {
             self.record_eq_requirement(left_resolved, expr_span);
             return;
         }
+        let capability = match op {
+            BinaryOp::Less => crate::ValueCapability::Less,
+            BinaryOp::LessEqual => crate::ValueCapability::LessEqual,
+            BinaryOp::Greater => crate::ValueCapability::Greater,
+            BinaryOp::GreaterEqual => crate::ValueCapability::GreaterEqual,
+            _ => return,
+        };
         if let Ty::Named {
             head:
                 crate::TypeHead::Nominal(_) | crate::TypeHead::Param(_) | crate::TypeHead::Unresolved(_),
@@ -227,21 +234,11 @@ impl Checker {
         {
             if let Some(method) = self.impl_method_declaration_for_slot(
                 left_resolved,
-                crate::type_facts::ImplMethodSlot::OrdLt,
+                crate::type_facts::ImplMethodSlot::Value(capability),
             ) {
                 self.record_user_comparison_dispatch(
                     expr_span,
-                    UserComparisonDispatch::Ord { method },
-                );
-                return;
-            }
-            if let Some(method) = self.impl_method_declaration_for_slot(
-                left_resolved,
-                crate::type_facts::ImplMethodSlot::PartialOrdLt,
-            ) {
-                self.record_user_comparison_dispatch(
-                    expr_span,
-                    UserComparisonDispatch::PartialOrd { method },
+                    UserComparisonDispatch::Ordering { method },
                 );
                 return;
             }
@@ -280,16 +277,7 @@ impl Checker {
             );
             return;
         }
-        self.report_error(
-            TypeErrorKind::DerivedOrdUnavailable {
-                type_name: type_name.clone(),
-            },
-            &span,
-            format!(
-                "E_LIMIT_DERIVED_ORD: `{op}` has no derived ordering for `{type_name}` yet \
-                 — provide `impl Ord for {type_name}` (or `impl PartialOrd`) with a `lt` method"
-            ),
-        );
+        let _ = (capability, type_name, span);
     }
 
     /// Record that the binary expression at `span` must dispatch to a user

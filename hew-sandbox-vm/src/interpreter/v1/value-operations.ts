@@ -1,5 +1,9 @@
 import { UNIT, cloneValue, type VmValue } from "../values.js";
-import { runtimeTag, type PackageV1 } from "./package.js";
+import {
+  runtimeTag,
+  type PackageV1,
+  type ValueComponentCapabilities,
+} from "./package.js";
 import { ShimFault } from "./shims.js";
 
 export type ValueRequest =
@@ -26,6 +30,63 @@ function bytesHash(bytes: Iterable<number>): bigint {
   let state = OFFSET;
   for (const byte of bytes) state = mix(state, BigInt(byte));
   return state;
+}
+
+function orderingResult(
+  capability: "Less" | "LessEqual" | "Greater" | "GreaterEqual",
+  comparison: number,
+): VmValue {
+  switch (capability) {
+    case "Less":
+      return boolean(comparison < 0);
+    case "LessEqual":
+      return boolean(comparison <= 0);
+    case "Greater":
+      return boolean(comparison > 0);
+    case "GreaterEqual":
+      return boolean(comparison >= 0);
+  }
+}
+
+function compareBytes(left: Uint8Array, right: Uint8Array): number {
+  const length = Math.min(left.length, right.length);
+  for (let i = 0; i < length; i++) {
+    if (left[i]! < right[i]!) return -1;
+    if (left[i]! > right[i]!) return 1;
+  }
+  return left.length < right.length ? -1 : left.length > right.length ? 1 : 0;
+}
+
+function scalarOrdering(
+  left: VmValue,
+  right: VmValue | undefined,
+  ty: string,
+  capability: "Less" | "LessEqual" | "Greater" | "GreaterEqual",
+): VmValue {
+  if (left.kind === "f64") {
+    if (
+      right?.kind !== "f64" ||
+      Number.isNaN(left.value) ||
+      Number.isNaN(right.value)
+    )
+      return boolean(false);
+    return orderingResult(
+      capability,
+      left.value < right.value ? -1 : left.value > right.value ? 1 : 0,
+    );
+  }
+  if (!right || right.kind !== left.kind) return boolean(false);
+  const signed = /^(?:i(?:8|16|32|64)|isize|duration)$/.test(ty);
+  const width = Number(ty.match(/^[iu](8|16|32|64)$/)?.[1] ?? 64);
+  const lhs =
+    left.kind === "i64" && signed
+      ? BigInt.asIntN(width, left.value)
+      : bits(left, ty);
+  const rhs =
+    right.kind === "i64" && signed
+      ? BigInt.asIntN(width, right.value)
+      : bits(right, ty);
+  return orderingResult(capability, lhs < rhs ? -1 : lhs > rhs ? 1 : 0);
 }
 
 function bits(value: VmValue, ty: string): bigint {
@@ -69,31 +130,47 @@ export function* selectedValue(
   const [left, right] = args;
   if (!left) throw new Error("selected value operation has no receiver");
   const hash = plan.capability === "Hash";
+  const equality = plan.capability === "Eq";
+  const ordering =
+    plan.capability === "Less" ||
+    plan.capability === "LessEqual" ||
+    plan.capability === "Greater" ||
+    plan.capability === "GreaterEqual"
+      ? plan.capability
+      : undefined;
   if (plan.ty === "string") {
     if (left.kind !== "string")
       throw new Error("string capability has no string");
-    return hash
-      ? integer(bytesHash(new TextEncoder().encode(left.value)))
-      : boolean(right?.kind === "string" && left.value === right.value);
+    if (hash) return integer(bytesHash(new TextEncoder().encode(left.value)));
+    if (right?.kind !== "string") return boolean(false);
+    if (equality) return boolean(left.value === right.value);
+    return orderingResult(
+      ordering!,
+      compareBytes(
+        new TextEncoder().encode(left.value),
+        new TextEncoder().encode(right.value),
+      ),
+    );
   }
   if (plan.ty === "bytes") {
     if (left.kind !== "vector")
       throw new Error("bytes capability has no bytes");
     const bytes = left.items.map((value) => Number(bits(value, "u8")));
-    return hash
-      ? integer(bytesHash(bytes))
-      : boolean(
-          right?.kind === "vector" &&
-            bytes.length === right.items.length &&
-            bytes.every(
-              (value, i) => BigInt(value) === bits(right.items[i]!, "u8"),
-            ),
-        );
+    if (hash) return integer(bytesHash(bytes));
+    if (equality)
+      return boolean(
+        right?.kind === "vector" &&
+          bytes.length === right.items.length &&
+          bytes.every(
+            (value, i) => BigInt(value) === bits(right.items[i]!, "u8"),
+          ),
+      );
+    throw new Error("bytes ordering is outside the checked capability domain");
   }
   const components = plan.components ?? [];
   let fields: VmValue[];
   let others: VmValue[] = [];
-  let selections: number[];
+  let selections: ValueComponentCapabilities[];
   if (left.kind === "record") {
     fields = left.fields;
     selections = components;
@@ -107,7 +184,10 @@ export function* selectedValue(
       throw new Error(
         "derived enum Hash is outside the checked capability domain",
       );
-    if (right?.kind !== "enum" || left.tag !== right.tag) return boolean(false);
+    if (right?.kind !== "enum") return boolean(false);
+    if (ordering && left.tag !== right.tag)
+      return orderingResult(ordering, left.tag < right.tag ? -1 : 1);
+    if (left.tag !== right.tag) return boolean(false);
     fields = left.payload;
     others = right.payload;
     selections = plan.variants?.[left.tag] ?? [];
@@ -122,15 +202,40 @@ export function* selectedValue(
     others = right.items;
     selections = fields.map(() => components[0]!);
   } else {
-    return hash
-      ? integer(bits(left, plan.ty))
-      : boolean(!!right && bits(left, plan.ty) === bits(right, plan.ty));
+    if (hash) return integer(bits(left, plan.ty));
+    if (equality)
+      return boolean(!!right && bits(left, plan.ty) === bits(right, plan.ty));
+    return scalarOrdering(left, right, plan.ty, ordering!);
   }
   let state = OFFSET;
   for (const [at, field] of fields.entries()) {
+    const selection = selections[at];
+    if (!selection)
+      throw new Error("derived value operation lacks a component selection");
+    if (ordering) {
+      const selected = selection.ordering;
+      if (!selected)
+        throw new Error("derived ordering lacks exact component predicates");
+      const pair = [field, others[at]!] as VmValue[];
+      const less = yield* selectedValue(pkg, selected.less, pair);
+      if (less.kind !== "bool")
+        throw new Error("Less returned a non-boolean value");
+      if (less.value)
+        return boolean(ordering === "Less" || ordering === "LessEqual");
+      const greater = yield* selectedValue(pkg, selected.greater, pair);
+      if (greater.kind !== "bool")
+        throw new Error("Greater returned a non-boolean value");
+      if (greater.value)
+        return boolean(ordering === "Greater" || ordering === "GreaterEqual");
+      const comparable = yield* selectedValue(pkg, selected.less_equal, pair);
+      if (comparable.kind !== "bool")
+        throw new Error("LessEqual returned a non-boolean value");
+      if (!comparable.value) return boolean(false);
+      continue;
+    }
     const result = yield* selectedValue(
       pkg,
-      selections[at]!,
+      selection.selected,
       hash ? [field] : [field, others[at]!],
     );
     if (hash) {
@@ -143,7 +248,9 @@ export function* selectedValue(
       if (!result.value) return boolean(false);
     }
   }
-  return hash ? integer(state) : boolean(true);
+  if (hash) return integer(state);
+  if (equality) return boolean(true);
+  return boolean(ordering === "LessEqual" || ordering === "GreaterEqual");
 }
 
 type MapValue = Extract<VmValue, { kind: "map" }>;

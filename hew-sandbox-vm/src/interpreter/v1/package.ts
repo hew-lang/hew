@@ -157,11 +157,21 @@ export type PlaceDecl =
 /// structural one over the VM's own value representation.
 export interface ValueCapability {
   id: number;
-  capability: "Eq" | "Hash";
+  capability: "Eq" | "Hash" | "Less" | "LessEqual" | "Greater" | "GreaterEqual";
   ty: string;
   callable?: number;
-  components?: number[];
-  variants?: number[][];
+  components?: ValueComponentCapabilities[];
+  variants?: ValueComponentCapabilities[][];
+}
+
+export interface ValueComponentCapabilities {
+  selected: number;
+  ordering?: {
+    less: number;
+    less_equal: number;
+    greater: number;
+    greater_equal: number;
+  };
 }
 
 export interface ClosureShape {

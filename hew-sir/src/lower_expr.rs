@@ -341,7 +341,11 @@ impl Builder<'_, '_> {
                         | ResolvedTy::Named { .. }
                         | ResolvedTy::Unit
                 ) {
-                    let equals = self.lower_value_equality(expr, [left, right])?;
+                    let equals = self.lower_value_comparison(
+                        expr,
+                        [left, right],
+                        hew_types::ValueCapability::Eq,
+                    )?;
                     return if *op == hew_parser::ast::BinaryOp::NotEqual {
                         self.emit(
                             expr,
@@ -353,6 +357,32 @@ impl Builder<'_, '_> {
                     } else {
                         Ok(equals)
                     };
+                }
+                let ordering = match op {
+                    hew_parser::ast::BinaryOp::Less => Some(hew_types::ValueCapability::Less),
+                    hew_parser::ast::BinaryOp::LessEqual => {
+                        Some(hew_types::ValueCapability::LessEqual)
+                    }
+                    hew_parser::ast::BinaryOp::Greater => Some(hew_types::ValueCapability::Greater),
+                    hew_parser::ast::BinaryOp::GreaterEqual => {
+                        Some(hew_types::ValueCapability::GreaterEqual)
+                    }
+                    _ => None,
+                };
+                if let Some(capability) = ordering {
+                    if matches!(
+                        self.ty(&left.ty),
+                        ResolvedTy::Tuple(_)
+                            | ResolvedTy::Named {
+                                head: hew_types::TypeHead::Builtin(
+                                    hew_types::BuiltinType::Option | hew_types::BuiltinType::Result
+                                ),
+                                ..
+                            }
+                            | ResolvedTy::Named { .. }
+                    ) {
+                        return self.lower_value_comparison(expr, [left, right], capability);
+                    }
                 }
                 if *op == hew_parser::ast::BinaryOp::Add && self.ty(&left.ty) == ResolvedTy::Bytes {
                     return self

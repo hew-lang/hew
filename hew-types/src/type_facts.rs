@@ -86,6 +86,7 @@ pub struct TypeFacts {
     pub send: SendFact,
     pub hash: bool,
     pub eq: bool,
+    pub partial_ord: bool,
 }
 
 /// Independently selected value operation.
@@ -93,6 +94,34 @@ pub struct TypeFacts {
 pub enum ValueCapability {
     Hash,
     Eq,
+    Less,
+    LessEqual,
+    Greater,
+    GreaterEqual,
+}
+
+impl ValueCapability {
+    #[must_use]
+    pub const fn is_ordering(self) -> bool {
+        matches!(
+            self,
+            Self::Less | Self::LessEqual | Self::Greater | Self::GreaterEqual
+        )
+    }
+
+    #[must_use]
+    pub const fn component_capabilities(self) -> &'static [Self] {
+        match self {
+            Self::Hash => &[Self::Hash],
+            Self::Eq => &[Self::Eq],
+            Self::Less | Self::LessEqual | Self::Greater | Self::GreaterEqual => &[
+                Self::Less,
+                Self::LessEqual,
+                Self::Greater,
+                Self::GreaterEqual,
+            ],
+        }
+    }
 }
 
 /// The implementation chosen for one concrete value operation.
@@ -267,8 +296,6 @@ fn require_concrete_capability_type(ty: &ResolvedTy) -> Result<(), ClassError> {
 pub(crate) enum ImplMethodSlot {
     Declared(crate::DefId),
     Value(ValueCapability),
-    OrdLt,
-    PartialOrdLt,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -880,6 +907,7 @@ impl TypeFactService {
         let derived = match capability {
             ValueCapability::Hash => self.derived_hash(ty, visiting),
             ValueCapability::Eq => self.derived_eq(ty, visiting),
+            ordering => self.derived_ordering(ty, ordering, visiting),
         };
         visiting.remove(&key);
         derived.map(|allowed| allowed.then_some(ValueMethodPlan::Derived))
@@ -1211,13 +1239,96 @@ impl TypeFactService {
         }
     }
 
+    fn derived_ordering(
+        &self,
+        ty: &ResolvedTy,
+        capability: ValueCapability,
+        visiting: &mut HashSet<(ResolvedTy, ValueCapability)>,
+    ) -> Result<bool, ClassError> {
+        debug_assert!(capability.is_ordering());
+        match ty {
+            ResolvedTy::Tuple(members) => {
+                self.members_have_capability(members, capability, visiting)
+            }
+            ResolvedTy::Named {
+                head:
+                    crate::TypeHead::Builtin(builtin @ (BuiltinType::Option | BuiltinType::Result)),
+                args,
+                ..
+            } => {
+                let arity = if *builtin == BuiltinType::Result {
+                    2
+                } else {
+                    1
+                };
+                if args.len() != arity {
+                    return Err(ClassError::UnknownDeclaration {
+                        name: ty.user_facing().to_string(),
+                    });
+                }
+                self.members_have_capability(args, capability, visiting)
+            }
+            ResolvedTy::Named { head, .. } => {
+                let Some(definition) = self.context.types().of(*head) else {
+                    return Ok(false);
+                };
+                if definition.is_indirect
+                    || !matches!(
+                        definition.kind,
+                        crate::check::TypeDefKind::Struct
+                            | crate::check::TypeDefKind::Record
+                            | crate::check::TypeDefKind::Enum
+                    )
+                {
+                    return Ok(false);
+                }
+                self.members_have_capability(
+                    &self.declared_capability_members(ty)?,
+                    capability,
+                    visiting,
+                )
+            }
+            _ => Ok(matches!(
+                ty,
+                ResolvedTy::I8
+                    | ResolvedTy::I16
+                    | ResolvedTy::I32
+                    | ResolvedTy::I64
+                    | ResolvedTy::U8
+                    | ResolvedTy::U16
+                    | ResolvedTy::U32
+                    | ResolvedTy::U64
+                    | ResolvedTy::Isize
+                    | ResolvedTy::Usize
+                    | ResolvedTy::F32
+                    | ResolvedTy::F64
+                    | ResolvedTy::Bool
+                    | ResolvedTy::Char
+                    | ResolvedTy::Duration
+                    | ResolvedTy::Unit
+                    | ResolvedTy::String
+            )),
+        }
+    }
+
     fn contextual_facts(&self, ty: &ResolvedTy) -> Result<TypeFacts, ClassError> {
         let declarations = ClassContext::new(&self.context.declarations);
         let as_ty = ty.to_ty();
         let send = self.send_fact(ty, &as_ty);
         let hash = self.select_capability(ty, ValueCapability::Hash)?.is_some();
         let eq = self.select_capability(ty, ValueCapability::Eq)?.is_some();
-        TypeFacts::of_type(ty, &declarations, send, hash, eq)
+        let partial_ord = [
+            ValueCapability::Less,
+            ValueCapability::LessEqual,
+            ValueCapability::Greater,
+            ValueCapability::GreaterEqual,
+        ]
+        .into_iter()
+        .all(|capability| {
+            self.select_capability(ty, capability)
+                .is_ok_and(|plan| plan.is_some())
+        });
+        TypeFacts::of_type(ty, &declarations, send, hash, eq, partial_ord)
     }
 
     fn send_fact(&self, ty: &ResolvedTy, as_ty: &crate::Ty) -> SendFact {
@@ -1254,7 +1365,7 @@ impl TypeFactService {
 impl TypeFacts {
     /// Build the facts for one substituted type.
     ///
-    /// `send`, `hash` and `eq` are decided by their own checker authorities and
+    /// `send`, `hash`, `eq` and ordering are decided by their own checker authorities and
     /// handed in; `class` and `clone` come from the §1.1 table.
     ///
     /// # Errors
@@ -1268,6 +1379,7 @@ impl TypeFacts {
         send: SendFact,
         hash: bool,
         eq: bool,
+        partial_ord: bool,
     ) -> Result<Self, ClassError> {
         let (class, clone) = crate::value_class::classify_ty(ty, decls)?;
         let send = match ty {
@@ -1291,6 +1403,7 @@ impl TypeFacts {
             send,
             hash,
             eq,
+            partial_ord,
         })
     }
 }
@@ -2081,8 +2194,9 @@ mod tests {
                 ty.nominal_instance(&crate::DefTable::new()).is_none(),
                 "`{ty:?}` has no NominalId"
             );
-            let facts = TypeFacts::of_type(ty, &context, SendFact::Known(true), false, false)
-                .expect("§1.1 classes every one of these");
+            let facts =
+                TypeFacts::of_type(ty, &context, SendFact::Known(true), false, false, false)
+                    .expect("§1.1 classes every one of these");
             table.insert(TypeInstanceKey(ty.clone()), facts);
         }
 
@@ -2102,8 +2216,15 @@ mod tests {
         let closure = closure_over(vec![ResolvedTy::I64]);
         // Even when the caller hands in a decided fact, the closure row refuses
         // it: the mode-agnostic answer is wrong for a `BorrowMut` capture.
-        let facts = TypeFacts::of_type(&closure, &context, SendFact::Known(true), false, false)
-            .expect("a closure has a class");
+        let facts = TypeFacts::of_type(
+            &closure,
+            &context,
+            SendFact::Known(true),
+            false,
+            false,
+            false,
+        )
+        .expect("a closure has a class");
         assert_eq!(SendFact::DeferredToClosureFacts, facts.send);
 
         // A consumer cannot read a `bool` out of it: the only way to a yes/no
@@ -2126,6 +2247,7 @@ mod tests {
             &context,
             SendFact::Known(true),
             false,
+            true,
             true,
         )
         .expect("a string has a class");
@@ -2187,8 +2309,15 @@ mod tests {
                 assoc_bindings: vec![],
             }],
         };
-        let facts = TypeFacts::of_type(&dyn_show, &context, SendFact::Known(true), false, false)
-            .expect("a trait object has a class");
+        let facts = TypeFacts::of_type(
+            &dyn_show,
+            &context,
+            SendFact::Known(true),
+            false,
+            false,
+            false,
+        )
+        .expect("a trait object has a class");
         assert_eq!(SendFact::Known(false), facts.send);
     }
 
@@ -2515,6 +2644,7 @@ mod tests {
             &named("Tree", None, vec![]),
             &context,
             SendFact::Known(true),
+            false,
             false,
             false,
         )

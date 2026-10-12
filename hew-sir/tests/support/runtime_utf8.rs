@@ -41,6 +41,7 @@ pub(super) fn facts(class: ValueClass, clone: CloneKind) -> TypeFacts {
         send: SendFact::Known(true),
         hash: false,
         eq: false,
+        partial_ord: false,
     }
 }
 

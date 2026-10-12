@@ -126,6 +126,7 @@ fn a_published_row_decides_a_kind_the_empty_context_refuses() {
             send: hew_types::SendFact::Known(true),
             hash: false,
             eq: false,
+            partial_ord: false,
         },
     );
     assert!(OwnKind::of_ty(&conn_ty(), &TypeFactTable::new()).is_err());

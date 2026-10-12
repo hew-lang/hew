@@ -634,6 +634,7 @@ fn module_with_return() -> SemModule {
             send: SendFact::Known(true),
             hash: true,
             eq: true,
+            partial_ord: true,
         },
     );
     SemModule {
@@ -3116,7 +3117,7 @@ fn failed_vector_index_clears_a_previous_iteration_scalar_result() {
 fn selected_value_call_module(capability: ValueCapability) -> PhysicalModule {
     let (method, invocation) = match capability {
         ValueCapability::Hash => ("fn selected(a: i64) -> i64 { a }", "selected(7)"),
-        ValueCapability::Eq => (
+        _ => (
             "fn selected(a: i64, b: i64) -> bool { a == b }",
             "if selected(1, 2) { 1 } else { 0 }",
         ),

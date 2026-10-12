@@ -32,10 +32,9 @@ same change that lands the mechanism.
 
 ## The `E_LIMIT_*` family
 
-| Code                  | Channel    | Removed by | Refuses                                                                                                                                    |
-| --------------------- | ---------- | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
-| `E_LIMIT_RC_FIELD`    | Limitation | v0.7.0     | A field read through an `Rc<T>` (§3.7.5). `.get()` on a `T: Copy` payload is the accepted form until the borrow-projection lowering lands. |
-| `E_LIMIT_DERIVED_ORD` | Limitation | v0.7.0     | A structurally derivable aggregate ordering comparison whose lexicographic lowering is not implemented.                                    |
+| Code               | Channel    | Removed by | Refuses                                                                                                                                    |
+| ------------------ | ---------- | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| `E_LIMIT_RC_FIELD` | Limitation | v0.7.0     | A field read through an `Rc<T>` (§3.7.5). `.get()` on a `T: Copy` payload is the accepted form until the borrow-projection lowering lands. |
 
 ## User-channel codes in the same family
 

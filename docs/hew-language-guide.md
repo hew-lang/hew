@@ -5328,6 +5328,57 @@ the same shard across runs, which is what a sharded CI matrix needs.
 `--list` prints `<file>::<test-name>` identities without compiling or
 running anything; run it first when a discovery count is a surprise.
 
+### Property tests
+
+A `#[test]` function with parameters runs generated cases. Parameters must have
+concrete data types; records, enums, tuples and collections use their structural
+shape without a derive or a generator declaration. Resources and callables are
+not generated.
+
+```hew
+type Point {
+    x: i64;
+    label: string;
+}
+
+#[test]
+fn point_keeps_its_label(point: Point) {
+    let copied = point;
+    assert(copied.label == point.label);
+}
+```
+
+`hew test --cases 200 --seed 0x1234` chooses the case count and seed. The default
+is 100 cases, with a stable seed for each test identity. A failing case is shrunk;
+the report includes the counterexample, seed and reproduction command. Generated
+inputs preserve nested optional states and fields marked `#[serial(skip)]`.
+
+### Benchmarks
+
+A benchmark receives its `Bencher` from the dispatcher:
+
+```hew,no_run
+import std.bench;
+
+#[bench]
+fn concatenate(b: bench.Bencher) {
+    b.iter(|| "hello" + " world");
+}
+```
+
+`hew bench [path::function ...]` compiles with optimization and runs on the host
+clock. `Bencher.iter` calibrates its batch size, then records 31 samples. Results
+show the median time per iteration and the interquartile range. Use `--save NAME`
+to store a baseline and `--compare NAME` to show the percentage change against it;
+`--format json` emits machine-readable measurements. Baselines live in
+`.hew/benchmarks/`. Benchmarks replace the former `std.bench.Suite` API.
+
+### Source coverage
+
+`hew test --coverage` writes `.hew/coverage/lcov.info`. The native and VM engines
+count the same source-mapped SIR blocks. The report includes executable lines
+that no selected test reached, with a zero count.
+
 ### Output formats: text and `--format junit`
 
 `--format junit` emits a JUnit XML report instead of the default coloured

@@ -120,7 +120,7 @@ impl Builder<'_, '_> {
         index: usize,
         ty: &ResolvedTy,
     ) -> Result<crate::ValueId, String> {
-        let plan = self.service.wire_plans(ty)?;
+        let plan = self.service.property_plans(ty)?;
         let input = self.emit_typed(
             Provenance::Synthesized,
             &ResolvedTy::I64,

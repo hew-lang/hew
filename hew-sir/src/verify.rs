@@ -5425,6 +5425,14 @@ fn verify_terminator_shape(
             normal,
             unwind,
         } => {
+            if plan.property_input != (codec.direction == hew_types::CodecDirection::TestInput) {
+                invalid_operation(
+                    function,
+                    *id,
+                    "codec input purpose differs from its typed plan".into(),
+                    diagnostics,
+                );
+            }
             if let Err(reason) = plan.verify(variants.aggregate_shapes, variants.shapes) {
                 invalid_operation(function, *id, reason, diagnostics);
             }

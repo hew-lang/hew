@@ -11,6 +11,8 @@ use crate::{AggregateShapeId, VariantShapeId};
 /// by its type and planned once, so recursive types terminate.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SemWirePlans {
+    /// Generated arguments preserve fields and explicit optional presence.
+    pub property_input: bool,
     pub root: ResolvedTy,
     pub plans: BTreeMap<ResolvedTy, SemWirePlan>,
 }

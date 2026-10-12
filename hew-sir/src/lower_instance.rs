@@ -586,7 +586,7 @@ impl<'a> InstanceService<'a> {
                 .arguments
                 .iter()
                 .filter(|_| !plan.benchmark)
-                .map(|ty| self.wire_plans(ty)?.property_shape())
+                .map(|ty| self.property_plans(ty)?.property_shape())
                 .collect::<Result<Vec<_>, String>>();
             let Ok(properties) = properties else {
                 continue;

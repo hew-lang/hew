@@ -7858,6 +7858,7 @@ refuses the name it does not know rather than dropping it.
 | `#[serial(...)]` | type declaration, field | Text-key case (`case = ".."`) on a type; text key (`key = ".."`) or `skip` on a field (§7.3.2). On a `#[test]` fn, runs it alone. |
 | `#[deprecated]` | type declaration | Accepted; no phase consumes it today. Wire field deprecation is the `deprecated` field modifier of §7.2, not this attribute. |
 | `#[test]` | free function | Test entry point (the language guide's Testing chapter). Exempt from the dead-code lint. |
+| `#[bench]` | free function | Optimized host-clock benchmark taking one `std.bench.Bencher`; run with `hew bench`. Exempt from the dead-code lint. |
 | `#[ignore]` | `#[test]` function | Discovered but not run; accepts an optional reason string. |
 | `#[should_panic]` | `#[test]` function | Passes on a Hew panic, assertion or checked trap; an optional string must match the fault report. Normal return, error return, process exit and signals do not satisfy it. |
 | `#[timeout(D)]` | `#[test]` function | A positive duration literal sets the per-test wall-clock hang guard. |
@@ -7870,11 +7871,11 @@ refuses the name it does not know rather than dropping it.
 | `#[offload]` | `fn` inside an `extern "C"` block | A call parks its task while the function runs on the blocking pool (§3.9.1, §4.7). Takes no arguments. |
 | `#[export("...")]` | free `fn` | Makes the function callable from C (§3.9.4). |
 
-Testing attribute arguments are positional. `test`, `serial` and `real_time`
+Testing attribute arguments are positional. `test`, `bench`, `serial` and `real_time`
 accept no arguments; `ignore` and `should_panic` accept at most one quoted
 string; `timeout` requires one positive duration literal. Named arguments,
 extra arguments and other literal shapes produce `E_ATTRIBUTE_ARGUMENT` with
-an actionable correction. All test modifiers require `#[test]` on the same
+an actionable correction. Test modifiers require `#[test]` or `#[bench]` on the same
 free function.
 
 **Substrate attributes** carry compiler-internal identity and are legal only

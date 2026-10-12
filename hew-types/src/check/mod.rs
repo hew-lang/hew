@@ -1771,7 +1771,7 @@ impl Checker {
                     invalid = true;
                     continue;
                 }
-            } else if let Some(ty) = arguments.iter().find(|ty| !self.is_serializable(ty)) {
+            } else if let Some(ty) = arguments.iter().find(|ty| !self.is_generatable(ty)) {
                 self.errors.push(TypeError::new(
                     TypeErrorKind::TestSignature,
                     span.clone(),

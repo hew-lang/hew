@@ -149,6 +149,15 @@ impl Parser<'_> {
     pub(crate) fn validate_attributes_for(&mut self, attrs: &[Attribute], position: AttrPosition) {
         let has_test = attrs.iter().any(|a| a.name == "test" || a.name == "bench");
         for attr in attrs {
+            if attr.name == "bench" && attrs.iter().any(|other| other.name == "test") {
+                self.error_at_with_kind_and_hint(
+                    "a function cannot be both a test and a benchmark [E_ATTRIBUTE_ARGUMENT]"
+                        .into(),
+                    attr.span.clone(),
+                    "keep either #[test] or #[bench]",
+                    ParseDiagnosticKind::AttributeArgument,
+                );
+            }
             let in_table = legal_positions(&attr.name).is_some_and(|p| p.contains(&position));
             // `#[ignore]`, `#[should_panic]`, `#[serial]` and `#[real_time]` sit
             // at `FreeFn` like `#[test]` itself, but §12.6 only legalises them

@@ -1662,6 +1662,11 @@ pub(crate) fn verify_terminator(
             unwind,
         } => {
             wire::verify_wire_plan(module, plan)?;
+            if plan.property_input != (codec.direction == hew_types::CodecDirection::TestInput) {
+                return Err(PhysicalError::new(
+                    "codec input purpose differs from its typed plan",
+                ));
+            }
             let ArgumentTransfer::Borrow(source) = input else {
                 return Err(PhysicalError::new("wire codec input must borrow its slot"));
             };

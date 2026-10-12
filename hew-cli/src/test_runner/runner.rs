@@ -942,7 +942,7 @@ fn run_compiled_test(
     };
     let shapes = properties.get(ordinal).map_or(&[][..], Vec::as_slice);
     if shapes.is_empty() {
-        return run_compiled_test_input(test, ordinal, artifact, options, None);
+        return run_compiled_test_input(test, ordinal, artifact, options, None, true);
     }
     let start = std::time::Instant::now();
     let strategies = shapes
@@ -974,7 +974,8 @@ fn run_compiled_test(
     });
     let last = std::cell::RefCell::new(None);
     let outcome = runner.run(&strategies, |values| {
-        let result = run_compiled_test_input(test, ordinal, artifact, options, Some(&values));
+        let result =
+            run_compiled_test_input(test, ordinal, artifact, options, Some(&values), false);
         let outcome = match &result.outcome {
             TestOutcome::Failed(failure) => Err(TestCaseError::fail(failure.message.clone())),
             _ => Ok(()),
@@ -988,7 +989,11 @@ fn run_compiled_test(
             .expect("a property runs at least one case"),
         Err(TestError::Fail(_, values)) => {
             let mut result =
-                run_compiled_test_input(test, ordinal, artifact, options, Some(&values));
+                run_compiled_test_input(test, ordinal, artifact, options, Some(&values), true);
+            if !matches!(result.outcome, TestOutcome::Failed(_)) {
+                result.outcome = TestOutcome::failed(TestFailureKind::Runtime,
+                    "property failed during generation or shrinking; the retained input passed on replay");
+            }
             if let TestOutcome::Failed(failure) = &mut result.outcome {
                 let _ = write!(failure.message, "\nminimal counterexample: {values:?}\nproperty seed: {seed:#x}\nreproduce: hew test {} --seed {seed:#x} --cases {}", super::test_selector(test), options.cases);
             }
@@ -1015,6 +1020,7 @@ fn run_compiled_test_input(
     artifact: &CompiledTestArtifact,
     options: &TestRunOptions<'_>,
     property: Option<&[hew_codec::Value]>,
+    preserve_failure: bool,
 ) -> TestResult {
     let start = std::time::Instant::now();
     let timeout = test
@@ -1071,7 +1077,10 @@ fn run_compiled_test_input(
         match outcome {
             TestOutcome::Failed(mut failure) => {
                 failed_runs += 1;
-                if let (Some(trace_dir), Some(dir)) = (options.trace_dir, report_dir.as_ref()) {
+                if let (Some(trace_dir), Some(dir)) = (
+                    options.trace_dir.filter(|_| preserve_failure),
+                    report_dir.as_ref(),
+                ) {
                     let source = dir.path().join("trace.json");
                     let hash = super::stable_hash(&super::test_selector(test));
                     let target = trace_dir.join(format!("test-{hash:016x}-{run_index}.trace.json"));
@@ -1097,7 +1106,7 @@ fn run_compiled_test_input(
                     }
                 }
                 if first_failure.is_none() {
-                    if let Some(dir) = report_dir {
+                    if let Some(dir) = report_dir.filter(|_| preserve_failure) {
                         if dir.path().join("tmp").is_dir() {
                             let scratch = dir.keep().join("tmp");
                             let _ =

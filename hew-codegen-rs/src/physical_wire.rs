@@ -7,9 +7,14 @@ use super::*;
 use hew_mir::physical::{SemWireKind, SemWirePayload, SemWirePlan, SemWirePlans, SemWireTable};
 use hew_types::Codec;
 
-fn wire_symbol(ty: &ResolvedTy, decode: bool) -> String {
+fn wire_symbol(ty: &ResolvedTy, decode: bool, property_input: bool) -> String {
     format!(
-        "__hew_wire_{}_{}",
+        "__hew_wire_{}_{}_{}",
+        if property_input {
+            "property"
+        } else {
+            "document"
+        },
         if decode { "decode" } else { "encode" },
         hew_types::mangle_resolved_ty(ty)
     )
@@ -135,8 +140,16 @@ fn table_global<'ctx>(
     )
 }
 
-fn table_symbol(ty: &ResolvedTy, variant: Option<usize>) -> String {
-    let base = format!("__hew_wire_table_{}", hew_types::mangle_resolved_ty(ty));
+fn table_symbol(ty: &ResolvedTy, variant: Option<usize>, property_input: bool) -> String {
+    let base = format!(
+        "__hew_wire_table_{}_{}",
+        if property_input {
+            "property"
+        } else {
+            "document"
+        },
+        hew_types::mangle_resolved_ty(ty)
+    );
     variant.map_or(base.clone(), |index| format!("{base}_v{index}"))
 }
 
@@ -195,7 +208,7 @@ pub(super) fn emit_callback<'ctx>(
     callbacks: &key::CallbackTable<'ctx>,
     decode: bool,
 ) -> CodegenResult<FunctionValue<'ctx>> {
-    let name = wire_symbol(ty, decode);
+    let name = wire_symbol(ty, decode, plans.property_input);
     if let Some(function) = llvm.get_function(&name) {
         return Ok(function);
     }
@@ -349,7 +362,12 @@ impl<'ctx> EncodeEmitter<'_, 'ctx> {
         variant: Option<usize>,
         table: &SemWireTable,
     ) -> BasicValueEnum<'ctx> {
-        table_global(&self.values, &table_symbol(ty, variant), table).into()
+        table_global(
+            &self.values,
+            &table_symbol(ty, variant, self.plans.property_input),
+            table,
+        )
+        .into()
     }
     fn child(&self, ty: &ResolvedTy, slot: PointerValue<'ctx>) -> CodegenResult<()> {
         let function = emit_callback(
@@ -1085,7 +1103,12 @@ impl<'ctx> DecodeEmitter<'_, 'ctx> {
         variant: Option<usize>,
         table: &SemWireTable,
     ) -> BasicValueEnum<'ctx> {
-        table_global(&self.values, &table_symbol(ty, variant), table).into()
+        table_global(
+            &self.values,
+            &table_symbol(ty, variant, self.plans.property_input),
+            table,
+        )
+        .into()
     }
     fn check_status(&self, status: IntValue<'ctx>) -> CodegenResult<()> {
         let success = self

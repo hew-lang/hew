@@ -139,8 +139,18 @@ impl SourceSet {
         }
     }
 
+    /// Read an input and record its content fingerprint.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error if the input cannot be read or was not supplied.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the shared input table's mutex is poisoned.
     pub fn read_bytes(&self, path: &Path) -> std::io::Result<Vec<u8>> {
         use sha2::{Digest, Sha256};
+        use std::fmt::Write as _;
         let identity = if self.filesystem {
             buffer_identity(path).unwrap_or_else(|| path.to_path_buf())
         } else {
@@ -160,21 +170,25 @@ impl SourceSet {
                 "compilation input was not supplied",
             ));
         };
+        let fingerprint = Sha256::digest(&bytes).iter().fold(
+            String::with_capacity(64),
+            |mut fingerprint, byte| {
+                write!(fingerprint, "{byte:02x}").expect("writing to a String cannot fail");
+                fingerprint
+            },
+        );
         self.reads
             .lock()
             .expect("source input table poisoned")
-            .insert(
-                identity,
-                Some(
-                    Sha256::digest(&bytes)
-                        .iter()
-                        .map(|byte| format!("{byte:02x}"))
-                        .collect(),
-                ),
-            );
+            .insert(identity, Some(fingerprint));
         Ok(bytes)
     }
 
+    /// Return the inputs observed by this frontend run.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the shared input table's mutex is poisoned.
     #[must_use]
     pub fn inputs(&self) -> Vec<hew_types::compile_time::CompilationInput> {
         self.reads

@@ -89,17 +89,22 @@ fn vector_for_in_uses_ordinary_cfg_and_cursor_updates() {
         .unwrap();
     let operations: Vec<_> = main.blocks.iter().flat_map(|b| &b.ops).collect();
     let mut reads = 0;
+    let mut length_reads = 0;
     for block in &main.blocks {
         if let hew_sir::SemTerminator::RtCall {
             family:
                 hew_types::RuntimeCallFamily::Vector(
-                    hew_types::VecValueOp::Len | hew_types::VecValueOp::Get,
+                    operation @ (hew_types::VecValueOp::Len | hew_types::VecValueOp::Get),
                 ),
             args,
             ..
         } = &block.terminator
         {
             reads += 1;
+            if *operation == hew_types::VecValueOp::Len {
+                length_reads += 1;
+                continue;
+            }
             assert!(
                 operations.iter().any(|op| {
                     if op
@@ -142,7 +147,14 @@ fn vector_for_in_uses_ordinary_cfg_and_cursor_updates() {
             );
         }
     }
-    assert_eq!(reads, 2, "cursor next needs one length and one item read");
+    assert_eq!(
+        length_reads, 1,
+        "cursor construction reads the vector length once"
+    );
+    assert_eq!(
+        reads, 2,
+        "cursor construction and next need two vector reads"
+    );
     let plan = hew_sir::place_plan(
         &module.defs,
         main,

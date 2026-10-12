@@ -111,7 +111,7 @@ fn actor_coalesce(
         Some(hew_parser::ast::OverflowFallback::DropOld) => crate::SemCoalesceFallback::DropOld,
         Some(hew_parser::ast::OverflowFallback::Fail) => crate::SemCoalesceFallback::Fail,
         Some(hew_parser::ast::OverflowFallback::Block) => {
-            return Err("coalesce fallback `block` has no admission contract".into())
+            return Err("coalesce fallback `block` has no admission contract".into());
         }
     };
     let mut keys = Vec::new();
@@ -749,7 +749,7 @@ impl Builder<'_, '_> {
         let values = match self.lower_actor_payload(args, &parameters, evaluation_order)? {
             std::ops::ControlFlow::Continue(values) => values,
             std::ops::ControlFlow::Break(value) => {
-                return Ok(ActorRequestPreparation::Diverged(value))
+                return Ok(ActorRequestPreparation::Diverged(value));
             }
         };
         inputs.extend(values.into_iter().map(|value| crate::BoundaryOperand {
@@ -1469,6 +1469,7 @@ impl Builder<'_, '_> {
         match operation {
             ActorDeliveryCall::Resume {
                 policy,
+                source_method: expected_source_method,
                 method,
                 redirect,
             } => {
@@ -1535,9 +1536,7 @@ impl Builder<'_, '_> {
                         .ok_or("recovery input lacks its sealed completion protocol")?;
                 let source_handler = source_method.id.declaration();
                 if source_policy != *policy
-                    || (source_handler != handler.declaration
-                        && self.service.module.defs.kind(source_handler)
-                            != hew_types::DeclarationKind::RequestProtocol)
+                    || source_handler != *expected_source_method
                     || *params
                         != hew_types::Ty::Tuple(
                             handler.params.iter().map(ResolvedTy::to_ty).collect(),

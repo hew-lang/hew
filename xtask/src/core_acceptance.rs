@@ -226,10 +226,10 @@ pub(crate) fn run(args: &[String]) -> Result<()> {
     let root = workspace_root()?;
     let run_dir = tempfile::tempdir()
         .map_err(|err| format!("create core acceptance temporary directory: {err}"))?;
-    let mut manifest = load_manifest(&root)?;
+    let mut manifest = load_manifest(&root, &options.cases)?;
     resolve_stdout_files(&mut manifest, &root)?;
     validate_manifest(&manifest, &root)?;
-    let ratchet = load_expected_failures(&root, &manifest, current_platform())?;
+    let ratchet = load_expected_failures(&root, &manifest, current_platform(), &options.cases)?;
     let mut selected = select_cases(&manifest, &options.suite, &options.cases, &options.kinds)?;
     let platform = current_platform();
     selected.retain(|case| {
@@ -415,12 +415,16 @@ fn load_expected_failures(
     root: &Path,
     manifest: &Manifest,
     platform: &str,
+    selected: &[String],
 ) -> Result<BTreeMap<String, String>> {
     let ids: std::collections::BTreeSet<&str> =
         manifest.cases.iter().map(|case| case.id.as_str()).collect();
     let rows = crate::ratchet::rows_for(root, "acceptance", platform)?;
     let mut out = BTreeMap::new();
     for (id, row) in rows {
+        if !selected.is_empty() && !selected.iter().any(|selected| selected == &id) {
+            continue;
+        }
         if !ids.contains(id.as_str()) {
             return Err(format!(
                 "{}: {id} is not a core-acceptance case; delete the row with the case",
@@ -596,7 +600,7 @@ fn workspace_root() -> Result<PathBuf> {
         .ok_or_else(|| "xtask manifest should have a workspace parent".to_string())
 }
 
-fn load_manifest(root: &Path) -> Result<Manifest> {
+fn load_manifest(root: &Path, selected: &[String]) -> Result<Manifest> {
     let cases_dir = root.join("tests/core-acceptance/cases");
     let mut paths: Vec<PathBuf> = fs::read_dir(&cases_dir)
         .map_err(|err| format!("read core acceptance cases {}: {err}", cases_dir.display()))?
@@ -604,6 +608,20 @@ fn load_manifest(root: &Path) -> Result<Manifest> {
         .collect::<std::result::Result<_, _>>()
         .map_err(|err| format!("read core acceptance case entry: {err}"))?;
     paths.retain(|path| path.extension().is_some_and(|ext| ext == "toml"));
+    if !selected.is_empty() {
+        for id in selected {
+            if !paths
+                .iter()
+                .any(|path| path.file_stem().is_some_and(|stem| stem == id.as_str()))
+            {
+                return Err(format!("unknown core acceptance case: {id:?}"));
+            }
+        }
+        paths.retain(|path| {
+            path.file_stem()
+                .is_some_and(|stem| selected.iter().any(|id| stem == id.as_str()))
+        });
+    }
     paths.sort();
 
     let mut cases = Vec::with_capacity(paths.len());
@@ -1126,7 +1144,7 @@ impl Runner<'_> {
                     Some(binary)
                 } else {
                     let _ = writeln!(
-                    log,
+                        log,
                         "FAIL {} profile={} class=environment-failure detail=compiler returned success without {}",
                         case.id,
                         profile.label(),
@@ -1704,8 +1722,8 @@ mod tests {
     fn case_id_must_match_its_file_name() {
         let directory = tempfile::tempdir().unwrap();
         write_case(directory.path(), "wrong-name.toml", "actual-id");
-        let error =
-            load_manifest(directory.path()).expect_err("mismatched id and file name must fail");
+        let error = load_manifest(directory.path(), &[])
+            .expect_err("mismatched id and file name must fail");
         assert!(error.contains("does not match its file name"));
     }
 
@@ -1714,7 +1732,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         write_case(directory.path(), "b-case.toml", "b-case");
         write_case(directory.path(), "a-case.toml", "a-case");
-        let manifest = load_manifest(directory.path()).expect("both cases load");
+        let manifest = load_manifest(directory.path(), &[]).expect("both cases load");
         let ids: Vec<&str> = manifest.cases.iter().map(|case| case.id.as_str()).collect();
         assert_eq!(ids, ["a-case", "b-case"]);
     }
@@ -1798,7 +1816,7 @@ mod tests {
             "gone",
         );
         let directory = ledger_root(&body);
-        let error = load_expected_failures(directory.path(), &manifest(), "linux")
+        let error = load_expected_failures(directory.path(), &manifest(), "linux", &[])
             .expect_err("a row for a case that no longer exists must be refused");
         assert!(error.contains("is not a core-acceptance case"), "{error}");
     }
@@ -1807,7 +1825,7 @@ mod tests {
     fn a_row_with_an_unknown_platform_is_refused() {
         let body = row("solaris", "acceptance-case", "compile", "#1", "reason");
         let directory = ledger_root(&body);
-        let error = load_expected_failures(directory.path(), &manifest(), "linux")
+        let error = load_expected_failures(directory.path(), &manifest(), "linux", &[])
             .expect_err("an unknown platform must be refused");
         assert!(error.contains("unknown platform"), "{error}");
     }
@@ -1816,7 +1834,7 @@ mod tests {
     fn a_wildcard_platform_applies_on_every_host() {
         let body = row("*", "acceptance-case", "compile", "#3001", "reason");
         let directory = ledger_root(&body);
-        let rows = load_expected_failures(directory.path(), &manifest(), "windows").unwrap();
+        let rows = load_expected_failures(directory.path(), &manifest(), "windows", &[]).unwrap();
         assert_eq!(rows["acceptance-case"], "reason");
     }
 
@@ -1830,7 +1848,7 @@ mod tests {
             "reason",
         );
         let directory = ledger_root(&body);
-        let rows = load_expected_failures(directory.path(), &manifest(), "linux").unwrap();
+        let rows = load_expected_failures(directory.path(), &manifest(), "linux", &[]).unwrap();
         assert_eq!(rows["acceptance-case"], "reason");
     }
 
@@ -1838,9 +1856,10 @@ mod tests {
     fn a_row_applies_only_on_its_named_platforms() {
         let body = row("windows", "acceptance-case", "compile", "#3436", "reason");
         let directory = ledger_root(&body);
-        let windows = load_expected_failures(directory.path(), &manifest(), "windows").unwrap();
+        let windows =
+            load_expected_failures(directory.path(), &manifest(), "windows", &[]).unwrap();
         assert_eq!(windows["acceptance-case"], "reason");
-        let linux = load_expected_failures(directory.path(), &manifest(), "linux").unwrap();
+        let linux = load_expected_failures(directory.path(), &manifest(), "linux", &[]).unwrap();
         assert!(
             linux.is_empty(),
             "row must not apply on an unnamed platform"
@@ -1857,7 +1876,7 @@ mod tests {
             "reason",
         ) + &row("freebsd", "acceptance-case", "compile", "#2", "reason");
         let directory = ledger_root(&body);
-        let error = load_expected_failures(directory.path(), &manifest(), "freebsd")
+        let error = load_expected_failures(directory.path(), &manifest(), "freebsd", &[])
             .expect_err("overlapping platform selection for one case must be refused");
         assert!(error.contains("already selected for freebsd"), "{error}");
     }
@@ -1878,7 +1897,7 @@ mod tests {
             "reason",
         );
         let directory = ledger_root(&body);
-        let error = load_expected_failures(directory.path(), &manifest(), "linux")
+        let error = load_expected_failures(directory.path(), &manifest(), "linux", &[])
             .expect_err("a row out of id order must be refused");
         assert!(error.contains("not sorted"), "{error}");
     }
@@ -1888,9 +1907,11 @@ mod tests {
         let body = row("windows", "acceptance-case", "compile", "#1", "reason-a")
             + &row("freebsd", "acceptance-case", "compile", "#2", "reason-b");
         let directory = ledger_root(&body);
-        let windows = load_expected_failures(directory.path(), &manifest(), "windows").unwrap();
+        let windows =
+            load_expected_failures(directory.path(), &manifest(), "windows", &[]).unwrap();
         assert_eq!(windows["acceptance-case"], "reason-a");
-        let freebsd = load_expected_failures(directory.path(), &manifest(), "freebsd").unwrap();
+        let freebsd =
+            load_expected_failures(directory.path(), &manifest(), "freebsd", &[]).unwrap();
         assert_eq!(freebsd["acceptance-case"], "reason-b");
     }
 

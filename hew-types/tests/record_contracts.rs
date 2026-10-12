@@ -29,7 +29,8 @@ fn vector_cursor_uses_its_source_record_fields_and_recursive_copy() {
                     "vec".to_string(),
                     ResolvedTy::named_builtin(BuiltinType::Vec, vec![element])
                 ),
-                ("idx".to_string(), ResolvedTy::I64),
+                ("front".to_string(), ResolvedTy::I64),
+                ("back".to_string(), ResolvedTy::I64),
             ]
         );
         assert_eq!(
@@ -273,11 +274,20 @@ fn value_capabilities_refuse_unsupported_and_abstract_receivers() {
     for ty in [
         ResolvedTy::Tuple(vec![ResolvedTy::I64]),
         ResolvedTy::named_builtin(BuiltinType::Vec, vec![ResolvedTy::I64]),
-        ResolvedTy::named_path(service.defs(), "Choice", vec![]),
     ] {
-        assert_eq!(service.capability_plan(&ty, Hash).unwrap(), None, "{ty:?}");
-        assert!(!service.require(&ty).unwrap().hash);
+        assert_eq!(
+            service
+                .capability_plan(&ty, Hash)
+                .unwrap()
+                .map(|selection| selection.plan().clone()),
+            Some(Derived),
+            "{ty:?}"
+        );
+        assert!(service.require(&ty).unwrap().hash);
     }
+    let choice = ResolvedTy::named_path(service.defs(), "Choice", vec![]);
+    assert_eq!(service.capability_plan(&choice, Hash).unwrap(), None);
+    assert!(!service.require(&choice).unwrap().hash);
     for capability in [Hash, Eq] {
         assert!(service
             .capability_plan(
@@ -636,7 +646,20 @@ fn main() -> i64 {
                 .map(|selection| selection.plan().clone()),
             Some(Derived)
         );
-        assert_eq!(service.capability_plan(&container, Hash).unwrap(), None);
+        let expected_hash = if matches!(container, ResolvedTy::Tuple(_))
+            || container.is_builtin(BuiltinType::Vec)
+        {
+            Some(Derived)
+        } else {
+            None
+        };
+        assert_eq!(
+            service
+                .capability_plan(&container, Hash)
+                .unwrap()
+                .map(|selection| selection.plan().clone()),
+            expected_hash
+        );
     }
 }
 

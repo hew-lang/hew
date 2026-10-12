@@ -86,6 +86,7 @@ install -Dm644 NOTICE         %{buildroot}%{_licensedir}/%{name}/NOTICE
 %{_libdir}/hew/
 %{_datadir}/hew/
 %{_includedir}/hew.h
+%{_includedir}/hew_host.h
 
 %changelog
 * Thu Feb 19 2026 The Hew Project Developers <hello@hew.sh> - 0.1.0-1

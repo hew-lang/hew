@@ -209,7 +209,7 @@ build_tarball() {
 
     # Standard library sources (all .hew files, including subdirectories)
     cp -r "${REPO_DIR}/std/." "${staging}/std/"
-    cp "${REPO_DIR}/hew-cabi/include/hew.h" "${staging}/include/hew.h"
+    cp "${REPO_DIR}/hew-cabi/include/hew.h" "${REPO_DIR}/hew-cabi/include/hew_host.h" "${staging}/include/"
 
     # Generate shell completions from built binaries
     for shell in bash zsh fish; do
@@ -490,7 +490,7 @@ build_alpine() {
 
         # Standard library sources (all .hew files, including subdirectories)
         cp -r "${REPO_DIR}/std/." "${staging}/std/"
-        cp "${REPO_DIR}/hew-cabi/include/hew.h" "${staging}/include/hew.h"
+        cp "${REPO_DIR}/hew-cabi/include/hew.h" "${REPO_DIR}/hew-cabi/include/hew_host.h" "${staging}/include/"
 
         # Generate shell completions from built binaries
         for shell in bash zsh fish; do

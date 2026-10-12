@@ -1780,6 +1780,7 @@ pub enum RecoveryKind {
     Option,
     OptionalChain {
         flatten: bool,
+        consumes_receiver: bool,
     },
     Result,
     Scope {
@@ -3410,7 +3411,7 @@ pub struct Checker {
     pub(super) file_import_const_exports: HashMap<String, BTreeSet<String>>,
     /// Per-call target facts for ordinary `Expr::Call` expressions.
     pub(super) recovery_kinds: HashMap<SpanKey, RecoveryKind>,
-    pub(super) chain_values: Vec<(Ty, Option<(String, crate::env::PlacePath)>)>,
+    pub(super) chain_values: Vec<(Ty, Option<(String, crate::env::PlacePath)>, bool)>,
     /// See [`TypeCheckOutput::call_argument_slots`].
     pub(super) call_argument_slots: HashMap<SpanKey, Vec<usize>>,
     /// See [`TypeCheckOutput::spawn_argument_slots`].

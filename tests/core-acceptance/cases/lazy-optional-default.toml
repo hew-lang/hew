@@ -6,5 +6,5 @@ suites = ["acceptance", "safety"]
 timeout_seconds = 15
 
 [case.expected]
-stdout = "KEPT\nKEPT\nfallback\nDEFAULT\nclosed\n"
+stdout = "KEPT\nKEPT\nfallback\nDEFAULT\nclosed\nclosed\nclosed\n"
 exit = 0

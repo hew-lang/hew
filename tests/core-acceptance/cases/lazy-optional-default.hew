@@ -9,11 +9,13 @@ fn choose(value: Option<string>) -> string {
 
 type Address { city: string; postcode: Option<string>; }
 type User { address: Option<Address>; }
+type Envelope { session: Session; }
 
 #[resource]
 type Session { id: i64; }
 impl Session {
     fn peek(self) -> i64 { self.id }
+    fn take(consume self) -> i64 { self.id }
     fn close(consume self) { println("closed"); }
 }
 
@@ -42,5 +44,10 @@ fn main() -> i64 {
     let session: Option<Session> = .Some(Session { id: 7 });
     assert(session?.peek() == Option.Some(7));
     assert(session?.peek() == Option.Some(7));
+    let consumed: Option<Session> = .Some(Session { id: 8 });
+    assert(consumed?.take() == Option.Some(8));
+    let wrapped: Option<Envelope> = .Some(Envelope { session: Session { id: 9 } });
+    let extracted = wrapped?.session;
+    assert(extracted?.peek() == Option.Some(9));
     0
 }

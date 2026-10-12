@@ -417,12 +417,21 @@ impl LowerCtx {
         body: &Spanned<Expr>,
         span: &Span,
     ) -> (HirExprKind, ResolvedTy) {
-        let Some(hew_types::check::RecoveryKind::OptionalChain { flatten }) =
-            self.recovery_kinds.get(&self.mk_key(span)).cloned()
+        let Some(hew_types::check::RecoveryKind::OptionalChain {
+            flatten,
+            consumes_receiver,
+        }) = self.recovery_kinds.get(&self.mk_key(span)).cloned()
         else {
             return self.unsupported_postfix_try(span, "missing checked optional chain semantics");
         };
-        let scrutinee = self.lower_expr(receiver, IntentKind::Read);
+        let scrutinee = self.lower_expr(
+            receiver,
+            if consumes_receiver {
+                IntentKind::Consume
+            } else {
+                IntentKind::Borrow
+            },
+        );
         let Some(payload) = Self::resolved_option_inner(&scrutinee.ty).cloned() else {
             return self
                 .unsupported_postfix_try(span, "optional chain receiver without Option type");

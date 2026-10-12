@@ -1797,11 +1797,17 @@ impl Parser<'_> {
         Some(params)
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "single dispatch over all postfix-dot syntactic forms; splitting fragments shared start/cursor state"
-    )]
     fn parse_optional_chain(&mut self, receiver: Spanned<Expr>) -> Option<Spanned<Expr>> {
+        if matches!(
+            self.peek_at(self.pos + 1),
+            Some(Token::LeftBracket | Token::LeftParen)
+        ) {
+            self.error(
+                "optional chains require a named member; use `?.get(index)` instead of `?.[index]`"
+                    .to_string(),
+            );
+            return None;
+        }
         let start = receiver.1.start;
         let placeholder = (
             Expr::ChainValue,
@@ -1827,6 +1833,10 @@ impl Parser<'_> {
         ))
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "single dispatch over all postfix-dot syntactic forms; splitting fragments shared start/cursor state"
+    )]
     pub(crate) fn parse_dot_postfix(&mut self, lhs: Spanned<Expr>) -> Option<Spanned<Expr>> {
         let start = lhs.1.start;
         self.advance(); // consume .

@@ -1626,7 +1626,7 @@ fn require_initial_scalar_read(intent: IntentKind) -> Result<(), String> {
         // operation - `begin_borrow`, `move`, `destroy_value` - that the
         // initial scalar domain does not emit. Naming the intent rather than a
         // mode keeps the refusal precise without reviving the deleted mode set.
-        IntentKind::Modify | IntentKind::Consume | IntentKind::Discharge => Err(format!(
+        IntentKind::Borrow | IntentKind::Modify | IntentKind::Consume | IntentKind::Discharge => Err(format!(
             "HIR {intent:?} intent needs a SIR ownership operation; initial scalar SIR admits only read operands"
         )),
         IntentKind::Capture => Err(
@@ -1678,6 +1678,18 @@ fn lower_initial_value_transfer(
     binding_use: OwnedBindingUse,
 ) -> Result<ValueId, String> {
     let ty = builder.ty(&expr.ty);
+    if expr.intent == IntentKind::Borrow && binding_use == OwnedBindingUse::Probe {
+        if let Some(place) = builder.expression_projection(expr)? {
+            let value = builder.emit_typed(
+                Provenance::Site(expr.site),
+                &ty,
+                SemOpKind::LoadBorrow { place },
+            )?;
+            builder.scope_loans.push(value);
+            return Ok(value);
+        }
+        return builder.lower_owned_transfer(expr, binding_use);
+    }
     if ty == ResolvedTy::Unit && matches!(expr.intent, IntentKind::Read | IntentKind::Consume) {
         if matches!(
             expr.kind,

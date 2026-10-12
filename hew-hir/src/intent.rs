@@ -1,6 +1,7 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum IntentKind {
     Read,
+    Borrow,
     Modify,
     Consume,
     /// Run this affine value's terminal release ritual without transferring

@@ -565,7 +565,7 @@ impl Checker {
             Expr::ChainValue => self
                 .chain_values
                 .last()
-                .map_or(Ty::Error, |(ty, _)| ty.clone()),
+                .map_or(Ty::Error, |(ty, _, _)| ty.clone()),
             Expr::OptionalChain { receiver, body } => {
                 self.check_optional_chain(receiver, body, span)
             }
@@ -956,9 +956,18 @@ impl Checker {
         };
         let entry = self.env.ownership_snapshot();
         let place = self.expr_place(&receiver.0);
-        self.chain_values.push((payload, place));
+        self.chain_values.push((payload, place, false));
         let body_ty = self.synthesize(&body.0, &body.1);
-        self.chain_values.pop();
+        if self.parameter_clone_kind(&body_ty) == Some(crate::CloneKind::None) {
+            self.mark_expr_moved(&body.0, &body.1);
+        }
+        let consumes_receiver = self
+            .chain_values
+            .pop()
+            .is_some_and(|(_, _, consumed)| consumed);
+        if consumes_receiver {
+            self.mark_expr_moved(&receiver.0, &receiver.1);
+        }
         let taken = BranchArmExit {
             ownership: self.env.ownership_snapshot(),
             diverges: Self::arm_skips_join(&body_ty),
@@ -968,7 +977,10 @@ impl Checker {
         let flatten = body_ty.as_option().is_some();
         self.recovery_kinds.insert(
             SpanKey::in_module(span, self.current_module_idx),
-            RecoveryKind::OptionalChain { flatten },
+            RecoveryKind::OptionalChain {
+                flatten,
+                consumes_receiver,
+            },
         );
         if flatten {
             body_ty

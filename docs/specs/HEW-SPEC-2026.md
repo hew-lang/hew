@@ -821,6 +821,20 @@ once. A present value supplies its payload; only absence evaluates `fallback`.
 The fallback must have the payload type (or diverge). `??` accepts only
 `Option`, never `Result`; it associates right and binds below logical operators.
 
+**Optional chains.** `value?.member` requires an `Option` receiver and evaluates
+it once. Absence skips the remaining postfix chain, including method arguments
+and indexes. Presence reads through the payload using ordinary member rules.
+The result is wrapped in `Some`, or flattened when the final member has an
+`Option` type at the checking site. A generic type parameter does not flatten
+based on a later instantiation. For example, `user?.address?.city.len() ?? 0`
+returns zero when either optional receiver is absent.
+
+Parentheses end the chain: `(value?).member` propagates absence before member
+access, whereas `value?.member` recovers it locally. A trailing `?` propagates
+the chain's final absence. `?.` does not accept `Result`, mutate a payload through
+a `var self` method, or form an assignment target. Direct `?.[index]` and
+`?.(arguments)` links are not admitted; use a named member such as `?.get(index)`.
+
 `result_value handle problem { recovery }` evaluates its Result operand once.
 Success supplies the success payload. Only an error runs the block, with
 `problem` bound to the error payload. The block must produce the success
@@ -2836,6 +2850,13 @@ deferred action cannot escape with `return` or `?` or suspend. It may inspect a
 fallible operation locally, but a result that must reach the caller belongs in
 an explicit completion operation before cleanup. A secondary cleanup fault
 must not replace the primary fault.
+
+`defer err { body }` shares that LIFO stack but runs only when its scope exits
+through a declared `fails` edge, a fault or cancellation. Ordinary returned
+`Result.Err` and `Option.None` values do not trigger it. Neither normal scope
+completion nor an ordinary `return`, `break` or `continue` triggers it. It binds
+no error. A fault raised by another deferred action activates remaining
+failure-only actions while preserving the primary fault.
 
 A `close` that fails on a cancellation edge is not discarded. Cancellation
 marks a frame's fault rather than being a failure of its own, so the first real

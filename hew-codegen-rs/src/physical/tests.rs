@@ -602,6 +602,7 @@ fn scalar_entry_module() -> SemModule {
         symbol: "main".to_string(),
         source_origin: FunctionSourceOrigin::RootUnit,
         signature: SemSignature {
+            failure_domain: hew_types::CallableFailureDomain::HewFault,
             params: vec![],
             return_ty: ResolvedTy::I64,
         },
@@ -779,6 +780,7 @@ fn bytes_copy_module() -> SemModule {
         symbol: "copy_bytes".to_string(),
         source_origin: FunctionSourceOrigin::RootUnit,
         signature: SemSignature {
+            failure_domain: hew_types::CallableFailureDomain::HewFault,
             params: vec![],
             return_ty: ResolvedTy::Bytes,
         },

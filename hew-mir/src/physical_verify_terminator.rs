@@ -1221,6 +1221,11 @@ pub(crate) fn verify_terminator(
                 .ok()
                 .and_then(|index| module.offloads.get(index))
                 .ok_or_else(|| PhysicalError::new("offload names no published extern"))?;
+            if offload.failure_domain != hew_types::CallableFailureDomain::Abort {
+                return Err(PhysicalError::new(
+                    "offloaded foreign calls cannot unwind across Hew frames",
+                ));
+            }
             if args.len() != offload.params.len() {
                 return Err(PhysicalError::new("offload arity differs from its extern"));
             }
@@ -1819,6 +1824,7 @@ pub(crate) fn verify_terminator(
             edge(unwind)
         }
         PhysicalTerminator::ExternCall {
+            failure_domain,
             symbol,
             args,
             result,
@@ -1826,6 +1832,11 @@ pub(crate) fn verify_terminator(
             normal,
             ..
         } => {
+            if *failure_domain != hew_types::CallableFailureDomain::Abort {
+                return Err(PhysicalError::new(
+                    "foreign calls cannot propagate Hew faults or host unwinds",
+                ));
+            }
             // SIR proved types and ownership against the declaration. Verify
             // the transfer/edge structure and the target's C result carrier.
             for argument in args {

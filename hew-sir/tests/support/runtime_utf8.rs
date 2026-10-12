@@ -162,6 +162,7 @@ pub(super) fn decode_module() -> SemModule {
             symbol: function.name.clone(),
             source_origin: function.source_origin.clone(),
             signature: SemSignature {
+                failure_domain: hew_types::CallableFailureDomain::HewFault,
                 params: vec![SemAbiParam {
                     ty: ResolvedTy::Bytes,
                     passing: SemParamPassing::Borrow,

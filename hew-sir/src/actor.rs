@@ -364,6 +364,7 @@ impl SemActor {
             }
         }
         Ok(crate::SemSignature {
+            failure_domain: hew_types::CallableFailureDomain::HewFault,
             params,
             return_ty: result_ty,
         })
@@ -423,6 +424,7 @@ impl SemActor {
             params.push(param(&ResolvedTy::U64, crate::SemParamPassing::ReadOnly));
         }
         Ok(crate::SemSignature {
+            failure_domain: hew_types::CallableFailureDomain::HewFault,
             params,
             return_ty: result_ty,
         })
@@ -821,6 +823,7 @@ impl LocalObservationKind {
             return Err("local observation changes its checked signature".into());
         }
         Ok(crate::SemSignature {
+            failure_domain: hew_types::CallableFailureDomain::HewFault,
             params: vec![crate::SemAbiParam {
                 ty: target.clone(),
                 passing: crate::SemParamPassing::Consume,
@@ -867,6 +870,7 @@ impl RemoteObservationKind {
             return Err("remote observation changes its checked signature".into());
         }
         Ok(crate::SemSignature {
+            failure_domain: hew_types::CallableFailureDomain::HewFault,
             params: params
                 .iter()
                 .enumerate()
@@ -1022,6 +1026,7 @@ impl ActorOperation {
             .filter(|supervisor| supervisor.id == *id)
             .ok_or("unknown supervisor identity")?;
         let consume = |types: Vec<ResolvedTy>, return_ty| crate::SemSignature {
+            failure_domain: hew_types::CallableFailureDomain::HewFault,
             params: types
                 .into_iter()
                 .map(|ty| crate::SemAbiParam {
@@ -1140,6 +1145,7 @@ impl ActorOperation {
                 return Err("restart wait requires a supervised role".into());
             }
             return Ok(crate::SemSignature {
+                failure_domain: hew_types::CallableFailureDomain::HewFault,
                 params: vec![crate::SemAbiParam {
                     ty: target.handle_ty(actors, supervisors)?,
                     passing: crate::SemParamPassing::Borrow,
@@ -1165,6 +1171,7 @@ impl ActorOperation {
             return kind.signature(params, result);
         }
         let consume = |types: Vec<ResolvedTy>, return_ty| crate::SemSignature {
+            failure_domain: hew_types::CallableFailureDomain::HewFault,
             params: types
                 .into_iter()
                 .map(|ty| crate::SemAbiParam {

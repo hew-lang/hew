@@ -127,6 +127,7 @@ impl Builder<'_, '_> {
                     method: *method,
                 },
                 crate::SemSignature {
+                    failure_domain: hew_types::CallableFailureDomain::HewFault,
                     params: Vec::new(),
                     return_ty: hew_types::ResolvedTy::String,
                 },

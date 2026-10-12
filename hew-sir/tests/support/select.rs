@@ -59,6 +59,7 @@ pub fn module(task_count: u32, has_timeout: bool) -> SemModule {
         symbol: "select_probe".into(),
         source_origin: FunctionSourceOrigin::Unknown,
         signature: SemSignature {
+            failure_domain: hew_types::CallableFailureDomain::HewFault,
             params: abi,
             return_ty: ResolvedTy::I64,
         },

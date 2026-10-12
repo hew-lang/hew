@@ -310,15 +310,9 @@ impl SemFunction {
     }
 }
 
-/// The call convention SIR is permitted to model before ownership/layout MIR
-/// decides concrete ABI carriers.
-///
-/// Runtime, C-ABI, coroutine, actor, and other specialised conventions stay
-/// outside this initial domain.  Keeping this enum explicit prevents a
-/// resolved SIR call from silently acquiring a target-specific ABI policy.
-/// Default calls return normally or propagate an unrecoverable trap. They do
-/// not transport cooperative cancellation; admitting another exit cause must
-/// extend this contract and the lifetime flow together.
+/// The Hew call convention before physical MIR selects concrete carriers.
+/// Failure transport is the signature's explicit failure-domain contract;
+/// runtime and foreign boundaries retain their own typed signatures.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SemCallConv {
     Default,
@@ -367,6 +361,7 @@ pub struct SemAbiParam {
 /// ABI-neutral signature of a resolved SIR callable.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SemSignature {
+    pub failure_domain: hew_types::CallableFailureDomain,
     pub params: Vec<SemAbiParam>,
     pub return_ty: ResolvedTy,
 }
@@ -1264,10 +1259,10 @@ pub enum CallResult {
     Value(ValueDef),
 }
 
-/// Whether an invoke-style call has an unwind CFG successor.
+/// Whether a call has an explicit fault-cleanup CFG successor.
 ///
-/// Applicability is decided by the producer. Later passes inspect this closed
-/// value instead of deriving unwind behaviour from a callee or symbol.
+/// The verifier checks applicability against the callable's failure domain.
+/// This edge carries a Hew status/fault result, never a host unwind.
 #[derive(Debug, Clone, PartialEq)]
 pub enum CallUnwind {
     NotApplicable,

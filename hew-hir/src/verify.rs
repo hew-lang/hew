@@ -79,6 +79,17 @@ impl Verifier {
             self.current_source_module = Self::item_source_module(module, item);
             match item {
                 HirItem::Function(func) => {
+                    if Some(func.failure_domain) != Some(hew_types::CallableFailureDomain::HewFault)
+                    {
+                        self.diagnostics.push(self.diagnostic(
+                            HirDiagnosticKind::CheckerBoundaryViolation {
+                                name: "callable failure domain".into(),
+                                reason: "declaration disagrees with its failure ABI".into(),
+                            },
+                            func.span.clone(),
+                            "callable failure domain must agree with the checked declaration",
+                        ));
+                    }
                     self.node(func.node, func.span.clone());
                     if let Some(receiver) = func.var_self_receiver {
                         let valid = !func.is_generator && func.params.first().is_some_and(|param| {
@@ -191,6 +202,18 @@ impl Verifier {
                     self.node(block.node, block.span.clone());
                 }
                 HirItem::ExternFn(ef) => {
+                    if Some(ef.failure_domain)
+                        != hew_types::CallableFailureDomain::for_extern_abi(&ef.abi)
+                    {
+                        self.diagnostics.push(self.diagnostic(
+                            HirDiagnosticKind::CheckerBoundaryViolation {
+                                name: "callable failure domain".into(),
+                                reason: "declaration disagrees with its failure ABI".into(),
+                            },
+                            ef.span.clone(),
+                            "callable failure domain must agree with the checked declaration",
+                        ));
+                    }
                     // Extern fns have no body, no parameter bindings — only
                     // their own HirNodeId contributes to uniqueness. The
                     // signature is verified by the checker before lowering.
@@ -1266,6 +1289,7 @@ mod tests {
 
     fn function_with_tail(ids: &mut IdGen, name: &str, tail: HirExpr) -> HirItem {
         HirItem::Function(HirFn {
+            failure_domain: hew_types::CallableFailureDomain::HewFault,
             id: ids.item(),
             node: ids.node(),
             declaration: hew_types::DefId::for_test(name),

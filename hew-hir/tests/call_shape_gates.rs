@@ -262,6 +262,7 @@ fn synth_user_call(name: &str, item_id: u32, declaration: &str) -> HirExpr {
 
 fn synth_fn_with_tail(name: &str, item_id: u32, tail: HirExpr) -> HirItem {
     HirItem::Function(HirFn {
+        failure_domain: hew_types::CallableFailureDomain::HewFault,
         id: ItemId(item_id),
         node: HirNodeId(0),
         declaration: hew_types::DefId::for_test(name),
@@ -330,6 +331,7 @@ fn item_callee_referencing_module_fn_does_not_emit_diagnostic() {
     // `HirItem::Function` in the module — the gate's callable set includes
     // user-declared functions, so no diagnostic should fire.
     let target = HirItem::Function(HirFn {
+        failure_domain: hew_types::CallableFailureDomain::HewFault,
         id: ItemId(99),
         node: HirNodeId(0),
         declaration: hew_types::DefId::for_test("real_callee"),
@@ -367,6 +369,7 @@ fn item_callee_referencing_module_fn_does_not_emit_diagnostic() {
 /// A `HirItem::Function` named `emitted_name` realizing declaration `declaration`.
 fn emitted_body(declaration: &str, emitted_name: &str, item_id: u32) -> HirItem {
     HirItem::Function(HirFn {
+        failure_domain: hew_types::CallableFailureDomain::HewFault,
         id: ItemId(item_id),
         node: HirNodeId(0),
         declaration: hew_types::DefId::for_test(declaration),
@@ -485,6 +488,7 @@ fn binding_callee_does_not_emit_indirect_call_unsupported() {
         span: dummy_span(),
     };
     let main = HirItem::Function(HirFn {
+        failure_domain: hew_types::CallableFailureDomain::HewFault,
         id: ItemId(0),
         node: HirNodeId(0),
         declaration: hew_types::DefId::for_test("main"),
@@ -554,6 +558,7 @@ fn walker_recurses_into_let_stmt_initializer() {
         span: dummy_span(),
     };
     let main = HirItem::Function(HirFn {
+        failure_domain: hew_types::CallableFailureDomain::HewFault,
         id: ItemId(0),
         node: HirNodeId(0),
         declaration: hew_types::DefId::for_test("main"),

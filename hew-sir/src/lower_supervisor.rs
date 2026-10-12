@@ -265,6 +265,7 @@ impl InstanceService<'_> {
             span: child.span.clone(),
         };
         let function = HirFn {
+            failure_domain: hew_types::CallableFailureDomain::HewFault,
             id: source.id,
             node: source.node,
             declaration: source.bootstrap_declaration,
@@ -300,6 +301,7 @@ impl InstanceService<'_> {
             });
         }
         let signature = SemSignature {
+            failure_domain: hew_types::CallableFailureDomain::HewFault,
             params,
             return_ty: handle,
         };

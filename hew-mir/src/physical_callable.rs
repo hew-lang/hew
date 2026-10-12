@@ -195,6 +195,12 @@ pub(super) fn verify_indirect_call(
     args: &[ArgumentTransfer],
     result: Option<StorageId>,
 ) -> Result<(), PhysicalError> {
+    if signature.failure_domain != hew_types::CallableFailureDomain::HewFault {
+        return Err(PhysicalError::new(
+            "indirect Hew calls require the recoverable fault ABI",
+        ));
+    }
+
     let source = match callee {
         ArgumentTransfer::Borrow(source)
         | ArgumentTransfer::BorrowMut(source)
@@ -371,6 +377,7 @@ impl FunctionLowerer<'_> {
             word: crate::physical::VTABLE_PREFIX_WORDS + *slot,
             method: *method,
             signature: PhysicalCallSignature {
+                failure_domain: signature.failure_domain,
                 params: self.call_params(signature)?,
                 return_ty: signature.return_ty.clone(),
                 return_layout: if matches!(
@@ -419,6 +426,7 @@ impl FunctionLowerer<'_> {
         Ok(PhysicalTerminator::IndirectCall {
             callee: self.argument_transfer(callee.operand.value, callee.decision)?,
             signature: PhysicalCallSignature {
+                failure_domain: signature.failure_domain,
                 params,
                 return_ty: signature.return_ty.clone(),
                 return_layout: if matches!(
@@ -505,6 +513,12 @@ pub(super) fn verify_dyn_call(
     args: &[ArgumentTransfer],
     result: Option<StorageId>,
 ) -> Result<(), PhysicalError> {
+    if signature.failure_domain != hew_types::CallableFailureDomain::HewFault {
+        return Err(PhysicalError::new(
+            "indirect Hew calls require the recoverable fault ABI",
+        ));
+    }
+
     let (slot, method) = selected_method;
     let source = match receiver {
         ArgumentTransfer::Borrow(id)

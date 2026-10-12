@@ -583,6 +583,7 @@ fn module_with_return() -> SemModule {
         symbol: "main".to_string(),
         source_origin: FunctionSourceOrigin::RootUnit,
         signature: SemSignature {
+            failure_domain: hew_types::CallableFailureDomain::HewFault,
             params: vec![],
             return_ty: ResolvedTy::I64,
         },
@@ -681,6 +682,7 @@ fn module_with_call_and_unwind() -> SemModule {
         symbol: "helper".to_string(),
         source_origin: FunctionSourceOrigin::Unknown,
         signature: SemSignature {
+            failure_domain: hew_types::CallableFailureDomain::HewFault,
             params: vec![],
             return_ty: ResolvedTy::I64,
         },
@@ -2130,6 +2132,7 @@ fn verifier_rejects_overwriting_a_maybe_live_owner() {
         },
     );
     let callable = PhysicalCallable {
+        failure_domain: hew_types::CallableFailureDomain::HewFault,
         id: CallableId(0),
         declaration: hew_types::DefId::for_test("malformed_owner_merge"),
         instance: CallableInstance::Monomorphic,

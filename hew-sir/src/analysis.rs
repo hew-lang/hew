@@ -590,6 +590,7 @@ mod tests {
                 symbol: function.name.clone(),
                 source_origin: function.source_origin.clone(),
                 signature: SemSignature {
+                    failure_domain: hew_types::CallableFailureDomain::HewFault,
                     params: function
                         .params
                         .iter()

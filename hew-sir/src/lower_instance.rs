@@ -493,6 +493,7 @@ impl<'a> InstanceService<'a> {
             symbol: "__hew_entry".to_string(),
             source_origin: source.source_origin,
             signature: SemSignature {
+                failure_domain: hew_types::CallableFailureDomain::HewFault,
                 params: Vec::new(),
                 return_ty: ResolvedTy::I64,
             },
@@ -539,6 +540,7 @@ impl<'a> InstanceService<'a> {
                     symbol: format!("__hew_test_entry_{ordinal}"),
                     source_origin: source.source_origin,
                     signature: SemSignature {
+                        failure_domain: hew_types::CallableFailureDomain::HewFault,
                         params: Vec::new(),
                         return_ty: ResolvedTy::I64,
                     },
@@ -674,7 +676,11 @@ impl<'a> InstanceService<'a> {
                 method: layout_slot.method,
                 callee,
                 receiver: receiver_passing,
-                signature: SemSignature { params, return_ty },
+                signature: SemSignature {
+                    failure_domain: target.signature.failure_domain,
+                    params,
+                    return_ty,
+                },
             });
         }
         let id = crate::SemVtableId(

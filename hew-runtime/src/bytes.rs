@@ -675,39 +675,51 @@ pub unsafe extern "C" fn hew_bytes_append(
         dst.offset = 0;
     }
 
-    let end = dst.offset + dst.len;
-    let needed = end + src_len;
+    let Some(end) = dst.offset.checked_add(dst.len) else {
+        // SAFETY: a wrapped active-region end would make the copy target invalid.
+        unsafe { bytes_offset_overflow_trap("bytes append") };
+    };
+    let Some(new_len) = dst.len.checked_add(src_len) else {
+        // SAFETY: Hew byte lengths cannot represent the append result.
+        unsafe { bytes_offset_overflow_trap("bytes append") };
+    };
     // SAFETY: ptr is valid.
     let cap = unsafe { capacity(ptr) };
+    let mut write_offset = end;
 
-    let ptr = if needed > cap {
-        let new_cap = grow_capacity(cap, needed);
-        // Compact if offset > 0.
+    let ptr = if end.checked_add(src_len).is_none_or(|tail| tail > cap) {
+        // Compact first so growth is based on the active length rather than
+        // retaining unused prefix capacity.
         if dst.offset > 0 {
             // SAFETY: ptr is uniquely owned; regions may overlap.
             unsafe {
                 std::ptr::copy(ptr.add(dst.offset as usize), ptr, dst.len as usize);
             }
             dst.offset = 0;
+            write_offset = dst.len;
         }
-        // SAFETY: ptr is uniquely owned, dst.len <= cap, new_cap >= needed.
-        let ptr = unsafe { realloc_buf(ptr, dst.len, new_cap) };
-        dst.ptr = ptr;
-        ptr
+        if new_len > cap {
+            let new_cap = grow_capacity(cap, new_len);
+            // SAFETY: ptr is uniquely owned, dst.len <= cap, new_cap >= new_len.
+            let ptr = unsafe { realloc_buf(ptr, dst.len, new_cap) };
+            dst.ptr = ptr;
+            ptr
+        } else {
+            ptr
+        }
     } else {
         ptr
     };
 
-    let write_offset = (dst.offset + dst.len) as usize;
     // SAFETY: write_offset + src_len <= capacity (ensured above).
     unsafe {
         std::ptr::copy_nonoverlapping(
             src_ptr.add(src_offset as usize),
-            ptr.add(write_offset),
+            ptr.add(write_offset as usize),
             src_len as usize,
         );
     }
-    dst.len += src_len;
+    dst.len = new_len;
 }
 
 /// The active bytes of a triple; empty for the null/0/0 value.

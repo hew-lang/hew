@@ -281,16 +281,6 @@ impl<'a, 'ctx, 'm> SelectedValueEmitter<'a, 'ctx, 'm> {
         }
     }
 
-    fn require_eq(
-        &self,
-        rhs: Option<PointerValue<'ctx>>,
-        kind: &str,
-    ) -> CodegenResult<PointerValue<'ctx>> {
-        rhs.ok_or_else(|| {
-            CodegenError::FailClosed(format!("derived {kind} Hash is outside checker admission"))
-        })
-    }
-
     fn values(&self) -> ValueEmitter<'_, 'ctx> {
         ValueEmitter {
             module: self.parent.module,

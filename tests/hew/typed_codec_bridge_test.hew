@@ -37,6 +37,13 @@ fn formats_preserve_typed_values_and_errors() {
     check(toml.decode<Sample>(toml.encode(value)).expect("TOML"));
     check(msgpack.decode<Sample>(msgpack.encode(value)).expect("MessagePack"));
     assert(json.decode<u64>("18446744073709551615").expect("u64") == 18446744073709551615);
+    let narrow: f32 = 0.1;
+    assert(cbor.decode<f32>(cbor.encode(narrow)).expect("f32") == narrow);
+    let infinity = yaml.decode<f64>(".inf").expect("infinity");
+    assert(cbor.decode<f64>(cbor.encode(infinity)).expect("infinity round-trip") == infinity);
+    let negative_zero: f64 = -0.0;
+    let encoded_zero = cbor.encode(negative_zero);
+    assert(cbor.encode(cbor.decode<f64>(encoded_zero).expect("negative zero")) == encoded_zero);
     let map = json.decode<HashMap<string, i64>>("{\"north\":9007199254740993}").expect("map");
     assert(map.get("north").expect("key") == value.exact);
     let set = cbor.decode<HashSet<i64>>(cbor.encode([4, 5])).expect("set");

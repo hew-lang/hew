@@ -16,10 +16,10 @@ struct hew_cabi_manifest_row {
   enum hew_cabi_manifest_ownership ownership;
 };
 
-#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1629u
+#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1622u
 #define HEW_CABI_MANIFEST_STATIC_COUNT 24u
 
-static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1629] = {
+static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1622] = {
     {"hew_actor_ask",
      "{\"native\": \"fn hew_actor_ask( *mut HewActor, i32, *mut c_void, usize, "
      ") -> *mut c_void\"}",
@@ -4666,45 +4666,6 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1629] = {
      "{\"native\": \"fn hew_process_poll( *mut HewProcess) -> i32\"}", "native",
      "stable", "not-applicable", "no-in-signature-extent",
      HEW_CABI_OWNERSHIP_UNMEASURED},
-    {"hew_process_result_free",
-     "{\"native\": \"fn hew_process_result_free( *mut HewProcessResult)\"}",
-     "native", "stable", "not-applicable", "no-in-signature-extent",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
-    {"hew_process_result_is_valid",
-     "{\"native\": \"fn hew_process_result_is_valid( *const HewProcessResult) "
-     "-> bool\"}",
-     "native", "stable", "not-applicable", "no-in-signature-extent",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
-    {"hew_process_result_signalled",
-     "{\"native\": \"fn hew_process_result_signalled( *const HewProcessResult) "
-     "-> bool\"}",
-     "native", "stable", "not-applicable", "no-in-signature-extent",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
-    {"hew_process_result_status",
-     "{\"native\": \"fn hew_process_result_status( *const HewProcessResult) -> "
-     "i64\"}",
-     "native", "stable", "not-applicable", "no-in-signature-extent",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
-    {"hew_process_result_stderr",
-     "{\"native\": \"fn hew_process_result_stderr( *const HewProcessResult) -> "
-     "*mut HewString\"}",
-     "native", "stable", "not-applicable", "no-in-signature-extent",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
-    {"hew_process_result_stdout",
-     "{\"native\": \"fn hew_process_result_stdout( *const HewProcessResult) -> "
-     "*mut HewString\"}",
-     "native", "stable", "not-applicable", "no-in-signature-extent",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
-    {"hew_process_run",
-     "{\"native\": \"fn hew_process_run( *const HewString) -> *mut "
-     "HewProcessResult\"}",
-     "native", "stable", "not-applicable", "no-in-signature-extent",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
-    {"hew_process_run_argv",
-     "{\"native\": \"fn hew_process_run_argv( *const HewString, *mut HewVec, ) "
-     "-> *mut HewProcessResult\"}",
-     "native", "stable", "not-applicable", "no-in-signature-extent",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_process_signal",
      "{\"native\": \"fn hew_process_signal( *mut HewProcess, bool) -> i32\"}",
      "native", "stable", "not-applicable", "no-in-signature-extent",
@@ -4716,6 +4677,11 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1629] = {
     {"hew_process_start",
      "{\"native\": \"fn hew_process_start( *const HewString, *mut HewVec, i32, "
      "i32, i32, ) -> *mut HewProcess\"}",
+     "native", "stable", "not-applicable", "no-in-signature-extent",
+     HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_process_start_shell",
+     "{\"native\": \"fn hew_process_start_shell( *const HewString) -> *mut "
+     "HewProcess\"}",
      "native", "stable", "not-applicable", "no-in-signature-extent",
      HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_process_status",

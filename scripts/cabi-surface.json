@@ -12315,110 +12315,6 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_process_result_free( *mut HewProcessResult)"
-      },
-      "symbol": "hew_process_result_free"
-    },
-    {
-      "availability": [
-        "native"
-      ],
-      "classification": "stable",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_process_result_is_valid( *const HewProcessResult) -> bool"
-      },
-      "symbol": "hew_process_result_is_valid"
-    },
-    {
-      "availability": [
-        "native"
-      ],
-      "classification": "stable",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_process_result_signalled( *const HewProcessResult) -> bool"
-      },
-      "symbol": "hew_process_result_signalled"
-    },
-    {
-      "availability": [
-        "native"
-      ],
-      "classification": "stable",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_process_result_status( *const HewProcessResult) -> i64"
-      },
-      "symbol": "hew_process_result_status"
-    },
-    {
-      "availability": [
-        "native"
-      ],
-      "classification": "stable",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_process_result_stderr( *const HewProcessResult) -> *mut HewString"
-      },
-      "symbol": "hew_process_result_stderr"
-    },
-    {
-      "availability": [
-        "native"
-      ],
-      "classification": "stable",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_process_result_stdout( *const HewProcessResult) -> *mut HewString"
-      },
-      "symbol": "hew_process_result_stdout"
-    },
-    {
-      "availability": [
-        "native"
-      ],
-      "classification": "stable",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_process_run( *const HewString) -> *mut HewProcessResult"
-      },
-      "symbol": "hew_process_run"
-    },
-    {
-      "availability": [
-        "native"
-      ],
-      "classification": "stable",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_process_run_argv( *const HewString, *mut HewVec, ) -> *mut HewProcessResult"
-      },
-      "symbol": "hew_process_run_argv"
-    },
-    {
-      "availability": [
-        "native"
-      ],
-      "classification": "stable",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
         "native": "fn hew_process_signal( *mut HewProcess, bool) -> i32"
       },
       "symbol": "hew_process_signal"
@@ -12448,6 +12344,19 @@
         "native": "fn hew_process_start( *const HewString, *mut HewVec, i32, i32, i32, ) -> *mut HewProcess"
       },
       "symbol": "hew_process_start"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "stable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_process_start_shell( *const HewString) -> *mut HewProcess"
+      },
+      "symbol": "hew_process_start_shell"
     },
     {
       "availability": [

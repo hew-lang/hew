@@ -2126,10 +2126,6 @@ mod tests {
                 "http.Server".to_string(),
                 "hew_http_server_close".to_string(),
             ),
-            (
-                "process.ProcessResultHandle".to_string(),
-                "hew_process_result_free".to_string(),
-            ),
         ] {
             assert!(
                 all.contains(&expected),

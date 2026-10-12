@@ -8,16 +8,16 @@ use hew_parser::{
 };
 use hew_types::{module_registry::ModuleRegistry, Checker};
 
-const PROCESS_RESOURCE: &str = r#"
-    #[resource] #[opaque] pub type ProcessResultHandle {}
-    impl ProcessResultHandle {
-        fn close(consume self) { unsafe { hew_process_result_free(self) }; }
+const OPAQUE_RESOURCE: &str = r#"
+    #[resource] #[opaque] pub type Handle {}
+    impl Handle {
+        fn close(consume self) { unsafe { fixture_release(self) }; }
     }
     extern "C" {
-        fn hew_process_run(command: string) -> ProcessResultHandle;
-        fn hew_process_result_free(consume result: ProcessResultHandle);
+        fn fixture_create(command: string) -> Handle;
+        fn fixture_release(consume result: Handle);
     }
-    pub fn make() -> ProcessResultHandle { unsafe { hew_process_run("owned") } }
+    pub fn make() -> Handle { unsafe { fixture_create("owned") } }
 "#;
 
 fn resource_module(module_name: &str, source: &str, caller: &str) -> hew_sir::SemModule {
@@ -30,7 +30,7 @@ fn resource_module(module_name: &str, source: &str, caller: &str) -> hew_sir::Se
     };
     import.resolved_items = Some(parsed.program.items.clone().into());
     let source_path = match module_name {
-        "std.process" => "std/process.hew",
+        "bindings" => "bindings.hew",
         "std.net" => "std/net/net.hew",
         _ => panic!("unknown fixture module"),
     };
@@ -109,16 +109,16 @@ unsafe extern "C" fn release_owner(owner: *mut usize) {
 #[test]
 fn opaque_resource_c_abi_releases_once_on_return_close_and_fault_at_o0_o2() {
     let semantic = resource_module(
-        "std.process",
-        PROCESS_RESOURCE,
+        "bindings",
+        OPAQUE_RESOURCE,
         r#"
         extern "C" { fn selected_case() -> i64; }
         fn main() -> i64 {
             let choice = unsafe { selected_case() };
-            let first = process.make();
+            let first = bindings.make();
             if choice == 0 { first.close(); return 10; }
             if choice == 1 { return 11; }
-            let second = process.make();
+            let second = bindings.make();
             if choice == 2 { second.close(); return 12; }
             4 / (choice - 3)
         }
@@ -143,11 +143,8 @@ fn opaque_resource_c_abi_releases_once_on_return_close_and_fault_at_o0_o2() {
         // Map its runtime imports even though this oracle calls the body directly.
         for (symbol, address) in [
             ("selected_case", selected_case as *const () as usize),
-            ("hew_process_run", create_owner as *const () as usize),
-            (
-                "hew_process_result_free",
-                release_owner as *const () as usize,
-            ),
+            ("fixture_create", create_owner as *const () as usize),
+            ("fixture_release", release_owner as *const () as usize),
             (
                 "hew_string_literal_new",
                 hew_runtime::string::hew_string_literal_new as *const () as usize,
@@ -225,9 +222,9 @@ fn opaque_resource_c_abi_releases_once_on_return_close_and_fault_at_o0_o2() {
 #[test]
 fn opaque_resource_layouts_preserve_pointer_and_native_io_token_abis() {
     let pointer = resource_module(
-        "std.process",
-        PROCESS_RESOURCE,
-        "fn main() { let _value = process.make(); }",
+        "bindings",
+        OPAQUE_RESOURCE,
+        "fn main() { let _value = bindings.make(); }",
     );
     let token = resource_module(
         "std.net",
@@ -249,11 +246,7 @@ fn opaque_resource_layouts_preserve_pointer_and_native_io_token_abis() {
         "wasm32-unknown-unknown",
     ] {
         for (semantic, owner, repr) in [
-            (
-                &pointer,
-                "std.process.ProcessResultHandle",
-                PhysicalRepr::Pointer,
-            ),
+            (&pointer, "bindings.Handle", PhysicalRepr::Pointer),
             (
                 &token,
                 "std.net.Connection",

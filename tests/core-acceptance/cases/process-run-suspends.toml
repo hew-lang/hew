@@ -1,0 +1,14 @@
+[[case]]
+id = "process-run-suspends"
+intent = "Command capture drains stdout and stderr concurrently, preserves bytes and status, permits unrelated actor progress with one worker, and reaps its child on cancellation."
+source = "cases/process-run-suspends.hew"
+suites = ["acceptance"]
+timeout_seconds = 20
+
+[case.env]
+HEW_WORKERS = "1"
+
+[case.expected]
+stdout = "Process capture progress and cancellation cleanup\n"
+stderr = ""
+exit = 0

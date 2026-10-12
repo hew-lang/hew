@@ -7,6 +7,37 @@ pub struct AssociatedTypeSchemas {
 }
 
 impl AssociatedTypeSchemas {
+    /// Project implicit associated binders through a method's checked receiver.
+    #[must_use]
+    pub fn instantiate_receiver_type(
+        &self,
+        ty: &Ty,
+        obligations: &[super::ReceiverObligation],
+        defs: &crate::DefTable,
+    ) -> Ty {
+        if let Ty::Named {
+            head: crate::TypeHead::Param(parameter),
+            args,
+        } = ty
+        {
+            if args.is_empty() {
+                for ((base, trait_id, associated), binder) in &self.parameters {
+                    if parameter == binder {
+                        if let Some(receiver) = obligations.iter().find(|item| item.param == *base)
+                        {
+                            return Ty::AssocType {
+                                base: Box::new(receiver.arg.clone()),
+                                trait_name: defs.path(*trait_id).into(),
+                                assoc_name: associated.as_str().into(),
+                            };
+                        }
+                    }
+                }
+            }
+        }
+        ty.map_children_pub(&|child| self.instantiate_receiver_type(child, obligations, defs))
+    }
+
     /// Expand source binders into the body's checked substitution schema.
     #[must_use]
     pub fn binders(&self, parameters: &[crate::ParamHead]) -> Vec<crate::ParamHead> {

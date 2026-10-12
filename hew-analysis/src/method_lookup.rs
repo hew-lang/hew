@@ -42,6 +42,10 @@ pub(crate) fn collect_method_sigs_for_receiver(
         tc.sigs(),
         receiver_ty,
     );
+    let methods: Vec<_> = methods
+        .into_iter()
+        .map(|(name, sig)| (name, instantiate_receiver_projections(tc, sig)))
+        .collect();
     let Ty::Named {
         head: TypeHead::Nominal(nominal),
         ..
@@ -86,6 +90,20 @@ pub(crate) fn lookup_method_sig(
         }
     }
     method_resolution::lookup_method_sig(&tc.defs, &tc.type_defs, tc.sigs(), receiver_ty, method)
+        .map(|sig| instantiate_receiver_projections(tc, sig))
+}
+
+fn instantiate_receiver_projections(tc: &TypeCheckOutput, mut sig: FnSig) -> FnSig {
+    let instantiate = |ty: &Ty| {
+        tc.associated_type_schemas.instantiate_receiver_type(
+            ty,
+            &sig.receiver_obligations,
+            &tc.defs,
+        )
+    };
+    sig.params = sig.params.iter().map(instantiate).collect();
+    sig.return_type = instantiate(&sig.return_type);
+    sig
 }
 
 pub(crate) fn lookup_type_def_for_receiver(

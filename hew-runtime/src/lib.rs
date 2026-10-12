@@ -669,6 +669,7 @@ pub(crate) mod activation;
 pub mod actor;
 pub mod actor_balance;
 pub mod actor_call_native;
+pub mod actor_caller;
 pub mod actor_group;
 pub mod actor_native;
 pub mod arena;

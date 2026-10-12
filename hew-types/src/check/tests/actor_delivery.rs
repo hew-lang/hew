@@ -369,7 +369,7 @@ fn a_fails_handler_with_no_display_is_refused_through_a_mailbox_view() {
 #[test]
 fn an_infallible_completion_envelope_needs_no_failed_arm() {
     let output = check_source(
-        "actor Worker {\n    receive fn total() -> i64 {\n        1\n    }\n}\n\nfn main() {\n    let w = spawn Worker;\n    match w.total() {\n        .Ok(n) => {}\n        .Err(e) => match e {\n            ActorError.Rejected(_) => {}\n            ActorError.Trapped => {}\n            ActorError.Dead => {}\n            ActorError.TimedOut => {}\n            ActorError.NodeNotRunning => {}\n            ActorError.RoutingFailed => {}\n            ActorError.EncodeFailed => {}\n            ActorError.ConnectionDropped => {}\n            ActorError.Partition => {}\n        }\n    }\n}\n",
+        "actor Worker {\n    receive fn total() -> i64 {\n        1\n    }\n}\n\nfn main() {\n    let w = spawn Worker;\n    match w.total() {\n        .Ok(n) => {}\n        .Err(e) => match e {\n            ActorError.Rejected(_) => {}\n            ActorError.Trapped => {}\n            ActorError.Refused => {}\n            ActorError.Dead => {}\n            ActorError.TimedOut => {}\n            ActorError.NodeNotRunning => {}\n            ActorError.RoutingFailed => {}\n            ActorError.EncodeFailed => {}\n            ActorError.ConnectionDropped => {}\n            ActorError.Partition => {}\n        }\n    }\n}\n",
     );
     assert!(output.errors.is_empty(), "{:?}", output.errors);
 }
@@ -379,7 +379,7 @@ fn an_infallible_completion_envelope_needs_no_failed_arm() {
 #[test]
 fn a_fails_completion_envelope_still_requires_its_failed_arm() {
     let output = check_source(
-        "actor Worker {\n    receive fn total() -> i64 fails string {\n        1\n    }\n}\n\nfn main() {\n    let w = spawn Worker;\n    match w.total() {\n        .Ok(n) => {}\n        .Err(e) => match e {\n            ActorError.Rejected(_) => {}\n            ActorError.Trapped => {}\n            ActorError.Dead => {}\n            ActorError.TimedOut => {}\n            ActorError.NodeNotRunning => {}\n            ActorError.RoutingFailed => {}\n            ActorError.EncodeFailed => {}\n            ActorError.ConnectionDropped => {}\n            ActorError.Partition => {}\n        }\n    }\n}\n",
+        "actor Worker {\n    receive fn total() -> i64 fails string {\n        1\n    }\n}\n\nfn main() {\n    let w = spawn Worker;\n    match w.total() {\n        .Ok(n) => {}\n        .Err(e) => match e {\n            ActorError.Rejected(_) => {}\n            ActorError.Trapped => {}\n            ActorError.Refused => {}\n            ActorError.Dead => {}\n            ActorError.TimedOut => {}\n            ActorError.NodeNotRunning => {}\n            ActorError.RoutingFailed => {}\n            ActorError.EncodeFailed => {}\n            ActorError.ConnectionDropped => {}\n            ActorError.Partition => {}\n        }\n    }\n}\n",
     );
     assert!(
         output
@@ -675,4 +675,31 @@ fn a_coalesce_key_names_a_receive_parameter_with_a_key_type() {
         "{:?}",
         untypeable.errors
     );
+}
+
+#[test]
+fn actor_and_supervisor_interceptors_consume_their_call() {
+    let output = check_source(
+        r#"
+actor Worker {
+    #[intercept]
+    fn guard(call: Call<Self>) -> Outcome<Self> {
+        let name = call.handler_name();
+        call.proceed()
+    }
+    receive fn process(value: string) -> string { value }
+}
+supervisor Group {
+    #[intercept]
+    fn observe<A>(call: Call<A>) -> Outcome<A> {
+        let result = call.proceed();
+        let failed = result.failed();
+        result
+    }
+    child worker: Worker;
+}
+fn main() {}
+"#,
+    );
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
 }

@@ -53,6 +53,15 @@ pub extern "C" fn hew_log_set_format(format: i32) {
     LOG_FORMAT.store(format.clamp(0, 1), Ordering::Relaxed);
 }
 
+/// Report a runtime refusal even when the program has not configured logging.
+pub(crate) fn runtime_warning(message: &str) {
+    if LOG_FORMAT.load(Ordering::Relaxed) == 1 {
+        emit_json(1, message);
+    } else {
+        emit_text(1, message);
+    }
+}
+
 /// Emit a log line if the message level passes the global filter.
 ///
 /// If the global format is TEXT (0), outputs coloured text to stderr.

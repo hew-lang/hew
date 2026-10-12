@@ -533,9 +533,8 @@ pub struct HewMsgNode {
     /// `MailboxPayloadClass::Unit (0)` on all existing allocators (zero-init
     /// backward-compatible). See `crate::mailbox_envelope::MailboxPayloadClass`.
     pub payload_class: u8,
-    /// Source actor PID for attribution and cross-node routing.
-    /// `SOURCE_PID_UNKNOWN (0)` when the origin is not recorded.
-    pub source_pid: u64,
+    /// Sender identity stamped by the admitting runtime.
+    pub caller: crate::actor_caller::HewCallerStamp,
     /// Opaque handle for an associated `HewCancellationToken`.
     /// `CANCEL_TOKEN_NONE (0)` when no token is attached.
     /// Cross-node serialisation of this field is deferred to a future lane.
@@ -626,6 +625,7 @@ unsafe fn msg_node_alloc(
     data: *const c_void,
     data_size: usize,
     reply_channel: *mut c_void,
+    caller: crate::actor_caller::HewCallerStamp,
 ) -> *mut HewMsgNode {
     // External / user-send seam: capture (and, when no execution context is
     // installed, MINT) a sampled trace root via `tracing::current_context` so
@@ -638,6 +638,7 @@ unsafe fn msg_node_alloc(
             data_size,
             reply_channel,
             crate::tracing::current_context(),
+            caller,
         )
     }
 }
@@ -670,6 +671,7 @@ unsafe fn msg_node_alloc_sys(
             data_size,
             reply_channel,
             crate::tracing::system_context(),
+            crate::actor_caller::HewCallerStamp::default(),
         )
     }
 }
@@ -690,6 +692,7 @@ unsafe fn msg_node_alloc_with_trace(
     data_size: usize,
     reply_channel: *mut c_void,
     trace_context: HewTraceContext,
+    caller: crate::actor_caller::HewCallerStamp,
 ) -> *mut HewMsgNode {
     // SAFETY: malloc(sizeof HewMsgNode) — POD-like struct, no drop glue.
     let node = mailbox_malloc(std::mem::size_of::<HewMsgNode>()).cast::<HewMsgNode>();
@@ -715,10 +718,9 @@ unsafe fn msg_node_alloc_with_trace(
         // would silently pass the cross-node gate — defeating the fail-closed
         // invariant. Zero maps to the canonical sentinels:
         //   payload_class = 0  →  MailboxPayloadClass::Unit
-        //   source_pid    = 0  →  SOURCE_PID_UNKNOWN
         //   cancel_token  = 0  →  CANCEL_TOKEN_NONE
         (*node).payload_class = 0;
-        (*node).source_pid = 0;
+        (*node).caller = caller;
         (*node).cancel_token_handle = 0;
 
         // Deep-copy message data for actor isolation.
@@ -785,7 +787,7 @@ unsafe fn msg_node_alloc_aliased(
         // Explicit zero-init for the mailbox-envelope ABI fields.
         // See msg_node_alloc for the rationale; same invariant applies here.
         (*node).payload_class = 0;
-        (*node).source_pid = 0;
+        (*node).caller = crate::actor_caller::local_sender();
         (*node).cancel_token_handle = 0;
     }
 
@@ -1171,7 +1173,7 @@ fn alloc_stub_node() -> *mut HewMsgNode {
         // Explicit zero-init for the mailbox-envelope ABI fields.
         // See msg_node_alloc for the rationale; same invariant applies here.
         (*node).payload_class = 0;
-        (*node).source_pid = 0;
+        (*node).caller = crate::actor_caller::HewCallerStamp::default();
         (*node).cancel_token_handle = 0;
     }
     node
@@ -1925,6 +1927,7 @@ unsafe fn send_with_overflow(
     data_size: usize,
     non_blocking: bool,
     reply_channel: *mut c_void,
+    caller: crate::actor_caller::HewCallerStamp,
 ) -> SendOutcome {
     let Some(_admission) = mb.enter_admission() else {
         return SendOutcome::Closed;
@@ -1960,7 +1963,7 @@ unsafe fn send_with_overflow(
         }
 
         // SAFETY: `data` validity guaranteed by caller.
-        let node = unsafe { msg_node_alloc(msg_type, data, data_size, reply_channel) };
+        let node = unsafe { msg_node_alloc(msg_type, data, data_size, reply_channel, caller) };
         if node.is_null() {
             release_fast_path_capacity(mb);
             return SendOutcome::Oom;
@@ -2035,7 +2038,8 @@ unsafe fn send_with_overflow(
                         q = mb.slow_path.lock_or_recover();
                     }
                     // SAFETY: `data` validity guaranteed by caller.
-                    let node = unsafe { msg_node_alloc(msg_type, data, data_size, reply_channel) };
+                    let node =
+                        unsafe { msg_node_alloc(msg_type, data, data_size, reply_channel, caller) };
                     if node.is_null() {
                         return SendOutcome::Oom;
                     }
@@ -2047,7 +2051,8 @@ unsafe fn send_with_overflow(
                 }
                 DeclaredAdmission::EvictOldest => {
                     // SAFETY: the caller supplies valid payload bytes.
-                    let node = unsafe { msg_node_alloc(msg_type, data, data_size, reply_channel) };
+                    let node =
+                        unsafe { msg_node_alloc(msg_type, data, data_size, reply_channel, caller) };
                     if node.is_null() {
                         return SendOutcome::Oom;
                     }
@@ -2071,7 +2076,7 @@ unsafe fn send_with_overflow(
         // to enqueue_user_node: its lock-free publication order would
         // expose `count` before this VecDeque node is protected.
         // SAFETY: `data` validity guaranteed by caller.
-        let node = unsafe { msg_node_alloc(msg_type, data, data_size, reply_channel) };
+        let node = unsafe { msg_node_alloc(msg_type, data, data_size, reply_channel, caller) };
         if node.is_null() {
             return SendOutcome::Oom;
         }
@@ -2084,7 +2089,7 @@ unsafe fn send_with_overflow(
 
     // Unbounded fast path, or a slow-path mailbox currently below capacity.
     // SAFETY: `data` validity guaranteed by caller.
-    let node = unsafe { msg_node_alloc(msg_type, data, data_size, reply_channel) };
+    let node = unsafe { msg_node_alloc(msg_type, data, data_size, reply_channel, caller) };
     if node.is_null() {
         return SendOutcome::Oom;
     }
@@ -2207,9 +2212,10 @@ pub(crate) unsafe fn try_admit_native_request(
     envelope: *mut HewMsgEnvelope,
     reply: *mut c_void,
     obligated: bool,
+    caller: crate::actor_caller::HewCallerStamp,
 ) -> SendOutcome {
     // SAFETY: preserves the caller's pinned mailbox and unique references.
-    unsafe { admit_native_request(mb, msg_type, envelope, reply, obligated, false) }
+    unsafe { admit_native_request(mb, msg_type, envelope, reply, obligated, false, caller) }
 }
 
 /// Admit a terminal attachment event behind queued data, bypassing capacity.
@@ -2219,7 +2225,17 @@ pub(crate) unsafe fn admit_native_terminal(
     envelope: *mut HewMsgEnvelope,
 ) -> SendOutcome {
     // SAFETY: the caller pins the mailbox and owns the unpublished envelope.
-    unsafe { admit_native_request(mb, msg_type, envelope, ptr::null_mut(), true, true) }
+    unsafe {
+        admit_native_request(
+            mb,
+            msg_type,
+            envelope,
+            ptr::null_mut(),
+            true,
+            true,
+            crate::actor_caller::local_sender(),
+        )
+    }
 }
 
 /// Replace the queued message this request supersedes, if any.
@@ -2233,6 +2249,7 @@ unsafe fn coalesce_native_request(
     queue: &SlowPathQueue,
     msg_type: i32,
     envelope: *mut HewMsgEnvelope,
+    caller: crate::actor_caller::HewCallerStamp,
 ) -> Option<*mut HewMsgEnvelope> {
     let same_key = mb
         .coalesce_match_fn
@@ -2251,7 +2268,10 @@ unsafe fn coalesce_native_request(
         }
     })?;
     // SAFETY: the queue lock grants exclusive access to this node.
-    Some(unsafe { std::mem::replace(&mut (*queued).envelope, envelope) })
+    Some(unsafe {
+        (*queued).caller = caller;
+        std::mem::replace(&mut (*queued).envelope, envelope)
+    })
 }
 
 /// What a destination's declared mailbox policy does with a submission that
@@ -2310,6 +2330,7 @@ unsafe fn admit_native_request(
     reply: *mut c_void,
     obligated: bool,
     terminal: bool,
+    caller: crate::actor_caller::HewCallerStamp,
 ) -> SendOutcome {
     let Some(_admission) = mb.enter_admission() else {
         return SendOutcome::Closed;
@@ -2320,7 +2341,10 @@ unsafe fn admit_native_request(
         return SendOutcome::Oom;
     }
     // SAFETY: the unpublished node is exclusively owned here.
-    unsafe { (*node).obligated = obligated };
+    unsafe {
+        (*node).obligated = obligated;
+        (*node).caller = caller;
+    }
     let outcome = if mb.capacity > 0 && mb.use_slow_path {
         let mut queue = mb.slow_path.lock_or_recover();
         if mb.is_closed() {
@@ -2340,7 +2364,9 @@ unsafe fn admit_native_request(
             } else {
                 let declared = if mb.overflow == HewOverflowPolicy::Coalesce {
                     // SAFETY: the queue is locked and the caller owns `envelope`.
-                    match unsafe { coalesce_native_request(mb, &queue, msg_type, envelope) } {
+                    match unsafe {
+                        coalesce_native_request(mb, &queue, msg_type, envelope, (*node).caller)
+                    } {
                         Some(displaced) => {
                             drop(queue);
                             // SAFETY: replacement transferred this envelope out of the queue.
@@ -2479,7 +2505,17 @@ pub unsafe extern "C" fn hew_mailbox_send(
     // SAFETY: Caller guarantees `mb` is valid.
     let mb = unsafe { &*mb };
     // SAFETY: Caller guarantees `data` points to `size` readable bytes.
-    match unsafe { send_with_overflow(mb, msg_type, data, size, false, ptr::null_mut()) } {
+    match unsafe {
+        send_with_overflow(
+            mb,
+            msg_type,
+            data,
+            size,
+            false,
+            ptr::null_mut(),
+            crate::actor_caller::local_sender(),
+        )
+    } {
         SendOutcome::Enqueued | SendOutcome::Coalesced | SendOutcome::DroppedOld => {
             HewError::Ok as i32
         }
@@ -2519,11 +2555,12 @@ pub(crate) unsafe fn hew_mailbox_send_fire_and_forget(
     msg_type: i32,
     data: *mut c_void,
     size: usize,
+    caller: crate::actor_caller::HewCallerStamp,
 ) -> SendOutcome {
     // SAFETY: Caller guarantees `mb` is valid.
     let mb_ref = unsafe { &*mb };
     // SAFETY: Caller guarantees `data` points to `size` readable bytes.
-    unsafe { send_with_overflow(mb_ref, msg_type, data, size, false, ptr::null_mut()) }
+    unsafe { send_with_overflow(mb_ref, msg_type, data, size, false, ptr::null_mut(), caller) }
 }
 
 /// The block-send registration owns the copied message and parked continuation.
@@ -2572,7 +2609,15 @@ pub(crate) unsafe fn mailbox_await_send(
         return (HewError::ErrActorStopped as i32, 0);
     }
     // SAFETY: the caller guarantees the readable payload range.
-    let node = unsafe { msg_node_alloc(msg_type, data, size, ptr::null_mut()) };
+    let node = unsafe {
+        msg_node_alloc(
+            msg_type,
+            data,
+            size,
+            ptr::null_mut(),
+            crate::actor_caller::local_sender(),
+        )
+    };
     if node.is_null() {
         return (HewError::ErrOom as i32, 0);
     }
@@ -2634,6 +2679,7 @@ pub(crate) unsafe fn mailbox_send_with_reply_cooperative(
     data: *mut c_void,
     size: usize,
     reply_channel: *mut c_void,
+    caller: crate::actor_caller::HewCallerStamp,
 ) -> i32 {
     if mb.is_null() || reply_channel.is_null() {
         return HewError::ErrClosed as i32;
@@ -2645,7 +2691,7 @@ pub(crate) unsafe fn mailbox_send_with_reply_cooperative(
     };
     if mailbox.capacity <= 0 || mailbox.overflow != HewOverflowPolicy::Block {
         // SAFETY: caller guarantees the ordinary send preconditions.
-        return unsafe { hew_mailbox_send_with_reply(mb, msg_type, data, size, reply_channel) };
+        return unsafe { mailbox_send_with_reply(mb, msg_type, data, size, reply_channel, caller) };
     }
 
     let mut queue = mailbox.slow_path.lock_or_recover();
@@ -2653,7 +2699,7 @@ pub(crate) unsafe fn mailbox_send_with_reply_cooperative(
         return HewError::ErrActorStopped as i32;
     }
     // SAFETY: the caller guarantees the readable payload and live channel.
-    let node = unsafe { msg_node_alloc(msg_type, data, size, reply_channel) };
+    let node = unsafe { msg_node_alloc(msg_type, data, size, reply_channel, caller) };
     if node.is_null() {
         return HewError::ErrOom as i32;
     }
@@ -2760,10 +2806,31 @@ pub unsafe extern "C" fn hew_mailbox_send_with_reply(
     size: usize,
     reply_channel: *mut c_void,
 ) -> i32 {
+    // SAFETY: forwards the live mailbox and unpublished message.
+    unsafe {
+        mailbox_send_with_reply(
+            mb,
+            msg_type,
+            data,
+            size,
+            reply_channel,
+            crate::actor_caller::local_sender(),
+        )
+    }
+}
+
+unsafe fn mailbox_send_with_reply(
+    mb: *mut HewMailbox,
+    msg_type: i32,
+    data: *mut c_void,
+    size: usize,
+    reply_channel: *mut c_void,
+    caller: crate::actor_caller::HewCallerStamp,
+) -> i32 {
     // SAFETY: Caller guarantees `mb` is valid.
     let mb = unsafe { &*mb };
     // SAFETY: Caller guarantees `data` points to `size` readable bytes.
-    match unsafe { send_with_overflow(mb, msg_type, data, size, false, reply_channel) } {
+    match unsafe { send_with_overflow(mb, msg_type, data, size, false, reply_channel, caller) } {
         SendOutcome::Enqueued | SendOutcome::Coalesced | SendOutcome::DroppedOld => {
             HewError::Ok as i32
         }
@@ -2799,7 +2866,17 @@ pub unsafe extern "C" fn hew_mailbox_try_send(
     // SAFETY: Caller guarantees `mb` is valid.
     let mb = unsafe { &*mb };
     // SAFETY: Caller guarantees `data` points to `size` readable bytes.
-    match unsafe { send_with_overflow(mb, msg_type, data, size, true, ptr::null_mut()) } {
+    match unsafe {
+        send_with_overflow(
+            mb,
+            msg_type,
+            data,
+            size,
+            true,
+            ptr::null_mut(),
+            crate::actor_caller::local_sender(),
+        )
+    } {
         SendOutcome::Enqueued | SendOutcome::Coalesced | SendOutcome::DroppedOld => {
             HewError::Ok as i32
         }
@@ -3643,7 +3720,14 @@ mod tests {
         assert_eq!(
             // SAFETY: mailbox, zero-sized payload, and retained channel are valid.
             unsafe {
-                mailbox_send_with_reply_cooperative(mb, 2, ptr::null_mut(), 0, channel.cast())
+                mailbox_send_with_reply_cooperative(
+                    mb,
+                    2,
+                    ptr::null_mut(),
+                    0,
+                    channel.cast(),
+                    crate::actor_caller::local_sender(),
+                )
             },
             HewError::Ok as i32
         );
@@ -3973,6 +4057,7 @@ mod tests {
                             env,
                             ptr::null_mut(),
                             false,
+                            crate::actor_caller::local_sender(),
                         );
                         match outcome {
                             SendOutcome::Enqueued => {
@@ -4133,7 +4218,8 @@ mod tests {
                     (&raw const first).cast(),
                     size_of::<i32>(),
                     false,
-                    ptr::null_mut()
+                    ptr::null_mut(),
+                    crate::actor_caller::local_sender()
                 ),
                 SendOutcome::Enqueued
             ));
@@ -4144,7 +4230,8 @@ mod tests {
                     (&raw const second).cast(),
                     size_of::<i32>(),
                     false,
-                    ptr::null_mut()
+                    ptr::null_mut(),
+                    crate::actor_caller::local_sender()
                 ),
                 SendOutcome::Dropped
             ));
@@ -4576,7 +4663,15 @@ mod tests {
                 unsafe { hew_mailbox_new() }
             };
             assert!(!mb.is_null());
-            let node = unsafe { msg_node_alloc(17, ptr::null_mut(), 0, ptr::null_mut()) };
+            let node = unsafe {
+                msg_node_alloc(
+                    17,
+                    ptr::null_mut(),
+                    0,
+                    ptr::null_mut(),
+                    crate::actor_caller::local_sender(),
+                )
+            };
             assert!(!node.is_null());
 
             let (hook, entered, release) = UserCountPublicationHookGuard::install(node);
@@ -4885,8 +4980,15 @@ mod tests {
                         let msg_type = i32::try_from(producer_id * PER_PRODUCER + seq)
                             .expect("test payload id fits in i32");
                         // SAFETY: null payload + zero size is a valid message.
-                        let node =
-                            unsafe { msg_node_alloc(msg_type, ptr::null(), 0, ptr::null_mut()) };
+                        let node = unsafe {
+                            msg_node_alloc(
+                                msg_type,
+                                ptr::null(),
+                                0,
+                                ptr::null_mut(),
+                                crate::actor_caller::local_sender(),
+                            )
+                        };
                         assert!(!node.is_null(), "message allocation must succeed");
                         // SAFETY: each node is freshly allocated and exclusively
                         // owned by this producer until publish.
@@ -4950,7 +5052,15 @@ mod tests {
             // A real message carrying the stub's own stamp: legal on the public
             // ABI, and the queue must treat it as any other message.
             // SAFETY: null payload + zero size is a valid message.
-            let node = unsafe { msg_node_alloc(stamp, ptr::null(), 0, ptr::null_mut()) };
+            let node = unsafe {
+                msg_node_alloc(
+                    stamp,
+                    ptr::null(),
+                    0,
+                    ptr::null_mut(),
+                    crate::actor_caller::local_sender(),
+                )
+            };
             assert!(!node.is_null(), "message allocation must succeed");
             assert_ne!(node, stub, "a real node is never the stub allocation");
             // SAFETY: freshly allocated and exclusively owned until publish.
@@ -4998,7 +5108,15 @@ mod tests {
                 for seq in 0..burst {
                     let msg_type = i32::try_from(seq).expect("test payload id fits in i32");
                     // SAFETY: null payload + zero size is a valid message.
-                    let node = unsafe { msg_node_alloc(msg_type, ptr::null(), 0, ptr::null_mut()) };
+                    let node = unsafe {
+                        msg_node_alloc(
+                            msg_type,
+                            ptr::null(),
+                            0,
+                            ptr::null_mut(),
+                            crate::actor_caller::local_sender(),
+                        )
+                    };
                     assert!(!node.is_null(), "message allocation must succeed");
                     // SAFETY: freshly allocated and exclusively owned until publish.
                     unsafe { q.enqueue(node) };
@@ -5124,14 +5242,28 @@ mod tests {
                 let payload = alloc_test_payload(b"retained");
                 let envelope = hew_msg_envelope_new(payload, 8, Some(envelope_test_drop_glue));
                 assert!(matches!(
-                    try_admit_native_request(&*full, 7, envelope, ptr::null_mut(), false),
+                    try_admit_native_request(
+                        &*full,
+                        7,
+                        envelope,
+                        ptr::null_mut(),
+                        false,
+                        crate::actor_caller::local_sender()
+                    ),
                     SendOutcome::Failed
                 ));
                 assert_eq!(ENVELOPE_DROP_COUNT.load(Ordering::SeqCst), 0);
                 assert_eq!((*envelope).payload, payload);
                 assert_eq!((*envelope).refcount.load(Ordering::SeqCst), 1);
                 assert!(matches!(
-                    try_admit_native_request(&*backup, 7, envelope, ptr::null_mut(), false),
+                    try_admit_native_request(
+                        &*backup,
+                        7,
+                        envelope,
+                        ptr::null_mut(),
+                        false,
+                        crate::actor_caller::local_sender()
+                    ),
                     SendOutcome::Enqueued
                 ));
                 hew_mailbox_free(full);
@@ -5161,7 +5293,14 @@ mod tests {
                     Some(envelope_test_drop_glue),
                 );
                 assert!(matches!(
-                    try_admit_native_request(&*full, 7, queued, ptr::null_mut(), false),
+                    try_admit_native_request(
+                        &*full,
+                        7,
+                        queued,
+                        ptr::null_mut(),
+                        false,
+                        crate::actor_caller::local_sender()
+                    ),
                     SendOutcome::Enqueued
                 ));
                 let arriving = hew_msg_envelope_new(
@@ -5169,7 +5308,14 @@ mod tests {
                     8,
                     Some(envelope_test_drop_glue),
                 );
-                let outcome = try_admit_native_request(&*full, 7, arriving, ptr::null_mut(), false);
+                let outcome = try_admit_native_request(
+                    &*full,
+                    7,
+                    arriving,
+                    ptr::null_mut(),
+                    false,
+                    crate::actor_caller::local_sender(),
+                );
                 let decided = match policy {
                     // `drop_new` loses the arriving message.
                     HewOverflowPolicy::DropNew => matches!(outcome, SendOutcome::Dropped),
@@ -5208,7 +5354,14 @@ mod tests {
             let ask =
                 hew_msg_envelope_new(alloc_test_payload(b"ask"), 3, Some(envelope_test_drop_glue));
             assert!(matches!(
-                try_admit_native_request(&*mb, 7, ask, channel.cast(), true),
+                try_admit_native_request(
+                    &*mb,
+                    7,
+                    ask,
+                    channel.cast(),
+                    true,
+                    crate::actor_caller::local_sender()
+                ),
                 SendOutcome::Enqueued
             ));
             let one_way = hew_msg_envelope_new(
@@ -5217,7 +5370,14 @@ mod tests {
                 Some(envelope_test_drop_glue),
             );
             assert!(matches!(
-                try_admit_native_request(&*mb, 7, one_way, ptr::null_mut(), false),
+                try_admit_native_request(
+                    &*mb,
+                    7,
+                    one_way,
+                    ptr::null_mut(),
+                    false,
+                    crate::actor_caller::local_sender()
+                ),
                 SendOutcome::Enqueued
             ));
 
@@ -5229,7 +5389,14 @@ mod tests {
                 Some(envelope_test_drop_glue),
             );
             assert!(matches!(
-                try_admit_native_request(&*mb, 7, newest, ptr::null_mut(), false),
+                try_admit_native_request(
+                    &*mb,
+                    7,
+                    newest,
+                    ptr::null_mut(),
+                    false,
+                    crate::actor_caller::local_sender()
+                ),
                 SendOutcome::Enqueued
             ));
             assert_eq!(ENVELOPE_DROP_COUNT.load(Ordering::SeqCst), 1);
@@ -5255,7 +5422,14 @@ mod tests {
                     Some(envelope_test_drop_glue),
                 );
                 assert!(matches!(
-                    try_admit_native_request(&*asks_only, slot, ask, channel.cast(), true),
+                    try_admit_native_request(
+                        &*asks_only,
+                        slot,
+                        ask,
+                        channel.cast(),
+                        true,
+                        crate::actor_caller::local_sender()
+                    ),
                     SendOutcome::Enqueued
                 ));
             }
@@ -5266,7 +5440,14 @@ mod tests {
             );
             assert!(
                 matches!(
-                    try_admit_native_request(&*asks_only, 7, refused, ptr::null_mut(), false),
+                    try_admit_native_request(
+                        &*asks_only,
+                        7,
+                        refused,
+                        ptr::null_mut(),
+                        false,
+                        crate::actor_caller::local_sender()
+                    ),
                     SendOutcome::Failed
                 ),
                 "with only asks to evict, drop_old refuses instead"
@@ -5288,14 +5469,28 @@ mod tests {
             {
                 let _fail = fail_mailbox_alloc_on_nth(0);
                 assert!(matches!(
-                    try_admit_native_request(&*mailbox, 7, envelope, ptr::null_mut(), false),
+                    try_admit_native_request(
+                        &*mailbox,
+                        7,
+                        envelope,
+                        ptr::null_mut(),
+                        false,
+                        crate::actor_caller::local_sender()
+                    ),
                     SendOutcome::Oom
                 ));
             }
             assert_eq!(ENVELOPE_DROP_COUNT.load(Ordering::SeqCst), 0);
             mailbox_close(mailbox);
             assert!(matches!(
-                try_admit_native_request(&*mailbox, 7, envelope, ptr::null_mut(), false),
+                try_admit_native_request(
+                    &*mailbox,
+                    7,
+                    envelope,
+                    ptr::null_mut(),
+                    false,
+                    crate::actor_caller::local_sender()
+                ),
                 SendOutcome::Closed
             ));
             assert_eq!((*envelope).payload, payload);
@@ -5382,6 +5577,7 @@ mod tests {
                     crate::lifetime::local_handles::HewLocalPidId::INVALID,
                     0,
                     env,
+                    crate::actor_caller::local_sender()
                 ),
                 SendOutcome::Closed
             ));
@@ -5572,7 +5768,14 @@ mod tests {
             assert_eq!((*env).refcount.load(Ordering::SeqCst), 1);
 
             assert!(matches!(
-                try_admit_native_request(&*mb, 9, env, ptr::null_mut(), false),
+                try_admit_native_request(
+                    &*mb,
+                    9,
+                    env,
+                    ptr::null_mut(),
+                    false,
+                    crate::actor_caller::local_sender()
+                ),
                 SendOutcome::Enqueued
             ));
             assert_eq!(hew_mailbox_has_messages(mb), 1);
@@ -5703,30 +5906,62 @@ mod tests {
                 HewOverflowPolicy::DropNew,
             );
             assert!(matches!(
-                try_admit_native_request(&*mb, 3, keyed_envelope(7), ptr::null_mut(), false),
+                try_admit_native_request(
+                    &*mb,
+                    3,
+                    keyed_envelope(7),
+                    ptr::null_mut(),
+                    false,
+                    crate::actor_caller::HewCallerStamp::actor(41)
+                ),
                 SendOutcome::Enqueued
             ));
             // Same message type and key: the queued payload is superseded.
             assert!(matches!(
-                try_admit_native_request(&*mb, 3, keyed_envelope(7), ptr::null_mut(), false),
+                try_admit_native_request(
+                    &*mb,
+                    3,
+                    keyed_envelope(7),
+                    ptr::null_mut(),
+                    false,
+                    crate::actor_caller::HewCallerStamp::actor(42)
+                ),
                 SendOutcome::Coalesced
             ));
             assert_eq!(COALESCE_TEST_DROPS.load(Ordering::SeqCst), 1);
             assert_eq!(hew_mailbox_len(mb), 1);
             // A different key has nothing to supersede, so `drop_new` discards it.
             assert!(matches!(
-                try_admit_native_request(&*mb, 3, keyed_envelope(9), ptr::null_mut(), false),
+                try_admit_native_request(
+                    &*mb,
+                    3,
+                    keyed_envelope(9),
+                    ptr::null_mut(),
+                    false,
+                    crate::actor_caller::local_sender()
+                ),
                 SendOutcome::Dropped
             ));
             assert_eq!(COALESCE_TEST_DROPS.load(Ordering::SeqCst), 2);
             // The same key on a different message type never merges.
             assert!(matches!(
-                try_admit_native_request(&*mb, 4, keyed_envelope(7), ptr::null_mut(), false),
+                try_admit_native_request(
+                    &*mb,
+                    4,
+                    keyed_envelope(7),
+                    ptr::null_mut(),
+                    false,
+                    crate::actor_caller::local_sender()
+                ),
                 SendOutcome::Dropped
             ));
             assert_eq!(COALESCE_TEST_DROPS.load(Ordering::SeqCst), 3);
             let node = hew_mailbox_try_recv(mb);
             assert!(!node.is_null());
+            assert_eq!(
+                (*node).caller,
+                crate::actor_caller::HewCallerStamp::actor(42)
+            );
             hew_msg_node_free(node);
             assert_eq!(COALESCE_TEST_DROPS.load(Ordering::SeqCst), 4);
             hew_mailbox_free(mb);

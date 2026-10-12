@@ -18,6 +18,10 @@ pub const DECLARATIONS: &[KnownDecl] = &[
     KnownDecl::ActorRequest,
     KnownDecl::ActorRequestOwner,
     KnownDecl::ActorRequestAdmission,
+    KnownDecl::ActorId,
+    KnownDecl::Caller,
+    KnownDecl::Call,
+    KnownDecl::Outcome,
 ];
 
 /// A view's policy is immutable and determines its submission effect.
@@ -61,6 +65,7 @@ impl SendPolicy {
 /// Selected operations carried independently of source and linker spellings.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ActorDeliveryCall {
+    Intercept(InterceptorOperation),
     /// Close admission and drain accepted turns without waiting.
     Stop,
     /// Close admission, discard queued turns and cancel at the next suspension.
@@ -86,6 +91,24 @@ pub enum ActorDeliveryCall {
         method: crate::DefId,
         redirect: bool,
     },
+}
+
+/// Operations on the compiler-owned, linear interceptor protocol.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InterceptorOperation {
+    Caller,
+    HandlerName,
+    Proceed,
+    Refuse,
+    Failed,
+    Refused,
+}
+
+impl InterceptorOperation {
+    #[must_use]
+    pub const fn consumes(self) -> bool {
+        matches!(self, Self::Proceed | Self::Refuse)
+    }
 }
 
 /// The method declaration identifies a sealed protocol; its arguments retain

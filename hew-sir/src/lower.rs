@@ -18,6 +18,8 @@ mod writable;
 mod actor;
 #[path = "lower_actor_codec.rs"]
 mod actor_codec;
+#[path = "lower_actor_intercept.rs"]
+mod actor_intercept;
 #[path = "lower_remote_actor.rs"]
 mod remote_actor;
 
@@ -550,7 +552,9 @@ struct InstanceService<'a> {
     by_instance: HashMap<SirInstanceKey, CallableId>,
     closures: Vec<crate::SemClosure>,
     actors: Vec<crate::SemActor>,
-    actor_sources: HashMap<CallableId, (HirFn, Vec<HirBinding>, TypeSubstitution)>,
+    actor_sources: HashMap<CallableId, ActorBodySource>,
+    actor_interceptor_chains: HashMap<crate::ActorId, Vec<ResolvedTy>>,
+    supervisor_interceptor_chains: HashMap<crate::SupervisorId, Vec<ResolvedTy>>,
     supervisors: Vec<crate::SemSupervisor>,
     /// Bodies the lowering synthesizes outside the HIR item table.
     synthetic_sources: HashMap<CallableId, (HirFn, TypeSubstitution)>,
@@ -1036,10 +1040,17 @@ pub(crate) fn runtime_variant_tags(
             (Role::SendErrorDead, "Dead"),
             (Role::SendErrorWriteTimedOut, "WriteTimedOut"),
         ],
+        head if *head == KnownDecl::Caller.head() => &[
+            (Role::CallerActor, "Actor"),
+            (Role::CallerTask, "Task"),
+            (Role::CallerTimer, "Timer"),
+            (Role::CallerNode, "Node"),
+        ],
         head if *head == KnownDecl::ActorError.head() => &[
             (Role::ActorErrorRejected, "Rejected"),
             (Role::ActorErrorFailed, "Failed"),
             (Role::ActorErrorTrapped, "Trapped"),
+            (Role::ActorErrorRefused, "Refused"),
             (Role::ActorErrorDead, "Dead"),
             (Role::ActorErrorTimedOut, "TimedOut"),
             (Role::ActorErrorNodeNotRunning, "NodeNotRunning"),
@@ -1313,12 +1324,40 @@ struct LoweringInput<'a> {
     source: BodySource,
 }
 
+#[derive(Clone)]
+struct ActorBodySource {
+    function: HirFn,
+    state_bindings: Vec<HirBinding>,
+    substitution: TypeSubstitution,
+    stream: Option<ResolvedTy>,
+    weave: Option<ActorWeave>,
+}
+
+#[derive(Clone)]
+enum ActorWeave {
+    Entry {
+        handler: usize,
+        interceptor: CallableId,
+    },
+    Interceptor {
+        next: InterceptorNext,
+    },
+}
+
+#[derive(Clone)]
+enum InterceptorNext {
+    Layer(CallableId),
+    Handlers(Vec<crate::SemActorHandler>),
+}
+
 enum BodySource {
     Function,
     Closure(Box<HirExpr>),
     Actor {
         actor: crate::ActorId,
         state_bindings: Vec<HirBinding>,
+        stream: Option<ResolvedTy>,
+        weave: Option<ActorWeave>,
     },
     EntryAdapter(EntryAdapter),
 }

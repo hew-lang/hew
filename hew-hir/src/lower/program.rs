@@ -1866,6 +1866,7 @@ pub fn lower_program_with_mono_cap(
     // the full path keeps source attribution aligned with checker facts.
     // Prelude declarations must precede lazy body checking, independently of
     // whether their executable methods are needed or have checked successfully.
+    let actor_intercept_types = ctx.lower_actor_intercept_types();
     let prelude_enums: Vec<_> = SOURCE_PRELUDE_ENUMS
         .iter()
         .copied()
@@ -2903,6 +2904,7 @@ pub fn lower_program_with_mono_cap(
         }));
     }
     items.extend(delivery_declarations.into_iter().map(HirItem::TypeDecl));
+    items.extend(actor_intercept_types.into_iter().map(HirItem::TypeDecl));
     for decl in prelude_enums {
         items.push(HirItem::TypeDecl(decl));
     }

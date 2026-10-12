@@ -424,11 +424,15 @@ impl Checker {
         let Some(definition) = self.type_defs.get(&nominal) else {
             return;
         };
-        let Some(index) = definition
-            .field_order
-            .iter()
-            .position(|name| name == field.0.name.as_str())
-        else {
+        let index = if head == crate::KnownDecl::Call.head() && field.0.name.as_str() == "request" {
+            Some(0)
+        } else {
+            definition
+                .field_order
+                .iter()
+                .position(|name| name == field.0.name.as_str())
+        };
+        let Some(index) = index else {
             return;
         };
         let Some(site) = self.scope_site() else {

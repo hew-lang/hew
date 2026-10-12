@@ -40,8 +40,11 @@ pub enum DeclarationKind {
     ActorInit,
     ActorReceive,
     ActorMethod,
+    ActorRequestType,
+    ActorResponseType,
     Supervisor,
     SupervisorBootstrap,
+    SupervisorMethod,
     Machine,
     MachineEventType,
     MachineState,
@@ -403,10 +406,14 @@ pub enum KnownDecl {
     HashMapIter,
     NodeConfig,
     PartitionPolicy,
+    ActorId,
+    Caller,
+    Call,
+    Outcome,
 }
 
 impl KnownDecl {
-    pub const ALL: [Self; 18] = [
+    pub const ALL: [Self; 22] = [
         Self::ActorError,
         Self::Never,
         Self::ActorMailbox,
@@ -425,6 +432,10 @@ impl KnownDecl {
         Self::HashMapIter,
         Self::NodeConfig,
         Self::PartitionPolicy,
+        Self::ActorId,
+        Self::Caller,
+        Self::Call,
+        Self::Outcome,
     ];
 
     /// The declaration's canonical path in `std.builtins`.
@@ -449,6 +460,10 @@ impl KnownDecl {
             Self::HashMapIter => "std.builtins.HashMapIter",
             Self::NodeConfig => "std.builtins.NodeConfig",
             Self::PartitionPolicy => "std.link_monitor.PartitionPolicy",
+            Self::ActorId => "std.builtins.ActorId",
+            Self::Caller => "std.builtins.Caller",
+            Self::Call => "std.builtins.Call",
+            Self::Outcome => "std.builtins.Outcome",
         }
     }
 
@@ -472,6 +487,10 @@ impl KnownDecl {
             Self::HashMapIter => "HashMapIter",
             Self::NodeConfig => "NodeConfig",
             Self::PartitionPolicy => "PartitionPolicy",
+            Self::ActorId => "ActorId",
+            Self::Caller => "Caller",
+            Self::Call => "Call",
+            Self::Outcome => "Outcome",
         }
     }
 

@@ -723,6 +723,8 @@ impl HirRecordDecl {
 /// treats `HirItem::Supervisor` as a no-op tier alongside `Record`/`Actor`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct HirSupervisorDecl {
+    /// Stateless interceptor instantiated inside each declared child turn.
+    pub interceptor: Option<HirFn>,
     pub id: ItemId,
     pub node: HirNodeId,
     /// Exact checker-owned supervisor declaration identity.

@@ -18,6 +18,7 @@ impl Checker {
     }
 
     pub(super) fn check_item(&mut self, item: &Item, span: &Span) {
+        self.check_interceptor_storage(item, span);
         match item {
             Item::Function(fd) => self.check_function(fd),
             Item::Actor(ad) => {
@@ -331,6 +332,7 @@ impl Checker {
         // Child construction uses the ordinary spawn contract with retained
         // config parameters in scope. Each restart repeats this construction.
         self.check_supervisor_init_args(sd, span);
+        self.check_supervisor_interceptor(sd);
         self.current_type_param_bounds.pop();
         self.exit_primary_sig_scope(scope);
     }
@@ -994,7 +996,12 @@ impl Checker {
             self.record_callable_formal_candidate(p.name);
             self.env.set_parameter_consume(
                 p.name.name.as_str(),
-                p.is_consume || (is_receiver && fd.consumes_self),
+                p.is_consume
+                    || (is_receiver && fd.consumes_self)
+                    || fd
+                        .attributes
+                        .iter()
+                        .any(|attribute| attribute.name.as_str() == "intercept"),
             );
             if private_copy {
                 self.env.reinit_place(p.name.name.as_str(), &[]);
@@ -1055,6 +1062,21 @@ impl Checker {
     }
 
     fn check_function_body_as(&mut self, fd: &FnDecl, fn_name: &str) {
+        if !fd
+            .attributes
+            .iter()
+            .any(|attribute| attribute.name.as_str() == "intercept")
+            && self.fn_sig(fn_name).is_some_and(|signature| {
+                signature.return_type.contains_interceptor_token()
+                    || signature.params.iter().any(Ty::contains_interceptor_token)
+            })
+        {
+            self.report_error(
+                TypeErrorKind::InterceptEscape,
+                &fd.fn_span,
+                "Call and Outcome may cross only an interceptor boundary".to_string(),
+            );
+        }
         // Functions marked `#[intrinsic("key")]` are typed declaration stubs
         // whose bodies are empty placeholders; the real semantics live in the
         // catalog. Skip body type-checking entirely — the signature was already
@@ -1341,6 +1363,9 @@ impl Checker {
                 .unwrap_or_default();
             self.current_type_param_bounds.push(bounds);
         }
+        let previous_self = self
+            .current_self_type
+            .replace((identity.clone(), actor_ty.clone()));
         let prev_actor_type = self.current_actor_type.replace(actor_ty);
         let deferred_fields = self
             .actor_deferred_fields
@@ -1409,6 +1434,7 @@ impl Checker {
             self.current_type_param_bounds.pop();
             self.generic_ctx.pop();
         }
+        self.current_self_type = previous_self;
         self.current_actor_type = prev_actor_type;
         self.current_actor_fields = prev_actor_fields;
         self.actor_consumed_state = prev_consumed_state;
@@ -1429,6 +1455,7 @@ impl Checker {
     /// its `#[on(<event>)]` annotation. Tracks `#[on(start)]` uniqueness
     /// across the loop.
     fn check_actor_methods(&mut self, ad: &ActorDecl, identity: &str) {
+        self.check_actor_interceptor(ad, identity);
         let mut on_start_seen: Option<Span> = None;
         let mut on_down_seen: Option<Span> = None;
         // The crash hook is checked after every other body so that it sees

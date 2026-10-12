@@ -512,13 +512,22 @@ struct ReconnectPlan {
 
 /// Inbound message routing callback.
 ///
-/// Parameters: `(target_actor_id, msg_type, data, size, request_id, source_node_id, conn_mgr)`.
+/// Carries the authenticated peer identity separately from reply routing.
 /// `request_id` > 0 with `source_node_id` > 0 means this is an ask that expects
 /// a reply. `request_id` == 0 is fire-and-forget.
 /// `conn_mgr` is the manager that received the message; the callback must
 /// use it to route replies so they go out on the correct connection regardless
 /// of which node is stored in the process-global `CURRENT_NODE`.
-type InboundRouter = unsafe extern "C" fn(u64, i32, *mut u8, usize, u64, u16, *mut HewConnMgr);
+type InboundRouter = unsafe extern "C" fn(
+    u64,
+    i32,
+    *mut u8,
+    usize,
+    u64,
+    u16,
+    *mut HewConnMgr,
+    crate::node_identity::HewNodeId,
+);
 
 // SAFETY: HewConnMgr is only accessed through C ABI functions that
 // serialize access via the internal Mutex. The transport pointer is

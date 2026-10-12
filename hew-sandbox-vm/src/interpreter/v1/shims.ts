@@ -75,6 +75,8 @@ export function resolveRuntimeShim(
             throw new Error("SupervisorPool requires its resumable executor");
           }
         : undefined;
+    case "ActorCaller":
+    case "ActorRefusalLog":
     case "StructuralFormat":
       return () => {
         throw new Error("StructuralFormat requires its resumable executor");

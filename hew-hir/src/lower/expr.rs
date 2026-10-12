@@ -281,6 +281,22 @@ impl LowerCtx {
             use hew_types::actor_delivery::ActorDeliveryCall;
             let (receiver, args) = match (&operation, &expr.0) {
                 (
+                    ActorDeliveryCall::Intercept(operation),
+                    Expr::MethodCall { receiver, args, .. },
+                ) => (
+                    self.lower_expr(
+                        receiver,
+                        if operation.consumes() {
+                            IntentKind::Consume
+                        } else {
+                            IntentKind::Read
+                        },
+                    ),
+                    args.iter()
+                        .map(|arg| self.lower_expr(arg.expr(), IntentKind::Read))
+                        .collect(),
+                ),
+                (
                     ActorDeliveryCall::Stop
                     | ActorDeliveryCall::Terminate
                     | ActorDeliveryCall::AwaitStopped

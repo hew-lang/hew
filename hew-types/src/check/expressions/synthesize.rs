@@ -1415,6 +1415,13 @@ impl Checker {
             // Track captures: variable from scope below the lambda boundary
             if let Some(capture_depth) = self.lambda_capture_depth {
                 if depth < capture_depth {
+                    if ty.contains_interceptor_token() {
+                        self.report_error(
+                            TypeErrorKind::InterceptEscape,
+                            span,
+                            "Call and Outcome cannot be captured by a closure".to_string(),
+                        );
+                    }
                     self.lambda_captures.push(ty.clone());
                     self.lambda_capture_facts.push(ClosureCaptureFact {
                         binding_id,
@@ -1996,6 +2003,16 @@ impl Checker {
 
     /// Check if an expression is typically used for side effects (not for its return value).
     pub(in crate::check) fn record_type(&mut self, span: &Span, ty: &Ty) {
+        if ty.contains_interceptor_token()
+            && !matches!(ty, Ty::Named { head, .. }
+            if *head == crate::KnownDecl::Call.head() || *head == crate::KnownDecl::Outcome.head())
+        {
+            self.report_error(
+                TypeErrorKind::InterceptEscape,
+                span,
+                "Call and Outcome cannot be stored in another value".to_string(),
+            );
+        }
         let key = SpanKey::in_module(span, self.current_module_idx);
         self.expr_type_source_modules
             .insert(key.clone(), self.current_module.clone());

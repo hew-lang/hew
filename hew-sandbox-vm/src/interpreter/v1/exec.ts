@@ -85,7 +85,13 @@ type Fault = (
   | { kind: "trap"; trap: TrapName; message?: string }
 ) & { primary?: Fault; secondary?: Fault[] };
 
+type CallerStamp =
+  | { kind: "Task" | "Timer" }
+  | { kind: "Actor"; identity: bigint };
+
 interface FrameContext {
+  caller?: CallerStamp;
+  reply?: boolean;
   id: string;
   actor: ActorInstance | null;
   cancel?: (fault?: Fault) => void;
@@ -107,6 +113,7 @@ interface GeneratorEntry {
 }
 
 interface ActorMessage {
+  caller: CallerStamp;
   handler: ActorShape["handlers"][number];
   payload: VmValue[];
   reply: boolean;
@@ -119,6 +126,7 @@ interface ActorMessage {
 }
 
 interface ActorInstance {
+  identity: bigint;
   id: string;
   layout: ActorShape;
   state: VmValue;
@@ -328,6 +336,7 @@ class ExecutorV1 {
   private readonly generators = new Map<string, GeneratorEntry>();
   private readonly tasks = new Map<string, TaskEntry>();
   private completedTasks = 0;
+  private actorIdentity = 0n;
   private readonly faultDebts = new Set<number>();
   private nextFaultDebt = 0;
   private readonly closingResources = new WeakSet<object>();
@@ -1362,6 +1371,50 @@ class ExecutorV1 {
         return;
       case "runtime.call": {
         const entry = this.pkg.runtime_families[term.family];
+        if (entry?.family === "ActorCaller") {
+          const caller = act.context.caller ?? { kind: "Task" };
+          const payload: VmValue[] = [];
+          if (caller.kind === "Actor") {
+            const shape = this.pkg.variants[term.result_shape!];
+            const tag = runtimeTag(shape!, "CallerActor");
+            payload.push({
+              kind: "record",
+              typeId: shape!.cases[tag]!.fields[0]!,
+              fields: [{ kind: "i64", value: caller.identity }],
+            });
+          }
+          this.completeShim(
+            act,
+            term,
+            this.variant(
+              term.result_shape,
+              caller.kind === "Actor"
+                ? "CallerActor"
+                : caller.kind === "Timer"
+                  ? "CallerTimer"
+                  : "CallerTask",
+              payload,
+            ),
+          );
+          return;
+        }
+        if (entry?.family === "ActorRefusalLog") {
+          const [message, handler, reason] = term.args.map((argument) =>
+            this.boundary(act, argument),
+          );
+          this.trace.snapshot("actor.delivery_refused", {
+            actor_id: act.context.actor?.id,
+            handler: toJsonValue(handler!),
+            message: toJsonValue(message!),
+          });
+          if (!act.context.reply)
+            this.trace.writeStderr(
+              `WARN actor.delivery_refused actor=${act.context.actor?.identity ?? 0n} handler=${asString(handler!)}: ${asString(reason!)}\n`,
+              null,
+            );
+          this.completeShim(act, term, UNIT);
+          return;
+        }
         if (
           entry &&
           (entry.family === "Map" ||
@@ -2573,6 +2626,9 @@ class ExecutorV1 {
   ): void {
     const args = term.args.map((arg) => this.boundary(act, arg));
     const operation = term.operation;
+    const caller: CallerStamp = act.context.actor
+      ? { kind: "Actor", identity: act.context.actor.identity }
+      : { kind: "Task" };
     switch (operation.op) {
       case "spawn": {
         const layout = this.pkg.actors?.find(
@@ -2582,6 +2638,7 @@ class ExecutorV1 {
           throw new Error(`actor layout ${operation.actor} is missing`);
         let supplied = 0;
         const actor: ActorInstance = {
+          identity: ++this.actorIdentity,
           id: this.ids.actor(),
           layout,
           state: {
@@ -2684,6 +2741,7 @@ class ExecutorV1 {
             if (!handler)
               throw new Error("stream request has no producer handler");
             actor.mailbox.push({
+              caller,
               handler,
               payload: fields,
               reply: false,
@@ -2834,6 +2892,7 @@ class ExecutorV1 {
               const superseded = actor.mailbox[queued]!;
               actor.mailbox[queued] = {
                 ...superseded,
+                caller,
                 payload: payload.fields,
               };
               discardAtReceiver(
@@ -2857,6 +2916,7 @@ class ExecutorV1 {
           if (oldest >= 0) {
             const [evicted] = actor.mailbox.splice(oldest, 1);
             actor.mailbox.push({
+              caller,
               handler,
               payload: payload.fields,
               reply: false,
@@ -2889,6 +2949,7 @@ class ExecutorV1 {
             return;
           }
           actor.mailbox.push({
+            caller,
             handler,
             payload: payload.fields,
             reply: false,
@@ -3091,6 +3152,9 @@ class ExecutorV1 {
     let admitted = false;
     let closing = false;
     const owner = this.current.context.actor;
+    const caller: CallerStamp = owner
+      ? { kind: "Actor", identity: owner.identity }
+      : { kind: "Task" };
     let receiver: ActorInstance | null = null;
     const finish: ActorMessage["complete"] = (value, error, drained) => {
       const alreadySettled = settled;
@@ -3204,6 +3268,7 @@ class ExecutorV1 {
       admitted = true;
       receiver = actor;
       actor.mailbox.push({
+        caller,
         handler,
         payload,
         complete: finish,
@@ -3283,6 +3348,8 @@ class ExecutorV1 {
         {
           id: actor.id,
           actor,
+          caller: message.caller,
+          reply: message.reply,
           returned: (value) => {
             actor.active = null;
             const drained = (fault: Fault | null) => {
@@ -3316,7 +3383,14 @@ class ExecutorV1 {
           failed: (fault) => {
             actor.active = null;
             actor.busy = false;
-            if (fault.kind === "panic" && fault.cancelled) {
+            if (
+              fault.kind === "trap" &&
+              fault.trap === "actor_refused" &&
+              !fault.secondary?.length
+            ) {
+              message.complete(null, "Refused");
+              this.dispatchActor(actor);
+            } else if (fault.kind === "panic" && fault.cancelled) {
               message.complete(null, "Dead");
               this.dispatchActor(actor);
             } else {
@@ -3865,6 +3939,7 @@ function faultInfo(fault: Fault): [number, string] {
     divide_by_zero: [202, "DivideByZero"],
     shift_out_of_range: [204, "ShiftOutOfRange"],
     vector_bounds: [205, "IndexOutOfBounds"],
+    actor_refused: [-4, "Refused"],
   }[fault.trap] as [number, string];
 }
 
@@ -3946,6 +4021,8 @@ function actorErrorRole(reason: string): RuntimeVariantRole {
       return "ActorErrorFailed";
     case "Trapped":
       return "ActorErrorTrapped";
+    case "Refused":
+      return "ActorErrorRefused";
     case "Dead":
       return "ActorErrorDead";
     case "TimedOut":
@@ -4081,6 +4158,8 @@ function trapMessage(trap: TrapName): string {
       return "shift amount out of range";
     case "vector_bounds":
       return "index out of bounds";
+    case "actor_refused":
+      return "delivery refused by interceptor";
   }
 }
 

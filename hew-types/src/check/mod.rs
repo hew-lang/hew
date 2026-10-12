@@ -24,6 +24,7 @@ use std::sync::OnceLock;
 
 mod actor_codec;
 mod actor_delivery;
+mod actor_intercept;
 pub(crate) mod admissibility;
 pub(crate) mod assertion;
 mod bounds;
@@ -2242,6 +2243,30 @@ impl Checker {
                         false,
                     );
                 }
+                for (kind, suffix, offset) in [
+                    (Kind::ActorRequestType, "Request", 0),
+                    (Kind::ActorResponseType, "Response", decl.receive_fns.len()),
+                ] {
+                    let enum_path = format!("{path}.{suffix}");
+                    let enum_owner = declare(
+                        kind,
+                        0,
+                        Symbol::intern(suffix),
+                        owner,
+                        enum_path.clone(),
+                        false,
+                    );
+                    for (index, receive) in decl.receive_fns.iter().enumerate() {
+                        declare(
+                            Kind::Variant,
+                            offset + index,
+                            receive.name.name,
+                            enum_owner,
+                            format!("{enum_path}::{}", receive.name),
+                            false,
+                        );
+                    }
+                }
                 for (index, receive) in decl.receive_fns.iter().enumerate() {
                     declare(
                         Kind::ActorReceive,
@@ -2278,6 +2303,16 @@ impl Checker {
                     format!("{path}::<bootstrap>"),
                     false,
                 );
+                for (index, method) in decl.methods.iter().enumerate() {
+                    declare(
+                        Kind::SupervisorMethod,
+                        index,
+                        method.name.name,
+                        owner,
+                        format!("{path}::{}", method.name),
+                        false,
+                    );
+                }
             }
             Item::Machine(decl) => {
                 let name = decl.name.name;
@@ -2510,7 +2545,17 @@ impl Checker {
                     );
                 }
             }
-            Item::Supervisor(decl) => declare(Kind::Supervisor, 0, span, &decl.type_params),
+            Item::Supervisor(decl) => {
+                declare(Kind::Supervisor, 0, span, &decl.type_params);
+                for (index, method) in decl.methods.iter().enumerate() {
+                    declare(
+                        Kind::SupervisorMethod,
+                        index,
+                        &method.fn_span,
+                        method.type_params.as_deref().unwrap_or_default(),
+                    );
+                }
+            }
             Item::Machine(decl) => declare(Kind::Machine, 0, span, &decl.type_params),
             _ => {}
         }
@@ -3068,6 +3113,7 @@ impl Checker {
             &mut self.errors,
         );
         self.fn_sigs = fn_sigs_for_descriptors;
+        self.register_actor_intercept_types(program);
     }
 
     fn check_dependency_bodies(&mut self, program: &Program) {

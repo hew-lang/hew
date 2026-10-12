@@ -29,11 +29,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         // A stream producer owns the caller's sink as an implicit trailing
         // parameter with no source binding.
         let stream = match source {
-            BodySource::Actor { actor, .. } => service.actors[actor.0 as usize]
-                .handlers
-                .iter()
-                .find(|handler| handler.callable == callable.id)
-                .and_then(|handler| handler.stream.clone()),
+            BodySource::Actor { stream, .. } => stream.clone(),
             BodySource::Function | BodySource::Closure(_) | BodySource::EntryAdapter(_) => None,
         };
         if source_params.len() + receiver_count + usize::from(stream.is_some())
@@ -405,6 +401,18 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         source: BodySource,
     ) -> Result<Option<Operand>, String> {
         match source {
+            BodySource::Actor {
+                actor,
+                weave:
+                    Some(super::ActorWeave::Entry {
+                        handler,
+                        interceptor,
+                    }),
+                ..
+            } => {
+                self.lower_intercept_entry(actor, handler, interceptor)?;
+                Ok(None)
+            }
             BodySource::Actor { state_bindings, .. } if self.stream_sink.is_some() => {
                 // HIR shapes a stream producer as a generator block; the body
                 // runs as this actor turn and yields straight into the sink.
@@ -559,6 +567,14 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         }
         let ty = self.ty(&expr.ty);
         let own = OwnKind::of_ty(&ty, self.service.checked_facts.rows())?;
+        if let HirExprKind::FieldAccess { object, field } = &expr.kind {
+            if hew_types::actor_protocol::is_interceptor_view(&self.ty(&object.ty), field) {
+                let mut loans = Vec::new();
+                let value = self.lower_borrowed_read(expr, &mut loans)?.value;
+                self.scope_loans.extend(loans);
+                return Ok(value);
+            }
+        }
         let movable_owner = self
             .service
             .checked_facts

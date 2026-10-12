@@ -231,6 +231,7 @@ pub(super) const fn argument_source(transfer: &ArgumentTransfer) -> StorageId {
 
 pub(super) fn trap_code(kind: TrapKind) -> i32 {
     match kind {
+        TrapKind::ActorRefused => hew_runtime::fault::HEW_FAULT_REFUSED,
         TrapKind::IntegerOverflow => HEW_TRAP_INTEGER_OVERFLOW,
         TrapKind::DivideByZero => HEW_TRAP_DIVIDE_BY_ZERO,
         TrapKind::SignedMinDivNegOne => HEW_TRAP_SIGNED_MIN_DIV_NEG_ONE,

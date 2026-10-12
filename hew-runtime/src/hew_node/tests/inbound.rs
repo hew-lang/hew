@@ -483,9 +483,10 @@ fn inbound_router_no_spawn_after_shutdown_started() {
             1,
             ptr::null_mut(),
             0,
-            /*request_id=*/ 1,
-            /*source_node_id=*/ 1,
+            1,
+            1,
             (*node.as_ptr()).conn_mgr,
+            crate::node_identity::HewNodeId::default(),
         );
     }
 
@@ -617,9 +618,10 @@ fn node_stop_waits_to_free_connmgr_until_inbound_ask_error_worker_drains() {
             1,
             ptr::null_mut(),
             0,
-            /*request_id=*/ 1,
-            /*source_node_id=*/ 353,
+            1,
+            353,
             (*node2.as_ptr()).conn_mgr,
+            crate::node_identity::HewNodeId::default(),
         );
     }
 
@@ -730,9 +732,10 @@ fn node_stop_drain_waits_for_router_wedged_after_counter_increment() {
                 1,
                 ptr::null_mut(),
                 0,
-                /*request_id=*/ 1,
-                /*source_node_id=*/ 1,
+                1,
+                1,
                 conn_mgr_addr as *mut connection::HewConnMgr,
+                crate::node_identity::HewNodeId::default(),
             );
         }
     });
@@ -885,14 +888,13 @@ fn handle_inbound_ask_capture_safe_for_secondary_node_freed_connmgr() {
     let worker_handle = thread::spawn(move || {
         handle_inbound_ask(
             actor_id,
-            /*msg_type=*/ 1,
-            /*payload=*/ &[],
-            /*request_id=*/ 1,
-            /*source_node_id=*/ 363,
-            // SAFETY: pointer ferried as usize; valid until freed by the
-            // stop below, after which the fix guarantees it is never read.
+            1,
+            &[],
+            1,
+            363,
             SendConnMgr(conn_mgr_addr as *mut connection::HewConnMgr),
             shutdown_started,
+            crate::actor_caller::HewCallerStamp::default(),
         );
     });
 

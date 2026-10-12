@@ -18,6 +18,8 @@ use crate::internal::types::{ExitReason, HEW_TRAP_USER_PANIC};
 
 /// Private completion codes kept distinct from source panic and trap codes.
 pub const HEW_FAULT_CANCELLED: i32 = -1;
+/// Delivery completion used only by a compiled interceptor wrapper.
+pub const HEW_FAULT_REFUSED: i32 = -4;
 
 /// Whether `code` is a cancellation that a requested shutdown caused. Such a
 /// cancellation is an expected stop, not a fault. The wasm32 driver has no
@@ -94,6 +96,15 @@ impl HewFault {
 
     pub(crate) fn code(&self) -> i32 {
         self.primary.code
+    }
+
+    /// Remove an expected completion marker while retaining cleanup faults.
+    pub(crate) fn without_primary(mut self) -> Option<Self> {
+        if self.secondary.is_empty() {
+            return None;
+        }
+        self.primary = self.secondary.remove(0);
+        Some(self)
     }
 
     pub(crate) fn append(&mut self, secondary: Self) {

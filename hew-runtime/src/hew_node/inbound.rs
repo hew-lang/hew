@@ -190,6 +190,10 @@ pub(super) static INBOUND_ROUTER_AFTER_INCREMENT_HOOK: std::sync::LazyLock<TestG
 pub(super) static INBOUND_ASK_FEATURE_FLAGS_CAPTURE_HOOK: std::sync::LazyLock<TestGate> =
     std::sync::LazyLock::new(TestGate::default);
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "frame delivery carries authenticated identity and reply routing"
+)]
 pub(super) unsafe extern "C" fn node_inbound_router(
     target_actor_id: u64,
     msg_type: i32,
@@ -198,7 +202,9 @@ pub(super) unsafe extern "C" fn node_inbound_router(
     request_id: u64,
     source_node_id: u16,
     conn_mgr: *mut connection::HewConnMgr,
+    peer: crate::node_identity::HewNodeId,
 ) {
+    let caller = crate::actor_caller::HewCallerStamp::peer(peer);
     if request_id > 0 && source_node_id > 0 {
         // Inbound remote ask — dispatch locally and send the reply back.
 
@@ -335,6 +341,7 @@ pub(super) unsafe extern "C" fn node_inbound_router(
                 source_node_id,
                 conn_mgr_send,
                 shutdown_started,
+                caller,
             );
         });
     } else {
@@ -342,7 +349,7 @@ pub(super) unsafe extern "C" fn node_inbound_router(
         // address space before delivering it to the local mailbox.
         let _remote_trace_source = crate::tracing::enter_remote_trace_source();
         // SAFETY: data is valid for `size` bytes (reader_loop contract).
-        unsafe { deliver_inbound_send(target_actor_id, msg_type, data, size) };
+        unsafe { deliver_inbound_send(target_actor_id, msg_type, data, size, caller) };
     }
 }
 
@@ -358,7 +365,13 @@ pub(super) unsafe extern "C" fn node_inbound_router(
 ///
 /// # Safety
 /// `data` must be valid for `size` bytes (or null when `size == 0`).
-unsafe fn deliver_inbound_send(target_actor_id: u64, msg_type: i32, data: *mut u8, size: usize) {
+unsafe fn deliver_inbound_send(
+    target_actor_id: u64,
+    msg_type: i32,
+    data: *mut u8,
+    size: usize,
+    caller: crate::actor_caller::HewCallerStamp,
+) {
     let codec = crate::lifetime::live_actors::dispatch_ptr_by_id(target_actor_id)
         .and_then(|dispatch| crate::xnode_serial::lookup_request(dispatch, msg_type));
     let payload = if size == 0 {
@@ -377,7 +390,7 @@ unsafe fn deliver_inbound_send(target_actor_id: u64, msg_type: i32, data: *mut u
         return;
     };
     if !request
-        .submit(target_actor_id, msg_type)
+        .submit(target_actor_id, msg_type, caller)
         .is_some_and(submission_delivered)
     {
         set_last_error(format!(
@@ -392,6 +405,10 @@ unsafe fn deliver_inbound_send(target_actor_id: u64, msg_type: i32, data: *mut u
     clippy::needless_pass_by_value,
     reason = "spawned ask-handler thread must own the shutdown flag clone"
 )]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "frame delivery carries authenticated identity and reply routing"
+)]
 pub(super) fn handle_inbound_ask(
     target_actor_id: u64,
     msg_type: i32,
@@ -400,6 +417,7 @@ pub(super) fn handle_inbound_ask(
     source_node_id: u16,
     conn_mgr: SendConnMgr,
     shutdown_started: Arc<AtomicBool>,
+    caller: crate::actor_caller::HewCallerStamp,
 ) {
     // Test seam: wedge a straggler worker at the top of the handler, BEFORE the
     // feature-flags capture acquires the CURRENT_NODE read lock, so a test can
@@ -487,7 +505,7 @@ pub(super) fn handle_inbound_ask(
         reject(AskError::DecodeFailure);
         return;
     };
-    let reply_data = match request.ask(target_actor_id, msg_type, reply_codec) {
+    let reply_data = match request.ask(target_actor_id, msg_type, reply_codec, caller) {
         Ok(reply) => reply,
         Err(reason) => {
             reject(reason);

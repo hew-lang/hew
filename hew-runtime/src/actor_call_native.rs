@@ -10,7 +10,7 @@ use crate::internal::types::AskError;
 use crate::lifetime::live_actors::ActorIncarnation;
 use crate::lifetime::local_handles::HewLocalPidId;
 use crate::mailbox::native::{
-    hew_actor_ask_wait_free, hew_actor_ask_wait_poll, hew_actor_ask_wait_resume,
+    ask_wait_resume, hew_actor_ask_wait_free, hew_actor_ask_wait_poll,
     hew_actor_ask_wait_take_request, HewNativeAsk,
 };
 use crate::mailbox::{hew_msg_envelope_new, HewMsgEnvelope, HewMsgEnvelopeDropFn};
@@ -169,6 +169,47 @@ pub unsafe extern "C" fn hew_actor_call_new(
     payload_release: Option<HewValueReleaseStart>,
     reply_release: Option<HewValueReleaseStart>,
 ) -> *mut HewActorCall {
+    // SAFETY: forwards the owned request and captures its local sender.
+    unsafe {
+        actor_call_new(
+            token,
+            message,
+            payload,
+            size,
+            drop_payload,
+            reply_size,
+            drop_reply,
+            waker,
+            duration_ns,
+            has_deadline,
+            policy,
+            payload_release,
+            reply_release,
+            crate::actor_caller::local_sender(),
+        )
+    }
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the checked request and reply carry one complete admission contract"
+)]
+pub(crate) unsafe fn actor_call_new(
+    token: HewLocalPidId,
+    message: i32,
+    payload: *mut c_void,
+    size: usize,
+    drop_payload: HewMsgEnvelopeDropFn,
+    reply_size: usize,
+    drop_reply: Option<HewReplyDropFn>,
+    waker: *const HewWaker,
+    duration_ns: i64,
+    has_deadline: i32,
+    policy: i32,
+    payload_release: Option<HewValueReleaseStart>,
+    reply_release: Option<HewValueReleaseStart>,
+    caller: crate::actor_caller::HewCallerStamp,
+) -> *mut HewActorCall {
     let mut rejected_payload = ptr::null_mut();
     let envelope = if payload.is_null() {
         ptr::null_mut()
@@ -194,7 +235,7 @@ pub unsafe extern "C" fn hew_actor_call_new(
     };
     // SAFETY: the sealed constructor takes this envelope and the same protocol.
     unsafe {
-        let operation = hew_actor_call_resume(
+        let operation = actor_call_resume(
             token,
             message,
             envelope,
@@ -205,6 +246,7 @@ pub unsafe extern "C" fn hew_actor_call_new(
             has_deadline,
             policy,
             reply_release,
+            caller,
         );
         (*operation).rejected_payload = rejected_payload;
         operation
@@ -233,6 +275,41 @@ pub unsafe extern "C" fn hew_actor_call_resume(
     policy: i32,
     reply_release: Option<HewValueReleaseStart>,
 ) -> *mut HewActorCall {
+    // SAFETY: forwards the owned request and captures its local sender.
+    unsafe {
+        actor_call_resume(
+            token,
+            message,
+            envelope,
+            reply_size,
+            drop_reply,
+            waker,
+            duration_ns,
+            has_deadline,
+            policy,
+            reply_release,
+            crate::actor_caller::local_sender(),
+        )
+    }
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the checked request and reply carry one complete admission contract"
+)]
+pub(crate) unsafe fn actor_call_resume(
+    token: HewLocalPidId,
+    message: i32,
+    envelope: *mut HewMsgEnvelope,
+    reply_size: usize,
+    drop_reply: Option<HewReplyDropFn>,
+    waker: *const HewWaker,
+    duration_ns: i64,
+    has_deadline: i32,
+    policy: i32,
+    reply_release: Option<HewValueReleaseStart>,
+    caller: crate::actor_caller::HewCallerStamp,
+) -> *mut HewActorCall {
     // SAFETY: registration precedes any request publication.
     let channel = unsafe { hew_reply_channel_new_native(waker, drop_reply, reply_release) };
     let timer = if has_deadline != 0 {
@@ -244,7 +321,7 @@ pub unsafe extern "C" fn hew_actor_call_resume(
     // SAFETY: channel and request are still unpublished, and this call owns both.
     let admission = unsafe {
         crate::reply_channel::enable_native_withdrawal(channel);
-        hew_actor_ask_wait_resume(token, message, envelope, channel.cast(), waker)
+        ask_wait_resume(token, message, envelope, channel.cast(), waker, caller)
     };
     let mut operation = Box::new(HewActorCall {
         admission,
@@ -451,7 +528,8 @@ mod tests {
                         7,
                         envelope,
                         channel.cast(),
-                        true
+                        true,
+                        crate::actor_caller::local_sender()
                     ),
                     crate::mailbox::SendOutcome::Enqueued
                 ));

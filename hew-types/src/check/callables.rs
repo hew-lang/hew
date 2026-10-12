@@ -144,8 +144,16 @@ impl Checker {
         {
             return Some(span.clone());
         }
-        let (root, _) = self.expr_place(expr)?;
-        self.env.lookup_ref(&root)?.collection_borrow.clone()
+        let (root, path) = self.expr_place(expr)?;
+        let binding = self.env.lookup_ref(&root)?;
+        if let Some(field) = path.first() {
+            if crate::ResolvedTy::from_ty(&self.subst.resolve(&binding.ty))
+                .is_ok_and(|ty| crate::actor_protocol::is_interceptor_view(&ty, field))
+            {
+                return Some(span.clone());
+            }
+        }
+        binding.collection_borrow.clone()
     }
 
     /// Bind a pattern against its scrutinee. A scrutinee that is a collection
@@ -719,12 +727,13 @@ impl Checker {
     }
 
     pub(super) fn reject_borrowed_consumption(&mut self, expr: &Expr, span: &Span) -> bool {
-        if matches!(expr, Expr::Index { .. }) && self.collection_borrow_origin(expr, span).is_some()
+        if matches!(expr, Expr::Index { .. } | Expr::FieldAccess { .. })
+            && self.collection_borrow_origin(expr, span).is_some()
         {
             self.report_error(
                 TypeErrorKind::OwnConsumeBorrowed,
                 span,
-                "E_OWN_CONSUME_BORROWED: cannot consume an indexed collection borrow".to_string(),
+                "E_OWN_CONSUME_BORROWED: cannot consume a borrowed projection".to_string(),
             );
             return true;
         }

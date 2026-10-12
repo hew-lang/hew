@@ -858,15 +858,7 @@ fn connect_client(
             .as_str()
             .into_client_request()
             .map_err(|err| tungstenite_failure(&err))?;
-        if !options.subprotocols.is_empty() {
-            let offer = options.subprotocols.join(", ");
-            let value = offer
-                .parse()
-                .map_err(|_| (WS_INVALID_ARGUMENT, format!("subprotocol offer {offer:?}")))?;
-            request
-                .headers_mut()
-                .insert("Sec-WebSocket-Protocol", value);
-        }
+        offer_subprotocols(&mut request, &options.subprotocols)?;
         let uri = request.uri();
         let mode = uri_mode(uri).map_err(|err| tungstenite_failure(&err))?;
         keep_transport(&mut first_tls, mode)?;
@@ -955,6 +947,22 @@ fn connect_client(
         return Ok((ws, selected));
     }
     unreachable!("WebSocket redirect loop always returns or continues")
+}
+
+fn offer_subprotocols(
+    request: &mut tungstenite::handshake::client::Request,
+    subprotocols: &[&str],
+) -> Result<(), ConnectError> {
+    if !subprotocols.is_empty() {
+        let offer = subprotocols.join(", ");
+        let value = offer
+            .parse()
+            .map_err(|_| (WS_INVALID_ARGUMENT, format!("subprotocol offer {offer:?}")))?;
+        request
+            .headers_mut()
+            .insert("Sec-WebSocket-Protocol", value);
+    }
+    Ok(())
 }
 
 /// Refuse a redirect whose transport differs from the first request's.

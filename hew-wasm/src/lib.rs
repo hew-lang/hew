@@ -1250,6 +1250,19 @@ mod tests {
             "type_info should include user-facing i64 entries with spans: {result}"
         );
 
+        let actor_result = ok(type_check(include_str!(
+            "../../tests/core-acceptance/cases/lambda-actor-values.hew"
+        )));
+        let actor_parsed: serde_json::Value = serde_json::from_str(&actor_result).unwrap();
+        assert!(
+            !actor_parsed["diagnostics"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|diag| diag["severity"].as_str() == Some("error")),
+            "browser type checking should accept lambda actor parameter forms: {actor_result}"
+        );
+
         let error_result = ok(type_check("fn main() { let x = 1; x = 2; }"));
         let error_parsed: serde_json::Value = serde_json::from_str(&error_result).unwrap();
         let diagnostics = error_parsed["diagnostics"].as_array().unwrap();

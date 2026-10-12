@@ -1,4 +1,4 @@
-use super::super::*;
+use super::super::{Checker, Expr, Literal, Span, SpanKey, Spanned, Ty, TypeErrorKind};
 use crate::compile_time::{ConstantValue, InputProvider};
 use std::sync::Arc;
 

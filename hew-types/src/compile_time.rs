@@ -3,8 +3,16 @@ use std::path::{Path, PathBuf};
 /// Host-provided compilation inputs; the checker never reads the filesystem.
 pub trait InputProvider: std::fmt::Debug + Send + Sync {
     fn root_source(&self) -> &Path;
+    /// Resolve and read an include relative to its source.
+    ///
+    /// # Errors
+    /// Rejects paths outside the source package and inputs that cannot be read.
     fn include(&self, source: &Path, path: &str) -> Result<InputFile, InputError>;
     fn inputs(&self) -> Vec<CompilationInput>;
+    /// Read an input through the provider.
+    ///
+    /// # Errors
+    /// Returns the input's I/O error if it cannot be read.
     fn read(&self, path: &Path) -> std::io::Result<Vec<u8>>;
     fn exists(&self, path: &Path) -> bool;
 }

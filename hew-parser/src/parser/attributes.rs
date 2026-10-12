@@ -38,6 +38,8 @@ pub(crate) enum AttrPosition {
     ActorDecl,
     /// A plain `fn` inside an actor body (lifecycle hooks).
     ActorMemberFn,
+    /// An interceptor function inside a supervisor body.
+    SupervisorMemberFn,
     /// A `receive fn` inside an actor body.
     ActorReceiveFn,
     /// A method inside an `impl { .. }` block.
@@ -57,8 +59,8 @@ pub(crate) enum AttrPosition {
 /// recognised attribute at all.
 fn legal_positions(name: &str) -> Option<&'static [AttrPosition]> {
     use AttrPosition::{
-        ActorDecl, ActorMemberFn, ActorReceiveFn, ExternFn, Field, FreeFn, ImplMethod, TraitDecl,
-        TraitMethod, TypeDecl,
+        ActorDecl, ActorMemberFn, ActorReceiveFn, ExternFn, Field, FreeFn, ImplMethod,
+        SupervisorMemberFn, TraitDecl, TraitMethod, TypeDecl,
     };
 
     // Substrate attributes share one broad position set: every declaration
@@ -88,6 +90,7 @@ fn legal_positions(name: &str) -> Option<&'static [AttrPosition]> {
         // text keys (`case`, `key`, `skip`).
         "serial" => &[FreeFn, TypeDecl, Field],
         "on" => &[ActorMemberFn],
+        "intercept" => &[ActorMemberFn, SupervisorMemberFn],
         "every" => &[ActorReceiveFn],
         "max_heap" => &[ActorDecl],
         "extern_symbol" => &[ImplMethod, ExternFn],

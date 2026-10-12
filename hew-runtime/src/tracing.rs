@@ -121,6 +121,8 @@ pub const SPAN_SUPERVISOR_MAX_RESTARTS: i32 = 20;
 /// Supervisor scheduled a delayed (backoff-window) restart. `msg_type`
 /// carries the scheduled delay in milliseconds (saturated to `i32`).
 pub const SPAN_SUPERVISOR_BACKOFF: i32 = 21;
+/// A compiled handler interceptor declined a delivery.
+pub const SPAN_DELIVERY_REFUSED: i32 = 22;
 
 /// Closed taxonomy of v0.5 concurrency trace event names emitted by this
 /// runtime. The entries pair each `SPAN_*` constant with the canonical
@@ -161,6 +163,7 @@ pub const EVENT_TYPE_NAMES: &[(i32, &str)] = &[
     (SPAN_SUPERVISOR_CIRCUIT_CLOSE, "supervisor_circuit_close"),
     (SPAN_SUPERVISOR_MAX_RESTARTS, "supervisor_max_restarts"),
     (SPAN_SUPERVISOR_BACKOFF, "supervisor_backoff"),
+    (SPAN_DELIVERY_REFUSED, "actor.delivery_refused"),
 ];
 
 /// Resolve a span code to its canonical taxonomy name. Returns `None` for
@@ -972,6 +975,10 @@ fn record_lifecycle_event(actor_id: u64, event_type: i32, msg_type: i32) {
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn record_supervisor_event(actor_id: u64, event_type: i32, discriminator: i32) {
     record_lifecycle_event(actor_id, event_type, discriminator);
+}
+
+pub(crate) fn record_delivery_refused(actor_id: u64, message: i32) {
+    record_lifecycle_event(actor_id, SPAN_DELIVERY_REFUSED, message);
 }
 
 // ── C ABI ──────────────────────────────────────────────────────────────

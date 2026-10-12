@@ -136,7 +136,26 @@ impl LowerCtx {
         self.pop_scope();
         self.current_fn_type_params = previous_type_params;
 
+        let interceptor = decl.methods.first().and_then(|method| {
+            let member = self.defs.member_of_kind(
+                declaration,
+                method.name.name,
+                hew_types::DeclarationKind::SupervisorMethod,
+            )?;
+            let name = self.defs.path(member).to_string();
+            self.lower_fn_with_name_and_impl_params(
+                method,
+                &name,
+                method.fn_span.clone(),
+                &self
+                    .declaration_type_parameters
+                    .get(&declaration)
+                    .map_or_else(Vec::new, |(_, _, parameters)| parameters.clone()),
+                Some(member),
+            )
+        });
         Some(HirSupervisorDecl {
+            interceptor,
             id: self.ids.item(),
             node: self.ids.node(),
             declaration,
@@ -157,6 +176,66 @@ impl LowerCtx {
             children,
             span,
         })
+    }
+
+    pub(super) fn lower_actor_intercept_types(&mut self) -> Vec<HirTypeDecl> {
+        let mut protocols: Vec<_> = self.actor_protocol_descriptors.values().cloned().collect();
+        protocols.sort_by(|left, right| left.actor_name.cmp(&right.actor_name));
+        let mut declarations = Vec::new();
+        for protocol in protocols {
+            let Some(owner) = self.defs.lookup_path(&protocol.actor_name) else {
+                continue;
+            };
+            for (kind, suffix) in [
+                (hew_types::DeclarationKind::ActorRequestType, "Request"),
+                (hew_types::DeclarationKind::ActorResponseType, "Response"),
+            ] {
+                let Some(declaration) =
+                    self.defs
+                        .member_of_kind(owner, hew_parser::ast::Symbol::intern(suffix), kind)
+                else {
+                    continue;
+                };
+                let span = 0..0;
+                let Some(definition) = self.checked_member_definition(declaration, &span) else {
+                    continue;
+                };
+                let variants: Vec<_> = protocol
+                    .handlers
+                    .iter()
+                    .filter_map(|handler| {
+                        Some(HirVariant {
+                            name: handler.name.clone(),
+                            kind: self.checked_variant_kind(&definition, &handler.name, &span)?,
+                        })
+                    })
+                    .collect();
+                let name = self.defs.path(declaration).to_string();
+                let id = self.ids.item();
+                self.enum_variants_by_name
+                    .insert(name.clone(), variants.clone());
+                self.enum_type_params
+                    .insert(name.clone(), definition.type_params.clone());
+                self.enum_item_ids.insert(name.clone(), id);
+                declarations.push(HirTypeDecl {
+                    kind: HirTypeDeclKind::Enum,
+                    id,
+                    node: self.ids.node(),
+                    declaration,
+                    name,
+                    defining_module: None,
+                    marker: ResourceMarker::None,
+                    is_opaque: false,
+                    is_indirect: false,
+                    consuming_methods: Vec::new(),
+                    type_params: definition.type_params,
+                    fields: Vec::new(),
+                    variants,
+                    span,
+                });
+            }
+        }
+        declarations
     }
 
     pub(super) fn register_machine_ctor_variant_metadata(

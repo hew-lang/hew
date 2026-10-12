@@ -2658,7 +2658,14 @@ fn null_actor_send_result_internal_reply_returns_err_actor_stopped() {
     let _guard = crate::runtime_test_guard();
     // SAFETY: null is the input we are testing the guard against.
     let result = unsafe {
-        actor_send_result_internal_reply(ptr::null_mut(), 0, ptr::null_mut(), 0, ptr::null_mut())
+        actor_send_result_internal_reply(
+            ptr::null_mut(),
+            0,
+            ptr::null_mut(),
+            0,
+            ptr::null_mut(),
+            crate::actor_caller::local_sender(),
+        )
     };
     assert_eq!(
         result,
@@ -5563,7 +5570,7 @@ fn an_injected_drop_fault_loses_a_native_submission_and_says_so() {
 
         assert!(
             matches!(
-                try_submit_native_envelope(token, 4, fresh()),
+                try_submit_native_envelope(token, 4, fresh(), crate::actor_caller::local_sender()),
                 mailbox::SendOutcome::Dropped
             ),
             "a dropped submission is a loss, not an acceptance"
@@ -5581,7 +5588,7 @@ fn an_injected_drop_fault_loses_a_native_submission_and_says_so() {
 
         // The injection was for one message; the next submission lands.
         assert!(matches!(
-            try_submit_native_envelope(token, 4, fresh()),
+            try_submit_native_envelope(token, 4, fresh(), crate::actor_caller::local_sender()),
             mailbox::SendOutcome::Enqueued
         ));
         assert_eq!(mailbox::hew_mailbox_has_messages(mailbox), 1);
@@ -5625,7 +5632,7 @@ fn native_submission_delivers_by_reference_and_releases_once() {
         assert_eq!((*env).refcount.load(Ordering::SeqCst), 1);
 
         assert!(matches!(
-            try_submit_native_envelope(token, 4, env),
+            try_submit_native_envelope(token, 4, env, crate::actor_caller::local_sender()),
             mailbox::SendOutcome::Enqueued
         ));
         // Enqueued, not yet consumed.
@@ -5761,7 +5768,7 @@ fn terminal_actor_native_submission_refuses_without_enqueue() {
 
             assert!(
                 matches!(
-                    try_submit_native_envelope(token, 4, env),
+                    try_submit_native_envelope(token, 4, env, crate::actor_caller::local_sender()),
                     mailbox::SendOutcome::Closed
                 ),
                 "the terminal gate must refuse a {terminal:?} destination"
@@ -5838,7 +5845,8 @@ fn racing_native_submission_during_trap_releases_once_and_crash_notifies() {
                 let env =
                     crate::mailbox::hew_msg_envelope_new(payload, size, Some(count_drop_glue));
                 sender_start.wait();
-                match try_submit_native_envelope(token, 4, env) {
+                match try_submit_native_envelope(token, 4, env, crate::actor_caller::local_sender())
+                {
                     mailbox::SendOutcome::Enqueued => {}
                     mailbox::SendOutcome::Closed => {
                         crate::mailbox::hew_msg_envelope_release(env);

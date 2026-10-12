@@ -1890,6 +1890,8 @@ pub struct SupervisorDecl {
     /// declaration omits the clause — runtime defaults apply at codegen.
     pub intensity: Option<Intensity>,
     pub children: Vec<ChildSpec>,
+    #[serde(default)]
+    pub methods: Vec<FnDecl>,
 }
 
 /// A supervisor restart-budget contract: at most `restarts` restarts are

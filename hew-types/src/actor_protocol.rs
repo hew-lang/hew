@@ -90,6 +90,8 @@ pub enum CoalesceFallback {
 /// HIR into the semantic actor layout. Downstream stages consume these facts.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ActorProtocolDescriptor {
+    /// The actor-owned interceptor entered around each receive handler.
+    pub interceptor: Option<crate::DefId>,
     pub mailbox: MailboxContract,
     /// Canonical owner-qualified actor name.
     pub actor_name: String,
@@ -245,6 +247,7 @@ impl ActorProtocolDescriptor {
             });
         }
         Ok(Self {
+            interceptor: None,
             mailbox: MailboxContract::Unbounded,
             actor_name,
             handlers: built,
@@ -293,6 +296,7 @@ impl ActorProtocolDescriptor {
             });
         }
         Ok(Self {
+            interceptor: None,
             mailbox: MailboxContract::Unbounded,
             actor_name,
             handlers: built,
@@ -443,4 +447,82 @@ pub struct LambdaActorIdentity {
     /// The declaration path the actor is registered under, which is also the
     /// name its synthesized declaration carries.
     pub path: String,
+}
+
+/// Concrete backing fields of a delivery's linear call token. The actor-owned
+/// request declaration is selected by identity, with the actor's arguments.
+pub fn interceptor_fields(
+    defs: &crate::DefTable,
+    ty: &ResolvedTy,
+) -> Option<Vec<(String, ResolvedTy)>> {
+    let ResolvedTy::Named { head, args, .. } = ty else {
+        return None;
+    };
+    let call = *head == crate::KnownDecl::Call.head();
+    if !call && *head != crate::KnownDecl::Outcome.head() {
+        return None;
+    }
+    let [ResolvedTy::Named {
+        head: actor, args, ..
+    }] = args.as_slice()
+    else {
+        return None;
+    };
+    let owner = actor.nominal()?.declaration();
+    if defs.kind(owner) != crate::DeclarationKind::Actor {
+        return None;
+    }
+    let (name, kind) = if call {
+        ("Request", crate::DeclarationKind::ActorRequestType)
+    } else {
+        ("Response", crate::DeclarationKind::ActorResponseType)
+    };
+    let request = defs.member_of_kind(owner, hew_parser::ast::Symbol::intern(name), kind)?;
+    let member = ResolvedTy::named_user(
+        crate::NominalHead::new(
+            crate::NominalId::from_minted_declaration(request),
+            defs.path(request),
+        ),
+        args.clone(),
+    );
+    if !call {
+        return Some(vec![
+            (
+                "response".to_string(),
+                ResolvedTy::named_builtin(crate::BuiltinType::Option, vec![member]),
+            ),
+            ("failed".to_string(), ResolvedTy::Bool),
+            ("refused".to_string(), ResolvedTy::Bool),
+        ]);
+    }
+    Some(vec![
+        (
+            "request".to_string(),
+            ResolvedTy::named_user(
+                crate::NominalHead::new(
+                    crate::NominalId::from_minted_declaration(request),
+                    defs.path(request),
+                ),
+                args.clone(),
+            ),
+        ),
+        (
+            "caller".to_string(),
+            ResolvedTy::Named {
+                head: crate::KnownDecl::Caller.head(),
+                args: Vec::new(),
+                is_opaque: false,
+            },
+        ),
+        ("handler".to_string(), ResolvedTy::String),
+        ("message".to_string(), ResolvedTy::U32),
+    ])
+}
+
+/// These projections lend the delivery-owned value instead of copying it.
+#[must_use]
+pub fn is_interceptor_view(ty: &ResolvedTy, field: &str) -> bool {
+    matches!(ty, ResolvedTy::Named { head, .. }
+        if (*head == crate::KnownDecl::Call.head() && field == "request")
+            || (*head == crate::KnownDecl::Outcome.head() && field == "response"))
 }

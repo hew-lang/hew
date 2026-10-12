@@ -33,6 +33,7 @@ pub struct HewCoroState {
     /// Original mailbox message identity, recorded before the actor turn parks.
     /// Read only by the scheduler while it owns the activation.
     pub(crate) actor_message_type: i32,
+    pub(crate) actor_caller: crate::actor_caller::HewCallerStamp,
     waker: OwnedWaker,
     token: *mut HewCancellationToken,
     enclosing_tokens: Vec<*mut HewCancellationToken>,
@@ -86,6 +87,7 @@ pub unsafe extern "C" fn hew_coro_state_new(
     Box::into_raw(Box::new(HewCoroState {
         actor_turn: crate::lifetime::live_actors::ActorIncarnation::NONE,
         actor_message_type: 0,
+        actor_caller: crate::actor_caller::HewCallerStamp::default(),
         waker: retained,
         token,
         enclosing_tokens: Vec::new(),
@@ -128,6 +130,7 @@ pub unsafe extern "C" fn hew_coro_state_child(parent: *const HewCoroState) -> *m
     unsafe {
         (*child).actor_turn = parent.actor_turn;
         (*child).actor_message_type = parent.actor_message_type;
+        (*child).actor_caller = parent.actor_caller;
     }
     child
 }
@@ -152,6 +155,7 @@ pub unsafe extern "C" fn hew_coro_state_cleanup_child(
     unsafe {
         (*child).actor_turn = parent.actor_turn;
         (*child).actor_message_type = parent.actor_message_type;
+        (*child).actor_caller = parent.actor_caller;
         (*child).cleanup_fault.store(
             parent.cleanup_fault.load(Ordering::Acquire),
             Ordering::Release,

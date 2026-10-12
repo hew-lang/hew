@@ -1265,6 +1265,12 @@ impl Ty {
     }
 
     #[must_use]
+    pub fn contains_interceptor_token(&self) -> bool {
+        matches!(self, Ty::Named { head, .. } if *head == crate::KnownDecl::Call.head() || *head == crate::KnownDecl::Outcome.head())
+            || self.any_child(&Ty::contains_interceptor_token)
+    }
+
+    #[must_use]
     pub fn contains_task(&self) -> bool {
         matches!(self, Ty::Task(_)) || self.any_child(&Ty::contains_task)
     }

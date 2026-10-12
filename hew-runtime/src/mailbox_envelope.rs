@@ -8,17 +8,8 @@
 //! Each `HewMsgNode` carries a `payload_class: u8` field. The runtime owns the
 //! classification for the message's lifetime: the class is set at enqueue time
 //! and must be treated as immutable thereafter. A receiving actor must not
-//! mutate `payload_class`, `source_pid`, or `cancel_token_handle` after
+//! mutate `payload_class`, `caller`, or `cancel_token_handle` after
 //! dequeue.
-//!
-//! # FUTURE-EXTENSION-PT: `hew_mailbox_envelope_alloc`
-//!
-//! Stage 7.5 defers a dedicated `hew_mailbox_envelope_alloc` C-ABI entry that
-//! will set `payload_class`, `source_pid`, and `cancel_token_handle` atomically
-//! on an allocated node, removing the need for callers to field-initialise
-//! individually. Until that lane lands, callers zero-init the node (which maps
-//! to `Unit` / `SOURCE_PID_UNKNOWN` / `CANCEL_TOKEN_NONE`) and overwrite
-//! individual fields as needed.
 
 /// Discriminant that classifies the payload carried by a
 /// [`crate::mailbox::HewMsgNode`].
@@ -50,9 +41,6 @@ pub type CancellationTokenHandle = u64;
 
 /// Sentinel: no cancellation token is associated with this message.
 pub const CANCEL_TOKEN_NONE: CancellationTokenHandle = 0;
-
-/// Sentinel: the source actor PID is not known (e.g. anonymous cross-node send).
-pub const SOURCE_PID_UNKNOWN: u64 = 0;
 
 /// Validate `(payload_class, cancel_token_handle)` for a cross-node envelope send.
 ///

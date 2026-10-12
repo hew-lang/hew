@@ -68,6 +68,8 @@ pub enum RuntimeCallFamily {
     LinkRemote,
     ActorMonitor,
     ActorSelf,
+    ActorCaller,
+    ActorRefusalLog,
     ActorSendById,
     ActorSpawn,
     ActorUnlink,

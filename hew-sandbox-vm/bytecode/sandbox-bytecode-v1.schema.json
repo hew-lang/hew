@@ -449,7 +449,8 @@
         "integer_overflow",
         "divide_by_zero",
         "shift_out_of_range",
-        "vector_bounds"
+        "vector_bounds",
+        "actor_refused"
       ]
     },
     "function": {

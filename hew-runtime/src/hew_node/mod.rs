@@ -858,6 +858,7 @@ fn ask_error_from_code(code: i32) -> Option<AskError> {
         x if x == AskError::Backpressure as i32 => Some(AskError::Backpressure),
         x if x == AskError::MonitorLost as i32 => Some(AskError::MonitorLost),
         x if x == AskError::HandlerTrapped as i32 => Some(AskError::HandlerTrapped),
+        x if x == AskError::Refused as i32 => Some(AskError::Refused),
         _ => None,
     }
 }
@@ -2065,7 +2066,12 @@ impl InboundRequest {
     /// Submit a one-way message, keeping the fields when admission refuses.
     /// Returns the native submission status, or `None` when no live actor
     /// holds the id.
-    fn submit(self, actor_id: u64, msg_type: i32) -> Option<i32> {
+    fn submit(
+        self,
+        actor_id: u64,
+        msg_type: i32,
+        caller: crate::actor_caller::HewCallerStamp,
+    ) -> Option<i32> {
         use crate::actor_native::HewSubmitStatus;
         let (_runtime, token) = Self::target(actor_id)?;
         // The runtime frees a refused wrapper's bytes and leaves its fields
@@ -2080,15 +2086,17 @@ impl InboundRequest {
         };
         // SAFETY: the copy is an unpublished wrapper with the member's fields.
         let status = unsafe {
-            crate::actor_native::hew_actor_submit_native(
+            crate::actor_native::submit_native(
                 token,
                 msg_type,
                 copy,
                 self.size,
                 self.drop,
                 0,
+                false,
                 None,
                 ptr::null_mut(),
+                caller,
             )
         };
         if submission_delivered(status) {
@@ -2107,6 +2115,7 @@ impl InboundRequest {
         actor_id: u64,
         msg_type: i32,
         reply: crate::xnode_serial::ThunkPair,
+        caller: crate::actor_caller::HewCallerStamp,
     ) -> Result<Vec<u8>, AskError> {
         let Some((_runtime, token)) = Self::target(actor_id) else {
             return Err(AskError::ActorStopped);
@@ -2117,7 +2126,7 @@ impl InboundRequest {
         // SAFETY: the operation owns the wrapper and its fields on every
         // outcome, and the waker descriptor is live for the call.
         let operation = unsafe {
-            crate::actor_call_native::hew_actor_call_new(
+            crate::actor_call_native::actor_call_new(
                 token,
                 msg_type,
                 wrapper,
@@ -2133,6 +2142,7 @@ impl InboundRequest {
                 1,
                 None,
                 None,
+                caller,
             )
         };
         // SAFETY: this thread exclusively drives the live operation.
@@ -2250,7 +2260,7 @@ unsafe fn send_location(
                 return 0;
             };
             *moved = true;
-            return match request.submit(actor_id, msg_type) {
+            return match request.submit(actor_id, msg_type, crate::actor_caller::local_sender()) {
                 Some(status) if submission_delivered(status) => 0,
                 // A target that is gone or closing reports its stale
                 // address, as this node's own send path always has.

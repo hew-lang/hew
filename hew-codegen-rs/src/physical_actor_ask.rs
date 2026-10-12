@@ -979,6 +979,7 @@ pub(super) const fn actor_error_variant_role(
     use hew_runtime::internal::types::ActorErrorRole as Role;
     match role {
         Role::Trapped => Variant::ActorErrorTrapped,
+        Role::Refused => Variant::ActorErrorRefused,
         Role::Dead => Variant::ActorErrorDead,
         Role::TimedOut => Variant::ActorErrorTimedOut,
         Role::NodeNotRunning => Variant::ActorErrorNodeNotRunning,

@@ -552,6 +552,9 @@ impl TypeFactService {
                 ty.user_facing()
             )
         })?;
+        if let Some(fields) = crate::actor_protocol::interceptor_fields(&self.context.defs, ty) {
+            return Ok((instance, fields));
+        }
         let definition = self
             .context
             .type_defs

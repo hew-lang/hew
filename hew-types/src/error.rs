@@ -802,6 +802,8 @@ pub enum TypeErrorKind {
     UseAfterConsume,
     /// A consuming operation requires ownership of a borrowed parameter.
     OwnConsumeBorrowed,
+    /// A delivery token escaped its owning interceptor protocol.
+    InterceptEscape,
     /// Mutation of borrowed storage requires an independent clone or owner.
     OwnMutateBorrowed,
     /// A projection's enclosing value cannot be split into independent owners.
@@ -1551,6 +1553,7 @@ impl TypeErrorKind {
             Self::UseAfterMove => "UseAfterMove",
             Self::UseAfterConsume => "UseAfterConsume",
             Self::OwnConsumeBorrowed => "E_OWN_CONSUME_BORROWED",
+            Self::InterceptEscape => "E_INTERCEPT_ESCAPE",
             Self::OwnMutateBorrowed => "E_OWN_MUTATE_BORROWED",
             Self::OwnPartialConsume => "E_OWN_PARTIAL_CONSUME",
             Self::ResourceCloseMustConsume => "E_RESOURCE_CLOSE_MUST_CONSUME",

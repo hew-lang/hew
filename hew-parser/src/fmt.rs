@@ -2750,6 +2750,12 @@ impl<'a> Formatter<'a> {
     }
 
     fn format_supervisor(&mut self, decl: &SupervisorDecl, span_start: usize, span_end: usize) {
+        enum Member<'a> {
+            Strategy,
+            Intensity,
+            Child(&'a ChildSpec),
+            Method(&'a FnDecl),
+        }
         self.write_indent();
         self.write_visibility(decl.visibility);
         self.write("supervisor ");
@@ -2771,53 +2777,70 @@ impl<'a> Formatter<'a> {
         // Clauses and children print in source order. Write `strategy:` only
         // when the declaration carries one: materializing the default would
         // rewrite the program instead of formatting it.
-        let mut clauses: Vec<(usize, Option<&ChildSpec>, &str)> = Vec::new();
+        let mut clauses: Vec<(usize, Member<'_>)> = Vec::new();
         if decl.strategy.is_some() {
             clauses.push((
                 self.machine_section(span_start, span_end, "strategy"),
-                None,
-                "strategy",
+                Member::Strategy,
             ));
         }
         if decl.intensity.is_some() {
             clauses.push((
                 self.machine_section(span_start, span_end, "intensity"),
-                None,
-                "intensity",
+                Member::Intensity,
             ));
         }
         clauses.extend(
             decl.children
                 .iter()
-                .map(|c| (c.span.start, Some(c), "child")),
+                .map(|child| (child.span.start, Member::Child(child))),
         );
-        clauses.sort_by_key(|(start, _, _)| *start);
+        clauses.extend(decl.methods.iter().map(|method| {
+            (
+                member_start(&method.attributes, method.fn_span.start),
+                Member::Method(method),
+            )
+        }));
+        clauses.sort_by_key(|(start, _)| *start);
 
-        let mut previous_was_child = false;
-        for (i, (start, child, clause)) in clauses.into_iter().enumerate() {
-            let canonical = child.is_some() && (i == 0 || !previous_was_child);
-            previous_was_child = child.is_some();
-            self.begin_member(start, canonical);
-            if let Some(child) = child {
-                self.format_child_spec(child);
-                self.end_member(child.span.end);
-                continue;
-            }
-            self.write_indent();
-            if clause == "strategy" {
-                self.write("strategy: ");
-                match decl.strategy {
-                    Some(SupervisorStrategy::OneForOne) => self.write("one_for_one"),
-                    Some(SupervisorStrategy::OneForAll) => self.write("one_for_all"),
-                    Some(SupervisorStrategy::RestForOne) => self.write("rest_for_one"),
-                    Some(SupervisorStrategy::SimpleOneForOne) => self.write("simple_one_for_one"),
-                    None => {}
+        let mut previous_was_body = false;
+        for (i, (start, member)) in clauses.into_iter().enumerate() {
+            let body = matches!(member, Member::Child(_) | Member::Method(_));
+            self.begin_member(start, body && (i == 0 || !previous_was_body));
+            previous_was_body = body;
+            match member {
+                Member::Child(child) => {
+                    self.format_child_spec(child);
+                    self.end_member(child.span.end);
+                    continue;
                 }
-            } else if let Some(intensity) = &decl.intensity {
-                self.write("intensity: ");
-                self.write(&intensity.restarts.to_string());
-                self.write(" within ");
-                self.write(&intensity.window);
+                Member::Method(method) => {
+                    self.format_fn(method, method.fn_span.end);
+                    self.end_member(method.fn_span.end);
+                    continue;
+                }
+                Member::Strategy => {
+                    self.write_indent();
+                    self.write("strategy: ");
+                    match decl.strategy {
+                        Some(SupervisorStrategy::OneForOne) => self.write("one_for_one"),
+                        Some(SupervisorStrategy::OneForAll) => self.write("one_for_all"),
+                        Some(SupervisorStrategy::RestForOne) => self.write("rest_for_one"),
+                        Some(SupervisorStrategy::SimpleOneForOne) => {
+                            self.write("simple_one_for_one")
+                        }
+                        None => {}
+                    }
+                }
+                Member::Intensity => {
+                    if let Some(intensity) = &decl.intensity {
+                        self.write_indent();
+                        self.write("intensity: ");
+                        self.write(&intensity.restarts.to_string());
+                        self.write(" within ");
+                        self.write(&intensity.window);
+                    }
+                }
             }
             self.write(";\n");
         }

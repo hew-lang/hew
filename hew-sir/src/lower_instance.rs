@@ -28,6 +28,8 @@ impl<'a> InstanceService<'a> {
             closures: Vec::new(),
             actors: Vec::new(),
             actor_sources: HashMap::new(),
+            actor_interceptor_chains: HashMap::new(),
+            supervisor_interceptor_chains: HashMap::new(),
             supervisors: Vec::new(),
             synthetic_sources: HashMap::new(),
             closures_by_instance: HashMap::new(),
@@ -1073,17 +1075,19 @@ impl<'a> InstanceService<'a> {
             });
         }
         if let SemCallableKind::HewActor(actor) = callable_meta.kind {
-            let (function, state_bindings, substitution) = self
+            let source = self
                 .actor_sources
                 .get(&callable)
                 .ok_or_else(|| "actor body has no checked HIR source".to_string())?;
             return Ok(LoweringInput {
-                function: Cow::Owned(function.clone()),
+                function: Cow::Owned(source.function.clone()),
                 callable: callable_meta,
-                substitution: substitution.clone(),
+                substitution: source.substitution.clone(),
                 source: BodySource::Actor {
                     actor,
-                    state_bindings: state_bindings.clone(),
+                    state_bindings: source.state_bindings.clone(),
+                    stream: source.stream.clone(),
+                    weave: source.weave.clone(),
                 },
             });
         }

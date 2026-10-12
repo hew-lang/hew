@@ -1,0 +1,47 @@
+actor Worker {
+    var delivered: i64 = 0;
+
+    #[intercept]
+    fn guard(call: Call<Self>) -> Outcome<Self> {
+        match call.caller() {
+            .Task => println("task"),
+            _ => println("other"),
+        }
+        let name = call.handler_name();
+        println(name);
+        if name == "blocked" {
+            call.refuse("blocked by guard")
+        } else {
+            println("before");
+            let result = call.proceed();
+            assert(!result.failed());
+            assert(!result.refused());
+            println("after");
+            result
+        }
+    }
+
+    receive fn echo(text: string) -> string {
+        delivered = delivered + 1;
+        text
+    }
+
+    receive fn blocked(text: string) -> string {
+        delivered = delivered + 100;
+        text
+    }
+
+    receive fn count() -> i64 { delivered }
+}
+
+fn main() {
+    let worker = spawn Worker;
+    println(worker.echo("hello").expect("echo"));
+    match worker.blocked("unused owned payload") {
+        .Err(.Refused) => println("refused"),
+        _ => assert(false),
+    }
+    assert(worker.count().expect("same actor survives") == 1);
+    stop(worker);
+    stopped(worker);
+}

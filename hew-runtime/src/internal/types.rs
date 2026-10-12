@@ -480,6 +480,8 @@ pub enum AskError {
     /// The receiving handler failed. Its actor owns the fault; the caller
     /// receives an ordinary error and may continue independently.
     HandlerTrapped = 22,
+    /// A receiving interceptor refused the delivery without entering its handler.
+    Refused = 23,
 }
 
 /// The public `ActorError` variant a runtime ask failure folds to.
@@ -490,6 +492,7 @@ pub enum AskError {
 /// call site, never from a runtime status.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ActorErrorRole {
+    Refused,
     Trapped,
     Dead,
     TimedOut,
@@ -502,7 +505,7 @@ pub enum ActorErrorRole {
 
 impl AskError {
     /// Every runtime ask status, indexed by its discriminant.
-    pub const ALL: [Self; 23] = [
+    pub const ALL: [Self; 24] = [
         Self::None,
         Self::NodeNotRunning,
         Self::RoutingFailed,
@@ -526,6 +529,7 @@ impl AskError {
         Self::Backpressure,
         Self::MonitorLost,
         Self::HandlerTrapped,
+        Self::Refused,
     ];
 
     /// The public role this status reports; `None` is the success sentinel.
@@ -539,6 +543,7 @@ impl AskError {
         Some(match self {
             Self::None => return None,
             Self::HandlerTrapped => ActorErrorRole::Trapped,
+            Self::Refused => ActorErrorRole::Refused,
             // The target is gone, or its fate is settled against ever running
             // this request: the caller must not resubmit.
             Self::SendFailed
@@ -711,6 +716,8 @@ pub const HEW_REPLY_FAIL_HANDLER_TRAPPED: i32 = 3;
 /// The reply payload could not be materialized (allocation failure on the
 /// deposit or submission path).
 pub const HEW_REPLY_FAIL_PAYLOAD_ALLOC_FAILED: i32 = 4;
+/// The receiving interceptor declined the delivery.
+pub const HEW_REPLY_FAIL_REFUSED: i32 = 5;
 
 /// Name a reply-failure discriminant for diagnostics. Fail-closed: an
 /// unrecognized discriminant names itself rather than borrowing a real
@@ -723,6 +730,7 @@ pub const fn reply_fail_kind_name(kind: i32) -> &'static str {
         HEW_REPLY_FAIL_CANCELLED => "ask cancelled before a reply arrived",
         HEW_REPLY_FAIL_HANDLER_TRAPPED => "handler trapped during dispatch",
         HEW_REPLY_FAIL_PAYLOAD_ALLOC_FAILED => "reply payload allocation failed",
+        HEW_REPLY_FAIL_REFUSED => "delivery refused by interceptor",
         _ => "(unrecognized reply-failure discriminant)",
     }
 }

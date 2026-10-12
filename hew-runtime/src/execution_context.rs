@@ -178,8 +178,8 @@ pub extern "C" fn hew_set_partition_policy(tag: i64) -> bool {
 /// Target-architecture-aware byte size of [`HewExecutionContext`].
 ///
 /// Derived from `size_of` rather than a literal so the value is correct on
-/// both 64-bit native targets (136 bytes) and 32-bit wasm32 targets (96 bytes,
-/// because four-byte pointers eliminate the pointer-sized padding slots).
+/// both 64-bit native targets and 32-bit wasm32 targets despite their
+/// different pointer sizes and padding.
 pub const HEW_CTX_SIZE: usize = std::mem::size_of::<HewExecutionContext>();
 
 /// Byte offset of [`HewExecutionContext::actor`].
@@ -249,7 +249,6 @@ pub const HEW_CTX_FLAG_UNWIND_BOUNDARY_INSTALLED: u32 = 1 << 1;
 /// |------|--------------|---------------|
 /// | `trace` start | 56 | 40 |
 /// | post-trace start (`partition_policy`) | 96 | 80 |
-/// | struct size | 136 | 96 |
 ///
 /// The shift between targets originates in the pre-trace pointer fields:
 /// `actor` (ptr) → `actor_id` (u64, align-padded to 8) → `parent_supervisor`
@@ -298,6 +297,8 @@ pub struct HewExecutionContext {
     /// Checked native completion, consumed by the activation's scheduler.
     /// The slot releases an unconsumed owner during exceptional teardown.
     pub checked_fault: crate::actor_native::CheckedActorFault,
+    /// Identity of the sender of this turn's delivery.
+    pub caller: crate::actor_caller::HewCallerStamp,
 }
 
 thread_local! {
@@ -845,8 +846,7 @@ mod tests {
     #[test]
     fn execution_context_size_matches_ctx_size_constant() {
         // HEW_CTX_SIZE is now derived from size_of rather than a literal, so
-        // this assertion holds on all targets (136 on native 64-bit, 96 on
-        // wasm32) without needing per-target conditional compilation.
+        // this assertion holds without target-specific size literals.
         assert_eq!(std::mem::size_of::<HewExecutionContext>(), HEW_CTX_SIZE);
     }
 

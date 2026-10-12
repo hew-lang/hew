@@ -117,11 +117,23 @@ impl InstanceService<'_> {
         ty: &ResolvedTy,
         exact: Option<&str>,
     ) -> Result<crate::ActorId, String> {
+        self.require_actor_intercepted(ty, exact, &[])
+    }
+
+    pub(super) fn require_actor_intercepted(
+        &mut self,
+        ty: &ResolvedTy,
+        exact: Option<&str>,
+        chain: &[ResolvedTy],
+    ) -> Result<crate::ActorId, String> {
         if let Some(actor) = self.actors.iter().find(|actor| {
-            exact.map_or_else(
-                || actor.admits_target(ty),
-                |name| self.module.defs.path(actor.declaration) == name,
-            )
+            self.actor_interceptor_chains
+                .get(&actor.id)
+                .is_some_and(|current| current == chain)
+                && exact.map_or_else(
+                    || actor.admits_target(ty),
+                    |name| self.module.defs.path(actor.declaration) == name,
+                )
         }) {
             return Ok(actor.id);
         }
@@ -201,6 +213,7 @@ impl InstanceService<'_> {
             coalesce: None,
             max_heap_bytes: source.max_heap_bytes,
         });
+        self.actor_interceptor_chains.insert(id, chain.to_vec());
         self.register_actor_bodies(id, &source, &substitution)?;
         // The key projection names message ids, so it is resolved once the
         // handlers exist.
@@ -326,14 +339,15 @@ impl InstanceService<'_> {
                 substitution.apply(&method.return_ty),
                 &method.body,
                 &format!("method_{}", method.name),
-                false,
+                source.protocol_descriptor.interceptor == Some(method.declaration),
                 None,
             )?;
             // Internal calls select a method from this actor's descriptor;
             // generic actor instances never overwrite a declaration-wide row.
             self.actors[id.0 as usize].methods.push(body);
         }
-        self.register_actor_handlers(id, source, substitution)
+        self.register_actor_handlers(id, source, substitution)?;
+        self.weave_actor_interceptor(id, source, substitution)
     }
 
     #[expect(
@@ -468,7 +482,7 @@ impl InstanceService<'_> {
         clippy::too_many_arguments,
         reason = "one checked actor body supplies its complete callable contract"
     )]
-    fn register_actor_body(
+    pub(super) fn register_actor_body(
         &mut self,
         actor: crate::ActorId,
         source: &hew_hir::HirActorDecl,
@@ -551,7 +565,16 @@ impl InstanceService<'_> {
         });
         self.actor_sources.insert(
             id,
-            (function, state_bindings.to_vec(), substitution.clone()),
+            super::ActorBodySource {
+                function,
+                state_bindings: state_bindings.to_vec(),
+                substitution: substitution.clone(),
+                stream: implicit_owned.and_then(|ty| match ty {
+                    ResolvedTy::Named { args, .. } => args.first().cloned(),
+                    _ => None,
+                }),
+                weave: None,
+            },
         );
         self.states.push(CallableState::Unreached);
         self.statuses.push(None);
@@ -1227,6 +1250,7 @@ impl Builder<'_, '_> {
         let BodySource::Actor {
             actor,
             state_bindings,
+            ..
         } = source
         else {
             return Ok(());
@@ -1426,6 +1450,9 @@ impl Builder<'_, '_> {
             unreachable!()
         };
         match operation {
+            ActorDeliveryCall::Intercept(operation) => {
+                self.lower_interceptor_operation(expression, receiver, args, *operation)
+            }
             ActorDeliveryCall::Resume {
                 policy,
                 source_method: expected_source_method,

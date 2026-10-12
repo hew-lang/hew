@@ -148,7 +148,7 @@ impl Parser<'_> {
                 self.validate_attributes_for(&attrs, AttrPosition::ActorMemberFn);
                 let hook_attrs: Vec<_> = attrs
                     .into_iter()
-                    .filter(|attr| is_lifecycle_hook_attr(&attr.name))
+                    .filter(|attr| is_lifecycle_hook_attr(&attr.name) || attr.name == "intercept")
                     .collect();
                 let fn_start = self.peek_span().start;
                 self.advance();
@@ -1297,8 +1297,26 @@ impl Parser<'_> {
         let mut strategy = None;
         let mut intensity = None;
         let mut children = Vec::new();
+        let mut methods = Vec::new();
 
         while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
+            let mut doc_comment = self.collect_doc_comments();
+            let attributes = self.parse_attributes();
+            if doc_comment.is_none() {
+                doc_comment = self.collect_doc_comments();
+            }
+            if self.peek() == Some(&Token::Fn) {
+                self.validate_attributes_for(&attributes, AttrPosition::SupervisorMemberFn);
+                let start = self.peek_span().start;
+                self.advance();
+                let mut method =
+                    self.parse_function(start, false, Visibility::Private, attributes)?;
+                method.doc_comment = doc_comment;
+                methods.push(method);
+                self.refuse_mark_after_body();
+                continue;
+            }
+            self.validate_attributes_for(&attributes, AttrPosition::Unsupported);
             match self.peek() {
                 Some(Token::Strategy) => {
                     self.advance();
@@ -1675,6 +1693,7 @@ impl Parser<'_> {
             strategy,
             intensity,
             children,
+            methods,
         })
     }
 }

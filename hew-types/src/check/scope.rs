@@ -46,7 +46,9 @@ impl Binding {
             | DeclarationKind::Record
             | DeclarationKind::Supervisor
             | DeclarationKind::Machine
-            | DeclarationKind::MachineEventType => Self::Type(nominal()),
+            | DeclarationKind::MachineEventType
+            | DeclarationKind::ActorRequestType
+            | DeclarationKind::ActorResponseType => Self::Type(nominal()),
             DeclarationKind::Actor => Self::Actor(nominal()),
             DeclarationKind::Trait if DefTable::as_predicate(id).is_some() => Self::Predicate(id),
             DeclarationKind::Trait => Self::Trait(id),

@@ -178,6 +178,13 @@ impl Verifier {
                     // uniqueness in S-A; children-list resolution and
                     // wired_to validation are S-B's job.
                     self.node(sup.node, sup.span.clone());
+                    if let Some(interceptor) = &sup.interceptor {
+                        self.node(interceptor.node, interceptor.span.clone());
+                        for parameter in &interceptor.params {
+                            self.binding(parameter.id, parameter.span.clone());
+                        }
+                        self.block(&interceptor.body);
+                    }
                     // Register each child's declaration site and every
                     // init-arg/pool-count expression's real site. Without
                     // this, MIR diagnostics that carry a supervisor child's

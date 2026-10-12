@@ -203,6 +203,7 @@ pub(super) fn reader_loop(
                             envelope.request_id,
                             authenticated,
                             mgr,
+                            peer_identity.node_id.into(),
                         );
                     }
                     if let Some(saved) = saved_ctx {

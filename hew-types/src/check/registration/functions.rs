@@ -110,7 +110,12 @@ impl Checker {
 
     pub(super) fn collect_item_type_param_names(&mut self, item: &Item) {
         match item {
-            Item::Supervisor(sd) => self.insert_type_param_names(&sd.type_params),
+            Item::Supervisor(sd) => {
+                self.insert_type_param_names(&sd.type_params);
+                for method in &sd.methods {
+                    self.insert_opt_type_param_names(method.type_params.as_ref());
+                }
+            }
             Item::Function(fd) => self.insert_opt_type_param_names(fd.type_params.as_ref()),
             Item::TypeDecl(td) => self.insert_opt_type_param_names(td.type_params.as_ref()),
             Item::Record(rd) => self.insert_opt_type_param_names(rd.type_params.as_ref()),
@@ -380,6 +385,15 @@ impl Checker {
                 for rf in &ad.receive_fns {
                     self.register_receive_fn(&identity, rf);
                 }
+                let actor_parameters = self
+                    .declaration_parameter_heads(&identity)
+                    .into_iter()
+                    .map(Ty::param)
+                    .collect();
+                let actor_self = self.named_ty_for_key(&identity, actor_parameters);
+                let previous_self = self
+                    .current_self_type
+                    .replace((identity.clone(), actor_self));
                 for method in &ad.methods {
                     let method_name = format!("{identity}::{}", method.name);
                     self.register_fn_sig_with_name(&method_name, method, None);
@@ -402,13 +416,18 @@ impl Checker {
                     // trampoline and MIR emits it under a hook symbol. It gets
                     // no declaration row, so a call naming one still fails the
                     // way it does today.
-                    if !method.attributes.iter().any(|a| a.name.as_str() == "on") {
+                    if !method
+                        .attributes
+                        .iter()
+                        .any(|a| matches!(a.name.as_str(), "on" | "intercept"))
+                    {
                         self.fn_def_spans.insert(
                             method_name,
                             (method.fn_span.clone(), self.current_module.clone()),
                         );
                     }
                 }
+                self.current_self_type = previous_self;
                 self.exit_primary_sig_scope(actor_sig_scope);
             }
             Item::Impl(id) => {
@@ -805,11 +824,19 @@ impl Checker {
                 // `source_module` tells the diagnostic renderer which file owns the span.
                 self.register_import(id, Some(span));
             }
-            Item::Const(_)
-            | Item::TypeAlias(_)
-            | Item::Supervisor(_)
-            | Item::Machine(_)
-            | Item::Record(_) => {
+            Item::Supervisor(supervisor) => {
+                let identity = self.declaration_identity(supervisor.name.name.as_str());
+                let scope = self.enter_primary_sig_scope(&[(Some(&supervisor.type_params), None)]);
+                for method in &supervisor.methods {
+                    self.register_fn_sig_with_name(
+                        &format!("{identity}::{}", method.name),
+                        method,
+                        None,
+                    );
+                }
+                self.exit_primary_sig_scope(scope);
+            }
+            Item::Const(_) | Item::TypeAlias(_) | Item::Machine(_) | Item::Record(_) => {
                 // Records have no method body items in v0.5; method registration
                 // is a no-op here.  TODO(A-4): if records gain methods, register
                 // them via a `register_record_methods` pass here.

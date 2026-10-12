@@ -3570,7 +3570,6 @@ impl<'a> Formatter<'a> {
                     self.write_else();
                     self.format_block(else_block, self.source.len());
                 }
-                self.write(";");
             }
             Stmt::Var {
                 name, ty, value, ..
@@ -3585,7 +3584,6 @@ impl<'a> Formatter<'a> {
                     self.write(" = ");
                     self.format_expr(expr);
                 }
-                self.write(";");
             }
             Stmt::Assign { target, op, value } => {
                 self.format_expr(target);
@@ -3597,7 +3595,6 @@ impl<'a> Formatter<'a> {
                     self.write(" = ");
                 }
                 self.format_expr(value);
-                self.write(";");
             }
             Stmt::Break { label, value } => {
                 self.write("break");
@@ -3609,7 +3606,6 @@ impl<'a> Formatter<'a> {
                     self.write(" ");
                     self.format_expr(expr);
                 }
-                self.write(";");
             }
             Stmt::Continue { label } => {
                 self.write("continue");
@@ -3617,7 +3613,6 @@ impl<'a> Formatter<'a> {
                     self.write(" @");
                     self.write_ident(*label);
                 }
-                self.write(";");
             }
             Stmt::Return(value) => {
                 self.write("return");
@@ -3625,7 +3620,6 @@ impl<'a> Formatter<'a> {
                     self.write(" ");
                     self.format_expr(expr);
                 }
-                self.write(";");
             }
             Stmt::Defer { body, failure_only } => {
                 self.write(if *failure_only {
@@ -3634,11 +3628,9 @@ impl<'a> Formatter<'a> {
                     "defer "
                 });
                 self.format_expr(body);
-                self.write(";");
             }
             Stmt::Expression(expr) => {
                 self.format_expr(expr);
-                self.write(";");
             }
             Stmt::If { .. }
             | Stmt::IfLet { .. }
@@ -3650,6 +3642,7 @@ impl<'a> Formatter<'a> {
                 unreachable!("non-inline statement reached gen block inline formatter")
             }
         }
+        self.write(";");
     }
 
     #[expect(clippy::too_many_lines, reason = "match on all Stmt variants")]

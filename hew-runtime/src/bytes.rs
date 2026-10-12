@@ -741,7 +741,11 @@ pub unsafe extern "C" fn hew_bytes_concat_owned(
 ) {
     // SAFETY: both inputs are valid borrowed triples per the contract.
     let (a, b) = unsafe { (active(&*a), active(&*b)) };
-    let Some(total) = u32::try_from(a.len() + b.len()).ok() else {
+    let Some(total) = a
+        .len()
+        .checked_add(b.len())
+        .and_then(|total| u32::try_from(total).ok())
+    else {
         // SAFETY: this is the terminal length-overflow path.
         unsafe { bytes_offset_overflow_trap("bytes concatenation") };
     };
@@ -1004,11 +1008,7 @@ pub unsafe extern "C" fn hew_bytes_from_str(str_ptr: *const u8) -> BytesTriple {
     // SAFETY: str_ptr is a valid NUL-terminated C string per caller contract.
     let len = unsafe { libc::strlen(str_ptr.cast()) };
 
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "String lengths in Hew are bounded by u32::MAX"
-    )]
-    let len32 = len as u32;
+    let len32 = u32::try_from(len).unwrap_or_else(|_| std::process::abort());
 
     if len32 == 0 {
         return BytesTriple {

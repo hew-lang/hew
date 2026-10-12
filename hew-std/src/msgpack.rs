@@ -170,7 +170,10 @@ fn check_depth(slice: &[u8]) -> Result<(), String> {
             0xc9 => {
                 let len = usize::try_from(read_u32_be(slice, &mut cursor)?)
                     .map_err(|_| MALFORMED_MSGPACK_ERROR.to_string())?;
-                skip_bytes(slice, &mut cursor, len + 1)?;
+                let len = len
+                    .checked_add(1)
+                    .ok_or_else(|| MALFORMED_MSGPACK_ERROR.to_string())?;
+                skip_bytes(slice, &mut cursor, len)?;
             }
             0xca | 0xce | 0xd2 => skip_bytes(slice, &mut cursor, 4)?,
             0xcb | 0xcf | 0xd3 => skip_bytes(slice, &mut cursor, 8)?,
@@ -625,6 +628,15 @@ mod tests {
         unsafe {
             assert!(hew_msgpack_to_json(garbage.as_ptr(), garbage.len()).is_null());
         }
+    }
+
+    #[test]
+    fn depth_scan_rejects_ext32_length_overflow() {
+        let malformed = [0xc9, 0xff, 0xff, 0xff, 0xff, 0x00];
+        assert_eq!(
+            check_depth(&malformed),
+            Err(MALFORMED_MSGPACK_ERROR.to_string())
+        );
     }
 
     #[test]

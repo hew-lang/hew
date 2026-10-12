@@ -587,11 +587,15 @@ fn suppress_sigpipe(_sock: &Socket) {}
 
 /// Send exactly `buf` bytes over a socket with length-prefixed framing.
 fn framed_send(sock: &Socket, data: &[u8]) -> c_int {
-    if data.len() > u32::MAX as usize {
+    if data.len() > MAX_FRAME_SIZE {
+        set_last_error(format!(
+            "transport framed_send: frame exceeds max size ({} > {MAX_FRAME_SIZE})",
+            data.len()
+        ));
         return -1;
     }
-    #[expect(clippy::cast_possible_truncation, reason = "payload bounded by caller")]
-    let frame_len = data.len() as u32;
+    let frame_len = u32::try_from(data.len())
+        .unwrap_or_else(|_| unreachable!("frame size is bounded by MAX_FRAME_SIZE"));
     let header = frame_len.to_le_bytes();
 
     // Write header. `send_with_flags` (not `write`) so `MSG_NOSIGNAL` can
@@ -627,11 +631,8 @@ fn framed_send(sock: &Socket, data: &[u8]) -> c_int {
             Ok(n) => written += n,
         }
     }
-    #[expect(clippy::cast_possible_truncation, reason = "payload bounded by caller")]
-    #[expect(clippy::cast_possible_wrap, reason = "C ABI: value fits in i32")]
-    {
-        data.len() as c_int
-    }
+    c_int::try_from(data.len())
+        .unwrap_or_else(|_| unreachable!("frame size is bounded by MAX_FRAME_SIZE"))
 }
 
 /// Receive a length-prefixed frame into `buf`. Returns bytes read or -1.

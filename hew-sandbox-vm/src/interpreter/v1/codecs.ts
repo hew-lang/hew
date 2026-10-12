@@ -159,7 +159,7 @@ function* fromBridge(
     return { kind: "f64", value: number };
   }
   if ("Signed" in node || "Unsigned" in node)
-    return { kind: "i64", value: BigInt.asIntN(64, BigInt(String(value))) };
+    return { kind: "i64", value: BigInt(String(value)) };
   if ("Option" in node) {
     if (variant === null || variant === undefined)
       throw new Error("codec Option lacks its shape");
@@ -298,7 +298,10 @@ export function* executeCodec(
         }
       : {
           kind: "string",
-          value: new TextDecoder().decode(new Uint8Array(bytes)),
+          value: new TextDecoder("utf-8", {
+            fatal: true,
+            ignoreBOM: true,
+          }).decode(new Uint8Array(bytes)),
         };
   }
   const root = result.ok ? shape.root : term.decoded!.error_root;

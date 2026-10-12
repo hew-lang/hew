@@ -78,8 +78,6 @@ function buildWasmCrate({ crate, outName, version, source }) {
   const pkg = JSON.parse(readFileSync(pkgPath, "utf8"));
   pkg.name = `@hew-lang/${outName}`;
   pkg.version = version;
-  pkg.type = "module";
-  pkg.main = pkg.module ?? `${outName.replace(/-/g, "_")}.js`;
   pkg.hewSource = source;
   pkg.publishConfig = { access: "public" };
   pkg.repository = {

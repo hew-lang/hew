@@ -7,8 +7,8 @@ use std::time::{Duration, Instant};
 
 use hew_cabi::string::{string_as_str, HewString};
 
-use super::{AcceptedConnection, HewAsyncIo, IoFailure, IoProducer, IoValue};
-use crate::blocking_pool::{hew_blocking_pool_submit, shared_blocking_pool_opt, HewBlockingPool};
+use super::{HewAsyncIo, IoFailure, IoProducer, IoValue};
+use crate::blocking_pool::{shared_blocking_pool_opt, submit_abandonable, HewBlockingPool};
 use crate::wake::HewWaker;
 
 enum Address {
@@ -58,11 +58,9 @@ impl ConnectJob {
             };
             match result {
                 Ok(stream) => {
-                    // Adoption transfers the socket into an owned result. A
-                    // late completion drops it through the ordinary close path.
-                    return Ok(IoValue::Connection(AcceptedConnection(
-                        crate::transport::tcp_adopt_connection(stream),
-                    )));
+                    // The operation owns the socket until its live consumer
+                    // takes the result and adopts it into the runtime table.
+                    return Ok(IoValue::TcpConnection(stream));
                 }
                 Err(error) => last_error = error,
             }
@@ -81,8 +79,12 @@ unsafe extern "C" fn run_connect_job(context: *mut c_void) {
     if !job.operation.is_pending() {
         return;
     }
+    if let Some(detach) = crate::blocking_pool::Detach::current() {
+        job.operation.produced_by(detach);
+    }
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| job.run()))
         .unwrap_or_else(|_| Err(IoFailure::invalid("TCP connection worker panicked")));
+    crate::blocking_pool::job_finishing();
     job.operation.complete(result);
 }
 
@@ -113,12 +115,15 @@ unsafe fn submit(
                     deadline,
                     operation: IoProducer::new(Arc::clone(&operation)),
                 }));
-                // SAFETY: the installed runtime owns the pool; the admitted job
-                // owns all inputs and shutdown joins its eventual completion.
-                if unsafe { hew_blocking_pool_submit(pool, run_connect_job, job.cast()) } != 0 {
+                // SAFETY: the admitted job owns its address and any socket. A
+                // caller that gives up detaches it; adoption into the runtime
+                // handle table happens only when a live consumer takes success.
+                if unsafe { submit_abandonable(pool, run_connect_job, job.cast()) } != 0 {
                     // SAFETY: failed admission did not transfer ownership.
                     drop(unsafe { Box::from_raw(job) });
-                    operation.complete(Err(IoFailure::invalid("TCP connection pool is stopped")));
+                    operation.complete(Err(IoFailure::invalid(
+                        "TCP connection pool could not accept work",
+                    )));
                 }
             }
         }

@@ -107,7 +107,6 @@ fn attempt(buffer: &mut Buffer) -> Option<Result<IoValue, IoFailure>> {
         }
         #[cfg(windows)]
         {
-            ensure_reader();
             return None;
         }
         #[cfg(target_arch = "wasm32")]
@@ -193,17 +192,18 @@ fn fill(buffer: &mut Buffer) -> io::Result<bool> {
 /// Start the reader thread once. It fills the buffer while there is room and
 /// pauses after end of input or an error until a read has reported it.
 #[cfg(windows)]
-pub(crate) fn ensure_reader() {
-    static STARTED: std::sync::Once = std::sync::Once::new();
-    STARTED.call_once(|| {
-        let spawned = std::thread::Builder::new()
-            .name("hew-stdin".into())
-            .spawn(reader_loop);
-        if let Err(error) = spawned {
-            STDIN.lock_or_recover().error = Some(error);
-            crate::reactor::report_stdin_ready();
-        }
-    });
+fn ensure_reader() -> Result<(), IoFailure> {
+    static STARTED: std::sync::OnceLock<Result<(), io::Error>> = std::sync::OnceLock::new();
+    STARTED
+        .get_or_init(|| {
+            std::thread::Builder::new()
+                .name("hew-stdin".into())
+                .spawn(reader_loop)
+                .map(drop)
+        })
+        .as_ref()
+        .map(|()| ())
+        .map_err(|error| IoFailure::from_io("start standard input reader", error))
 }
 
 #[cfg(windows)]
@@ -243,6 +243,11 @@ fn reader_loop() {
 /// waiter.
 #[cfg(not(target_arch = "wasm32"))]
 pub(super) fn advance(operation: &Arc<HewAsyncIo>, slot: &Arc<Slot>) {
+    #[cfg(windows)]
+    if let Err(error) = ensure_reader() {
+        operation.complete(Err(error));
+        return;
+    }
     let mut buffer = STDIN.lock_or_recover();
     if !slot.take_turn(operation) {
         return;
@@ -250,7 +255,7 @@ pub(super) fn advance(operation: &Arc<HewAsyncIo>, slot: &Arc<Slot>) {
     let result = match attempt(&mut buffer) {
         Some(result) => result,
         None => match slot.wait(Direction::Read, operation) {
-            Ok(()) => return,
+            Ok(_) => return,
             Err(error) => Err(error),
         },
     };

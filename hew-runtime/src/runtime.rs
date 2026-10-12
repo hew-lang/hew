@@ -595,6 +595,8 @@ pub(crate) fn install_default(inner: Box<RuntimeInner>) -> bool {
 /// `hew_runtime_cleanup` perform the scheduler-frees-last drop order. Returns
 /// `None` when no runtime was installed.
 pub(crate) fn take_default() -> Option<Box<RuntimeInner>> {
+    #[cfg(not(target_arch = "wasm32"))]
+    crate::shutdown_signal::disarm_runtime_handlers();
     let ptr = DEFAULT_RUNTIME.swap(std::ptr::null_mut(), Ordering::AcqRel);
     if ptr.is_null() {
         None

@@ -43,7 +43,7 @@ use crate::util::{CondvarExt, MutexExt};
 
 // ── Constants ───────────────────────────────────────────────────────────
 
-/// Park timeout — workers recheck the shutdown flag at this interval.
+#[cfg(test)]
 const PARK_TIMEOUT: Duration = Duration::from_millis(10);
 
 // ── Observability counters ──────────────────────────────────────────────
@@ -596,7 +596,12 @@ pub extern "C" fn hew_sched_init() -> c_int {
 
     // SIGTERM/SIGINT without a `shutdown_signal()` subscriber now start
     // graceful shutdown.
-    crate::shutdown_signal::install_runtime_handlers();
+    if let Err(error) = crate::shutdown_signal::install_runtime_handlers() {
+        set_last_error(format!("hew_sched_init: {error}"));
+        eprintln!("hew: scheduler init failed — {error}");
+        let _ = runtime::take_default();
+        std::process::exit(1);
+    }
 
     // Phase 2: Spawn worker threads.
     // If ANY worker fails to spawn, treat it as an initialisation failure:
@@ -1410,10 +1415,7 @@ fn worker_loop(id: usize, rt: WorkerRuntimePtr, local: &WorkDeque) {
             }
         }
 
-        // 4. Check if a signal-initiated shutdown needs to be started.
-        crate::shutdown_signal::check_pending();
-
-        // 5. Park on the per-worker condvar until notified or timeout. Queue
+        // 4. Park on the per-worker condvar until notified. Queue
         // state is probed once more under the same mutex wake notifiers acquire,
         // closing the final-probe -> wait-registration lost-wakeup window.
         // Observe shutdown through the single worker exit above, including
@@ -1427,6 +1429,7 @@ enum WorkerParkOutcome {
     Shutdown,
     WorkAvailable,
     Notified,
+    #[cfg(test)]
     TimedOut,
 }
 
@@ -1467,14 +1470,21 @@ fn park_worker(
     }
 
     crate::observe::record_scheduler_park();
-    let (_guard, result) = parker.cond.wait_timeout_or_recover(guard, PARK_TIMEOUT);
+    #[cfg(test)]
+    if !probe_queues {
+        let (_guard, result) = parker.cond.wait_timeout_or_recover(guard, PARK_TIMEOUT);
+        parker.parked.store(false, Ordering::SeqCst);
+        sched.parked_workers.fetch_sub(1, Ordering::SeqCst);
+        return if result.timed_out() {
+            WorkerParkOutcome::TimedOut
+        } else {
+            WorkerParkOutcome::Notified
+        };
+    }
+    let _guard = parker.cond.wait_or_recover(guard);
     parker.parked.store(false, Ordering::SeqCst);
     sched.parked_workers.fetch_sub(1, Ordering::SeqCst);
-    if result.timed_out() {
-        WorkerParkOutcome::TimedOut
-    } else {
-        WorkerParkOutcome::Notified
-    }
+    WorkerParkOutcome::Notified
 }
 
 /// Try to steal an actor from a random peer worker's deque.
@@ -2019,7 +2029,7 @@ impl Drop for NoWorkerSchedulerForTest {
             // not been freed yet (Drop runs once, under SCHED_TEST_MUTEX).
             let installed = unsafe { &*ptr };
             // Tell any worker bound to this transient to stop, and wake parked
-            // ones so they re-check promptly rather than waiting out PARK_TIMEOUT.
+            // ones so they re-check promptly.
             installed.scheduler.shutdown.store(true, Ordering::Release);
             for parker in &installed.scheduler.parkers {
                 parker.notify_all();
@@ -2537,7 +2547,7 @@ mod tests {
     /// wait-registration gap must not be lost. The hook pins that exact gap:
     /// it enqueues first, then `sched_try_wake` observes that no worker has
     /// published a park yet. The fixed final probe sees the work and never
-    /// enters `wait_timeout`; omitting only that probe enters the wait with the
+    /// enters the condvar wait; omitting only that probe enters the wait with the
     /// work still stranded. A condvar may wake spuriously, so the hook records
     /// its own work-path notification delta synchronously rather than requiring
     /// an exact timeout result or attributing concurrent tests' notifications
@@ -2596,7 +2606,7 @@ mod tests {
 
     /// #2830 busy-target strand: round-robin may start at a worker that is
     /// running user code while a peer is already parked. The old direct-index
-    /// notify had no waiter and left the peer asleep until `PARK_TIMEOUT`.
+    /// notify had no waiter and left the peer asleep until the old park timeout.
     ///
     /// Published parker state makes the selection deterministic: starting at
     /// busy worker 1 skips it and notifies exactly parked worker 0. Returning

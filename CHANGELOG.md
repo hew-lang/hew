@@ -10,6 +10,7 @@
   ordering, optional chaining and double-ended iterators.
 - Add task-producing race, typed failure propagation and failure-only defer.
 - Make scheduling event driven and suspend native TLS and process capture.
+- Isolate child-process pipes on macOS so unrelated children cannot delay EOF.
 - Complete authenticated distributed send ownership and runtime safety fixes.
 - Add typed properties and shrinking, benchmark comparisons, shared source
   coverage and five-format native/sandbox codecs.

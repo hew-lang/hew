@@ -48,10 +48,8 @@ impl super::SessionOutput {
                 }
                 let line = u32::try_from(
                     text.as_bytes()[..*offset]
-                        .iter()
-                        .filter(|&&c| c == b'\n')
-                        .count()
-                        + 1,
+                        .split(|byte| *byte == b'\n')
+                        .count(),
                 )
                 .expect("source line capacity");
                 let path = std::path::Path::new(file)

@@ -4204,7 +4204,8 @@ fn verify_direct_call_terminator(
 /// so an unwind edge is invalid.
 #[expect(
     clippy::too_many_arguments,
-    reason = "the terminator's own fields plus the module type context"
+    clippy::too_many_lines,
+    reason = "verify the complete extern terminator against its declaration and module context"
 )]
 fn verify_extern_call_terminator(
     function: &SemFunction,

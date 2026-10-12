@@ -43,6 +43,12 @@ fn selected_call(capability: ValueCapability) -> SemModule {
             "if selected(1, 2) { 1 } else { 0 }",
         ),
         ValueCapability::Hash => ("fn selected(a: i64) -> i64 { a }", "selected(1)"),
+        ValueCapability::Less
+        | ValueCapability::LessEqual
+        | ValueCapability::Greater
+        | ValueCapability::GreaterEqual => {
+            panic!("this fixture selects only equality and hashing")
+        }
     };
     let mut module = lower_source(&format!(
         "{method} fn main() -> i64 {{ let map: HashMap<i64, string> = HashMap.new(); {invocation} }}"

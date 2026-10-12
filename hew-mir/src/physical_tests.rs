@@ -639,6 +639,7 @@ fn module_with_return() -> SemModule {
         },
     );
     SemModule {
+        coverage: hew_sir::CoveragePlan::default(),
         offloads: Vec::new(),
         defs: hew_types::DefTable::fixture(),
         structural_display: BTreeMap::new(),
@@ -2230,6 +2231,7 @@ fn verifier_rejects_overwriting_a_maybe_live_owner() {
         ],
     };
     let physical = PhysicalModule {
+        coverage: hew_sir::CoveragePlan::default(),
         offloads: Vec::new(),
         defs: hew_types::DefTable::fixture(),
         debug: PhysicalDebug::default(),

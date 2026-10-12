@@ -645,6 +645,7 @@ fn scalar_entry_module() -> SemModule {
         bindings: vec![],
     };
     SemModule {
+        coverage: hew_sir::CoveragePlan::default(),
         offloads: Vec::new(),
         defs: hew_types::DefTable::fixture(),
         structural_display: BTreeMap::new(),
@@ -845,6 +846,7 @@ fn bytes_copy_module() -> SemModule {
         bindings: vec![],
     };
     SemModule {
+        coverage: hew_sir::CoveragePlan::default(),
         offloads: Vec::new(),
         defs: hew_types::DefTable::fixture(),
         structural_display: BTreeMap::new(),

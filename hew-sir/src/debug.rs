@@ -65,9 +65,9 @@ impl SemDebugFacts {
             .map(|(id, source)| (*id, clamp_offset(source.span.start)))
             .collect();
         Self {
+            coverage_sites,
             scopes,
             sites,
-            coverage_sites,
         }
     }
 

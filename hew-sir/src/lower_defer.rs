@@ -323,6 +323,10 @@ impl Builder<'_, '_> {
         self.finish_fault_exit()
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one deferred body preserves the shared cleanup and fault state"
+    )]
     pub(super) fn emit_deferred_body(
         &mut self,
         action: &PendingDefer,

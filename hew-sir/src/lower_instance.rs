@@ -1584,6 +1584,10 @@ impl<'a> InstanceService<'a> {
         self.states[index] = state;
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "construct the semantic module from one completed instance table"
+    )]
     pub(super) fn into_module(self) -> SemModule {
         let Self {
             module,

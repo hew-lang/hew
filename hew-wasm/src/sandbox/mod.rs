@@ -382,6 +382,10 @@ fn has_error_diagnostics(diagnostics: &[Diagnostic]) -> bool {
         .any(|diagnostic| diagnostic.severity == "error")
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "one frontend-to-package boundary preserves diagnostics and test metadata"
+)]
 fn compile_from_semantics(
     source: &str,
     profile: Option<&str>,

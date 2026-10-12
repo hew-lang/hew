@@ -28,22 +28,6 @@ pub fn resolve_stream_method(stream_kind: &str, method: &str) -> Option<&'static
     resolve_builtin_method_symbol(kind, method)
 }
 
-/// Returns the codegen representation for a handle type.
-///
-/// Most handle types are opaque pointers (`"handle"`).
-/// File-descriptor types like `std.net.Listener` and `std.net.Connection` use `"i32"`.
-///
-// SHIM: This hardcoded mapping should eventually move to `hew.toml` metadata
-// in each module's package directory, so modules can declare their own
-// representation. Remove once the `hew.toml` format supports a `repr` field.
-#[must_use]
-pub fn handle_type_representation(name: &str) -> &'static str {
-    match name {
-        STD_NET_LISTENER | STD_NET_CONNECTION => "i32",
-        _ => "handle",
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

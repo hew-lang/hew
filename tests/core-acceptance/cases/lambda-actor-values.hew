@@ -40,5 +40,20 @@ fn main() {
     }
     stop(handle);
     stopped(handle);
+
+    let inferred = actor |n| { n + 1 };
+    assert(inferred(41).expect("inferred actor reply") == 42);
+    stop(inferred);
+    stopped(inferred);
+
+    let add = actor |left: i64, right: i64| { left + right };
+    assert(add(19, 23).expect("inferred tuple reply") == 42);
+    stop(add);
+    stopped(add);
+
+    let answer = actor || { 42 };
+    assert(answer().expect("inferred unit-message reply") == 42);
+    stop(answer);
+    stopped(answer);
     println("closed");
 }

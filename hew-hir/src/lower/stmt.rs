@@ -354,28 +354,12 @@ impl LowerCtx {
                 // against this let's id to discriminate Weak (self) from
                 // Strong (every other free-variable capture).
                 //
-                // The pre-bind fires for both untyped and typed lets. The
-                // binding type follows the annotation when present (the
-                // type-checker layer reconciles the annotation against the
-                // lambda's synthesised handle shape) and falls back to the
-                // synthetic `actor(Msg) -> Reply` derived from the lambda's
-                // parameter / return annotations otherwise.
                 if let (
                     Pattern::Identifier(name),
-                    Some((
-                        Expr::SpawnLambdaActor {
-                            params: lambda_params,
-                            return_type,
-                            ..
-                        },
-                        _,
-                    )),
+                    Some((Expr::SpawnLambdaActor { .. }, value_span)),
                 ) = (&pattern.0, value.as_ref())
                 {
-                    let binding_ty = match ty.as_ref() {
-                        Some(annotation) => self.lower_type(annotation),
-                        None => self.actor_lambda_handle_ty(lambda_params, return_type.as_ref()),
-                    };
+                    let binding_ty = self.checked_actor_lambda_handle_ty(value_span);
                     // Pre-bind in the current scope; record the id so
                     // we can detect a self-reference inside the body
                     // walk via builder state.

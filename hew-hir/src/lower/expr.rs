@@ -1003,12 +1003,9 @@ impl LowerCtx {
             }
             Expr::Race(branches) => self.lower_race(branches, span.clone()),
             Expr::Spawn { target, args, .. } => self.lower_spawn(target, args, span.clone()),
-            Expr::SpawnLambdaActor {
-                params,
-                return_type,
-                body,
-                ..
-            } => self.lower_spawn_lambda_actor(params, return_type.as_ref(), body, &span),
+            Expr::SpawnLambdaActor { params, body, .. } => {
+                self.lower_spawn_lambda_actor(params, body, &span)
+            }
             Expr::Lambda { params, body, .. } => self.lower_closure(params, body, span.clone()),
             Expr::GenBlock { body } => self.lower_gen_block(body, span.clone()),
             Expr::Yield(value) => {

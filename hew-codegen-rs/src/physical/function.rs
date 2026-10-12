@@ -210,6 +210,30 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             // opens on its own first source point rather than inheriting the
             // line of whichever block was emitted before it.
             self.enter_block(block.id)?;
+            if let Some(counter) = self
+                .module
+                .coverage
+                .get(&(self.function.callable, block.id))
+            {
+                let hit = get_or_declare_external(
+                    self.llvm,
+                    "hew_coverage_hit",
+                    self.ctx
+                        .void_type()
+                        .fn_type(&[self.ctx.i32_type().into()], false),
+                )?;
+                self.builder
+                    .build_call(
+                        hit,
+                        &[self
+                            .ctx
+                            .i32_type()
+                            .const_int(u64::from(counter.id), false)
+                            .into()],
+                        "",
+                    )
+                    .llvm_ctx("record source coverage")?;
+            }
             for (index, operation) in block.ops.iter().enumerate() {
                 self.locate(block.id, index);
                 self.emit_op(operation)?;

@@ -36,7 +36,10 @@ pub fn resolve_runner(project_dir: &Path) -> Result<PathBuf, String> {
         })
 }
 
-pub(super) fn compile_test(tests: &[&TestCase]) -> Result<CompiledTestArtifact, String> {
+pub(super) fn compile_test(
+    tests: &[&TestCase],
+    coverage_enabled: bool,
+) -> Result<CompiledTestArtifact, String> {
     let test = tests
         .first()
         .ok_or("VM test file has no selected entries")?;
@@ -57,6 +60,7 @@ pub(super) fn compile_test(tests: &[&TestCase]) -> Result<CompiledTestArtifact, 
         &selections,
         companion,
         project_dir,
+        coverage_enabled,
     )
     .map_err(|error| error.to_string())?;
     let errors = output
@@ -90,6 +94,7 @@ pub(super) fn compile_test(tests: &[&TestCase]) -> Result<CompiledTestArtifact, 
     }
     Ok(CompiledTestArtifact::Vm {
         properties: output.properties,
+        coverage: output.coverage,
         _emit_dir: emit_dir,
         packages,
     })

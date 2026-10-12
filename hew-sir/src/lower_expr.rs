@@ -28,6 +28,7 @@ impl Builder<'_, '_> {
     ) -> Result<ValueId, String> {
         let loan_floor = self.scope_loans.len();
         let value = self.lower_expr_inner(expr, binding_use)?;
+        self.current_site = Some(expr.site);
         if self.is_open()
             && matches!(
                 self.value_own_kind(value),

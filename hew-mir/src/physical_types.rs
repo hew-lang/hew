@@ -1322,6 +1322,7 @@ pub struct PhysicalFunction {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct PhysicalModule {
+    pub coverage: hew_sir::CoveragePlan,
     pub actors: Vec<hew_sir::SemActor>,
     pub supervisors: Vec<hew_sir::SemSupervisor>,
     pub actor_recipes: BTreeMap<ResolvedTy, PhysicalValueRecipe>,

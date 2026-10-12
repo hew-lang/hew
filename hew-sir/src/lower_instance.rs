@@ -1690,6 +1690,7 @@ impl<'a> InstanceService<'a> {
             }
         }
         SemModule {
+            coverage: crate::CoveragePlan::new(),
             structural_display,
             debug,
             actors,

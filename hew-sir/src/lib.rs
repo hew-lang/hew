@@ -9,6 +9,7 @@ mod actor;
 mod analysis;
 mod callable;
 mod capability;
+mod coverage;
 mod debug;
 mod defer;
 mod dump;
@@ -40,6 +41,7 @@ pub use callable::{
     verify_generator_coercion, ClosureId, ClosureInstanceKey, SemCaptureField, SemClosure,
 };
 pub use capability::{derived_capability_components, is_identity_carrier, SemValueMethodPlan};
+pub use coverage::{CoverageCounter, CoveragePlan};
 pub use debug::{SemDebugFacts, SemDebugScope};
 pub use dump::{dump_lowering, dump_sir};
 pub use lifetime::{CleanupMode, LeafContents, PlaceLifetimes};

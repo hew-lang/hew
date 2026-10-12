@@ -1145,20 +1145,31 @@ impl<'m> Walker<'m> {
             blocks: function
                 .blocks
                 .iter()
-                .map(|block| self.block(block))
+                .map(|block| self.block(function.callable, block))
                 .collect::<Result<Vec<_>, _>>()?,
         })
     }
 
-    fn block(&mut self, block: &SemBlock) -> Result<Block, EmitError> {
+    fn block(
+        &mut self,
+        callable: hew_sir::CallableId,
+        block: &SemBlock,
+    ) -> Result<Block, EmitError> {
+        let mut ops = block
+            .ops
+            .iter()
+            .map(|op| self.op(op))
+            .collect::<Result<Vec<_>, _>>()?;
+        if let Some(counter) = self.module.coverage.get(&(callable, block.id)) {
+            ops.insert(
+                0,
+                serde_json::json!({ "op": "coverage.hit", "counter": counter.id }),
+            );
+        }
         Ok(Block {
             id: block.id.0,
             params: block.args.iter().map(block_arg).collect(),
-            ops: block
-                .ops
-                .iter()
-                .map(|op| self.op(op))
-                .collect::<Result<Vec<_>, _>>()?,
+            ops,
             term: self.terminator(&block.terminator, &block.terminator_provenance)?,
         })
     }

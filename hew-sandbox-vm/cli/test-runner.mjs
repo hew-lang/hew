@@ -41,6 +41,7 @@ try {
   const faultKind = hewFault?.kind ?? fault?.kind ?? null;
   const report = {
     version: 1,
+    coverage: final.coverage ?? {},
     outcome,
     status: passed ? 0 : 1,
     fault_kind: faultKind,

@@ -1822,6 +1822,7 @@ impl PreparedCallee {
 #[derive(Clone)]
 struct ControlState {
     block: BlockId,
+    source_site: Option<hew_hir::SiteId>,
     bindings: HashMap<BindingId, BindingTarget>,
     binding_declarations: HashMap<BindingId, usize>,
     owned_live: BTreeMap<ValueId, ResolvedTy>,

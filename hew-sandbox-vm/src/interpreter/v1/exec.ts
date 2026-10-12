@@ -411,7 +411,7 @@ class ExecutorV1 {
       const act = this.current;
       while (act.opIndex < act.block.ops.length) {
         const op = act.block.ops[act.opIndex++]!;
-        this.commitStep();
+        if (op.op !== "coverage.hit") this.commitStep();
         try {
           this.execute(act, op);
         } catch (error) {
@@ -632,6 +632,11 @@ class ExecutorV1 {
 
   private execute(act: Activation, op: OpV1): void {
     switch (op.op) {
+      case "coverage.hit": {
+        const key = String(op.counter);
+        this.trace.coverage[key] = (this.trace.coverage[key] ?? 0) + 1;
+        return;
+      }
       case "const.int":
         this.define(act, op.dst, {
           kind: "i64",

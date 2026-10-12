@@ -144,6 +144,7 @@ export interface SandboxTrace {
   replay: ReplayConfig;
   events: TraceEvent[];
   final_state: {
+    coverage?: Record<string, number>;
     status: RuntimeStatus;
     exit_code: number | null;
     step_count: number;

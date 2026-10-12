@@ -25,6 +25,8 @@ pub struct SemDebugScope {
 /// attribute a line that file never had.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct SemDebugFacts {
+    /// Full site attribution, including imported files, for coverage projection.
+    pub coverage_sites: BTreeMap<SiteId, hew_hir::HirSiteSource>,
     /// Lexical blocks in HIR scope order.
     pub scopes: Vec<SemDebugScope>,
     /// Source byte offset where each operation site begins.
@@ -55,12 +57,18 @@ impl SemDebugFacts {
             })
             .collect();
         scopes.sort_unstable_by_key(|scope| scope.id);
-        let sites = hew_hir::collect_site_spans(module)
-            .into_iter()
+        let coverage_sites: BTreeMap<_, _> =
+            hew_hir::collect_site_spans(module).into_iter().collect();
+        let sites = coverage_sites
+            .iter()
             .filter(|(_, source)| source.source_module.is_none())
-            .map(|(id, source)| (id, clamp_offset(source.span.start)))
+            .map(|(id, source)| (*id, clamp_offset(source.span.start)))
             .collect();
-        Self { scopes, sites }
+        Self {
+            scopes,
+            sites,
+            coverage_sites,
+        }
     }
 
     /// The source byte an operation's provenance names, when it has one in the

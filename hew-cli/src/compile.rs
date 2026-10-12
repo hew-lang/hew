@@ -26,6 +26,8 @@ use crate::target::TargetSpec;
 
 #[derive(Debug, Clone, Default)]
 pub struct CompileOptions {
+    /// Write the shared source coverage map and instrument block entries.
+    pub coverage_map: Option<PathBuf>,
     pub no_typecheck: bool,
     pub werror: bool,
     pub target: Option<String>,

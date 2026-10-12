@@ -1219,6 +1219,7 @@ stable-stdlib = [
 # non-trivial actor programs. NOT user-callable via `extern "rt"` (the checker
 # enforces this). JIT hosts must expose these in the same symbol map as `stable`.
 non-declarable = [
+  "hew_coverage_hit",
   # Verified native compiler/runtime protocol entry points.
   "hew_de_new_raw",
   "hew_de_unit",

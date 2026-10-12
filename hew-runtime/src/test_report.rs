@@ -70,6 +70,7 @@ pub(crate) fn finish(status: i32) {
     let driver = crate::driver::report_state();
     let record = serde_json::json!({
         "version": 1,
+        "coverage": crate::coverage::snapshot(),
         "outcome": outcome,
         "status": status,
         "fault_kind": fault.as_ref().map(|fault| fault.kind),

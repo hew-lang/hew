@@ -12,19 +12,29 @@ fn key_value(key: &Key) -> Value {
 }
 
 pub(super) fn strategy(shape: &Shape) -> Result<BoxedStrategy<Value>, String> {
-    at(shape, shape.root, 16)
+    at(shape, shape.root, 64, &[])
 }
 
-fn at(shape: &Shape, id: usize, depth: usize) -> Result<BoxedStrategy<Value>, String> {
+fn at(
+    shape: &Shape,
+    id: usize,
+    budget: usize,
+    ancestors: &[usize],
+) -> Result<BoxedStrategy<Value>, String> {
     let node = shape
         .nodes
         .get(id)
         .ok_or("property shape has an invalid child")?;
-    let child = |id| {
-        if depth == 0 {
+    let mut ancestors = ancestors.to_vec();
+    ancestors.push(id);
+    let remaining = budget.saturating_sub(1);
+    // Split the expansion budget among siblings, so recursive collections do
+    // not multiply it. Required acyclic fields remain representable at zero.
+    let child = |id, allowance| {
+        if ancestors.contains(&id) && allowance == 0 {
             Err("property shape has no bounded value".to_string())
         } else {
-            at(shape, id, depth - 1)
+            at(shape, id, allowance, &ancestors)
         }
     };
     Ok(match node {
@@ -50,19 +60,24 @@ fn at(shape: &Shape, id: usize, depth: usize) -> Result<BoxedStrategy<Value>, St
             .boxed(),
         Node::Tuple(fields) => fields
             .iter()
-            .map(|id| child(*id))
+            .map(|id| child(*id, remaining / fields.len().max(1)))
             .collect::<Result<Vec<_>, _>>()?
             .prop_map(Value::Seq)
             .boxed(),
-        Node::Array { element, len } => proptest::collection::vec(child(*element)?, *len)
-            .prop_map(Value::Seq)
-            .boxed(),
+        Node::Array { len: 0, .. } => Just(Value::Seq(Vec::new())).boxed(),
+        Node::Array { element, len } => {
+            proptest::collection::vec(child(*element, remaining / len)?, *len)
+                .prop_map(Value::Seq)
+                .boxed()
+        }
         Node::Sequence(element) | Node::Set(element) => {
-            if depth == 0 {
-                Just(Value::Seq(Vec::new())).boxed()
-            } else {
+            let length = remaining.min(7);
+            if let Some(element) = (length > 0)
+                .then(|| child(*element, remaining / length))
+                .and_then(Result::ok)
+            {
                 let unique = matches!(node, Node::Set(_));
-                proptest::collection::vec(child(*element)?, 0..8)
+                proptest::collection::vec(element, 0..=length)
                     .prop_map(move |values| {
                         let mut elements = Vec::new();
                         for value in values {
@@ -73,13 +88,18 @@ fn at(shape: &Shape, id: usize, depth: usize) -> Result<BoxedStrategy<Value>, St
                         Value::Seq(elements)
                     })
                     .boxed()
+            } else {
+                Just(Value::Seq(Vec::new())).boxed()
             }
         }
         Node::Map { key, value } => {
-            if depth == 0 {
-                Just(Value::Map(Vec::new())).boxed()
-            } else {
-                proptest::collection::vec((child(*key)?, child(*value)?), 0..8)
+            let length = (remaining / 2).min(7);
+            let children = (length > 0).then(|| {
+                let allowance = remaining / (length * 2);
+                Ok::<_, String>((child(*key, allowance)?, child(*value, allowance)?))
+            });
+            if let Some(Ok(children)) = children {
+                proptest::collection::vec(children, 0..=length)
                     .prop_map(|entries| {
                         let mut unique = Vec::new();
                         for (key, value) in entries {
@@ -90,6 +110,8 @@ fn at(shape: &Shape, id: usize, depth: usize) -> Result<BoxedStrategy<Value>, St
                         Value::Map(unique)
                     })
                     .boxed()
+            } else {
+                Just(Value::Map(Vec::new())).boxed()
             }
         }
         Node::Record(fields) => {
@@ -99,7 +121,7 @@ fn at(shape: &Shape, id: usize, depth: usize) -> Result<BoxedStrategy<Value>, St
                 .collect::<Vec<_>>();
             fields
                 .iter()
-                .map(|(_, id)| child(*id))
+                .map(|(_, id)| child(*id, remaining / fields.len().max(1)))
                 .collect::<Result<Vec<_>, _>>()?
                 .prop_map(move |values| Value::Map(keys.iter().cloned().zip(values).collect()))
                 .boxed()
@@ -111,7 +133,7 @@ fn at(shape: &Shape, id: usize, depth: usize) -> Result<BoxedStrategy<Value>, St
                     let key = key_value(key);
                     Some(match payload {
                         None => Just(key).boxed(),
-                        Some(id) => child(*id)
+                        Some(id) => child(*id, remaining)
                             .ok()?
                             .prop_map(move |value| Value::Map(vec![(key.clone(), value)]))
                             .boxed(),
@@ -124,12 +146,12 @@ fn at(shape: &Shape, id: usize, depth: usize) -> Result<BoxedStrategy<Value>, St
             proptest::strategy::Union::new(choices).boxed()
         }
         Node::Option(element) => {
-            if depth == 0 {
-                Just(Value::Null).boxed()
-            } else {
-                proptest::option::of(child(*element)?)
+            if let Ok(element) = child(*element, remaining) {
+                proptest::option::of(element)
                     .prop_map(|value| value.unwrap_or(Value::Null))
                     .boxed()
+            } else {
+                Just(Value::Null).boxed()
             }
         }
     })

@@ -679,6 +679,9 @@ pub enum TestColour {
     reason = "clap maps these independent command-line switches directly"
 )]
 pub struct TestArgs {
+    /// Write native or VM source coverage to .hew/coverage/lcov.info.
+    #[arg(long)]
+    pub coverage: bool,
     /// Files or directories to test.
     pub paths: Vec<PathBuf>,
     /// Run executable Hew code fences in source comments or Markdown files.

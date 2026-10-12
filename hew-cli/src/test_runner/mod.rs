@@ -4,6 +4,7 @@
 //! isolated program via the native compilation pipeline, and reports results
 //! with coloured output.
 
+mod coverage;
 pub mod discovery;
 mod doc_examples;
 pub mod output;
@@ -360,6 +361,7 @@ pub fn cmd_test(args: &crate::args::TestArgs) {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         output::output_event(event, format, &root, use_color, args.show_output);
     };
+    let coverage = args.coverage.then(coverage::Coverage::default);
     let summary = runner::run_tests(
         &all_tests,
         runner::TestRunOptions {
@@ -387,8 +389,21 @@ pub fn cmd_test(args: &crate::args::TestArgs) {
             },
             root: &root,
             on_event: Some(&emit),
+            coverage: coverage.as_ref(),
         },
     );
+    if let Some(coverage) = coverage {
+        let path = root.join(".hew/coverage/lcov.info");
+        if let Err(error) = coverage.write(&path) {
+            eprintln!("Error: cannot write source coverage: {error}");
+            std::process::exit(1);
+        }
+        if format == output::OutputFormat::Json {
+            println!("{}", serde_json::json!({"event": "coverage", "path": path}));
+        } else {
+            eprintln!("Coverage: {}", path.display());
+        }
+    }
     if let Err(error) = save_failed_tests(&summary, &all_tests, &root) {
         eprintln!("Warning: cannot save failed test identities: {error}");
     }

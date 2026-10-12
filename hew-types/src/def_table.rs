@@ -1510,7 +1510,7 @@ impl DefTable {
         if let Some(established) = self.lambda_actor_protocol {
             return established;
         }
-        let path = crate::actor_protocol::LAMBDA_ACTOR_METHOD_ID;
+        let path = crate::actor_protocol::LAMBDA_ACTOR_PROTOCOL_PATH;
         let id = self.push_row(DefRow {
             name: Symbol::intern(path),
             kind: DeclarationKind::RequestProtocol,

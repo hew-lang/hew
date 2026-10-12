@@ -12,7 +12,8 @@
 import std.time.datetime;
 
 /// Supplied by the benchmark dispatcher.
-pub type Bencher {}
+pub type Bencher {
+}
 
 trait BencherMethods {
     /// Calibrate a batch, then measure 31 samples with automatic result cleanup.
@@ -39,7 +40,9 @@ impl BencherMethods for Bencher {
                 f();
             }
             let elapsed = datetime.now_nanos() - start;
-            unsafe { hew_bench_record(elapsed, iterations); }
+            unsafe {
+                hew_bench_record(elapsed, iterations);
+            }
         }
     }
 }

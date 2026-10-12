@@ -21,6 +21,7 @@ struct Request {
 
 /// Execute the compiler's typed codec plan using the shared native engine.
 #[wasm_bindgen(js_name = executeCodec)]
+#[must_use]
 pub fn execute_codec(request: &str) -> String {
     execute(request)
         .unwrap_or_else(|error| json!({"failure": error}))

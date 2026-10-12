@@ -15,6 +15,10 @@ pub(super) fn strategy(shape: &Shape) -> Result<BoxedStrategy<Value>, String> {
     at(shape, shape.root, 64, &[])
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "one exhaustive shape match preserves the recursive generation budget"
+)]
 fn at(
     shape: &Shape,
     id: usize,

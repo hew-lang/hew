@@ -64,6 +64,10 @@ fn baseline(root: &Path, name: &str) -> PathBuf {
     root.join(".hew/benchmarks").join(format!("{name}.json"))
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "baseline comparison and reporting form one benchmark result transaction"
+)]
 pub(super) fn report(
     summary: &super::runner::TestSummary,
     args: &BenchArgs,
@@ -143,7 +147,7 @@ pub(super) fn report(
         times.sort_by(f64::total_cmp);
         let middle = times.len() / 2;
         let median_ns = if times.len() % 2 == 0 {
-            (times[middle - 1] + times[middle]) / 2.0
+            times[middle - 1].midpoint(times[middle])
         } else {
             times[middle]
         };

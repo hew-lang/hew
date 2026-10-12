@@ -172,14 +172,14 @@ fn requested_test_paths(args: &crate::args::TestArgs) -> (Vec<String>, Vec<Optio
     (paths, names)
 }
 
-#[allow(
-    clippy::too_many_lines,
-    reason = "test discovery, parse-failure handling, partitioning, and stable output form one fail-closed CLI transaction"
-)]
 pub fn cmd_test(args: &crate::args::TestArgs) {
     cmd_entries(args, None);
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "test discovery, parse-failure handling, partitioning, and stable output form one fail-closed CLI transaction"
+)]
 fn cmd_entries(args: &crate::args::TestArgs, benchmark: Option<&crate::args::BenchArgs>) {
     use std::io::IsTerminal as _;
     if args.watch {

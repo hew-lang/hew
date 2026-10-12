@@ -671,7 +671,7 @@ pub enum BenchFormat {
 
 #[derive(Debug, Args)]
 pub struct BenchArgs {
-    /// Files, directories or path::function selectors.
+    /// Files, directories or `path::function` selectors.
     pub paths: Vec<PathBuf>,
     /// Save the measured baseline under this name.
     #[arg(long)]

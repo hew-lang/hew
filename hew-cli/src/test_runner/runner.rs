@@ -923,10 +923,6 @@ fn execute_test_run(
     (run, report, Some(dir))
 }
 
-#[allow(
-    clippy::too_many_lines,
-    reason = "one isolated execution owns its timeout, report, output, and outcome"
-)]
 fn property_infrastructure_failure(result: &TestResult) -> bool {
     let TestOutcome::Failed(failure) = &result.outcome else {
         return false;
@@ -943,6 +939,10 @@ fn property_infrastructure_failure(result: &TestResult) -> bool {
         }))
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "property generation, shrinking and retained replay share one runner outcome"
+)]
 fn run_compiled_test(
     test: &TestCase,
     ordinal: usize,
@@ -1058,6 +1058,10 @@ fn run_compiled_test(
     result
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "one isolated execution owns its timeout, report, output, and outcome"
+)]
 fn run_compiled_test_input(
     test: &TestCase,
     ordinal: usize,
@@ -1619,8 +1623,6 @@ mod tests {
     }
 
     fn run_inline_with(source: &str, timeout: Duration, schedules: ScheduleOptions) -> TestSummary {
-        let result = hew_parser::parse(source);
-        let tests = discovery::discover_tests(&result.program, "<inline>");
         // Keep each invocation's source isolated from concurrent test processes
         // and worktrees. The directory handle removes it after `run_tests`
         // finishes, while the stable `.hew` basename preserves source semantics.
@@ -1630,13 +1632,11 @@ mod tests {
             .expect("create inline test source directory");
         let source_path = source_dir.path().join("inline.hew");
         std::fs::write(&source_path, source).expect("write inline test source");
-        let tests: Vec<TestCase> = tests
-            .into_iter()
-            .map(|mut t| {
-                t.file = source_path.display().to_string();
-                t
-            })
-            .collect();
+        let tests = discovery::discover_tests_in_file(
+            source_path.to_str().expect("inline test path is utf-8"),
+        )
+        .expect("discover inline test source")
+        .tests;
         let summary = run_tests(
             &tests,
             TestRunOptions {

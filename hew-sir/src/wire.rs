@@ -124,6 +124,13 @@ impl SemWirePlan {
 
 impl SemWirePlans {
     /// Project the checked codec walk into the shared generator and VM value vocabulary.
+    ///
+    /// # Errors
+    /// Returns an error for missing child plans, unsupported scalars or oversized arrays.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one exhaustive projection keeps codec shape and value metadata together"
+    )]
     pub fn property_shape(&self) -> Result<hew_codec::property::Shape, String> {
         use hew_codec::property::{Key, Node, Shape};
         let ids: BTreeMap<_, _> = self
@@ -161,7 +168,7 @@ impl SemWirePlans {
             match plan.kind {
                 SemWireKind::Record { shape, .. } => aggregates[child(ty)?] = Some(shape.0),
                 SemWireKind::Enum { shape, .. } | SemWireKind::Option { shape, .. } => {
-                    variant_shapes[child(ty)?] = Some(shape.0)
+                    variant_shapes[child(ty)?] = Some(shape.0);
                 }
                 _ => {}
             }

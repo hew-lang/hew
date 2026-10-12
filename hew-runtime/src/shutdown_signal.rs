@@ -35,6 +35,9 @@ static INSTALL: Once = Once::new();
 /// Install the handlers and make the actor runtime the default reaction: a
 /// signal with no subscriber starts graceful shutdown. Called once the
 /// scheduler starts.
+///
+/// # Errors
+/// Returns an error if the signal dispatcher cannot start.
 pub fn install_runtime_handlers() -> Result<(), String> {
     install();
     #[cfg(unix)]

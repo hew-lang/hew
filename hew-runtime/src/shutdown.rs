@@ -512,7 +512,7 @@ fn shutdown_initiate(drain_timeout_ms: i64, cancel_parked_waits: bool) {
 
     // Spawn a background thread to orchestrate the shutdown phases
     // so the caller is not blocked.
-    match std::thread::Builder::new()
+    if let Ok(thread) = std::thread::Builder::new()
         .name("hew-shutdown".into())
         .spawn(move || {
             if let Err(panic_payload) = run_shutdown_with_panic_handling(|| {
@@ -520,23 +520,23 @@ fn shutdown_initiate(drain_timeout_ms: i64, cancel_parked_waits: bool) {
             }) {
                 std::panic::resume_unwind(panic_payload);
             }
+        })
+    {
+        control.orchestration = Orchestration::Background(thread);
+    } else {
+        // Spawn failed — run shutdown synchronously on current thread.
+        // This ensures shutdown completes even if thread spawning fails.
+        control.orchestration = Orchestration::Inline(std::thread::current().id());
+        drop(control);
+        drop(initiation);
+        let _running = InlineShutdown(&runtime.shutdown_control);
+        if let Err(panic_payload) = run_shutdown_with_panic_handling(|| {
+            shutdown_orchestrate_mode(timeout, cancel_parked_waits);
         }) {
-        Ok(thread) => control.orchestration = Orchestration::Background(thread),
-        Err(_) => {
-            // Spawn failed — run shutdown synchronously on current thread.
-            // This ensures shutdown completes even if thread spawning fails.
-            control.orchestration = Orchestration::Inline(std::thread::current().id());
-            drop(control);
-            drop(initiation);
-            let _running = InlineShutdown(&runtime.shutdown_control);
-            if let Err(panic_payload) = run_shutdown_with_panic_handling(|| {
-                shutdown_orchestrate_mode(timeout, cancel_parked_waits);
-            }) {
-                // The synchronous fallback is reached from an extern "C"
-                // entry point, so unlike the worker-thread path it cannot
-                // deliberately resume the unwind across its caller.
-                crate::util::quarantine_panic_payload(panic_payload);
-            }
+            // The synchronous fallback is reached from an extern "C"
+            // entry point, so unlike the worker-thread path it cannot
+            // deliberately resume the unwind across its caller.
+            crate::util::quarantine_panic_payload(panic_payload);
         }
     }
 }

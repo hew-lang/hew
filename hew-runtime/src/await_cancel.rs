@@ -95,11 +95,13 @@ unsafe fn cancel_timer(reg: *mut HewAwaitCancel) {
         // Removal is the ownership claim. A non-null payload means the wheel
         // had not collected the callback, so cancellation now owns its retained
         // registration reference. Once collected, only the callback releases it.
+        // SAFETY: the live registration owns this timer handle and wheel.
         let payload = unsafe {
             hew_timer_wheel_remove(timer.wheel, timer.handle.entry, timer.handle.generation)
         };
         if !payload.is_null() {
             debug_assert_eq!(payload, reg.cast());
+            // SAFETY: successful removal transfers the retained reference here.
             unsafe { hew_await_cancel_free(reg) };
         }
     }

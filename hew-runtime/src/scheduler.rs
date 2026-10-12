@@ -487,6 +487,22 @@ fn configured_scheduler_worker_count() -> usize {
     .clamp(1, crate::actor::HEW_MAX_WORKERS)
 }
 
+fn initialize_scheduler_seed() {
+    match std::env::var("HEW_SEED") {
+        Ok(seed_str) => {
+            if let Ok(seed) = seed_str.parse::<u64>() {
+                hew_deterministic_set_seed(seed);
+            } else {
+                eprintln!(
+                    "hew-runtime: HEW_SEED='{seed_str}' not parseable as u64; using randomized seed"
+                );
+                hew_deterministic_set_seed(randomized_scheduler_seed());
+            }
+        }
+        Err(_) => hew_deterministic_set_seed(randomized_scheduler_seed()),
+    }
+}
+
 /// Initialize and start the M:N scheduler.
 ///
 /// Spawns one worker thread per available CPU core (falls back to 4).
@@ -504,19 +520,7 @@ pub extern "C" fn hew_sched_init() -> c_int {
         configured_scheduler_worker_count()
     };
 
-    match std::env::var("HEW_SEED") {
-        Ok(seed_str) => {
-            if let Ok(seed) = seed_str.parse::<u64>() {
-                hew_deterministic_set_seed(seed);
-            } else {
-                eprintln!(
-                    "hew-runtime: HEW_SEED='{seed_str}' not parseable as u64; using randomized seed"
-                );
-                hew_deterministic_set_seed(randomized_scheduler_seed());
-            }
-        }
-        Err(_) => hew_deterministic_set_seed(randomized_scheduler_seed()),
-    }
+    initialize_scheduler_seed();
 
     // Phase 1: Create all deques and collect stealers BEFORE spawning
     // threads. Workers steal from each other's deques, so every deque

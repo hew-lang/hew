@@ -4124,10 +4124,12 @@ fn duplicate_stdlib_import_with_same_resolved_source_does_not_reregister_items()
         output.type_def_at_path("std.bench.Bencher").is_some(),
         "stdlib Hew items should still register public types canonically"
     );
-    assert!(output.type_def_at_path("Suite").is_none());
+    assert!(output.type_def_at_path("Bencher").is_none());
     assert!(
-        output.sigs().contains("std.bench.hew_bench_record"),
-        "stdlib Hew items should still register qualified functions"
+        output
+            .impl_method_declaration_ids
+            .contains_key("std.bench.Bencher::iter"),
+        "stdlib Hew items should still register qualified methods"
     );
     assert!(
         !output

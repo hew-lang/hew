@@ -1166,7 +1166,7 @@ mod tests {
 
     #[test]
     fn imported_methods_use_their_checked_rewrite() {
-        let source = "import std.bench;\nfn main() { var s = bench.suite(\"suite\"); s.add(\"noop\", 1, || {}); s.report(); }";
+        let source = "import std.text.semver;\nfn main() fails semver.VersionError { let version = semver.parse(\"1.2.3-beta\")?; assert(version.pre() == \"beta\"); }";
         check_source(source, DeterministicAdmission::ProcessEntry).unwrap();
     }
 

@@ -2195,6 +2195,15 @@ params = []
 release-symbol = ""
 discharge-depth = "none"
 
+# Benchmark samples copy two scalar values into the process report; no owner
+# crosses the std.bench FFI boundary.
+[[ownership.contracts]]
+symbol = "hew_bench_record"
+result = "none"
+params = ["borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
 # Deterministic test-driver queries and quiescence control return only scalars
 # or unit; no owner crosses the std.testing FFI boundary.
 [[ownership.contracts]]

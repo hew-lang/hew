@@ -68,7 +68,10 @@ fn selected_result_test_carries_error_display_identity() {
 #[test]
 fn selected_test_signature_failures_leave_no_partial_dispatch_plan() {
     for (source, names) in [
-        ("fn good() {} fn bad(value: i64) {}", vec!["good", "bad"]),
+        (
+            "fn good() {} fn bad(value: fn() -> i64) {}",
+            vec!["good", "bad"],
+        ),
         ("fn bad() -> string { \"bad\" }", vec!["bad"]),
         ("fn bad<T>() {}", vec!["bad"]),
         ("fn good() {}", vec!["good", "good"]),

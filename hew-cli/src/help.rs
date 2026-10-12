@@ -46,7 +46,7 @@ const COMMAND_GROUPS: &[(&str, &[&str])] = &[
     ),
     (
         "Code quality",
-        &["check", "test", "fmt", "doc", "wire", "machine"],
+        &["check", "test", "bench", "fmt", "doc", "wire", "machine"],
     ),
     (
         "Packages",

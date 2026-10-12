@@ -257,7 +257,6 @@ impl<'a, 'ctx, 'm> SelectedValueEmitter<'a, 'ctx, 'm> {
                 self.variant(id, lhs, rhs)
             }
             PhysicalValueMethod::Vector(id) => {
-                let rhs = self.require_eq(rhs, "vector")?;
                 let glue = self.values().vector_glue(id)?;
                 self.vector(&glue.element.ty, lhs, rhs)
             }
@@ -956,23 +955,39 @@ impl<'a, 'ctx, 'm> SelectedValueEmitter<'a, 'ctx, 'm> {
         &self,
         element: &ResolvedTy,
         lhs: PointerValue<'ctx>,
-        rhs: PointerValue<'ctx>,
+        rhs: Option<PointerValue<'ctx>>,
     ) -> CodegenResult<()> {
         let ctx = self.parent.ctx;
         let ptr = ctx.ptr_type(AddressSpace::default());
         let left = self.handle(lhs)?;
-        let right = self.handle(rhs)?;
+        let right = rhs.map(|rhs| self.handle(rhs)).transpose()?;
         let len = self.length("hew_vec_len", left)?;
         if let Some(frame) = &self.frame {
             frame.carry(ctx, &self.builder, left, "key.vector.left.slot")?;
-            frame.carry(ctx, &self.builder, right, "key.vector.right.slot")?;
+            if let Some(right) = right {
+                frame.carry(ctx, &self.builder, right, "key.vector.right.slot")?;
+            }
             frame.carry(ctx, &self.builder, len, "key.vector.length.slot")?;
         }
-        self.continue_equal(self.equal(len, self.length("hew_vec_len", right)?)?)?;
+        if let Some(right) = right {
+            self.continue_equal(self.equal(len, self.length("hew_vec_len", right)?)?)?;
+        }
         let index = self.scratch(ctx.i64_type().into(), "key.vector.index")?;
         self.builder
             .build_store(index, ctx.i64_type().const_zero())
             .llvm_ctx("initialize vector cursor")?;
+        let hash = if right.is_none() {
+            let hash = self.scratch(ctx.i64_type().into(), "key.vector.hash")?;
+            self.builder
+                .build_store(
+                    hash,
+                    self.mix(ctx.i64_type().const_int(FNV_OFFSET, false), len)?,
+                )
+                .llvm_ctx("initialize vector hash")?;
+            Some(hash)
+        } else {
+            None
+        };
         let check = self.block("key.vector.check");
         let body = self.block("key.vector.element");
         let done = self.block("key.vector.done");
@@ -989,10 +1004,20 @@ impl<'a, 'ctx, 'm> SelectedValueEmitter<'a, 'ctx, 'm> {
         let left_slot = self
             .runtime("hew_vec_get_owned", get_ty, &[left.into(), i.into()])?
             .into_pointer_value();
-        let right_slot = self
-            .runtime("hew_vec_get_owned", get_ty, &[right.into(), i.into()])?
-            .into_pointer_value();
-        self.continue_equal(self.component(element, left_slot, Some(right_slot))?)?;
+        if let Some(right) = right {
+            let right_slot = self
+                .runtime("hew_vec_get_owned", get_ty, &[right.into(), i.into()])?
+                .into_pointer_value();
+            self.continue_equal(self.component(element, left_slot, Some(right_slot))?)?;
+        } else {
+            let hash = hash.expect("vector hash slot exists");
+            let component = self.component(element, left_slot, None)?;
+            let state = self.load(ctx.i64_type().into(), hash)?.into_int_value();
+            let mixed = self.mix(state, component)?;
+            self.builder
+                .build_store(hash, mixed)
+                .llvm_ctx("accumulate vector hash")?;
+        }
         let i = self.load(ctx.i64_type().into(), index)?.into_int_value();
         let next = self
             .builder
@@ -1003,7 +1028,11 @@ impl<'a, 'ctx, 'm> SelectedValueEmitter<'a, 'ctx, 'm> {
             .llvm_ctx("store vector cursor")?;
         self.jump(check)?;
         self.builder.position_at_end(done);
-        self.finish(ctx.bool_type().const_int(1, false))
+        if let Some(hash) = hash {
+            self.finish(self.load(ctx.i64_type().into(), hash)?.into_int_value())
+        } else {
+            self.finish(ctx.bool_type().const_int(1, false))
+        }
     }
 }
 

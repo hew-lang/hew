@@ -41,14 +41,6 @@ fn encoding_values_require_shipped_source_and_have_semantic_copy_facts() {
             ty_is_eq_eligible(ty, output.types()),
             EqEligibility::Eligible
         );
-        assert_ne!(
-            crate::hash_eligibility::ty_is_hash_eligible_with_resources(
-                ty,
-                output.types(),
-                &HashSet::new()
-            ),
-            crate::hash_eligibility::HashEligibility::Eligible
-        );
         let resolved = ResolvedTy::from_ty(ty).unwrap();
         let facts = output.type_facts[&resolved.clone().into()];
         assert_eq!(

@@ -20,7 +20,6 @@ pub mod error;
 pub mod extern_symbol;
 pub mod extern_table;
 pub mod ffi_contracts;
-pub(crate) mod hash_eligibility;
 pub mod jit_symbols;
 pub mod lang_items;
 pub mod lowering_facts;

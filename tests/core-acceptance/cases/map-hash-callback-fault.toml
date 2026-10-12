@@ -1,6 +1,6 @@
 [[case]]
 id = "map-hash-callback-fault"
-intent = "A selected Hash callback propagates its original fault while releasing its local values, the consumed receiver and borrowed insertion staging."
+intent = "A selected element Hash callback reached through an owned Vec key propagates its original fault while releasing local values, vector storage, the consumed receiver and borrowed insertion staging."
 source = "cases/map-hash-callback-fault.hew"
 suites = ["acceptance", "safety"]
 timeout_seconds = 15

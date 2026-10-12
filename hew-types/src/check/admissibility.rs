@@ -88,9 +88,8 @@ fn align_up(offset: usize, align: usize) -> usize {
 
 /// Return `(size, align)` for a single Copy-eligible primitive or nested record.
 ///
-/// Returns `None` for types that are not hash-eligible primitives or Copy records.
-/// Only types that `ty_is_hash_eligible` would return `Eligible` for are expected
-/// here; the function is conservative and returns `None` for everything else.
+/// Returns `None` for types that do not have a fixed Copy layout.
+/// The function is conservative and returns `None` for everything else.
 pub(crate) fn primitive_copy_layout(ty: &Ty, types: TypeDefView<'_>) -> Option<(usize, usize)> {
     primitive_copy_layout_on_path(ty, types, &mut HashSet::new())
 }

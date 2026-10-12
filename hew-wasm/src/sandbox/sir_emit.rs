@@ -243,6 +243,8 @@ pub struct VtableSlot {
     /// decision, which the verifier proves matches the boundary the concrete
     /// type was erased under.
     pub receiver: String,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub receiver_handback: bool,
 }
 
 /// The checker's selection for one `(type, capability)` pair.
@@ -747,6 +749,12 @@ impl<'m> Walker<'m> {
                                     method: self.module.defs.name(slot.method).to_string(),
                                     callee: self.function_id(slot.callee)?,
                                     receiver: passing_name(slot.receiver).to_string(),
+                                    receiver_handback: self
+                                        .module
+                                        .callable(slot.callee)
+                                        .is_some_and(|callee| {
+                                            callee.signature.hands_back_receiver()
+                                        }),
                                 })
                             })
                             .collect::<Result<Vec<_>, EmitError>>()?,

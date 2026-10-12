@@ -212,6 +212,7 @@ interface Activation {
   /// Where the caller binds the receiver a failing `var self` method hands
   /// back on the unwind edge.
   handback?: ValueDef | null;
+  erasedHandback?: Extract<VmValue, { kind: "dyn" }>;
 }
 
 /// Ends the run. The status is already recorded on the trace.
@@ -1304,6 +1305,7 @@ class ExecutorV1 {
           term.normal,
           term.unwind,
         );
+        if (entry.receiver_handback) this.current.erasedHandback = receiver;
         return;
       }
       case "call": {
@@ -1777,6 +1779,13 @@ class ExecutorV1 {
         `${act.fn.name}: returned from a call with a "never" result`,
       );
     }
+    if (act.erasedHandback) {
+      if (value.kind !== "record" || value.fields.length !== 2) {
+        throw new Error(`${act.fn.name}: invalid erased receiver dual return`);
+      }
+      act.erasedHandback.value = value.fields[1]!;
+      value = value.fields[0]!;
+    }
     // The result is defined on the normal edge, like a block parameter, so it
     // is in scope for that edge's arguments.
     if (act.result && act.result !== "never") {
@@ -1837,13 +1846,16 @@ class ExecutorV1 {
     }
     // A failing `var self` method hands its receiver back, defined on the
     // unwind edge like a result on the normal edge.
-    if ((handback === null) !== !act.handback) {
+    if ((handback === null) !== !(act.handback || act.erasedHandback)) {
       throw new Error(
         `${act.fn.name}: receiver handback disagrees with its call`,
       );
     }
     if (handback !== null && act.handback) {
       this.define(caller, act.handback.value, handback);
+    }
+    if (handback !== null && act.erasedHandback) {
+      act.erasedHandback.value = handback;
     }
     caller.fault = fault;
     this.current = caller;

@@ -190,6 +190,7 @@ export interface VtableShape {
     method: string;
     callee: number;
     receiver: BoundaryDecision;
+    receiver_handback?: boolean;
   }>;
 }
 

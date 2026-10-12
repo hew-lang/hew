@@ -386,9 +386,11 @@ fn encrypt_results_are_transferred() {
 
 #[test]
 fn jwt_and_password_results_are_transferred() {
-    const CLAIMS: &str = r#"{"sub":"hew"}"#;
+    const CLAIMS: &str = r#"{"exp":4102444800,"sub":"hew"}"#;
     let payload = ManagedString::new(CLAIMS);
-    let secret = ManagedString::new("local-retention-secret");
+    let secret = ManagedString::new(
+        "this secret is only for Hew tests and must never be used in production",
+    );
     assert_managed_transferred(
         "hew_jwt_encode_hew",
         // SAFETY: payload/secret stay live through the measurement.

@@ -996,10 +996,12 @@ stable-stdlib = [
   "hew_json_stringify",
   "hew_json_type",
   "hew_jwt_decode_hew",
+  "hew_jwt_decode_with_policy_hew",
   "hew_jwt_decode_insecure",
   "hew_jwt_encode_hew",
   "hew_jwt_last_error_code",
   "hew_jwt_validate",
+  "hew_jwt_validate_with_policy",
   "hew_markdown_to_html",
   "hew_markdown_to_html_safe",
   "hew_msgpack_from_json_hew",
@@ -4616,6 +4618,14 @@ discharge-depth = "shallow"
 result-retention = "transferred"
 
 [[ownership.contracts]]
+symbol = "hew_jwt_decode_with_policy_hew"
+result = "fresh"
+params = ["borrow", "borrow", "borrow", "borrow", "borrow"]
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+result-retention = "transferred"
+
+[[ownership.contracts]]
 symbol = "hew_jwt_decode_insecure"
 result = "fresh"
 params = ["borrow"]
@@ -4642,6 +4652,13 @@ discharge-depth = "none"
 symbol = "hew_jwt_validate"
 result = "none"
 params = ["borrow", "borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_jwt_validate_with_policy"
+result = "none"
+params = ["borrow", "borrow", "borrow", "borrow", "borrow"]
 release-symbol = ""
 discharge-depth = "none"
 

@@ -10,9 +10,18 @@ fn main() {
     empty.append("a\0b".to_bytes());
     empty.append(bytes.new());
     assert(empty == "a\0b".to_bytes());
-    var sliced = original[3..6];
-    sliced.append("XYZ".to_bytes());
-    assert(sliced == "345XYZ".to_bytes());
+    var sliced = "0123456789abcdef".to_bytes()[13..16];
+    sliced.append("0123456789".to_bytes());
+    assert(sliced == "def0123456789".to_bytes());
+    assert(original == "0123456789abcdef".to_bytes());
+    var self_append = "0123456789abcdef".to_bytes();
+    self_append.append(self_append);
+    assert(self_append == "0123456789abcdef0123456789abcdef".to_bytes());
+    var shared_slice = original[3..16];
+    let preserved_slice = shared_slice;
+    shared_slice.append(shared_slice);
+    assert(shared_slice == "3456789abcdef3456789abcdef".to_bytes());
+    assert(preserved_slice == "3456789abcdef".to_bytes());
     assert(original == "0123456789abcdef".to_bytes());
     println("bytes append preserves borrowed buffers and slices");
 }

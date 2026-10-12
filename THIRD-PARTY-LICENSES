@@ -6,7 +6,7 @@ with the Hew compiler, runtime, and tools. Hew itself is dual-licensed under
 MIT OR Apache-2.0 (see LICENSE-MIT and LICENSE-APACHE in this archive).
 
 License summary by SPDX identifier:
-  Apache License 2.0 (391 packages)
+  Apache License 2.0 (392 packages)
   MIT License (114 packages)
   Unicode License v3 (19 packages)
   BSD 3-Clause "New" or "Revised" License (9 packages)
@@ -8603,6 +8603,7 @@ Apache License 2.0
   * hew-lsp 0.6.0-rc8 — https://github.com/hew-lang/hew
   * hew-mir 0.6.0-rc8 — https://github.com/hew-lang/hew
   * hew-observe 0.6.0-rc8 — https://github.com/hew-lang/hew
+  * hew-observe-protocol 0.6.0-rc8 — https://github.com/hew-lang/hew
   * hew-parser 0.6.0-rc8 — https://github.com/hew-lang/hew
   * hew-pkg 0.6.0-rc8 — https://github.com/hew-lang/hew
   * hew-runtime 0.6.0-rc8 — https://github.com/hew-lang/hew

@@ -33,6 +33,7 @@ pub enum HewJwtError {
     SignatureInvalid = 4,
     ClaimsExpired = 5,
     AllocationFailure = 6,
+    ClaimsInvalid = 7,
 }
 
 #[cfg(test)]
@@ -44,7 +45,7 @@ std::thread_local! {
 
 /// Store `err` in the per-actor slot by encoding its discriminant as a string.
 ///
-/// `HewJwtError` has only unit variants 0..=6 with no payload, so the integer
+/// `HewJwtError` has only unit variants 0..=7 with no payload, so the integer
 /// discriminant round-trips losslessly. When `err` is `None` the slot is cleared
 /// (matching the "no entry == None" invariant).
 fn set_last_jwt_error(err: HewJwtError) {
@@ -86,7 +87,8 @@ fn last_jwt_error() -> HewJwtError {
         4 => HewJwtError::SignatureInvalid,
         5 => HewJwtError::ClaimsExpired,
         6 => HewJwtError::AllocationFailure,
-        // Fail closed: a present slot only ever holds discriminants 1..=6 (the
+        7 => HewJwtError::ClaimsInvalid,
+        // Fail closed: a present slot only ever holds discriminants 1..=7 (the
         // `None` case clears the slot, so it returns early above). Any other
         // value here is a poisoned slot — an unparseable string, an out-of-range
         // code, or a stored `0`. Mapping it to `None` would read a swallowed
@@ -156,13 +158,53 @@ fn classify_jwt_error(kind: &ErrorKind) -> HewJwtError {
         }
         ErrorKind::InvalidSignature | ErrorKind::InvalidAlgorithm => HewJwtError::SignatureInvalid,
         ErrorKind::ExpiredSignature => HewJwtError::ClaimsExpired,
+        ErrorKind::MissingRequiredClaim(_)
+        | ErrorKind::InvalidClaimFormat(_)
+        | ErrorKind::InvalidIssuer
+        | ErrorKind::InvalidAudience
+        | ErrorKind::InvalidSubject
+        | ErrorKind::ImmatureSignature => HewJwtError::ClaimsInvalid,
         _ => HewJwtError::TokenMalformed,
     }
+}
+
+fn validate_hmac_secret(secret: &str, algorithm: Algorithm) -> Result<(), HewJwtError> {
+    let minimum = match algorithm {
+        Algorithm::HS256 => 32,
+        Algorithm::HS384 => 48,
+        Algorithm::HS512 => 64,
+        _ => return Err(HewJwtError::AlgorithmUnsupported),
+    };
+    if secret.len() < minimum {
+        return Err(HewJwtError::InvalidKey);
+    }
+    Ok(())
+}
+
+fn validation_for(
+    algorithm: Algorithm,
+    expected_issuer: Option<&str>,
+    expected_audience: Option<&str>,
+) -> Result<Validation, HewJwtError> {
+    let mut validation = Validation::new(algorithm);
+    validation.leeway = 0;
+    validation.validate_nbf = true;
+    match (expected_issuer, expected_audience) {
+        (None, None) => {}
+        (Some(issuer), Some(audience)) if !issuer.is_empty() && !audience.is_empty() => {
+            validation.set_required_spec_claims(&["exp", "iss", "aud"]);
+            validation.set_issuer(&[issuer]);
+            validation.set_audience(&[audience]);
+        }
+        _ => return Err(HewJwtError::ClaimsInvalid),
+    }
+    Ok(validation)
 }
 
 /// Shared encode logic once `payload_json` and `secret` are resolved to `&str`.
 fn encode_core(payload_str: &str, secret_str: &str, algo: i32) -> Result<String, HewJwtError> {
     let algorithm = algo_from_i32(algo).ok_or(HewJwtError::AlgorithmUnsupported)?;
+    validate_hmac_secret(secret_str, algorithm)?;
     let claims: serde_json::Value =
         serde_json::from_str(payload_str).map_err(|_| HewJwtError::TokenMalformed)?;
 
@@ -176,14 +218,61 @@ fn encode_core(payload_str: &str, secret_str: &str, algo: i32) -> Result<String,
 
 /// Shared decode logic once `token` and `secret` are resolved to `&str`.
 fn decode_core(token_str: &str, secret_str: &str, algo: i32) -> Result<String, HewJwtError> {
-    let algorithm = algo_from_i32(algo).ok_or(HewJwtError::AlgorithmUnsupported)?;
+    decode_with_policy_core(token_str, secret_str, algo, None, None)
+}
 
+fn decode_with_policy_core(
+    token_str: &str,
+    secret_str: &str,
+    algo: i32,
+    expected_issuer: Option<&str>,
+    expected_audience: Option<&str>,
+) -> Result<String, HewJwtError> {
+    let claims = verify_core(
+        token_str,
+        secret_str,
+        algo,
+        expected_issuer,
+        expected_audience,
+    )?;
+    serde_json::to_string(&claims).map_err(|_| HewJwtError::TokenMalformed)
+}
+
+fn verify_core(
+    token_str: &str,
+    secret_str: &str,
+    algo: i32,
+    expected_issuer: Option<&str>,
+    expected_audience: Option<&str>,
+) -> Result<serde_json::Value, HewJwtError> {
+    let algorithm = algo_from_i32(algo).ok_or(HewJwtError::AlgorithmUnsupported)?;
+    validate_hmac_secret(secret_str, algorithm)?;
     let key = DecodingKey::from_secret(secret_str.as_bytes());
-    let mut validation = Validation::new(algorithm);
-    validation.required_spec_claims.clear();
+    let validation = validation_for(algorithm, expected_issuer, expected_audience)?;
     let data = jsonwebtoken::decode::<serde_json::Value>(token_str, &key, &validation)
         .map_err(|err| classify_jwt_error(err.kind()))?;
-    serde_json::to_string(&data.claims).map_err(|_| HewJwtError::TokenMalformed)
+    let claims = data.claims;
+    if claims.get("sub").is_some_and(|value| !value.is_string())
+        || claims.get("iss").is_some_and(|value| !value.is_string())
+        || claims.get("aud").is_some_and(|value| {
+            !value.is_string()
+                && !value
+                    .as_array()
+                    .is_some_and(|values| values.iter().all(serde_json::Value::is_string))
+        })
+    {
+        return Err(HewJwtError::ClaimsInvalid);
+    }
+    match (expected_issuer, expected_audience) {
+        (None, None) if claims.get("aud").is_some() => Err(HewJwtError::ClaimsInvalid),
+        (Some(issuer), Some(_))
+            if claims.get("iss").and_then(serde_json::Value::as_str) == Some(issuer) =>
+        {
+            Ok(claims)
+        }
+        (None, None) => Ok(claims),
+        _ => Err(HewJwtError::ClaimsInvalid),
+    }
 }
 
 unsafe fn encode_impl(
@@ -365,6 +454,44 @@ pub unsafe extern "C" fn hew_jwt_decode_hew(
     }
 }
 
+/// Decode a JWT while requiring an exact issuer and audience.
+///
+/// Signature, algorithm, expiration and optional not-before validation are
+/// applied as for [`hew_jwt_decode_hew`]. The token must also contain matching
+/// `iss` and `aud` claims.
+///
+/// # Safety
+///
+/// All arguments must be null (canonical empty) or live managed string handles.
+#[no_mangle]
+pub unsafe extern "C" fn hew_jwt_decode_with_policy_hew(
+    token: *const HewString,
+    secret: *const HewString,
+    algo: i32,
+    expected_issuer: *const HewString,
+    expected_audience: *const HewString,
+) -> *mut HewString {
+    // SAFETY: all inputs are null (canonical empty) or live managed strings.
+    let (token_str, secret_str, issuer, audience) = unsafe {
+        (
+            string_as_str(token),
+            string_as_str(secret),
+            string_as_str(expected_issuer),
+            string_as_str(expected_audience),
+        )
+    };
+    match decode_with_policy_core(token_str, secret_str, algo, Some(issuer), Some(audience)) {
+        Ok(json) => {
+            set_last_jwt_error(HewJwtError::None);
+            string_from_str(&json)
+        }
+        Err(err) => {
+            set_last_jwt_error(err);
+            std::ptr::null_mut()
+        }
+    }
+}
+
 /// Decode a JWT without signature verification (for inspection only).
 ///
 /// **Warning:** This does NOT verify the token's signature or validate claims.
@@ -413,20 +540,41 @@ pub unsafe extern "C" fn hew_jwt_validate(
     let token_str = unsafe { string_as_str(token) };
     // SAFETY: token and secret are null (canonical empty) or live managed strings.
     let secret_str = unsafe { string_as_str(secret) };
-    let Some(algorithm) = algo_from_i32(algo) else {
-        return -2;
-    };
-
-    let key = DecodingKey::from_secret(secret_str.as_bytes());
-    let mut validation = Validation::new(algorithm);
-    validation.required_spec_claims.clear();
-
-    match jsonwebtoken::decode::<serde_json::Value>(token_str, &key, &validation) {
+    match verify_core(token_str, secret_str, algo, None, None) {
         Ok(_) => 1,
-        Err(e) => match e.kind() {
-            jsonwebtoken::errors::ErrorKind::ExpiredSignature => -1,
-            _ => 0,
-        },
+        Err(HewJwtError::ClaimsExpired) => -1,
+        Err(HewJwtError::AlgorithmUnsupported) => -2,
+        Err(_) => 0,
+    }
+}
+
+/// Validate a JWT while requiring an exact issuer and audience.
+///
+/// # Safety
+///
+/// All arguments must be null (canonical empty) or live managed string handles.
+#[no_mangle]
+pub unsafe extern "C" fn hew_jwt_validate_with_policy(
+    token: *const HewString,
+    secret: *const HewString,
+    algo: i32,
+    expected_issuer: *const HewString,
+    expected_audience: *const HewString,
+) -> i32 {
+    // SAFETY: all inputs are null (canonical empty) or live managed strings.
+    let (token_str, secret_str, issuer, audience) = unsafe {
+        (
+            string_as_str(token),
+            string_as_str(secret),
+            string_as_str(expected_issuer),
+            string_as_str(expected_audience),
+        )
+    };
+    match verify_core(token_str, secret_str, algo, Some(issuer), Some(audience)) {
+        Ok(_) => 1,
+        Err(HewJwtError::ClaimsExpired) => -1,
+        Err(HewJwtError::AlgorithmUnsupported) => -2,
+        Err(_) => 0,
     }
 }
 
@@ -505,11 +653,12 @@ mod tests {
     }
 
     fn valid_payload() -> CString {
-        CString::new(r#"{"sub":"user1","role":"admin"}"#).unwrap()
+        CString::new(r#"{"sub":"user1","role":"admin","exp":4102444800}"#).unwrap()
     }
 
     fn valid_secret() -> CString {
-        CString::new("test-secret-key").unwrap()
+        CString::new("this secret is only for Hew tests and must never be used in production")
+            .unwrap()
     }
 
     fn mint_token(payload: &CString, secret: &CString, algo: i32) -> String {
@@ -653,7 +802,9 @@ mod tests {
     fn decode_reports_signature_invalid_for_wrong_secret() {
         let payload = valid_payload();
         let secret = valid_secret();
-        let wrong_secret = CString::new("wrong-secret").unwrap();
+        let wrong_secret =
+            CString::new("this different secret is only for tests and must never be used live")
+                .unwrap();
         let token = mint_token(&payload, &secret, 0);
         let token_c = CString::new(token).unwrap();
 
@@ -668,7 +819,9 @@ mod tests {
     #[test]
     fn decode_reports_claims_expired() {
         let payload = CString::new(r#"{"sub":"user1","exp":1}"#).unwrap();
-        let secret = CString::new("secret").unwrap();
+        let secret =
+            CString::new("this secret is only for Hew tests and must never be used in production")
+                .unwrap();
         let token = mint_token(&payload, &secret, 0);
         let token_c = CString::new(token).unwrap();
 
@@ -765,9 +918,13 @@ mod tests {
 
     #[test]
     fn hew_wrappers_track_last_error_code() {
-        let payload = ManagedString::new(r#"{"sub":"user1","role":"admin"}"#);
-        let secret = ManagedString::new("test-secret-key");
-        let wrong_secret = ManagedString::new("wrong-secret");
+        let payload = ManagedString::new(r#"{"sub":"user1","role":"admin","exp":4102444800}"#);
+        let secret = ManagedString::new(
+            "this secret is only for Hew tests and must never be used in production",
+        );
+        let wrong_secret = ManagedString::new(
+            "this different secret is only for tests and must never be used live",
+        );
 
         // SAFETY: all managed strings are live for the duration of the calls below.
         unsafe {
@@ -798,7 +955,9 @@ mod tests {
     #[test]
     fn insecure_decode_skips_verification() {
         let payload = CString::new(r#"{"sub":"user1","data":"hello"}"#).unwrap();
-        let secret = CString::new("secret").unwrap();
+        let secret =
+            CString::new("this secret is only for Hew tests and must never be used in production")
+                .unwrap();
         let token = mint_token(&payload, &secret, 0);
         let token_m = ManagedString::new(&token);
 
@@ -820,14 +979,22 @@ mod tests {
         let secret = valid_secret();
         let token = mint_token(&payload, &secret, 0);
         let token_m = ManagedString::new(&token);
-        let secret_m = ManagedString::new("test-secret-key");
-        let wrong_secret_m = ManagedString::new("wrong-secret");
+        let secret_m = ManagedString::new(
+            "this secret is only for Hew tests and must never be used in production",
+        );
+        let wrong_secret_m = ManagedString::new(
+            "this different secret is only for tests and must never be used live",
+        );
 
         let expired_payload = CString::new(r#"{"sub":"user1","exp":1}"#).unwrap();
-        let expired_secret = CString::new("secret").unwrap();
+        let expired_secret =
+            CString::new("this secret is only for Hew tests and must never be used in production")
+                .unwrap();
         let expired_token = mint_token(&expired_payload, &expired_secret, 0);
         let expired_token_m = ManagedString::new(&expired_token);
-        let expired_secret_m = ManagedString::new("secret");
+        let expired_secret_m = ManagedString::new(
+            "this secret is only for Hew tests and must never be used in production",
+        );
 
         // SAFETY: all managed strings are live for the duration of the calls below.
         unsafe {
@@ -861,6 +1028,7 @@ mod tests {
             HewJwtError::SignatureInvalid,
             HewJwtError::ClaimsExpired,
             HewJwtError::AllocationFailure,
+            HewJwtError::ClaimsInvalid,
         ];
 
         for variant in variants {
@@ -884,7 +1052,7 @@ mod tests {
     fn poisoned_error_slot_fails_closed_to_token_malformed() {
         use hew_runtime::parse_error_slot::{clear_error, set_error, ErrorSlotKind};
 
-        for poison in ["99", "0", "-1", "garbage", "7"] {
+        for poison in ["99", "0", "-1", "garbage", "8"] {
             set_error(ErrorSlotKind::Jwt, poison.to_string());
             let recovered = last_jwt_error();
             assert_eq!(

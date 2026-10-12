@@ -1,0 +1,66 @@
+import std.process;
+import std.os;
+import std.io;
+import std.fs;
+
+actor Probe {
+    receive fn ping() -> bool { true }
+}
+
+fn alive(pid: string) -> bool {
+    let windows = match os.env("OS") {
+        .Some(name) => name == "Windows_NT",
+        .None => false,
+    };
+    let probe = if windows {
+        process.run_argv("powershell", ["-NoProfile", "-Command", f"Get-Process -Id {pid} -ErrorAction Stop | Out-Null"])
+    } else {
+        process.run_argv("kill", ["-0", pid])
+    };
+    probe.expect("process probe").status == process.ExitStatus.Exited(0)
+}
+
+fn main() {
+    let args = os.args();
+    if args.len() > 1 {
+        if args[1] == "capture" {
+            assert(args[2] == "" && args[3] == "a b");
+            sleep(400ms);
+            let chunk = "é\0data".repeat(2048);
+            for i in 0..32 {
+                io.write(chunk);
+                io.write_err(chunk);
+            }
+            exit(7);
+        }
+        fs.write(args[2], f"{os.pid()}").expect("child PID");
+        sleep(30s);
+        return;
+    }
+    let probe = spawn Probe;
+    let started = instant.now();
+    let work = fork process.run_argv(args[0], ["capture", "", "a b"]);
+    sleep(20ms);
+    assert(probe.ping().expect("progress"));
+    assert(started.elapsed() < 200ms);
+    let output = (await work).expect("capture");
+    assert(output.status == process.ExitStatus.Exited(7));
+    let expected = "é\0data".repeat(2048 * 32);
+    assert(output.stdout == expected && output.stderr == expected);
+    assert(process.run("echo shell").expect("shell").status == process.ExitStatus.Exited(0));
+    let marker = f"{os.temp_dir()}/hew-process-cancel-{os.pid()}";
+    let cancelled = scope within 500ms {
+        process.run_argv(args[0], ["cancel", marker]).expect("cancel child");
+        false
+    } handle failure {
+        match failure {
+            .Deadline { message } => true,
+            .Fault { message } => panic(message),
+        }
+    };
+    assert(cancelled);
+    let pid = fs.read(marker).expect("child started");
+    assert(!alive(pid));
+    fs.delete(marker).expect("remove marker");
+    println("Process capture progress and cancellation cleanup");
+}

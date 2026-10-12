@@ -494,17 +494,10 @@ stable = [
   "hew_process_is_valid",
   "hew_process_last_error",
   "hew_process_poll",
-  "hew_process_result_free",
-  "hew_process_result_is_valid",
-  "hew_process_result_signalled",
-  "hew_process_result_status",
-  "hew_process_result_stderr",
-  "hew_process_result_stdout",
-  "hew_process_run",
-  "hew_process_run_argv",
   "hew_process_signal",
   "hew_process_signalled",
   "hew_process_start",
+  "hew_process_start_shell",
   "hew_process_status",
   "hew_process_take_pipe",
   "hew_process_wait_error",
@@ -3588,11 +3581,8 @@ params = ["borrow", "borrow"]
 release-symbol = ""
 discharge-depth = "none"
 
-# process — hew-runtime/src/process.rs. run/run_argv return a Box'd
-# HewProcessResult whose free also releases the malloc'd stdout/stderr fields
-# (deep). start returns a Box'd HewProcess reaped by hew_process_drop.
-# result_stdout/result_stderr clone the stored strings (fresh). The child
-# accessors borrow; start and run_argv borrow their Vec<String> argv.
+# process — child creation returns one HewProcess reaped by hew_process_drop.
+# The child accessors borrow; start borrows its Vec<String> argv.
 [[ownership.contracts]]
 symbol = "hew_process_drop"
 result = "none"
@@ -3646,76 +3636,6 @@ release-symbol = ""
 discharge-depth = "none"
 
 [[ownership.contracts]]
-symbol = "hew_process_result_signalled"
-result = "none"
-params = ["borrow"]
-resource-param-types = ["std.process.ProcessResultHandle"]
-release-symbol = ""
-discharge-depth = "none"
-
-[[ownership.contracts]]
-symbol = "hew_process_result_status"
-result = "none"
-params = ["borrow"]
-resource-param-types = ["std.process.ProcessResultHandle"]
-release-symbol = ""
-discharge-depth = "none"
-
-[[ownership.contracts]]
-symbol = "hew_process_result_free"
-result = "none"
-params = ["consume"]
-resource-param-types = ["std.process.ProcessResultHandle"]
-release-symbol = ""
-discharge-depth = "none"
-
-[[ownership.contracts]]
-symbol = "hew_process_result_is_valid"
-result = "none"
-params = ["borrow"]
-resource-param-types = ["std.process.ProcessResultHandle"]
-release-symbol = ""
-discharge-depth = "none"
-
-[[ownership.contracts]]
-symbol = "hew_process_result_stderr"
-result = "retained"
-params = ["borrow"]
-resource-param-types = ["std.process.ProcessResultHandle"]
-release-symbol = "hew_string_drop"
-discharge-depth = "shallow"
-result-retention = "shared-refcount"
-
-[[ownership.contracts]]
-symbol = "hew_process_result_stdout"
-result = "retained"
-params = ["borrow"]
-resource-param-types = ["std.process.ProcessResultHandle"]
-release-symbol = "hew_string_drop"
-discharge-depth = "shallow"
-result-retention = "shared-refcount"
-
-[[ownership.contracts]]
-symbol = "hew_process_run"
-result = "fresh"
-params = ["borrow"]
-resource-result-type = "std.process.ProcessResultHandle"
-release-symbol = "hew_process_result_free"
-discharge-depth = "deep"
-result-retention = "resource-transfer"
-result-retention-basis = "command_output_to_result delegates success to output_to_result, which returns one fresh Box::into_raw(HewProcessResult)"
-
-[[ownership.contracts]]
-symbol = "hew_process_run_argv"
-result = "fresh"
-params = ["borrow", "borrow"]
-resource-result-type = "std.process.ProcessResultHandle"
-release-symbol = "hew_process_result_free"
-discharge-depth = "deep"
-result-retention = "resource-transfer"
-result-retention-basis = "after argv is copied into Command, output_to_result returns one fresh Box::into_raw(HewProcessResult)"
-
-[[ownership.contracts]]
 symbol = "hew_process_signal"
 result = "none"
 params = ["borrow", "borrow"]
@@ -3728,6 +3648,13 @@ result = "none"
 params = ["borrow"]
 release-symbol = ""
 discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_process_start_shell"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_process_drop"
+discharge-depth = "shallow"
 
 [[ownership.contracts]]
 symbol = "hew_process_start"

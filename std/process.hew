@@ -45,19 +45,7 @@
 
 import std.stream;
 
-/// A handle to a completed command invocation inside the runtime.
-#[resource]
-#[opaque]
-pub type ProcessResultHandle {
-}
-
-impl ProcessResultHandle {
-    fn close(consume self) {
-        unsafe {
-            hew_process_result_free(self)
-        };
-    }
-}
+import std.encoding.utf8;
 
 /// The runtime-owned child-process handle behind a `Child`.
 #[opaque]
@@ -285,48 +273,58 @@ fn last_process_error(default_message: string) -> ProcessError {
     }
 }
 
-fn take_command_output(consume result: ProcessResultHandle) -> CommandOutput {
-    unsafe {
-        let number = hew_process_result_status(result);
-        let status = if hew_process_result_signalled(result) {
-            ExitStatus.Signalled(number)
-        } else {
-            ExitStatus.Exited(number)
+fn collect_output(consume output: stream.Stream<bytes>) -> string {
+    var data = bytes.new();
+    for chunk in output {
+        data.append(chunk);
+    }
+    utf8.decode_lossy(data)
+}
+
+fn capture(consume child: Child) -> CommandOutput fails ProcessError {
+    let stdout = child.stdout()?;
+    let stderr = child.stderr()?;
+    scope {
+        let stdout_task = fork collect_output(stdout);
+        let stderr_task = fork collect_output(stderr);
+        let stdout = await stdout_task;
+        let stderr = await stderr_task;
+        let status = child.wait() handle error {
+            return error ProcessError.LaunchFailed(to_string(error));
         };
-        let output = CommandOutput { status: status, stdout: hew_process_result_stdout(result), stderr: hew_process_result_stderr(result) };
-        hew_process_result_free(result);
-        output
+        CommandOutput { status, stdout, stderr }
+    } handle failure {
+        match failure {
+            .Fault { message } => return error ProcessError.LaunchFailed(message),
+            .Deadline { message } => return error ProcessError.LaunchFailed(message),
+        }
     }
 }
 
 // ── Module-level functions ────────────────────────────────────────────
-/// Run a shell command synchronously and capture its status and output.
+/// Run a shell command and capture its status and output.
+/// Waiting for output or exit suspends the caller; cancellation reaps the child.
 pub fn run(command: string) -> Result<CommandOutput, ProcessError> {
-    unsafe {
+    let child = unsafe {
         hew_clear_error();
-        let result = hew_process_run(command);
-        if hew_process_result_is_valid(result) {
-            .Ok(take_command_output(result))
-        } else {
+        let handle = hew_process_start_shell(command);
+        if !hew_process_is_valid(handle) {
             let error = last_process_error("process.run: command execution failed");
-            hew_process_result_free(result);
-            .Err(error)
+            hew_process_drop(handle);
+            return .Err(error);
         }
-    }
+        Child { handle }
+    };
+    capture(child)
 }
 
 /// Run a program without the shell and capture its status and output.
+/// Both output streams drain concurrently while the caller is suspended.
 pub fn run_argv(command: string, args: Vec<string>) -> Result<CommandOutput, ProcessError> {
-    unsafe {
-        hew_clear_error();
-        let result = hew_process_run_argv(command, args);
-        if hew_process_result_is_valid(result) {
-            .Ok(take_command_output(result))
-        } else {
-            let error = last_process_error("process.run_argv: command execution failed");
-            hew_process_result_free(result);
-            .Err(error)
-        }
+    let specification = Command { program: command, args, stdin: Stdio.Null, stdout: Stdio.Piped, stderr: Stdio.Piped };
+    match start(specification) {
+        .Ok(child) => capture(child),
+        .Err(error) => .Err(error),
     }
 }
 
@@ -353,14 +351,7 @@ pub fn start(command: Command) -> Result<Child, ProcessError> {
 
 // ── FFI bindings ──────────────────────────────────────────────────────
 extern "C" {
-    fn hew_process_run(command: string) -> ProcessResultHandle;
-    fn hew_process_run_argv(command: string, args: Vec<string>) -> ProcessResultHandle;
-    fn hew_process_result_is_valid(result: ProcessResultHandle) -> bool;
-    fn hew_process_result_signalled(result: ProcessResultHandle) -> bool;
-    fn hew_process_result_status(result: ProcessResultHandle) -> i64;
-    fn hew_process_result_stdout(result: ProcessResultHandle) -> string;
-    fn hew_process_result_stderr(result: ProcessResultHandle) -> string;
-    fn hew_process_result_free(consume result: ProcessResultHandle);
+    fn hew_process_start_shell(command: string) -> ChildHandle;
     fn hew_process_start(program: string, args: Vec<string>, stdin: i32, stdout: i32, stderr: i32) -> ChildHandle;
     fn hew_process_is_valid(child: ChildHandle) -> bool;
     fn hew_process_id(child: ChildHandle) -> i64;

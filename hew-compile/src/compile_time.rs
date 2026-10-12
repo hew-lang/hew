@@ -46,7 +46,7 @@ impl InputProvider for Inputs {
         if relative.is_absolute()
             || relative
                 .components()
-                .any(|part| matches!(part, Component::Prefix(_)))
+                .any(|part| matches!(part, Component::Prefix(_) | Component::RootDir))
         {
             return Err(error(
                 "E_INCLUDE_OUTSIDE_PACKAGE",

@@ -223,6 +223,8 @@ const UNIT_FAMILY_SHIMS: Record<string, RuntimeShim | undefined> = {
   StringClone: (_host, args) => str(text(args, 0)),
   StringEquals: (_host, args) => bool(text(args, 0) === text(args, 1)),
   StringContains: (_host, args) => bool(text(args, 0).includes(text(args, 1))),
+  StringTrim: (_host, args) =>
+    str(text(args, 0).replace(/^\p{White_Space}+|\p{White_Space}+$/gu, "")),
   // Native string length counts codepoints, not bytes.
   StringLen: (_host, args) => int(BigInt([...text(args, 0)].length)),
   StringIndex: (_host, args) => {

@@ -14,7 +14,15 @@ pub(crate) fn from_js(files: Option<js_sys::Map>) -> Result<hew_compile::SourceS
             .get(0)
             .as_string()
             .ok_or("compilation input paths must be strings")?;
-        if std::path::Path::new(&path).is_absolute() || path.split('/').any(|part| part == "..") {
+        if std::path::Path::new(&path).components().any(|part| {
+            matches!(
+                part,
+                std::path::Component::Prefix(_)
+                    | std::path::Component::RootDir
+                    | std::path::Component::ParentDir
+            )
+        }) || path.split('/').any(|part| part == "..")
+        {
             return Err("compilation input paths must stay inside the package".into());
         }
         let value = pair.get(1);

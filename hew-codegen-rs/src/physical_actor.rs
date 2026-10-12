@@ -848,22 +848,20 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         );
         builder.position_at_end(self.ctx.append_basic_block(clone, "entry"));
         if let Some(action) = recipe.clone {
-            let loaded = builder
-                .build_load(
-                    llvm_type(self.ctx, &layout.repr)?,
-                    clone.get_first_param().unwrap().into_pointer_value(),
-                    "actor.state",
-                )
-                .llvm_ctx("load actor state snapshot source")?;
-            let copied = ValueEmitter {
+            let values = ValueEmitter {
                 module: self.module,
                 ctx: self.ctx,
                 llvm: &self.llvm,
                 builder: &builder,
                 value: clone,
                 fault_sink: None,
-            }
-            .clone_loaded_value(loaded, layout, action)?;
+            };
+            let loaded = values.load_value(
+                clone.get_first_param().unwrap().into_pointer_value(),
+                layout,
+                "actor.state",
+            )?;
+            let copied = values.clone_loaded_value(loaded, layout, action)?;
             let allocation = allocate(
                 self.module,
                 self.ctx,
@@ -871,9 +869,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                 &builder,
                 state_allocation_size(layout, actor.fields.len())?,
             )?;
-            builder
-                .build_store(allocation, copied)
-                .llvm_ctx("initialize independent actor snapshot")?;
+            values.store_value(allocation, layout, copied)?;
             for index in 0..actor.fields.len() {
                 let index = u32::try_from(index)
                     .map_err(|_| CodegenError::FailClosed("actor field exceeds u32".into()))?;
@@ -1352,14 +1348,16 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                     .llvm_ctx("address handler argument")?;
                 args.push(match parameter.carrier {
                     ParamCarrier::Indirect => slot.into(),
-                    ParamCarrier::Direct => builder
-                        .build_load(
-                            llvm_type(self.ctx, &parameter.layout.repr)?,
-                            slot,
-                            "handler.value",
-                        )
-                        .llvm_ctx("load handler argument")?
-                        .into(),
+                    ParamCarrier::Direct => ValueEmitter {
+                        module: self.module,
+                        ctx: self.ctx,
+                        llvm: &self.llvm,
+                        builder: &builder,
+                        value: dispatch,
+                        fault_sink: None,
+                    }
+                    .load_value(slot, &parameter.layout, "handler.value")?
+                    .into(),
                 });
             }
             // Empty timer messages have no payload or field ownership to transfer.
@@ -1456,14 +1454,16 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                 .llvm_ctx("address handler argument")?;
             args.push(match parameter.carrier {
                 ParamCarrier::Indirect => slot.into(),
-                ParamCarrier::Direct => builder
-                    .build_load(
-                        llvm_type(self.ctx, &parameter.layout.repr)?,
-                        slot,
-                        "handler.value",
-                    )
-                    .llvm_ctx("load handler argument")?
-                    .into(),
+                ParamCarrier::Direct => ValueEmitter {
+                    module: self.module,
+                    ctx: self.ctx,
+                    llvm: &self.llvm,
+                    builder: &builder,
+                    value: ramp,
+                    fault_sink: None,
+                }
+                .load_value(slot, &parameter.layout, "handler.value")?
+                .into(),
             });
         }
         if !handler.params.is_empty() {
@@ -2056,9 +2056,11 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 .builder
                 .build_struct_gep(state_repr, state, *index, "spawn.field")
                 .llvm_ctx("address initial actor field")?;
-            self.builder
-                .build_store(field, self.load(*source, "spawn.value")?)
-                .llvm_ctx("initialize actor field")?;
+            self.value_emitter().store_value(
+                field,
+                &self.storage(*source)?.layout,
+                self.load(*source, "spawn.value")?,
+            )?;
             let flag = state_field_initialized(self.ctx, &self.builder, state, layout, *index)?;
             self.builder
                 .build_store(flag, self.ctx.bool_type().const_int(1, false))
@@ -2523,7 +2525,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         let fields = self
             .load(*payload, "stream.start.payload")?
             .into_struct_value();
-        for index in 0..handler.params.len() {
+        for (index, ty) in handler.params.iter().enumerate() {
             let index = u32::try_from(index)
                 .map_err(|_| CodegenError::FailClosed("request index exceeds u32".into()))?;
             let slot = self
@@ -2534,9 +2536,10 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 .builder
                 .build_extract_value(fields, index, "stream.start.value")
                 .llvm_ctx("read request field")?;
-            self.builder
-                .build_store(slot, field)
-                .llvm_ctx("transfer field into unpublished request")?;
+            let layout = self.module.target.layout(ty).ok_or_else(|| {
+                CodegenError::FailClosed("stream request field lacks its layout".into())
+            })?;
+            self.value_emitter().store_value(slot, layout, field)?;
         }
         let drop = self
             .llvm
@@ -2776,7 +2779,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         self.builder
             .build_store(wrapper, self.ctx.i8_type().const_int(1, false))
             .llvm_ctx("initialize message ownership")?;
-        for index in 0..params.len() {
+        for (index, ty) in params.iter().enumerate() {
             let index = u32::try_from(index)
                 .map_err(|_| CodegenError::FailClosed("message index exceeds u32".into()))?;
             let slot = self
@@ -2787,9 +2790,11 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 .builder
                 .build_extract_value(fields, index, "submission.value")
                 .llvm_ctx("read message field")?;
-            self.builder
-                .build_store(slot, field)
-                .llvm_ctx("transfer field into unpublished wrapper")?;
+            let layout =
+                self.module.target.layout(ty).ok_or_else(|| {
+                    CodegenError::FailClosed("message field lacks its layout".into())
+                })?;
+            self.value_emitter().store_value(slot, layout, field)?;
         }
         let submit = get_or_declare_external(
             self.llvm,

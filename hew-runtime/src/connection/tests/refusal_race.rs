@@ -26,7 +26,7 @@ struct RacingCloseTransport {
     /// Connection whose `send` parks until the test releases it, or 0.
     ///
     /// A send parked here is a genuine claimed send in flight: it holds the
-    /// connection's `ClaimedSendLease` for as long as the transport call
+    /// connection's `SendClaim` for as long as the transport call
     /// has not returned, which is exactly the production condition manager
     /// free waits out after its close phase.
     park_send_conn: AtomicI32,
@@ -272,7 +272,7 @@ impl TeardownRace {
     ///
     /// Returns the sending thread; the caller releases it with
     /// [`TeardownRace::release_send_park`] and joins it. While it is
-    /// parked the connection holds a genuine `ClaimedSendLease`, which is
+    /// parked the connection holds a genuine `SendClaim`, which is
     /// the production condition manager free waits out after its close
     /// phase.
     fn park_claimed_send(
@@ -280,6 +280,19 @@ impl TeardownRace {
         conn_id: c_int,
         publication_token: u64,
     ) -> std::thread::JoinHandle<c_int> {
+        let route_slot = self.mgr().connections.access(|connections| {
+            connections
+                .iter()
+                .find(|connection| connection.conn_id == conn_id)
+                .expect("staged connection")
+                .peer_node_id
+        });
+        assert!(publish_claim(
+            self.mgr(),
+            route_slot,
+            conn_id,
+            publication_token
+        ));
         self.transport_impl()
             .park_send_conn
             .store(conn_id, Ordering::Release);
@@ -293,7 +306,7 @@ impl TeardownRace {
                 send_preencoded_on_manager(
                     &*mgr.0,
                     conn_id,
-                    Some(publication_token),
+                    publication_token,
                     payload.as_ptr(),
                     payload.len(),
                 )
@@ -487,7 +500,7 @@ fn duplicate_refusal_closes_the_transport_exactly_once() {
 ///
 /// A second connection holds a REAL claimed send in flight — a production
 /// `send_preencoded_on_manager` call parked inside the transport's `send`,
-/// holding that connection's `ClaimedSendLease` — which is precisely the
+/// holding that connection's `SendClaim` — which is precisely the
 /// condition free waits out after its close phase. That keeps free from
 /// dropping the manager out from under the refusal still running on it,
 /// without weakening the close race the test is about.

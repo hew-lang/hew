@@ -57,14 +57,6 @@ def hew_hashmap_summary(valobj, _internal_dict):
     return f"HashMap@0x{ptr:x}"
 
 
-def hew_actor_ref_summary(valobj, _internal_dict):
-    """Pretty-print actor reference pointers."""
-    ptr = valobj.GetValueAsUnsigned(0)
-    if ptr == 0:
-        return "ActorRef(null)"
-    return f"ActorRef@0x{ptr:x}"
-
-
 # ---------------------------------------------------------------------------
 # Custom LLDB Commands
 # ---------------------------------------------------------------------------
@@ -312,9 +304,6 @@ def __lldb_init_module(debugger, _internal_dict):
     debugger.HandleCommand('type summary add -F hew_lldb.hew_vec_summary -x "hew_vec"')
     debugger.HandleCommand(
         'type summary add -F hew_lldb.hew_hashmap_summary -x "hew_hashmap"'
-    )
-    debugger.HandleCommand(
-        'type summary add -F hew_lldb.hew_actor_ref_summary -x "hew_actor_ref"'
     )
 
     # Custom commands

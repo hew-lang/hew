@@ -16,10 +16,10 @@ struct hew_cabi_manifest_row {
   enum hew_cabi_manifest_ownership ownership;
 };
 
-#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1622u
+#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1617u
 #define HEW_CABI_MANIFEST_STATIC_COUNT 24u
 
-static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1622] = {
+static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1617] = {
     {"hew_actor_ask",
      "{\"native\": \"fn hew_actor_ask( *mut HewActor, i32, *mut c_void, usize, "
      ") -> *mut c_void\"}",
@@ -313,30 +313,6 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1622] = {
      "\"wasm32-wasip1\": \"fn hew_actor_pid( *mut HewActor) -> u64\"}",
      "native,wasm32-wasip1", "stable", "not-applicable",
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
-    {"hew_actor_ref_is_alive",
-     "{\"native\": \"fn hew_actor_ref_is_alive( *const HewActorRef) -> "
-     "c_int\"}",
-     "native", "stable", "not-applicable", "no-in-signature-extent",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
-    {"hew_actor_ref_is_local",
-     "{\"native\": \"fn hew_actor_ref_is_local( *const HewActorRef) -> "
-     "c_int\"}",
-     "native", "stable", "not-applicable", "no-in-signature-extent",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
-    {"hew_actor_ref_local",
-     "{\"native\": \"fn hew_actor_ref_local( *mut HewActor) -> HewActorRef\"}",
-     "native", "stable", "not-applicable", "no-in-signature-extent",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
-    {"hew_actor_ref_remote",
-     "{\"native\": \"fn hew_actor_ref_remote( *const HewLocation, c_int, *mut "
-     "HewTransport, ) -> HewActorRef\"}",
-     "native", "stable", "not-applicable", "no-in-signature-extent",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
-    {"hew_actor_ref_send",
-     "{\"native\": \"fn hew_actor_ref_send( *mut HewActorRef, c_int, *mut "
-     "c_void, usize, ) -> c_int\"}",
-     "native", "stable", "not-applicable", "length-or-count",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_actor_register_type",
      "{\"native\": \"fn hew_actor_register_type( *const c_void, *const c_char, "
      ")\", \"wasm32-wasip1\": \"fn hew_actor_register_type( *const c_void, "

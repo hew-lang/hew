@@ -84,8 +84,9 @@ fn send_registry_flush_frames(
     let mut sent = 0;
     while let Some(bytes) = frames.get(sent) {
         // SAFETY: mgr is live and `bytes` is a complete encoded control frame.
-        if unsafe { send_preencoded_on_manager(mgr, conn_id, None, bytes.as_ptr(), bytes.len()) }
-            != 0
+        if unsafe {
+            send_preencoded_on_manager(mgr, conn_id, publication_token, bytes.as_ptr(), bytes.len())
+        } != 0
         {
             set_last_error(format!(
                 "registry gossip flush send failed for conn {conn_id}; \
@@ -255,7 +256,7 @@ pub(crate) unsafe fn hew_connmgr_broadcast_registry_gossip(
         }
         // SAFETY: manager is live and bytes is a complete encoded control frame.
         if unsafe {
-            send_preencoded_on_manager(mgr_ref, conn_id, None, bytes.as_ptr(), bytes.len())
+            send_preencoded_on_manager(mgr_ref, conn_id, token, bytes.as_ptr(), bytes.len())
         } == 0
         {
             success_count += 1;

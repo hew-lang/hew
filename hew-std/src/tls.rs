@@ -62,7 +62,7 @@ pub struct TlsShared {
     /// Join handle for the background reader spawned by [`hew_tls_attach_native`].
     ///
     /// WHY: a detached reader can keep calling into the runtime
-    /// (`hew_actor_ref_is_alive`, `hew_actor_try_send`) for up to
+    /// through its native attachment for up to
     /// `TLS_READER_TIMEOUT` after `hew_tls_close`, and as a detached thread can
     /// outlive the actor/runtime at teardown (#1963 reader-lifetime class).
     /// `hew_tls_close` joins this handle before returning so the reader is

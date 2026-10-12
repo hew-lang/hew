@@ -383,8 +383,7 @@ fn link_down_from_unverified_or_superseded_peer_is_gated() {
 /// to authenticated (`Strict` + published-owner) connections. An `Unverified`
 /// (delivery-only) peer must not be selected as a gossip recipient, a SWIM
 /// relay, or a direct SWIM-send target — symmetric with the inbound gate —
-/// while fire-and-forget user-message delivery to it stays allowed (D9's one
-/// intentional Unverified capability).
+/// User-message sends also require an authenticated manager claim.
 #[test]
 #[allow(
     clippy::too_many_lines,

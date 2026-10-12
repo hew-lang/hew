@@ -4,8 +4,8 @@
 //! One table describes every native input a package brings to the final link:
 //!
 //! - a Rust crate (`lib`, with optional `crate` and `kind`), built by Cargo;
-//! - C and C++ `sources`, compiled by the C driver Hew links with, with their
-//!   `include-dirs`, `defines`, `cflags` and `cxxflags`;
+//! - C, C++ and assembly `sources`, compiled by the C driver Hew links with,
+//!   with their `include-dirs`, `defines`, `cflags`, `cxxflags` and `asflags`;
 //! - system libraries, discovered with `pkg-config` or named directly with
 //!   `link-libs` and `lib-dirs`.
 //!
@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 /// Library kinds accepted for a `[native]` Rust crate.
 const RUST_KINDS: &[&str] = &["staticlib", "cdylib"];
 
-/// File extensions compiled as C (`.c`) or C++ (`.cc`, `.cpp`, `.cxx`).
+/// File extensions compiled as C or C++. Assembly is case-sensitive: `.s`/`.S`.
 const C_EXTENSIONS: &[&str] = &["c"];
 const CXX_EXTENSIONS: &[&str] = &["cc", "cpp", "cxx"];
 
@@ -38,6 +38,8 @@ pub enum NativeOs {
 pub enum SourceLanguage {
     C,
     Cxx,
+    Assembly,
+    AssemblyWithCpp,
 }
 
 impl SourceLanguage {
@@ -50,18 +52,22 @@ impl SourceLanguage {
             Some(Self::C)
         } else if CXX_EXTENSIONS.contains(&extension) {
             Some(Self::Cxx)
+        } else if extension == "s" {
+            Some(Self::Assembly)
+        } else if extension == "S" {
+            Some(Self::AssemblyWithCpp)
         } else {
             None
         }
     }
 }
 
-/// C/C++ inputs and system libraries. The base `[native]` table carries one
+/// C/C++/assembly inputs and system libraries. The base `[native]` table carries one
 /// set; each `[native.<os>]` table carries another, appended for that OS.
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]
 pub struct NativeInputs {
-    /// C and C++ source files, relative to `hew.toml`.
+    /// C, C++ and assembly source files, relative to `hew.toml`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sources: Vec<String>,
     /// Header search directories for `sources`, relative to `hew.toml`.
@@ -76,6 +82,9 @@ pub struct NativeInputs {
     /// Extra driver flags for C++ sources (for example `-std=c++17`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub cxxflags: Vec<String>,
+    /// Extra driver flags for assembly sources.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub asflags: Vec<String>,
     /// `pkg-config` packages whose compile flags apply to `sources` and whose
     /// libraries join the final link.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -100,6 +109,7 @@ impl NativeInputs {
         self.defines.extend_from_slice(&other.defines);
         self.cflags.extend_from_slice(&other.cflags);
         self.cxxflags.extend_from_slice(&other.cxxflags);
+        self.asflags.extend_from_slice(&other.asflags);
         self.pkg_config.extend_from_slice(&other.pkg_config);
         self.link_libs.extend_from_slice(&other.link_libs);
         self.lib_dirs.extend_from_slice(&other.lib_dirs);
@@ -110,8 +120,8 @@ impl NativeInputs {
             package_relative(table, "sources", source)?;
             if SourceLanguage::of(source).is_none() {
                 return Err(format!(
-                    "{table} sources entry \"{source}\" is not a C or C++ file \
-                     (expected .c, .cc, .cpp or .cxx)"
+                    "{table} sources entry \"{source}\" is not a C, C++ or assembly file \
+                     (expected .c, .cc, .cpp, .cxx, .s or .S)"
                 ));
             }
         }
@@ -127,7 +137,11 @@ impl NativeInputs {
                 ));
             }
         }
-        for (field, flags) in [("cflags", &self.cflags), ("cxxflags", &self.cxxflags)] {
+        for (field, flags) in [
+            ("cflags", &self.cflags),
+            ("cxxflags", &self.cxxflags),
+            ("asflags", &self.asflags),
+        ] {
             if flags.iter().any(|flag| flag.trim().is_empty()) {
                 return Err(format!("{table} {field} entries must not be empty"));
             }
@@ -313,6 +327,9 @@ pub struct NativeLib {
     /// See [`NativeInputs::cxxflags`].
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub cxxflags: Vec<String>,
+    /// See [`NativeInputs::asflags`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub asflags: Vec<String>,
     /// See [`NativeInputs::pkg_config`].
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pkg_config: Vec<String>,
@@ -365,6 +382,7 @@ impl NativeLib {
             defines: self.defines.clone(),
             cflags: self.cflags.clone(),
             cxxflags: self.cxxflags.clone(),
+            asflags: self.asflags.clone(),
             pkg_config: self.pkg_config.clone(),
             link_libs: self.link_libs.clone(),
             lib_dirs: self.lib_dirs.clone(),
@@ -489,7 +507,10 @@ mod tests {
             ("", "declares nothing"),
             ("crate = \"native\"\n", "add `lib"),
             ("lib = \"x\"\nkind = \"bogus\"\n", "kind = \"bogus\""),
-            ("sources = [\"src/a.rs\"]\n", "not a C or C++ file"),
+            (
+                "sources = [\"src/a.rs\"]\n",
+                "not a C, C++ or assembly file",
+            ),
             ("sources = [\"../shared/a.c\"]\n", "inside the package"),
             ("sources = [\"/abs/a.c\"]\n", "inside the package"),
             ("sources = [\"C:/abs/a.c\"]\n", "inside the package"),

@@ -1,7 +1,7 @@
 //! Building a package's `[native]` code into link inputs.
 //!
 //! [`build`] is the one place a package's native code is built: the Rust crate
-//! (through Cargo), the C and C++ sources (through the C driver Hew links
+//! (through Cargo), the C, C++ and assembly sources (through the C driver Hew links
 //! with) and the system libraries (`pkg-config`, `link-libs`, `lib-dirs`). It
 //! returns everything the final link needs from that package, plus the files
 //! the build read, so `hew build --emit-deps` can name them.
@@ -26,13 +26,13 @@ const RESERVED_PREFIX: &str = "hew_";
 /// several threads, so the process id alone does not make a name unique.
 static NEXT_TEMPORARY: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
-/// How C and C++ sources compile for the current target.
+/// How native sources compile for the current target.
 #[derive(Debug, Clone)]
 pub struct NativeToolchain {
     /// Selects the `[native.<os>]` table.
     pub os: NativeOs,
     /// The C driver (`clang`, a gcc-compatible `cc`, or `HEW_CC`). It picks
-    /// the language from the source extension, so it compiles C++ too.
+    /// the C/C++ language from the source extension; assembly uses explicit `-x`.
     pub driver: String,
     /// Flags every compile carries: target, profile, PIC, CRT and sanitizer.
     pub flags: Vec<String>,
@@ -107,7 +107,7 @@ pub fn build(
     Ok(Some(out))
 }
 
-// ── C and C++ sources ──────────────────────────────────────────────────────
+// ── C, C++ and assembly sources ──────────────────────────────────────────────────────
 
 struct SourceSet<'a> {
     root: &'a Path,
@@ -120,15 +120,26 @@ impl SourceSet<'_> {
     fn compile(&self, toolchain: &NativeToolchain, out: &mut NativeBuild) -> Result<(), String> {
         let c_args = self.args(toolchain, SourceLanguage::C);
         let cxx_args = self.args(toolchain, SourceLanguage::Cxx);
+        let asm_args = self.args(toolchain, SourceLanguage::Assembly);
+        let asm_cpp_args = self.args(toolchain, SourceLanguage::AssemblyWithCpp);
         let object_dir = self.object_dir(&command_key(
             self.root,
             &toolchain.driver,
             &c_args,
             &cxx_args,
+            &asm_args,
+            &asm_cpp_args,
         ));
         for source in &self.inputs.sources {
             let language = SourceLanguage::of(source)
-                .ok_or_else(|| format!("{source}: not a C or C++ source"))?;
+                .ok_or_else(|| format!("{source}: not a C, C++ or assembly source"))?;
+            let language = match language {
+                SourceLanguage::Assembly | SourceLanguage::AssemblyWithCpp => {
+                    assembly_language(language, &self.inputs.asflags)
+                        .map_err(|e| self.compile_error(source, &e))?
+                }
+                other => other,
+            };
             let path = self.root.join(source);
             if !path.is_file() {
                 return Err(format!(
@@ -143,12 +154,21 @@ impl SourceSet<'_> {
             let args = match language {
                 SourceLanguage::C => &c_args,
                 SourceLanguage::Cxx => &cxx_args,
+                SourceLanguage::Assembly => &asm_args,
+                SourceLanguage::AssemblyWithCpp => &asm_cpp_args,
             };
-            if fresh_dependencies(&object, &depfile).is_none() {
-                compile_one(&toolchain.driver, args, &path, &object, &depfile)
+            // Integrated assemblers cannot report `.include` dependencies.
+            // Rebuild assembly rather than reuse an object with hidden inputs.
+            let assembly = matches!(
+                language,
+                SourceLanguage::Assembly | SourceLanguage::AssemblyWithCpp
+            );
+            if assembly || fresh_dependencies(&object, &depfile).is_none() {
+                compile_one(&toolchain.driver, args, &path, &object, &depfile, language)
                     .map_err(|stderr| self.compile_error(source, &stderr))?;
             }
             refuse_reserved_symbols(&object, &format!("`{source}`"), self.package)?;
+            out.dependencies.push(path);
             out.dependencies.extend(read_depfile(&depfile));
             out.compiles_cxx |= language == SourceLanguage::Cxx;
             out.inputs.push(object);
@@ -177,10 +197,27 @@ impl SourceSet<'_> {
         for dir in &self.inputs.include_dirs {
             args.push(format!("-I{}", self.root.join(dir).display()));
         }
-        args.extend(self.inputs.defines.iter().map(|d| format!("-D{d}")));
+        if language != SourceLanguage::Assembly {
+            args.extend(self.inputs.defines.iter().map(|d| format!("-D{d}")));
+        }
+        if matches!(
+            language,
+            SourceLanguage::Assembly | SourceLanguage::AssemblyWithCpp
+        ) {
+            args.extend([
+                "-x".to_string(),
+                if language == SourceLanguage::Assembly {
+                    "assembler"
+                } else {
+                    "assembler-with-cpp"
+                }
+                .to_string(),
+            ]);
+        }
         args.extend_from_slice(match language {
             SourceLanguage::C => &self.inputs.cflags,
             SourceLanguage::Cxx => &self.inputs.cxxflags,
+            SourceLanguage::Assembly | SourceLanguage::AssemblyWithCpp => &self.inputs.asflags,
         });
         args
     }
@@ -194,7 +231,44 @@ impl SourceSet<'_> {
     }
 }
 
-fn command_key(root: &Path, driver: &str, c_args: &[String], cxx_args: &[String]) -> String {
+/// Honour the driver's last explicit language selection, including the GNU
+/// joined spelling, before choosing preprocessing and dependency flags.
+fn assembly_language(default: SourceLanguage, flags: &[String]) -> Result<SourceLanguage, String> {
+    let mut language = default;
+    let mut flags = flags.iter();
+    while let Some(flag) = flags.next() {
+        let Some(joined) = flag.strip_prefix("-x") else {
+            continue;
+        };
+        let name = if joined.is_empty() {
+            flags
+                .next()
+                .map(String::as_str)
+                .ok_or("asflags -x requires an assembly language")?
+        } else {
+            joined
+        };
+        language = match name {
+            "assembler" => SourceLanguage::Assembly,
+            "assembler-with-cpp" => SourceLanguage::AssemblyWithCpp,
+            _ => {
+                return Err(format!(
+                    "asflags -x expects assembler or assembler-with-cpp, got {name}"
+                ))
+            }
+        };
+    }
+    Ok(language)
+}
+
+fn command_key(
+    root: &Path,
+    driver: &str,
+    c_args: &[String],
+    cxx_args: &[String],
+    asm_args: &[String],
+    asm_cpp_args: &[String],
+) -> String {
     let mut hasher = Sha256::new();
     // Dependency files name sources by absolute path, so an object built in
     // one location must not be reused from another.
@@ -204,6 +278,10 @@ fn command_key(root: &Path, driver: &str, c_args: &[String], cxx_args: &[String]
         .chain(c_args.iter().map(String::as_str))
         .chain(std::iter::once("\0cxx"))
         .chain(cxx_args.iter().map(String::as_str))
+        .chain(std::iter::once("\0asm"))
+        .chain(asm_args.iter().map(String::as_str))
+        .chain(std::iter::once("\0asm-cpp"))
+        .chain(asm_cpp_args.iter().map(String::as_str))
     {
         hasher.update(part.as_bytes());
         hasher.update([0]);
@@ -225,6 +303,7 @@ fn compile_one(
     source: &Path,
     object: &Path,
     depfile: &Path,
+    language: SourceLanguage,
 ) -> Result<(), String> {
     let parent = object
         .parent()
@@ -235,15 +314,17 @@ fn compile_one(
     let unique = format!(".{}-{serial}.tmp", std::process::id());
     let object_tmp = append(object, &unique);
     let depfile_tmp = append(depfile, &unique);
-    let output = Command::new(driver)
+    let mut command = Command::new(driver);
+    command
         .args(args)
         .arg("-c")
         .arg(source)
         .arg("-o")
-        .arg(&object_tmp)
-        .arg("-MMD")
-        .arg("-MF")
-        .arg(&depfile_tmp)
+        .arg(&object_tmp);
+    if language != SourceLanguage::Assembly {
+        command.arg("-MMD").arg("-MF").arg(&depfile_tmp);
+    }
+    let output = command
         .output()
         .map_err(|e| format!("cannot run the C compiler `{driver}`: {e}"))?;
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -256,8 +337,11 @@ fn compile_one(
     if !stderr.trim().is_empty() {
         eprint!("{stderr}");
     }
-    std::fs::rename(&depfile_tmp, depfile)
-        .and_then(|()| std::fs::rename(&object_tmp, object))
+    if language != SourceLanguage::Assembly {
+        std::fs::rename(&depfile_tmp, depfile)
+            .map_err(|e| format!("cannot write {}: {e}", depfile.display()))?;
+    }
+    std::fs::rename(&object_tmp, object)
         .map_err(|e| format!("cannot write {}: {e}", object.display()))
 }
 

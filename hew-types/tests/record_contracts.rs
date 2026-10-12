@@ -540,6 +540,10 @@ fn main() -> i64 {
 }
 
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one selected member capability fixture"
+)]
 fn derived_value_capabilities_compose_selected_member_methods_independently() {
     use hew_types::{
         ValueCapability::{Eq, Hash},

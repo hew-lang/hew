@@ -361,6 +361,18 @@ const VECTOR_SHIMS: Record<string, RuntimeShim | undefined> = {
     target.items.push(arg(args, 1));
     return target;
   },
+  Remove: (_host, args) => {
+    const target = vec(args, 0);
+    const at = index(args, 1);
+    if (at < 0 || at >= target.items.length) {
+      throw new ShimFault(
+        "vector_bounds",
+        `vector index ${at} out of bounds for length ${target.items.length}`,
+      );
+    }
+    const [item] = target.items.splice(at, 1);
+    return { kind: "record", typeId: "", fields: [target, item!] };
+  },
   Get: (host, args, shape) => {
     if (!shape) {
       throw new TypeError(

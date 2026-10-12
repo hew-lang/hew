@@ -162,6 +162,10 @@ fn opaque_resource_c_abi_releases_once_on_return_close_and_fault_at_o0_o2() {
                 hew_runtime::fault::hew_fault_drop as *const () as usize,
             ),
             (
+                "hew_fault_combine",
+                hew_runtime::fault::hew_fault_combine as *const () as usize,
+            ),
+            (
                 "hew_fault_set_site",
                 hew_runtime::fault::hew_fault_set_site as *const () as usize,
             ),
@@ -174,12 +178,9 @@ fn opaque_resource_c_abi_releases_once_on_return_close_and_fault_at_o0_o2() {
                 hew_runtime::exit_status::hew_process_exit_byte as *const () as usize,
             ),
         ] {
-            engine.add_global_mapping(
-                &llvm
-                    .get_function(symbol)
-                    .unwrap_or_else(|| panic!("missing runtime symbol {symbol}")),
-                address,
-            );
+            if let Some(function) = llvm.get_function(symbol) {
+                engine.add_global_mapping(&function, address);
+            }
         }
         type MainBody =
             unsafe extern "C" fn(*mut i64, *mut *mut hew_runtime::fault::HewFault) -> i32;

@@ -946,9 +946,19 @@ impl Checker {
 
     /// Bind parameters and establish independent mutable parameter values.
     fn bind_function_parameters(&mut self, fd: &FnDecl, in_actor: bool) {
+        let signature = self.checking_sig();
+        let receiver_offset = usize::from(fd.params.first().is_some_and(|param| param.is_receiver));
         // Only the first parameter can be the receiver.
         for (i, p) in fd.params.iter().enumerate() {
             let (ty, is_receiver) = self.resolve_param_binding_ty(i, p);
+            if !is_receiver && ty.has_inference_var() {
+                if let Some(declared) = signature
+                    .as_ref()
+                    .and_then(|signature| signature.params.get(i - receiver_offset))
+                {
+                    self.expect_type(declared, &ty, &p.ty.1);
+                }
+            }
             let private_copy = p.is_mutable
                 && !p.is_consume
                 && !is_receiver

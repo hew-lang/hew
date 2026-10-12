@@ -574,7 +574,13 @@ fn verify_vtables(module: &SemModule, diagnostics: &mut Vec<SirDiagnostic>) {
                     .params
                     .iter()
                     .map(|param| &param.ty))
-                || callee.signature.return_ty != slot.signature.return_ty
+                || callee.signature.erased_return_ty(slot.receiver) != Ok(&slot.signature.return_ty)
+                || arguments
+                    .iter()
+                    .zip(&slot.signature.params)
+                    .any(|(implementation, boundary)| {
+                        !crate::model::dyn_passing_admits(boundary.passing, implementation.passing)
+                    })
             {
                 refuse(format!(
                     "slot {} implementation `{}` differs from the dispatch signature",

@@ -385,6 +385,49 @@ impl SemSignature {
                 )
         })
     }
+
+    pub(crate) fn erased_return_ty(
+        &self,
+        boundary: SemParamPassing,
+    ) -> Result<&ResolvedTy, String> {
+        let receiver = self
+            .params
+            .first()
+            .ok_or_else(|| "erased implementation takes no receiver".to_string())?;
+        if self.hands_back_receiver() {
+            if boundary != SemParamPassing::BorrowMut {
+                return Err("receiver handback requires a mutable erased boundary".into());
+            }
+            let ResolvedTy::Tuple(fields) = &self.return_ty else {
+                return Err("receiver handback requires a dual result".into());
+            };
+            if let [result, returned_receiver] = fields.as_slice() {
+                if *returned_receiver == receiver.ty {
+                    return Ok(result);
+                }
+            }
+            return Err("dual result does not return the erased receiver".into());
+        }
+        if dyn_passing_admits(boundary, receiver.passing) {
+            Ok(&self.return_ty)
+        } else {
+            Err("implementation changes the erased receiver transfer".into())
+        }
+    }
+}
+
+pub(crate) fn dyn_passing_admits(
+    boundary: SemParamPassing,
+    implementation: SemParamPassing,
+) -> bool {
+    match boundary {
+        SemParamPassing::Consume => implementation == SemParamPassing::Consume,
+        SemParamPassing::BorrowMut => implementation == SemParamPassing::BorrowMut,
+        SemParamPassing::Borrow | SemParamPassing::ReadOnly => matches!(
+            implementation,
+            SemParamPassing::Borrow | SemParamPassing::ReadOnly
+        ),
+    }
 }
 
 /// Body-free semantic header for one generic HIR definition.

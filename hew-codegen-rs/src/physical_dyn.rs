@@ -1,8 +1,8 @@
 //! Trait-object tables, erasure and vtable dispatch.
 //!
 //! The runtime owns the layout: a `dyn Trait` value is the two-word
-//! `HewTraitObject { data, vtable }`, and every table is the three-word prefix
-//! (`drop_in_place`, `size_of`, `align_of`) followed by one function pointer
+//! `HewTraitObject { data, vtable }`, and every table is the four-word prefix
+//! (`drop_in_place`, `size_of`, `align_of`, `value_layout`) followed by one function pointer
 //! per method slot. See `hew-runtime/src/trait_object.rs`.
 //!
 //! Each slot holds a thunk rather than the implementation itself, so the
@@ -111,8 +111,10 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         self.emit_value_drop_callback(&name, &table.concrete_layout, action)
     }
 
-    /// One method slot: adapt the erased data pointer to the implementation's
-    /// own receiver carrier, then forward every remaining argument unchanged.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one thunk adapts the receiver carrier and its success/fault handback ABI"
+    )]
     fn emit_vtable_slot(
         &self,
         table: &PhysicalVtable,
@@ -155,7 +157,36 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                 .llvm_ctx("load erased receiver")?
                 .into(),
         }];
-        for index in 1..function.count_params() {
+        let handback = if callee.receiver_handback {
+            let layout = callee.return_layout.as_ref().ok_or_else(|| {
+                CodegenError::FailClosed("receiver handback lacks a dual result layout".into())
+            })?;
+            let PhysicalRepr::Struct(fields) = &layout.repr else {
+                return Err(CodegenError::FailClosed(
+                    "receiver handback result is not an aggregate".into(),
+                ));
+            };
+            if fields.len() != 2 || fields[1] != receiver.layout {
+                return Err(CodegenError::FailClosed(
+                    "receiver handback result differs from its receiver layout".into(),
+                ));
+            }
+            let dual_ty = llvm_type(self.ctx, &layout.repr)?.into_struct_type();
+            let dual = builder
+                .build_alloca(dual_ty, "dyn.dual.result")
+                .llvm_ctx("allocate erased receiver handback")?;
+            Some((dual_ty, dual))
+        } else {
+            None
+        };
+        let result_out = slot.signature.return_layout.as_ref().map(|_| {
+            function
+                .get_nth_param(function.count_params() - 2)
+                .unwrap()
+                .into_pointer_value()
+        });
+        let arguments_end = function.count_params() - 1 - u32::from(result_out.is_some());
+        for index in 1..arguments_end {
             arguments.push(
                 function
                     .get_nth_param(index)
@@ -165,12 +196,62 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                     .into(),
             );
         }
+        if let Some((_, dual)) = handback {
+            arguments.push(dual.into());
+        } else if let Some(result_out) = result_out {
+            arguments.push(result_out.into());
+        }
+        arguments.push(function.get_last_param().unwrap().into());
         let status = builder
             .build_call(target, &arguments, "dyn.slot.status")
             .llvm_ctx("forward vtable slot to its implementation")?
             .try_as_basic_value()
             .basic()
             .ok_or_else(|| CodegenError::FailClosed("vtable slot returned no status".into()))?;
+        if let Some((dual_ty, dual)) = handback {
+            let returned_receiver = builder
+                .build_struct_gep(dual_ty, dual, 1, "dyn.returned.receiver")
+                .llvm_ctx("address erased receiver handback")?;
+            let value = builder
+                .build_load(
+                    llvm_type(self.ctx, &receiver.layout.repr)?,
+                    returned_receiver,
+                    "dyn.handback",
+                )
+                .llvm_ctx("load erased receiver handback")?;
+            builder
+                .build_store(data, value)
+                .llvm_ctx("restore erased receiver on success or fault")?;
+            if let (Some(layout), Some(result_out)) = (&slot.signature.return_layout, result_out) {
+                let success = self.ctx.append_basic_block(function, "success");
+                let finish = self.ctx.append_basic_block(function, "finish");
+                let ok = builder
+                    .build_int_compare(
+                        inkwell::IntPredicate::EQ,
+                        status.into_int_value(),
+                        self.ctx.i32_type().const_zero(),
+                        "dyn.slot.ok",
+                    )
+                    .llvm_ctx("test erased call status")?;
+                builder
+                    .build_conditional_branch(ok, success, finish)
+                    .llvm_ctx("publish erased result only on success")?;
+                builder.position_at_end(success);
+                let result = builder
+                    .build_struct_gep(dual_ty, dual, 0, "dyn.user.result")
+                    .llvm_ctx("address erased user result")?;
+                let value = builder
+                    .build_load(llvm_type(self.ctx, &layout.repr)?, result, "dyn.result")
+                    .llvm_ctx("load erased user result")?;
+                builder
+                    .build_store(result_out, value)
+                    .llvm_ctx("publish erased user result")?;
+                builder
+                    .build_unconditional_branch(finish)
+                    .llvm_ctx("finish erased receiver handback")?;
+                builder.position_at_end(finish);
+            }
+        }
         builder
             .build_return(Some(&status))
             .llvm_ctx("return vtable slot status")?;

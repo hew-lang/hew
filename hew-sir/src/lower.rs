@@ -5,6 +5,8 @@ use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::ops::Range;
 
+use crate::model::dyn_passing_admits;
+
 use hew_parser::ast::Span;
 
 #[path = "lower_projection.rs"]
@@ -1450,20 +1452,6 @@ fn dyn_boundary_passing(own: OwnKind) -> SemParamPassing {
         SemParamPassing::Borrow
     } else {
         SemParamPassing::ReadOnly
-    }
-}
-
-/// Whether an implementation's declared transfer realizes the boundary's.
-fn dyn_passing_admits(boundary: SemParamPassing, implementation: SemParamPassing) -> bool {
-    match boundary {
-        SemParamPassing::Consume => implementation == SemParamPassing::Consume,
-        SemParamPassing::BorrowMut => implementation == SemParamPassing::BorrowMut,
-        // A borrowed boundary hands the callee a live value it does not own;
-        // a bit-copy receiver reads it and an owned one borrows it.
-        SemParamPassing::Borrow | SemParamPassing::ReadOnly => matches!(
-            implementation,
-            SemParamPassing::Borrow | SemParamPassing::ReadOnly
-        ),
     }
 }
 

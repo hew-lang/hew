@@ -6,10 +6,56 @@ trait Named { fn name(self) -> string; }
 trait Greet { fn who(self) -> string; fn greet(self) -> string { f"hi {self.who()}" } }
 trait Base { fn base(self) -> string; }
 trait Tagged: Base { fn tag(self) -> string; }
+trait Mutable {
+    fn value(self) -> i64;
+    fn update(var self, mode: i64) -> string;
+    fn touch(var self);
+}
 
 type Both { id: i64; }
 impl Both { fn name(self) -> string { "inherent" } }
 impl Named for Both { fn name(self) -> string { "trait" } }
+impl Mutable for Both {
+    fn value(self) -> i64 { self.id }
+    fn update(var self, mode: i64) -> string {
+        if mode == 0 { panic("before mutation"); }
+        self.id = self.id + 1;
+        if mode == 1 { panic("after mutation"); }
+        f"plain {self.id}"
+    }
+    fn touch(var self) { self.id = self.id + 1; }
+}
+
+resource Counter { id: i64; }
+impl Counter { fn close(consume self) { println(f"close {self.id}"); } }
+impl Mutable for Counter {
+    fn value(self) -> i64 { self.id }
+    fn update(var self, mode: i64) -> string {
+        if mode == 0 { panic("before mutation"); }
+        self.id = self.id + 1;
+        if mode == 1 { panic("after mutation"); }
+        f"owned {self.id}"
+    }
+    fn touch(var self) { self.id = self.id + 1; }
+}
+
+fn exercise_mutable(consume input: dyn Mutable, initial: i64) {
+    var counter = input;
+    let before = scope { counter.update(0) } handle failure {
+        assert(counter.value() == initial);
+        "before"
+    };
+    assert(before == "before");
+    let after = scope { counter.update(1) } handle failure {
+        assert(counter.value() == initial + 1);
+        "after"
+    };
+    assert(after == "after");
+    println(counter.update(2));
+    assert(counter.value() == initial + 2);
+    counter.touch();
+    assert(counter.value() == initial + 3);
+}
 
 type Person { n: string; }
 impl Greet for Person { fn who(self) -> string { self.n } }
@@ -39,4 +85,6 @@ fn main() {
     println(gen_name(Widget { id: 5 }));
     println(dyn_tag(Widget { id: 6 }));
     println(gen_tag(Widget { id: 7 }));
+    exercise_mutable(Both { id: 10 }, 10);
+    exercise_mutable(Counter { id: 20 }, 20);
 }

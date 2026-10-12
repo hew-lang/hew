@@ -14,7 +14,18 @@ fn after_front<T>(consume input: VecIter<T>) -> VecIter<T> {
     cursor
 }
 
+fn dynamic_back(consume input: dyn DoubleEndedIterator<Item = i64>) -> i64 {
+    var cursor = input;
+    assert(cursor.next().expect("dynamic front") == 8);
+    assert(cursor.next_back().expect("dynamic back") == 10);
+    assert(cursor.next_back().expect("dynamic middle") == 9);
+    assert(cursor.next().is_none());
+    assert(cursor.next_back().is_none());
+    0
+}
+
 fn main() -> i64 {
+    assert(dynamic_back([8, 9, 10].into_iter()) == 0);
     var source = ["first", "second", "third"];
     var cursor = source.iter();
     source.clear();

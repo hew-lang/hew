@@ -642,15 +642,14 @@ impl<'a> InstanceService<'a> {
                 hew_types::DynReceiver::BorrowMut => SemParamPassing::BorrowMut,
                 hew_types::DynReceiver::Consume => SemParamPassing::Consume,
             };
-            if receiver.ty != *concrete_ty
-                || !dyn_passing_admits(receiver_passing, receiver.passing)
-            {
+            if receiver.ty != *concrete_ty {
                 return Err(format!(
                     "slot {slot} implementation `{}` does not receive `{}` on the erased boundary",
                     target.symbol,
                     concrete_ty.user_facing()
                 ));
             }
+            let return_ty = target.signature.erased_return_ty(receiver_passing)?.clone();
             let mut params = Vec::with_capacity(arguments.len());
             for argument in arguments {
                 let passing =
@@ -673,10 +672,7 @@ impl<'a> InstanceService<'a> {
                 method: layout_slot.method,
                 callee,
                 receiver: receiver_passing,
-                signature: SemSignature {
-                    params,
-                    return_ty: target.signature.return_ty.clone(),
-                },
+                signature: SemSignature { params, return_ty },
             });
         }
         let id = crate::SemVtableId(

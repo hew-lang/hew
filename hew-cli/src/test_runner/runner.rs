@@ -246,6 +246,7 @@ impl TestCompilePaths {
 /// new positional argument every time the compiler pipeline gains a mode.
 #[derive(Clone, Copy)]
 pub struct TestRunOptions<'a> {
+    pub coverage: Option<&'a super::coverage::Coverage>,
     pub filter: Option<&'a str>,
     pub include_ignored: bool,
     pub compile_paths: Option<&'a TestCompilePaths>,
@@ -318,6 +319,8 @@ struct Execution {
 /// Private record written by the runtime after the selected test settles.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct TestReport {
+    #[serde(default)]
+    coverage: std::collections::BTreeMap<u32, u64>,
     #[serde(default)]
     version: Option<u32>,
     outcome: String,
@@ -725,11 +728,21 @@ pub(super) enum CompiledTestArtifact {
     Native {
         _emit_dir: tempfile::TempDir,
         binary_path: PathBuf,
+        coverage: Option<hew_compile::SourceCoverageMap>,
     },
     Vm {
         _emit_dir: tempfile::TempDir,
         packages: Vec<PathBuf>,
+        coverage: Option<hew_compile::SourceCoverageMap>,
     },
+}
+
+impl CompiledTestArtifact {
+    fn coverage(&self) -> Option<&hew_compile::SourceCoverageMap> {
+        match self {
+            Self::Native { coverage, .. } | Self::Vm { coverage, .. } => coverage.as_ref(),
+        }
+    }
 }
 
 fn compile_test(
@@ -746,7 +759,11 @@ fn compile_test(
         return Err("selected test entries span multiple source files".into());
     }
     if options.engine == crate::args::TestEngine::Vm {
-        return super::vm::compile_test(tests);
+        let artifact = super::vm::compile_test(tests, options.coverage.is_some())?;
+        if let (Some(collector), Some(map)) = (options.coverage, artifact.coverage()) {
+            collector.include(map);
+        }
+        return Ok(artifact);
     }
     let compile_paths = options
         .compile_paths
@@ -764,7 +781,10 @@ fn compile_test(
     let binary_path = compile_paths
         .target
         .executable_path(emit_dir.path(), binary_name);
-    let options = crate::compile::CompileOptions {
+    let compile_options = crate::compile::CompileOptions {
+        coverage_map: options
+            .coverage
+            .map(|_| emit_dir.path().join("coverage.json")),
         module_search_paths: Some(compile_paths.paths.module_search_paths.clone()),
         test_entry_selections: tests.iter().map(|test| test.occurrence).collect(),
         deterministic_admission: hew_compile::DeterministicAdmission::Tests(
@@ -782,7 +802,7 @@ fn compile_test(
     let compile_result = crate::compile_native_binary_with_paths(
         source_path,
         &binary_path,
-        &options,
+        &compile_options,
         Some(&compile_paths.paths),
     );
     let diagnostics = crate::diagnostic::finish_diagnostic_capture();
@@ -794,7 +814,21 @@ fn compile_test(
         });
     }
 
+    let coverage = compile_options
+        .coverage_map
+        .as_ref()
+        .map(|path| {
+            let bytes = std::fs::read(path)
+                .map_err(|error| format!("cannot read source coverage map: {error}"))?;
+            serde_json::from_slice(&bytes)
+                .map_err(|error| format!("invalid source coverage map: {error}"))
+        })
+        .transpose()?;
+    if let (Some(collector), Some(map)) = (options.coverage, coverage.as_ref()) {
+        collector.include(map);
+    }
     Ok(CompiledTestArtifact::Native {
+        coverage,
         _emit_dir: emit_dir,
         binary_path,
     })
@@ -861,6 +895,11 @@ fn execute_test_run(
     let report = std::fs::read(&path)
         .ok()
         .and_then(|bytes| serde_json::from_slice::<TestReport>(&bytes).ok());
+    if let (Some(collector), Some(map), Some(report)) =
+        (options.coverage, artifact.coverage(), report.as_ref())
+    {
+        collector.record(map, &report.coverage);
+    }
     (run, report, Some(dir))
 }
 
@@ -1436,6 +1475,7 @@ mod tests {
         let summary = run_tests(
             &tests,
             TestRunOptions {
+                coverage: None,
                 filter: None,
                 include_ignored: false,
                 compile_paths: Some(cargo_test_compile_paths()),
@@ -1462,6 +1502,7 @@ mod tests {
         run_tests(
             &discovered.tests,
             TestRunOptions {
+                coverage: None,
                 filter: None,
                 include_ignored: false,
                 compile_paths: Some(cargo_test_compile_paths()),
@@ -1884,6 +1925,7 @@ fn test_timeout() {
         let summary = run_tests(
             &tests,
             TestRunOptions {
+                coverage: None,
                 filter: None,
                 include_ignored: false,
                 compile_paths: Some(&unused_paths),

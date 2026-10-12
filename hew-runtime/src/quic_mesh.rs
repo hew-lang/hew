@@ -2310,8 +2310,8 @@ impl PeerConn {
 mod tests {
     use super::*;
 
-    /// Verify that the ASN.1 DER walk correctly extracts the SPKI from a
-    /// rcgen-generated certificate.
+    /// Verify that webpki extracts the SPKI from a valid certificate and
+    /// rejects malformed certificate bytes.
     #[test]
     fn spki_extraction_roundtrips() {
         let (tls, spki) = MeshTls::self_signed(vec!["test".into()]).unwrap();
@@ -2324,6 +2324,7 @@ mod tests {
             spki, extracted,
             "SPKI extracted from cert must match the one returned by self_signed()"
         );
+        assert!(extract_spki_from_cert_der(b"not a certificate").is_err());
     }
 
     /// CAP-12: keyfile frame round-trips, preserving the leaf SPKI.

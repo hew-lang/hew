@@ -51,6 +51,11 @@ pub fn analyze(source: &str) -> Result<String, JsValue> {
     export_json("analyze", || Ok(run_analysis(source)))
 }
 
+/// Analyze source using the supplied browser input files.
+///
+/// # Errors
+///
+/// Returns a JavaScript error if an input is invalid or the result cannot be serialized.
 #[wasm_bindgen(js_name = analyze)]
 pub fn analyze_with_inputs(source: &str, files: Option<js_sys::Map>) -> Result<String, JsValue> {
     let inputs = inputs::from_js(files).map_err(|error| JsValue::from_str(&error))?;
@@ -90,6 +95,11 @@ pub fn type_check(source: &str) -> Result<String, JsValue> {
     export_json("type_check", || Ok(run_type_check(source)))
 }
 
+/// Type-check source using the supplied browser input files.
+///
+/// # Errors
+///
+/// Returns a JavaScript error if an input is invalid or the result cannot be serialized.
 #[wasm_bindgen(js_name = type_check)]
 pub fn type_check_with_inputs(source: &str, files: Option<js_sys::Map>) -> Result<String, JsValue> {
     let inputs = inputs::from_js(files).map_err(|error| JsValue::from_str(&error))?;

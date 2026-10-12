@@ -1,7 +1,7 @@
 use tower_lsp_server::jsonrpc::{Error, ErrorCode, Result};
 use tower_lsp_server::ls_types::{
-    GotoDefinitionParams, GotoDefinitionResponse, Location, PrepareRenameResponse, ReferenceParams,
-    RenameParams, WorkspaceEdit,
+    GotoDefinitionParams, GotoDefinitionResponse, Location, PrepareRenameResponse, Range,
+    ReferenceParams, RenameParams, WorkspaceEdit,
 };
 
 use super::super::{
@@ -81,7 +81,7 @@ pub(crate) fn goto_definition(
         let uri = tower_lsp_server::ls_types::Uri::from_checked_file_path(&input.path)?;
         return Some(GotoDefinitionResponse::Scalar(Location {
             uri,
-            range: Default::default(),
+            range: Range::default(),
         }));
     }
     if let Some(location) =

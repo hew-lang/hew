@@ -62,7 +62,7 @@ fn buffered_exit(program: string) {
             .None => break,
         }
     }
-    println(f"output after exit: {bytes == 8192}");
+    println(f"output after exit: {bytes == 512}");
 }
 
 fn streamed_exit(program: string) {
@@ -167,7 +167,8 @@ fn main() {
                 print("late");
             }
             "buffered" => {
-                for _ in 0..512 {
+                // A small residual payload lets the child exit before the parent reads.
+                for _ in 0..32 {
                     print("0123456789abcdef");
                 }
             }

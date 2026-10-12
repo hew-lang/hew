@@ -200,3 +200,36 @@ function buildSandboxWasmBridge() {
   );
   assert.equal(result.status, 0, result.stderr || result.stdout);
 }
+
+for (const [name, body, expected] of [
+  [
+    "repeated assignment",
+    "fresh = Ticket { id: 2 }; fresh = Ticket { id: 3 };",
+    "closed 1\nclosed 2\nclosed 3\n",
+  ],
+  [
+    "explicit close",
+    "fresh = Ticket { id: 2 }; fresh.close();",
+    "closed 1\nclosed 2\n",
+  ],
+  [
+    "reinitialization",
+    "fresh.close(); fresh = Ticket { id: 2 };",
+    "closed 1\nclosed 2\n",
+  ],
+]) {
+  test(`compiled resource lifecycle: ${name}`, () => {
+    const result = runProgram(
+      `
+#[resource]
+type Ticket { id: i64; }
+impl Ticket { fn close(consume self) { println(f"closed {self.id}"); } }
+fn main() { var fresh = Ticket { id: 1 }; ${body} }
+`,
+      "",
+    );
+    assert.equal(result.exit_code, 0, JSON.stringify(result.diagnostics));
+    assert.deepEqual(result.diagnostics, []);
+    assert.equal(result.stdout, expected);
+  });
+}

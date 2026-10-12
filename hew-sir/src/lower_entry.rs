@@ -22,7 +22,19 @@ impl Builder<'_, '_> {
         self.service.request_body(entry.id);
         let mut arguments = Vec::with_capacity(entry.signature.params.len());
         for (index, parameter) in entry.signature.params.iter().enumerate() {
-            let value = self.lower_property_argument(index, &parameter.ty)?;
+            let value = if adapter.benchmark {
+                let shape = self.service.require_aggregate_shape(&parameter.ty)?;
+                self.emit_typed(
+                    Provenance::Synthesized,
+                    &parameter.ty,
+                    SemOpKind::AggregateMake {
+                        shape,
+                        fields: Vec::new(),
+                    },
+                )?
+            } else {
+                self.lower_property_argument(index, &parameter.ty)?
+            };
             arguments.push(BoundaryOperand {
                 operand: Operand { value },
                 decision: match parameter.passing {
@@ -40,7 +52,7 @@ impl Builder<'_, '_> {
             arguments,
             &[],
             &live_before,
-            true,
+            entry.signature.return_ty != ResolvedTy::Unit,
             None,
         )?;
         let EntryExitAction::Result { display, .. } = &adapter.action else {
@@ -112,9 +124,9 @@ impl Builder<'_, '_> {
         let input = self.emit_typed(
             Provenance::Synthesized,
             &ResolvedTy::I64,
-            SemOpKind::ConstInteger(
+            SemOpKind::ConstInteger(i128::from(
                 i64::try_from(index).map_err(|_| "property argument index exceeds i64")?,
-            ),
+            )),
         )?;
         let own = OwnKind::of_ty(ty, self.service.checked_facts.rows())?;
         let raw = self.fresh_value();

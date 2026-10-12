@@ -1801,6 +1801,7 @@ dependencies = [
  "finl_unicode",
  "hew-analysis",
  "hew-cabi",
+ "hew-codec",
  "hew-codegen-rs",
  "hew-compile",
  "hew-hir",
@@ -1815,6 +1816,7 @@ dependencies = [
  "libc",
  "notify",
  "object 0.40.0",
+ "proptest",
  "pulldown-cmark",
  "rustyline",
  "serde",
@@ -2125,6 +2127,7 @@ version = "0.6.0-rc8"
 dependencies = [
  "assert_cmd",
  "hew-analysis",
+ "hew-codec",
  "hew-compile",
  "hew-hir",
  "hew-lexer",

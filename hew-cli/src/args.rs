@@ -63,6 +63,8 @@ pub enum Command {
     Eval(EvalArgs),
     /// Run tests.
     Test(TestArgs),
+    /// Run benchmarks with calibrated samples and saved baselines.
+    Bench(BenchArgs),
     /// Watch for changes and re-check automatically.
     Watch(WatchArgs),
     /// Wire schema compatibility tools.
@@ -659,6 +661,26 @@ pub enum TestFormat {
     Text,
     Json,
     Junit,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum BenchFormat {
+    Text,
+    Json,
+}
+
+#[derive(Debug, Args)]
+pub struct BenchArgs {
+    /// Files, directories or path::function selectors.
+    pub paths: Vec<PathBuf>,
+    /// Save the measured baseline under this name.
+    #[arg(long)]
+    pub save: Option<String>,
+    /// Compare measurements against this saved baseline.
+    #[arg(long)]
+    pub compare: Option<String>,
+    #[arg(long, value_enum, default_value = "text")]
+    pub format: BenchFormat,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]

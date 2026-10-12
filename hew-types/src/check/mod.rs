@@ -1722,8 +1722,7 @@ impl Checker {
                 continue;
             };
             let error_mark = self.errors.len();
-            let action =
-                self.classify_entry_exit_action(return_type, span.clone(), resolved_fn_sigs);
+            let action = self.classify_entry_exit_action(return_type, span, resolved_fn_sigs);
             let Some(action) = action else {
                 for error in &mut self.errors[error_mark..] {
                     error.kind = TypeErrorKind::TestSignature;
@@ -1756,7 +1755,23 @@ impl Checker {
                 invalid = true;
                 continue;
             };
-            if let Some(ty) = arguments.iter().find(|ty| !self.is_serializable(ty)) {
+            let benchmark = declaration
+                .attributes
+                .iter()
+                .any(|attribute| attribute.name == "bench");
+            if benchmark {
+                let valid = matches!(arguments.as_slice(), [ty] if ty.nominal_instance(&self.defs)
+                    .is_some_and(|instance| self.defs.path(instance.nominal.declaration()) == "std.bench.Bencher"));
+                if !valid {
+                    self.errors.push(TypeError::new(
+                        TypeErrorKind::TestSignature,
+                        span.clone(),
+                        "benchmark must take exactly one std.bench.Bencher parameter",
+                    ));
+                    invalid = true;
+                    continue;
+                }
+            } else if let Some(ty) = arguments.iter().find(|ty| !self.is_serializable(ty)) {
                 self.errors.push(TypeError::new(
                     TypeErrorKind::TestSignature,
                     span.clone(),
@@ -1769,6 +1784,7 @@ impl Checker {
                 continue;
             }
             plans.push(TestEntryPlan {
+                benchmark,
                 entry,
                 action,
                 arguments,

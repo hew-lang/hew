@@ -513,8 +513,14 @@ impl<'a> InstanceService<'a> {
             &mut plan.action,
             EntryExitAction::Integer(hew_types::EntryIntegerType::I64),
         );
-        self.entry_adapters
-            .insert(id, EntryAdapter { entry, action });
+        self.entry_adapters.insert(
+            id,
+            EntryAdapter {
+                entry,
+                action,
+                benchmark: false,
+            },
+        );
         self.request_body(id);
     }
 
@@ -559,6 +565,7 @@ impl<'a> InstanceService<'a> {
                 self.entry_adapters.insert(
                     id,
                     EntryAdapter {
+                        benchmark: plan.benchmark,
                         entry,
                         action: plan.action.clone(),
                     },
@@ -578,6 +585,7 @@ impl<'a> InstanceService<'a> {
             let properties = plan
                 .arguments
                 .iter()
+                .filter(|_| !plan.benchmark)
                 .map(|ty| self.wire_plans(ty)?.property_shape())
                 .collect::<Result<Vec<_>, String>>();
             let Ok(properties) = properties else {

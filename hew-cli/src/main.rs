@@ -523,20 +523,14 @@ fn compile_native_binary_with_paths(
             DiagChannel::User
         })?;
     let (pipeline, inputs) = lower_file_to_physical_for_target(input, &target, options)?;
-    let native = link_program_native(&inputs, &target, false, hew_codegen_rs::OptLevel::O0)?;
+    let opt_level = options.opt_level.unwrap_or(hew_codegen_rs::OptLevel::O0);
+    let native = link_program_native(&inputs, &target, false, opt_level)?;
     let emit_dir = bin_path.parent().unwrap_or_else(|| Path::new("."));
     let module_name = bin_path
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("module");
-    let artefacts = emit_module(
-        &pipeline,
-        module_name,
-        emit_dir,
-        true,
-        hew_codegen_rs::OptLevel::O0,
-        false,
-    )?;
+    let artefacts = emit_module(&pipeline, module_name, emit_dir, true, opt_level, false)?;
     let obj = artefacts.native_obj_path.as_deref().ok_or_else(|| {
         emit_semantic_error(
             "E_CODEGEN_ARTEFACT_MISSING",

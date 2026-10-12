@@ -246,6 +246,7 @@ impl TestCompilePaths {
 /// new positional argument every time the compiler pipeline gains a mode.
 #[derive(Clone, Copy)]
 pub struct TestRunOptions<'a> {
+    pub benchmark: bool,
     pub cases: u32,
     pub coverage: Option<&'a super::coverage::Coverage>,
     pub filter: Option<&'a str>,
@@ -320,6 +321,8 @@ struct Execution {
 /// Private record written by the runtime after the selected test settles.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct TestReport {
+    #[serde(default)]
+    pub(super) benchmarks: Vec<(u64, u64)>,
     #[serde(default)]
     coverage: std::collections::BTreeMap<u32, u64>,
     #[serde(default)]
@@ -785,6 +788,7 @@ fn compile_test(
         .target
         .executable_path(emit_dir.path(), binary_name);
     let compile_options = crate::compile::CompileOptions {
+        opt_level: options.benchmark.then_some(hew_codegen_rs::OptLevel::O2),
         coverage_map: options
             .coverage
             .map(|_| emit_dir.path().join("coverage.json")),
@@ -1583,6 +1587,7 @@ mod tests {
             TestRunOptions {
                 coverage: None,
                 cases: 100,
+                benchmark: false,
                 filter: None,
                 include_ignored: false,
                 compile_paths: Some(cargo_test_compile_paths()),
@@ -1611,6 +1616,7 @@ mod tests {
             TestRunOptions {
                 coverage: None,
                 cases: 100,
+                benchmark: false,
                 filter: None,
                 include_ignored: false,
                 compile_paths: Some(cargo_test_compile_paths()),
@@ -2035,6 +2041,7 @@ fn test_timeout() {
             TestRunOptions {
                 coverage: None,
                 cases: 100,
+                benchmark: false,
                 filter: None,
                 include_ignored: false,
                 compile_paths: Some(&unused_paths),

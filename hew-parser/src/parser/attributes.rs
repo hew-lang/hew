@@ -81,7 +81,9 @@ fn legal_positions(name: &str) -> Option<&'static [AttrPosition]> {
         // `FreeFn` like `#[test]` and `#[export]`; the co-occurrence half of
         // their `#[test]`-only rule is enforced by
         // `Parser::validate_attributes_for`, not by this table.
-        "test" | "export" | "ignore" | "should_panic" | "real_time" | "timeout" => &[FreeFn],
+        "test" | "bench" | "export" | "ignore" | "should_panic" | "real_time" | "timeout" => {
+            &[FreeFn]
+        }
         // On a test fn `#[serial]` runs it alone; on a type or field it sets
         // text keys (`case`, `key`, `skip`).
         "serial" => &[FreeFn, TypeDecl, Field],
@@ -112,7 +114,9 @@ impl Parser<'_> {
         quoted_arguments: bool,
     ) {
         let (valid, hint) = match attr.name.as_str() {
-            "test" | "real_time" | "offload" => (argument_count == 0, "remove the arguments"),
+            "test" | "bench" | "real_time" | "offload" => {
+                (argument_count == 0, "remove the arguments")
+            }
             "ignore" | "should_panic" => (
                 argument_count <= 1 && quoted_arguments,
                 "use no argument or one quoted string, such as (\"reason\")",
@@ -143,7 +147,7 @@ impl Parser<'_> {
     /// This is the one diagnostic path every attribute-consuming call site
     /// routes through — no call site keeps its own bespoke allowlist.
     pub(crate) fn validate_attributes_for(&mut self, attrs: &[Attribute], position: AttrPosition) {
-        let has_test = attrs.iter().any(|a| a.name == "test");
+        let has_test = attrs.iter().any(|a| a.name == "test" || a.name == "bench");
         for attr in attrs {
             let in_table = legal_positions(&attr.name).is_some_and(|p| p.contains(&position));
             // `#[ignore]`, `#[should_panic]`, `#[serial]` and `#[real_time]` sit

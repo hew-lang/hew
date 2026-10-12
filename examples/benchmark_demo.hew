@@ -21,15 +21,16 @@ fn sum_to(n: i64) -> i64 {
     total
 }
 
+#[bench]
+fn fibonacci_20(b: bench.Bencher) {
+    b.iter(|| fibonacci(20));
+}
+
+#[bench]
+fn sum_1000(b: bench.Bencher) {
+    b.iter(|| sum_to(1000));
+}
+
 fn main() {
-    var s = bench.suite("Demo Benchmarks");
-    s.add("fibonacci(20)", 100, || {
-        fibonacci(20);
-    });
-    s.add("sum_to(1000)", 1000, || {
-        sum_to(1000);
-    });
-    s.report();
-    println("---");
-    s.report_json();
+    println("Run with: hew bench examples/benchmark_demo.hew");
 }

@@ -290,6 +290,7 @@ pub struct EntryExitPlan {
 /// Checked arguments supplied by the test dispatcher, before exit conversion.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TestEntryPlan {
+    pub benchmark: bool,
     pub entry: crate::DefId,
     pub action: EntryExitAction,
     pub arguments: Vec<ResolvedTy>,

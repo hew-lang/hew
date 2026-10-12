@@ -10,11 +10,12 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
     pub(super) fn emit_runtime_call(
         &self,
         action: PhysicalRuntimeAction,
-        transfers: &[ArgumentTransfer],
+        arguments: &PhysicalArguments,
         result: Option<StorageId>,
         normal: &PhysicalEdge,
         failure: Option<&PhysicalEdge>,
     ) -> CodegenResult<()> {
+        let transfers: &[ArgumentTransfer] = arguments;
         let source = |index: usize| {
             transfers.get(index).map(argument_source).ok_or_else(|| {
                 CodegenError::FailClosed(format!(
@@ -149,33 +150,33 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 return self.emit_float_method(op, transfers, required_result()?, normal, failure);
             }
             RuntimeCallFamily::Tcp(op) => {
-                self.emit_tcp_operation(op, transfers, result)?;
+                self.emit_tcp_operation(op, arguments, result)?;
             }
             RuntimeCallFamily::FileRead(op) => {
                 self.emit_direct_runtime_call(
                     hew_types::RuntimeCallFamily::FileRead(op),
-                    transfers,
+                    arguments,
                     result,
                 )?;
             }
             RuntimeCallFamily::StreamClose => {
                 self.emit_direct_runtime_call(
                     hew_types::RuntimeCallFamily::StreamClose,
-                    transfers,
+                    arguments,
                     result,
                 )?;
             }
             RuntimeCallFamily::SinkClose => {
                 self.emit_direct_runtime_call(
                     hew_types::RuntimeCallFamily::SinkClose,
-                    transfers,
+                    arguments,
                     result,
                 )?;
             }
             RuntimeCallFamily::SinkClone => {
                 self.emit_direct_runtime_call(
                     hew_types::RuntimeCallFamily::SinkClone,
-                    transfers,
+                    arguments,
                     result,
                 )?;
             }
@@ -183,49 +184,49 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             RuntimeCallFamily::StreamForward => {
                 self.emit_direct_runtime_call(
                     hew_types::RuntimeCallFamily::StreamForward,
-                    transfers,
+                    arguments,
                     result,
                 )?;
             }
             RuntimeCallFamily::StreamPairSink => {
                 self.emit_direct_runtime_call(
                     hew_types::RuntimeCallFamily::StreamPairSink,
-                    transfers,
+                    arguments,
                     result,
                 )?;
             }
             RuntimeCallFamily::StreamPairStream => {
                 self.emit_direct_runtime_call(
                     hew_types::RuntimeCallFamily::StreamPairStream,
-                    transfers,
+                    arguments,
                     result,
                 )?;
             }
             RuntimeCallFamily::ActorCallFree => {
                 self.emit_direct_runtime_call(
                     hew_types::RuntimeCallFamily::ActorCallFree,
-                    transfers,
+                    arguments,
                     result,
                 )?;
             }
             RuntimeCallFamily::ActorRequestRelease => {
                 self.emit_direct_runtime_call(
                     hew_types::RuntimeCallFamily::ActorRequestRelease,
-                    transfers,
+                    arguments,
                     result,
                 )?;
             }
             RuntimeCallFamily::ActorRequestTake => {
                 self.emit_direct_runtime_call(
                     hew_types::RuntimeCallFamily::ActorRequestTake,
-                    transfers,
+                    arguments,
                     result,
                 )?;
             }
             RuntimeCallFamily::Encoding { format, op } => {
                 self.emit_direct_runtime_call(
                     hew_types::RuntimeCallFamily::Encoding { format, op },
-                    transfers,
+                    arguments,
                     result,
                 )?;
             }
@@ -750,7 +751,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 self.store(dest, truth.into())?;
             }
             family if hew_types::runtime_call::declared_direct_runtime_method(family).is_some() => {
-                self.emit_direct_runtime_call(family, transfers, result)?;
+                self.emit_direct_runtime_call(family, arguments, result)?;
             }
             RuntimeCallFamily::StringToBytes => {
                 let function = get_or_declare_external(
@@ -1065,7 +1066,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                         action.family
                     )));
                 }
-                self.emit_direct_runtime_call(action.family, transfers, result)?;
+                self.emit_direct_runtime_call(action.family, arguments, result)?;
             }
         }
         if failure.is_some() {

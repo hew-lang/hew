@@ -8,7 +8,6 @@
 use super::encoding::ForeignResult;
 use super::*;
 use hew_mir::physical::{PhysicalOffload, PhysicalOffloadSlot};
-use hew_types::ResolvedTy;
 
 /// One offloaded extern's environment layout and thunks.
 pub(super) struct OffloadThunks<'ctx> {
@@ -109,8 +108,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             let field = builder
                 .build_struct_gep(env_ty, env, index as u32, "offload.argument")
                 .llvm_ctx("address offload argument")?;
-            // `bytes` crosses every C boundary by pointer to its triple.
-            if slot.recipe.ty == ResolvedTy::Bytes {
+            if slot.carrier == ParamCarrier::Indirect {
                 values.push(field.into());
             } else {
                 values.push(

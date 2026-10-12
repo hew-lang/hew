@@ -176,10 +176,14 @@ fn physical_trap_certificate_cannot_survive_an_ordinary_exit_or_later_effect() {
                     kind: hew_types::runtime_call::PrintKind::Bool,
                     newline: true,
                 }),
-                args: vec![ArgumentTransfer::Clone {
-                    source: function.parameters[1],
-                    action: CloneAction::Bitwise,
-                }],
+                args: PhysicalArguments::new(
+                    vec![ArgumentTransfer::Clone {
+                        source: function.parameters[1],
+                        action: CloneAction::Bitwise,
+                    }],
+                    vec![ParamCarrier::Direct],
+                )
+                .unwrap(),
                 result: None,
                 normal: PhysicalEdge {
                     target: BlockId(1),

@@ -98,11 +98,11 @@ use hew_mir::physical::{
     PhysicalVectorGlue, PhysicalVectorId, PhysicalVectorOp, TrapKind,
 };
 use hew_mir::{
-    ArgumentTransfer, CloneAction, DestroyAction, ParamCarrier, PhysicalBlock, PhysicalCallable,
-    PhysicalCheckedFailure, PhysicalConst, PhysicalEdge, PhysicalFunction, PhysicalLayout,
-    PhysicalModule, PhysicalOp, PhysicalRepr, PhysicalRuntimeAction, PhysicalRuntimeCarrier,
-    PhysicalStorage, PhysicalTarget, PhysicalTerminator, ReturnTransfer, StorageId,
-    VerifiedPhysicalModule,
+    ArgumentTransfer, CloneAction, DestroyAction, ParamCarrier, PhysicalArguments, PhysicalBlock,
+    PhysicalCallable, PhysicalCheckedFailure, PhysicalConst, PhysicalEdge, PhysicalFunction,
+    PhysicalLayout, PhysicalModule, PhysicalOp, PhysicalRepr, PhysicalRuntimeAction,
+    PhysicalRuntimeCarrier, PhysicalStorage, PhysicalTarget, PhysicalTerminator, ReturnTransfer,
+    StorageId, VerifiedPhysicalModule,
 };
 use hew_parser::ast::{BinaryOp, UnaryOp};
 use hew_runtime::internal::types::{

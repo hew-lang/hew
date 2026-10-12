@@ -134,10 +134,10 @@ fn encoding_mutation_rejects_wrong_transfers_missing_receiver_result_and_failure
                     let ArgumentTransfer::Move(source) = args[0] else {
                         panic!("receiver")
                     };
-                    args[0] = ArgumentTransfer::Borrow(source);
+                    args.transfers_mut()[0] = ArgumentTransfer::Borrow(source);
                 }
                 1 => {
-                    let last = args.last_mut().unwrap();
+                    let last = args.transfers_mut().last_mut().unwrap();
                     let ArgumentTransfer::Move(source) = *last else {
                         panic!("child")
                     };

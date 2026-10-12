@@ -10,9 +10,10 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
     pub(super) fn emit_direct_runtime_call(
         &self,
         family: RuntimeCallFamily,
-        transfers: &[ArgumentTransfer],
+        arguments: &PhysicalArguments,
         result: Option<StorageId>,
     ) -> CodegenResult<()> {
+        let transfers: &[ArgumentTransfer] = arguments;
         let row = family.row();
         let contract = row.contract.ok_or_else(|| {
             CodegenError::FailClosed("runtime operation lacks its semantic contract".into())
@@ -23,29 +24,9 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         // other scalar and handle carriers agree with physical storage.
         let values = transfers
             .iter()
-            .map(|transfer| {
-                let source = argument_source(transfer);
-                // `bytes` is the runtime's `{ptr, u32, u32}` triple and the
-                // identity carriers are its `HewNodeId` / `HewLocation` /
-                // `HewRemotePid` structs; every C entry takes those by pointer,
-                // since a first-class aggregate argument and a C struct
-                // parameter do not agree on how the bytes travel. Everything
-                // else crosses by value out of its storage.
-                let ty = &self.storage(source)?.ty;
-                if *ty == ResolvedTy::Bytes
-                    || ty.is_builtin(hew_types::BuiltinType::NodeId)
-                    || ty.is_builtin(hew_types::BuiltinType::Location)
-                    || ty.is_builtin(hew_types::BuiltinType::RemotePid)
-                {
-                    if matches!(transfer, ArgumentTransfer::Move(_)) {
-                        return Err(CodegenError::FailClosed(
-                            "a moved byte operand needs its own emission".into(),
-                        ));
-                    }
-                    Ok(self.slots[source.0 as usize].into())
-                } else {
-                    self.load(source, "runtime.argument")
-                }
+            .zip(arguments.carriers())
+            .map(|(transfer, carrier)| {
+                self.emit_physical_argument(transfer, *carrier, "runtime.argument")
             })
             .collect::<CodegenResult<Vec<_>>>()?;
         if let (RuntimeCReturn::Storage, false, Some(result)) =
@@ -144,42 +125,44 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
     pub(super) fn emit_extern_call(
         &self,
         symbol: &str,
-        transfers: &[ArgumentTransfer],
+        arguments: &PhysicalArguments,
         result: Option<StorageId>,
         result_abi: &PhysicalExternResultAbi,
         normal: &PhysicalEdge,
     ) -> CodegenResult<()> {
-        // `bytes` is the runtime's `{ptr, u32, u32}` triple, and every C-side
-        // declaration takes it by pointer (`*const BytesTriple`). Everything
-        // else - scalars, pointer-width handles, `string`, collections -
-        // passes by value out of its storage.
+        let transfers: &[ArgumentTransfer] = arguments;
         let values = transfers
             .iter()
-            .map(|transfer| {
-                let source = argument_source(transfer);
-                if self.storage(source)?.ty == ResolvedTy::Bytes {
-                    if matches!(transfer, ArgumentTransfer::Move(_)) {
-                        // Clearing a moved owner must not zero the C argument.
-                        // Scratch is in the allocation prologue, so a loop
-                        // reuses it instead of growing the native stack.
-                        let value = self.load(source, "extern.bytes.argument")?;
-                        let scratch = self
-                            .value_emitter()
-                            .entry_scratch(value.get_type(), "extern.bytes.argument.slot")?;
-                        self.builder
-                            .build_store(scratch, value)
-                            .llvm_ctx("snapshot moved extern byte argument")?;
-                        Ok(scratch.into())
-                    } else {
-                        Ok(self.slots[source.0 as usize].into())
-                    }
-                } else {
-                    self.load(source, "extern.argument")
-                }
+            .zip(arguments.carriers())
+            .map(|(transfer, carrier)| {
+                self.emit_physical_argument(transfer, *carrier, "extern.argument")
             })
             .collect::<CodegenResult<Vec<_>>>()?;
         self.emit_c_call(symbol, &values, transfers, result, result_abi)?;
         self.emit_result_edge(result, normal)
+    }
+
+    pub(super) fn emit_physical_argument(
+        &self,
+        transfer: &ArgumentTransfer,
+        carrier: ParamCarrier,
+        name: &str,
+    ) -> CodegenResult<BasicValueEnum<'ctx>> {
+        let source = argument_source(transfer);
+        if carrier == ParamCarrier::Direct {
+            return self.load(source, name);
+        }
+        if matches!(transfer, ArgumentTransfer::Move(_)) {
+            let value = self.load(source, name)?;
+            let scratch = self
+                .value_emitter()
+                .entry_scratch(value.get_type(), &format!("{name}.slot"))?;
+            self.builder
+                .build_store(scratch, value)
+                .llvm_ctx("snapshot moved indirect argument")?;
+            return Ok(scratch.into());
+        }
+        Ok(self.slots[source.0 as usize].into())
     }
 
     /// How each narrow argument widens, from the C type its storage holds.

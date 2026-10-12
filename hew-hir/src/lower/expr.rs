@@ -1697,13 +1697,10 @@ impl LowerCtx {
             Expr::OptionalChain { receiver, body } => {
                 self.lower_optional_chain(receiver, body, &span)
             }
-            Expr::ChainValue => self
-                .chain_values
-                .last()
-                .map(|value| (value.kind.clone(), value.ty.clone()))
-                .unwrap_or_else(|| {
-                    self.unsupported_postfix_try(&span, "optional payload outside its chain")
-                }),
+            Expr::ChainValue => match self.chain_values.last() {
+                Some(value) => (value.kind.clone(), value.ty.clone()),
+                None => self.unsupported_postfix_try(&span, "optional payload outside its chain"),
+            },
             Expr::Coalesce { left, right } => self.lower_local_recovery(left, right, None, &span),
             Expr::Handle {
                 operand,

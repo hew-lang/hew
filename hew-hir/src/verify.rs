@@ -74,45 +74,48 @@ struct Verifier {
 }
 
 impl Verifier {
+    fn function(&mut self, func: &crate::node::HirFn) {
+        if func.failure_domain != hew_types::CallableFailureDomain::HewFault {
+            self.diagnostics.push(self.diagnostic(
+                HirDiagnosticKind::CheckerBoundaryViolation {
+                    name: "callable failure domain".into(),
+                    reason: "declaration disagrees with its failure ABI".into(),
+                },
+                func.span.clone(),
+                "callable failure domain must agree with the checked declaration",
+            ));
+        }
+        self.node(func.node, func.span.clone());
+        if let Some(receiver) = func.var_self_receiver {
+            let valid = !func.is_generator
+                && func.params.first().is_some_and(|param| {
+                    param.id == receiver
+                        && param.mutable
+                        && matches!(&func.return_ty, ResolvedTy::Tuple(fields)
+                        if matches!(fields.as_slice(), [_, returned] if *returned == param.ty))
+                });
+            if !valid {
+                self.diagnostics.push(self.diagnostic(
+                    HirDiagnosticKind::CheckerBoundaryViolation {
+                        name: "var self receiver".to_string(),
+                        reason: "marker must name the mutable first parameter returned as Self".to_string(),
+                    },
+                    func.span.clone(),
+                    "var self transfer requires one exact receiver binding and (result, Self) return type",
+                ));
+            }
+        }
+        for param in &func.params {
+            self.binding(param.id, param.span.clone());
+        }
+        self.block(&func.body);
+    }
+
     fn module(&mut self, module: &HirModule) {
         for item in &module.items {
             self.current_source_module = Self::item_source_module(module, item);
             match item {
-                HirItem::Function(func) => {
-                    if Some(func.failure_domain) != Some(hew_types::CallableFailureDomain::HewFault)
-                    {
-                        self.diagnostics.push(self.diagnostic(
-                            HirDiagnosticKind::CheckerBoundaryViolation {
-                                name: "callable failure domain".into(),
-                                reason: "declaration disagrees with its failure ABI".into(),
-                            },
-                            func.span.clone(),
-                            "callable failure domain must agree with the checked declaration",
-                        ));
-                    }
-                    self.node(func.node, func.span.clone());
-                    if let Some(receiver) = func.var_self_receiver {
-                        let valid = !func.is_generator && func.params.first().is_some_and(|param| {
-                            param.id == receiver && param.mutable
-                                && matches!(&func.return_ty, ResolvedTy::Tuple(fields)
-                                    if matches!(fields.as_slice(), [_, returned] if *returned == param.ty))
-                        });
-                        if !valid {
-                            self.diagnostics.push(self.diagnostic(
-                                HirDiagnosticKind::CheckerBoundaryViolation {
-                                    name: "var self receiver".to_string(),
-                                    reason: "marker must name the mutable first parameter returned as Self".to_string(),
-                                },
-                                func.span.clone(),
-                                "var self transfer requires one exact receiver binding and (result, Self) return type",
-                            ));
-                        }
-                    }
-                    for param in &func.params {
-                        self.binding(param.id, param.span.clone());
-                    }
-                    self.block(&func.body);
-                }
+                HirItem::Function(func) => self.function(func),
                 HirItem::TypeDecl(decl) => {
                     // Type declarations contribute only their HirNodeId
                     // uniqueness to the verifier — they carry no bindings,

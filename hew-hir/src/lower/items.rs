@@ -838,6 +838,10 @@ impl LowerCtx {
     /// The combined `type_params` is `impl_type_params ++ method.type_params`,
     /// matching how `Wrapper<U>::show` is logically `fn show<U>(w: Wrapper<U>) -> ...`
     /// once the impl-level binder is flattened into the method.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "constructs ordinary and generator functions with shared checked declaration and ABI facts"
+    )]
     pub(super) fn lower_fn_with_name_and_impl_params(
         &mut self,
         func: &FnDecl,

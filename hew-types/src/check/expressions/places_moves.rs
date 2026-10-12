@@ -831,7 +831,8 @@ impl Checker {
             .params
             .iter()
             .filter_map(|p| {
-                let ty = self.resolve_type_expr(&p.ty);
+                let binding = self.env.lookup_ref(p.name)?;
+                let ty = self.subst.resolve(&binding.ty);
                 if matches!(
                     ty,
                     Ty::Named {

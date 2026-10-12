@@ -3071,12 +3071,13 @@ impl Checker {
 impl Checker {
     fn resolve_param_binding_ty(&mut self, index: usize, param: &Param) -> (Ty, bool) {
         let is_receiver = index == 0 && param.is_receiver;
+        let ty = self.resolve_type_expr(&param.ty);
         if is_receiver {
             if let Some((_, self_ty)) = &self.current_self_type {
                 return (self_ty.clone(), true);
             }
         }
-        (self.resolve_type_expr(&param.ty), is_receiver)
+        (ty, is_receiver)
     }
 }
 

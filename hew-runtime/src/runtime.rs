@@ -78,6 +78,7 @@ pub(crate) struct RuntimeInner {
     /// failed). Was the `SHUTDOWN_PHASE` global. `PHASE_RUNNING == 0`, so a
     /// freshly-constructed runtime starts running.
     pub(crate) shutdown_phase: AtomicI32,
+    pub(crate) shutdown_control: crate::shutdown::ShutdownControl,
     /// External work admitted before explicit shutdown, including publication
     /// that has not yet reached an actor mailbox or scheduler queue.
     pub(crate) shutdown_ingress: crate::shutdown::ExternalIngress,
@@ -136,6 +137,7 @@ impl RuntimeInner {
             local_handles: LocalHandles::new(),
             registry: ShardedRegistry::new(),
             shutdown_phase: AtomicI32::new(crate::shutdown::PHASE_RUNNING),
+            shutdown_control: crate::shutdown::ShutdownControl::default(),
             shutdown_ingress: crate::shutdown::ExternalIngress::default(),
             supervisor_roots: PoisonSafe::new(Vec::new()),
             node: NodeSlot::new(),
@@ -595,8 +597,12 @@ pub(crate) fn install_default(inner: Box<RuntimeInner>) -> bool {
 /// `hew_runtime_cleanup` perform the scheduler-frees-last drop order. Returns
 /// `None` when no runtime was installed.
 pub(crate) fn take_default() -> Option<Box<RuntimeInner>> {
-    #[cfg(not(target_arch = "wasm32"))]
     crate::shutdown_signal::disarm_runtime_handlers();
+    if !crate::shutdown::finish_for_cleanup() {
+        crate::set_last_error("runtime cleanup: shutdown work remains active");
+        return None;
+    }
+    let _initiation = crate::shutdown::initiation_guard();
     let ptr = DEFAULT_RUNTIME.swap(std::ptr::null_mut(), Ordering::AcqRel);
     if ptr.is_null() {
         None

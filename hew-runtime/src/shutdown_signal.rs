@@ -30,7 +30,6 @@ static SUBSCRIBERS: Mutex<Vec<Arc<ChannelCore>>> = Mutex::new(Vec::new());
 static SUBSCRIBED: AtomicUsize = AtomicUsize::new(0);
 /// The actor runtime has started and owns the default reaction.
 static RUNTIME_HANDLES: AtomicBool = AtomicBool::new(false);
-static RUNTIME_DISPATCH: Mutex<()> = Mutex::new(());
 static INSTALL: Once = Once::new();
 
 /// Install the handlers and make the actor runtime the default reaction: a
@@ -40,26 +39,22 @@ pub fn install_runtime_handlers() -> Result<(), String> {
     install();
     #[cfg(unix)]
     unix::ensure_dispatcher()?;
-    let _dispatch = RUNTIME_DISPATCH.lock_or_recover();
     RUNTIME_HANDLES.store(true, Ordering::Release);
     Ok(())
 }
 
 /// A signal with no subscriber to receive it.
 fn request_runtime_shutdown() -> bool {
-    let _dispatch = RUNTIME_DISPATCH.lock_or_recover();
     if RUNTIME_HANDLES.load(Ordering::Acquire) {
-        crate::shutdown::hew_shutdown_initiate(0);
+        crate::shutdown::request_from_signal();
         true
     } else {
         false
     }
 }
 
-/// Withdraw signal access and wait for any current shutdown request before
-/// the default runtime is detached and freed.
+/// Withdraw signal admission before shutdown work is joined and swept.
 pub(crate) fn disarm_runtime_handlers() {
-    let _dispatch = RUNTIME_DISPATCH.lock_or_recover();
     RUNTIME_HANDLES.store(false, Ordering::Release);
 }
 

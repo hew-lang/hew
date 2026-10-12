@@ -831,6 +831,11 @@ fn finalize_scheduler_shutdown(sched: &Scheduler) {
 /// bounded join deadline, the installed runtime retains its handle until process
 /// exit rather than freeing memory that worker may still access.
 fn teardown_after_spawn_failure(handles: Vec<Option<JoinHandle<()>>>) {
+    crate::shutdown_signal::disarm_runtime_handlers();
+    if !crate::shutdown::finish_for_cleanup() {
+        eprintln!("hew: shutdown work remains active after scheduler initialization failed");
+        std::process::exit(1);
+    }
     let Some(sched) = get_scheduler() else {
         eprintln!(
             "hew: scheduler spawn-failure teardown lost the installed runtime; \
@@ -956,6 +961,11 @@ pub(crate) fn actor_progress_available() -> bool {
 /// shutdown. It is a no-op if the scheduler was never initialized.
 #[no_mangle]
 pub extern "C" fn hew_runtime_cleanup() {
+    crate::shutdown_signal::disarm_runtime_handlers();
+    if !crate::shutdown::finish_for_cleanup() {
+        set_last_error("runtime cleanup: shutdown work remains active");
+        return;
+    }
     let Some(sched) = get_scheduler() else {
         return;
     };

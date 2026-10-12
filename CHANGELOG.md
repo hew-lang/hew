@@ -2,6 +2,23 @@
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-10-12
+
+- Compile native programs through ownership SIR and physical MIR, including
+  explicit suspension states and cleanup.
+- Compose generic associated results, mutable trait objects, aggregate
+  ordering, optional chaining and double-ended iterators.
+- Add task-producing race, typed failure propagation and failure-only defer.
+- Make scheduling event driven and suspend native TLS and process capture.
+- Complete authenticated distributed send ownership and runtime safety fixes.
+- Add typed properties and shrinking, benchmark comparisons, shared source
+  coverage and five-format native/sandbox codecs.
+- Align compiler tooling, editor grammars, package-root imports and registry
+  identities, and reduce checker-backed migration memory use.
+
+See the [release notes](docs/releases/v0.6.0.md) and
+[migration guide](docs/migrations/v0.6.0.md).
+
 ### v0.6.0-rc8
 
 - Lower native suspension from physical MIR and reuse sequential child storage.

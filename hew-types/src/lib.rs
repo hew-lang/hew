@@ -12,6 +12,7 @@ pub mod builtin_type;
 pub mod check;
 pub mod compile_time;
 pub mod cycle;
+pub mod data_plan;
 pub mod data_shape;
 pub mod def_table;
 pub mod dump;

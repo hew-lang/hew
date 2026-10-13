@@ -485,6 +485,15 @@ else needs `impl Display for {rendered}`)"
         None
     }
 
+    pub(in crate::check) fn type_decl_has_bare_variants(&self, id: crate::NominalId) -> bool {
+        matches!(
+            self.defs.kind(id.declaration()),
+            crate::DeclarationKind::Type
+                | crate::DeclarationKind::Machine
+                | crate::DeclarationKind::MachineEventType
+        )
+    }
+
     /// Look up an identifier as a unit enum variant or qualified variant name.
     #[allow(
         clippy::too_many_lines,
@@ -507,7 +516,7 @@ else needs `impl Display for {rendered}`)"
         let mut found = None;
         // Pass 1: user-declared types.
         for (id, td) in &self.type_defs {
-            if crate::actor_protocol::is_interceptor_member(&self.defs, id.declaration()) {
+            if !self.type_decl_has_bare_variants(*id) {
                 continue;
             }
             let type_name = self.defs.path(id.declaration());
@@ -528,7 +537,7 @@ else needs `impl Display for {rendered}`)"
         // Pass 2: builtin/imported types (only when no user type matched).
         if found.is_none() {
             for (id, td) in &self.type_defs {
-                if crate::actor_protocol::is_interceptor_member(&self.defs, id.declaration()) {
+                if !self.type_decl_has_bare_variants(*id) {
                     continue;
                 }
                 let type_name = self.defs.path(id.declaration());

@@ -11,6 +11,7 @@ use std::process::Output;
 use support::{describe_output, repo_root};
 
 const SOURCE: &str = r#"import std.sort;
+import std.math;
 
 fn check_ints() -> i64 {
     var reverse: Vec<i64> = Vec.new();
@@ -116,6 +117,50 @@ fn check_strings() -> i64 {
     0
 }
 
+fn check_floats() -> i64 {
+    let empty: Vec<f64> = Vec.new();
+    if sort.sort_floats(empty).len() != 0 { return 40; }
+
+    // IEEE total order: negative quiet/signalling NaNs, negative infinity,
+    // finite values and signed zeros, positive infinity, signalling/quiet NaNs.
+    let sign = (-0.0).to_bits();
+    var expected: Vec<u64> = Vec.new();
+    expected.push(sign | 0x7ff8_0000_0000_0002);
+    expected.push(sign | 0x7ff8_0000_0000_0001);
+    expected.push(sign | 0x7ff0_0000_0000_0002);
+    expected.push(sign | 0x7ff0_0000_0000_0001);
+    expected.push(sign | 0x7ff0_0000_0000_0000);
+    expected.push((-1.0).to_bits());
+    expected.push(sign | 1);
+    expected.push(sign);
+    expected.push(0);
+    expected.push(1);
+    expected.push((1.0).to_bits());
+    expected.push(0x7ff0_0000_0000_0000);
+    expected.push(0x7ff0_0000_0000_0001);
+    expected.push(0x7ff0_0000_0000_0002);
+    expected.push(0x7ff8_0000_0000_0001);
+    expected.push(0x7ff8_0000_0000_0002);
+
+    var single: Vec<f64> = Vec.new();
+    single.push(math.from_bits(expected[0]));
+    let single_out = sort.sort_floats(single);
+    if single_out.len() != 1 || single_out[0].to_bits() != expected[0] { return 41; }
+    if single[0].to_bits() != expected[0] { return 42; }
+
+    var input: Vec<f64> = Vec.new();
+    for i in 0 .. expected.len() {
+        input.push(math.from_bits(expected[(i * 7 + 5) % expected.len()]));
+    }
+    let output = sort.sort_floats(input);
+    if output.len() != expected.len() { return 43; }
+    for i in 0 .. expected.len() {
+        if output[i].to_bits() != expected[i] { return 44; }
+        if input[i].to_bits() != expected[(i * 7 + 5) % expected.len()] { return 45; }
+    }
+    0
+}
+
 fn main() {
     let int_status = check_ints();
     if int_status != 0 {
@@ -123,7 +168,11 @@ fn main() {
         return;
     }
     let string_status = check_strings();
-    println(f"sort-authority={string_status}");
+    if string_status != 0 {
+        println(f"sort-authority={string_status}");
+        return;
+    }
+    println(f"sort-authority={check_floats()}");
 }
 "#;
 

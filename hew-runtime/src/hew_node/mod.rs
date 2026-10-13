@@ -28,6 +28,7 @@ use crate::transport::{self, HewTransport, HewTransportOps};
 mod api;
 mod dist_probes;
 mod inbound;
+mod inbound_call;
 mod monitor_link;
 mod remote_call;
 #[cfg(test)]
@@ -35,7 +36,8 @@ mod tests;
 
 pub use self::api::*;
 pub use self::dist_probes::*;
-pub(crate) use self::inbound::*;
+use self::inbound::*;
+pub(crate) use self::inbound_call::InboundAsks;
 pub use self::monitor_link::*;
 pub use self::remote_call::*;
 
@@ -866,12 +868,18 @@ fn ask_error_from_code(code: i32) -> Option<AskError> {
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum AskRejectionReasonCode {
+    EncodeFailed = AskError::EncodeFailed as u8,
+    SendFailed = AskError::SendFailed as u8,
+    PayloadSizeMismatch = AskError::PayloadSizeMismatch as u8,
     WorkerAtCapacity = AskError::WorkerAtCapacity as u8,
     ActorStopped = AskError::ActorStopped as u8,
     MailboxFull = AskError::MailboxFull as u8,
     OrphanedAsk = AskError::OrphanedAsk as u8,
     NoRunnableWork = AskError::NoRunnableWork as u8,
     DecodeFailure = AskError::DecodeFailure as u8,
+    LocalShutdown = AskError::LocalShutdown as u8,
+    HandlerTrapped = AskError::HandlerTrapped as u8,
+    Refused = AskError::Refused as u8,
 }
 
 /// Errors returned by [`AskRejectionReasonCode::decode`].
@@ -885,12 +893,18 @@ enum AskRejectionDecodeError {
 impl AskRejectionReasonCode {
     fn encode(reason: AskError) -> Option<u8> {
         let code = match reason {
+            AskError::EncodeFailed => Self::EncodeFailed,
+            AskError::SendFailed => Self::SendFailed,
+            AskError::PayloadSizeMismatch => Self::PayloadSizeMismatch,
             AskError::WorkerAtCapacity => Self::WorkerAtCapacity,
             AskError::ActorStopped => Self::ActorStopped,
             AskError::MailboxFull => Self::MailboxFull,
             AskError::OrphanedAsk => Self::OrphanedAsk,
             AskError::NoRunnableWork => Self::NoRunnableWork,
             AskError::DecodeFailure => Self::DecodeFailure,
+            AskError::LocalShutdown => Self::LocalShutdown,
+            AskError::HandlerTrapped => Self::HandlerTrapped,
+            AskError::Refused => Self::Refused,
             _ => return None,
         };
         Some(code as u8)
@@ -899,12 +913,18 @@ impl AskRejectionReasonCode {
     fn decode(reason_payload: &[u8]) -> Result<AskError, AskRejectionDecodeError> {
         match reason_payload.first().copied() {
             None => Ok(AskError::WorkerAtCapacity), // empty payload: legacy peer
+            Some(x) if x == Self::EncodeFailed as u8 => Ok(AskError::EncodeFailed),
+            Some(x) if x == Self::SendFailed as u8 => Ok(AskError::SendFailed),
+            Some(x) if x == Self::PayloadSizeMismatch as u8 => Ok(AskError::PayloadSizeMismatch),
             Some(x) if x == Self::WorkerAtCapacity as u8 => Ok(AskError::WorkerAtCapacity),
             Some(x) if x == Self::ActorStopped as u8 => Ok(AskError::ActorStopped),
             Some(x) if x == Self::MailboxFull as u8 => Ok(AskError::MailboxFull),
             Some(x) if x == Self::OrphanedAsk as u8 => Ok(AskError::OrphanedAsk),
             Some(x) if x == Self::NoRunnableWork as u8 => Ok(AskError::NoRunnableWork),
             Some(x) if x == Self::DecodeFailure as u8 => Ok(AskError::DecodeFailure),
+            Some(x) if x == Self::LocalShutdown as u8 => Ok(AskError::LocalShutdown),
+            Some(x) if x == Self::HandlerTrapped as u8 => Ok(AskError::HandlerTrapped),
+            Some(x) if x == Self::Refused as u8 => Ok(AskError::Refused),
             Some(code) => Err(AskRejectionDecodeError::UnknownAskRejectionReason { code }),
         }
     }
@@ -1617,34 +1637,8 @@ pub unsafe extern "C" fn hew_node_stop(node: *mut HewNode) -> c_int {
             rt.monitors.drain_remote_observations_for_shutdown();
         }
 
-        // ── Phase 1: close the inbound-ask spawn gate, then DRAIN in-flight
-        // reply sends BEFORE the CURRENT_NODE teardown barrier ───────────────
-        //
-        // `hew_connmgr_close_inbound_spawn` flips a flag that
-        // `node_inbound_router` checks before spawning: no NEW inbound-ask
-        // worker starts once it is set. Workers ALREADY past that gate are
-        // mid-`handle_inbound_ask` — they have computed (or are computing) a
-        // reply and are about to write it to the wire in `send_reply_envelope`.
-        //
-        // We drain those existing workers to zero HERE — while `CURRENT_NODE`
-        // still points at this node and `reconnect_shutdown` is still false —
-        // so their already-earned replies flush to the asking node instead of
-        // being abandoned. The drain MUST run before the barrier below, which
-        // sets `mark_stopping` (→ `reconnect_shutdown`) and zeroes
-        // `CURRENT_NODE`; either of those makes `send_reply_envelope` bail.
-        //
-        // Previously the barrier ran first, so a worker that reached
-        // `send_reply_envelope` after it saw `CURRENT_NODE == 0` (or the
-        // shutdown flag) and silently dropped its computed reply, surfacing a
-        // spurious `ConnectionDropped` to the caller as the connection then
-        // closed under the in-flight ask.
-        //
-        // Draining before the barrier is safe: the spawn gate guarantees the
-        // counter only decreases, so the wait terminates; and `conn_mgr` is not
-        // freed until well below. The 5-second ceiling bounds a misbehaving
-        // dispatch — a worker still in flight after the ceiling hits the
-        // `CURRENT_NODE == 0` / `reconnect_shutdown` guard below and bails
-        // (fail-closed), exactly as before.
+        // Close admission before draining completed replies. Pending calls retain
+        // their observations until completion or the existing drain ceiling.
         let inbound_active_arc = if node.conn_mgr.is_null() {
             None
         } else {
@@ -1653,19 +1647,17 @@ pub unsafe extern "C" fn hew_node_stop(node: *mut HewNode) -> c_int {
             // SAFETY: conn_mgr is valid here and remains live until after the drain.
             unsafe { connection::hew_connmgr_inbound_ask_active(node.conn_mgr) }
         };
-        drain_inbound_ask_workers(inbound_active_arc.as_ref());
+        drain_inbound_requests(inbound_active_arc.as_ref());
+        if !node.conn_mgr.is_null() {
+            // SAFETY: the node still owns its manager. Admission is closed, and
+            // cancellation drops pending request/reply owners without a worker.
+            unsafe { (*node.conn_mgr).inbound_asks.cancel_all() };
+        }
 
         {
-            // Setting CURRENT_NODE to zero acts as a lifetime barrier for any
-            // ask-handler thread that slipped past the drain ceiling above.
-            // Those threads acquire the CURRENT_NODE read lock in
-            // `send_reply_envelope` and bail out immediately if the value is 0.
-            // The write lock here blocks until every concurrent read-lock-holder
-            // (i.e. every in-flight reply send) has completed, so `conn_mgr`
-            // cannot be freed while any such thread is still running for the
-            // current node. `mark_stopping` (→ `reconnect_shutdown`) is set here
-            // too, completing the teardown signal for reconnect workers and the
-            // straggler bail.
+            // A router still preparing a rejection may outlive the drain
+            // ceiling. This barrier finishes publication before freeing its
+            // manager; later replies observe shutdown without dereferencing it.
             with_current_node(|guard| {
                 if !node.conn_mgr.is_null() {
                     // SAFETY: node owns this connection manager until teardown completes.
@@ -2095,52 +2087,32 @@ impl InboundRequest {
         Some(status)
     }
 
-    /// Complete an ask against the local actor and encode its reply. The
-    /// reply's fields are released once encoded.
-    fn ask(
+    /// Start an owned request through the same non-blocking admission as local calls.
+    fn ask_start(
         self,
-        actor_id: u64,
+        token: crate::lifetime::local_handles::HewLocalPidId,
         msg_type: i32,
         reply: crate::xnode_serial::ThunkPair,
         caller: crate::actor_caller::HewCallerStamp,
-    ) -> Result<Vec<u8>, AskError> {
-        let Some((_runtime, token)) = Self::target(actor_id) else {
-            return Err(AskError::ActorStopped);
-        };
-        let (readiness, waker) = crate::wake::blocking::Readiness::new();
+        waker: &crate::wake::HewWaker,
+    ) -> *mut crate::actor_call_native::HewActorCall {
         let (wrapper, size, drop) = (self.wrapper, self.size, self.drop);
         std::mem::forget(self);
-        // SAFETY: the operation owns the wrapper and its fields on every
-        // outcome, and the waker descriptor is live for the call.
-        let operation = unsafe {
+        // SAFETY: the operation owns the fields on every outcome and retains the waker.
+        unsafe {
             crate::actor_call_native::actor_call_new(
-                token,
-                msg_type,
-                wrapper,
-                size,
-                drop,
-                reply.size,
-                reply.drop,
-                waker.descriptor(),
-                0,
-                0,
-                // A full mailbox refuses the request rather than parking this
-                // worker, and the peer learns `MailboxFull`.
-                1,
-                None,
-                None,
-                caller,
+                token, msg_type, wrapper, size, drop, reply.size, reply.drop, waker, 0, 0, 1, None,
+                None, caller,
             )
-        };
-        // SAFETY: this thread exclusively drives the live operation.
-        let status = loop {
-            // SAFETY: this thread exclusively drives the live operation.
-            let status = unsafe { crate::actor_call_native::hew_actor_call_poll(operation) };
-            if status != -1 {
-                break status;
-            }
-            readiness.wait();
-        };
+        }
+    }
+
+    /// Take and encode a ready reply, consuming the operation and its owned fields.
+    unsafe fn ask_take(
+        operation: *mut crate::actor_call_native::HewActorCall,
+        reply: crate::xnode_serial::ThunkPair,
+        status: i32,
+    ) -> Result<Vec<u8>, AskError> {
         let mut value = vec![0_u8; reply.size];
         let mut rejected = ptr::null_mut();
         let status = if status < 0 {

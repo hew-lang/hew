@@ -299,6 +299,14 @@ connection MUST be rejected.
 creates a request identifier, sends the typed request, suspends the caller, and
 resumes with the completion-call `Result` and its `ActorError` envelope.
 
+Inbound asks use the actor-call readiness protocol without retaining an OS
+thread while waiting. A node admits at most 64 pending inbound asks for one
+exact actor incarnation; saturation returns `WorkerAtCapacity` without
+dispatching the request. Another destination retains its own capacity. A
+declared mailbox bound still refuses full-mailbox admission independently.
+Node shutdown drains completed replies, then cancels remaining observations
+after its bounded drain period and releases their request/reply ownership.
+
 Pending asks are owned by one reply table. Connection loss, SWIM death, local
 shutdown, cancellation, timeout, version mismatch, stale identity, and explicit
 peer rejection resolve through that authority. A terminal resolution removes

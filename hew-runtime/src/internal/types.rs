@@ -418,7 +418,7 @@ pub enum AskError {
     ConnectionDropped = 6,
     /// The reply payload size did not match the expected reply type size.
     PayloadSizeMismatch = 7,
-    /// The remote node's inbound ask worker pool is at capacity.
+    /// The remote destination's pending inbound asks are at capacity.
     ///
     /// The actor was never dispatched. The ask may be retried after a
     /// brief back-off. This is distinct from [`ConnectionDropped`]: the
@@ -472,7 +472,7 @@ pub enum AskError {
     Unauthorized = 19,
     /// The remote node's inbound ask pipeline is applying backpressure:
     /// the caller should back off and retry. Distinct from `WorkerAtCapacity`
-    /// (pool exhaustion) — this is a deliberate flow-control signal.
+    /// (destination capacity) — this is a deliberate flow-control signal.
     Backpressure = 20,
     /// The monitor subscription for the ask's reply was lost before the
     /// reply arrived (e.g. the monitor actor was stopped or evicted).

@@ -310,6 +310,7 @@ fn snapshot_connections_json_emits_expected_array() {
         reconnect_shutdown: Arc::new(AtomicBool::new(false)),
         inbound_spawn_closed: Arc::new(AtomicBool::new(false)),
         inbound_ask_active: Arc::new(AtomicUsize::new(0)),
+        inbound_asks: Arc::default(),
         reconnect_workers: PoisonSafe::new(Vec::new()),
         reverse_link_workers: PoisonSafe::new(Vec::new()),
         reader_lifecycle: Arc::new(ReaderLifecycle::default()),

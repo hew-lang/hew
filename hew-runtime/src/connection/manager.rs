@@ -106,6 +106,7 @@ pub(crate) unsafe fn connmgr_new(
         reconnect_shutdown: Arc::new(AtomicBool::new(false)),
         inbound_spawn_closed: Arc::new(AtomicBool::new(false)),
         inbound_ask_active: Arc::new(AtomicUsize::new(0)),
+        inbound_asks: Arc::default(),
         reconnect_workers: PoisonSafe::new(Vec::new()),
         reverse_link_workers: PoisonSafe::new(Vec::new()),
         reader_lifecycle: Arc::new(ReaderLifecycle::default()),
@@ -155,6 +156,8 @@ pub unsafe extern "C" fn hew_connmgr_free(mgr: *mut HewConnMgr) {
         // SAFETY: caller guarantees `mgr` is valid and surrenders ownership.
         let mgr = unsafe { Box::from_raw(mgr) };
         mgr.reconnect_shutdown.store(true, Ordering::Release);
+        mgr.inbound_spawn_closed.store(true, Ordering::SeqCst);
+        mgr.inbound_asks.cancel_all();
         let transport = mgr.transport;
 
         // Keep actors published while closing so a transport slot cannot be
@@ -250,7 +253,7 @@ pub(crate) unsafe fn hew_connmgr_close_inbound_spawn(mgr: *mut HewConnMgr) {
     let mgr_ref = unsafe { &*mgr };
     // SeqCst (not Release): this store is the drain side of the Dekker pairing
     // in `node_inbound_router`. `hew_node_stop` stores the gate here, then loads
-    // the per-manager counter (in `drain_inbound_ask_workers`) under SeqCst; the
+    // the per-manager counter (in `drain_inbound_requests`) under SeqCst; the
     // router increments the counter, then loads this gate under SeqCst. SeqCst on
     // both sides gives a single total order so a router that passes the gate is
     // always visible to the drain — Release/Acquire would let the gate store and
@@ -274,9 +277,9 @@ pub(crate) unsafe fn hew_connmgr_inbound_spawn_closed_flag(
     Some(Arc::clone(&mgr_ref.inbound_spawn_closed))
 }
 
-/// Return a clone of the per-manager inbound-worker active counter.
+/// Return a clone of the per-manager inbound-work active counter.
 ///
-/// Used by inbound ask and reverse-link setup paths to track workers for this
+/// Used by inbound ask and reverse-link setup paths to track owners for this
 /// specific manager, and by `hew_node_stop` to drain them before freeing node
 /// resources.
 ///

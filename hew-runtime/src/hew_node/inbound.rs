@@ -1,4 +1,4 @@
-//! Inbound frame routing, ask handling and the inbound worker bound.
+//! Inbound frame routing and retained ask completion.
 
 use super::{
     submission_delivered, with_current_node_read, AskError, AskRejectionReasonCode, HewNode,
@@ -18,39 +18,11 @@ use std::sync::Arc;
 use std::sync::{Condvar, Mutex};
 use std::thread;
 
-// ---------------------------------------------------------------------------
-// Inbound ask worker bound
-// ---------------------------------------------------------------------------
-
-/// Maximum number of OS threads that may concurrently service inbound remote
-/// asks.  A remote peer cannot exceed this by flooding ask requests, bounding
-/// both OS thread count and virtual-memory usage.
-///
-/// The value is intentionally generous (64) so that legitimate high-fanout
-/// workloads are unaffected while still preventing unbounded growth.
-pub(crate) const INBOUND_ASK_WORKER_LIMIT: usize = 64;
-
-/// Count of currently active inbound ask-handler threads.
-///
-/// Incremented before spawning, decremented by [`InboundAskGuard`] when the
-/// handler thread exits (or panics — the `Drop` impl runs in both cases).
-pub(super) static INBOUND_ASK_ACTIVE: AtomicUsize = AtomicUsize::new(0);
-
-/// RAII guard that decrements [`INBOUND_ASK_ACTIVE`] and the per-manager
-/// active counter exactly once on drop.
-///
-/// Constructed in the spawned ask-handler thread so both counters stay
-/// accurate even under panics or early returns.
+/// One admitted observation in this manager's shutdown drain.
 pub(super) struct InboundAskGuard(pub(super) Arc<AtomicUsize>);
 
 impl Drop for InboundAskGuard {
     fn drop(&mut self) {
-        INBOUND_ASK_ACTIVE.fetch_sub(1, Ordering::AcqRel);
-        // SeqCst (matching the spawn-gate protocol in `node_inbound_router` and
-        // the drain in `drain_inbound_ask_workers`): this decrement is the
-        // signal the Phase-1 drain waits on. A worker only reaches here after
-        // `handle_inbound_ask` has flushed its reply, so when the drain observes
-        // the counter hit zero, every counted worker's reply has been sent.
         self.0.fetch_sub(1, Ordering::SeqCst);
     }
 }
@@ -182,136 +154,36 @@ pub(super) unsafe extern "C" fn node_inbound_router(
     // SAFETY: the reader supplies a NUL-terminated UTF-8 declaration for this call.
     let identity = unsafe { std::ffi::CStr::from_ptr(identity) }
         .to_str()
-        .expect("decoded wire identity")
-        .to_owned();
+        .expect("decoded wire identity");
     let caller = crate::actor_caller::HewCallerStamp::peer(peer);
     if request_id > 0 && source_node_id > 0 {
-        // Inbound remote ask — dispatch locally and send the reply back.
-
-        // ── Backpressure: bounded concurrent inbound ask workers ─────────────
-        //
-        // Reserve an inbound worker before copying the payload. Capacity refusal
-        // is an explicit rejection outcome for every v3 peer.
-        let prev = INBOUND_ASK_ACTIVE.fetch_add(1, Ordering::AcqRel);
-        if prev >= INBOUND_ASK_WORKER_LIMIT {
-            INBOUND_ASK_ACTIVE.fetch_sub(1, Ordering::AcqRel);
-            // SAFETY: the inbound router is only called while `conn_mgr` is live.
-            if let Some(shutdown) = unsafe { connection::hew_connmgr_shutdown_flag(conn_mgr) } {
-                send_rejection_reply(
-                    source_node_id,
-                    request_id,
-                    AskError::WorkerAtCapacity,
-                    conn_mgr,
-                    shutdown.as_ref(),
-                );
-            }
+        // SAFETY: the reader pins its manager and frame throughout this call.
+        let Some(shutdown) = (unsafe { connection::hew_connmgr_shutdown_flag(conn_mgr) }) else {
             return;
-        }
-        // ─────────────────────────────────────────────────────────────────────
-
-        // Deep-copy the payload so we can hand it to a background thread.
+        };
         let payload = if size > 0 && !data.is_null() {
-            // SAFETY: data is valid for `size` bytes (reader_loop contract).
-            unsafe { std::slice::from_raw_parts(data, size) }.to_vec()
+            // SAFETY: the reader lends the complete frame until routing returns.
+            unsafe { std::slice::from_raw_parts(data, size) }
         } else {
-            Vec::new()
+            &[]
         };
-        let conn_mgr_send = SendConnMgr(conn_mgr);
-        // SAFETY: the inbound router is only called while `conn_mgr` is live.
-        let Some(shutdown_started) = (unsafe { connection::hew_connmgr_shutdown_flag(conn_mgr) })
-        else {
-            // Undo the increment we already committed above.
-            INBOUND_ASK_ACTIVE.fetch_sub(1, Ordering::AcqRel);
-            return;
-        };
-        // Acquire the per-manager active counter and the spawn-gate flag. The
-        // counter tracks workers for THIS conn_mgr specifically, so hew_node_stop
-        // drains only its own workers (not another node's in a multi-node test).
-        // SAFETY: conn_mgr is live for the duration of this router call.
-        let Some(per_mgr_active) =
-            (unsafe { connection::hew_connmgr_inbound_ask_active(conn_mgr) })
-        else {
-            INBOUND_ASK_ACTIVE.fetch_sub(1, Ordering::AcqRel);
-            return;
-        };
-        // SAFETY: conn_mgr is live for the duration of this router call.
-        let Some(spawn_gate) =
-            (unsafe { connection::hew_connmgr_inbound_spawn_closed_flag(conn_mgr) })
-        else {
-            per_mgr_active.fetch_sub(1, Ordering::SeqCst);
-            INBOUND_ASK_ACTIVE.fetch_sub(1, Ordering::AcqRel);
-            return;
-        };
-        // ── ATOMIC spawn-gate + counter protocol (close the teardown race) ───
-        //
-        // The spawn-gate check and the counter increment MUST be atomic with
-        // respect to `hew_node_stop`'s Phase-1 drain, or a worker can pass the
-        // gate, then have the drain close the gate and observe a zero counter,
-        // then increment + spawn AFTER the drain finished — reaching Phase 2 and
-        // abandoning its reply (the production reply-abandon race this fix
-        // closes). We make it atomic with the increment-then-recheck (Dekker)
-        // pattern under SeqCst:
-        //
-        //   router: per_mgr_active.fetch_add(1, SeqCst); gate.load(SeqCst)
-        //   drain : gate.store(true, SeqCst);            per_mgr_active.load(SeqCst)
-        //
-        // SeqCst on BOTH sides (not AcqRel — that permits the store/load on the
-        // two distinct atomics to reorder) gives a single total order in which
-        // at least one thread observes the other's store. So either the drain
-        // sees count ≥ 1 and waits for this worker, OR this router sees the gate
-        // closed and bails before spawning. It is impossible for the router to
-        // see the gate open AND the drain to see count 0 — i.e. a worker that
-        // passes this gate is guaranteed visible to a concurrent drain, and a
-        // worker counted-out by the drain cannot spawn.
-        //
-        // Two signals close the window:
-        //   • `inbound_spawn_closed` — set FIRST by `hew_node_stop`, before its
-        //     drain, so already-running `handle_inbound_ask` threads still flush
-        //     their replies while NEW workers are turned away here.
-        //   • `reconnect_shutdown` — set in Phase 2 (`hew_connmgr_mark_stopping`
-        //     / `hew_connmgr_free`); a worker spawned past it would bail inside
-        //     `handle_inbound_ask` with conn_mgr on the verge of being freed.
-        per_mgr_active.fetch_add(1, Ordering::SeqCst);
-        // Test seam: wedge a router in the Dekker window (incremented, gate not
-        // yet re-read) so a test can prove a concurrent drain always observes
-        // this worker. No-op in production (Disabled mode).
-        #[cfg(test)]
-        INBOUND_ROUTER_AFTER_INCREMENT_HOOK.hit();
-        if spawn_gate.load(Ordering::SeqCst) || shutdown_started.load(Ordering::SeqCst) {
-            per_mgr_active.fetch_sub(1, Ordering::SeqCst);
-            INBOUND_ASK_ACTIVE.fetch_sub(1, Ordering::AcqRel);
-            return;
-        }
-        // Construct the guard *before* spawning so both counter decrements are
-        // covered regardless of whether spawn succeeds:
-        //   • spawn succeeds: guard moves into the closure; Drop runs when the
-        //     thread exits or panics.
-        //   • spawn fails (OOM): thread::spawn drops the closure, which calls
-        //     InboundAskGuard::drop and decrements both counters immediately.
-        // Previously the guard was created inside the closure body, leaving a
-        // window where a spawn failure would leak both INBOUND_ASK_ACTIVE and
-        // the per-manager counter.
-        let guard = InboundAskGuard(per_mgr_active);
-        let _ = thread::spawn(move || {
-            let _guard = guard;
-            let _remote_trace_source = crate::tracing::enter_remote_trace_source();
-            handle_inbound_ask(
-                target_actor_id,
-                &identity,
-                &payload,
-                request_id,
-                source_node_id,
-                conn_mgr_send,
-                shutdown_started,
-                caller,
-            );
-        });
+        let _remote_trace_source = crate::tracing::enter_remote_trace_source();
+        handle_inbound_ask(
+            target_actor_id,
+            identity,
+            payload,
+            request_id,
+            source_node_id,
+            SendConnMgr(conn_mgr),
+            shutdown,
+            caller,
+        );
     } else {
         // Fire-and-forget message — reconstruct the value into THIS node's
         // address space before delivering it to the local mailbox.
         let _remote_trace_source = crate::tracing::enter_remote_trace_source();
         // SAFETY: data is valid for `size` bytes (reader_loop contract).
-        unsafe { deliver_inbound_send(target_actor_id, &identity, data, size, caller) };
+        unsafe { deliver_inbound_send(target_actor_id, identity, data, size, caller) };
     }
 }
 
@@ -369,15 +241,14 @@ unsafe fn deliver_inbound_send(
     }
 }
 
-/// Handle an inbound remote ask by performing a local blocking ask and
-/// sending the reply envelope back to the requesting node.
+/// Decode and admit an inbound ask without waiting on a reader or OS thread.
 #[expect(
     clippy::too_many_arguments,
     reason = "keeps authenticated request and caller metadata together at admission"
 )]
 #[expect(
     clippy::needless_pass_by_value,
-    reason = "spawned ask-handler thread must own the shutdown flag clone"
+    reason = "the retained reply operation owns the shutdown flag clone"
 )]
 pub(super) fn handle_inbound_ask(
     target_actor_id: u64,
@@ -389,37 +260,62 @@ pub(super) fn handle_inbound_ask(
     shutdown_started: Arc<AtomicBool>,
     caller: crate::actor_caller::HewCallerStamp,
 ) {
-    // Test seam: wedge a straggler worker at the top of the handler, BEFORE the
-    // reply admission acquires the CURRENT_NODE read lock, so a test can
-    // let a concurrent secondary-node stop free `conn_mgr` while we are parked
-    // here. No-op in production (Disabled mode).
+    // Hold a router before it acquires the manager's publication barrier.
     #[cfg(test)]
     INBOUND_ASK_REPLY_ADMISSION_HOOK.hit();
 
-    // Keep shutdown eligibility under the same barrier as reply publication.
-    // A secondary node can stop while CURRENT_NODE still names another node.
-    let can_reply =
-        with_current_node_read(|guard| *guard != 0 && !shutdown_started.load(Ordering::Acquire));
-
+    // Clone ownership only while the reply barrier still pins the manager.
+    let admission = with_current_node_read(|guard| {
+        if *guard == 0 || conn_mgr.0.is_null() || shutdown_started.load(Ordering::Acquire) {
+            return None;
+        }
+        // SAFETY: the barrier and shutdown flag keep this manager live.
+        let manager = unsafe { &*conn_mgr.0 };
+        Some((
+            Arc::clone(&manager.inbound_asks),
+            Arc::clone(&manager.inbound_ask_active),
+            // SAFETY: the same barrier pins this manager for the flag clone.
+            unsafe { connection::hew_connmgr_inbound_spawn_closed_flag(conn_mgr.0) }?,
+        ))
+    });
+    let Some((pending, active, gate)) = admission else {
+        return;
+    };
+    active.fetch_add(1, Ordering::SeqCst);
+    let guard = InboundAskGuard(active);
+    #[cfg(test)]
+    INBOUND_ROUTER_AFTER_INCREMENT_HOOK.hit();
+    if gate.load(Ordering::SeqCst) || shutdown_started.load(Ordering::SeqCst) {
+        return;
+    }
     let reject = |reason: AskError| {
         #[cfg(test)]
         INBOUND_ASK_ERROR_REPLY_HOOK.hit();
-        if can_reply {
-            send_rejection_reply(
-                source_node_id,
-                request_id,
-                reason,
-                conn_mgr.0,
-                shutdown_started.as_ref(),
-            );
-        }
+        send_rejection_reply(
+            source_node_id,
+            request_id,
+            reason,
+            conn_mgr.0,
+            shutdown_started.as_ref(),
+        );
     };
     // A dead target (never spawned, or already freed) has no dispatch pointer
     // tracked at all: that is an ActorStopped fact (folds to the public
     // `ActorError.Dead`, matching the local ask route, D526), never a decode
     // problem. Only once a live actor's dispatch is resolved does a missing
     // codec registration for `msg_type` become a genuine DecodeFailure.
-    let Some(dispatch) = crate::lifetime::live_actors::dispatch_ptr_by_id(target_actor_id) else {
+    let target = crate::lifetime::live_actors::with_actor_send_by_id(target_actor_id, |actor| {
+        // SAFETY: the send pin keeps the complete actor incarnation live.
+        unsafe {
+            Some((
+                crate::lifetime::live_actors::ActorIncarnation::of(actor),
+                (*actor).local_pid_id,
+                (*actor).dispatch? as *const c_void,
+            ))
+        }
+    })
+    .flatten();
+    let Some((target, token, dispatch)) = target else {
         reject(AskError::ActorStopped);
         return;
     };
@@ -440,22 +336,23 @@ pub(super) fn handle_inbound_ask(
         reject(AskError::DecodeFailure);
         return;
     };
-    let reply_data = match request.ask(target_actor_id, msg_type, reply_codec, caller) {
-        Ok(reply) => reply,
-        Err(reason) => {
-            reject(reason);
-            return;
-        }
-    };
-
-    // Send the reply envelope back to the requesting node.
-    send_reply_envelope(
+    let call = super::inbound_call::PendingCall::new(
+        token,
+        msg_type,
+        request,
+        reply_codec,
+        caller,
         source_node_id,
         request_id,
-        &reply_data,
-        conn_mgr.0,
-        shutdown_started.as_ref(),
+        conn_mgr,
+        Arc::clone(&shutdown_started),
+        guard,
     );
+    if let Err(reason) = pending.admit(target, call, gate.as_ref()) {
+        if reason != AskError::LocalShutdown {
+            reject(reason);
+        }
+    }
 }
 
 /// Send a **rejection** reply envelope back to the source node.
@@ -465,7 +362,7 @@ pub(super) fn handle_inbound_ask(
 /// the receiving node recognises the sentinel and calls
 /// [`fail_remote_reply`] instead of [`complete_remote_reply`], preserving the
 /// remote rejection reason for the originating `hew_node_api_ask` caller.
-fn send_rejection_reply(
+pub(super) fn send_rejection_reply(
     target_node_id: u16,
     request_id: u64,
     reason: AskError,
@@ -617,35 +514,16 @@ pub(super) fn actor_id_to_registry_ptr(actor_id: u64) -> *mut c_void {
     encoded as *mut c_void
 }
 
-/// Wait for this manager's in-flight inbound-ask worker threads to drain to
-/// zero, with a 5-second ceiling.
-///
-/// Each worker spawned by [`node_inbound_router`] increments the per-manager
-/// counter and decrements it (via `InboundAskGuard`) when `handle_inbound_ask`
-/// returns — i.e. after its reply has been written to the wire. Draining the
-/// counter therefore guarantees every already-computed reply has flushed before
-/// the caller proceeds to the `CURRENT_NODE` teardown barrier and frees
-/// `conn_mgr`. The per-manager counter (not the process-global
-/// `INBOUND_ASK_ACTIVE`) is used so stopping one node in a multi-node test does
-/// not wait on another node's workers.
-///
-/// The ceiling bounds a misbehaving actor dispatch; in practice well-behaved
-/// nodes drain in microseconds. A worker still running after the ceiling is
-/// caught by the downstream `CURRENT_NODE == 0` / `reconnect_shutdown` barrier
-/// (it bails without touching the soon-to-be-freed manager).
-pub(super) fn drain_inbound_ask_workers(inbound_active: Option<&Arc<AtomicUsize>>) {
+/// Drain this manager's admitted requests and reverse-link work before teardown.
+/// Pending actor observations are cancelled after the existing five-second ceiling.
+pub(super) fn drain_inbound_requests(inbound_active: Option<&Arc<AtomicUsize>>) {
     const MAX_DRAIN: std::time::Duration = std::time::Duration::from_secs(5);
     const POLL: std::time::Duration = std::time::Duration::from_millis(1);
     let Some(active) = inbound_active else {
         return;
     };
     let deadline = std::time::Instant::now() + MAX_DRAIN;
-    // SeqCst (matching `node_inbound_router`'s gate protocol): the caller stored
-    // `inbound_spawn_closed = true` with SeqCst BEFORE this drain. This SeqCst
-    // load is the drain side of the Dekker pairing — it cannot observe a zero
-    // counter while a router that saw the gate open is still between its
-    // increment and spawning. Once it reads zero, no further worker can spawn
-    // (all routers now see the gate closed and bail), so the count stays zero.
+    // Pair with the router's increment/re-check after shutdown closes admission.
     while active.load(Ordering::SeqCst) > 0 {
         if std::time::Instant::now() >= deadline {
             break;

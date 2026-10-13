@@ -995,6 +995,20 @@ fn remote_ask_round_trip_returns_exact_values() {
     );
 }
 
+#[test]
+fn pending_inbound_asks_preserve_other_services_and_retire_on_shutdown() {
+    let stdout = run_two_process_scenario("inbound_isolation");
+    for expected in [
+        "PASS inbound_isolation healthy-with-64-pending",
+        "PASS inbound_isolation 64-completed-1-refused",
+        "PASS inbound_isolation trapped",
+        "PASS inbound_isolation shutdown-retired-64",
+    ] {
+        assert!(stdout.contains(expected), "{stdout}");
+    }
+    assert!(!stdout.contains("FAIL "), "{stdout}");
+}
+
 /// A `RemotePid` of the client's own actor routes locally beside a live peer:
 /// its send, ask, monitor DOWN and linked crash match what a peer delivers.
 #[test]

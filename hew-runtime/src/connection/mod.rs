@@ -274,30 +274,14 @@ pub struct HewConnMgr {
     /// Global shutdown signal shared with reconnect workers and stop-time
     /// ask-reply teardown guards.
     reconnect_shutdown: Arc<AtomicBool>,
-    /// Spawn gate for inbound workers, distinct from `reconnect_shutdown`.
-    ///
-    /// `hew_node_stop` sets this FIRST — before draining in-flight workers —
-    /// so the drain terminates (no new workers spawn) while already-running
-    /// `handle_inbound_ask` threads still flush their computed replies to the
-    /// wire (those threads bail only on `reconnect_shutdown` / `CURRENT_NODE`,
-    /// which are set AFTER the drain). Separating the gate from the teardown
-    /// guard is what lets a graceful stop deliver in-flight replies instead of
-    /// abandoning them as a spurious `ConnectionDropped`. Reverse-link setup
-    /// workers use the same gate and drain because they also access node state.
-    ///
-    /// This flag and `inbound_ask_active` form a Dekker pair accessed under
-    /// `SeqCst` (see `node_inbound_router` and `drain_inbound_ask_workers`): the
-    /// store here is ordered with the counter load in the drain such that a
-    /// router which passes the gate is always visible to a concurrent drain, so
-    /// no worker can spawn after the drain observed a zero counter.
+    /// Close admission before draining inbound asks and reverse-link setup.
+    /// SeqCst pairs this gate with the active counter's increment/re-check so
+    /// every admitted owner is visible to node shutdown. Reply publication
+    /// remains open until the drain completes and `reconnect_shutdown` is set.
     inbound_spawn_closed: Arc<AtomicBool>,
-    /// Count of inbound ask and reverse-link setup workers active for this manager.
-    ///
-    /// Incremented before each worker's gate re-check (so a concurrent drain
-    /// always sees a spawning worker), then decremented by its RAII guard. Used
-    /// by `hew_node_stop` to drain workers before freeing node resources.
-    /// Accessed under `SeqCst` on the spawn/drain path.
+    /// Admitted inbound asks and reverse-link setup owners for this manager.
     pub(crate) inbound_ask_active: Arc<AtomicUsize>,
+    pub(crate) inbound_asks: Arc<crate::hew_node::InboundAsks>,
     /// Background reconnect worker handles.
     reconnect_workers: PoisonSafe<Vec<JoinHandle<()>>>,
     /// Deferred reverse-link setup workers, joined before manager teardown.

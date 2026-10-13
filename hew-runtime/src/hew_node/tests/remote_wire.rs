@@ -998,67 +998,6 @@ fn two_node_inbound_mailbox_full_reports_mailbox_full() {
 
 #[cfg(feature = "quic")]
 #[test]
-fn two_node_worker_limit_still_reports_worker_at_capacity() {
-    let _guard = crate::runtime_test_guard();
-    let _real_sched;
-    crate::registry::hew_registry_clear();
-
-    let (node1, _node1_port, node2, node2_port) = start_authorized_quic_mesh_pair(319, 320);
-
-    _real_sched = init_real_scheduler();
-
-    crate::pid::hew_pid_set_local_node(320);
-    let actor = spawn_remote_test_actor(noop_dispatch);
-    crate::pid::hew_pid_set_local_node(319);
-    assert!(!actor.is_null(), "actor spawn failed");
-    // SAFETY: actor was just spawned and is valid here.
-    let actor_id = unsafe { (*actor).id };
-    assert_eq!(crate::pid::hew_pid_node(actor_id), 320);
-
-    let connect_addr = CString::new(format!("320@127.0.0.1:{node2_port}")).unwrap();
-    // SAFETY: node1 and connect_addr are valid for this connection attempt.
-    unsafe { connect_with_retry(node1.as_ptr(), &connect_addr) };
-    // SAFETY: both node pointers remain valid until teardown.
-    unsafe { wait_for_handshake(node1.as_ptr(), node2.as_ptr()) };
-
-    let saved = INBOUND_ASK_ACTIVE.swap(INBOUND_ASK_WORKER_LIMIT, Ordering::AcqRel);
-    let target = remote_pid_for_node(&node2, actor_id);
-    // SAFETY: the registered request value is live; the reply is unit.
-    let (_, status) = unsafe {
-        ask_for_test(
-            &raw const target,
-            inbound_test_codec(noop_dispatch, 0),
-            1,
-            TEST_U32_REQUEST.cast_mut(),
-            std::mem::size_of::<u32>(),
-            NO_ASK_DEADLINE_MS,
-            0,
-        )
-    };
-    let err = status;
-    INBOUND_ASK_ACTIVE.store(saved, Ordering::Release);
-
-    assert!(
-        status != AskError::None as i32,
-        "worker-limit rejection must not return the void-success sentinel"
-    );
-    assert_eq!(
-        err,
-        AskError::WorkerAtCapacity as i32,
-        "worker-limit rejection must keep reporting WorkerAtCapacity"
-    );
-
-    // SAFETY: actor and nodes were allocated in this test and remain valid here.
-    unsafe {
-        let _ = crate::actor::hew_actor_free(actor);
-        assert_eq!(hew_node_stop(node1.as_ptr()), 0);
-        assert_eq!(hew_node_stop(node2.as_ptr()), 0);
-    }
-    crate::registry::hew_registry_clear();
-}
-
-#[cfg(feature = "quic")]
-#[test]
 fn two_node_remote_nonvoid_empty_reply_returns_null() {
     let _guard = crate::runtime_test_guard();
     let _real_sched;

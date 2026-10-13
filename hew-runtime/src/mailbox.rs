@@ -2323,6 +2323,10 @@ fn evict_oldest_one_way(mb: &HewMailbox, queue: &mut SlowPathQueue) -> Option<*m
     Some(old)
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "mailbox admission keeps queue publication and envelope ownership together"
+)]
 unsafe fn admit_native_request(
     mb: &HewMailbox,
     msg_type: i32,

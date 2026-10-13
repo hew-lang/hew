@@ -2954,6 +2954,40 @@ pub(super) struct TraitImplArgs {
 }
 
 impl TraitImplArgs {
+    pub(super) fn matches_receiver(&self, receiver: &Ty) -> bool {
+        let parameters = self
+            .params
+            .iter()
+            .copied()
+            .map(|parameter| (parameter, Ty::Var(TypeVar::fresh())))
+            .collect();
+        let pattern = self.target.substitute_type_params_parallel(&parameters);
+        crate::unify::unify_exact(&mut Substitution::new(), &pattern, receiver).is_ok()
+    }
+
+    pub(super) fn overlaps(&self, other: &Self) -> bool {
+        if self.args.len() != other.args.len() {
+            return false;
+        }
+        let fresh = |head: &Self| {
+            let parameters = head
+                .params
+                .iter()
+                .copied()
+                .map(|parameter| (parameter, Ty::Var(TypeVar::fresh())))
+                .collect();
+            std::iter::once(&head.target)
+                .chain(&head.args)
+                .map(|ty| ty.substitute_type_params_parallel(&parameters))
+                .collect::<Vec<_>>()
+        };
+        let mut inference = Substitution::new();
+        fresh(self)
+            .iter()
+            .zip(fresh(other))
+            .all(|(left, right)| crate::unify::unify_exact(&mut inference, left, &right).is_ok())
+    }
+
     pub(super) fn same_head(&self, other: &Self) -> bool {
         if self.params.len() != other.params.len() {
             return false;
@@ -2988,6 +3022,13 @@ pub(super) struct SourceImplDeclaration {
     pub(super) head: TraitImplArgs,
     pub(super) methods: HashMap<Symbol, Span>,
     pub(super) source_module: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct PrimitiveTraitMethod {
+    pub(super) receiver: Ty,
+    pub(super) signature: FnSig,
+    pub(super) origin: SourceImplOrigin,
 }
 
 /// A trait a generic binder is bounded by, resolved once where the bound is
@@ -3643,11 +3684,6 @@ pub struct Checker {
     pub(super) rejected_impl_declarations: HashSet<crate::DefId>,
     /// Bound sites already reported as naming no trait or misapplying one.
     pub(super) reported_unknown_bounds: HashSet<SpanKey>,
-    /// Dedup guard so a rejected overlapping primitive/builtin trait impl emits
-    /// only one `ConflictingTraitImpl` diagnostic even though
-    /// `record_primitive_trait_impl_self_args` runs once per impl method. Keyed
-    /// by (`canonical_constructor`, `trait_name`, `span.start`, `span.end`).
-    pub(super) conflicting_trait_impl_reported: HashSet<(String, crate::DefId, usize, usize)>,
     /// Method names provided by each trait impl block, keyed like
     /// `trait_impls`. This preserves provenance that is lost when impl
     /// methods are flattened onto the type's receiver-method table.
@@ -3666,23 +3702,8 @@ pub struct Checker {
     ///
     /// Outer key: (`canonical_primitive_or_builtin_name`, `trait_name`).
     /// Inner: method name → resolved `FnSig` (receiver already filtered).
-    pub(super) primitive_trait_impls: HashMap<(String, crate::DefId), HashMap<String, FnSig>>,
-    /// The impl's `Self` type arguments for each `impl <Trait> for
-    /// <PrimitiveOrBuiltinGeneric>`, captured at registration so dispatch can
-    /// bind the impl's type parameters from a concrete receiver's type
-    /// arguments before applying the signature.
-    ///
-    /// For `impl<E> Index for Vec<E>` the entry is `[Ty::Named { name: "E" }]`;
-    /// at a `v: Vec<i64>` call site, structurally unifying these stored args
-    /// against the receiver's `[i64]` yields the substitution `E → i64`, so the
-    /// method's `Option<E>` / `Self::Output` return projects to a concrete type
-    /// instead of leaking an unresolved inference var past the checker output
-    /// boundary. Non-generic primitive impls (`impl Display for i64`) store an
-    /// empty vec and are a no-op on dispatch.
-    ///
-    /// Key: (`canonical_primitive_or_builtin_name`, `trait_name`) — same as
-    /// [`Self::primitive_trait_impls`].
-    pub(super) primitive_trait_impl_self_args: HashMap<(String, crate::DefId), Vec<Ty>>,
+    pub(super) primitive_trait_impls:
+        HashMap<(String, crate::DefId), HashMap<String, Vec<PrimitiveTraitMethod>>>,
     /// Maps supervisor name to its partitioned child lists.
     ///
     /// Static children (declared with `child name: Type`) are in `statics`,
@@ -4030,8 +4051,6 @@ pub struct Checker {
     pub(super) local_type_defs: HashSet<String>,
     /// Tracks source-authored type definitions that can shadow builtin names.
     pub(super) source_type_defs: HashSet<String>,
-    /// Tracks which traits are defined locally (in the current compilation unit).
-    pub(super) local_trait_defs: HashSet<String>,
     /// The current impl block's target: its registry spelling and the type
     /// its written target resolves to through `Scope` (`Self`).
     pub(super) current_self_type: Option<(String, Ty)>,
@@ -4113,7 +4132,7 @@ pub struct Checker {
     /// Distinct from `ImplAliasScope.entries`, which is the per-impl scope
     /// stack used for `Self::Bar` lookup during impl-body checking.
     pub(super) impl_assoc_type_bindings:
-        HashMap<(ResolvedTy, crate::DefId, Symbol), ImplAssociatedType>,
+        HashMap<(ResolvedTy, crate::DefId, Symbol), Vec<ImplAssociatedType>>,
     pub(super) associated_schema_parameters: super::AssociatedTypeSchemas,
     /// Whether warnings for WASM-only builds should be emitted.
     pub(super) wasm_target: bool,
@@ -4551,12 +4570,10 @@ impl Checker {
             source_impl_declarations: HashMap::new(),
             rejected_impl_declarations: HashSet::new(),
             reported_unknown_bounds: HashSet::new(),
-            conflicting_trait_impl_reported: HashSet::new(),
             trait_impl_method_names: HashMap::new(),
             trait_impl_method_declaration_ids: HashMap::new(),
             trait_impl_method_binders: HashMap::new(),
             primitive_trait_impls: HashMap::new(),
-            primitive_trait_impl_self_args: HashMap::new(),
             supervisor_children: HashMap::new(),
             supervisor_child_slots: HashMap::new(),
             pool_accessor_sites: HashMap::new(),
@@ -4623,7 +4640,6 @@ impl Checker {
             current_module_idx: 0,
             local_type_defs: HashSet::new(),
             source_type_defs: HashSet::new(),
-            local_trait_defs: HashSet::new(),
             current_self_type: None,
             current_impl_surface_target: None,
             current_actor_type: None,

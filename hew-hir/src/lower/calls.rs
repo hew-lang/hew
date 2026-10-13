@@ -1154,7 +1154,16 @@ impl LowerCtx {
                     )
                 } else if let Some(endpoint) = overload_endpoint {
                     let arg_tys = args.iter().map(|arg| arg.ty.clone()).collect::<Vec<_>>();
-                    if let Some(entry) = stdlib_catalog::resolve_overload(&endpoint, &arg_tys) {
+                    let explicit_display =
+                        matches!(endpoint.as_str(), "println" | "print" | "to_string")
+                            && arg_tys.len() == 1
+                            && self.display_facts.has_explicit_display_impl(&arg_tys[0]);
+                    if explicit_display {
+                        self.try_lower_generic_display_builtin(&endpoint, args, &span)
+                            .expect("explicit Display implementation has one argument")
+                    } else if let Some(entry) =
+                        stdlib_catalog::resolve_overload(&endpoint, &arg_tys)
+                    {
                         let result_ty = entry.return_ty.to_resolved();
                         let callee = self.lower_stdlib_callee(entry, function.1.clone());
                         (

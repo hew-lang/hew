@@ -2827,7 +2827,7 @@ impl<'a> Formatter<'a> {
                         Some(SupervisorStrategy::OneForAll) => self.write("one_for_all"),
                         Some(SupervisorStrategy::RestForOne) => self.write("rest_for_one"),
                         Some(SupervisorStrategy::SimpleOneForOne) => {
-                            self.write("simple_one_for_one")
+                            self.write("simple_one_for_one");
                         }
                         None => {}
                     }

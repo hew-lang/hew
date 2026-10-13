@@ -1,0 +1,9 @@
+import "../protocol/blanket.hew";
+
+import "model.hew";
+
+impl Blanket for Widget {
+    pub fn tag(self) -> i64 {
+        2
+    }
+}

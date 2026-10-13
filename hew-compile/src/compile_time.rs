@@ -6,13 +6,40 @@ use hew_types::compile_time::{InputError, InputFile, InputProvider};
 pub(crate) struct Inputs {
     root: PathBuf,
     documents: super::SourceSet,
+    std_roots: Vec<PathBuf>,
 }
 
 impl Inputs {
-    pub(crate) fn new(root: &str, documents: super::SourceSet) -> Self {
+    pub(crate) fn new(root: &str, documents: super::SourceSet, std_roots: Vec<PathBuf>) -> Self {
+        let std_roots = std_roots
+            .iter()
+            .map(|root| {
+                if !documents.filesystem && !root.is_absolute() {
+                    normalize(&Path::new("/").join(root))
+                } else {
+                    normalize(root)
+                }
+            })
+            .collect();
         Self {
             root: PathBuf::from(root),
             documents,
+            std_roots,
+        }
+    }
+
+    fn source_path(&self, source: &Path) -> PathBuf {
+        let source = if source.is_absolute() {
+            source.to_path_buf()
+        } else if !self.documents.filesystem {
+            Path::new("/").join(source)
+        } else {
+            std::env::current_dir().unwrap_or_default().join(source)
+        };
+        if self.documents.filesystem {
+            super::buffer_identity(&source).unwrap_or(source)
+        } else {
+            normalize(&source)
         }
     }
 }
@@ -40,6 +67,18 @@ impl InputProvider for Inputs {
         &self.root
     }
 
+    fn package_anchor(
+        &self,
+        source: &Path,
+    ) -> Result<hew_types::module_registry::ModuleAnchor, InputError> {
+        super::anchor_for(&self.source_path(source), &self.std_roots, &self.documents).map_err(
+            |cause| InputError {
+                code: "E_PACKAGE_MANIFEST",
+                message: cause.to_string(),
+            },
+        )
+    }
+
     fn include(&self, source: &Path, path: &str) -> Result<InputFile, InputError> {
         let error = |code, message| InputError { code, message };
         let relative = Path::new(path);
@@ -53,13 +92,7 @@ impl InputProvider for Inputs {
                 "include paths must be relative to the source file".into(),
             ));
         }
-        let source = if source.is_absolute() {
-            source.to_path_buf()
-        } else if !self.documents.filesystem {
-            Path::new("/").join(source)
-        } else {
-            std::env::current_dir().unwrap_or_default().join(source)
-        };
+        let source = self.source_path(source);
         let source_dir = source.parent().unwrap_or(Path::new("."));
         let root = source_dir
             .ancestors()

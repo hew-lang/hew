@@ -1284,7 +1284,7 @@ impl Checker {
                     .get(&key)
                     .map_or_else(|| span.clone(), |(s, _)| s.clone());
                 let acc_module_owned = self.current_module.clone();
-                if !visibility::access_allowed(
+                if !self.visibility_access_allowed(
                     decl_module_owned.as_deref(),
                     acc_module_owned.as_deref(),
                     vis,
@@ -2411,7 +2411,7 @@ impl Checker {
                         .get(&resolved_fn_name)
                         .and_then(|(_, m)| m.as_deref());
                     let acc_module = self.current_module.as_deref();
-                    if !visibility::access_allowed(decl_module, acc_module, vis) {
+                    if !self.visibility_access_allowed(decl_module, acc_module, vis) {
                         // Extract just the function name (last segment after '.').
                         let symbol = crate::short_name(&resolved_fn_name);
                         let decl_span = self

@@ -169,10 +169,6 @@ pub(super) static INBOUND_ROUTER_AFTER_INCREMENT_HOOK: std::sync::LazyLock<TestG
 pub(super) static INBOUND_ASK_REPLY_ADMISSION_HOOK: std::sync::LazyLock<TestGate> =
     std::sync::LazyLock::new(TestGate::default);
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "frame delivery carries authenticated identity and reply routing"
-)]
 pub(super) unsafe extern "C" fn node_inbound_router(
     target_actor_id: u64,
     identity: *const std::ffi::c_char,

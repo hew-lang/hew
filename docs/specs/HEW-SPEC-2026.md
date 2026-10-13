@@ -1027,7 +1027,7 @@ to use `type`.
 
 - **Value types** (copy): integers, floats, bool, char, small fixed aggregates.
 - **Owned heap types**: `string`, `bytes`, `Vec<T>`, `HashMap<K,V>`, user-defined types.
-- **Shared immutable types**: `Frozen` values are the conceptual shared-immutable category. The runtime has internal `Arc`/ABI support, but no user-facing `Arc<T>` type is exposed (HEW-FUTURE §2.3).
+- **Shared immutable types**: `Frozen` values are the conceptual shared-immutable category. Internal reference-count selection belongs to the compiler and runtime and preserves value semantics and actor isolation (HEW-FUTURE §2.3).
 - **Actor references**: an actor handle is sendable.
 - **Pipe halves**: `Stream<T>` (readable) and `Sink<T>` (writable) — move-only handles, `Send` when `T` is (§6.4).
 
@@ -1336,7 +1336,6 @@ The compiler automatically determines `Send` and `Frozen` for user-defined types
 | `type S` where all field types are `Frozen` | `Frozen` (recursive over field types) |
 | `type S` where any field type is not `Frozen` | NOT `Frozen`                        |
 | `enum E`                      | All variant payloads are `Frozen`         |
-| `Arc<T>`                      | _Not currently surfaced in Hew source; runtime-only support today_ |
 | `Vec<T>`, `HashMap<K,V>`      | NOT `Frozen` (mutable containers)         |
 
 > **Soundness requirement:** The compiler MUST reject as non-`Send` any type whose `Send` status cannot be determined (e.g., opaque foreign types). Foreign types are non-`Send` by default. The runtime/ABI has internal escape hatches, but there is currently **no surfaced Hew `#[send]` attribute** for user code.
@@ -2110,6 +2109,21 @@ match.
 
 Traits define shared behaviour that types can implement. Hew has built-in marker traits and supports user-defined traits.
 
+An explicit trait impl must belong to the package defining the trait or the
+outer receiver type. A local type argument does not make a foreign receiver
+local: `Vec<Local>` still belongs to the standard library. Package identity is
+the canonical `hew.toml` anchor, independent of module depth or import aliases;
+sources without a manifest share the compilation package. The authenticated
+standard library is a distinct package. Explicit replacements of implicit
+prelude impls retain their existing override behaviour.
+
+Two impl heads for the same trait must not overlap.
+The checker freshens their generic parameters and compares both receiver and
+trait arguments by unification. Bounds do not establish disjointness. Thus
+`impl<T> Render for Wrapped<T>` conflicts with `impl Render for Wrapped<i64>`,
+while `impl Render for Wrapped<i64>` and `impl Render for Wrapped<string>` are
+permitted. Hew has no specialization or declaration-order tie breaker.
+
 **Trait declaration:**
 
 ```hew
@@ -2157,7 +2171,7 @@ impl PointRenderer for Point {
 - `Sync` - Type is safe to share across concurrent actors without synchronisation. Derived structurally from field types; the compiler determines this automatically. A type is `Sync` if all its fields are `Sync`. Value types are always `Sync`; mutable containers (`Vec<T>`, `HashMap<K,V>`) are not.
 
 - `Frozen` - Type is deeply immutable and thus safely shareable. Implies `Send`. `Frozen ⊇ Send` holds by structural coincidence — every type whose fields are all deeply immutable is also send-admissible — not via an explicit impl chain.
-  - Runtime-internal shared immutable handles (the planned `Arc<T>` surface is not yet exposed in Hew source)
+  - Runtime-internal shared immutable handles
   - Types where all fields are `Frozen`
 
 - `Copy` - Type is copied on assignment rather than moved.
@@ -2666,7 +2680,7 @@ fn eval(e: Expr) -> i64 {
 - `indirect` can only be used with `enum` declarations, not `type` declarations
 - Only enums that contain self-referential variants benefit from `indirect`
 
-#### 3.7.5 Reference Counting (Rc and Arc)
+#### 3.7.5 Reference Counting (Rc and Weak)
 
 **`Rc<T>` — single-actor reference counting:**
 
@@ -2736,11 +2750,11 @@ Strong `Rc` cycles leak because Hew does not run a tracing collector. Use weak
 back-edges to break cycles. `Rc.new_cyclic`, dereference/borrow access to an Rc
 payload, and cross-actor transfer are not supported in edition 2026.
 
-> See HEW-FUTURE.md §2.3 for the user-facing `Arc<T>` surface — targeted
-> for v0.7. The runtime contains internal atomic-refcount machinery, but
-> source code has no `Arc<T>` keyword in edition 2026. Cross-actor sharing
-> is via owned messages and actor state; the intended invariant is that
-> only deeply-immutable (`Frozen`) data is shareable.
+The compiler and runtime select internal reference-count implementations for
+ordinary values. Cross-actor transfer preserves isolation and the checked
+`Frozen` restrictions. Concrete sharing depends on implemented lowering;
+additional aggregate sharing is not implied. Explicit `Rc` retains its
+observable within-actor aliasing contract.
 
 **When to use which:**
 | Type | Cross-actor? | Send mechanism | Use case |
@@ -3254,7 +3268,8 @@ impl<T: Send> Send for Vec<T> {}
 impl<T: Frozen> Frozen for Vec<T> {}
 ```
 
-The runtime also has internal `Arc` support, but those `Send`/`Frozen` rules are not yet part of surfaced Hew source syntax.
+Internal atomic reference counts do not introduce another source type or relax
+the checked `Send` and `Frozen` rules.
 
 **Actor boundary enforcement:**
 
@@ -5613,14 +5628,32 @@ stream receive arm (so `None` is a legitimate winning value indicating
 the pipe observed end of data on that call); `p3: C` for the task arm;
 and no binding for `after`.
 
-**Why sealed?**
+**Custom waiting through ordinary functions.**
 
-A user-implementable `Awaitable` trait would have to specify coherence
-rules, cancellation hooks, fairness rules, pinning constraints, and a
-loser-cleanup protocol — all unsettled in edition 2026. The four forms
-above are the workloads `select` exists to serve. A user `Awaitable`
-surface may land in a future edition once trait lowering and generator
-cancellation are proven; see HEW-FUTURE.md.
+A user function can suspend while composing existing operations. Forking that
+function produces a `Task` that participates in `select`, without a poll,
+waker or pinning interface. For example, the existing
+[`select-task-arm-loop-poll` source case](../../tests/core-acceptance/cases/select-task-arm-loop-poll.hew)
+uses this adapter:
+
+```hew
+import std.stream;
+
+fn wait_for(consume rx: stream.Stream<i64>) -> i64 {
+    let value = match rx.recv() {
+        .Some(v) => v,
+        .None => -1,
+    };
+    rx.close();
+    value
+}
+```
+
+The caller starts `let job = fork wait_for(rx)` inside a scope and selects on
+`job`. Its timer arms leave the same task live until the caller releases the
+pipe and receives the result. A losing task arm continues scope-owned work;
+withdrawing a native readiness registration has a different cleanup contract.
+Direct custom `select` registrations remain design-dependent future work.
 
 The source forms and cleanup table are the intended contract. The current
 native actor-call gap is recorded in §2.1.1.
@@ -8198,11 +8231,8 @@ current compiler stages and their responsibilities are described in §8.1.
   ladder: AST → typed HIR → ownership SIR → checked physical MIR → LLVM
   IR via inkwell. The v0.4 Rust-frontend / C++ backend / MessagePack-AST
   pipeline is no longer the design.
-- **Deferred to next edition.** Generators (`Lazy<T>` / `#[prefetch(N)]`),
-  closures with captured
-  environment, user-facing `Arc<T>`, `dyn Trait`, `DoubleEndedIterator`,
-  cancellation tokens and the self-hosting
-  roadmap. See HEW-FUTURE.md for the surface and version targets.
-  Pipes (`std.stream`, §6.4) and the rest of the `Iterator`/`IntoIterator`
-  trait hierarchy shipped in this edition (§2.4, §2.5). Cross-node actor
-  communication is shipped and normative — see §11 and HEW-DIST-SPEC.md.
+- **Further implementation.** HEW-FUTURE.md records pending language,
+  library and tooling work and its version targets. Accepted additions can
+  amend edition 2026 during the 0.6 series; an edition boundary is not a
+  prerequisite. Cross-node actor communication is normative — see §11 and
+  HEW-DIST-SPEC.md.

@@ -81,13 +81,8 @@ impl Checker {
         // `#[lang_item("display")]` declaration has no Display at all, and
         // f-string interpolation accepts only the cases handled above.
         let display = self.lang_trait(crate::LangItem::Display)?;
-        if let Some(canonical) = resolved.canonical_lowering_name() {
-            if self
-                .primitive_trait_impls
-                .contains_key(&(canonical.to_string(), display))
-            {
-                return Some(resolved);
-            }
+        if self.type_implements_trait(&resolved, display) {
+            return Some(resolved);
         }
         // R6: a trait object is Display when Display is in its bounds'
         // supertrait closure; HIR renders it through that layout slot.

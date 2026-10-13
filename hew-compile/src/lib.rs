@@ -308,13 +308,16 @@ impl SourceSet {
     }
 }
 
-/// The canonical path of a buffer. An unsaved buffer has no file to resolve,
-/// but its directory does, so a spelling through a symlinked directory still
-/// names the same buffer.
+/// Resolve the existing prefix of an input, including missing directories.
 fn buffer_identity(path: &Path) -> Option<PathBuf> {
-    path.canonicalize()
-        .ok()
-        .or_else(|| Some(path.parent()?.canonicalize().ok()?.join(path.file_name()?)))
+    for ancestor in path.ancestors() {
+        if let Ok(canonical) = ancestor.canonicalize() {
+            return Some(compile_time::normalize(
+                &canonical.join(path.strip_prefix(ancestor).ok()?),
+            ));
+        }
+    }
+    None
 }
 
 /// The overlay used when a caller supplies no [`FrontendOptions`].
@@ -328,7 +331,7 @@ fn resolve_candidate(documents: &SourceSet, candidate: &Path) -> Option<PathBuf>
     if !documents.filesystem {
         return documents
             .contains(candidate)
-            .then(|| candidate.to_path_buf());
+            .then(|| compile_time::normalize(candidate));
     }
     match candidate.canonicalize() {
         Ok(canonical) => Some(canonical),
@@ -1636,9 +1639,8 @@ fn resolve_imports_internal(
         module_search_paths: options.module_search_paths.as_deref(),
         documents: &options.documents,
     };
-    let input_canonical = input_path
-        .canonicalize()
-        .unwrap_or_else(|_| input_path.to_path_buf());
+    let input_canonical = resolve_candidate(&options.documents, input_path)
+        .unwrap_or_else(|| input_path.to_path_buf());
     let undeclared = undeclared_imports(&input_canonical, &program.items, &import_ctx)?;
     if !undeclared.is_empty() {
         return Err(FrontendFailure::new(
@@ -1893,6 +1895,7 @@ fn typecheck_program_with_dependency_cache(
     checker.set_input_provider(Arc::new(compile_time::Inputs::new(
         input,
         options.documents.clone(),
+        hew_types::module_registry::stdlib_search_paths(),
     )));
     if options.enable_wasm_target {
         checker.enable_wasm_target();
@@ -2626,7 +2629,7 @@ fn build_module_graph_with_diagnostics(
     use hew_parser::module::{Module, ModuleGraph};
 
     let input_canonical =
-        std::fs::canonicalize(source_file).unwrap_or_else(|_| source_file.to_path_buf());
+        resolve_candidate(ctx.documents, source_file).unwrap_or_else(|| source_file.to_path_buf());
     let source_dir = input_canonical.parent().unwrap_or(Path::new("."));
 
     ctx.in_progress_imports.insert(input_canonical.clone());

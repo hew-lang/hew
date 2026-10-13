@@ -366,7 +366,7 @@ impl Checker {
                             .map_or_else(|| span.clone(), |(s, _)| s.clone());
                         let acc_module_owned = self.current_module.clone();
                         let decl_module = decl_module_owned.as_deref();
-                        if !visibility::access_allowed(
+                        if !self.visibility_access_allowed(
                             decl_module,
                             acc_module_owned.as_deref(),
                             vis,

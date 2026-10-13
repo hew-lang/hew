@@ -981,7 +981,6 @@ impl Checker {
                     // Set current_self_type for resolving `Self` in method parameters
                     let prev_self_type = self.current_self_type.take();
                     let self_ty = self.resolve_impl_target(id);
-                    let self_type_args = Self::impl_target_args(&self_ty);
                     self.current_self_type = Some((type_name.clone(), self_ty));
                     if !self.admit_source_impl(id, span, impl_origin) {
                         self.current_self_type = prev_self_type;
@@ -1040,12 +1039,6 @@ impl Checker {
                         if let (Some(canonical), Some(trait_ref)) =
                             (primitive_key.clone(), impl_trait.as_ref())
                         {
-                            self.record_primitive_trait_impl_self_args(
-                                canonical.clone(),
-                                trait_ref.trait_id,
-                                self_type_args.clone(),
-                                &id.target_type.1,
-                            );
                             self.record_primitive_trait_impl_method(
                                 canonical,
                                 trait_ref.trait_id,
@@ -1865,7 +1858,6 @@ impl Checker {
                                                                  // Set current_self_type for resolving `Self` in method parameters
                         let prev_self_type = self.current_self_type.take();
                         let self_ty = self.resolve_impl_target(id);
-                        let self_type_args = Self::impl_target_args(&self_ty);
                         self.current_self_type = Some((type_name.clone(), self_ty));
                         if !self.admit_source_impl(id, span, SourceImplOrigin::Source) {
                             self.current_self_type = prev_self_type;
@@ -1896,12 +1888,6 @@ impl Checker {
                             if let (Some(canonical), Some(trait_ref)) =
                                 (primitive_key.clone(), impl_trait.as_ref())
                             {
-                                self.record_primitive_trait_impl_self_args(
-                                    canonical.clone(),
-                                    trait_ref.trait_id,
-                                    self_type_args.clone(),
-                                    &id.target_type.1,
-                                );
                                 self.record_primitive_trait_impl_method(
                                     canonical,
                                     trait_ref.trait_id,

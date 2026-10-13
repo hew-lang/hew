@@ -3,6 +3,14 @@ use std::path::{Path, PathBuf};
 /// Host-provided compilation inputs; the checker never reads the filesystem.
 pub trait InputProvider: std::fmt::Debug + Send + Sync {
     fn root_source(&self) -> &Path;
+    /// Resolve package membership with the frontend's source-input authority.
+    ///
+    /// # Errors
+    /// Returns an invalid package manifest diagnostic.
+    fn package_anchor(
+        &self,
+        source: &Path,
+    ) -> Result<crate::module_registry::ModuleAnchor, InputError>;
     /// Resolve and read an include relative to its source.
     ///
     /// # Errors

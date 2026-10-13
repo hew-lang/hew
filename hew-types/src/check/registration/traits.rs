@@ -475,9 +475,6 @@ impl Checker {
                 .unwrap_or_default();
             for assoc_name in assoc_names {
                 let binding_key = (key.clone(), trait_id, assoc_name);
-                if self.impl_assoc_type_bindings.contains_key(&binding_key) {
-                    continue;
-                }
                 if let Some(entry) = entries.get(assoc_name.as_str()) {
                     let expr = entry.expr.clone();
                     let resolved = self.resolve_type_expr(&expr);
@@ -487,14 +484,17 @@ impl Checker {
                             &id.target_type.1,
                         );
                         let receiver = self.resolve_type_expr(&id.target_type);
-                        self.impl_assoc_type_bindings.insert(
-                            binding_key,
-                            super::super::types::ImplAssociatedType {
+                        let bindings = self
+                            .impl_assoc_type_bindings
+                            .entry(binding_key)
+                            .or_default();
+                        if !bindings.iter().any(|binding| binding.receiver == receiver) {
+                            bindings.push(super::super::types::ImplAssociatedType {
                                 ty: resolved,
                                 receiver,
                                 parameters,
-                            },
-                        );
+                            });
+                        }
                     }
                 }
             }
@@ -1705,124 +1705,94 @@ impl Checker {
         method_name: String,
         sig: FnSig,
     ) {
-        // First-wins, matching `record_primitive_trait_impl_self_args` and the
-        // assoc-type binding table. Under Hew's coherence rule there is at most
-        // one impl of a trait per constructor, so a second registration is
-        // either the same impl reprocessed across phases or a rejected
-        // conflicting impl (diagnosed at `record_trait_impl`); in neither case
-        // may it overwrite the surviving impl's signature. Keeping every side
-        // table first-wins guarantees the dispatched method signature and the
-        // applicability proof (self-args) always come from the *same* impl, so
-        // they cannot drift.
-        self.primitive_trait_impls
+        let receiver = self
+            .current_impl_target()
+            .expect("registered impl has a receiver");
+        let origin = Self::impl_self_key(&receiver)
+            .and_then(|key| self.source_impl_declarations.get(&(key, Some(trait_id))))
+            .and_then(|rows| {
+                rows.iter().find(|row| {
+                    row.head.target == receiver
+                        && self.defs.module(row.declaration) == self.current_declaration_module()
+                })
+            })
+            .map_or(super::super::types::SourceImplOrigin::Source, |row| {
+                row.origin
+            });
+        let methods = self
+            .primitive_trait_impls
             .entry((canonical_key, trait_id))
             .or_default()
             .entry(method_name)
-            .or_insert(sig);
-    }
-
-    /// Record the impl's `Self` type arguments for an `impl <Trait> for
-    /// <PrimitiveOrBuiltinGeneric>` so a later dispatch on a concrete receiver
-    /// can bind the impl's type parameters (see
-    /// [`Checker::primitive_trait_impl_self_args`]). Idempotent within one impl:
-    /// every method of that impl records the SAME `Self` args, so the first
-    /// recorded entry per `(canonical, trait)` wins.
-    ///
-    /// Coherence enforcement (single-impl-per-constructor): if a *different*
-    /// `Self` shape is already recorded for this `(canonical, trait)`, two
-    /// distinct impls target the same builtin constructor with the same trait —
-    /// e.g. a blanket `impl<T> Acc for Vec<T>` (`self_args = [T]`) and a concrete
-    /// `impl Acc for Vec<i64>` (`self_args = [i64]`). Hew has no specialization
-    /// or overlapping impls (single-crate coherence, mission Q66.b), so the
-    /// second impl is rejected at its declaration site with a clean diagnostic
-    /// and does NOT overwrite the first (first-wins keeps the surviving impl's
-    /// method signatures and this `Self`-arg applicability proof from the SAME
-    /// impl, so they cannot drift).
-    ///
-    /// Source admission rejects distinct same-head impls by their block and
-    /// trait declaration identities before this side table is populated.
-    /// Shape equality here therefore represents re-registration of an admitted
-    /// impl or an explicit override of an implicit prelude impl. This extra
-    /// different-shape restriction remains builtin-specific; user-record
-    /// concrete specialisations do not reach this side table.
-    pub(in crate::check) fn record_primitive_trait_impl_self_args(
-        &mut self,
-        canonical_key: String,
-        trait_id: crate::DefId,
-        self_args: Vec<Ty>,
-        impl_span: &Span,
-    ) {
-        match self
-            .primitive_trait_impl_self_args
-            .get(&(canonical_key.clone(), trait_id))
-        {
-            None => {
-                self.primitive_trait_impl_self_args
-                    .insert((canonical_key, trait_id), self_args);
-            }
-            Some(existing) if existing == &self_args => {
-                // Source admission permits re-registration and prelude
-                // overrides, but rejects distinct same-head source impls.
-            }
-            Some(_) => {
-                // A second, structurally-different impl of the same trait on the
-                // same builtin constructor: an overlapping impl, which Hew does
-                // not permit. Reject it; keep the first-registered impl.
-                let trait_name = self.defs.display(trait_id).to_string();
-                let dedup = (
-                    canonical_key.clone(),
-                    trait_id,
-                    impl_span.start,
-                    impl_span.end,
-                );
-                if self.conflicting_trait_impl_reported.insert(dedup) {
-                    self.report_error(
-                        TypeErrorKind::ConflictingTraitImpl {
-                            trait_name: trait_name.clone(),
-                            type_name: canonical_key.clone(),
-                        },
-                        impl_span,
-                        format!(
-                            "conflicting implementation of trait `{trait_name}` for `{canonical_key}`: \
-                             a trait may be implemented at most once per type constructor \
-                             (Hew has no specialization or overlapping impls)"
-                        ),
-                    );
-                }
-            }
+            .or_default();
+        if !methods.iter().any(|entry| {
+            entry.receiver == receiver
+                && entry.origin == origin
+                && entry
+                    .signature
+                    .impl_method
+                    .as_ref()
+                    .map(|method| method.declaration)
+                    == sig.impl_method.as_ref().map(|method| method.declaration)
+        }) {
+            methods.push(super::super::types::PrimitiveTraitMethod {
+                receiver,
+                signature: sig,
+                origin,
+            });
         }
     }
 
     /// Look up a method on the primitive/builtin-generic impl table.
     ///
-    /// Walks every trait registered for the receiver's canonical kind and
-    /// returns the first method whose name matches.  Returns the resolved
-    /// `FnSig` (receiver already filtered) plus the trait name that
-    /// provided it, so callers can record dispatch metadata keyed on the
-    /// resolved trait rather than re-deriving it from a name string.
+    /// Select one applicable trait, retaining explicit prelude overrides.
     #[must_use]
     pub(in crate::check) fn lookup_primitive_trait_method(
-        &self,
+        &mut self,
         receiver_ty: &Ty,
         method: &str,
-    ) -> Option<(crate::DefId, FnSig)> {
-        let canonical = Self::canonical_primitive_or_builtin_key(receiver_ty)?;
-        let mut candidates: Vec<(crate::DefId, &FnSig)> = self
+    ) -> Result<Option<(crate::DefId, FnSig)>, Vec<(crate::DefId, crate::DefId)>> {
+        let Some(canonical) = Self::canonical_primitive_or_builtin_key(receiver_ty) else {
+            return Ok(None);
+        };
+        let mut candidates: Vec<(crate::DefId, super::super::types::PrimitiveTraitMethod)> = self
             .primitive_trait_impls
             .iter()
             .filter(|((rx_key, _), _)| rx_key == &canonical)
-            .filter_map(|((_, trait_id), methods)| methods.get(method).map(|sig| (*trait_id, sig)))
+            .flat_map(|((_, trait_id), methods)| {
+                methods
+                    .get(method)
+                    .into_iter()
+                    .flatten()
+                    .map(|entry| (*trait_id, entry.clone()))
+            })
             .collect();
-        // A trait declared in the current module shadows an imported one.
-        // Multiple genuinely distinct visible traits can still declare the
-        // same receiver method. Keep selection stable until the language grows
-        // an explicit ambiguity diagnostic for this receiver-form surface.
-        candidates.sort_unstable_by_key(|(trait_id, _)| {
-            (!self.trait_is_local(*trait_id), self.defs.path(*trait_id))
+        candidates.sort_unstable_by_key(|(trait_id, entry)| {
+            (
+                self.defs.path(*trait_id),
+                entry.origin == super::super::types::SourceImplOrigin::Prelude,
+            )
         });
-        candidates
-            .into_iter()
-            .next()
-            .map(|(trait_id, sig)| (trait_id, sig.clone()))
+        let mut matches = Vec::new();
+        for (trait_id, entry) in candidates {
+            if matches.iter().any(|(owner, _)| *owner == trait_id) {
+                continue;
+            }
+            if let Some(sig) = self.instantiate_primitive_trait_method_sig(
+                entry.signature,
+                &entry.receiver,
+                trait_id,
+                receiver_ty,
+            ) {
+                matches.push((trait_id, sig));
+            }
+        }
+        if matches.len() > 1 {
+            return Err(matches
+                .iter()
+                .filter_map(|(owner, _)| self.trait_method_ids_of(*owner, method))
+                .collect());
+        }
+        Ok(matches.pop())
     }
 }

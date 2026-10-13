@@ -1,0 +1,10 @@
+[[case]]
+id = "package-coherence"
+source = "cases/package-coherence/main.hew"
+intent = "Packages may implement owned traits or receivers, and disjoint concrete trait heads dispatch independently."
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "blue\nwidget: blue\nnumbers: 2\nwords: 1\n1\none\ninteger: 42\ntext: hello\nyes\nno\nflag: yes\n"
+exit = 0

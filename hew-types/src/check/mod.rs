@@ -2831,12 +2831,10 @@ impl Checker {
             source_impl_declarations: self.source_impl_declarations.clone(),
             rejected_impl_declarations: self.rejected_impl_declarations.clone(),
             reported_unknown_bounds: self.reported_unknown_bounds.clone(),
-            conflicting_trait_impl_reported: self.conflicting_trait_impl_reported.clone(),
             trait_impl_method_names: self.trait_impl_method_names.clone(),
             trait_impl_method_declaration_ids: self.trait_impl_method_declaration_ids.clone(),
             trait_impl_method_binders: self.trait_impl_method_binders.clone(),
             primitive_trait_impls: self.primitive_trait_impls.clone(),
-            primitive_trait_impl_self_args: self.primitive_trait_impl_self_args.clone(),
             supervisor_children: self.supervisor_children.clone(),
             supervisor_child_slots: self.supervisor_child_slots.clone(),
             pool_accessor_sites: self.pool_accessor_sites.clone(),
@@ -2903,7 +2901,6 @@ impl Checker {
             current_module_idx: self.current_module_idx.clone(),
             local_type_defs: self.local_type_defs.clone(),
             source_type_defs: self.source_type_defs.clone(),
-            local_trait_defs: self.local_trait_defs.clone(),
             current_self_type: self.current_self_type.clone(),
             current_impl_surface_target: self.current_impl_surface_target.clone(),
             current_actor_type: self.current_actor_type.clone(),
@@ -2958,6 +2955,7 @@ impl Checker {
         // registration pass below resolves declaration identity through this
         // table, so it must be complete before any key is minted.
         self.mint_module_identities(program);
+        self.assign_module_packages();
         // Fresh extern authority per compile (rc1-F1 stage B): contracts are
         // minted by the registration passes below; a stale table would leak
         // symbol ownership across `check_program` runs.
@@ -3113,12 +3111,9 @@ impl Checker {
                     // index lets two peers with same-offset expressions
                     // overwrite each other in `expr_types`.
                     self.current_module_idx = span_indices.module_base(mod_id).unwrap_or_default();
-                    // Temporarily scope local_type_defs / local_trait_defs to
-                    // this module so orphan-rule checks see module-local
-                    // definitions and locally_non_generic works correctly.
+                    // Keep type resolution local to this module's declarations.
                     let saved_local_type_defs = std::mem::take(&mut self.local_type_defs);
                     let saved_source_type_defs = std::mem::take(&mut self.source_type_defs);
-                    let saved_local_trait_defs = std::mem::take(&mut self.local_trait_defs);
                     for (item, _) in &module.items {
                         match item {
                             Item::TypeDecl(td) => {
@@ -3126,13 +3121,6 @@ impl Checker {
                                 self.source_type_defs.insert(td.name.to_string());
                             }
                             Item::Machine(md) => {
-                                // Parallel to the TypeDecl arm: seed the machine's
-                                // name so orphan-rule and locally_non_generic checks
-                                // inside the body pass see it as locally-defined.
-                                // Also seed the synthesised `<Name>Event` companion
-                                // type so event-typed parameters and bare event
-                                // ctors in imported machine modules resolve as
-                                // locally-non-generic.
                                 self.local_type_defs.insert(md.name.to_string());
                                 self.source_type_defs.insert(md.name.to_string());
                                 let event_type_name = format!("{}.Event", md.name);
@@ -3140,15 +3128,8 @@ impl Checker {
                                 self.source_type_defs.insert(event_type_name);
                             }
                             Item::Actor(ad) => {
-                                // An actor declares a nominal type; an
-                                // `impl ImportedTrait for ThisActor` is therefore
-                                // local-typed, not an orphan. Seed both sets so the
-                                // orphan rule treats it like any other local type.
                                 self.local_type_defs.insert(ad.name.to_string());
                                 self.source_type_defs.insert(ad.name.to_string());
-                            }
-                            Item::Trait(tr) => {
-                                self.local_trait_defs.insert(tr.name.to_string());
                             }
                             _ => {}
                         }
@@ -3229,7 +3210,6 @@ impl Checker {
 
                     self.local_type_defs = saved_local_type_defs;
                     self.source_type_defs = saved_source_type_defs;
-                    self.local_trait_defs = saved_local_trait_defs;
                 }
             }
             self.current_module = None;

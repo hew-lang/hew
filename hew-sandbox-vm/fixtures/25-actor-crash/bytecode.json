@@ -41,7 +41,7 @@
   ],
   "bytes": [],
   "closures": [],
-  "compiler_version": "hew-wasm-0.6.0",
+  "compiler_version": "hew-wasm-0.6.1",
   "entry": {
     "exit": "unit",
     "function": 0
@@ -492,7 +492,7 @@
               "shape": 2,
               "source": 9,
               "span": null,
-              "variant": 3
+              "variant": 4
             }
           ],
           "params": [
@@ -528,7 +528,7 @@
               "shape": 2,
               "source": 9,
               "span": null,
-              "variant": 3
+              "variant": 4
             },
             {
               "dst": 12,
@@ -916,7 +916,7 @@
       "places": []
     }
   ],
-  "hew_version": "0.6.0",
+  "hew_version": "0.6.1",
   "profile": "sandbox.sandbox-vm-export.v0",
   "regex_patterns": [],
   "resources": [],
@@ -1001,6 +1001,10 @@
         },
         {
           "fields": [],
+          "name": "Refused"
+        },
+        {
+          "fields": [],
           "name": "Trapped"
         },
         {
@@ -1035,16 +1039,17 @@
       "id": 2,
       "name": "ActorError<Never, Never>",
       "runtime_tags": {
-        "ActorErrorConnectionDropped": 8,
-        "ActorErrorDead": 3,
-        "ActorErrorEncodeFailed": 7,
+        "ActorErrorConnectionDropped": 9,
+        "ActorErrorDead": 4,
+        "ActorErrorEncodeFailed": 8,
         "ActorErrorFailed": 1,
-        "ActorErrorNodeNotRunning": 5,
-        "ActorErrorPartition": 9,
+        "ActorErrorNodeNotRunning": 6,
+        "ActorErrorPartition": 10,
+        "ActorErrorRefused": 2,
         "ActorErrorRejected": 0,
-        "ActorErrorRoutingFailed": 6,
-        "ActorErrorTimedOut": 4,
-        "ActorErrorTrapped": 2
+        "ActorErrorRoutingFailed": 7,
+        "ActorErrorTimedOut": 5,
+        "ActorErrorTrapped": 3
       }
     },
     {

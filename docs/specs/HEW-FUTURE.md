@@ -7,8 +7,8 @@ version target.
 
 Status legend:
 
-- **[Target: v0.6]** — planned for the next minor compiler release within
-  edition 2026; additive to existing programs.
+- **[Target: v0.6]** — adopted for the 0.6 compiler series within edition
+  2026; individual sections distinguish implemented and pending work.
 - **[Target: v0.6 / gated on Cluster N]** — planned for v0.6, but depends
   on a specific compiler-internal milestone landing first.
 - **[Target: v0.7+]** — further out, subject to revision.
@@ -18,9 +18,9 @@ Status legend:
   (tooling, release-engineering, ecosystem).
 - **[REJECTED]** — formally considered and not adopted.
 
-Editions reference: a future edition (e.g. `2028`) may *promote* one or
-more sections in this document into normative status. Within edition
-2026, every section below is informative only.
+This document records adoption and implementation status. Accepted surfaces
+can move into the normative edition-2026 specification during the 0.6 series;
+see the promotion policy below.
 
 ---
 
@@ -141,18 +141,16 @@ field that is neither escalation-only nor `@resource`-backed.
 
 ### 1.9 Runtime mechanisms the normative surface already assumes
 
-**[Target: v0.7]**
+**[Target: v0.6 series]**
 
-Four runtime mechanisms are specified as language behaviour in
-HEW-SPEC-2026 and are not in the shipped runtime. They are listed here so
-the spec's promise and the build's behaviour are told apart, not to reopen
-the design:
+These runtime foundations belong to the adopted language contract in
+HEW-SPEC-2026. Their implementation and remaining limits are 0.6-series work,
+rather than a deferral of the contract to 0.7:
 
 - **Safepoint preemption.** Compiler-inserted `cooperate` checks at function
   entry and loop back-edges, so a computation that never suspends still
   yields to the scheduler and still observes cancellation
-  (HEW-SPEC-2026 §4.3, §4.5, §4.8, §9.0). Until it lands, a non-suspending
-  loop runs to completion.
+  (HEW-SPEC-2026 §4.3, §4.5, §4.8, §9.0).
 - **Envelope-only delivery.** Every message, local or remote, travelling as
   one envelope form rather than a local fast path beside the wire path.
 - **The wire identity field.** A node-identity field in the envelope header,
@@ -207,16 +205,16 @@ Out of scope for edition 2026:
   system maturing.
 - Higher-ranked trait bounds (`for<'a> Fn(&'a T)`).
 
-### 2.3 User-facing `Arc<T>`
+### 2.3 Internal reference-count selection
 
-**[Target: v0.7]**
+The compiler and runtime choose reference-count implementations for ordinary
+values. Cross-actor transfer preserves isolation and the checked `Frozen`
+restrictions; concrete sharing depends on the implemented lowering. This does
+not introduce a public `Arc<T>` type or promise automatic sharing of additional
+aggregate shapes.
 
-The runtime contains ABI-level atomic refcount machinery. The
-**user-visible** `Arc<T>` surface — including `Arc::new`, `Arc::clone`,
-and the cross-actor sharing rule — is not stabilised in edition 2026.
-The intended invariant is that only deeply-immutable (`Frozen`) data is
-shareable across actors; until that surface lands, cross-actor sharing
-is via owned messages and actor state.
+Explicit `Rc<T>` remains a separate, observable shared-identity surface within
+one actor, including its existing aliasing and weak-reference behaviour.
 
 ### 2.4 `DoubleEndedIterator`
 
@@ -294,14 +292,12 @@ reference them rather than duplicate them here.
 
 ### 4.2 Distributed computing and the Node API
 
-**[Target: v0.7+ / depends on wire, actors, auth all settled]**
+**[Target: v0.6 series]**
 
-Earlier drafts described `node.spawn`, cross-node registry gossip, QUIC
-transport, and remote-message dispatch as a stable surface. Distribution
-sits at the intersection of three subsystems that need to be stable
-first — wire types (settling), actors (stable), and an authentication
-story (not yet started). The Node API as a normative surface waits for
-all three.
+Distribution has in-tree compiler, actor and authenticated-transport
+implementations. Its normative contract is HEW-DIST-SPEC.md. Wire identity and
+versioning are code-owned contracts that must evolve coherently across the
+compiler, runtime and packages; remaining work belongs to the 0.6 series.
 
 The runtime contains a working `sim-transport` for property testing
 distributed scenarios; the simulator does not commit to the source-level
@@ -309,11 +305,12 @@ surface.
 
 ---
 
-## 5. Declarative macros (adopted design, U386)
+## 5. Declarative macros (adopted design)
 
-Adopted 2026-09-07 as the v1 design; implementation is scheduled after the
-native cutover PR is open and the surface lanes are integrated. The full text with examples is
-`hew-orchestration/plans/macros-v1.md`.
+**[Target: v0.6 series; implementation in progress]**
+
+Built-in `name!(...)` invocations are implemented. User-defined declarative
+macros follow the adopted design below and are not yet in the delivered compiler.
 
 - `macro name { (pattern) => expr { .. }; (pattern) => items { .. }; }`
   at module level; `pub macro` exports. Invocation is `name!(..)` in
@@ -365,11 +362,9 @@ A surface moves out of this document when:
 3. The maintainers agree it is part of the normative language, not a
    library or tooling addition.
 
-Promotion lands in the next edition (`HEW-SPEC-2028.md`), not as an
-edition-2026 amendment. Edition stability means edition 2026's prose
-does not change once stabilised; new surfaces wait for the next edition.
-
-Within a single edition, **additive** stdlib surfaces and **additive**
-compiler features (new optimisations, new diagnostics, soundness fixes)
-land without an edition bump. Anything that would reject previously-
-accepted code on an old edition is an edition-breaking change and waits.
+Accepted language and standard-library additions can amend edition 2026 and
+ship in the 0.6.x line. Packages declare their minimum compiler version through
+`hew` in `hew.toml`. The young 0.6 line can also adopt an explicitly approved
+breaking change with migration guidance. An edition boundary is not a
+prerequisite for these accepted changes; stabilized editions must preserve their
+published contracts.

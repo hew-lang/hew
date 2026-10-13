@@ -712,6 +712,17 @@ impl TypeFactService {
             .map(|args| Some((method, args)))
     }
 
+    /// Whether rendering selects an explicit implementation outside the stdlib.
+    #[must_use]
+    pub fn has_explicit_display_impl(&self, source: &ResolvedTy) -> bool {
+        self.selected_display_method(source)
+            .and_then(|method| self.context.defs.module(method))
+            .is_some_and(|module| {
+                self.context.defs.module_package(module)
+                    != &crate::def_table::PackageOrigin::StandardLibrary
+            })
+    }
+
     fn selected_display_method(&self, source: &ResolvedTy) -> Option<crate::DefId> {
         let slot = ImplMethodSlot::Declared(self.context.display_method?);
         selected_impl_method(&self.context.method_ids, source, slot).or_else(|| {

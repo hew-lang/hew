@@ -3215,7 +3215,10 @@ fn impl_for_primitive_int_populates_primitive_trait_impl_table() {
         .expect("primitive trait impl table should have entry for (i64, Display)");
     let fmt_sig = methods
         .get("fmt")
-        .expect("fmt method should be recorded for impl Display for i64");
+        .expect("fmt method should be recorded for impl Display for i64")
+        .first()
+        .map(|method| &method.signature)
+        .expect("one fmt implementation");
     assert!(
         fmt_sig.params.is_empty(),
         "receiver should be filtered: {:?}",
@@ -4057,7 +4060,10 @@ fn primitive_trait_dispatch_builtins_blanket_populates_side_table_at_register_bu
             });
         let fmt_sig = entry
             .get("fmt")
-            .unwrap_or_else(|| panic!("missing fmt method for ({key}, Display) entry: {entry:?}"));
+            .unwrap_or_else(|| panic!("missing fmt method for ({key}, Display) entry: {entry:?}"))
+            .first()
+            .map(|method| &method.signature)
+            .expect("one fmt implementation");
         assert!(
             fmt_sig.params.is_empty(),
             "receiver should be filtered from fmt sig for `{key}`: {fmt_sig:?}"

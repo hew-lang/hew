@@ -634,6 +634,7 @@ impl Checker {
             for source in decl.resolved_source_paths.iter().skip(1) {
                 self.defs.mint_source_file_module(&owner, source);
             }
+            self.assign_module_packages();
             // A file import (`import "helper.hew";`, empty path) flattens its
             // items into the root's namespace, so its nominals answer bare as
             // well as under their own file. A module import
@@ -1533,7 +1534,6 @@ impl Checker {
                         // placeholder the dispatch-time binding zips against
                         // the receiver's concrete args.
                         let self_ty = self.resolve_impl_target(id);
-                        let self_type_args = Self::impl_target_args(&self_ty);
                         let primitive_key = id.trait_bound.as_ref().and_then(|_| {
                             self.canonical_primitive_or_builtin_key_for_impl_name(type_name)
                         });
@@ -1568,12 +1568,6 @@ impl Checker {
                             if let (Some(canonical), Some(trait_ref)) =
                                 (primitive_key.clone(), impl_trait.as_ref())
                             {
-                                self.record_primitive_trait_impl_self_args(
-                                    canonical.clone(),
-                                    trait_ref.trait_id,
-                                    self_type_args.clone(),
-                                    &id.target_type.1,
-                                );
                                 self.record_primitive_trait_impl_method(
                                     canonical,
                                     trait_ref.trait_id,

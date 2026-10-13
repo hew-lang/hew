@@ -667,6 +667,13 @@ impl BuiltinAnchor {
 pub struct ModuleId(u32);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum PackageOrigin {
+    Compilation,
+    StandardLibrary,
+    Manifest(PathBuf),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct ModuleEntry {
     /// Whether this path was established by module ownership, rather than a private root identity.
     portable: bool,
@@ -679,6 +686,7 @@ struct ModuleEntry {
     /// Diagnostics that must name the actual FILE — a directory module's peer
     /// files share one assembled render — read it back here.
     canonical_source: Option<PathBuf>,
+    package: PackageOrigin,
 }
 
 const SYNTHETIC_ROOT_PATH: &str = "#synthetic-root";
@@ -989,15 +997,18 @@ impl DefTable {
             .unwrap_or(hew_parser::ast::Visibility::Pub)
     }
 
-    /// Whether two modules are in one package: the modules of one directory.
+    /// Whether two modules share the frontend's canonical package anchor.
     #[must_use]
     pub fn same_package(&self, a: ModuleId, b: ModuleId) -> bool {
-        let package = |module: ModuleId| {
-            self.module_path(module)
-                .rsplit_once('.')
-                .map_or("", |(package, _)| package)
-        };
-        package(a) == package(b)
+        self.module_package(a) == self.module_package(b)
+    }
+
+    pub(crate) fn module_package(&self, module: ModuleId) -> &PackageOrigin {
+        &self.modules[module.0 as usize].package
+    }
+
+    pub(crate) fn set_module_package(&mut self, module: ModuleId, package: PackageOrigin) {
+        self.modules[module.0 as usize].package = package;
     }
 
     /// The declared spelling of a definition, for display.
@@ -1274,6 +1285,7 @@ impl DefTable {
             portable,
             canonical_path,
             canonical_source,
+            package: PackageOrigin::Compilation,
         });
         id
     }

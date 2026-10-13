@@ -207,7 +207,10 @@ impl Builder<'_, '_> {
         live_before_arguments.extend(temporaries.iter().copied());
         let result = self
             .finish_user_call(
-                PreparedCallee::Direct(callee.id),
+                PreparedCallee::Direct {
+                    target: callee.id,
+                    site: Some(expr.site),
+                },
                 signature,
                 arguments,
                 &loans,

@@ -1,3 +1,30 @@
+fn first() -> i64 {
+    11
+}
+
+fn second() -> i64 {
+    sleep(1ms);
+    22
+}
+
+fn changing(initial: fn[clone, suspends]() -> i64) -> fn[var, clone, suspends]() -> i64 {
+    capture(var initial) || {
+        let value = initial();
+        initial = second;
+        value
+    }
+}
+
+type Holder {
+    action: fn[clone, suspends]() -> i64;
+}
+
+impl Holder {
+    fn replace(var self) {
+        self.action = second;
+    }
+}
+
 fn main() -> i64 {
     var label = "original".to_upper();
     let snapshot: fn[clone]() -> string = || label;
@@ -18,5 +45,17 @@ fn main() -> i64 {
     };
     println(shadowed());
     println(count);
+    var action: fn[clone, suspends]() -> i64 = first;
+    for _index in 0..2 {
+        println(action());
+        action = second;
+    }
+    var captured = changing(first);
+    println(captured());
+    println(captured());
+    var holder = Holder { action: first };
+    println(holder.action());
+    holder.replace();
+    println(holder.action());
     0
 }

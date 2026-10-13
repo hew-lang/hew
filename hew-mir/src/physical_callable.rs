@@ -191,6 +191,7 @@ pub(super) fn verify_indirect_call(
     module: &PhysicalModule,
     function: &PhysicalFunction,
     callee: ArgumentTransfer,
+    targets: &hew_sir::CallableTargets,
     signature: &PhysicalCallSignature,
     args: &[ArgumentTransfer],
     result: Option<StorageId>,
@@ -199,6 +200,27 @@ pub(super) fn verify_indirect_call(
         return Err(PhysicalError::new(
             "indirect Hew calls require the recoverable fault ABI",
         ));
+    }
+    if !targets.may_be_unknown && targets.known.is_empty() {
+        return Err(PhysicalError::new("closed indirect call has no target"));
+    }
+    for id in &targets.known {
+        let target = module
+            .callables
+            .get(id.0 as usize)
+            .filter(|target| target.id == *id)
+            .ok_or_else(|| PhysicalError::new("indirect call names an absent target"))?;
+        let receiver = usize::from(matches!(
+            target.instance,
+            hew_sir::CallableInstance::Closure(_)
+        ));
+        if target.params.get(receiver..) != Some(signature.params.as_slice())
+            || target.return_ty != signature.return_ty
+        {
+            return Err(PhysicalError::new(
+                "indirect target disagrees with its invocation signature",
+            ));
+        }
     }
 
     let source = match callee {
@@ -410,6 +432,7 @@ impl FunctionLowerer<'_> {
         call: &SemTerminator,
     ) -> Result<PhysicalTerminator, PhysicalError> {
         let SemTerminator::IndirectCall {
+            targets,
             callee,
             signature,
             args,
@@ -424,6 +447,7 @@ impl FunctionLowerer<'_> {
 
         let params = self.call_params(signature)?;
         Ok(PhysicalTerminator::IndirectCall {
+            targets: targets.clone(),
             callee: self.argument_transfer(callee.operand.value, callee.decision)?,
             signature: PhysicalCallSignature {
                 failure_domain: signature.failure_domain,

@@ -261,6 +261,7 @@ fn factory_body(module: &sir::SemModule, weak_once: bool, invoke: bool) -> sir::
                 args: vec![],
                 ops,
                 terminator: sir::SemTerminator::IndirectCall {
+                    targets: sir::CallableTargets::default(),
                     id: sir::OpId(4),
                     callee: boundary(receiver, decision),
                     signature: sir::callable_value_signature(&exposed, &module.type_facts).unwrap(),

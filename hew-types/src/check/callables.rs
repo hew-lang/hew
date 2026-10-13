@@ -393,6 +393,7 @@ impl Checker {
             } else {
                 ClosureCaptureAccess::Read
             };
+            fact.value_candidates.may_be_unknown |= fact.access == ClosureCaptureAccess::Var;
             fact.consumption = if body.binding_by_id(fact.binding_id).is_some_and(|binding| {
                 binding.capture_consumption == ClosureCaptureConsumption::Consumed
             }) {

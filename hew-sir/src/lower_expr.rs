@@ -271,6 +271,9 @@ impl Builder<'_, '_> {
                 let target =
                     self.service
                         .resolve_direct_call(declaration, expr.site, &self.substitution)?;
+                self.service
+                    .callable_facts
+                    .record_value(self.callable.id, declaration, target.id);
                 let ty = ResolvedTy::Function {
                     params: target
                         .signature

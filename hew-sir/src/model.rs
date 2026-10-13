@@ -2029,6 +2029,7 @@ pub enum SemTerminator {
     /// The normal edge is absent exactly for a Never result.
     IndirectCall {
         id: OpId,
+        targets: crate::CallableTargets,
         callee: BoundaryOperand,
         signature: SemSignature,
         args: Vec<BoundaryOperand>,

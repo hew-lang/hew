@@ -2609,6 +2609,7 @@ fn verify_indirect_call(
     context: Option<&CallableContext<'_>>,
 ) -> Result<(), String> {
     let SemTerminator::IndirectCall {
+        targets,
         callee,
         signature,
         args,
@@ -2634,6 +2635,23 @@ fn verify_indirect_call(
         || signature != &crate::callable_value_signature(ty, facts)?
     {
         return Err("indirect call differs from its exact callable type and signature".to_string());
+    }
+    if !targets.may_be_unknown && targets.known.is_empty() {
+        return Err("closed indirect call has no callable target".into());
+    }
+    for id in &targets.known {
+        let target = context
+            .and_then(|context| context.callable(*id))
+            .ok_or_else(|| "indirect call target is absent from its module".to_string())?;
+        let receiver = usize::from(matches!(
+            target.instance,
+            crate::CallableInstance::Closure(_)
+        ));
+        if target.signature.params.get(receiver..) != Some(signature.params.as_slice())
+            || target.signature.return_ty != signature.return_ty
+        {
+            return Err("indirect call target differs from its invocation signature".into());
+        }
     }
     let decision = match capabilities.call {
         hew_types::CallableCallMode::Read => crate::BoundaryDecision::Borrow,

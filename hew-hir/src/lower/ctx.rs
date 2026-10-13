@@ -19,6 +19,7 @@ impl LowerCtx {
         seed_builtin_type_classes(&mut type_classes);
         Self {
             ids: IdGen::default(),
+            checked_sites: HashMap::new(),
             binding_scopes: Vec::new(),
             checked_scopes: Vec::new(),
             synthetic_binding_uses: HashMap::new(),
@@ -545,6 +546,12 @@ impl LowerCtx {
     #[inline]
     pub(super) fn mk_key(&self, span: &Span) -> SpanKey {
         SpanKey::in_module(span, self.current_module_idx)
+    }
+
+    pub(super) fn source_site(&mut self, span: &Span) -> SiteId {
+        let site = self.ids.site();
+        self.checked_sites.insert(site, self.mk_key(span));
+        site
     }
 
     /// Fail-closed guard for the refutable enum-struct consumers (`if let` /

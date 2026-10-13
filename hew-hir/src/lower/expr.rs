@@ -145,7 +145,7 @@ impl LowerCtx {
                 Some(MethodCallRewrite::VecFrom)
             ) {
                 if let [arg] = args.as_slice() {
-                    let site = self.ids.site();
+                    let site = self.source_site(&span);
                     let lowered = self.lower_expr(arg.expr(), IntentKind::Consume);
                     return self.subsumed_value(site, &span, intent, lowered);
                 }
@@ -227,7 +227,7 @@ impl LowerCtx {
                         hew_types::DeclarationKind::Function
                             | hew_types::DeclarationKind::ExternFunction
                     ) {
-                        let site = self.ids.site();
+                        let site = self.source_site(&span);
                         let (kind, ty) = if let Some(value) =
                             self.lower_source_function_value(declaration, &span, site)
                         {
@@ -270,7 +270,7 @@ impl LowerCtx {
         // built. Allocation order: site before node so existing
         // SiteId counts in tests stay stable (lower_expr previously
         // allocated node before site at the same call).
-        let site = self.ids.site();
+        let site = self.source_site(&span);
         if let Some(operations) = self
             .checked_indexed_place_operations
             .get(&self.mk_key(&span))

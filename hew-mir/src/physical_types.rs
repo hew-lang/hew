@@ -1185,6 +1185,7 @@ pub enum PhysicalTerminator {
         cleanup: PhysicalEdge,
     },
     IndirectCall {
+        targets: hew_sir::CallableTargets,
         callee: ArgumentTransfer,
         signature: PhysicalCallSignature,
         args: Vec<ArgumentTransfer>,

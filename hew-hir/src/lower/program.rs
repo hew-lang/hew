@@ -3079,6 +3079,7 @@ pub fn lower_program_with_mono_cap(
     );
 
     let module = HirModule {
+        checked_sites: ctx.checked_sites,
         indexed_place_operations: ctx.indexed_place_operations,
         items,
         diagnostic_source_modules,

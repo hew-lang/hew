@@ -261,7 +261,10 @@ impl Builder<'_, '_> {
         }
         let live = self.owned_live.keys().copied().collect();
         self.finish_user_call(
-            PreparedCallee::Direct(callee),
+            PreparedCallee::Direct {
+                target: callee,
+                site: None,
+            },
             callable.signature.clone(),
             arguments,
             &[],

@@ -659,6 +659,12 @@ impl TypeEnv {
 
     /// Record the lexical scope depth immediately before a loop body opens.
     pub fn enter_loop(&mut self, label: Option<&str>) {
+        // A later iteration may observe a replacement written on a back edge.
+        for binding in self.scopes.iter_mut().flat_map(HashMap::values_mut) {
+            if binding.is_mutable {
+                binding.value_candidates.may_be_unknown = true;
+            }
+        }
         let observing_reads = self
             .scopes
             .iter()
@@ -1085,6 +1091,10 @@ impl TypeEnv {
             if !actor_body {
                 binding.is_mutable = private.contains(&binding.id);
             }
+            // A later invocation may observe this private field's replacement.
+            if binding.is_mutable {
+                binding.value_candidates.may_be_unknown = true;
+            }
             binding.capture_consumption = crate::ClosureCaptureConsumption::Retained;
             binding.loop_fresh.clear();
         }
@@ -1468,12 +1478,14 @@ impl TypeEnv {
     ///
     /// The write starts a fresh observation window: whatever was read before
     /// it saw the old value, so `mutation_observed` resets here and only a
-    /// later read can set it again.
+    /// later read can set it again. Opaque writes open the value's origins;
+    /// an explicit assignment then supplies its checked replacement origins.
     pub fn mark_written(&mut self, name: impl LexicalName) {
         let name = name.lexical_key();
         for scope in self.scopes.iter_mut().rev() {
             if let Some(binding) = scope.get_mut(&name) {
                 binding.mutation = MutationState::Unobserved;
+                binding.value_candidates.may_be_unknown = true;
                 return;
             }
         }

@@ -18,6 +18,8 @@ use crate::IntentKind;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct HirModule {
+    /// Original checker identities for lowered source expressions.
+    pub checked_sites: HashMap<SiteId, hew_types::SpanKey>,
     /// Checker-selected read/replacement contracts for indexed writable paths.
     pub indexed_place_operations:
         HashMap<SiteId, (hew_types::RuntimeCallFamily, hew_types::RuntimeCallFamily)>,

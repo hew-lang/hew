@@ -927,6 +927,7 @@ type TraitMethodBindingKey = (Option<String>, u32, String, String);
 struct LowerCtx {
     compile_time_values: HashMap<SpanKey, hew_types::compile_time::ConstantValue>,
     ids: IdGen,
+    checked_sites: HashMap<SiteId, SpanKey>,
     /// Binding metadata for capture analysis; keyed by the HIR binding id.
     binding_scopes: Vec<HashMap<BindingId, OuterClosureBinding>>,
     /// Checker-owned source binding identities in the current lexical scopes.

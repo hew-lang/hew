@@ -471,7 +471,7 @@ impl<'ctx> ValueEmitter<'_, 'ctx> {
     }
 }
 
-use hew_mir::physical::{ClosureId, PhysicalCallSignature, PhysicalClosure, StorageOrigin};
+use hew_mir::physical::{ClosureId, PhysicalClosure, StorageOrigin};
 
 fn callable_descriptor_type(ctx: &Context) -> inkwell::types::StructType<'_> {
     let pointer = ctx.ptr_type(AddressSpace::default());
@@ -1120,15 +1120,25 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         )
     }
 
-    pub(super) fn emit_indirect_call(
-        &self,
-        callee: ArgumentTransfer,
-        signature: &PhysicalCallSignature,
-        args: &[ArgumentTransfer],
-        result: Option<StorageId>,
-        normal: Option<&PhysicalEdge>,
-        unwind: Option<&PhysicalEdge>,
-    ) -> CodegenResult<()> {
+    pub(super) fn emit_indirect_call(&self, call: &PhysicalTerminator) -> CodegenResult<()> {
+        let PhysicalTerminator::IndirectCall {
+            targets,
+            callee,
+            signature,
+            args,
+            result,
+            normal,
+            unwind,
+        } = call
+        else {
+            return Err(CodegenError::FailClosed(
+                "indirect emitter received another terminator".into(),
+            ));
+        };
+        let callee = *callee;
+        let result = *result;
+        let normal = normal.as_ref();
+        let unwind = unwind.as_ref();
         let source = argument_source(&callee);
         let carrier = self.load(source, "callable.receiver")?.into_struct_value();
         let environment = self
@@ -1136,12 +1146,32 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .build_extract_value(carrier, 0, "callable.environment")
             .llvm_ctx("load callable environment")?
             .into_pointer_value();
-        let descriptor = self
+        let loaded_descriptor = self
             .builder
             .build_extract_value(carrier, 1, "callable.descriptor")
             .llvm_ctx("load callable descriptor")?
             .into_pointer_value();
         let consuming = matches!(callee, ArgumentTransfer::Move(_));
+        let descriptor = if !targets.may_be_unknown && targets.known.len() == 1 {
+            let target = targets.known[0];
+            let name = self
+                .module
+                .closures
+                .iter()
+                .find(|closure| closure.body == target)
+                .map_or_else(
+                    || function_descriptor_symbol(target),
+                    |closure| closure_descriptor_symbol(closure.id),
+                );
+            self.llvm
+                .get_global(&name)
+                .ok_or_else(|| {
+                    CodegenError::FailClosed("checked callable target has no descriptor".into())
+                })?
+                .as_pointer_value()
+        } else {
+            loaded_descriptor
+        };
         let entry_slot = self
             .builder
             .build_struct_gep(
@@ -1208,9 +1238,6 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .llvm_ctx("clear invocation fault")?;
         let result_address =
             result.map_or_else(|| pointer.const_null(), |id| self.slots[id.0 as usize]);
-        let frame = self.frame.as_ref().ok_or_else(|| {
-            CodegenError::FailClosed("indirect invocation requires a resumable caller".into())
-        })?;
         for source in &moved {
             self.clear_owned(*source)?;
         }
@@ -1228,6 +1255,39 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .build_load(pointer, sync_slot, "callable.sync.entry")
             .llvm_ctx("load synchronous invocation entry")?
             .into_pointer_value();
+        let mut may_suspend = targets.may_be_unknown || consuming;
+        for id in &targets.known {
+            may_suspend |= callable(self.module, *id)?.is_resumable;
+        }
+        if !may_suspend {
+            let status = self
+                .builder
+                .build_indirect_call(
+                    self.ctx.i32_type().fn_type(&[pointer.into(); 4], false),
+                    sync_invoke,
+                    &[
+                        environment.into(),
+                        argument_slots.into(),
+                        result_address.into(),
+                        self.active_fault.into(),
+                    ],
+                    "invoke.sync.status",
+                )
+                .llvm_ctx("invoke checked synchronous callable")?
+                .try_as_basic_value()
+                .basic()
+                .ok_or_else(|| {
+                    CodegenError::FailClosed("synchronous invocation returned no status".into())
+                })?
+                .into_int_value();
+            self.builder
+                .build_store(self.active_status, status)
+                .llvm_ctx("retain invocation status")?;
+            return self.emit_call_outcome(status, result, normal, unwind);
+        }
+        let frame = self.frame.as_ref().ok_or_else(|| {
+            CodegenError::FailClosed("indirect invocation requires a resumable caller".into())
+        })?;
         let synchronous = self
             .ctx
             .append_basic_block(self.value, "invoke.synchronous");

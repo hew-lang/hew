@@ -542,6 +542,7 @@ enum CallableState {
 /// `HirModule::monomorphisations` or invokes MIR lowering.
 struct InstanceService<'a> {
     module: &'a HirModule,
+    callable_facts: callable_facts::CallableFacts<'a>,
     /// The checker's §6.2 rows. The lowering reads a decided class out of this
     /// rather than recomputing one, and projects the rows its own bodies
     /// mention onto the module it produces.
@@ -1802,8 +1803,14 @@ enum OwnedBindingUse {
 
 /// The evaluated receiver is retained separately from the ordinary arguments.
 enum PreparedCallee {
-    Direct(CallableId),
-    Indirect(crate::BoundaryOperand),
+    Direct {
+        target: CallableId,
+        site: Option<hew_hir::SiteId>,
+    },
+    Indirect {
+        receiver: crate::BoundaryOperand,
+        site: hew_hir::SiteId,
+    },
     Dyn {
         receiver: crate::BoundaryOperand,
         slot: u32,
@@ -1837,7 +1844,7 @@ impl PreparedCallee {
         handback: Option<ValueDef>,
     ) -> SemTerminator {
         match self {
-            Self::Direct(callee) => SemTerminator::Call {
+            Self::Direct { target: callee, .. } => SemTerminator::Call {
                 id,
                 callee,
                 args,
@@ -1846,8 +1853,11 @@ impl PreparedCallee {
                 unwind,
                 handback,
             },
-            Self::Indirect(callee) => SemTerminator::IndirectCall {
+            Self::Indirect {
+                receiver: callee, ..
+            } => SemTerminator::IndirectCall {
                 id,
+                targets: crate::CallableTargets::default(),
                 callee,
                 signature,
                 args,
@@ -2119,6 +2129,8 @@ mod aggregate;
 mod builder_core;
 #[path = "lower_call.rs"]
 mod call;
+#[path = "lower_callable_facts.rs"]
+mod callable_facts;
 #[path = "lower_control.rs"]
 mod control;
 #[path = "lower_expr.rs"]

@@ -1322,6 +1322,7 @@ mod tests {
 
     fn module(items: Vec<HirItem>) -> HirModule {
         HirModule {
+            checked_sites: HashMap::new(),
             indexed_place_operations: HashMap::new(),
             entry_exit_plan: None,
             test_entry_plans: Vec::new(),

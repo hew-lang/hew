@@ -734,6 +734,7 @@ impl Checker {
             self.record_task_return(value);
         }
         self.record_return_cleanup_effects();
+        self.record_receiver_output(false);
     }
 
     fn check_return_operand_inner(&mut self, value: Option<&Spanned<Expr>>, span: &Span) {
@@ -1987,7 +1988,10 @@ impl Checker {
                     self.loop_labels.push(lbl.to_string());
                 }
                 self.loop_depth += 1;
-                self.env.enter_loop(label.map(|ident| ident.name.as_str()));
+                self.env.enter_loop(
+                    label.map(|ident| ident.name.as_str()),
+                    &SpanKey::in_module(span, self.current_module_idx),
+                );
                 let body_ty = self.check_block(body, None);
                 self.exit_loop_checked(&body_ty);
                 self.loop_depth -= 1;
@@ -2281,7 +2285,10 @@ impl Checker {
                 self.env.push_scope();
                 // The pattern binds afresh on every iteration, so it opens
                 // inside the loop rather than among the values the loop carries.
-                self.env.enter_loop(label.map(|ident| ident.name.as_str()));
+                self.env.enter_loop(
+                    label.map(|ident| ident.name.as_str()),
+                    &SpanKey::in_module(span, self.current_module_idx),
+                );
                 self.in_for_binding = true;
                 // Each element of a borrowed-element loop is a loan of the slot
                 // the sequence still owns (D432).
@@ -2323,7 +2330,10 @@ impl Checker {
                     });
                 }
                 // The condition runs at the head of every iteration.
-                self.env.enter_loop(label.map(|ident| ident.name.as_str()));
+                self.env.enter_loop(
+                    label.map(|ident| ident.name.as_str()),
+                    &SpanKey::in_module(span, self.current_module_idx),
+                );
                 self.check_against(&condition.0, &condition.1, &Ty::Bool);
                 if let Some(lbl) = label {
                     self.loop_labels.push(lbl.to_string());
@@ -2342,7 +2352,10 @@ impl Checker {
                 body,
             } => {
                 // The condition runs at the head of every iteration.
-                self.env.enter_loop(label.map(|ident| ident.name.as_str()));
+                self.env.enter_loop(
+                    label.map(|ident| ident.name.as_str()),
+                    &SpanKey::in_module(span, self.current_module_idx),
+                );
                 self.check_condition(conditions);
                 if let Some(lbl) = label {
                     self.loop_labels.push(lbl.to_string());

@@ -522,6 +522,7 @@ impl Checker {
             // PostfixTry: expr? → unwrap Result/Option
             Expr::PostfixTry(inner) => {
                 let ty = self.synthesize(&inner.0, &inner.1);
+                self.record_receiver_output(!self.env.return_edge_defers().is_empty());
                 let ty = self.subst.resolve(&ty);
                 // `?` on an `Option` propagates absence to an `Option` return;
                 // `?` on a `Result` leaves through the failure edge.
@@ -696,6 +697,7 @@ impl Checker {
                     );
                 }
                 self.recheck_return_edge_defers();
+                self.record_receiver_output(false);
                 Ty::Never
             }
 

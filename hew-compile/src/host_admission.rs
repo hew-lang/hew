@@ -35,13 +35,6 @@ enum CallableNode {
     Closure(SpanKey),
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-struct ResolvedField {
-    owner: NominalId,
-    index: u32,
-    values: Vec<ResolvedValue>,
-}
-
 /// A value origin resolved under its calling context. Aggregate fields and
 /// closure captures retain that context when the value crosses another call.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -51,13 +44,20 @@ enum ResolvedValue {
         span: SpanKey,
         captures: Vec<(TypeBindingId, Vec<Self>)>,
     },
-    Aggregate(Vec<ResolvedField>),
+    Aggregate {
+        span: SpanKey,
+        captures: Vec<(TypeBindingId, Vec<Self>)>,
+    },
+    Source {
+        candidates: IndirectCallCandidates,
+        captures: Vec<(TypeBindingId, Vec<Self>)>,
+    },
     Unknown,
 }
 
 type CandidateEnv = HashMap<TypeBindingId, Vec<ResolvedValue>>;
 
-fn selected_call_declaration(output: &TypeCheckOutput, span: &SpanKey) -> Option<DefId> {
+fn selected_call_target<'a>(output: &'a TypeCheckOutput, span: &SpanKey) -> Option<&'a CallTarget> {
     output
         .method_call_rewrites
         .get(span)
@@ -72,14 +72,40 @@ fn selected_call_declaration(output: &TypeCheckOutput, span: &SpanKey) -> Option
             _ => None,
         })
         .or_else(|| output.direct_call_targets.get(span))
-        .and_then(target_declaration)
 }
+
+fn selected_call_declaration(output: &TypeCheckOutput, span: &SpanKey) -> Option<DefId> {
+    selected_call_target(output, span).and_then(target_declaration)
+}
+
+type Projection = (NominalId, u32);
+type CandidateVisit = (
+    CallableCandidate,
+    Vec<Projection>,
+    Vec<(TypeBindingId, Vec<ResolvedValue>)>,
+);
 
 fn resolve_candidates(
     output: &TypeCheckOutput,
     candidates: &IndirectCallCandidates,
     env: &CandidateEnv,
+) -> Vec<ResolvedValue> {
+    let values = resolve_candidates_at(output, candidates, env, &[], false, 0, &mut Vec::new());
+    if values.is_empty() {
+        vec![ResolvedValue::Unknown]
+    } else {
+        values
+    }
+}
+
+fn resolve_candidates_at(
+    output: &TypeCheckOutput,
+    candidates: &IndirectCallCandidates,
+    env: &CandidateEnv,
+    projections: &[Projection],
+    nominal_only: bool,
     depth: usize,
+    seen: &mut Vec<CandidateVisit>,
 ) -> Vec<ResolvedValue> {
     if depth > 128 {
         return vec![ResolvedValue::Unknown];
@@ -89,86 +115,258 @@ fn resolve_candidates(
         values.push(ResolvedValue::Unknown);
     }
     for candidate in &candidates.known {
-        for value in resolve_candidate(output, candidate, env, depth + 1) {
+        for value in resolve_candidate_at(
+            output,
+            candidate,
+            env,
+            projections,
+            nominal_only,
+            depth + 1,
+            seen,
+        ) {
             if !values.contains(&value) {
                 values.push(value);
             }
         }
     }
-    if values.is_empty() {
-        values.push(ResolvedValue::Unknown);
-    }
     values
 }
 
-fn resolve_candidate(
+fn project_values(
+    output: &TypeCheckOutput,
+    values: &[ResolvedValue],
+    projections: &[Projection],
+    nominal_only: bool,
+    depth: usize,
+    seen: &mut Vec<CandidateVisit>,
+) -> Vec<ResolvedValue> {
+    let mut projected = Vec::new();
+    for value in values {
+        let next = match value {
+            ResolvedValue::Source {
+                candidates,
+                captures,
+            } => resolve_candidates_at(
+                output,
+                candidates,
+                &captures.iter().cloned().collect(),
+                projections,
+                nominal_only,
+                depth + 1,
+                seen,
+            ),
+            ResolvedValue::Aggregate { span, captures } if !projections.is_empty() => {
+                let (selected, rest) = projections.split_last().expect("nonempty projections");
+                output
+                    .aggregate_field_candidates
+                    .get(span)
+                    .and_then(|fields| {
+                        fields
+                            .iter()
+                            .find(|field| (field.owner, field.index) == *selected)
+                    })
+                    .map_or_else(
+                        || vec![ResolvedValue::Unknown],
+                        |field| {
+                            resolve_candidates_at(
+                                output,
+                                &field.candidates,
+                                &captures.iter().cloned().collect(),
+                                rest,
+                                nominal_only,
+                                depth + 1,
+                                seen,
+                            )
+                        },
+                    )
+            }
+            value if projections.is_empty() => vec![value.clone()],
+            _ => vec![ResolvedValue::Unknown],
+        };
+        for value in next {
+            if !projected.contains(&value) {
+                projected.push(value);
+            }
+        }
+    }
+    projected
+}
+
+fn receiver_actual<'a>(
+    output: &'a TypeCheckOutput,
+    site: &SpanKey,
+) -> Option<&'a IndirectCallCandidates> {
+    output
+        .callable_argument_flows
+        .get(site)
+        .and_then(|flows| flows.first())
+        .map(|flow| &flow.candidates)
+        .or_else(|| {
+            output
+                .generic_trait_call_arguments
+                .get(site)
+                .and_then(|actuals| actuals.iter().find(|actual| actual.slot == 0))
+                .map(|actual| &actual.candidates)
+        })
+}
+
+#[expect(
+    clippy::too_many_lines,
+    reason = "project each checker-owned value-origin variant"
+)]
+fn resolve_candidate_at(
     output: &TypeCheckOutput,
     candidate: &CallableCandidate,
     env: &CandidateEnv,
+    projections: &[Projection],
+    nominal_only: bool,
     depth: usize,
+    seen: &mut Vec<CandidateVisit>,
 ) -> Vec<ResolvedValue> {
     if depth > 128 {
         return vec![ResolvedValue::Unknown];
     }
-    match candidate {
-        CallableCandidate::TaskProducer(_)
-        | CallableCandidate::TaskResult(_)
-        | CallableCandidate::Sequence(_)
-        | CallableCandidate::Element { .. } => {
+    let visit = (candidate.clone(), projections.to_vec(), env_key(env));
+    if let Some(cycle) = seen.iter().position(|active| active == &visit) {
+        // A loop recurrence contributes no additional origin beyond its entry
+        // and replacement edges. An expansion without a concrete origin is
+        // still unknown at the invocation boundary.
+        return if seen[cycle..]
+            .iter()
+            .any(|(candidate, _, _)| matches!(candidate, CallableCandidate::LoopInput { .. }))
+        {
+            Vec::new()
+        } else {
             vec![ResolvedValue::Unknown]
+        };
+    }
+    seen.push(visit);
+    let values = match candidate {
+        CallableCandidate::Declaration(id) if projections.is_empty() => {
+            vec![ResolvedValue::Declaration(*id)]
         }
-        CallableCandidate::Declaration(id) => vec![ResolvedValue::Declaration(*id)],
-        CallableCandidate::Closure(span) => vec![ResolvedValue::Closure {
-            span: span.clone(),
-            captures: env_key(env),
-        }],
-        CallableCandidate::Formal(formal) => env
-            .get(formal)
-            .cloned()
-            .unwrap_or_else(|| vec![ResolvedValue::Unknown]),
-        CallableCandidate::Aggregate(span) => {
-            let Some(fields) = output.aggregate_field_candidates.get(span) else {
-                return vec![ResolvedValue::Unknown];
-            };
-            let mut fields = fields
-                .iter()
-                .map(|field| ResolvedField {
-                    owner: field.owner,
-                    index: field.index,
-                    values: resolve_candidates(output, &field.candidates, env, depth + 1),
-                })
+        CallableCandidate::Closure(span) if projections.is_empty() => {
+            vec![ResolvedValue::Closure {
+                span: span.clone(),
+                captures: env_key(env),
+            }]
+        }
+        CallableCandidate::Formal(formal) => env.get(formal).map_or_else(
+            || vec![ResolvedValue::Unknown],
+            |values| project_values(output, values, projections, nominal_only, depth + 1, seen),
+        ),
+        CallableCandidate::LoopInput { site, binding } => output
+            .loop_value_candidates
+            .get(&(site.clone(), *binding))
+            .map_or_else(
+                || vec![ResolvedValue::Unknown],
+                |candidates| {
+                    resolve_candidates_at(
+                        output,
+                        candidates,
+                        env,
+                        projections,
+                        nominal_only,
+                        depth + 1,
+                        seen,
+                    )
+                },
+            ),
+        CallableCandidate::Aggregate(span) => project_values(
+            output,
+            &[ResolvedValue::Aggregate {
+                span: span.clone(),
+                captures: env_key(env),
+            }],
+            projections,
+            nominal_only,
+            depth + 1,
+            seen,
+        ),
+        // Writeback can change fields, but cannot change the receiver's type.
+        CallableCandidate::CallWriteback(site) if nominal_only => receiver_actual(output, site)
+            .map_or_else(
+                || vec![ResolvedValue::Unknown],
+                |candidates| {
+                    resolve_candidates_at(
+                        output,
+                        candidates,
+                        env,
+                        projections,
+                        nominal_only,
+                        depth + 1,
+                        seen,
+                    )
+                },
+            ),
+        CallableCandidate::CallWriteback(site) | CallableCandidate::CallResult(site) => {
+            let mut callees = selected_call_declaration(output, site)
+                .into_iter()
                 .collect::<Vec<_>>();
-            fields.sort_by_key(|field| (field.owner, field.index));
-            vec![ResolvedValue::Aggregate(fields)]
-        }
-        CallableCandidate::CallResult(span) => {
-            let Some(callee) = selected_call_declaration(output, span) else {
-                return vec![ResolvedValue::Unknown];
-            };
-            let Some(returned) = output
-                .callable_return_candidates
-                .get(&hew_types::check::effects::EffectBody::Declaration(callee))
-            else {
-                return vec![ResolvedValue::Unknown];
-            };
-            let next_env = callee_env(output, span, callee, env, depth + 1);
-            resolve_candidates(output, returned, &next_env, depth + 1)
-        }
-        CallableCandidate::Field {
-            receiver,
-            owner,
-            index,
-        } => {
+            if callees.is_empty() {
+                if let Some(CallTarget::StaticTraitMethod {
+                    declaring_trait,
+                    method,
+                }) = selected_call_target(output, site)
+                {
+                    let receiver = receiver_actual(output, site)
+                        .map(|candidates| {
+                            resolve_candidates_at(
+                                output,
+                                candidates,
+                                env,
+                                &[],
+                                true,
+                                depth + 1,
+                                &mut Vec::new(),
+                            )
+                        })
+                        .unwrap_or_default();
+                    for value in receiver {
+                        if let ResolvedValue::Aggregate { span, .. } = value {
+                            if let Some(nominal) = output
+                                .aggregate_field_candidates
+                                .get(&span)
+                                .and_then(|fields| fields.first())
+                                .map(|field| field.owner)
+                            {
+                                for (name, owner, declaration) in
+                                    output.dispatch.methods_of(nominal)
+                                {
+                                    if name == output.defs.name(*method) && (owner == hew_types::check::dispatch_table::MethodOwner::Inherent || owner == hew_types::check::dispatch_table::MethodOwner::Trait(*declaring_trait)) && !callees.contains(&declaration) { callees.push(declaration); }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
             let mut values = Vec::new();
-            for value in resolve_candidate(output, receiver, env, depth + 1) {
-                let projected = match value {
-                    ResolvedValue::Aggregate(fields) => fields
-                        .into_iter()
-                        .find(|field| field.owner == *owner && field.index == *index)
-                        .map_or_else(|| vec![ResolvedValue::Unknown], |field| field.values),
-                    _ => vec![ResolvedValue::Unknown],
+            if callees.is_empty() {
+                values.push(ResolvedValue::Unknown);
+            }
+            for callee in callees {
+                let body = hew_types::check::effects::EffectBody::Declaration(callee);
+                let returned = if matches!(candidate, CallableCandidate::CallWriteback(_)) {
+                    output.callable_receiver_outputs.get(&body)
+                } else {
+                    output.callable_return_candidates.get(&body)
                 };
-                for value in projected {
+                let next_env = callee_env(output, site, callee, env);
+                let next = returned.map_or_else(
+                    || vec![ResolvedValue::Unknown],
+                    |returned| {
+                        resolve_candidates_at(
+                            output,
+                            returned,
+                            &next_env,
+                            projections,
+                            nominal_only,
+                            depth + 1,
+                            seen,
+                        )
+                    },
+                );
+                for value in next {
                     if !values.contains(&value) {
                         values.push(value);
                     }
@@ -176,7 +374,43 @@ fn resolve_candidate(
             }
             values
         }
+        CallableCandidate::Field {
+            receiver,
+            owner,
+            index,
+        } => {
+            let mut path = projections.to_vec();
+            path.push((*owner, *index));
+            resolve_candidate_at(output, receiver, env, &path, nominal_only, depth + 1, seen)
+        }
+        _ => vec![ResolvedValue::Unknown],
+    };
+    seen.pop();
+    values
+}
+
+/// Forwarding a formal preserves its value, rather than nesting another
+/// suspended substitution each time a recursive call crosses the boundary.
+fn actual_values(
+    candidates: &IndirectCallCandidates,
+    caller_env: &CandidateEnv,
+) -> Vec<ResolvedValue> {
+    if !candidates.may_be_unknown {
+        match candidates.known.as_slice() {
+            [] => return Vec::new(),
+            [CallableCandidate::Formal(formal)] => {
+                return caller_env
+                    .get(formal)
+                    .cloned()
+                    .unwrap_or_else(|| vec![ResolvedValue::Unknown]);
+            }
+            _ => {}
+        }
     }
+    vec![ResolvedValue::Source {
+        candidates: candidates.clone(),
+        captures: env_key(caller_env),
+    }]
 }
 
 fn callee_env(
@@ -184,7 +418,6 @@ fn callee_env(
     span: &SpanKey,
     callee: DefId,
     caller_env: &CandidateEnv,
-    depth: usize,
 ) -> CandidateEnv {
     let direct: CandidateEnv = output
         .callable_argument_flows
@@ -192,12 +425,7 @@ fn callee_env(
         .into_iter()
         .flatten()
         .filter(|flow| flow.callee == callee)
-        .map(|flow| {
-            (
-                flow.formal,
-                resolve_candidates(output, &flow.candidates, caller_env, depth + 1),
-            )
-        })
+        .map(|flow| (flow.formal, actual_values(&flow.candidates, caller_env)))
         .collect();
     if !direct.is_empty() {
         return direct;
@@ -216,7 +444,7 @@ fn callee_env(
         .filter_map(|actual| {
             Some((
                 *formals.get(actual.slot)?,
-                resolve_candidates(output, &actual.candidates, caller_env, depth + 1),
+                actual_values(&actual.candidates, caller_env),
             ))
         })
         .collect()
@@ -805,12 +1033,25 @@ pub(super) fn check(
             None::<(SourceSite, String, String)>,
             Vec::<Ty>::new(),
             CandidateEnv::new(),
+            Vec::<(CallableNode, Vec<Ty>)>::new(),
         )]);
         let mut visited = HashSet::new();
-        while let Some((caller, user_site, type_args, caller_env)) = queue.pop_front() {
+        while let Some((caller, user_site, type_args, mut caller_env, mut ancestors)) =
+            queue.pop_front()
+        {
+            if ancestors.contains(&(caller.clone(), type_args.clone()))
+                && !visited.contains(&(caller.clone(), type_args.clone(), env_key(&caller_env)))
+            {
+                // Changed origins on a recursive instance have no finite
+                // receiver-writeback proof. Keep its formals conservative.
+                for values in caller_env.values_mut() {
+                    *values = vec![ResolvedValue::Unknown];
+                }
+            }
             if !visited.insert((caller.clone(), type_args.clone(), env_key(&caller_env))) {
                 continue;
             }
+            ancestors.push((caller.clone(), type_args.clone()));
             let caller_source = match &caller {
                 CallableNode::Declaration(id) => output
                     .defs
@@ -907,10 +1148,15 @@ pub(super) fn check(
                     let values = output
                         .indirect_call_candidates
                         .get(&call.span)
-                        .map(|candidates| resolve_candidates(output, candidates, &caller_env, 0));
+                        .map(|candidates| resolve_candidates(output, candidates, &caller_env));
                     if values.as_ref().is_none_or(|values| {
                         values.iter().any(|value| {
-                            matches!(value, ResolvedValue::Unknown | ResolvedValue::Aggregate(_))
+                            matches!(
+                                value,
+                                ResolvedValue::Unknown
+                                    | ResolvedValue::Aggregate { .. }
+                                    | ResolvedValue::Source { .. }
+                            )
                         })
                     }) {
                         if let Some((site, source, filename)) = selected_site.clone() {
@@ -945,13 +1191,13 @@ pub(super) fn check(
                         for value in values {
                             match value {
                                 ResolvedValue::Declaration(id) => {
-                                    let next_env =
-                                        callee_env(output, &call.span, *id, &caller_env, 0);
+                                    let next_env = callee_env(output, &call.span, *id, &caller_env);
                                     queue.push_back((
                                         CallableNode::Declaration(*id),
                                         selected_site.clone(),
                                         Vec::new(),
                                         next_env,
+                                        ancestors.clone(),
                                     ));
                                 }
                                 ResolvedValue::Closure { span, captures } => {
@@ -960,9 +1206,12 @@ pub(super) fn check(
                                         selected_site.clone(),
                                         Vec::new(),
                                         captures.iter().cloned().collect(),
+                                        ancestors.clone(),
                                     ));
                                 }
-                                ResolvedValue::Aggregate(_) | ResolvedValue::Unknown => {}
+                                ResolvedValue::Aggregate { .. }
+                                | ResolvedValue::Source { .. }
+                                | ResolvedValue::Unknown => {}
                             }
                         }
                     }
@@ -985,12 +1234,13 @@ pub(super) fn check(
                         .flatten()
                         .map(|ty| ty.substitute_type_params_parallel(&substitutions))
                         .collect();
-                    let next_env = callee_env(output, &call.span, next, &caller_env, 0);
+                    let next_env = callee_env(output, &call.span, next, &caller_env);
                     queue.push_back((
                         CallableNode::Declaration(next),
                         selected_site,
                         next_args,
                         next_env,
+                        ancestors.clone(),
                     ));
                 } else if let CallTarget::StaticTraitMethod {
                     declaring_trait,
@@ -1052,12 +1302,13 @@ pub(super) fn check(
                                         ))
                             {
                                 let next_env =
-                                    callee_env(output, &call.span, candidate, &caller_env, 0);
+                                    callee_env(output, &call.span, candidate, &caller_env);
                                 queue.push_back((
                                     CallableNode::Declaration(candidate),
                                     selected_site.clone(),
                                     next_args.clone(),
                                     next_env,
+                                    ancestors.clone(),
                                 ));
                             }
                         }
@@ -1099,12 +1350,13 @@ pub(super) fn check(
                         })
                         .collect();
                     for candidate in candidates {
-                        let next_env = callee_env(output, &call.span, candidate, &caller_env, 0);
+                        let next_env = callee_env(output, &call.span, candidate, &caller_env);
                         queue.push_back((
                             CallableNode::Declaration(candidate),
                             selected_site.clone(),
                             Vec::new(),
                             next_env,
+                            ancestors.clone(),
                         ));
                     }
                 }
@@ -1136,6 +1388,7 @@ mod tests {
             "import std.path; fn main() { let _ = path.glob(\"/*\"); }",
             "import std.os; fn main() { let read = || os.env(\"PATH\"); let _ = read(); }",
             "import std.os; fn invoke(f: fn() -> Option<string>) { let _ = f(); } fn main() { invoke(|| os.env(\"PATH\")); }",
+            "import std.os; fn empty() -> Option<string> { .None } fn read() -> Option<string> { os.env(\"PATH\") } type Holder { action: fn[clone]() -> Option<string>; } impl Holder { fn replace(var self) { self.action = read; } fn through_helper(var self, n: i64) { self.replace(); if n > 0 { self.through_helper(n - 1); } } } fn main() { var holder = Holder { action: empty }; for _index in 0..2 { let _ = (holder.action)(); holder.through_helper(1); } }",
             "import std.os; actor Worker { receive fn inspect() { let _ = os.env(\"PATH\"); } } fn main() { let worker = spawn Worker; let _ = worker.inspect(); stop(worker); }",
             "import std.os; actor Worker { #[on(start)] fn boot() { let _ = os.env(\"PATH\"); } } fn main() { let worker = spawn Worker; stop(worker); }",
             "import std.os; #[resource] type Token { value: i64; } impl Token { fn close(consume self) { let _ = os.env(\"PATH\"); } } fn main() { let token = Token { value: 1 }; }",
@@ -1415,8 +1668,12 @@ mod tests {
 
     #[test]
     fn known_function_parameter_is_admitted_from_its_call_site() {
-        let source = "fn call_reader(reader: fn() -> string) { println(reader()); }\nfn main() { call_reader(|| \"safe\"); }";
-        check_source(source, HostAdmission::ProcessEntry).unwrap();
+        for source in [
+            "fn call_reader(reader: fn() -> string) { println(reader()); }\nfn main() { call_reader(|| \"safe\"); }",
+            "fn repeat(reader: fn[clone]() -> string, n: i64) -> string { if n == 0 { return reader(); } repeat(reader, n - 1) } fn main() { println(repeat(|| \"safe\", 3)); }",
+        ] {
+            check_source(source, HostAdmission::ProcessEntry).unwrap();
+        }
     }
 
     #[test]

@@ -111,6 +111,12 @@ impl Checker {
         } else if let Some((root, path)) = place {
             self.env.discount_mutation_receiver_read(root);
             self.env.mark_written(root);
+            self.replace_place_value_candidates(
+                receiver,
+                IndirectCallCandidates::single(CallableCandidate::CallWriteback(
+                    SpanKey::in_module(span, self.current_module_idx),
+                )),
+            );
             self.reject_borrowed_parameter_mutation(root, &path, span);
         }
     }
@@ -1970,6 +1976,10 @@ impl Checker {
                                     // never-reassigned mutable binding.
                                     self.env.discount_mutation_receiver_read(n.name.as_str());
                                     self.env.mark_written(n.name.as_str());
+                                    self.replace_place_value_candidates(
+                                        receiver,
+                                        IndirectCallCandidates::unknown(),
+                                    );
                                     self.reject_borrowed_parameter_mutation(
                                         n.name.as_str(),
                                         &[],

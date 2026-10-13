@@ -46,7 +46,7 @@ enum Projection {
     Element(usize),
 }
 
-type Visit = (CallableId, CallableCandidate);
+type Visit = (CallableId, CallableCandidate, Vec<Projection>);
 
 fn empty() -> crate::CallableTargets {
     crate::CallableTargets {
@@ -121,8 +121,7 @@ impl InstanceService<'_> {
                 else {
                     continue;
                 };
-                let mut targets =
-                    self.resolve_candidates(owner, candidates, &[], &mut HashSet::new());
+                let mut targets = self.resolve_candidates(owner, candidates, &[], &mut Vec::new());
                 targets.known.retain(|id| {
                     self.callable(*id).is_some_and(|target| {
                         let receiver = usize::from(matches!(
@@ -157,7 +156,7 @@ impl InstanceService<'_> {
         owner: CallableId,
         candidates: &IndirectCallCandidates,
         projections: &[Projection],
-        seen: &mut HashSet<Visit>,
+        seen: &mut Vec<Visit>,
     ) -> crate::CallableTargets {
         let mut targets = empty();
         targets.may_be_unknown = candidates.may_be_unknown;
@@ -175,7 +174,7 @@ impl InstanceService<'_> {
         owner: CallableId,
         formal: hew_types::env::TypeBindingId,
         projections: &[Projection],
-        seen: &mut HashSet<Visit>,
+        seen: &mut Vec<Visit>,
     ) -> crate::CallableTargets {
         let facts = &self.callable_facts;
         if let Some(super::CallableInstance::Closure(id)) =
@@ -270,12 +269,24 @@ impl InstanceService<'_> {
         owner: CallableId,
         candidate: &CallableCandidate,
         projections: &[Projection],
-        seen: &mut HashSet<Visit>,
+        seen: &mut Vec<Visit>,
     ) -> crate::CallableTargets {
-        let visit = (owner, candidate.clone());
-        if !seen.insert(visit.clone()) {
+        if seen.len() > 128 {
             return crate::CallableTargets::default();
         }
+        let visit = (owner, candidate.clone(), projections.to_vec());
+        if let Some(cycle) = seen.iter().position(|active| active == &visit) {
+            // Entry and replacement edges supply the origins of a loop cycle.
+            return if seen[cycle..]
+                .iter()
+                .any(|(_, candidate, _)| matches!(candidate, CallableCandidate::LoopInput { .. }))
+            {
+                empty()
+            } else {
+                crate::CallableTargets::default()
+            };
+        }
+        seen.push(visit);
         let facts = &self.callable_facts;
         let result = match candidate {
             CallableCandidate::Declaration(declaration) if projections.is_empty() => {
@@ -308,13 +319,24 @@ impl InstanceService<'_> {
             CallableCandidate::Formal(formal) => {
                 self.resolve_formal(owner, *formal, projections, seen)
             }
-            CallableCandidate::CallResult(site) => {
+            CallableCandidate::LoopInput { site, binding } => facts
+                .checked
+                .loop_value_candidates
+                .get(&(site.clone(), *binding))
+                .map_or_else(crate::CallableTargets::default, |candidates| {
+                    self.resolve_candidates(owner, candidates, projections, seen)
+                }),
+            CallableCandidate::CallWriteback(site) | CallableCandidate::CallResult(site) => {
                 if let Some(callees) = facts.calls.get(&(owner, site.clone())) {
                     let mut targets = empty();
                     for callee in callees {
-                        let returns = self
-                            .checked_body(*callee)
-                            .and_then(|body| facts.checked.callable_return_candidates.get(&body));
+                        let returns = self.checked_body(*callee).and_then(|body| {
+                            if matches!(candidate, CallableCandidate::CallWriteback(_)) {
+                                facts.checked.callable_receiver_outputs.get(&body)
+                            } else {
+                                facts.checked.callable_return_candidates.get(&body)
+                            }
+                        });
                         join(
                             &mut targets,
                             returns.map_or_else(crate::CallableTargets::default, |returns| {
@@ -378,7 +400,7 @@ impl InstanceService<'_> {
             }
             _ => crate::CallableTargets::default(),
         };
-        seen.remove(&visit);
+        seen.pop();
         result
     }
 }

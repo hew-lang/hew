@@ -419,6 +419,16 @@ impl Checker {
             );
         }
 
+        // Publish the same complete binder substitution to call consumers.
+        // Instantiated method signatures have already removed impl parameters.
+        if let Some(arguments) = declared_params
+            .iter()
+            .map(|parameter| substitution.get(parameter).cloned())
+            .collect::<Option<Vec<_>>>()
+        {
+            self.record_concrete_call_type_args(span, &arguments);
+        }
+
         // Nothing pinned means nothing to discharge; a partially pinned
         // application still records, and the walk refuses to decide any
         // obligation whose substituted form is still abstract.

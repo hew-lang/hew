@@ -726,8 +726,12 @@ pub struct TypeCheckOutput {
     pub callable_formals: HashMap<super::effects::EffectBody, Vec<TypeBindingId>>,
     /// Exact field writes of an authored aggregate constructor.
     pub aggregate_field_candidates: HashMap<SpanKey, Vec<CallableFieldFlow>>,
+    /// Entry and backedge origins for checker-bound loop inputs.
+    pub loop_value_candidates: HashMap<(SpanKey, TypeBindingId), IndirectCallCandidates>,
     /// Symbolic return origins of checker-owned function bodies.
     pub callable_return_candidates: HashMap<super::effects::EffectBody, IndirectCallCandidates>,
+    /// Mutable receiver origins at every checked return or failure edge.
+    pub callable_receiver_outputs: HashMap<super::effects::EffectBody, IndirectCallCandidates>,
     /// Canonical trait and trait-method declaration identities, keyed by the
     /// owner-qualified canonical path `Trait::method`. Impl methods publish
     /// their resolved pair separately through `ImplMethodProvenance`.
@@ -1115,8 +1119,15 @@ pub enum CallableCandidate {
     },
     /// A checker-bound formal supplied by a caller at the selected call site.
     Formal(TypeBindingId),
+    /// Value reaching a loop head from entry or a checked back edge.
+    LoopInput {
+        site: SpanKey,
+        binding: TypeBindingId,
+    },
     /// Intermediate value origin: an authored aggregate constructor.
     Aggregate(SpanKey),
+    /// Receiver value handed back by a checked mutable method call.
+    CallWriteback(SpanKey),
     /// Intermediate value origin: the result of a selected call.
     CallResult(SpanKey),
     /// Intermediate value origin: a checker-selected field of a receiver.
@@ -3480,7 +3491,10 @@ pub struct Checker {
     pub(super) generic_trait_call_arguments: HashMap<SpanKey, Vec<CallableDispatchActual>>,
     pub(super) pending_callable_arguments: HashMap<SpanKey, PendingCallableArguments>,
     pub(super) aggregate_field_candidates: HashMap<SpanKey, Vec<CallableFieldFlow>>,
+    pub(super) loop_value_candidates: HashMap<(SpanKey, TypeBindingId), IndirectCallCandidates>,
     pub(super) callable_return_candidates:
+        HashMap<super::effects::EffectBody, IndirectCallCandidates>,
+    pub(super) callable_receiver_outputs:
         HashMap<super::effects::EffectBody, IndirectCallCandidates>,
     /// Checker-owned canonical declaration ids for trait methods. Keys are
     /// owner-qualified source spellings, never linker symbols.
@@ -4499,7 +4513,9 @@ impl Checker {
             generic_trait_call_arguments: HashMap::new(),
             pending_callable_arguments: HashMap::new(),
             aggregate_field_candidates: HashMap::new(),
+            loop_value_candidates: HashMap::new(),
             callable_return_candidates: HashMap::new(),
+            callable_receiver_outputs: HashMap::new(),
             trait_method_ids: HashMap::new(),
             impl_method_declaration_ids: HashMap::new(),
             consuming_inherent_methods: HashSet::new(),

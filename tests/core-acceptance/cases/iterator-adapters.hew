@@ -9,6 +9,33 @@ type Line {
     qty: i64;
 }
 
+fn first_value() -> i64 {
+    11
+}
+
+fn second_value() -> i64 {
+    22
+}
+
+type ReplacingIterator {
+    remaining: i64;
+    action: fn[clone]() -> i64;
+}
+
+impl Iterator for ReplacingIterator {
+    type Item = i64;
+
+    fn next(var self) -> Option<i64> {
+        if self.remaining <= 0 {
+            return .None;
+        }
+        self.remaining -= 1;
+        let value = (self.action)();
+        self.action = second_value;
+        .Some(value)
+    }
+}
+
 fn counts() -> Vec<i64> {
     var v: Vec<i64> = Vec.new();
     for i in 1..7 {
@@ -26,6 +53,9 @@ fn lines() -> Vec<Line> {
 }
 
 fn main() {
+    let replaced = iter.collect(ReplacingIterator { remaining: 2, action: first_value });
+    assert(replaced == [11, 22]);
+
     // map + collect: the mapped vector is owned here and released at scope end.
     let doubled = iter.collect(iter.map(counts().into_iter(), |x: i64| x * 2));
     println(doubled.len());

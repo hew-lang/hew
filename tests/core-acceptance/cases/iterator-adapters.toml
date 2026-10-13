@@ -1,6 +1,6 @@
 [[case]]
 id = "iterator-adapters"
-intent = "Iterator adapters compose over scalars and owned records; reversible map/filter adapters share front/back state, nested reversal preserves the remaining sequence, and mapping effects follow actual traversal order."
+intent = "Iterator adapters compose over scalars and owned records; reversible map/filter adapters share front/back state, nested reversal preserves the remaining sequence, and mapping effects follow actual traversal order, and mutable advancement preserves callable replacements."
 source = "cases/iterator-adapters.hew"
 suites = ["acceptance", "safety"]
 timeout_seconds = 20

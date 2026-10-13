@@ -303,7 +303,7 @@ impl Checker {
         self.callable_candidates_for_expr(&place.0, &place.1)
     }
 
-    fn replace_place_value_candidates(
+    pub(super) fn replace_place_value_candidates(
         &mut self,
         target: &Spanned<Expr>,
         candidates: IndirectCallCandidates,
@@ -379,6 +379,26 @@ impl Checker {
             SpanKey::in_module(span, self.current_module_idx),
             IndirectCallCandidates::unknown(),
         );
+    }
+
+    /// Implicit failure edges without replayed defers retain an opaque output.
+    pub(super) fn record_receiver_output(&mut self, opaque_defers: bool) {
+        let Some(body) = self.effect_graph.current_body.clone() else {
+            return;
+        };
+        let Some(receiver) = self
+            .var_self_receiver
+            .as_ref()
+            .and_then(|name| self.env.lookup_ref(name.as_str()))
+        else {
+            return;
+        };
+        let mut candidates = receiver.value_candidates.clone();
+        candidates.may_be_unknown |= opaque_defers;
+        self.callable_receiver_outputs
+            .entry(body)
+            .and_modify(|output| output.join(candidates.clone()))
+            .or_insert(candidates);
     }
 
     /// Parameters retain their own symbolic origin until a selected call

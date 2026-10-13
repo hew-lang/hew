@@ -7,6 +7,10 @@ fn second() -> i64 {
     22
 }
 
+fn missing() -> Option<i64> {
+    .None
+}
+
 fn changing(initial: fn[clone, suspends]() -> i64) -> fn[var, clone, suspends]() -> i64 {
     capture(var initial) || {
         let value = initial();
@@ -22,6 +26,17 @@ type Holder {
 impl Holder {
     fn replace(var self) {
         self.action = second;
+    }
+
+    fn replace_through_helper(var self) {
+        self.replace();
+    }
+
+    fn replace_then_try(var self) -> Option<i64> {
+        self.action = second;
+        let _ = missing()?;
+        self.action = first;
+        .Some(0)
     }
 }
 
@@ -57,5 +72,13 @@ fn main() -> i64 {
     println(holder.action());
     holder.replace();
     println(holder.action());
+    var delegated = Holder { action: first };
+    for _index in 0..2 {
+        println((delegated.action)());
+        delegated.replace_through_helper();
+    }
+    var failed = Holder { action: first };
+    let _ = failed.replace_then_try();
+    println((failed.action)());
     0
 }

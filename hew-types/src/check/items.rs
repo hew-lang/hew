@@ -1186,6 +1186,9 @@ impl Checker {
             Some(&expected_ret)
         };
         let actual = self.check_function_block(fd, block_expected);
+        if !Self::arm_skips_join(&actual) {
+            self.record_receiver_output(false);
+        }
         // A completely empty body on a method whose `Self` is a compiler
         // builtin (`ActorHandle`, `RemotePid`, `Vec`, …) is a fail-closed
         // declaration stub: no source constructor exists for an opaque pid
@@ -1947,6 +1950,7 @@ impl Checker {
     /// the checked body's type: a `!` body never reaches its back edge.
     pub(super) fn exit_loop_checked(&mut self, body_ty: &Ty) {
         let exit = self.env.exit_loop(!Self::arm_skips_join(body_ty));
+        self.loop_value_candidates.extend(exit.value_candidates);
         self.report_deferred_init_conflicts(&exit.deferred_init_conflicts);
         self.report_loop_carried_moves(&exit.carried_moves);
     }

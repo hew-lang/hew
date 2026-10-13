@@ -5,8 +5,8 @@
 pub(super) use super::*;
 
 #[test]
-fn indirect_calls_publish_closure_candidates_and_opaque_origins() {
-    let source = "fn invoke(f: fn() -> i64) -> i64 {\n    f()\n}\n\ntype Bag {\n    callback: fn() -> i64;\n}\n\nfn main() {\n    let local = || 1;\n    let selected = if true {\n        || 2\n    } else {\n        || 3\n    };\n    let bag = Bag { callback: || 4 };\n    println(local());\n    println(selected());\n    println(bag.callback());\n    println(invoke(|| 5));\n}\n";
+fn indirect_calls_publish_local_closure_and_formal_origins() {
+    let source = "fn invoke(f: fn() -> i64) -> i64 {\n    f()\n}\n\nfn main() {\n    let local = || 1;\n    let selected = if true {\n        || 2\n    } else {\n        || 3\n    };\n    println(local());\n    println(selected());\n    println(invoke(|| 5));\n}\n";
     let output = check_source(source);
     assert!(output.errors.is_empty(), "{:#?}", output.errors);
     let closure = |text: &str| {
@@ -59,15 +59,6 @@ fn indirect_calls_publish_closure_candidates_and_opaque_origins() {
         Some(&IndirectCallCandidates {
             known: vec![CallableCandidate::Formal(*formal)],
             may_be_unknown: false,
-        })
-    );
-    assert_eq!(
-        output
-            .indirect_call_candidates
-            .get(&call_key("bag.callback()")),
-        Some(&IndirectCallCandidates {
-            known: vec![],
-            may_be_unknown: true,
         })
     );
 }

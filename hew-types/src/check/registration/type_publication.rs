@@ -2083,7 +2083,7 @@ impl Checker {
                         self.current_module_idx = importer_file_idx;
                     }
                 }
-                Item::Import(_) => {}
+                Item::Macro(_) | Item::MacroCall(_) | Item::Import(_) => {}
             }
         }
         self.current_item_source = importer_item_source;

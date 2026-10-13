@@ -148,11 +148,42 @@ impl Pattern {
         else {
             return None;
         };
-        let (text, offset, contexts) = source(children);
-        let mut parser = Parser::with_contexts(&text, offset, Arc::new(contexts));
+        let (text, offset, contexts, fragments) = source(children);
+        let mut parser =
+            Parser::with_contexts(&text, offset, Arc::new(contexts)).with_fragments(fragments);
         let mut state = MatchState::default();
         let end = match_sequence(&self.elements, children, 0, &mut state, &mut parser)?;
         (end == children.len()).then(|| state.finish())
+    }
+
+    pub(crate) fn placeholders(&self) -> Captures {
+        let mut captures = Captures::default();
+        for (&name, spec) in &self.captures {
+            let text = match spec.kind {
+                FragmentKind::Ident => format!("__capture_{name}"),
+                FragmentKind::Expr | FragmentKind::Literal => "0".into(),
+                FragmentKind::Ty => "i32".into(),
+                FragmentKind::Pat => "_".into(),
+                FragmentKind::Block => "{}".into(),
+            };
+            let parsed = hew_parser::parse_fragment(&text, 0, Arc::default(), spec.kind);
+            captures.values.insert(
+                name,
+                vec![Capture {
+                    syntax: Arc::new(parsed.fragment.expect("placeholder is valid syntax")),
+                    tokens: Arc::from([TokenTree::Token {
+                        spelling: text.clone(),
+                        span: 0..text.len(),
+                        context: hew_parser::ast::SyntaxContext::ROOT,
+                        leading: String::new(),
+                    }]),
+                }],
+            );
+            if let Some(group) = spec.repetition {
+                captures.repetitions.insert(group, 1);
+            }
+        }
+        captures
     }
 
     fn compile_sequence(
@@ -166,6 +197,12 @@ impl Pattern {
         while let Some(tree) = trees.get(cursor) {
             if spelling(tree) != Some("$") {
                 elements.push(match tree {
+                    TokenTree::Fragment { .. } => {
+                        return Err(error(
+                            tree,
+                            "a macro pattern cannot inspect a parsed capture",
+                        ));
+                    }
                     TokenTree::Token { spelling, .. } => Element::Token(spelling.clone()),
                     TokenTree::Group {
                         delimiter,
@@ -445,6 +482,18 @@ fn parse_capture(
     trees: &[TokenTree],
     parser: &mut Parser<'_>,
 ) -> Option<(usize, Capture)> {
+    if let TokenTree::Fragment { syntax, .. } = trees.first()? {
+        if syntax.kind() != kind {
+            return None;
+        }
+        return Some((
+            1,
+            Capture {
+                syntax: Arc::new((**syntax).clone()),
+                tokens: Arc::from(&trees[..1]),
+            },
+        ));
+    }
     let start = trees.first()?.span().start;
     let parsed = parser.parse_fragment_at(start, kind);
     if !parsed.errors.is_empty() {

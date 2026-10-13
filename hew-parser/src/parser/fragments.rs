@@ -56,6 +56,12 @@ pub fn parse_generated(
 }
 
 impl Parser<'_> {
+    #[must_use]
+    pub fn with_fragments(mut self, fragments: FragmentInputs) -> Self {
+        self.fragments = fragments;
+        self
+    }
+
     /// Parse a fragment at a token boundary without re-lexing or changing the cursor.
     #[must_use]
     pub fn parse_fragment_at(&mut self, start: usize, kind: FragmentKind) -> FragmentParseResult {
@@ -109,6 +115,24 @@ impl Parser<'_> {
             _ => return Err(self.invalid_fragment_position(&fragment, "an expression")),
         };
         self.consume_fragment(&expression.1);
+        if let Some(expander) = self.expander.as_ref() {
+            let span = expression.1.clone();
+            if let Some(source) = self
+                .source
+                .get(span.start - self.source_offset..span.end - self.source_offset)
+                .filter(|source| source.contains('!'))
+            {
+                let mut fragments = self.fragments.within(span.clone());
+                fragments.remove(span.start);
+                let mut parser =
+                    Parser::with_contexts(source, span.start, Arc::clone(&self.contexts))
+                        .with_fragments(fragments)
+                        .with_expander(Rc::clone(expander), self.macro_source.clone());
+                let expanded = parser.parse_expr();
+                self.errors.extend(parser.errors);
+                return expanded.map(Some).ok_or(());
+            }
+        }
         Ok(Some(expression))
     }
 

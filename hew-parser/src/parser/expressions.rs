@@ -907,6 +907,19 @@ impl Parser<'_> {
                 }
             }
             Token::Identifier(name) => {
+                if self.is_macro_call()
+                    && !(matches!(
+                        *name,
+                        "include_str" | "include_bytes" | "location" | "stringify" | "embed"
+                    ) && self.peek_at(self.pos + 1) == Some(&Token::Bang))
+                {
+                    let call = self.parse_macro_call()?;
+                    if self.expander.is_some() {
+                        return self.expand_macro_expression(&call);
+                    }
+                    let end = call.input.span().end;
+                    return Some((Expr::MacroCall(Box::new(call)), start..end));
+                }
                 let name = self.ident_at(name, &self.peek_span());
                 let name_span = self.peek_span();
                 self.advance();

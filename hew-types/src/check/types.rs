@@ -3223,6 +3223,7 @@ pub(super) enum BareActorResolution {
     reason = "checker state flags are independent booleans"
 )]
 pub struct Checker {
+    pub(super) expansions: std::sync::Arc<hew_parser::macro_syntax::ExpansionMap>,
     pub(super) input_references: HashMap<SpanKey, crate::compile_time::InputReference>,
     pub(super) input_provider: Option<std::sync::Arc<dyn crate::compile_time::InputProvider>>,
     pub(super) compile_time_values: HashMap<SpanKey, crate::compile_time::ConstantValue>,
@@ -4408,6 +4409,7 @@ impl Checker {
     )]
     pub fn new(module_registry: ModuleRegistry) -> Self {
         Self {
+            expansions: Default::default(),
             input_provider: None,
             input_references: HashMap::new(),
             compile_time_values: HashMap::new(),

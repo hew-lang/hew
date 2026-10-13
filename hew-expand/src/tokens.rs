@@ -1,5 +1,5 @@
 use hew_parser::ast::Span;
-use hew_parser::macro_syntax::{Delimiter, TokenContexts, TokenTree};
+use hew_parser::macro_syntax::{Delimiter, FragmentInputs, TokenContexts, TokenTree};
 
 pub(crate) fn delimiters(delimiter: Delimiter) -> (&'static str, &'static str) {
     match delimiter {
@@ -13,26 +13,34 @@ pub(crate) fn delimiters(delimiter: Delimiter) -> (&'static str, &'static str) {
 pub(crate) fn spelling(tree: &TokenTree) -> Option<&str> {
     match tree {
         TokenTree::Token { spelling, .. } => Some(spelling),
-        TokenTree::Group { .. } => None,
+        TokenTree::Group { .. } | TokenTree::Fragment { .. } => None,
     }
 }
 
-pub(crate) fn source(trees: &[TokenTree]) -> (String, usize, TokenContexts) {
+pub(crate) fn source(trees: &[TokenTree]) -> (String, usize, TokenContexts, FragmentInputs) {
     let start = trees.first().map_or(0, |tree| tree.span().start);
     let end = trees.last().map_or(start, |tree| tree.span().end);
     let mut bytes = vec![b' '; end - start];
     let mut contexts = TokenContexts::default();
+    let mut fragments = FragmentInputs::default();
     for tree in trees {
-        write_source(tree, start, &mut bytes, &mut contexts);
+        write_source(tree, start, &mut bytes, &mut contexts, &mut fragments);
     }
     (
         String::from_utf8(bytes).expect("token spellings preserve UTF-8"),
         start,
         contexts,
+        fragments,
     )
 }
 
-fn write_source(tree: &TokenTree, offset: usize, bytes: &mut [u8], contexts: &mut TokenContexts) {
+fn write_source(
+    tree: &TokenTree,
+    offset: usize,
+    bytes: &mut [u8],
+    contexts: &mut TokenContexts,
+    fragments: &mut FragmentInputs,
+) {
     let leading = tree.leading().as_bytes();
     if let Some(start) = tree.span().start.checked_sub(leading.len() + offset) {
         bytes[start..tree.span().start - offset].copy_from_slice(leading);
@@ -61,8 +69,14 @@ fn write_source(tree: &TokenTree, offset: usize, bytes: &mut [u8], contexts: &mu
             let end = span.end - offset - 1;
             bytes[end - closing.len()..end].copy_from_slice(closing.as_bytes());
             for child in children {
-                write_source(child, offset, bytes, contexts);
+                write_source(child, offset, bytes, contexts, fragments);
             }
+        }
+        TokenTree::Fragment { syntax, tokens } => {
+            for token in tokens {
+                write_source(token, offset, bytes, contexts, fragments);
+            }
+            fragments.insert((**syntax).clone());
         }
     }
 }

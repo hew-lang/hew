@@ -1236,6 +1236,17 @@ impl<'a> Formatter<'a> {
 
     fn format_item(&mut self, item: &Item, span_start: usize, span_end: usize) {
         match item {
+            Item::Macro(_) | Item::MacroCall(_) => {
+                self.write_indent();
+                self.write(self.source.get(span_start..span_end).unwrap_or_default());
+                self.newline();
+                self.prev_source_pos = span_end;
+                while self.next_comment < self.comments.len()
+                    && self.comments[self.next_comment].span.start < span_end
+                {
+                    self.next_comment += 1;
+                }
+            }
             Item::Import(decl) => self.format_import(decl, span_start..span_end),
             Item::Const(decl) => self.format_const(decl),
             Item::TypeDecl(decl) => self.format_type_decl(decl, span_start, span_end),
@@ -3435,6 +3446,7 @@ impl<'a> Formatter<'a> {
             | Expr::ChainValue
             | Expr::RegexLiteral(_)
             | Expr::ByteStringLiteral(_)
+            | Expr::MacroCall(_)
             | Expr::MacroInvocation { .. }
             | Expr::ByteArrayLiteral(_)
             | Expr::Yield(None)
@@ -4247,6 +4259,15 @@ impl<'a> Formatter<'a> {
             self.flush_inline_comments(expr.1.start);
         }
         match &expr.0 {
+            Expr::MacroCall(_) => {
+                self.write(self.source.get(expr.1.clone()).unwrap_or_default());
+                self.prev_source_pos = expr.1.end;
+                while self.next_comment < self.comments.len()
+                    && self.comments[self.next_comment].span.start < expr.1.end
+                {
+                    self.next_comment += 1;
+                }
+            }
             Expr::Binary { left, op, right } => {
                 let prec = binop_precedence(*op);
                 self.format_expr_prec(left, prec, false);

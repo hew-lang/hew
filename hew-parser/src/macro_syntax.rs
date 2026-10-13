@@ -29,6 +29,10 @@ pub enum TokenTree {
         leading: String,
         closing: String,
     },
+    Fragment {
+        syntax: Box<Fragment>,
+        tokens: Vec<TokenTree>,
+    },
 }
 
 impl TokenTree {
@@ -36,6 +40,7 @@ impl TokenTree {
     pub fn leading(&self) -> &str {
         match self {
             Self::Token { leading, .. } | Self::Group { leading, .. } => leading,
+            Self::Fragment { tokens, .. } => tokens.first().map_or("", Self::leading),
         }
     }
 
@@ -43,6 +48,7 @@ impl TokenTree {
     pub fn span(&self) -> &Span {
         match self {
             Self::Token { span, .. } | Self::Group { span, .. } => span,
+            Self::Fragment { syntax, .. } => syntax.span(),
         }
     }
 }
@@ -57,7 +63,7 @@ pub enum FragmentKind {
     Literal,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Fragment {
     Ident(Spanned<Ident>),
     Expr(Spanned<Expr>),
@@ -68,6 +74,18 @@ pub enum Fragment {
 }
 
 impl Fragment {
+    #[must_use]
+    pub fn kind(&self) -> FragmentKind {
+        match self {
+            Self::Ident(_) => FragmentKind::Ident,
+            Self::Expr(_) => FragmentKind::Expr,
+            Self::Ty(_) => FragmentKind::Ty,
+            Self::Pat(_) => FragmentKind::Pat,
+            Self::Block(_) => FragmentKind::Block,
+            Self::Literal(_) => FragmentKind::Literal,
+        }
+    }
+
     #[must_use]
     pub fn span(&self) -> &Span {
         match self {
@@ -88,6 +106,17 @@ pub struct TokenContexts {
 }
 
 impl TokenContexts {
+    #[must_use]
+    pub fn within(&self, span: Span) -> Self {
+        Self {
+            spans: self
+                .spans
+                .range(span)
+                .map(|(&start, &value)| (start, value))
+                .collect(),
+        }
+    }
+
     pub fn insert(&mut self, span: Span, context: SyntaxContext) {
         self.spans.insert(span.start, (span.end, context));
     }
@@ -109,6 +138,21 @@ pub struct FragmentInputs {
 }
 
 impl FragmentInputs {
+    #[must_use]
+    pub fn within(&self, span: Span) -> Self {
+        Self {
+            fragments: self
+                .fragments
+                .range(span)
+                .map(|(&start, value)| (start, value.clone()))
+                .collect(),
+        }
+    }
+
+    pub(crate) fn remove(&mut self, start: usize) {
+        self.fragments.remove(&start);
+    }
+
     pub fn insert(&mut self, fragment: Fragment) {
         self.fragments.insert(fragment.span().start, fragment);
     }
@@ -144,6 +188,34 @@ pub struct MacroCall {
     pub path: Path,
     pub input: TokenTree,
 }
+
+#[derive(Debug)]
+pub struct ExpansionInput {
+    pub source: String,
+    pub offset: usize,
+    pub contexts: std::sync::Arc<TokenContexts>,
+    pub fragments: FragmentInputs,
+}
+
+pub trait ExpansionProvider: std::fmt::Debug {
+    fn begin(
+        &mut self,
+        call: &MacroCall,
+        category: ExpansionCategory,
+        source: &std::path::Path,
+    ) -> Result<ExpansionInput, String>;
+
+    fn complete(&mut self);
+
+    fn declare(
+        &mut self,
+        declaration: &MacroDecl,
+        span: Span,
+        source: &std::path::Path,
+    ) -> Result<(), String>;
+}
+
+pub type SharedExpander = std::rc::Rc<std::cell::RefCell<dyn ExpansionProvider>>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExpansionId(pub u32);
@@ -208,6 +280,27 @@ pub struct ExpansionMap {
 }
 
 impl ExpansionMap {
+    /// Resolve a generated position to caller syntax or the outer invocation.
+    #[must_use]
+    pub fn source_origin(&self, span: &Span) -> Option<(PathBuf, Span)> {
+        let expansion = self
+            .expansions
+            .iter()
+            .find(|expansion| expansion.synthetic.contains(&span.start))?;
+        let origin = expansion
+            .origins
+            .iter()
+            .find(|(generated, _)| generated.contains(&span.start))
+            .map_or(&expansion.invocation, |(_, origin)| origin);
+        let origin = match origin {
+            Origin::Caller { .. } => origin,
+            Origin::Template { .. } => &expansion.invocation,
+        };
+        let (Origin::Caller { file, span } | Origin::Template { file, span }) = origin;
+        self.source_origin(span)
+            .or_else(|| Some((file.clone(), span.clone())))
+    }
+
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.contexts.rows.is_empty() && self.expansions.is_empty() && self.sources.is_empty()

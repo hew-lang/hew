@@ -747,6 +747,8 @@ pub struct Parser<'src> {
     pub(crate) source_offset: usize,
     pub(crate) contexts: Arc<TokenContexts>,
     pub(crate) fragments: FragmentInputs,
+    pub(crate) expander: Option<crate::macro_syntax::SharedExpander>,
+    pub(crate) macro_source: std::path::PathBuf,
     /// End byte of the most recently consumed token (absolute).
     ///
     /// For a full-program parse this starts at 0.  For an f-string sub-parser

@@ -112,6 +112,8 @@ impl<'src> Parser<'src> {
             source_offset: offset,
             contexts,
             fragments: FragmentInputs::default(),
+            expander: None,
+            macro_source: std::path::PathBuf::new(),
             last_token_end: offset,
         }
     }

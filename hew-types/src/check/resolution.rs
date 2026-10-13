@@ -1812,7 +1812,9 @@ impl Checker {
                 // Record declarations carry no function-signature holes (only
                 // type-def inference holes, which `register_record_decl` records
                 // via `record_type_def_inference_holes`).  No action needed here.
-                Item::Import(_)
+                Item::Macro(_)
+                | Item::MacroCall(_)
+                | Item::Import(_)
                 | Item::Const(_)
                 | Item::Supervisor(_)
                 | Item::Machine(_)

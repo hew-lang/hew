@@ -495,6 +495,7 @@ fn where_clause_has_infer(clause: Option<&WhereClause>) -> bool {
 fn item_has_inferred_declaration(item: &Item) -> bool {
     match item {
         Item::Function(function) => signature_has_infer(function),
+        Item::Macro(_) | Item::MacroCall(_) => true,
         Item::Import(_) => false,
         Item::Const(declaration) => type_has_infer(&declaration.ty.0),
         Item::TypeAlias(declaration) => {

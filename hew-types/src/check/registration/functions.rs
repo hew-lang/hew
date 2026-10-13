@@ -110,6 +110,7 @@ impl Checker {
 
     pub(super) fn collect_item_type_param_names(&mut self, item: &Item) {
         match item {
+            Item::Macro(_) | Item::MacroCall(_) => {}
             Item::Supervisor(sd) => {
                 self.insert_type_param_names(&sd.type_params);
                 for method in &sd.methods {
@@ -210,6 +211,7 @@ impl Checker {
                     let saved_source_type_defs = std::mem::take(&mut self.source_type_defs);
                     for (item, _) in &module.items {
                         match item {
+                            Item::Macro(_) | Item::MacroCall(_) => {}
                             Item::TypeDecl(td) => {
                                 self.local_type_defs.insert(td.name.to_string());
                                 self.source_type_defs.insert(td.name.to_string());
@@ -315,6 +317,7 @@ impl Checker {
     )]
     pub(in crate::check) fn collect_function_item(&mut self, item: &Item, span: &Span) {
         match item {
+            Item::Macro(_) | Item::MacroCall(_) => {}
             Item::Function(fd) => {
                 if self.reject_protected_prelude_declaration(fd.name.name.as_str(), span) {
                     return;

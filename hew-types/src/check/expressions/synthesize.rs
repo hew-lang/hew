@@ -172,7 +172,7 @@ impl Checker {
                 Ty::option(Ty::Var(TypeVar::fresh()))
             }
             Expr::Ident(name) => {
-                let ty = self.synthesize_identifier(name.name.as_str(), span);
+                let ty = self.synthesize_identifier(*name, span);
                 self.record_value_path_resolution(expr, span);
                 ty
             }
@@ -198,11 +198,8 @@ impl Checker {
             }
             Expr::GenericApplySuffix { target, type_args } => match &target.0 {
                 Expr::Ident(name) => {
-                    let ty = self.synthesize_identifier_with_type_args(
-                        name.name.as_str(),
-                        Some(type_args),
-                        span,
-                    );
+                    let ty =
+                        self.synthesize_identifier_with_type_args(*name, Some(type_args), span);
                     if !matches!(ty, Ty::Error) {
                         self.record_value_path_resolution(&target.0, &target.1);
                     }
@@ -1057,7 +1054,7 @@ impl Checker {
         let entry = self.env.ownership_snapshot();
         self.env.push_scope();
         if let Some((Some(name), binding_span)) = error {
-            self.check_shadowing(name.name.as_str(), binding_span);
+            self.check_shadowing(*name, binding_span);
             self.env
                 .define_with_span(name.to_string(), error_ty, false, binding_span.clone());
             self.record_local_resolution(*name, binding_span);
@@ -1237,7 +1234,11 @@ impl Checker {
         Ty::Unit
     }
 
-    pub(in crate::check) fn synthesize_identifier(&mut self, name: &str, span: &Span) -> Ty {
+    pub(in crate::check) fn synthesize_identifier(
+        &mut self,
+        name: impl crate::env::LexicalName,
+        span: &Span,
+    ) -> Ty {
         self.synthesize_identifier_with_type_args(name, None, span)
     }
 
@@ -1247,11 +1248,13 @@ impl Checker {
     )]
     pub(super) fn synthesize_identifier_with_type_args(
         &mut self,
-        name: &str,
+        name: impl crate::env::LexicalName,
         type_args: Option<&[Spanned<TypeExpr>]>,
         span: &Span,
     ) -> Ty {
-        if type_args.is_some() && self.env.lookup_ref(name).is_some() {
+        let ident = name.lexical_key();
+        let name = ident.name.as_str();
+        if type_args.is_some() && self.env.lookup_ref(ident).is_some() {
             self.report_error(
                 TypeErrorKind::InvalidOperation,
                 span,
@@ -1301,8 +1304,8 @@ impl Checker {
         if self.report_bare_const_scope_error(name, span) {
             return Ty::Error;
         }
-        if self.is_constant_identifier(hew_parser::ast::Ident::new(surface_name)) {
-            if let Some(binding) = self.env.lookup(name) {
+        if self.is_constant_identifier(ident) {
+            if let Some(binding) = self.env.lookup(ident) {
                 return binding.ty.clone();
             }
         }
@@ -1339,7 +1342,7 @@ impl Checker {
                 }
             }
         }
-        if let Some((depth, binding)) = self.env.lookup_with_depth(name) {
+        if let Some((depth, binding)) = self.env.lookup_with_depth(ident) {
             let binding_id = binding.id;
             let is_moved = binding.is_moved;
             let deferred_init = binding.deferred_init();
@@ -1444,7 +1447,7 @@ impl Checker {
                 }
             }
             ty
-        } else if let Some(fn_sig_key) = self.visible_fn_signature_key(name) {
+        } else if let Some(fn_sig_key) = self.visible_fn_signature_key(ident) {
             // Function name used as a value (e.g., variant constructor)
             if let Some(source_identity) = self
                 .import_fn_name_aliases

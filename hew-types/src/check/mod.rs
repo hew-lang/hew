@@ -807,7 +807,24 @@ impl Checker {
     /// Select a free-function signature in the current source file. Explicit
     /// imports publish only lexical bindings; their canonical declarations own
     /// the signatures, leaving ambient builtin signatures intact.
-    pub(super) fn visible_fn_signature_key(&self, name: &str) -> Option<String> {
+    pub(super) fn visible_fn_signature_key(
+        &self,
+        name: impl crate::env::LexicalName,
+    ) -> Option<String> {
+        let ident = name.lexical_key();
+        let name = ident.name.as_str();
+        if ident.ctx != hew_parser::ast::SyntaxContext::ROOT {
+            let site = self.scope_site()?;
+            let scope::Resolution::Def(declaration) =
+                self.scopes.value_head(&self.env, site, ident)?
+            else {
+                return None;
+            };
+            return self
+                .fn_sig_keys
+                .iter()
+                .find_map(|(key, id)| (*id == declaration).then(|| key.clone()));
+        }
         let canonical = Self::declared_fn_identity(self.canonical_fn_owner(), name);
         // The current source scope owns an authored function or extern before
         // any imported binding with the same spelling. Extern declarations do
@@ -1922,9 +1939,11 @@ impl Checker {
             Item::Supervisor(decl) => decl.visibility,
             Item::Machine(decl) => decl.visibility,
             Item::Record(decl) => decl.visibility,
-            Item::Import(_) | Item::Impl(_) | Item::ExternBlock(_) => {
-                hew_parser::ast::Visibility::Pub
-            }
+            Item::Macro(_)
+            | Item::MacroCall(_)
+            | Item::Import(_)
+            | Item::Impl(_)
+            | Item::ExternBlock(_) => hew_parser::ast::Visibility::Pub,
         };
         let mut declare = |kind: Kind,
                            ordinal: usize,
@@ -2054,7 +2073,7 @@ impl Checker {
             minted
         };
         match item {
-            Item::Import(_) => {}
+            Item::Macro(_) | Item::MacroCall(_) | Item::Import(_) => {}
             Item::Impl(_) => {
                 declare(
                     Kind::ImplBlock,
@@ -2664,6 +2683,7 @@ impl Checker {
     )]
     fn fork_dependency_state(&self) -> Self {
         Self {
+            expansions: self.expansions.clone(),
             input_provider: self.input_provider.clone(),
             input_references: self.input_references.clone(),
             compile_time_values: self.compile_time_values.clone(),
@@ -2956,6 +2976,7 @@ impl Checker {
         // registration pass below resolves declaration identity through this
         // table, so it must be complete before any key is minted.
         self.mint_module_identities(program);
+        self.expansions = std::sync::Arc::new(program.expansions.clone());
         if !program.expansions.contexts.rows.is_empty() {
             let mut contexts = scope::SyntaxContexts::new();
             for row in &program.expansions.contexts.rows {
@@ -4870,6 +4891,7 @@ impl Checker {
             | Expr::ChainValue
             | Expr::RegexLiteral(_)
             | Expr::ByteStringLiteral(_)
+            | Expr::MacroCall(_)
             | Expr::MacroInvocation { .. }
             | Expr::ByteArrayLiteral(_) => {}
         }
@@ -5310,6 +5332,7 @@ fn collect_lambda_spans_in_expr(
         | Expr::ChainValue
         | Expr::RegexLiteral(_)
         | Expr::ByteStringLiteral(_)
+        | Expr::MacroCall(_)
         | Expr::MacroInvocation { .. }
         | Expr::ByteArrayLiteral(_) => {}
     }

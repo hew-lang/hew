@@ -204,10 +204,16 @@ impl Checker {
                 "compilation inputs are unavailable".into(),
             )
         })?;
-        let source = self
-            .current_item_source
-            .as_deref()
-            .unwrap_or_else(|| provider.root_source());
+        let original = self.expansions.source_origin(span);
+        let source = original
+            .as_ref()
+            .map(|(path, _)| path.as_path())
+            .unwrap_or_else(|| {
+                self.current_item_source
+                    .as_deref()
+                    .unwrap_or_else(|| provider.root_source())
+            });
+        let span = original.as_ref().map_or(span, |(_, span)| span);
         let filename = source
             .file_name()
             .and_then(|name| name.to_str())

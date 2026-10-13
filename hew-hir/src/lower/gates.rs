@@ -187,6 +187,8 @@ pub(super) fn check_binary_operator_gates(ctx: &mut LowerCtx, program: &Program)
             | Item::Supervisor(_)
             | Item::Record(_)
             | Item::Machine(_)
+            | Item::Macro(_)
+            | Item::MacroCall(_)
             | Item::Import(_) => {}
         }
     }

@@ -157,10 +157,12 @@ impl Writer<'_> {
             }
             let end = self.source.len();
             if kind != FragmentKind::Ident {
-                let parsed = hew_parser::parse_fragment(
+                let parsed = hew_parser::parse_generated_fragment(
                     &self.source[start..end],
                     self.offset + start,
-                    Arc::new(self.contexts.clone()),
+                    Arc::new(self.contexts.within(self.offset + start..self.offset + end)),
+                    self.fragments
+                        .within(self.offset + start..self.offset + end),
                     kind,
                 );
                 if !parsed.errors.is_empty() || parsed.consumed != end - start {
@@ -188,6 +190,12 @@ impl Writer<'_> {
         self.charge(tree)?;
         self.leading(tree.leading());
         match tree {
+            TokenTree::Fragment { .. } => {
+                return Err(error(
+                    tree,
+                    "a parsed capture cannot become template syntax",
+                ));
+            }
             TokenTree::Token { spelling, span, .. } => {
                 self.token(spelling, span.clone(), self.context, OriginKind::Template);
             }
@@ -224,6 +232,34 @@ impl Writer<'_> {
             self.leading(tree.leading());
         }
         match tree {
+            TokenTree::Fragment { syntax, tokens } => {
+                let start = self.source.len();
+                for (index, token) in tokens.iter().enumerate() {
+                    self.capture_tree(token, index == 0)?;
+                }
+                let parsed = hew_parser::parse_generated_fragment(
+                    &self.source[start..],
+                    self.offset + start,
+                    Arc::new(
+                        self.contexts
+                            .within(self.offset + start..self.offset + self.source.len()),
+                    ),
+                    self.fragments
+                        .within(self.offset + start..self.offset + self.source.len()),
+                    syntax.kind(),
+                );
+                if !parsed.errors.is_empty() || parsed.consumed != self.source.len() - start {
+                    return Err(error(
+                        tree,
+                        "captured syntax could not retain its fragment boundary",
+                    ));
+                }
+                self.fragments.insert(
+                    parsed
+                        .fragment
+                        .ok_or_else(|| error(tree, "missing captured syntax"))?,
+                );
+            }
             TokenTree::Token {
                 spelling,
                 span,

@@ -333,6 +333,8 @@ pub struct Attribute {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Item {
+    Macro(crate::macro_syntax::MacroDecl),
+    MacroCall(crate::macro_syntax::MacroCall),
     Import(ImportDecl),
     Const(ConstDecl),
     TypeDecl(TypeDecl),
@@ -430,6 +432,7 @@ pub enum Expr {
         name: Ident,
         args: Vec<Spanned<Expr>>,
     },
+    MacroCall(Box<crate::macro_syntax::MacroCall>),
     /// Expected-type contextual variant spelling, `.Variant`.
     ///
     /// This is deliberately not represented as a bare identifier: the

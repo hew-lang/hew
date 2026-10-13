@@ -356,7 +356,7 @@ impl Checker {
             if let Some((pat, ps)) = &pf.pattern {
                 self.bind_pattern(pat, ty, is_mutable, ps);
             } else {
-                self.check_shadowing(pf.name.name.as_str(), span);
+                self.check_shadowing(pf.name, span);
                 self.env.define_with_span(
                     pf.name.to_string(),
                     ty.clone(),
@@ -1086,7 +1086,7 @@ impl Checker {
                 if let Some((root, path)) = scrutinee_place {
                     self.record_pattern_place_transfer(&root, path, ty, span);
                 }
-                self.check_shadowing(name.name.as_str(), span);
+                self.check_shadowing(*name, span);
                 self.env.define_with_span(
                     *name,
                     literal_var.unwrap_or_else(|| ty.clone()),
@@ -1260,7 +1260,7 @@ impl Checker {
                                     if let Some((pat, ps)) = &pf.pattern {
                                         self.bind_pattern(pat, &field_ty, is_mutable, ps);
                                     } else {
-                                        self.check_shadowing(pf.name.name.as_str(), span);
+                                        self.check_shadowing(pf.name, span);
                                         self.env.define_with_span(
                                             pf.name.to_string(),
                                             field_ty,
@@ -1298,7 +1298,7 @@ impl Checker {
                                     if let Some((pat, ps)) = &pf.pattern {
                                         self.bind_pattern(pat, &field_ty, is_mutable, ps);
                                     } else {
-                                        self.check_shadowing(pf.name.name.as_str(), span);
+                                        self.check_shadowing(pf.name, span);
                                         self.env.define_with_span(
                                             pf.name.to_string(),
                                             field_ty,
@@ -1376,7 +1376,7 @@ impl Checker {
                                 if let Some((pat, ps)) = &pf.pattern {
                                     self.bind_pattern(pat, &field_ty, is_mutable, ps);
                                 } else {
-                                    self.check_shadowing(pf.name.name.as_str(), span);
+                                    self.check_shadowing(pf.name, span);
                                     self.env.define_with_span(
                                         pf.name.to_string(),
                                         field_ty,

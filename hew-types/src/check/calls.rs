@@ -1833,7 +1833,7 @@ impl Checker {
         // polymorphic closures and actor-handle capture checks.
         let lexical_shadow_of_item = matches!(&func.0, Expr::Ident(name)
             if self.env.lookup_ref_with_depth(*name).is_some_and(|(depth, _)| depth > 0)
-                && self.visible_fn_signature_key(name.name.as_str()).is_some());
+                && self.visible_fn_signature_key(*name).is_some());
         let func_name = match &func.0 {
             Expr::Ident(name) => name.to_string(),
             Expr::FieldAccess { object, field } => {
@@ -2358,8 +2358,11 @@ impl Checker {
         let visible_fn_key = if lexical_shadow_of_item {
             None
         } else {
-            self.visible_fn_signature_key(&func_name)
-                .or_else(|| self.enclosing_actor_method_key(&func_name))
+            self.visible_fn_signature_key(match &func.0 {
+                Expr::Ident(ident) => *ident,
+                _ => Ident::new(&func_name),
+            })
+            .or_else(|| self.enclosing_actor_method_key(&func_name))
         };
         let has_visible_fn_signature = visible_fn_key.is_some();
         let resolved_fn_name = visible_fn_key.unwrap_or_else(|| func_name.clone());

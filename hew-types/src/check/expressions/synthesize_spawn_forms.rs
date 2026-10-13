@@ -997,7 +997,7 @@ impl Checker {
             } else {
                 Ty::Var(TypeVar::fresh())
             };
-            self.check_shadowing(p.name.name.as_str(), &p.name_span);
+            self.check_shadowing(p.name, &p.name_span);
             self.env
                 .define_param_with_span(p.name, ty.clone(), false, p.name_span.clone());
             self.record_local_resolution(p.name, &p.name_span);

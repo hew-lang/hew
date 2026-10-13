@@ -379,7 +379,9 @@ pub fn lower_program_with_mono_cap(
             // No fn signatures to register for the variants below in this
             // pass. If a new Item variant is added, the compiler will force a
             // conscious decision here.
-            Item::Import(_)
+            Item::Macro(_)
+            | Item::MacroCall(_)
+            | Item::Import(_)
             | Item::TypeDecl(_)
             | Item::TypeAlias(_)
             | Item::Trait(_)
@@ -701,7 +703,9 @@ pub fn lower_program_with_mono_cap(
                             ctx.register_const_entry(const_decl, item_span, false);
                         }
                         // Non-pub Function/TypeDecl/Record fall here (not exported to importers).
-                        Item::Import(_)
+                        Item::Macro(_)
+                        | Item::MacroCall(_)
+                        | Item::Import(_)
                         | Item::Function(_)
                         | Item::TypeDecl(_)
                         | Item::TypeAlias(_)
@@ -786,7 +790,9 @@ pub fn lower_program_with_mono_cap(
             // No record shape to register for the variants below. If a new
             // Item variant with field layout is added, the compiler will force
             // a conscious decision here.
-            Item::Import(_)
+            Item::Macro(_)
+            | Item::MacroCall(_)
+            | Item::Import(_)
             | Item::Const(_)
             | Item::TypeAlias(_)
             | Item::Trait(_)
@@ -898,7 +904,9 @@ pub fn lower_program_with_mono_cap(
                 // No variant bare-names to count for these items. If a new
                 // Item variant with enumerable named variants is added, the
                 // compiler will force a conscious decision here.
-                Item::Import(_)
+                Item::Macro(_)
+                | Item::MacroCall(_)
+                | Item::Import(_)
                 | Item::Const(_)
                 | Item::TypeDecl(_)
                 | Item::TypeAlias(_)
@@ -979,7 +987,9 @@ pub fn lower_program_with_mono_cap(
                             // No variant bare-names to count for these items.
                             // Compiler enforces exhaustivity if a new Item variant
                             // is added. Item::Machine is handled by the arm above.
-                            Item::Import(_)
+                            Item::Macro(_)
+                            | Item::MacroCall(_)
+                            | Item::Import(_)
                             | Item::Const(_)
                             | Item::TypeDecl(_)
                             | Item::TypeAlias(_)
@@ -1066,7 +1076,9 @@ pub fn lower_program_with_mono_cap(
                 // No ctor entries to register for these items. If a new Item
                 // variant with enumerable ctors is added, the compiler will
                 // force a conscious decision here.
-                Item::Import(_)
+                Item::Macro(_)
+                | Item::MacroCall(_)
+                | Item::Import(_)
                 | Item::Const(_)
                 | Item::TypeDecl(_)
                 | Item::TypeAlias(_)
@@ -1186,7 +1198,9 @@ pub fn lower_program_with_mono_cap(
                             // Compiler enforces exhaustivity if a new Item variant
                             // is added. Item::Machine and TypeDecl::Enum are
                             // handled by the arms above.
-                            Item::Import(_)
+                            Item::Macro(_)
+                            | Item::MacroCall(_)
+                            | Item::Import(_)
                             | Item::Const(_)
                             | Item::TypeDecl(_)
                             | Item::TypeAlias(_)
@@ -1454,7 +1468,9 @@ pub fn lower_program_with_mono_cap(
                         // No enum-variant metadata for these items in imported
                         // modules. Compiler enforces exhaustivity if a new
                         // Item variant is added.
-                        Item::Import(_)
+                        Item::Macro(_)
+                        | Item::MacroCall(_)
+                        | Item::Import(_)
                         | Item::Const(_)
                         | Item::TypeDecl(_)
                         | Item::TypeAlias(_)
@@ -1655,7 +1671,9 @@ pub fn lower_program_with_mono_cap(
                         // a new Item variant is added, the compiler will force
                         // a conscious decision here. Item::Machine is handled
                         // by the arm above; pub records are emitted elsewhere.
-                        Item::Import(_)
+                        Item::Macro(_)
+                        | Item::MacroCall(_)
+                        | Item::Import(_)
                         | Item::Const(_)
                         | Item::TypeAlias(_)
                         | Item::Trait(_)
@@ -2135,7 +2153,11 @@ pub fn lower_program_with_mono_cap(
                     items.push(HirItem::Supervisor(supervisor));
                 }
             }
-            Item::Import(_) | Item::TypeAlias(_) | Item::Machine(_) => {
+            Item::Macro(_)
+            | Item::MacroCall(_)
+            | Item::Import(_)
+            | Item::TypeAlias(_)
+            | Item::Machine(_) => {
                 // The checker normalizes every machine into ordinary enum,
                 // report and impl declarations before HIR, so no machine
                 // declaration reaches lowering.
@@ -2644,6 +2666,8 @@ pub fn lower_program_with_mono_cap(
                         // Machines are normalized into ordinary declarations
                         // by the checker before HIR.
                         Item::Trait(_)
+                        | Item::Macro(_)
+                        | Item::MacroCall(_)
                         | Item::Import(_)
                         | Item::Function(_)
                         | Item::TypeDecl(_)

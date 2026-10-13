@@ -971,7 +971,11 @@ impl Checker {
                     Item::Supervisor(item) => Some(item.name.name.as_str()),
                     Item::Machine(item) => Some(item.name.name.as_str()),
                     Item::Record(item) => Some(item.name.name.as_str()),
-                    Item::Import(_) | Item::Impl(_) | Item::ExternBlock(_) => None,
+                    Item::Macro(_)
+                    | Item::MacroCall(_)
+                    | Item::Import(_)
+                    | Item::Impl(_)
+                    | Item::ExternBlock(_) => None,
                 };
                 if let Some(name) = name {
                     self.reject_protected_prelude_declaration_for_owner(Some(&owner), name, span);

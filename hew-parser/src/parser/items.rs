@@ -46,7 +46,25 @@ impl Parser<'_> {
                 break;
             }
             if let Some(item) = self.parse_item() {
-                items.push(item);
+                match item {
+                    (Item::Macro(declaration), span) if self.expander.is_some() => {
+                        let expander =
+                            Rc::clone(self.expander.as_ref().expect("expander is present"));
+                        if let Err(message) = expander.borrow_mut().declare(
+                            &declaration,
+                            span.clone(),
+                            &self.macro_source,
+                        ) {
+                            self.error_at(message, span);
+                        };
+                    }
+                    (Item::MacroCall(call), _) if self.expander.is_some() => {
+                        if let Some(expanded) = self.expand_macro_items(&call) {
+                            items.extend(expanded);
+                        }
+                    }
+                    item => items.push(item),
+                }
             } else {
                 // Skip past the failed item to the next top-level boundary so
                 // a single bad declaration (e.g. a reserved keyword used as a
@@ -409,6 +427,12 @@ impl Parser<'_> {
         let max_heap_attr = attrs.iter().find(|a| a.name == "max_heap").cloned();
 
         let item = match self.peek() {
+            Some(Token::Identifier("macro")) if self.is_macro_declaration() => {
+                Item::Macro(self.parse_macro_decl(Visibility::Private)?)
+            }
+            Some(Token::Identifier(_)) if self.is_macro_call() => {
+                Item::MacroCall(self.parse_macro_call()?)
+            }
             Some(Token::Import) => {
                 self.advance();
                 Item::Import(self.parse_import()?)
@@ -420,6 +444,9 @@ impl Parser<'_> {
             Some(Token::Pub | Token::Package) => {
                 let vis = self.parse_visibility();
                 match self.peek() {
+                    Some(Token::Identifier("macro")) if self.is_macro_declaration() => {
+                        Item::Macro(self.parse_macro_decl(vis)?)
+                    }
                     Some(Token::Fn | Token::Gen) => {
                         self.parse_fn_with_modifiers(vis, attrs, &doc_comment)?
                     }

@@ -392,7 +392,7 @@ impl LowerCtx {
             };
         }
         let (kind, ty) = match &expr.0 {
-            Expr::MacroInvocation { .. } => {
+            Expr::MacroCall(_) | Expr::MacroInvocation { .. } => {
                 match self.compile_time_values.get(&self.mk_key(&span)).cloned() {
                     Some(value) => {
                         if let Some(ty) = self.checker_expr_ty(&span, "compile-time input") {

@@ -1659,6 +1659,28 @@ fn resolve_imports_internal(
         diagnostics,
     )?;
     program.module_graph = Some(module_graph);
+    let mut sources = BTreeMap::new();
+    for module in program
+        .module_graph
+        .as_ref()
+        .expect("graph was built")
+        .modules
+        .values()
+    {
+        for path in &module.source_paths {
+            if let Ok(text) = read_source(&options.documents, path) {
+                sources.insert(path.clone(), text);
+            }
+        }
+    }
+    sources.insert(input_canonical, source.to_string());
+    if let Err((path, error)) = hew_expand::expand_program(program, sources.clone()) {
+        let text = sources.get(&path).map_or(source, String::as_str);
+        return Err(FrontendFailure::new(
+            "macro expansion failed",
+            vec![FrontendDiagnostic::parse(text, &display_path(&path), error)],
+        ));
+    }
     Ok(())
 }
 
@@ -1727,6 +1749,23 @@ fn build_module_source_map(program: &Program, documents: &SourceSet) -> ModuleSo
         }
     }
     map
+}
+
+fn macro_type_origin(
+    program: &Program,
+    mut diagnostic: hew_types::TypeError,
+) -> hew_types::TypeError {
+    if let Some((path, span)) = program.expansions.source_origin(&diagnostic.span) {
+        diagnostic.span = span;
+        diagnostic.source_module = Some(path.display().to_string());
+    }
+    for (span, _, source) in &mut diagnostic.notes {
+        if let Some((path, original)) = program.expansions.source_origin(span) {
+            *span = original;
+            *source = Some(path.display().to_string());
+        }
+    }
+    diagnostic
 }
 
 fn type_diagnostic_to_frontend(
@@ -1940,7 +1979,7 @@ fn typecheck_program_with_dependency_cache(
             type_diagnostic_to_frontend(
                 source,
                 input,
-                diagnostic,
+                macro_type_origin(program, diagnostic),
                 &module_source_map,
                 &options.documents,
             )
@@ -1950,7 +1989,7 @@ fn typecheck_program_with_dependency_cache(
         type_diagnostic_to_frontend(
             source,
             input,
-            diagnostic,
+            macro_type_origin(program, diagnostic),
             &module_source_map,
             &options.documents,
         )

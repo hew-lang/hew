@@ -1253,7 +1253,7 @@ impl Checker {
                             source_module: self.current_module.clone(),
                         });
                     }
-                    self.check_shadowing(name.name.as_str(), &pattern.1);
+                    self.check_shadowing(*name, &pattern.1);
                     self.env
                         .define_with_span(*name, val_ty.clone(), false, pattern.1.clone());
                     if value.is_none() {
@@ -1268,7 +1268,7 @@ impl Checker {
                         self.record_local_resolution(*name, &(pattern.1.start..name_end));
                     }
                     self.env
-                        .set_collection_borrow(name.name.as_str(), collection_borrow.clone());
+                        .set_collection_borrow(*name, collection_borrow.clone());
                     // Register generic lambda binding for call-site inference.
                     // Both guards must hold: the scratch field was populated
                     // AND the let value is itself (not just contains) a generic
@@ -1566,17 +1566,15 @@ impl Checker {
                         more_specific_hole_vars,
                     );
                 }
-                self.check_shadowing(name.name.as_str(), span);
-                self.env
-                    .define_with_span(name.to_string(), val_ty, true, span.clone());
+                self.check_shadowing(*name, span);
+                self.env.define_with_span(*name, val_ty, true, span.clone());
                 if value.is_none() {
                     self.env.mark_unassigned(*name);
                 }
                 self.record_local_resolution(*name, span);
                 self.record_binding_value_candidates(*name, value.as_ref());
                 self.record_local_resolution(*name, name_span);
-                self.env
-                    .set_collection_borrow(name.name.as_str(), collection_borrow);
+                self.env.set_collection_borrow(*name, collection_borrow);
                 if value_is_direct_generic_lambda {
                     if let Some(sig) = generic_sig {
                         self.lambda_poly_sig_map
@@ -1657,7 +1655,7 @@ impl Checker {
                             .any(|f| f.name == name.name.as_str())
                         {
                             Some(AssignTargetKind::ActorField)
-                        } else if self.env.lookup_ref(name.name.as_str()).is_some() {
+                        } else if self.env.lookup_ref(*name).is_some() {
                             Some(AssignTargetKind::LocalVar)
                         } else {
                             None
@@ -1869,7 +1867,7 @@ impl Checker {
                 // width then fails `check_against`'s ordinary implicit-convert
                 // gate instead of drifting.
                 if let Expr::Ident(name) = &target.0 {
-                    if let Some(binding) = self.env.lookup_ref(name.name.as_str()) {
+                    if let Some(binding) = self.env.lookup_ref(*name) {
                         if let binding_ty @ Ty::Var(_) = binding.ty.clone() {
                             let value_resolved = self.subst.resolve(&value_ty);
                             if self.subst.resolve(&binding_ty).is_numeric_literal()

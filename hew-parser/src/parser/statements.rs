@@ -115,9 +115,11 @@ impl Parser<'_> {
 
     pub(crate) fn parse_block(&mut self) -> Option<Block> {
         if let Some(fragment) = self.peek_fragment() {
-            if let Fragment::Block((block, span)) = fragment {
-                self.consume_fragment(&span);
-                return Some(block);
+            if matches!(fragment, Fragment::Block(_)) {
+                return match self.take_expression_fragment().ok().flatten()? {
+                    (Expr::Block(block), _) => Some(block),
+                    _ => None,
+                };
             }
             self.invalid_fragment_position(&fragment, "a block");
             return None;

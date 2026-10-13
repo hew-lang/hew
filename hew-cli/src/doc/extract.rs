@@ -548,6 +548,8 @@ pub fn extract_docs(program: &Program, module_name: &str) -> DocModule {
             | Item::ExternBlock(_)
             | Item::Supervisor(_)
             | Item::Machine(_)
+            | Item::Macro(_)
+            | Item::MacroCall(_)
             | Item::Record(_) => {} // doc renderer has no record section type yet
         }
     }

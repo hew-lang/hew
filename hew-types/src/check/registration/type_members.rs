@@ -334,7 +334,9 @@ impl Checker {
                 }
                 // Machines are normalized into ordinary declarations before
                 // registration runs.
-                Item::Import(_)
+                Item::Macro(_)
+                | Item::MacroCall(_)
+                | Item::Import(_)
                 | Item::Const(_)
                 | Item::Impl(_)
                 | Item::Machine(_)

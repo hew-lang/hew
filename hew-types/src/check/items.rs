@@ -20,6 +20,11 @@ impl Checker {
     pub(super) fn check_item(&mut self, item: &Item, span: &Span) {
         self.check_interceptor_storage(item, span);
         match item {
+            Item::Macro(_) | Item::MacroCall(_) => self.report_error(
+                TypeErrorKind::InvalidOperation,
+                span,
+                "macro syntax must be expanded before type checking".to_string(),
+            ),
             Item::Function(fd) => self.check_function(fd),
             Item::Actor(ad) => {
                 if !crate::ty::is_reserved_type_name(ad.name.name.as_str()) {
@@ -979,7 +984,7 @@ impl Checker {
                 && !is_receiver
                 && self.parameter_has_independent_clone(&ty);
             if in_actor {
-                self.check_shadowing(p.name.name.as_str(), &p.name_span);
+                self.check_shadowing(p.name, &p.name_span);
             }
             if is_receiver {
                 self.env.define_receiver_param_with_span(
@@ -1973,7 +1978,7 @@ impl Checker {
 
         // Bind init parameters
         for p in &init.params {
-            self.check_shadowing(p.name.name.as_str(), &p.ty.1);
+            self.check_shadowing(p.name, &p.ty.1);
             let ty = self.resolve_annotation_with_holes(
                 &p.ty,
                 format!("init parameter `{}` of actor `{actor_name}`", p.name),
@@ -2708,7 +2713,7 @@ impl Checker {
         self.env.push_scope();
 
         for p in &rf.params {
-            self.check_shadowing(p.name.name.as_str(), &p.name_span);
+            self.check_shadowing(p.name, &p.name_span);
             let ty = self.resolve_type_expr(&p.ty);
             self.reject_opaque_message_payload(&ty, &p.ty.1, &qualified_name);
             self.reject_dyn_message_type(&ty, &p.ty.1);

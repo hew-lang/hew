@@ -2063,7 +2063,7 @@ impl InboundRequest {
         .flatten()
     }
 
-    /// Submit a one-way message, keeping the fields when admission refuses.
+    /// Submit an owned one-way message, releasing its fields if admission refuses.
     /// Returns the native submission status, or `None` when no live actor
     /// holds the id.
     fn submit(
@@ -2074,36 +2074,23 @@ impl InboundRequest {
     ) -> Option<i32> {
         use crate::actor_native::HewSubmitStatus;
         let (_runtime, token) = Self::target(actor_id)?;
-        // The runtime frees a refused wrapper's bytes and leaves its fields
-        // with the sender, so it takes a shallow copy of this one.
-        let copy = crate::mem::buf_try_alloc(self.size);
-        if copy.is_null() {
+        // This request owns its fields on every outcome, so its existing
+        // wrapper can become the envelope payload without a shallow copy.
+        // SAFETY: the request owns this allocated wrapper and its typed fields.
+        let envelope = unsafe {
+            crate::mailbox::hew_msg_envelope_new(self.wrapper, self.size, Some(self.drop))
+        };
+        if envelope.is_null() {
             return Some(HewSubmitStatus::Oom as i32);
         }
-        // SAFETY: both buffers hold the decoded wrapper's size.
-        unsafe {
-            ptr::copy_nonoverlapping(self.wrapper.cast::<u8>(), copy.cast::<u8>(), self.size);
-        };
-        // SAFETY: the copy is an unpublished wrapper with the member's fields.
-        let status = unsafe {
-            crate::actor_native::submit_native(
-                token,
-                msg_type,
-                copy,
-                self.size,
-                self.drop,
-                0,
-                false,
-                None,
-                ptr::null_mut(),
-                caller,
-            )
-        };
-        if submission_delivered(status) {
-            // The destination owns the fields; only the shell remains.
-            // SAFETY: the shell came from the decode allocation.
-            unsafe { crate::mem::buf_free(self.wrapper) };
-            std::mem::forget(self);
+        std::mem::forget(self);
+        // SAFETY: admission consumes the uniquely owned envelope only on delivery.
+        let outcome =
+            unsafe { crate::actor::try_submit_native_envelope(token, msg_type, envelope, caller) };
+        let status = crate::actor_native::submission_status(outcome) as i32;
+        if !submission_delivered(status) {
+            // SAFETY: refusal left the envelope and its fields with this caller.
+            unsafe { crate::mailbox::hew_msg_envelope_release(envelope) };
         }
         Some(status)
     }

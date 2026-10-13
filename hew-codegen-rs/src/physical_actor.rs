@@ -234,7 +234,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                 value: function,
                 fault_sink: Some((fault_slot, status)),
             };
-            release::drain_cursor(&values, frame, cleanup)?;
+            release::drain(&values, Some(frame), cleanup)?;
         }
         builder
             .build_unconditional_branch(complete)
@@ -2424,7 +2424,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 .build_load(ptr, rejected, "spawn.rejected.cursor")
                 .llvm_ctx("take rejected state cleanup cursor")?
                 .into_pointer_value();
-            release::drain_cursor(&self.value_emitter(), frame, cursor)?;
+            release::drain(&self.value_emitter(), Some(frame), cursor)?;
         }
         self.store(result, token.into())?;
         let failed = self
@@ -2845,7 +2845,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                     .build_load(ptr, discarded, "submission.discarded.cursor")
                     .llvm_ctx("take discarded payload cursor")?
                     .into_pointer_value();
-                release::drain_cursor(&self.value_emitter(), frame, cursor)?;
+                release::drain(&self.value_emitter(), Some(frame), cursor)?;
             }
             status
         };

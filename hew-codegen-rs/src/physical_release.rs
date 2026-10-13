@@ -717,7 +717,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             "stream.release.cursor",
         )?
         .into_pointer_value();
-        drain_cursor(&self.value_emitter(), frame, cursor)
+        drain(&self.value_emitter(), Some(frame), cursor)
     }
 
     pub(super) fn release_handle(
@@ -1138,29 +1138,10 @@ fn cursor<'ctx>(
 }
 
 /// Drain detached owners using the caller's checked suspension capability.
+/// Nothing is started when no owner was displaced.
 pub(super) fn drain<'ctx>(
     values: &ValueEmitter<'_, 'ctx>,
     frame: Option<&coro::Frame<'ctx>>,
-    cursor: PointerValue<'ctx>,
-) -> CodegenResult<()> {
-    if let Some(frame) = frame {
-        return drain_cursor(values, frame, cursor);
-    }
-    let run = external_drop(values.ctx, values.llvm, "hew_release_sync")?;
-    values.emit_release_in_sink(|| {
-        values
-            .builder
-            .build_call(run, &[cursor.into()], "")
-            .llvm_ctx("release synchronous displaced owners")?;
-        Ok(())
-    })
-}
-
-/// Drain detached owners through the shared cursor thunk. Nothing is started
-/// when no owner was displaced.
-pub(super) fn drain_cursor<'ctx>(
-    values: &ValueEmitter<'_, 'ctx>,
-    frame: &coro::Frame<'ctx>,
     cursor: PointerValue<'ctx>,
 ) -> CodegenResult<()> {
     let drain = values
@@ -1178,7 +1159,18 @@ pub(super) fn drain_cursor<'ctx>(
         .build_conditional_branch(present, drain, done)
         .llvm_ctx("skip an empty cursor")?;
     values.builder.position_at_end(drain);
-    handle(values, frame, cursor, Handle::Cursor)?;
+    if let Some(frame) = frame {
+        handle(values, frame, cursor, Handle::Cursor)?;
+    } else {
+        let run = external_drop(values.ctx, values.llvm, "hew_release_sync")?;
+        values.emit_release_in_sink(|| {
+            values
+                .builder
+                .build_call(run, &[cursor.into()], "")
+                .llvm_ctx("release synchronous displaced owners")?;
+            Ok(())
+        })?;
+    }
     values
         .builder
         .build_unconditional_branch(done)

@@ -352,7 +352,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .build_load(pointer, cleanup, "await.result.cursor")
             .llvm_ctx("read unused task result cleanup")?
             .into_pointer_value();
-        release::drain_cursor(&self.value_emitter(), frame, cleanup)?;
+        release::drain(&self.value_emitter(), Some(frame), cleanup)?;
         self.free_handle("hew_checked_task_wait_free", wait)?;
         let dispatch = self.ctx.append_basic_block(self.value, "await.dispatch");
         let fault = self

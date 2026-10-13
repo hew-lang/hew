@@ -1,7 +1,7 @@
 use super::*;
 use crate::peer_binding::{ConfigState, PeerCredential, PEER_AUTH_STATE};
 use std::process::{Child, Command, Output, Stdio};
-use std::sync::atomic::{AtomicU32, AtomicUsize};
+use std::sync::atomic::AtomicU32;
 use std::time::{Duration, Instant};
 
 mod api;

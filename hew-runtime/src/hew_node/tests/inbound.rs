@@ -1,6 +1,10 @@
 //! Inbound ask admission and node-stop drain tests.
 
 use super::*;
+use crate::hew_node::inbound::{
+    handle_inbound_ask, send_reply_envelope, INBOUND_ASK_ERROR_REPLY_HOOK,
+    INBOUND_ASK_REPLY_ADMISSION_HOOK, INBOUND_ROUTER_AFTER_INCREMENT_HOOK,
+};
 
 #[test]
 fn secondary_node_stop_does_not_fail_current_node_pending_asks() {

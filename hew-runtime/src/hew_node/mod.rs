@@ -36,6 +36,8 @@ mod tests;
 
 pub use self::api::*;
 pub use self::dist_probes::*;
+#[cfg(test)]
+use self::inbound::NODE_STOP_BEFORE_CONNMGR_FREE_HOOK;
 use self::inbound::{
     accept_loop, actor_id_to_registry_ptr, drain_inbound_requests, node_inbound_router,
     stop_node_accept_thread,

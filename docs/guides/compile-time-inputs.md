@@ -4,7 +4,10 @@
 constant string or byte value. They use paths relative to the source file
 containing the invocation.
 
-```hew
+The following package example requires `sql/schema.sql` and `assets/logo.png`
+relative to the source file:
+
+```hew,ignore
 const SCHEMA: string = include_str!("sql/schema.sql");
 const LOGO: bytes = include_bytes!("assets/logo.png");
 

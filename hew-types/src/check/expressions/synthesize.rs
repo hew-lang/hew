@@ -384,7 +384,7 @@ impl Checker {
                 type_args,
                 base,
             } => {
-                let resolution = self.resolve_type_path(path).or_else(|| {
+                let resolution = if path.segments.len() > 1 {
                     self.scope_site().and_then(|site| {
                         self.scopes
                             .resolve(
@@ -395,7 +395,9 @@ impl Checker {
                             )
                             .ok()
                     })
-                });
+                } else {
+                    self.resolve_type_path(path)
+                };
                 if path.segments.len() > 1 {
                     let declaration = match resolution {
                         Some(super::super::scope::Resolution::Nominal(id)) => {

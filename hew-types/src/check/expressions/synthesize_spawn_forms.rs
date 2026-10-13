@@ -1778,7 +1778,7 @@ impl Checker {
             self.report_error_with_suggestions(
                 TypeErrorKind::UndefinedType,
                 span,
-                format!("undefined type `{name}`"),
+                format!("undefined type `{}`", name.replace("::", ".")),
                 similar,
             );
             Ty::Error

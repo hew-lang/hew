@@ -482,6 +482,13 @@ impl Checker {
                 owner_type_args: &[],
             }),
         );
+        let target = sig.impl_method.as_ref().map_or_else(
+            || CallTarget::Unsupported {
+                reason: "primitive trait method has no registered declaration identity".into(),
+            },
+            |method| CallTarget::impl_method(method.declaration),
+        );
+        self.record_direct_call_target(span, target);
         self.record_method_call_receiver_kind(
             span,
             MethodCallReceiverKind::PrimitiveTraitImpl {

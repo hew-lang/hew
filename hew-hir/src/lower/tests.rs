@@ -1174,56 +1174,24 @@ fn checker_fact_named<'a>(
 }
 
 #[test]
-fn fold_const_expr_resolves_prior_const_ref() {
-    let (_program, _tco, lowered) = parse_typecheck_and_lower(
-        r"
-            const A: i64 = 10;
-            const B: i64 = A + 1;
-
-            fn main() -> i64 {
-                B
-            }
-            ",
-    );
-
-    assert!(
-        lowered.diagnostics.is_empty(),
-        "lower diagnostics: {:#?}",
-        lowered.diagnostics
-    );
-    assert_eq!(
-        const_value_named(&lowered, "B"),
-        &HirExprKind::Literal(HirLiteral::Integer(11))
-    );
-}
-
-#[test]
-fn fold_const_expr_forward_ref_fails_closed_at_checker() {
-    let parsed = hew_parser::parse(
-        r"
-            const B: i64 = A + 1;
-            const A: i64 = 10;
-
-            fn main() -> i64 {
-                B
-            }
-            ",
-    );
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:#?}",
-        parsed.errors
-    );
-
-    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-    let tco = checker.check_program(&parsed.program);
-    assert!(
-        tco.errors
-            .iter()
-            .any(|error| error.message == "undefined variable `A`"),
-        "forward const reference must fail closed before HIR lowering; type errors: {:#?}",
-        tco.errors
-    );
+fn fold_const_expr_resolves_references_in_either_declaration_order() {
+    for constants in [
+        "const A: i64 = 10; const B: i64 = A + 1;",
+        "const B: i64 = A + 1; const A: i64 = 10;",
+    ] {
+        let source = format!("{constants} fn main() -> i64 {{ B }}");
+        let (_program, _tco, lowered) = parse_typecheck_and_lower(&source);
+        assert!(
+            lowered.diagnostics.is_empty(),
+            "{constants}: lower diagnostics: {:#?}",
+            lowered.diagnostics
+        );
+        assert_eq!(
+            const_value_named(&lowered, "B"),
+            &HirExprKind::Literal(HirLiteral::Integer(11)),
+            "{constants}"
+        );
+    }
 }
 
 #[test]
@@ -1607,9 +1575,9 @@ fn builtin_lowering_gates_use_discriminants_not_type_spellings() {
     );
     let user_vec_literal_ty = user_vec_ctx.array_literal_ty(&(0..0));
     assert!(
-            user_vec_literal_ty.is_none(),
-            "a user Vec<T> must not acquire array literal runtime lowering, got {user_vec_literal_ty:?}"
-        );
+        user_vec_literal_ty.is_none(),
+        "a user Vec<T> must not acquire array literal runtime lowering, got {user_vec_literal_ty:?}"
+    );
 
     let mut map_ctx = LowerCtx::new(
         &TypeCheckOutput::default(),

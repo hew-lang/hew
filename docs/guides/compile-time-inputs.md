@@ -63,7 +63,9 @@ type supplies its schema, including `#[serial]` field names and skipped
 fields, using the same decoder as `json.decode`, `yaml.decode` and
 `toml.decode`.
 
-```hew
+With `config/defaults.toml` and `config/local.json` relative to the source file:
+
+```hew,ignore
 type Config {
     host: string;
     port: u16;

@@ -1,7 +1,7 @@
 //! Constant declaration lowering and folding.
 
 use super::*;
-use hew_types::compile_time::ConstantValue as HirConstValue;
+use hew_types::compile_time::{ConstantValue as HirConstValue, TypedConstant};
 
 impl LowerCtx {
     pub(super) fn lower_constant_value(
@@ -23,54 +23,26 @@ impl LowerCtx {
             HirConstValue::Tuple(elements) => HirExprKind::TupleLiteral {
                 elements: elements
                     .iter()
-                    .map(|element| {
-                        self.lower_constant_value(
-                            &element.value,
-                            &element.ty,
-                            span,
-                            IntentKind::Read,
-                        )
-                    })
+                    .map(|element| self.lower_constant_element(element, span))
                     .collect(),
             },
             HirConstValue::Array(elements) => HirExprKind::ArrayLiteral {
                 elements: elements
                     .iter()
-                    .map(|element| {
-                        self.lower_constant_value(
-                            &element.value,
-                            &element.ty,
-                            span,
-                            IntentKind::Read,
-                        )
-                    })
+                    .map(|element| self.lower_constant_element(element, span))
                     .collect(),
             },
             HirConstValue::Vector(elements) => {
                 let elements = elements
                     .iter()
-                    .map(|element| {
-                        self.lower_constant_value(
-                            &element.value,
-                            &element.ty,
-                            span,
-                            IntentKind::Read,
-                        )
-                    })
+                    .map(|element| self.lower_constant_element(element, span))
                     .collect();
                 self.make_sequence_literal(elements, ty, span)
             }
             HirConstValue::Set(elements) => {
                 let elements = elements
                     .iter()
-                    .map(|element| {
-                        self.lower_constant_value(
-                            &element.value,
-                            &element.ty,
-                            span,
-                            IntentKind::Read,
-                        )
-                    })
+                    .map(|element| self.lower_constant_element(element, span))
                     .collect();
                 self.make_set_literal(elements, ty, span)
             }
@@ -79,13 +51,8 @@ impl LowerCtx {
                     .iter()
                     .map(|(key, value)| {
                         (
-                            self.lower_constant_value(&key.value, &key.ty, span, IntentKind::Read),
-                            self.lower_constant_value(
-                                &value.value,
-                                &value.ty,
-                                span,
-                                IntentKind::Read,
-                            ),
+                            self.lower_constant_element(key, span),
+                            self.lower_constant_element(value, span),
                         )
                     })
                     .collect();
@@ -98,15 +65,7 @@ impl LowerCtx {
                     fields
                         .iter()
                         .map(|(name, field)| {
-                            (
-                                name.clone(),
-                                self.lower_constant_value(
-                                    &field.value,
-                                    &field.ty,
-                                    span,
-                                    IntentKind::Read,
-                                ),
-                            )
+                            (name.clone(), self.lower_constant_element(field, span))
                         })
                         .collect()
                 }),
@@ -116,17 +75,7 @@ impl LowerCtx {
                 type_args: Vec::new(),
                 fields: fields
                     .iter()
-                    .map(|(name, field)| {
-                        (
-                            name.clone(),
-                            self.lower_constant_value(
-                                &field.value,
-                                &field.ty,
-                                span,
-                                IntentKind::Read,
-                            ),
-                        )
-                    })
+                    .map(|(name, field)| (name.clone(), self.lower_constant_element(field, span)))
                     .collect(),
                 base: None,
             },
@@ -139,6 +88,10 @@ impl LowerCtx {
             span: span.clone(),
             kind,
         }
+    }
+
+    fn lower_constant_element(&mut self, element: &TypedConstant, span: &Span) -> HirExpr {
+        self.lower_constant_value(&element.value, &element.ty, span, IntentKind::Read)
     }
 
     /// First-pass registration of a module-level `const`. Allocates a stable

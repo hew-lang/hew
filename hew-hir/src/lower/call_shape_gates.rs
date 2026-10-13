@@ -197,7 +197,7 @@ pub(super) fn scan_item_for_call_shape(
 ) {
     match item {
         HirItem::Const(constant) => {
-            scan_expr_for_call_shape(&constant.value, callable, diagnostics)
+            scan_expr_for_call_shape(&constant.value, callable, diagnostics);
         }
         HirItem::Function(f) => scan_block_for_call_shape(&f.body, callable, diagnostics),
         HirItem::Actor(actor) => {

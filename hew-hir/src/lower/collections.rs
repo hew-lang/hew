@@ -272,7 +272,7 @@ impl LowerCtx {
         self.make_collection_literal(
             init,
             elements.into_iter().map(|element| vec![element]).collect(),
-            (family, ResolvedTy::Unit),
+            &(family, ResolvedTy::Unit),
             span,
         )
     }
@@ -294,7 +294,7 @@ impl LowerCtx {
         self.make_collection_literal(
             init,
             elements.into_iter().map(|element| vec![element]).collect(),
-            (
+            &(
                 hew_types::RuntimeCallFamily::Set(SetValueOp::Insert),
                 ResolvedTy::Bool,
             ),
@@ -315,7 +315,7 @@ impl LowerCtx {
                 .into_iter()
                 .map(|(key, value)| vec![key, value])
                 .collect(),
-            (
+            &(
                 hew_types::RuntimeCallFamily::Map(hew_types::runtime_call::MapValueOp::Insert),
                 ResolvedTy::Unit,
             ),
@@ -327,7 +327,7 @@ impl LowerCtx {
         &mut self,
         init: HirExpr,
         entries: Vec<Vec<HirExpr>>,
-        insert: (hew_types::RuntimeCallFamily, ResolvedTy),
+        insert: &(hew_types::RuntimeCallFamily, ResolvedTy),
         span: &Span,
     ) -> HirExprKind {
         let ty = init.ty.clone();

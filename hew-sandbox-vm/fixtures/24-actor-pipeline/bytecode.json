@@ -5,7 +5,7 @@
         {
           "callable": 1,
           "fallible": false,
-          "message_id": 4150717511,
+          "message_id": 0,
           "name": "collect",
           "params": 1,
           "result_shape": null,
@@ -22,7 +22,7 @@
         {
           "callable": 2,
           "fallible": false,
-          "message_id": 518159035,
+          "message_id": 0,
           "name": "process",
           "params": 2,
           "result_shape": null,
@@ -228,7 +228,7 @@
             },
             "detail": {
               "actor": 1,
-              "message": 518159035,
+              "message": 0,
               "policy": "wait",
               "sealed": false
             },
@@ -545,7 +545,7 @@
             },
             "detail": {
               "actor": 0,
-              "message": 4150717511,
+              "message": 0,
               "policy": "wait",
               "sealed": false
             },

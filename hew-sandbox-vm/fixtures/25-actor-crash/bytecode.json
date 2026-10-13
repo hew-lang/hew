@@ -8,7 +8,7 @@
         {
           "callable": 2,
           "fallible": false,
-          "message_id": 1451298403,
+          "message_id": 0,
           "name": "explode",
           "params": 0,
           "result_shape": null,
@@ -110,7 +110,7 @@
             },
             "detail": {
               "actor": 0,
-              "message": 1451298403,
+              "message": 0,
               "policy": "wait",
               "sealed": false
             },
@@ -271,7 +271,7 @@
             },
             "detail": {
               "actor": 0,
-              "message": 1451298403,
+              "message": 0,
               "policy": "wait",
               "sealed": false
             },

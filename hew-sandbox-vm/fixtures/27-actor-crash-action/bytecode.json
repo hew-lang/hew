@@ -8,7 +8,7 @@
         {
           "callable": 2,
           "fallible": false,
-          "message_id": 1695211016,
+          "message_id": 0,
           "name": "fail",
           "params": 0,
           "result_shape": null,
@@ -217,7 +217,7 @@
             },
             "detail": {
               "actor": 0,
-              "message": 1695211016,
+              "message": 0,
               "policy": "wait",
               "sealed": false
             },
@@ -343,7 +343,7 @@
             },
             "detail": {
               "actor": 0,
-              "message": 1695211016,
+              "message": 0,
               "policy": "wait",
               "sealed": false
             },

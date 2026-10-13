@@ -1154,10 +1154,9 @@ impl LowerCtx {
                     )
                 } else if let Some(endpoint) = overload_endpoint {
                     let arg_tys = args.iter().map(|arg| arg.ty.clone()).collect::<Vec<_>>();
-                    let explicit_display =
-                        matches!(endpoint.as_str(), "println" | "print" | "to_string")
-                            && arg_tys.len() == 1
-                            && self.display_facts.has_explicit_display_impl(&arg_tys[0]);
+                    let explicit_display = stdlib_catalog::is_display_builtin(&endpoint)
+                        && arg_tys.len() == 1
+                        && self.display_facts.has_explicit_display_impl(&arg_tys[0]);
                     if explicit_display {
                         self.try_lower_generic_display_builtin(&endpoint, args, &span)
                             .expect("explicit Display implementation has one argument")

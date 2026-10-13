@@ -2,6 +2,23 @@ use super::*;
 use hew_types::compile_time::{ConstantValue, TypedConstant};
 
 impl LowerCtx {
+    fn const_fact<T>(&mut self, result: Result<T, String>, span: &Span) -> Option<T> {
+        match result {
+            Ok(value) => Some(value),
+            Err(reason) => {
+                self.diagnostics.push(HirDiagnostic::new(
+                    HirDiagnosticKind::CheckerBoundaryViolation {
+                        name: "constant".into(),
+                        reason,
+                    },
+                    span.clone(),
+                    "constant lowering requires exact checked aggregate facts",
+                ));
+                None
+            }
+        }
+    }
+
     fn fold_typed_const(&mut self, expr: &Spanned<Expr>, ty: &ResolvedTy) -> TypedConstant {
         TypedConstant {
             ty: ty.clone(),
@@ -46,10 +63,11 @@ impl LowerCtx {
                     return None;
                 }
                 let value = self.fold_typed_const(value, element);
-                Some(ConstantValue::Array(vec![
-                    value;
-                    usize::try_from(*length).ok()?
-                ]))
+                let length = self.const_fact(
+                    usize::try_from(*length).map_err(|error| error.to_string()),
+                    span,
+                )?;
+                Some(ConstantValue::Array(vec![value; length]))
             }
             Expr::MapLiteral { entries } => {
                 let (BuiltinType::HashMap, args) =
@@ -71,7 +89,7 @@ impl LowerCtx {
                 ))
             }
             Expr::StructInit { fields, base, .. } => {
-                let (_, declared) = self.display_facts.record_fields(ty).ok()?;
+                let (_, declared) = self.const_fact(self.display_facts.record_fields(ty), span)?;
                 self.fold_named_const_fields(&declared, fields, base.as_deref(), ty)
                     .map(ConstantValue::Record)
             }
@@ -170,7 +188,6 @@ impl LowerCtx {
             Expr::Call { function, .. } => (&function.0, &function.1),
             _ => (expr, span),
         };
-        let variants = self.display_facts.data_variants(ty).ok()?;
         let ResolvedTy::Named { head, .. } = ty else {
             return None;
         };
@@ -186,11 +203,13 @@ impl LowerCtx {
             .get(&self.mk_key(resolution_span))
             .or_else(|| self.resolutions.get(&self.mk_key(span)))
         {
-            Some(Resolution::Variant(owner, index)) if owner == head => {
-                usize::try_from(*index).ok()?
-            }
+            Some(Resolution::Variant(owner, index)) if owner == head => self.const_fact(
+                usize::try_from(*index).map_err(|error| error.to_string()),
+                span,
+            )?,
             _ => return None,
         };
+        let variants = self.const_fact(self.display_facts.data_variants(ty), span)?;
         let variant = variants.get(index)?;
         let fields = match expr {
             Expr::Call { args, .. } | Expr::MethodCall { args, .. } => {

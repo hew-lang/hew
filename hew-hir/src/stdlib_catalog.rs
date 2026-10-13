@@ -2755,6 +2755,17 @@ pub fn is_overloaded_builtin(name: &str) -> bool {
 }
 
 #[must_use]
+pub fn is_display_builtin(name: &str) -> bool {
+    CATALOG.iter().any(|entry| {
+        entry.overload_of == Some(name)
+            && matches!(
+                entry.linkage,
+                BuiltinLinkage::PrintIntercept { .. } | BuiltinLinkage::ToStringShim { .. }
+            )
+    })
+}
+
+#[must_use]
 pub fn resolve_overload(name: &str, arg_tys: &[ResolvedTy]) -> Option<&'static BuiltinEntry> {
     let lowered_name = overload_lowered_name(name, arg_tys)?;
     CATALOG.iter().find(|entry| entry.name == lowered_name)

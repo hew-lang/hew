@@ -594,7 +594,7 @@ impl LowerCtx {
         args: Vec<HirExpr>,
         span: &Span,
     ) -> Result<(HirExprKind, ResolvedTy), Vec<HirExpr>> {
-        let is_display_surface = matches!(name, "println" | "print" | "to_string");
+        let is_display_surface = stdlib_catalog::is_display_builtin(name);
         // Route a single `Display` argument through the Display dispatch spine
         // whenever no concrete-ABI overload matched. Reaching this fallback
         // means `stdlib_catalog::resolve_overload` found no monomorphic entry

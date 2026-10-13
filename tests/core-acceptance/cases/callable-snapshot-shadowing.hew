@@ -74,11 +74,11 @@ fn main() -> i64 {
     println(holder.action());
     var delegated = Holder { action: first };
     for _index in 0..2 {
-        println((delegated.action)());
+        println(delegated.action());
         delegated.replace_through_helper();
     }
     var failed = Holder { action: first };
     let _ = failed.replace_then_try();
-    println((failed.action)());
+    println(failed.action());
     0
 }

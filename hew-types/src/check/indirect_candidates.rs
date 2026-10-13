@@ -200,7 +200,7 @@ impl Checker {
         }
     }
 
-    fn callable_field_candidates(
+    pub(super) fn callable_field_candidates(
         &self,
         object: &Spanned<Expr>,
         field: &Spanned<Ident>,
@@ -371,13 +371,6 @@ impl Checker {
         self.indirect_call_candidates.insert(
             SpanKey::in_module(span, self.current_module_idx),
             candidates,
-        );
-    }
-
-    pub(super) fn record_unknown_indirect_call_candidates(&mut self, span: &Span) {
-        self.indirect_call_candidates.insert(
-            SpanKey::in_module(span, self.current_module_idx),
-            IndirectCallCandidates::unknown(),
         );
     }
 

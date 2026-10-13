@@ -754,7 +754,6 @@ impl Checker {
             _ => return None,
         };
         self.record_direct_call_target(span, CallTarget::IndirectFunctionValue);
-        self.record_unknown_indirect_call_candidates(span);
         if args.len() != params.len() {
             self.report_error(
                 TypeErrorKind::ArityMismatch,

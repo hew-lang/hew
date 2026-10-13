@@ -921,14 +921,21 @@ impl Checker {
         if let Some(super::MethodCallRewrite::RecordFnFieldCall { field_ty }) =
             self.method_call_rewrites.get(&key).cloned()
         {
+            let field = (Ident::new(method), span.clone());
+            self.record_field_resolution(receiver, &field);
+            let callable_ty = field_ty.to_ty();
+            if matches!(&callable_ty, Ty::Function { .. } | Ty::Closure { .. }) {
+                let candidates = self.callable_field_candidates(receiver, &field);
+                self.indirect_call_candidates.insert(key, candidates);
+            }
             let callee = (
                 Expr::FieldAccess {
                     object: Box::new(receiver.clone()),
-                    field: (Ident::new(method), span.clone()),
+                    field,
                 },
                 span.clone(),
             );
-            self.check_callable_receiver(&field_ty.to_ty(), &callee);
+            self.check_callable_receiver(&callable_ty, &callee);
         } else if let Some((root, path)) = self.expr_place(&receiver.0) {
             if self
                 .env

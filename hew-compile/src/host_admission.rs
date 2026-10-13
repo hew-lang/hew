@@ -1388,7 +1388,7 @@ mod tests {
             "import std.path; fn main() { let _ = path.glob(\"/*\"); }",
             "import std.os; fn main() { let read = || os.env(\"PATH\"); let _ = read(); }",
             "import std.os; fn invoke(f: fn() -> Option<string>) { let _ = f(); } fn main() { invoke(|| os.env(\"PATH\")); }",
-            "import std.os; fn empty() -> Option<string> { .None } fn read() -> Option<string> { os.env(\"PATH\") } type Holder { action: fn[clone]() -> Option<string>; } impl Holder { fn replace(var self) { self.action = read; } fn through_helper(var self, n: i64) { self.replace(); if n > 0 { self.through_helper(n - 1); } } } fn main() { var holder = Holder { action: empty }; for _index in 0..2 { let _ = (holder.action)(); holder.through_helper(1); } }",
+            "import std.os; fn empty() -> Option<string> { .None } fn read() -> Option<string> { os.env(\"PATH\") } type Holder { action: fn[clone]() -> Option<string>; } impl Holder { fn replace(var self) { self.action = read; } fn through_helper(var self, n: i64) { self.replace(); if n > 0 { self.through_helper(n - 1); } } } fn main() { var holder = Holder { action: empty }; for _index in 0..2 { let _ = holder.action(); holder.through_helper(1); } }",
             "import std.os; actor Worker { receive fn inspect() { let _ = os.env(\"PATH\"); } } fn main() { let worker = spawn Worker; let _ = worker.inspect(); stop(worker); }",
             "import std.os; actor Worker { #[on(start)] fn boot() { let _ = os.env(\"PATH\"); } } fn main() { let worker = spawn Worker; stop(worker); }",
             "import std.os; #[resource] type Token { value: i64; } impl Token { fn close(consume self) { let _ = os.env(\"PATH\"); } } fn main() { let token = Token { value: 1 }; }",
@@ -1685,8 +1685,12 @@ mod tests {
 
     #[test]
     fn known_function_value_is_admitted() {
-        let source = "fn answer() -> i64 { 7 }\nfn main() { let selected: fn() -> i64 = answer; println(selected()); }";
-        check_source(source, HostAdmission::ProcessEntry).unwrap();
+        for source in [
+            "fn answer() -> i64 { 7 }\nfn main() { let selected: fn() -> i64 = answer; println(selected()); }",
+            "fn answer() -> i64 { 1 } type Holder { action: fn[clone]() -> i64; } fn main() { let holder = Holder { action: answer }; let value: i64 = holder.action(); println(value); }",
+        ] {
+            check_source(source, HostAdmission::ProcessEntry).unwrap();
+        }
     }
 
     #[test]

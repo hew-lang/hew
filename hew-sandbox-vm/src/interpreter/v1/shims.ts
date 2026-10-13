@@ -406,6 +406,7 @@ const VECTOR_SHIMS: Record<string, RuntimeShim | undefined> = {
       : host.enumValue(shape, "OptionNone", []);
   },
   Index: (_host, args) => cloneValue(sequenceElement(args)),
+  IndexBorrow: (_host, args) => sequenceElement(args),
   Len: (_host, args) => int(BigInt(vec(args, 0).items.length)),
   Slice: (_host, args) => {
     const items = vec(args, 0).items;

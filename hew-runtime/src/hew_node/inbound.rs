@@ -379,10 +379,6 @@ unsafe fn deliver_inbound_send(
     clippy::needless_pass_by_value,
     reason = "spawned ask-handler thread must own the shutdown flag clone"
 )]
-#[expect(
-    clippy::too_many_arguments,
-    reason = "frame delivery carries authenticated identity and reply routing"
-)]
 pub(super) fn handle_inbound_ask(
     target_actor_id: u64,
     identity: &str,

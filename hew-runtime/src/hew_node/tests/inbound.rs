@@ -331,14 +331,14 @@ fn over_limit_void_ask_fails_closed_with_worker_at_capacity() {
     // the void-success sentinel because the rejection sent an empty payload
     // which remote_reply_data_to_ptr mistook for a void success.
     let target = remote_pid_for_node(&node2, actor_id);
-    // SAFETY: null payload / size-0 are valid; this is a void ask.
+    // SAFETY: the registered request value is live; the reply is unit.
     let (_, status) = unsafe {
         ask_for_test(
             &raw const target,
-            test_dispatch(),
+            inbound_test_codec(void_ask_probe_dispatch, 0),
             1,
-            ptr::null_mut(),
-            0,
+            TEST_U32_REQUEST.cast_mut(),
+            std::mem::size_of::<u32>(),
             NO_ASK_DEADLINE_MS,
             0,
         )

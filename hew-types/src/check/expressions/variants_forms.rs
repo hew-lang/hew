@@ -499,15 +499,6 @@ else needs `impl Display for {rendered}`)"
         clippy::too_many_lines,
         reason = "multi-branch variant resolution: unqualified, qualified-in-type_defs, and qualified-in-fn_sigs each need distinct handling"
     )]
-    pub(in crate::check) fn type_decl_has_bare_variants(&self, id: crate::NominalId) -> bool {
-        matches!(
-            self.defs.kind(id.declaration()),
-            crate::DeclarationKind::Type
-                | crate::DeclarationKind::Machine
-                | crate::DeclarationKind::MachineEventType
-        )
-    }
-
     pub(in crate::check) fn resolve_identifier_variant(&mut self, name: &str, span: &Span) -> Ty {
         // `Machine::State` / `Enum::Variant` is a value expression, so it
         // bypasses the ordinary TypeExpr resolver. Apply the same published

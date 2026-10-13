@@ -1023,14 +1023,14 @@ fn two_node_worker_limit_still_reports_worker_at_capacity() {
 
     let saved = INBOUND_ASK_ACTIVE.swap(INBOUND_ASK_WORKER_LIMIT, Ordering::AcqRel);
     let target = remote_pid_for_node(&node2, actor_id);
-    // SAFETY: this is a remote void ask; null payload/size are valid.
+    // SAFETY: the registered request value is live; the reply is unit.
     let (_, status) = unsafe {
         ask_for_test(
             &raw const target,
-            test_dispatch(),
+            inbound_test_codec(noop_dispatch, 0),
             1,
-            ptr::null_mut(),
-            0,
+            TEST_U32_REQUEST.cast_mut(),
+            std::mem::size_of::<u32>(),
             NO_ASK_DEADLINE_MS,
             0,
         )

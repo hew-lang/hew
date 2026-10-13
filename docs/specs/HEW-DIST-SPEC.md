@@ -278,9 +278,9 @@ not a node has started, and publishes cluster-wide once one has.
 Result<A, LookupError>` is the local view of the same registry and
 performs the same comparison.
 
-At v0.6.0 the declaration identity is recorded and compared on the registering
-node. The gossiped identity rides the wire-version bump, and the cluster-wide
-comparison is v0.8.0.
+The current registry records and compares declaration identity on the
+registering node. Cluster-wide lookup type comparison remains deferred.
+Wire version 3 resolves handler declarations when a message is dispatched.
 
 Names are discovery aliases, not identity:
 

@@ -96,8 +96,8 @@ fn setup_remote_ask(
         // Serialize the request value before it leaves this address space —
         // `data`/`size` is the raw in-memory struct (which may hold heap
         // pointers). The codec for `msg_type` encodes its CONTENTS; the receiver
-        // reconstructs the value. Fail closed if no codec is registered for a
-        // non-empty payload.
+        // reconstructs the value. Every request needs a registered descriptor
+        // for its declaration identity, including an empty payload.
         let serialized_req: Option<(*mut u8, usize)> = if size > 0 {
             let mut out_len: usize = 0;
             // SAFETY: data is a valid value of the message type; out_len valid.

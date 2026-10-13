@@ -1786,7 +1786,7 @@ pub enum SpawnSlot {
 #[derive(Debug, Clone)]
 pub(in crate::check) struct ChainValueContext {
     pub(in crate::check) ty: Ty,
-    pub(in crate::check) place: Option<(String, crate::env::PlacePath)>,
+    pub(in crate::check) place: Option<(hew_parser::ast::Ident, crate::env::PlacePath)>,
     pub(in crate::check) consumed: bool,
 }
 
@@ -3587,7 +3587,7 @@ pub struct Checker {
     /// `duplicate_definition` error. `None` is the root/flat-file namespace (the
     /// user's own program and flat file imports share one module). Builtins are
     /// registered without going through this gate and stay globally visible.
-    pub(super) type_namespace_owners: HashMap<(Option<String>, String), Span>,
+    pub(super) type_namespace_owners: HashMap<(Option<String>, hew_parser::ast::Ident), Span>,
     /// Tracks public top-level names introduced by prior flat file imports into
     /// one importing file, so a later flat import there rejects the collision
     /// instead of silently overwriting it.
@@ -4105,7 +4105,7 @@ pub struct Checker {
     /// pattern node it describes: an aggregate subpattern re-sets it for its
     /// own fields, and every other pattern shape drops it, because a variant
     /// payload or a temporary scrutinee is not a field of a caller's place.
-    pub(super) pattern_place: Option<(String, crate::env::PlacePath)>,
+    pub(super) pattern_place: Option<(hew_parser::ast::Ident, crate::env::PlacePath)>,
     /// Actor protocol descriptors (`receive fn` → stable hash-derived `msg_id`),
     /// built once before body checking so the active-mode
     /// `Actor`'s own actor-handle type → `TlsHandler`'s coercion can confirm an
@@ -4179,14 +4179,14 @@ pub struct Checker {
     /// Tracks slice annotation spans we've already rejected so repeated
     /// resolution passes don't emit duplicate diagnostics.
     /// Compile-time known numeric literal values used by later coercion sites.
-    pub(super) const_values: HashMap<String, ConstValue>,
+    pub(super) const_values: HashMap<hew_parser::ast::Ident, ConstValue>,
     /// Lexical bindings in `const_values` that originate from a real `const`
     /// declaration (or other declared constexpr authority), as opposed to the
     /// literal-coercion entries `check_let` inserts for every unannotated
     /// immutable integer/float literal binding. The binding identity prevents a
     /// local or parameter with the same name from inheriting a module constant's
     /// value during constexpr length/count evaluation (e.g. fixed-array repeats).
-    pub(super) declared_const_bindings: HashMap<String, TypeBindingId>,
+    pub(super) declared_const_bindings: HashMap<hew_parser::ast::Ident, TypeBindingId>,
     /// Inferred type arguments for generic function calls that omit explicit
     /// type annotations.  Populated in `check_call` after argument unification.
     pub(super) call_type_args: HashMap<SpanKey, Vec<Ty>>,

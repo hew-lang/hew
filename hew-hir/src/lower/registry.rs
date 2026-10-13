@@ -284,13 +284,16 @@ impl LowerCtx {
         func: &FnDecl,
         item_span: &Span,
     ) -> ItemId {
-        let id = self.register_fn_entry(symbol, func);
-        if let Some(declaration) =
-            self.source_declaration(item_span, hew_types::DeclarationKind::Function, 0)
-        {
-            if let Some(entry) = self.fn_registry.get(symbol).cloned() {
-                self.source_fn_entries
-                    .insert(declaration, (symbol.to_string(), entry));
+        let declaration =
+            self.source_declaration(item_span, hew_types::DeclarationKind::Function, 0);
+        let symbol = declaration.map_or_else(
+            || symbol.to_string(),
+            |declaration| self.defs.linkage_name(declaration, symbol),
+        );
+        let id = self.register_fn_entry(&symbol, func);
+        if let Some(declaration) = declaration {
+            if let Some(entry) = self.fn_registry.get(&symbol).cloned() {
+                self.source_fn_entries.insert(declaration, (symbol, entry));
             }
         }
         id

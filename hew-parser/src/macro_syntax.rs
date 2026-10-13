@@ -16,6 +16,12 @@ pub enum Delimiter {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum TokenTree {
+    Interpolated {
+        spelling: String,
+        span: Span,
+        leading: String,
+        expressions: Vec<(Span, Vec<TokenTree>)>,
+    },
     Token {
         spelling: String,
         span: Span,
@@ -36,10 +42,53 @@ pub enum TokenTree {
 }
 
 impl TokenTree {
+    /// Write the token tree without depending on a source buffer.
+    pub fn write_source(&self, output: &mut String) {
+        match self {
+            Self::Token {
+                spelling, leading, ..
+            }
+            | Self::Interpolated {
+                spelling, leading, ..
+            } => {
+                output.push_str(leading);
+                output.push_str(spelling);
+            }
+            Self::Group {
+                delimiter,
+                children,
+                leading,
+                closing,
+                ..
+            } => {
+                output.push_str(leading);
+                let (open, close) = match delimiter {
+                    Delimiter::Parenthesis => ("(", ")"),
+                    Delimiter::Bracket => ("[", "]"),
+                    Delimiter::Brace => ("{", "}"),
+                    Delimiter::Attribute => ("#[", "]"),
+                };
+                output.push_str(open);
+                for child in children {
+                    child.write_source(output);
+                }
+                output.push_str(closing);
+                output.push_str(close);
+            }
+            Self::Fragment { tokens, .. } => {
+                for token in tokens {
+                    token.write_source(output);
+                }
+            }
+        }
+    }
+
     #[must_use]
     pub fn leading(&self) -> &str {
         match self {
-            Self::Token { leading, .. } | Self::Group { leading, .. } => leading,
+            Self::Token { leading, .. }
+            | Self::Group { leading, .. }
+            | Self::Interpolated { leading, .. } => leading,
             Self::Fragment { tokens, .. } => tokens.first().map_or("", Self::leading),
         }
     }
@@ -47,7 +96,9 @@ impl TokenTree {
     #[must_use]
     pub fn span(&self) -> &Span {
         match self {
-            Self::Token { span, .. } | Self::Group { span, .. } => span,
+            Self::Token { span, .. }
+            | Self::Group { span, .. }
+            | Self::Interpolated { span, .. } => span,
             Self::Fragment { syntax, .. } => syntax.span(),
         }
     }
@@ -264,6 +315,7 @@ pub enum Origin {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Expansion {
+    pub name: String,
     pub file: PathBuf,
     pub synthetic: Span,
     pub invocation: Origin,
@@ -272,15 +324,41 @@ pub struct Expansion {
     pub origins: Vec<(Span, Origin)>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum TemplateBody {
+    Expr(Spanned<Expr>),
+    Items(Vec<Spanned<crate::ast::Item>>),
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MacroTemplate {
+    pub source: PathBuf,
+    pub visibility: Visibility,
+    pub body: TemplateBody,
+    pub origins: Vec<(Span, Origin)>,
+}
+
+impl MacroTemplate {
+    #[must_use]
+    pub fn origin(&self, span: &Span) -> Option<&Origin> {
+        self.origins
+            .iter()
+            .find(|(generated, _)| generated.contains(&span.start))
+            .map(|(_, original)| original)
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ExpansionMap {
+    pub templates: Vec<MacroTemplate>,
+    pub used_imports: Vec<(PathBuf, Span)>,
     pub contexts: SyntaxContexts,
     pub expansions: Vec<Expansion>,
     pub sources: BTreeMap<PathBuf, String>,
 }
 
 impl ExpansionMap {
-    /// Resolve a generated position to caller syntax or the outer invocation.
+    /// Resolve a generated position to the source token that wrote it.
     #[must_use]
     pub fn source_origin(&self, span: &Span) -> Option<(PathBuf, Span)> {
         let expansion = self
@@ -292,12 +370,21 @@ impl ExpansionMap {
             .iter()
             .find(|(generated, _)| generated.contains(&span.start))
             .map_or(&expansion.invocation, |(_, origin)| origin);
-        let origin = match origin {
-            Origin::Caller { .. } => origin,
-            Origin::Template { .. } => &expansion.invocation,
-        };
         let (Origin::Caller { file, span } | Origin::Template { file, span }) = origin;
         self.source_origin(span)
+            .or_else(|| Some((file.clone(), span.clone())))
+    }
+
+    /// The outermost invocation containing generated syntax.
+    #[must_use]
+    pub fn invocation_origin(&self, span: &Span) -> Option<(PathBuf, Span)> {
+        let expansion = self
+            .expansions
+            .iter()
+            .find(|expansion| expansion.synthetic.contains(&span.start))?;
+        let (Origin::Caller { file, span } | Origin::Template { file, span }) =
+            &expansion.invocation;
+        self.invocation_origin(span)
             .or_else(|| Some((file.clone(), span.clone())))
     }
 

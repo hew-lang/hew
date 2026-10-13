@@ -203,7 +203,8 @@ impl Pattern {
                             "a macro pattern cannot inspect a parsed capture",
                         ));
                     }
-                    TokenTree::Token { spelling, .. } => Element::Token(spelling.clone()),
+                    TokenTree::Token { spelling, .. }
+                    | TokenTree::Interpolated { spelling, .. } => Element::Token(spelling.clone()),
                     TokenTree::Group {
                         delimiter,
                         children,

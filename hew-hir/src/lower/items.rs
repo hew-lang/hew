@@ -9,7 +9,10 @@ impl LowerCtx {
         func: &FnDecl,
         span: std::ops::Range<usize>,
     ) -> Option<HirFn> {
-        self.lower_fn_with_name(func, func.name.name.as_str(), span)
+        let declaration =
+            self.source_declaration(&span, hew_types::DeclarationKind::Function, 0)?;
+        let name = self.source_fn_entries.get(&declaration)?.0.clone();
+        self.lower_fn_with_name(func, &name, span)
     }
 
     /// V0b: lower a top-level `impl [<TypeParams>] [Trait for] TargetType { ... }`

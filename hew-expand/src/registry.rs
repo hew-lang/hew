@@ -1,10 +1,10 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use hew_parser::ast::{Ident, ImportSpec, Item, Span, SyntaxContext, Visibility};
 use hew_parser::macro_syntax::{
     Expansion, ExpansionCategory, ExpansionId, ExpansionInput, ExpansionMap, ExpansionProvider,
-    MacroCall, MacroDecl, Origin,
+    MacroCall, MacroDecl, MacroTemplate, Origin, TemplateBody,
 };
 use hew_parser::module::{ModuleGraph, ModulePath};
 
@@ -19,10 +19,20 @@ struct Definition {
 }
 
 #[derive(Debug)]
+struct MacroImport {
+    target: ModulePath,
+    spec: Option<ImportSpec>,
+    qualifier: String,
+    span: Span,
+    file_import: bool,
+}
+
+#[derive(Debug)]
 pub(crate) struct Registry {
     definitions: BTreeMap<(ModulePath, String), Definition>,
     modules: BTreeMap<PathBuf, ModulePath>,
-    imports: BTreeMap<ModulePath, Vec<hew_parser::module::ModuleImport>>,
+    imports: BTreeMap<PathBuf, Vec<MacroImport>>,
+    ordinary_names: BTreeSet<(ModulePath, String)>,
     pub(crate) map: ExpansionMap,
     active: Vec<ExpansionId>,
     next_offset: usize,
@@ -32,23 +42,76 @@ pub(crate) struct Registry {
 impl Registry {
     pub(crate) fn new(graph: &ModuleGraph, sources: BTreeMap<PathBuf, String>) -> Self {
         let next_offset = sources.values().map(String::len).max().unwrap_or(0) + 1;
+        let modules: BTreeMap<_, _> = graph
+            .modules
+            .values()
+            .flat_map(|module| {
+                module
+                    .source_paths
+                    .iter()
+                    .map(|path| (path.clone(), module.id.clone()))
+            })
+            .collect();
+        let mut imports = BTreeMap::<PathBuf, Vec<MacroImport>>::new();
+        let mut ordinary_names = BTreeSet::new();
+        for module in graph.modules.values() {
+            for (index, (item, span)) in module.items.iter().enumerate() {
+                let name = match item {
+                    Item::Function(value) => Some(value.name),
+                    Item::Const(value) => Some(value.name),
+                    Item::TypeDecl(value) => Some(value.name),
+                    Item::TypeAlias(value) => Some(value.name),
+                    Item::Record(value) => Some(value.name),
+                    Item::Trait(value) => Some(value.name),
+                    Item::Actor(value) => Some(value.name),
+                    Item::Supervisor(value) => Some(value.name),
+                    Item::Machine(value) => Some(value.name),
+                    _ => None,
+                };
+                if let Some(name) = name {
+                    ordinary_names.insert((module.id.clone(), name.to_string()));
+                }
+                let Item::Import(import) = item else { continue };
+                let Some(source) = graph
+                    .item_source(&module.id, index)
+                    .or_else(|| module.source_paths.first())
+                else {
+                    continue;
+                };
+                let target = import
+                    .resolved_source_paths
+                    .iter()
+                    .find_map(|path| modules.get(path))
+                    .cloned()
+                    .unwrap_or_else(|| ModulePath {
+                        segments: import
+                            .path
+                            .segments
+                            .iter()
+                            .map(|(ident, _)| ident.name)
+                            .collect(),
+                    });
+                let qualifier = import
+                    .module_alias
+                    .or_else(|| import.path.segments.last().map(|(ident, _)| *ident))
+                    .map_or_else(String::new, |name| name.to_string());
+                imports
+                    .entry(source.clone())
+                    .or_default()
+                    .push(MacroImport {
+                        target,
+                        qualifier,
+                        spec: import.spec.clone(),
+                        span: span.clone(),
+                        file_import: import.file_path.is_some(),
+                    });
+            }
+        }
         Self {
             definitions: BTreeMap::new(),
-            modules: graph
-                .modules
-                .values()
-                .flat_map(|module| {
-                    module
-                        .source_paths
-                        .iter()
-                        .map(|path| (path.clone(), module.id.clone()))
-                })
-                .collect(),
-            imports: graph
-                .modules
-                .values()
-                .map(|module| (module.id.clone(), module.imports.clone()))
-                .collect(),
+            modules,
+            imports,
+            ordinary_names,
             map: ExpansionMap {
                 sources,
                 ..ExpansionMap::default()
@@ -96,8 +159,15 @@ impl Registry {
                     .collect::<Result<Vec<_>, _>>()
                     .map_err(|error| (source.clone(), error.span, error.message))?;
                 for (pattern, rule) in patterns.iter().zip(&declaration.rules) {
-                    validate_template(pattern, rule, source, self.next_offset)
-                        .map_err(|error| (source.clone(), error.span, error.message))?;
+                    let template = validate_template(
+                        pattern,
+                        rule,
+                        source,
+                        self.next_offset,
+                        declaration.visibility,
+                    )
+                    .map_err(|error| (source.clone(), error.span, error.message))?;
+                    self.map.templates.push(template);
                 }
                 self.definitions.insert(
                     key,
@@ -113,7 +183,11 @@ impl Registry {
         Ok(())
     }
 
-    fn definition(&self, call: &MacroCall, source: &Path) -> Result<&Definition, String> {
+    fn definition(
+        &self,
+        call: &MacroCall,
+        source: &Path,
+    ) -> Result<(&Definition, Option<(PathBuf, Span)>), String> {
         let Some((first, _)) = call.path.segments.first() else {
             return Err("empty macro path".into());
         };
@@ -131,7 +205,7 @@ impl Registry {
             .to_string();
         if call.path.segments.len() == 1 {
             if let Some(definition) = self.definitions.get(&(module.clone(), name.clone())) {
-                return Ok(definition);
+                return Ok((definition, None));
             }
         }
         let prefix = call.path.segments[..call.path.segments.len() - 1]
@@ -140,7 +214,7 @@ impl Registry {
             .collect::<Vec<_>>()
             .join(".");
         let mut found = None;
-        for import in self.imports.get(module).into_iter().flatten() {
+        for import in self.imports.get(anchor).into_iter().flatten() {
             let imported_name = match &import.spec {
                 Some(ImportSpec::Names(names)) if prefix.is_empty() => {
                     names.iter().find_map(|entry| {
@@ -148,11 +222,8 @@ impl Registry {
                             .then(|| entry.name.to_string())
                     })
                 }
-                None if import
-                    .target
-                    .segments
-                    .last()
-                    .is_some_and(|segment| segment.as_str() == prefix)
+                None if import.file_import && prefix.is_empty()
+                    || import.qualifier == prefix
                     || import.target.dotted() == prefix =>
                 {
                     Some(name.clone())
@@ -166,10 +237,16 @@ impl Registry {
                 .definitions
                 .get(&(import.target.clone(), imported_name))
             {
-                if definition.declaration.visibility == Visibility::Private {
+                if !import.file_import && definition.declaration.visibility == Visibility::Private {
                     return Err(format!("macro `{name}` is private"));
                 }
-                if found.replace(definition).is_some() {
+                if found
+                    .replace((
+                        definition,
+                        Some((anchor.to_path_buf(), import.span.clone())),
+                    ))
+                    .is_some()
+                {
                     return Err(format!("macro `{name}` is ambiguous"));
                 }
             }
@@ -185,6 +262,32 @@ impl Registry {
                     .join(".")
             )
         })
+    }
+
+    pub(crate) fn strip_macro_names(&self, target: &ModulePath, spec: &mut Option<ImportSpec>) {
+        if let Some(ImportSpec::Names(names)) = spec {
+            names.retain(|name| {
+                let key = (target.clone(), name.name.to_string());
+                !self.definitions.contains_key(&key) || self.ordinary_names.contains(&key)
+            });
+        }
+    }
+
+    pub(crate) fn strip_import(
+        &self,
+        import: &mut hew_parser::ast::ImportDecl,
+        source: &Path,
+        span: &Span,
+    ) {
+        if let Some(resolved) = self
+            .imports
+            .get(source)
+            .into_iter()
+            .flatten()
+            .find(|import| import.span == *span)
+        {
+            self.strip_macro_names(&resolved.target, &mut import.spec);
+        }
     }
 
     fn anchor<'a>(&'a self, ident: Ident, source: &'a Path) -> &'a Path {
@@ -208,24 +311,58 @@ impl ExpansionProvider for Registry {
         source: &Path,
     ) -> Result<ExpansionInput, String> {
         if self.active.len() >= 64 {
-            return Err("macro expansion exceeded depth 64".into());
+            let mut chain: Vec<_> = self
+                .active
+                .iter()
+                .map(|id| self.map.expansions[id.0 as usize].name.as_str())
+                .collect();
+            chain.push(
+                call.path
+                    .segments
+                    .last()
+                    .map_or("", |(ident, _)| ident.name.as_str()),
+            );
+            return Err(format!(
+                "macro expansion exceeded depth 64: {}",
+                chain.join(" -> ")
+            ));
         }
         if self.active.is_empty() {
             self.remaining_nodes = 1_000_000;
         }
-        let definition = self.definition(call, source)?;
+        let (definition, imported) = self.definition(call, source)?;
         let matched = definition
             .patterns
             .iter()
             .zip(&definition.declaration.rules)
             .find_map(|(pattern, rule)| {
-                (rule.category == category)
-                    .then(|| pattern.matches(&call.input))
-                    .flatten()
+                pattern
+                    .matches(&call.input)
                     .map(|captures| (pattern, rule, captures))
             })
-            .ok_or("no macro rule matches this input and expansion position")?;
+            .ok_or_else(|| {
+                let shapes = definition
+                    .declaration
+                    .rules
+                    .iter()
+                    .filter_map(|rule| {
+                        self.map
+                            .sources
+                            .get(&definition.source)
+                            .and_then(|source| source.get(rule.pattern.span().clone()))
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" or ");
+                format!("no macro rule matches this input; expected {shapes}")
+            })?;
         let (pattern, rule, captures) = matched;
+        if rule.category != category {
+            return Err(format!(
+                "the first matching macro rule produces {:?}, but this position requires {:?}",
+                rule.category, category
+            ));
+        }
+        let macro_name = definition.declaration.name.to_string();
         let definition_source = definition.source.clone();
         let definition_span = definition.span.clone();
         let id = ExpansionId(
@@ -250,12 +387,18 @@ impl ExpansionProvider for Registry {
             &mut remaining_nodes,
         )
         .map_err(|error| error.message)?;
+        if let Some(imported) = imported {
+            if !self.map.used_imports.contains(&imported) {
+                self.map.used_imports.push(imported);
+            }
+        }
         self.map
             .contexts
             .mint(call.path.segments[0].0.ctx, id, definition_source.clone());
         self.remaining_nodes = remaining_nodes;
         self.next_offset += generated.source.len() + 1;
         self.map.expansions.push(Expansion {
+            name: macro_name,
             file: source.to_path_buf(),
             synthetic: generated.offset..generated.offset + generated.source.len(),
             invocation: Origin::Caller {
@@ -312,13 +455,14 @@ fn validate_template(
     rule: &hew_parser::macro_syntax::MacroRule,
     source: &Path,
     offset: usize,
-) -> Result<(), crate::ExpansionError> {
+    visibility: Visibility,
+) -> Result<MacroTemplate, crate::ExpansionError> {
     use hew_parser::macro_syntax::{Fragment, FragmentKind};
     let generated = transcribe(
         pattern,
         &rule.template,
         &pattern.placeholders(),
-        SyntaxContext::from_row(1),
+        SyntaxContext::ROOT,
         offset,
         &mut 1_000_000,
     )?;
@@ -331,6 +475,7 @@ fn validate_template(
     };
     let map = ExpansionMap {
         expansions: vec![Expansion {
+            name: String::new(),
             file: source.to_path_buf(),
             synthetic: offset..offset + generated.source.len(),
             invocation: Origin::Caller {
@@ -392,7 +537,9 @@ fn validate_template(
                     span: rule.span.clone(),
                 });
             };
-            control.expr(&mut expression)
+            control
+                .expr(&mut expression)
+                .map(|()| TemplateBody::Expr(expression))
         }
         ExpansionCategory::Items => {
             let parsed = hew_parser::parse_generated(
@@ -411,7 +558,14 @@ fn validate_template(
                     span: original(&error.span),
                 });
             }
-            for (mut item, span) in parsed.program.items {
+            if parsed.program.items.is_empty() {
+                return Err(crate::ExpansionError {
+                    message: "an items macro must produce at least one declaration".into(),
+                    span: rule.span.clone(),
+                });
+            }
+            let mut items = parsed.program.items;
+            for (item, span) in &mut items {
                 if matches!(item, Item::Import(_) | Item::Macro(_)) {
                     return Err(crate::ExpansionError {
                         message: "an items macro cannot introduce imports or macro declarations"
@@ -420,17 +574,24 @@ fn validate_template(
                     });
                 }
                 control
-                    .item(&mut item, &span)
+                    .item(item, span)
                     .map_err(|error| crate::ExpansionError {
                         message: error.message,
                         span: original(&error.span),
                     })?;
             }
-            Ok(())
+            Ok(TemplateBody::Items(items))
         }
     };
-    result.map_err(|error| crate::ExpansionError {
-        message: error.message,
-        span: original(&error.span),
-    })
+    result
+        .map(|body| MacroTemplate {
+            source: source.to_path_buf(),
+            visibility,
+            body,
+            origins: map.expansions[0].origins.clone(),
+        })
+        .map_err(|error| crate::ExpansionError {
+            message: error.message,
+            span: original(&error.span),
+        })
 }

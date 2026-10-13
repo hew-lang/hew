@@ -380,8 +380,14 @@ impl Checker {
                 type_args,
                 base,
             } => {
+                let name = match self.resolve_type_path(path) {
+                    Some(super::super::scope::Resolution::Nominal(id)) => {
+                        self.defs.path(id.declaration()).to_string()
+                    }
+                    _ => path.to_string(),
+                };
                 let ty = self.check_struct_init(
-                    &path.to_string(), // TRANSITION(P1): deleted by A1 commit 2
+                    &name,
                     fields,
                     type_args.as_deref(),
                     base.as_deref(),
@@ -1056,7 +1062,7 @@ impl Checker {
         if let Some((Some(name), binding_span)) = error {
             self.check_shadowing(*name, binding_span);
             self.env
-                .define_with_span(name.to_string(), error_ty, false, binding_span.clone());
+                .define_with_span(name, error_ty, false, binding_span.clone());
             self.record_local_resolution(*name, binding_span);
         }
         let body_ty = if payload == Ty::Never {
@@ -1411,14 +1417,14 @@ impl Checker {
             // authority on that rule) and so are assignment targets, which
             // write rather than read.
             if !is_moved && !is_write_target {
-                self.report_place_use_after_move(name, &[], span);
+                self.report_place_use_after_move(ident, &[], span);
             }
             // A read inside a generator body captures into the generator frame.
             // `in_generator` covers `gen fn`, `receive gen fn` and `gen { }`,
             // and is cleared inside a nested lambda body, whose own capture
             // rule (`finish_closure_captures`) owns that boundary instead.
             if self.in_generator && !is_write_target {
-                self.reject_borrowed_generator_capture(name, span);
+                self.reject_borrowed_generator_capture(ident, span);
             }
             // Track captures: variable from scope below the lambda boundary
             if let Some(capture_depth) = self.lambda_capture_depth {

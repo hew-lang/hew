@@ -491,7 +491,7 @@ impl Checker {
                 })
         };
         match expr {
-            Expr::Ident(name) => match self.env.lookup_ref(name.name.as_str()) {
+            Expr::Ident(name) => match self.env.lookup_ref(name) {
                 Some(binding) if self.effect_graph.bindings.contains_key(&binding.id) => {
                     CallableOrigin::Binding {
                         binding: binding.id,

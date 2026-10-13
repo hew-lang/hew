@@ -935,7 +935,12 @@ impl Checker {
         // rc1-F1 stage A: body checking resolves the same canonical key
         // `register_fn_sig_with_name` minted — root items included — so
         // `current_function` (a `fn_sigs`-family key) is always canonical.
-        let fn_name = self.canonical_fn_identity(self.canonical_fn_owner(), fd.name.name.as_str());
+        let fn_name = self
+            .named_item_declaration(fd.name)
+            .map(|id| self.defs.path(id).to_string())
+            .unwrap_or_else(|| {
+                self.canonical_fn_identity(self.canonical_fn_owner(), fd.name.name.as_str())
+            });
         self.check_function_as(fd, &fn_name);
     }
 
@@ -1638,8 +1643,7 @@ impl Checker {
     pub(super) fn bind_actor_fields(&mut self, fields: &[FieldDecl]) {
         for (index, field) in fields.iter().enumerate() {
             let field_ty = self.resolve_type_expr(&field.ty);
-            self.env
-                .define(field.name.to_string(), field_ty, field.is_mutable);
+            self.env.define(field.name, field_ty, field.is_mutable);
             self.record_actor_field_binding(field, index);
         }
     }
@@ -1703,7 +1707,7 @@ impl Checker {
             self.record_consumed_actor_state(fields, consumer);
         }
         for field in fields {
-            let Some(binding) = self.env.lookup_ref(field.name.name.as_str()) else {
+            let Some(binding) = self.env.lookup_ref(field.name) else {
                 continue;
             };
             let (place, moved_at) = if binding.is_moved {
@@ -1782,7 +1786,7 @@ impl Checker {
                 self.env
                     .define_deferred_field(field.name.name.as_str(), field_ty);
             } else {
-                self.env.define(field.name.to_string(), field_ty, true);
+                self.env.define(field.name, field_ty, true);
             }
             self.record_actor_field_binding(field, index);
         }
@@ -2277,7 +2281,7 @@ impl Checker {
                     .contains_key(field.name.name.as_str())
             })
             .filter_map(|field| {
-                let binding = self.env.lookup_ref(field.name.name.as_str())?;
+                let binding = self.env.lookup_ref(field.name)?;
                 Some((binding.id, field.name.to_string()))
             })
             .collect();
@@ -2909,16 +2913,15 @@ impl Checker {
         } else {
             None
         };
-        self.env.define(cd.name.to_string(), actual, false);
+        self.env.define(cd.name, actual, false);
         if let Some(value) = const_value {
             let binding_id = self
                 .env
-                .lookup_ref(cd.name.name.as_str())
+                .lookup_ref(cd.name)
                 .expect("constant binding was just defined")
                 .id;
-            self.const_values.insert(cd.name.to_string(), value);
-            self.declared_const_bindings
-                .insert(cd.name.to_string(), binding_id);
+            self.const_values.insert(cd.name, value);
+            self.declared_const_bindings.insert(cd.name, binding_id);
         }
         self.record_root_value_binding(cd.name.name.as_str());
     }

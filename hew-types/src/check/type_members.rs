@@ -105,7 +105,7 @@ impl Checker {
 
         let (canonical_type, builtin) = match &target.0 {
             Expr::Ident(surface) => {
-                if self.env.lookup_ref(surface.name.as_str()).is_some()
+                if self.env.lookup_ref(surface).is_some()
                     || self.module_binding_in_current_file(surface.name.as_str())
                 {
                     return None;
@@ -147,7 +147,7 @@ impl Checker {
                 let Expr::Ident(module_short) = &object.0 else {
                     return None;
                 };
-                if self.env.lookup_ref(module_short.name.as_str()).is_some() {
+                if self.env.lookup_ref(module_short).is_some() {
                     return None;
                 }
                 self.resolve_module_type(module_short.name.as_str(), field.0.name.as_str())?;
@@ -176,7 +176,7 @@ impl Checker {
     /// machine follows the same nominal authority as other type heads.
     fn machine_event_type_head(&mut self, object: &Spanned<Expr>) -> Option<String> {
         let machine = match &object.0 {
-            Expr::Ident(name) if self.env.lookup_ref(name.name.as_str()).is_none() => self
+            Expr::Ident(name) if self.env.lookup_ref(name).is_none() => self
                 .source_nominal_declaration(name.name.as_str())
                 .or_else(|| {
                     self.resolve_nominal_declaration(NominalOrigin::Lexical, name.name.as_str())
@@ -188,7 +188,7 @@ impl Checker {
                 let Expr::Ident(module) = &object.0 else {
                     return None;
                 };
-                if self.env.lookup_ref(module.name.as_str()).is_some() {
+                if self.env.lookup_ref(module).is_some() {
                     return None;
                 }
                 self.resolve_module_type(module.name.as_str(), machine.0.name.as_str())?;

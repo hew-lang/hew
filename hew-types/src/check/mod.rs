@@ -37,6 +37,7 @@ mod coerce;
 pub mod const_eval;
 mod dependency_analysis;
 mod diagnostics;
+mod macro_templates;
 pub use dependency_analysis::DependencyAnalysisCache;
 pub mod dispatch;
 pub mod dispatch_table;
@@ -804,6 +805,18 @@ impl Checker {
         }
     }
 
+    pub(super) fn named_item_declaration(
+        &self,
+        name: hew_parser::ast::Ident,
+    ) -> Option<crate::DefId> {
+        let site = self.scope_site()?;
+        match self.scopes.value_head(&self.env, site, name)? {
+            scope::Resolution::Def(id) | scope::Resolution::Member(id) => Some(id),
+            scope::Resolution::Nominal(id) => Some(id.declaration()),
+            _ => None,
+        }
+    }
+
     /// Select a free-function signature in the current source file. Explicit
     /// imports publish only lexical bindings; their canonical declarations own
     /// the signatures, leaving ambient builtin signatures intact.
@@ -815,10 +828,15 @@ impl Checker {
         let name = ident.name.as_str();
         if ident.ctx != hew_parser::ast::SyntaxContext::ROOT {
             let site = self.scope_site()?;
-            let scope::Resolution::Def(declaration) =
-                self.scopes.value_head(&self.env, site, ident)?
-            else {
-                return None;
+            let declaration = match self.scopes.value_head(&self.env, site, ident) {
+                Some(scope::Resolution::Def(declaration)) => declaration,
+                None => {
+                    return self
+                        .builtin_fn_sigs
+                        .contains_key(&ident.name)
+                        .then(|| name.to_string())
+                }
+                _ => return None,
             };
             return self
                 .fn_sig_keys
@@ -1929,6 +1947,18 @@ impl Checker {
         // Declares one row and answers its identity, which a member row takes
         // as its owner.
         let mut minted_types: Vec<crate::DefId> = Vec::new();
+        let item_context = match item {
+            Item::Function(declaration) => declaration.name.ctx,
+            Item::Const(declaration) => declaration.name.ctx,
+            Item::TypeDecl(declaration) => declaration.name.ctx,
+            Item::TypeAlias(declaration) => declaration.name.ctx,
+            Item::Record(declaration) => declaration.name.ctx,
+            Item::Trait(declaration) => declaration.name.ctx,
+            Item::Actor(declaration) => declaration.name.ctx,
+            Item::Supervisor(declaration) => declaration.name.ctx,
+            Item::Machine(declaration) => declaration.name.ctx,
+            _ => hew_parser::ast::SyntaxContext::ROOT,
+        };
         let item_visibility = match item {
             Item::Const(decl) => decl.visibility,
             Item::TypeDecl(decl) => decl.visibility,
@@ -1955,6 +1985,9 @@ impl Checker {
             let occurrence =
                 Occurrence::new_with_synthetic_ordinal(module, span, item_ordinal, kind, ordinal);
             let mut minted = None;
+            if alias && item_context != hew_parser::ast::SyntaxContext::ROOT {
+                return None;
+            }
             let collision = if alias {
                 let claimant = self
                     .defs
@@ -1970,7 +2003,15 @@ impl Checker {
                     }
                 }
             } else {
-                match self.defs.declare(occurrence, name, owner, path.clone()) {
+                match self.defs.declare(
+                    occurrence,
+                    hew_parser::ast::Ident {
+                        name,
+                        ctx: item_context,
+                    },
+                    owner,
+                    path.clone(),
+                ) {
                     Ok(id) => {
                         minted = Some(id);
                         if matches!(kind, Kind::Type | Kind::Record | Kind::MachineEventType) {
@@ -1984,7 +2025,14 @@ impl Checker {
                             if let (Some(namespace_module), Some(binding)) =
                                 (namespace_module, scope::Binding::of_item(&self.defs, id))
                             {
-                                self.scopes.declare_item(namespace_module, name, binding);
+                                self.scopes.declare_item(
+                                    namespace_module,
+                                    hew_parser::ast::Ident {
+                                        name,
+                                        ctx: item_context,
+                                    },
+                                    binding,
+                                );
                             }
                         }
                         self.nominal_namespace_claims
@@ -2664,6 +2712,7 @@ impl Checker {
         let program = normalized_program
             .as_ref()
             .map_or(program, |normalized| &normalized.program);
+        self.validate_macro_templates(program);
         self.check_dependency_bodies(program);
         self.check_root_bodies(program);
         self.finish_program(program, normalized_program.as_ref())
@@ -3305,6 +3354,13 @@ impl Checker {
             .iter()
             .map(|(k, v)| (k.clone(), self.normalize_for_use(v)))
             .collect();
+
+        for (source, span) in &self.expansions.used_imports {
+            if let Some(module) = self.defs.module_for_source(source) {
+                self.scopes
+                    .mark_import_used(scope::ImportSite::new(module, span));
+            }
+        }
 
         // Emit unused import warnings. A REPL fragment imports modules it will
         // reference on later inputs, so suppress this lint for eval fragments.

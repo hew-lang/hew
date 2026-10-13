@@ -250,7 +250,7 @@ struct GenericScope {
 /// Every scope of one compilation, and the resolutions made through them.
 #[derive(Debug, Clone, Default)]
 pub struct Scopes {
-    items: HashMap<ModuleId, HashMap<Symbol, Binding>>,
+    items: HashMap<ModuleId, HashMap<Ident, Binding>>,
     files: HashMap<ModuleId, FileScope>,
     prelude: HashMap<Symbol, Binding>,
     members: HashMap<(DefId, Symbol), Resolution>,
@@ -316,9 +316,10 @@ impl Scopes {
     pub fn declare_item(
         &mut self,
         namespace: ModuleId,
-        name: Symbol,
+        name: impl crate::env::LexicalName,
         binding: Binding,
     ) -> Option<Binding> {
+        let name = name.lexical_key();
         let previous = self
             .items
             .entry(namespace)
@@ -335,7 +336,8 @@ impl Scopes {
 
     /// Withdraw the item `name` binds in `namespace`: a declaration the
     /// checker refused, so the name keeps reaching what it reached before.
-    pub fn unbind_item(&mut self, namespace: ModuleId, name: Symbol) {
+    pub fn unbind_item(&mut self, namespace: ModuleId, name: impl crate::env::LexicalName) {
+        let name = name.lexical_key();
         if let Some(items) = self.items.get_mut(&namespace) {
             items.remove(&name);
         }
@@ -343,8 +345,11 @@ impl Scopes {
 
     /// The item `name` binds in `namespace`.
     #[must_use]
-    pub fn item(&self, namespace: ModuleId, name: Symbol) -> Option<Binding> {
-        self.items.get(&namespace)?.get(&name).copied()
+    pub fn item(&self, namespace: ModuleId, name: impl crate::env::LexicalName) -> Option<Binding> {
+        self.items
+            .get(&namespace)?
+            .get(&name.lexical_key())
+            .copied()
     }
 
     /// Every item of `namespace`.
@@ -353,7 +358,8 @@ impl Scopes {
         self.items.get(&namespace).map_or_else(Vec::new, |items| {
             items
                 .iter()
-                .map(|(name, binding)| (*name, *binding))
+                .filter(|(name, _)| name.ctx == SyntaxContext::ROOT)
+                .map(|(name, binding)| (name.name, *binding))
                 .collect()
         })
     }
@@ -404,7 +410,7 @@ impl Scopes {
             .filter(|module| {
                 self.items
                     .get(&self.namespace_of(*module))
-                    .is_some_and(|items| items.contains_key(&name))
+                    .is_some_and(|items| items.contains_key(&Ident::new(name.as_str())))
             })
             .collect();
         modules.dedup();
@@ -454,6 +460,11 @@ impl Scopes {
         {
             self.used_imports.insert(*site);
         }
+    }
+
+    /// Credit an import resolved by an earlier shared frontend stage.
+    pub(crate) fn mark_import_used(&mut self, site: ImportSite) {
+        self.used_imports.insert(site);
     }
 
     /// Whether a resolution went through the import declaration at `site`.
@@ -742,8 +753,13 @@ impl Scopes {
         let own = file.and_then(|file| file.namespace).unwrap_or(module);
         let item = self
             .items
-            .get(&own)
-            .and_then(|items| items.get(&head.name))
+            .get(&self.namespace_of(site.file))
+            .and_then(|items| items.get(&head))
+            .or_else(|| {
+                self.items
+                    .get(&own)
+                    .and_then(|items| items.get(&Ident::from_symbol(head.name)))
+            })
             .map(|binding| (*binding, None))
             .or_else(|| {
                 file.filter(|file| !file.ambiguous.contains_key(&head.name))
@@ -783,7 +799,7 @@ impl Scopes {
             Resolution::Module(module) => self
                 .items
                 .get(&self.namespace_of(module))
-                .and_then(|items| items.get(&name))
+                .and_then(|items| items.get(&Ident::from_symbol(name)))
                 .map(|binding| binding.resolution()),
             Resolution::Nominal(nominal) => self.member(nominal.declaration(), name),
             Resolution::Def(owner) | Resolution::Member(owner) => self.member(owner, name),

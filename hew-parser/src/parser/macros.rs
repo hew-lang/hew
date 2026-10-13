@@ -177,6 +177,41 @@ impl Parser<'_> {
     }
 
     fn parse_raw_token_tree_atom(&mut self) -> Option<TokenTree> {
+        if let Some(Token::InterpolatedString(raw)) = self.peek() {
+            let raw = raw.to_string();
+            let leading = self.token_tree_trivia();
+            let (_, span) = self.advance()?;
+            let mut expressions = Vec::new();
+            for range in super::interpolation_spans(&raw, span.start) {
+                let text = &raw[range.start - span.start..range.end - span.start];
+                let mut parser =
+                    Parser::with_contexts(text, range.start, Arc::clone(&self.contexts))
+                        .with_fragments(self.fragments.within(range.clone()));
+                let mut tokens = Vec::new();
+                while !parser.at_end() {
+                    if let Some(fragment) = parser.peek_fragment() {
+                        let mut captured = Vec::new();
+                        while !parser.at_end() && parser.peek_span().start < fragment.span().end {
+                            captured.push(parser.parse_raw_token_tree_atom()?);
+                        }
+                        tokens.push(TokenTree::Fragment {
+                            syntax: Box::new(fragment),
+                            tokens: captured,
+                        });
+                    } else {
+                        tokens.push(parser.parse_raw_token_tree_atom()?);
+                    }
+                }
+                self.errors.extend(parser.errors);
+                expressions.push((range, tokens));
+            }
+            return Some(TokenTree::Interpolated {
+                spelling: raw,
+                span,
+                leading,
+                expressions,
+            });
+        }
         let nested = match self.peek()? {
             Token::LeftParen => Some(Delimiter::Parenthesis),
             Token::LeftBracket => Some(Delimiter::Bracket),

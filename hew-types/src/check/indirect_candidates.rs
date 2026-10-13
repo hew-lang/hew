@@ -253,7 +253,7 @@ impl Checker {
         name: Ident,
         value: Option<&Spanned<Expr>>,
     ) {
-        let Some(binding) = self.env.lookup_ref(name.name.as_str()) else {
+        let Some(binding) = self.env.lookup_ref(name) else {
             return;
         };
         let Some(value) = value else {
@@ -385,7 +385,7 @@ impl Checker {
     /// supplies an actual value. This remains precise through helper-to-helper
     /// forwarding without globally merging unrelated callers.
     pub(super) fn record_callable_formal_candidate(&mut self, name: Ident) {
-        let Some(binding) = self.env.lookup_ref(name.name.as_str()) else {
+        let Some(binding) = self.env.lookup_ref(name) else {
             return;
         };
         let id = binding.id;

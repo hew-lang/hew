@@ -1850,7 +1850,7 @@ impl Checker {
                     // identifiers on the existing name-building path
                     // (`(Vec.new)(args)` → `"Vec::new"`) because type/module
                     // names are not registered as value bindings.
-                    if self.env.lookup_ref(obj_name.name.as_str()).is_some() {
+                    if self.env.lookup_ref(obj_name).is_some() {
                         let field_ty = self.synthesize(&func.0, &func.1);
                         let resolved = self.subst.resolve(&field_ty);
                         return self.check_call_with_type(&resolved, func, args, span);
@@ -2594,7 +2594,10 @@ impl Checker {
         // Then check if it's a variable with a function type (e.g., lambda parameters)
         if let Some((binding_depth, binding)) = self
             .env
-            .lookup_with_depth(&func_name)
+            .lookup_with_depth(match &func.0 {
+                Expr::Ident(name) => *name,
+                _ => Ident::new(&func_name),
+            })
             .map(|(depth, binding)| (depth, binding.clone()))
         {
             let recursive_actor_receiver = self.in_lambda_actor_body

@@ -124,7 +124,9 @@ impl Checker {
             .map_or_else(Vec::new, |signature| signature.type_params.clone());
         if Self::ty_mentions_type_params(&ty, &parameters) {
             self.record_generic_requirement(
-                super::types::GenericRequirementKind::BorrowedTransfer { root },
+                super::types::GenericRequirementKind::BorrowedTransfer {
+                    root: root.to_string(),
+                },
                 &ty,
                 span,
             );
@@ -166,7 +168,7 @@ impl Checker {
         pattern: &Spanned<hew_parser::ast::Pattern>,
         ty: &Ty,
         is_mutable: bool,
-        place: Option<(String, crate::env::PlacePath)>,
+        place: Option<(hew_parser::ast::Ident, crate::env::PlacePath)>,
         loan: Option<Span>,
     ) {
         self.pattern_place = if loan.is_some() { None } else { place };
@@ -197,11 +199,12 @@ impl Checker {
     /// is still owned after the pattern binds.
     pub(super) fn record_pattern_place_transfer(
         &mut self,
-        root: &str,
+        root: impl crate::env::LexicalName,
         path: crate::env::PlacePath,
         ty: &Ty,
         span: &Span,
     ) {
+        let root = root.lexical_key();
         if !self.place_read_transfers_ownership(ty)
             || self.reject_borrowed_place_consumption(root, &path, span)
             || self.reject_partial_place_consumption(root, &path, span)
@@ -335,7 +338,7 @@ impl Checker {
     ) -> HashSet<TypeBindingId> {
         let mut bindings = HashSet::new();
         for (name, span) in captures {
-            if let Some(binding) = self.env.lookup_ref(name.name.as_str()) {
+            if let Some(binding) = self.env.lookup_ref(name) {
                 let id = binding.id;
                 if binding.init_state == crate::env::InitState::Unassigned {
                     self.report_error(TypeErrorKind::LocalUninitialized, span,
@@ -487,10 +490,11 @@ impl Checker {
     /// copy. An unresolved generic type does not prove absence of Clone.
     pub(super) fn reject_borrowed_parameter_mutation(
         &mut self,
-        root: &str,
+        root: impl crate::env::LexicalName,
         path: &[String],
         span: &Span,
     ) {
+        let root = root.lexical_key();
         if self.reject_prepared_task_access(root, path, span, TypeErrorKind::OwnMutateBorrowed) {
             return;
         }
@@ -525,7 +529,12 @@ impl Checker {
     /// A generic generator instantiated with a non-copyable argument still
     /// reaches the SIR verifier; that instance-level refusal is #3377's
     /// remaining half and needs the `T: Clone` decision (spec §3.8.1).
-    pub(super) fn reject_borrowed_generator_capture(&mut self, root: &str, span: &Span) {
+    pub(super) fn reject_borrowed_generator_capture(
+        &mut self,
+        root: impl crate::env::LexicalName,
+        span: &Span,
+    ) {
+        let root = root.lexical_key();
         if self.is_current_closure_capture(root) {
             return;
         }
@@ -633,9 +642,10 @@ impl Checker {
 
     pub(super) fn private_capture_mutation_error(
         &self,
-        name: &str,
+        name: impl crate::env::LexicalName,
         span: &Span,
     ) -> Option<TypeError> {
+        let name = name.lexical_key();
         let depth = self.lambda_capture_depth?;
         let (binding_depth, binding) = self.env.lookup_ref_with_depth(name)?;
         if binding_depth >= depth || binding.is_mutable || self.in_lambda_actor_body {
@@ -730,7 +740,8 @@ impl Checker {
         }
     }
 
-    fn is_current_closure_capture(&self, root: &str) -> bool {
+    fn is_current_closure_capture(&self, root: impl crate::env::LexicalName) -> bool {
+        let root = root.lexical_key();
         self.lambda_capture_depth.is_some_and(|capture_depth| {
             self.env
                 .lookup_ref_with_depth(root)
@@ -778,10 +789,11 @@ impl Checker {
     /// out of the place it destructures.
     pub(super) fn reject_borrowed_place_consumption(
         &mut self,
-        root: &str,
+        root: impl crate::env::LexicalName,
         path: &[String],
         span: &Span,
     ) -> bool {
+        let root = root.lexical_key();
         if self.reject_prepared_task_access(root, path, span, TypeErrorKind::OwnConsumeBorrowed) {
             return true;
         }
@@ -818,11 +830,12 @@ impl Checker {
 
     pub(super) fn reject_prepared_task_access(
         &mut self,
-        root: &str,
+        root: impl crate::env::LexicalName,
         path: &[String],
         span: &Span,
         kind: TypeErrorKind,
     ) -> bool {
+        let root = root.lexical_key();
         let Some(binding) = self.env.lookup_ref(root) else {
             return false;
         };

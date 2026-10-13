@@ -41,8 +41,13 @@ impl Checker {
     /// Read the binder inventory when registering a named source declaration.
     pub(in crate::check) fn declaration_parameter_heads(
         &mut self,
-        name: &str,
+        name: impl crate::env::LexicalName,
     ) -> Vec<crate::ParamHead> {
+        let ident = name.lexical_key();
+        if let Some(owner) = self.named_item_declaration(ident) {
+            return self.scopes.declaration_parameters(owner);
+        }
+        let name = ident.name.as_str();
         let path = self.declaration_identity(name);
         let Some(owner) = self
             .lookup_declaration(&path)
@@ -329,8 +334,12 @@ impl Checker {
                 // `current_module` (None = root): it is the display/provenance
                 // axis, and the legacy root render at publication boundaries
                 // derives from it.
-                let scoped_name =
-                    Self::declared_fn_identity(self.canonical_fn_owner(), fd.name.name.as_str());
+                let scoped_name = self
+                    .named_item_declaration(fd.name)
+                    .map(|id| self.defs.path(id).to_string())
+                    .unwrap_or_else(|| {
+                        Self::declared_fn_identity(self.canonical_fn_owner(), fd.name.name.as_str())
+                    });
                 if let Some((prev_span, _)) = self.fn_def_spans.get(&scoped_name) {
                     // Root diagnostics render the bare leaf, exactly as the
                     // declaration is spelled in source.
@@ -857,7 +866,11 @@ impl Checker {
         // on a *different* item) is reported as unknown rather than silently
         // exempted.
         let guard = self.enter_primary_sig_scope(&[]);
-        self.register_fn_sig_with_name(fd.name.name.as_str(), fd, None);
+        self.register_fn_sig_with_name(
+            fd.name.name.as_str(),
+            fd,
+            self.named_item_declaration(fd.name),
+        );
         self.exit_primary_sig_scope(guard);
     }
 
@@ -1076,8 +1089,12 @@ impl Checker {
         // identical to the key the same declaration mints when its module is
         // imported. The side registries (`fn_sig_inference_holes`,
         // `intrinsic_declarations`) are co-minted under this same key.
-        let key = scoped_module_item_name(self.canonical_fn_owner(), name)
-            .unwrap_or_else(|| name.to_string());
+        let key = declaration
+            .map(|id| self.defs.path(id).to_string())
+            .unwrap_or_else(|| {
+                scoped_module_item_name(self.canonical_fn_owner(), name)
+                    .unwrap_or_else(|| name.to_string())
+            });
         match declaration {
             Some(declaration) => self.insert_fn_sig(&key, declaration, sig),
             None => self.insert_fn_sig_at(&key, sig),

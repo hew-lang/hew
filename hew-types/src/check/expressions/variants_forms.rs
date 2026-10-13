@@ -292,7 +292,7 @@ else needs `impl Display for {rendered}`)"
 
     pub(super) fn expect_inferable_literal_binding(
         &mut self,
-        name: &str,
+        name: Ident,
         expected: &Ty,
         span: &Span,
     ) {

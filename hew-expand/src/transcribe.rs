@@ -196,6 +196,30 @@ impl Writer<'_> {
                     "a parsed capture cannot become template syntax",
                 ));
             }
+            TokenTree::Interpolated {
+                spelling,
+                span,
+                expressions,
+                ..
+            } => {
+                let mut end = span.start;
+                for (range, children) in expressions {
+                    self.token(
+                        &spelling[end - span.start..range.start - span.start],
+                        end..range.start,
+                        self.context,
+                        OriginKind::Template,
+                    );
+                    self.template_sequence(children, iteration)?;
+                    end = range.end;
+                }
+                self.token(
+                    &spelling[end - span.start..],
+                    end..span.end,
+                    self.context,
+                    OriginKind::Template,
+                );
+            }
             TokenTree::Token { spelling, span, .. } => {
                 self.token(spelling, span.clone(), self.context, OriginKind::Template);
             }
@@ -258,6 +282,32 @@ impl Writer<'_> {
                     parsed
                         .fragment
                         .ok_or_else(|| error(tree, "missing captured syntax"))?,
+                );
+            }
+            TokenTree::Interpolated {
+                spelling,
+                span,
+                expressions,
+                ..
+            } => {
+                let mut end = span.start;
+                for (range, children) in expressions {
+                    self.token(
+                        &spelling[end - span.start..range.start - span.start],
+                        end..range.start,
+                        hew_parser::ast::SyntaxContext::ROOT,
+                        OriginKind::Capture,
+                    );
+                    for child in children {
+                        self.capture_tree(child, false)?;
+                    }
+                    end = range.end;
+                }
+                self.token(
+                    &spelling[end - span.start..],
+                    end..span.end,
+                    hew_parser::ast::SyntaxContext::ROOT,
+                    OriginKind::Capture,
                 );
             }
             TokenTree::Token {
@@ -332,8 +382,16 @@ impl Writer<'_> {
                 }
                 cursor += 2;
             } else {
-                if let TokenTree::Group { children, .. } = tree {
-                    self.collect_repetition_groups(children, groups)?;
+                match tree {
+                    TokenTree::Group { children, .. } => {
+                        self.collect_repetition_groups(children, groups)?
+                    }
+                    TokenTree::Interpolated { expressions, .. } => {
+                        for (_, children) in expressions {
+                            self.collect_repetition_groups(children, groups)?;
+                        }
+                    }
+                    _ => {}
                 }
                 cursor += 1;
             }

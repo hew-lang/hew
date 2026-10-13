@@ -322,7 +322,7 @@ impl Checker {
     pub(super) fn is_coercible_numeric(&self, expr: &Expr) -> bool {
         is_integer_literal(expr)
             || is_float_literal(expr)
-            || matches!(expr, Expr::Ident(name) if self.const_values.contains_key(name.name.as_str()))
+            || matches!(expr, Expr::Ident(name) if self.const_values.contains_key(name))
     }
 
     /// Unify two branch types (if/else, if-let/else).

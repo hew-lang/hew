@@ -84,7 +84,7 @@ impl Checker {
         span: &Span,
     ) -> Ty {
         if type_args.is_some()
-            && matches!(&object.0, Expr::Ident(name) if self.env.lookup_ref(name.name.as_str()).is_some())
+            && matches!(&object.0, Expr::Ident(name) if self.env.lookup_ref(*name).is_some())
         {
             self.report_error(
                 TypeErrorKind::InvalidOperation,
@@ -144,7 +144,7 @@ impl Checker {
         {
             if let Expr::Ident(module_short) = &module.0 {
                 if self.module_binding_in_current_file(module_short.name.as_str())
-                    && self.env.lookup_ref(module_short.name.as_str()).is_none()
+                    && self.env.lookup_ref(module_short).is_none()
                 {
                     let constructor = format!("{module_short}.{}::{}", type_name.0, field);
                     return self.synthesize_identifier(&constructor, span);
@@ -169,7 +169,7 @@ impl Checker {
         // (`a.b.Type::Variant`) are out of scope for v0.5.
         if let Expr::Ident(name) = &object.0 {
             if let Some(pos) = field.find("::") {
-                let receiver_is_binding = self.env.lookup_ref(name.name.as_str()).is_some();
+                let receiver_is_binding = self.env.lookup_ref(*name).is_some();
                 let receiver_is_known_type = self.type_def_at(name.name.as_str());
                 if !receiver_is_binding && receiver_is_known_type.is_none() {
                     let type_name = &field[..pos];
@@ -196,7 +196,7 @@ impl Checker {
         //     constant key registered in env
         if let Expr::Ident(name) = &object.0 {
             if !field.contains("::") {
-                let receiver_is_binding = self.env.lookup_ref(name.name.as_str()).is_some();
+                let receiver_is_binding = self.env.lookup_ref(*name).is_some();
                 let receiver_is_known_type = self.type_def_at(name.name.as_str());
                 if !receiver_is_binding && receiver_is_known_type.is_none() {
                     let lexical_key = format!("{name}.{field}");
@@ -1147,12 +1147,13 @@ impl Checker {
         self.lambda_capture_facts = prev_capture_facts;
         if let Some(depth) = prev_capture_depth {
             for fact in &capture_facts {
-                if self
+                let name = self
                     .env
-                    .lookup_with_depth(&fact.name)
-                    .is_some_and(|(binding_depth, binding)| {
-                        binding_depth < depth && binding.id == fact.binding_id
-                    })
+                    .binding_name_by_id(fact.binding_id)
+                    .map(|(name, _)| *name);
+                if name
+                    .and_then(|name| self.env.lookup_with_depth(name))
+                    .is_some_and(|(binding_depth, _)| binding_depth < depth)
                 {
                     self.lambda_capture_facts.push(fact.clone());
                 }

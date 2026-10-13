@@ -434,14 +434,14 @@ pub(crate) fn unescape_bytes(s: &str) -> (Vec<u8>, Vec<(usize, &'static str)>) {
     clippy::too_many_lines,
     reason = "string interpolation parsing and escape diagnostics are handled together"
 )]
-pub(crate) fn parse_string_parts(
+fn split_string_parts(
     raw: &str,
     prefix_len: usize,
     suffix_len: usize,
     expr_open: &str,
     span_start: usize,
-    contexts: &Arc<TokenContexts>,
     errors: &mut Vec<ParseError>,
+    mut parse: impl FnMut(&str, usize) -> (Option<Spanned<Expr>>, Vec<ParseError>),
 ) -> Vec<StringPart> {
     let inner = &raw[prefix_len..raw.len() - suffix_len];
     let inner_offset = span_start + prefix_len;
@@ -591,9 +591,8 @@ pub(crate) fn parse_string_parts(
                 // diagnostic emitted by the sub-parser therefore refers to the
                 // original source without any further rebasing.
                 let base = inner_offset + expr_start_byte;
-                let mut sub_parser = Parser::with_contexts(expr_text, base, Arc::clone(contexts));
-                let parsed = sub_parser.parse_expr();
-                errors.extend(sub_parser.errors);
+                let (parsed, parse_errors) = parse(expr_text, base);
+                errors.extend(parse_errors);
                 if let Some(spanned_expr) = parsed {
                     parts.push(if structural {
                         StringPart::StructuralExpr(spanned_expr)
@@ -622,6 +621,38 @@ pub(crate) fn parse_string_parts(
     }
 
     parts
+}
+
+/// Expression ranges inside an interpolated string, using its ordinary scanner.
+#[must_use]
+pub fn interpolation_spans(raw: &str, offset: usize) -> Vec<Span> {
+    let mut spans = Vec::new();
+    split_string_parts(raw, 2, 1, "{", offset, &mut Vec::new(), |text, base| {
+        let span = base..base + text.len();
+        spans.push(span.clone());
+        (
+            Some((Expr::Literal(Literal::Bool(false)), span)),
+            Vec::new(),
+        )
+    });
+    spans
+}
+
+impl Parser<'_> {
+    pub(crate) fn parse_string_parts(&mut self, raw: &str, offset: usize) -> Vec<StringPart> {
+        let mut errors = Vec::new();
+        let parts = split_string_parts(raw, 2, 1, "{", offset, &mut errors, |text, base| {
+            let mut parser = Parser::with_contexts(text, base, Arc::clone(&self.contexts))
+                .with_fragments(self.fragments.within(base..base + text.len()));
+            if let Some(expander) = &self.expander {
+                parser = parser.with_expander(Rc::clone(expander), self.macro_source.clone());
+            }
+            let expression = parser.parse_expr();
+            (expression, parser.errors)
+        });
+        self.errors.extend(errors);
+        parts
+    }
 }
 
 /// Maximum nesting depth for recursive parse functions.

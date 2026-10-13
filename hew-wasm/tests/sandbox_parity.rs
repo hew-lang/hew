@@ -734,6 +734,21 @@ fn assert_case(case: &ParityCase, stdin: &str) {
 
 #[cfg(unix)]
 #[test]
+fn contextual_macros_native_and_vm() {
+    set_test_hewpath();
+    ensure_native_toolchain();
+    ensure_parity_runner_built();
+    assert_case(
+        &ParityCase {
+            test_name: "contextual_macros",
+            source_rel: "tests/core-acceptance/cases/contextual-macros.hew",
+        },
+        "",
+    );
+}
+
+#[cfg(unix)]
+#[test]
 fn compile_time_inputs_native_and_vm() {
     set_test_hewpath();
     ensure_native_toolchain();

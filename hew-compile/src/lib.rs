@@ -1756,6 +1756,15 @@ fn macro_type_origin(
     mut diagnostic: hew_types::TypeError,
 ) -> hew_types::TypeError {
     if let Some((path, span)) = program.expansions.source_origin(&diagnostic.span) {
+        if let Some((invocation_path, invocation_span)) =
+            program.expansions.invocation_origin(&diagnostic.span)
+        {
+            diagnostic.notes.push((
+                invocation_span,
+                "in this macro invocation".into(),
+                Some(invocation_path.display().to_string()),
+            ));
+        }
         diagnostic.span = span;
         diagnostic.source_module = Some(path.display().to_string());
     }

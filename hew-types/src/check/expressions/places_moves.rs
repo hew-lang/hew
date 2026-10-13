@@ -78,7 +78,12 @@ impl Checker {
 
     /// The depth of the nearest `#[resource]` record on `path` whose `close`
     /// releases a handle the selected value carries.
-    pub(super) fn resource_handle_owner(&self, root: &str, path: &[String]) -> Option<usize> {
+    pub(super) fn resource_handle_owner(
+        &self,
+        root: impl crate::env::LexicalName,
+        path: &[String],
+    ) -> Option<usize> {
+        let root = root.lexical_key();
         let binding = self.env.lookup_ref(root)?;
         let mut parent = self.subst.resolve(&binding.ty);
         let mut owner = None;
@@ -229,16 +234,17 @@ impl Checker {
     /// does not prevent moving that entire value out of its plain parent.
     pub(in crate::check) fn reject_partial_place_consumption(
         &mut self,
-        root: &str,
+        root: impl crate::env::LexicalName,
         path: &[String],
         span: &Span,
     ) -> bool {
+        let root = root.lexical_key();
         let Some(binding) = self.env.lookup_ref(root) else {
             return false;
         };
         let mut parent = self.subst.resolve(&binding.ty);
         for (depth, field) in path.iter().enumerate() {
-            if depth == 0 && self.resource_close_owns_self_field(root, &parent) {
+            if depth == 0 && self.resource_close_owns_self_field(root.name.as_str(), &parent) {
                 let Some(selected) = self.project_named_field(&parent, field) else {
                     return false;
                 };
@@ -374,14 +380,17 @@ impl Checker {
         }
     }
 
-    pub(in crate::check) fn expr_place(&self, expr: &Expr) -> Option<(String, PlacePath)> {
+    pub(in crate::check) fn expr_place(
+        &self,
+        expr: &Expr,
+    ) -> Option<(hew_parser::ast::Ident, PlacePath)> {
         match expr {
             Expr::ChainValue => self
                 .chain_values
                 .last()
                 .and_then(|context| context.place.clone()),
             Expr::Ident(name) if self.is_constant_identifier(*name) => None,
-            Expr::Ident(name) => Some((name.to_string(), PlacePath::new())),
+            Expr::Ident(name) => Some((*name, PlacePath::new())),
             Expr::FieldAccess { object, field } => {
                 // `self.count` in an actor body denotes the state binding
                 // `count`, so the place it names is rooted in that binding —
@@ -389,7 +398,7 @@ impl Checker {
                 if let Some(state_field) =
                     self.actor_self_state_field(&object.0, field.0.name.as_str())
                 {
-                    return Some((state_field.to_string(), PlacePath::new()));
+                    return Some((hew_parser::ast::Ident::new(state_field), PlacePath::new()));
                 }
                 let (root, mut path) = self.expr_place(&object.0)?;
                 path.push(field.0.to_string());
@@ -461,8 +470,12 @@ impl Checker {
     }
 
     /// Render a place for diagnostics: `h.sock`, or plain `h` for the root.
-    pub(in crate::check) fn render_place(root: &str, path: &[String]) -> String {
-        std::iter::once(root)
+    pub(in crate::check) fn render_place(
+        root: impl crate::env::LexicalName,
+        path: &[String],
+    ) -> String {
+        let root = root.lexical_key();
+        std::iter::once(root.name.as_str())
             .chain(path.iter().map(String::as_str))
             .collect::<Vec<_>>()
             .join(".")
@@ -531,10 +544,11 @@ impl Checker {
     /// noted for the enclosing loops' back-edge check.
     pub(in crate::check) fn report_place_use_after_move(
         &mut self,
-        root: &str,
+        root: impl crate::env::LexicalName,
         path: &[String],
         span: &Span,
     ) {
+        let root = root.lexical_key();
         self.env
             .note_loop_use(root, path, span, self.place_base_depth > 0);
         let Some((conflict, moved_path, moved_at)) = self.env.place_move_conflict(root, path)
@@ -560,12 +574,13 @@ impl Checker {
     /// moved.
     fn place_use_after_move_error(
         &self,
-        root: &str,
+        root: impl crate::env::LexicalName,
         path: &[String],
         conflict: PlaceConflict,
         moved_path: &[String],
         span: &Span,
     ) -> TypeError {
+        let root = root.lexical_key();
         let place = Self::render_place(root, path);
         let moved_place = Self::render_place(root, moved_path);
         let (message, suggestion) = match conflict {
@@ -871,7 +886,7 @@ impl Checker {
         let Expr::Ident(name) = expr else {
             return;
         };
-        let Some(binding) = self.env.lookup_ref(name.name.as_str()) else {
+        let Some(binding) = self.env.lookup_ref(*name) else {
             return;
         };
         let is_parameter = binding.is_param();

@@ -121,9 +121,9 @@ impl Checker {
         actual
     }
 
-    fn method_chain_root_binding(expr: &Expr) -> Option<&str> {
+    fn method_chain_root_binding(expr: &Expr) -> Option<Ident> {
         match expr {
-            Expr::Ident(name) => Some(name.name.as_str()),
+            Expr::Ident(name) => Some(*name),
             Expr::MethodCall { receiver, .. } => Self::method_chain_root_binding(&receiver.0),
             _ => None,
         }
@@ -190,12 +190,12 @@ impl Checker {
         span: &Span,
         stmt_span: &Span,
     ) -> Ty {
-        let root = Self::method_chain_root_binding(expr).map(str::to_string);
+        let root = Self::method_chain_root_binding(expr);
         // Probing the move state is bookkeeping, not a use: `lookup` would
         // count a read the source never wrote and hide a genuinely unused
         // binding behind its own discarded method call.
         let root_was_moved = root
-            .as_deref()
+            .as_ref()
             .and_then(|name| self.env.lookup_ref(name))
             .is_some_and(|binding| binding.is_moved);
         self.task_lifetimes
@@ -353,9 +353,9 @@ impl Checker {
         Some(joined)
     }
 
-    pub(super) fn assignment_root_binding_name<'a>(&self, expr: &'a Expr) -> Option<&'a str> {
+    pub(super) fn assignment_root_binding_name(&self, expr: &Expr) -> Option<Ident> {
         match expr {
-            Expr::Ident(name) => Some(name.name.as_str()),
+            Expr::Ident(name) => Some(*name),
             Expr::FieldAccess { object, field } => {
                 // The receiver is not a binding: `self.items[0]` is rooted in
                 // the state binding `items`, exactly where the bare spelling
@@ -365,7 +365,7 @@ impl Checker {
                 if let Some(state_field) =
                     self.actor_self_state_field(&object.0, field.0.name.as_str())
                 {
-                    return Some(state_field);
+                    return Some(Ident::new(state_field));
                 }
                 self.assignment_root_binding_name(&object.0)
             }
@@ -558,7 +558,7 @@ impl Checker {
         self.env.push_scope();
         // Snapshot const_values so let-bound literal entries added in this
         // scope are cleaned up when the scope exits.
-        let const_values_snapshot: HashMap<String, ConstValue> = self.const_values.clone();
+        let const_values_snapshot: HashMap<Ident, ConstValue> = self.const_values.clone();
         let num_stmts = block.stmts.len();
         let mut terminated = false;
         for (i, (stmt, span)) in block.stmts.iter().enumerate() {
@@ -1290,13 +1290,11 @@ impl Checker {
                         if let Some((val, _)) = value {
                             if is_integer_literal(val) {
                                 if let Some(v) = extract_integer_literal_value(val) {
-                                    self.const_values
-                                        .insert(name.to_string(), ConstValue::Integer(v));
+                                    self.const_values.insert(*name, ConstValue::Integer(v));
                                 }
                             } else if val_ty.is_float_literal() {
                                 if let Some(v) = extract_float_literal_value(val) {
-                                    self.const_values
-                                        .insert(name.to_string(), ConstValue::Float(v));
+                                    self.const_values.insert(*name, ConstValue::Float(v));
                                 }
                             }
                         }
@@ -1608,10 +1606,7 @@ impl Checker {
                     _ => target,
                 };
                 if !matches!(&target.0, Expr::Ident(_)) {
-                    if let Some(name) = self
-                        .assignment_root_binding_name(&target.0)
-                        .map(str::to_string)
-                    {
+                    if let Some(name) = self.assignment_root_binding_name(&target.0) {
                         if self.env.unassigned(&name) {
                             self.report_error(TypeErrorKind::LocalUninitialized, &target.1,
                                 format!("E_LOCAL_UNINITIALIZED: local `{name}` must hold a whole value before a field or indexed store"));
@@ -1638,12 +1633,8 @@ impl Checker {
                 // resolves the target place or computes the new value from the
                 // old one (`n = n + 1`). Neither observes the result, so the
                 // mutation-observation bookkeeping ignores them.
-                let outer_mutation = self
-                    .assignment_root_binding_name(&target.0)
-                    .map(str::to_string);
-                let outer_mutation = outer_mutation
-                    .as_deref()
-                    .map(|root| self.env.begin_mutation(root));
+                let outer_mutation = self.assignment_root_binding_name(&target.0);
+                let outer_mutation = outer_mutation.map(|root| self.env.begin_mutation(root));
                 // Classify the assignment target for the side-table before synthesising
                 // so that the entry is always emitted whenever the target is syntactically
                 // valid, regardless of whether subsequent type-checking finds errors.
@@ -1712,7 +1703,9 @@ impl Checker {
                         let root_is_mutable = self
                             .assignment_root_binding_name(&target.0)
                             .is_some_and(|root| {
-                                self.current_actor_fields.iter().any(|f| f.name == root)
+                                self.current_actor_fields
+                                    .iter()
+                                    .any(|f| f.name == root.name.as_str())
                                     || self
                                         .env
                                         .lookup_ref(root)
@@ -1809,17 +1802,21 @@ impl Checker {
                             // plain locals keep the variable-shaped error.
                             if let Some(error) = self.private_capture_mutation_error(name, span) {
                                 self.errors.push(error);
-                            } else if let Some(field) =
-                                self.current_actor_fields.iter().find(|f| f.name == *name)
+                            } else if let Some(field) = self
+                                .current_actor_fields
+                                .iter()
+                                .find(|f| f.name == name.name.as_str())
                             {
                                 self.errors.push(TypeError::immutable_field_assignment(
                                     span.clone(),
-                                    name,
+                                    name.name.as_str(),
                                     field.decl_span.clone(),
                                 ));
                             } else {
-                                self.errors
-                                    .push(TypeError::mutability_error(span.clone(), name));
+                                self.errors.push(TypeError::mutability_error(
+                                    span.clone(),
+                                    name.name.as_str(),
+                                ));
                             }
                         } else if let Some((root, path)) = self.expr_place(&target.0) {
                             // Replacing the root acquires a fresh local value;
@@ -1935,10 +1932,7 @@ impl Checker {
                 } = expr
                 {
                     if method.0.name.as_str() == "set" {
-                        if let Some(name) = self
-                            .assignment_root_binding_name(&receiver.0)
-                            .map(str::to_string)
-                        {
+                        if let Some(name) = self.assignment_root_binding_name(&receiver.0) {
                             self.env.mark_written(&name);
                             // `x.set(v)` replaces the binding's value: the
                             // receiver and argument reads belong to the write.

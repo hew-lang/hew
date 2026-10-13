@@ -83,9 +83,17 @@ pub fn expand_program(
     for (id, (items, item_sources)) in replacements {
         graph.modules.get_mut(&id).expect("known module").items = items;
         graph.item_sources.insert(id.dotted(), item_sources);
+        for import in &mut graph.modules.get_mut(&id).expect("known module").imports {
+            registry
+                .borrow()
+                .strip_macro_names(&import.target, &mut import.spec);
+        }
     }
     program.items.clone_from(&graph.modules[&graph.root].items);
     program.expansions = std::mem::take(&mut registry.borrow_mut().map);
+    if program.expansions.expansions.is_empty() {
+        program.expansions.sources.clear();
+    }
     Ok(())
 }
 
@@ -105,6 +113,7 @@ fn expand_item(
         Item::Macro(_) => Vec::new(),
         Item::Import(import) => {
             let mut import = import.clone();
+            registry.borrow().strip_import(&mut import, source, &item.1);
             if let Some(resolved) = &import.resolved_items {
                 let mut items = Vec::new();
                 let mut sources = Vec::new();
@@ -132,6 +141,7 @@ fn expand_item(
                 .and_then(|text| text.get(item.1.clone()))
                 .map(str::to_owned);
             if let Some(text) = text.filter(|text| text.contains('!')) {
+                let before = registry.borrow().map.expansions.len();
                 let expander: SharedExpander = registry.clone();
                 let result =
                     Parser::with_contexts(&text, item.1.start, Arc::new(TokenContexts::default()))
@@ -153,7 +163,15 @@ fn expand_item(
                     };
                     return Err((path, error));
                 }
+                if registry.borrow().map.expansions.len() == before {
+                    let unchanged = vec![item.clone()];
+                    cache.insert(key, unchanged.clone());
+                    return Ok(unchanged);
+                }
                 let mut items = result.program.items;
+                if let [expanded] = items.as_mut_slice() {
+                    preserve_doc_comment(&item.0, &mut expanded.0);
+                }
                 let registry = registry.borrow();
                 let mut control = control::Control::new(&registry.map);
                 for (item, span) in &mut items {
@@ -182,4 +200,17 @@ fn expand_item(
     };
     cache.insert(key, expanded.clone());
     Ok(expanded)
+}
+
+fn preserve_doc_comment(original: &Item, expanded: &mut Item) {
+    match (original, expanded) {
+        (Item::Function(a), Item::Function(b)) => b.doc_comment.clone_from(&a.doc_comment),
+        (Item::Const(a), Item::Const(b)) => b.doc_comment.clone_from(&a.doc_comment),
+        (Item::TypeDecl(a), Item::TypeDecl(b)) => b.doc_comment.clone_from(&a.doc_comment),
+        (Item::TypeAlias(a), Item::TypeAlias(b)) => b.doc_comment.clone_from(&a.doc_comment),
+        (Item::Record(a), Item::Record(b)) => b.doc_comment.clone_from(&a.doc_comment),
+        (Item::Trait(a), Item::Trait(b)) => b.doc_comment.clone_from(&a.doc_comment),
+        (Item::Actor(a), Item::Actor(b)) => b.doc_comment.clone_from(&a.doc_comment),
+        _ => {}
+    }
 }

@@ -264,7 +264,7 @@ impl Checker {
         for (item, span) in &program.items {
             match item {
                 Item::TypeDecl(td) => {
-                    if !self.register_type_namespace_name(None, td.name.name.as_str(), span) {
+                    if !self.register_type_namespace_name(None, td.name, span) {
                         continue;
                     }
                     self.register_type_decl(td);
@@ -272,7 +272,7 @@ impl Checker {
                     self.source_type_defs.insert(td.name.to_string());
                 }
                 Item::Actor(ad) => {
-                    if !self.register_type_namespace_name(None, ad.name.name.as_str(), span) {
+                    if !self.register_type_namespace_name(None, ad.name, span) {
                         continue;
                     }
                     self.register_actor_decl(ad);
@@ -280,7 +280,7 @@ impl Checker {
                     self.source_type_defs.insert(ad.name.to_string());
                 }
                 Item::TypeAlias(ta) => {
-                    if !self.register_type_namespace_name(None, ta.name.name.as_str(), span) {
+                    if !self.register_type_namespace_name(None, ta.name, span) {
                         continue;
                     }
                     self.register_type_alias_decl(ta, span);
@@ -288,7 +288,7 @@ impl Checker {
                     self.source_type_defs.insert(ta.name.to_string());
                 }
                 Item::Trait(td) => {
-                    if !self.register_type_namespace_name(None, td.name.name.as_str(), span) {
+                    if !self.register_type_namespace_name(None, td.name, span) {
                         continue;
                     }
                     let mut trait_errors = Vec::new();
@@ -314,7 +314,7 @@ impl Checker {
                 }
                 Item::Supervisor(sd) => {
                     self.reject_wasm_feature(span, WasmUnsupportedFeature::SupervisionTrees);
-                    if !self.register_type_namespace_name(None, sd.name.name.as_str(), span) {
+                    if !self.register_type_namespace_name(None, sd.name, span) {
                         continue;
                     }
                     // Root items: `current_module` is cleared above, so the
@@ -325,7 +325,7 @@ impl Checker {
                     self.source_type_defs.insert(identity);
                 }
                 Item::Record(rd) => {
-                    if !self.register_type_namespace_name(None, rd.name.name.as_str(), span) {
+                    if !self.register_type_namespace_name(None, rd.name, span) {
                         continue;
                     }
                     self.register_record_decl(rd);
@@ -353,7 +353,9 @@ impl Checker {
         decl: &hew_parser::ast::TypeAliasDecl,
         span: &Span,
     ) {
-        let path = scoped_module_item_name(self.current_module.as_deref(), decl.name.name.as_str())
+        let path = self
+            .named_item_declaration(decl.name)
+            .map(|id| self.defs.path(id).to_string())
             .unwrap_or_else(|| decl.name.to_string());
         let Some(declaration) = self.require_declaration_path(&path, span) else {
             return;
@@ -663,7 +665,7 @@ impl Checker {
         let type_param_names = if td.type_params.as_ref().is_none_or(Vec::is_empty) {
             Vec::new()
         } else {
-            self.declaration_parameter_heads(td.name.name.as_str())
+            self.declaration_parameter_heads(td.name)
         };
 
         let mut fields = HashMap::new();
@@ -706,7 +708,11 @@ impl Checker {
             }
         }
 
-        let stored_key = self.authoritative_type_def_key(td.name.name.as_str());
+        let canonical_name = self
+            .named_item_declaration(td.name)
+            .map(|id| self.defs.path(id).to_string())
+            .unwrap_or_else(|| td.name.to_string());
+        let stored_key = self.authoritative_type_def_key(&canonical_name);
         let Some(stored) = self.type_def_at(&stored_key) else {
             return;
         };
@@ -746,7 +752,7 @@ impl Checker {
         let field_types = self.expand_for_marker_registration(&field_types);
         self.registry.register_type(
             self.head_of_declaration(
-                self.nominal_head_for_key(&self.declaration_identity(td.name.name.as_str()))
+                self.nominal_head_for_key(&canonical_name)
                     .expect("registered type has a declaration")
                     .id,
             ),
@@ -774,7 +780,7 @@ impl Checker {
         let type_param_names = if rd.type_params.as_ref().is_none_or(Vec::is_empty) {
             Vec::new()
         } else {
-            self.declaration_parameter_heads(rd.name.name.as_str())
+            self.declaration_parameter_heads(rd.name)
         };
         let mut hole_vars = Vec::new();
 
@@ -998,9 +1004,11 @@ impl Checker {
         // Send gate derives `Send` from the correct module's fields. Keying the
         // guard on the bare name skipped the second module's `Reply` entirely,
         // leaving the gate to read whichever module won the bare-key race.
-        let guard_key = self
-            .current_module_identity()
-            .map_or_else(|| td.name.to_string(), |m| format!("{m}.{}", td.name));
+        let canonical_name = self
+            .named_item_declaration(td.name)
+            .map(|id| self.defs.path(id).to_string())
+            .unwrap_or_else(|| td.name.to_string());
+        let guard_key = canonical_name.clone();
         if self.type_def_at(guard_key.as_str()).is_some() {
             return;
         }
@@ -1034,7 +1042,7 @@ impl Checker {
         let type_param_names = if td.type_params.as_ref().is_none_or(Vec::is_empty) {
             Vec::new()
         } else {
-            self.declaration_parameter_heads(td.name.name.as_str())
+            self.declaration_parameter_heads(td.name)
         };
         let type_param_bounds = self.collect_type_param_bounds(
             td.type_params.as_ref(),
@@ -1191,7 +1199,7 @@ impl Checker {
         let field_types = self.expand_for_marker_registration(&field_types);
         self.registry.register_type(
             self.head_of_declaration(
-                self.nominal_head_for_key(&self.declaration_identity(td.name.name.as_str()))
+                self.nominal_head_for_key(&canonical_name)
                     .expect("registered type has a declaration")
                     .id,
             ),
@@ -1199,7 +1207,7 @@ impl Checker {
         );
         self.registry.register_type_params(
             self.head_of_declaration(
-                self.nominal_head_for_key(&self.declaration_identity(td.name.name.as_str()))
+                self.nominal_head_for_key(&canonical_name)
                     .expect("registered type has a declaration")
                     .id,
             ),
@@ -1215,8 +1223,8 @@ impl Checker {
         if let Some(module_owner) = self.current_module_identity().map(str::to_string) {
             self.register_canonical_type_def(&module_owner, td.name.name.as_str(), &type_def);
         }
-        self.insert_type_def(td.name.name.as_str(), type_def);
-        self.record_type_def_inference_holes(td.name.name.as_str(), hole_vars);
+        self.insert_type_def(&canonical_name, type_def);
+        self.record_type_def_inference_holes(&canonical_name, hole_vars);
         self.handle_bearing_dirty = true;
     }
 
@@ -1234,9 +1242,11 @@ impl Checker {
     pub(in crate::check) fn register_type_namespace_name(
         &mut self,
         module_owner: Option<&str>,
-        name: &str,
+        name: impl crate::env::LexicalName,
         span: &Span,
     ) -> bool {
+        let ident = name.lexical_key();
+        let name = ident.name.as_str();
         if self.reject_protected_prelude_declaration_for_owner(module_owner, name, span) {
             return false;
         }
@@ -1245,7 +1255,7 @@ impl Checker {
                 .push(TypeError::reserved_type_name(span.clone(), name));
             return false;
         }
-        let owner_key = (module_owner.map(str::to_string), name.to_string());
+        let owner_key = (module_owner.map(str::to_string), ident);
         if let Some(prev_span) = self.type_namespace_owners.get(&owner_key).cloned() {
             self.report_duplicate_type_namespace_name(name, span, prev_span);
             return false;
@@ -1285,7 +1295,7 @@ impl Checker {
                 .push(TypeError::reserved_type_name(span.clone(), machine_name));
             return false;
         }
-        let machine_key = (module_owner.map(str::to_string), machine_name.to_string());
+        let machine_key = (module_owner.map(str::to_string), Ident::new(machine_name));
         if let Some(prev_span) = self.type_namespace_owners.get(&machine_key).cloned() {
             self.report_duplicate_type_namespace_name(machine_name, span, prev_span);
             return false;
@@ -1319,10 +1329,10 @@ impl Checker {
                 self.must_use_types.insert(declaration);
             }
         }
-        let canonical_name = self.current_module_identity().map_or_else(
-            || td.name.to_string(),
-            |module| format!("{module}.{}", td.name),
-        );
+        let canonical_name = self
+            .named_item_declaration(td.name)
+            .map(|id| self.defs.path(id).to_string())
+            .unwrap_or_else(|| td.name.to_string());
         let Some(head) = self.nominal_head_for_key(&canonical_name) else {
             // A rejected duplicate declaration has no owner to register.
             let span = self
@@ -1360,7 +1370,7 @@ impl Checker {
         let type_param_names = if td.type_params.as_ref().is_none_or(Vec::is_empty) {
             Vec::new()
         } else {
-            self.declaration_parameter_heads(td.name.name.as_str())
+            self.declaration_parameter_heads(td.name)
         };
 
         // Reject duplicate type parameter names within the same declaration.
@@ -1520,7 +1530,7 @@ impl Checker {
 
         self.registry.register_type(
             self.head_of_declaration(
-                self.nominal_head_for_key(&self.declaration_identity(td.name.name.as_str()))
+                self.nominal_head_for_key(&canonical_name)
                     .expect("registered type has a declaration")
                     .id,
             ),
@@ -1528,7 +1538,7 @@ impl Checker {
         );
         self.registry.register_type_params(
             self.head_of_declaration(
-                self.nominal_head_for_key(&self.declaration_identity(td.name.name.as_str()))
+                self.nominal_head_for_key(&canonical_name)
                     .expect("registered type has a declaration")
                     .id,
             ),
@@ -1540,8 +1550,8 @@ impl Checker {
         // gate. `register_qualified_type_alias` repeats this for the pub import
         // surface; this covers the registration call itself.
 
-        self.insert_type_def(td.name.name.as_str(), type_def);
-        self.record_type_def_inference_holes(td.name.name.as_str(), hole_vars);
+        self.insert_type_def(&canonical_name, type_def);
+        self.record_type_def_inference_holes(&canonical_name, hole_vars);
         self.handle_bearing_dirty = true;
 
         self.register_serial_layout(td);
@@ -1577,7 +1587,7 @@ impl Checker {
         let type_param_names = if rd.type_params.as_ref().is_none_or(Vec::is_empty) {
             Vec::new()
         } else {
-            self.declaration_parameter_heads(rd.name.name.as_str())
+            self.declaration_parameter_heads(rd.name)
         };
         let type_param_bounds = self.collect_type_param_bounds(
             rd.type_params.as_ref(),
@@ -1590,10 +1600,10 @@ impl Checker {
             .iter()
             .map(|name| Ty::param(*name))
             .collect();
-        let declaration_name = self.current_module_identity().map_or_else(
-            || rd.name.to_string(),
-            |module| format!("{module}.{}", rd.name),
-        );
+        let declaration_name = self
+            .named_item_declaration(rd.name)
+            .map(|id| self.defs.path(id).to_string())
+            .unwrap_or_else(|| rd.name.to_string());
         let return_type = self.named_ty_for_key(&declaration_name, enum_return_args);
 
         let mut fields: HashMap<String, Ty> = HashMap::new();
@@ -1662,7 +1672,7 @@ impl Checker {
         let field_types = self.expand_for_marker_registration(&field_types);
         self.registry.register_type(
             self.head_of_declaration(
-                self.nominal_head_for_key(&declaration_name.clone())
+                self.nominal_head_for_key(&declaration_name)
                     .expect("registered type has a declaration")
                     .id,
             ),
@@ -1670,7 +1680,7 @@ impl Checker {
         );
         self.registry.register_type_params(
             self.head_of_declaration(
-                self.nominal_head_for_key(&declaration_name.clone())
+                self.nominal_head_for_key(&declaration_name)
                     .expect("registered type has a declaration")
                     .id,
             ),
@@ -1680,7 +1690,7 @@ impl Checker {
         // value-type semantics (Resource always false; all other markers field-driven).
         self.registry.register_record_type(
             self.head_of_declaration(
-                self.nominal_head_for_key(&declaration_name.clone())
+                self.nominal_head_for_key(&declaration_name)
                     .expect("registered type has a declaration")
                     .id,
             ),

@@ -14,7 +14,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use crate::NominalInstance;
-use hew_parser::ast::Symbol;
+use hew_parser::ast::{Ident, Symbol, SyntaxContext};
 
 /// Closed classification of source declarations and source-owned child bodies.
 ///
@@ -695,7 +695,7 @@ const SYNTHETIC_ROOT_PATH: &str = "#synthetic-root";
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct DefRow {
     /// Display leaf: the declared spelling.
-    name: Symbol,
+    name: Ident,
     kind: DeclarationKind,
     /// The source module the declaration occurs in; `None` for sourceless
     /// rows (builtin anchors, materialized trait defaults).
@@ -782,7 +782,7 @@ impl DefTable {
         };
         for anchor in BuiltinAnchor::ALL {
             table.push_row(DefRow {
-                name: Symbol::intern(anchor.spelling()),
+                name: Ident::new(anchor.spelling()),
                 kind: DeclarationKind::BuiltinType,
                 module: None,
                 owner: None,
@@ -792,7 +792,7 @@ impl DefTable {
         }
         for predicate in Predicate::ALL {
             table.push_row(DefRow {
-                name: Symbol::intern(predicate.spelling()),
+                name: Ident::new(predicate.spelling()),
                 kind: DeclarationKind::Trait,
                 module: None,
                 owner: None,
@@ -802,7 +802,7 @@ impl DefTable {
         }
         for known in KnownDecl::ALL {
             let id = table.push_row(DefRow {
-                name: Symbol::intern(known.leaf()),
+                name: Ident::new(known.leaf()),
                 kind: DeclarationKind::Type,
                 module: None,
                 owner: None,
@@ -852,7 +852,7 @@ impl DefTable {
             return *id;
         }
         let id = self.push_row(DefRow {
-            name: Symbol::intern(name),
+            name: Ident::new(name),
             kind: DeclarationKind::Function,
             module: None,
             owner: None,
@@ -909,7 +909,10 @@ impl DefTable {
             u32::try_from(self.defs.len()).expect("more than u32::MAX declarations in one compile"),
         );
         if let Some(owner) = row.owner {
-            self.members.entry((owner, row.name)).or_default().push(id);
+            self.members
+                .entry((owner, row.name.name))
+                .or_default()
+                .push(id);
         }
         self.defs.push(row);
         id
@@ -936,7 +939,7 @@ impl DefTable {
         }
         let name = Symbol::intern(path.rsplit_once('.').map_or(path, |(_, leaf)| leaf));
         let id = self.push_row(DefRow {
-            name,
+            name: Ident::from_symbol(name),
             kind,
             module: None,
             owner: None,
@@ -1014,7 +1017,7 @@ impl DefTable {
     /// The declared spelling of a definition, for display.
     #[must_use]
     pub fn name(&self, id: DefId) -> Symbol {
-        self.row(id).name
+        self.row(id).name.name
     }
 
     /// The canonical declaration path (`ma.T::m`). Linker symbols derive from
@@ -1390,6 +1393,26 @@ impl DefTable {
         self.modules[id.0 as usize].canonical_source.as_deref()
     }
 
+    /// The canonical render of a declaration in a syntax context.
+    pub(crate) fn contextual_path(path: String, context: SyntaxContext) -> String {
+        if context == SyntaxContext::ROOT {
+            path
+        } else {
+            format!("{path}#{}", context.row())
+        }
+    }
+
+    /// Render a chosen linkage namespace with the declaration's hygiene identity.
+    #[must_use]
+    pub fn linkage_name(&self, id: DefId, symbol: &str) -> String {
+        Self::contextual_path(symbol.to_string(), self.row(id).name.ctx)
+    }
+
+    #[must_use]
+    pub fn ident(&self, id: DefId) -> Ident {
+        self.row(id).name
+    }
+
     /// Establish exactly one identity for a source declaration.
     ///
     /// `name` is the declared spelling, `owner` the declaration it is a
@@ -1402,11 +1425,12 @@ impl DefTable {
     pub(crate) fn declare(
         &mut self,
         occurrence: DeclarationOccurrence,
-        name: Symbol,
+        name: impl crate::env::LexicalName,
         owner: Option<DefId>,
         path: impl Into<String>,
     ) -> Result<DefId, DeclarationIdentityError> {
-        let path = path.into();
+        let name = name.lexical_key();
+        let path = Self::contextual_path(path.into(), name.ctx);
         if let Some(&established) = self.by_occurrence.get(&occurrence) {
             if self.path(established) == path {
                 return Ok(established);
@@ -1427,7 +1451,7 @@ impl DefTable {
                 row.site = Some(occurrence);
                 if let Some(owner) = owner {
                     self.members
-                        .entry((owner, name))
+                        .entry((owner, name.name))
                         .or_default()
                         .push(established);
                 }
@@ -1544,7 +1568,7 @@ impl DefTable {
             self.path(declaring_trait),
         );
         let id = self.push_row(DefRow {
-            name: method,
+            name: Ident::from_symbol(method),
             kind: DeclarationKind::DefaultImplMethod,
             module: None,
             owner: Some(receiver.nominal.declaration()),
@@ -1562,7 +1586,7 @@ impl DefTable {
         }
         let path = crate::actor_protocol::LAMBDA_ACTOR_PROTOCOL_PATH;
         let id = self.push_row(DefRow {
-            name: Symbol::intern(path),
+            name: Ident::new(path),
             kind: DeclarationKind::RequestProtocol,
             module: None,
             owner: None,
@@ -1709,7 +1733,7 @@ impl DefTable {
             return established;
         }
         let id = self.push_row(DefRow {
-            name: Symbol::intern(path),
+            name: Ident::new(path),
             kind: DeclarationKind::Function,
             module: None,
             owner: None,

@@ -1,0 +1,49 @@
+macro twice {
+    ($value:expr) => expr { $value + $value }
+}
+macro bind {
+    ($value:expr) => expr { { let value = 10; $value + value } }
+}
+macro create {
+    ($name:ident, $value:literal) => items {
+        type Hidden<T> { value: T; }
+        const VALUE: i64 = $value;
+        fn helper() -> i64 {
+            let item: Hidden<i64> = Hidden { value: VALUE };
+            item.value + VALUE
+        }
+        fn $name() -> i64 { helper() }
+    }
+}
+create!(first, 3)
+create!(second, 7)
+macro plus { ($value:expr) => expr { $value + 1 } }
+macro sum {
+    ($($value:expr),*) => expr { { var total = 0; $(total += $value;)* total } }
+}
+macro capture {
+    ($value:expr) => expr { { let local = $value; let f = || local; f() } }
+}
+macro message { ($value:expr) => expr { f"value: {$value}" } }
+macro here { () => expr { location!().line } }
+macro under_loop {
+    ($body:block) => expr { { loop { $body; break; } } }
+}
+fn main() {
+    let value = 3;
+    println(twice!(value + 1));
+    println(bind!(value));
+    println(first());
+    println(second());
+    println(plus!(plus!(1)));
+    println(sum!(1, 2, 3));
+    println(capture!("owned".to_upper()));
+    println(message!(value + 1));
+    println(here!() == location!().line);
+    var count = 0;
+    loop {
+        count += 1;
+        under_loop!({ if count == 2 { break; } });
+    }
+    println(count);
+}

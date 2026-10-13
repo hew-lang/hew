@@ -222,7 +222,7 @@ impl Checker {
         let Expr::Ident(owner) = receiver else {
             return None;
         };
-        if self.env.lookup_ref(owner.name.as_str()).is_some() {
+        if self.env.lookup_ref(owner).is_some() {
             return None;
         }
         let identity = format!("{owner}::{method}");

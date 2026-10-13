@@ -204,7 +204,7 @@ impl Checker {
                 "compilation inputs are unavailable".into(),
             )
         })?;
-        let original = self.expansions.source_origin(span);
+        let original = self.expansions.invocation_origin(span);
         let source = original
             .as_ref()
             .map(|(path, _)| path.as_path())

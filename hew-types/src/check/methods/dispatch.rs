@@ -75,9 +75,9 @@ impl Checker {
         self.reject_indexed_writable_borrow(receiver);
         let place = self.expr_place(&receiver.0).or_else(|| {
             self.assignment_root_binding_name(&receiver.0)
-                .map(|root| (root.to_string(), Vec::new()))
+                .map(|root| (root, Vec::new()))
         });
-        let root = place.as_ref().map(|(root, _)| root.as_str());
+        let root = place.as_ref().map(|(root, _)| *root);
         if !root
             .and_then(|root| self.env.lookup_ref(root))
             .is_some_and(|binding| binding.is_mutable)
@@ -187,7 +187,7 @@ impl Checker {
                 // derivation. In particular, a lambda-actor handle is an
                 // opaque wrapper, but release still consumes its sole runtime
                 // handle and any later receiver use is invalid.
-                self.env.mark_moved(name.name.as_str(), receiver.1.clone());
+                self.env.mark_moved(name, receiver.1.clone());
             }
         }
 
@@ -264,7 +264,7 @@ impl Checker {
         }
         // Module-qualified calls: e.g. http.listen(addr) → lookup "http.listen" in fn_sigs
         if let Expr::Ident(name) = &receiver.0 {
-            let receiver_is_binding = self.env.lookup_ref(name.name.as_str()).is_some();
+            let receiver_is_binding = self.env.lookup_ref(name).is_some();
             // The shared type-head resolver already selected every
             // declaration-proven nominal above. Preserve that classification
             // while deciding whether an unresolved head is a module call.
@@ -2872,7 +2872,7 @@ impl Checker {
     ) {
         let mut error = TypeError::new(TypeErrorKind::UndefinedMethod, span.clone(), message);
         if let Expr::Ident(binding) = &receiver.0 {
-            if self.env.lookup_ref(binding.name.as_str()).is_some()
+            if self.env.lookup_ref(binding).is_some()
                 && self.module_import_bindings.contains_key(&(
                     self.current_module.clone(),
                     self.current_module_idx,

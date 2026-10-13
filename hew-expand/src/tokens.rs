@@ -12,7 +12,9 @@ pub(crate) fn delimiters(delimiter: Delimiter) -> (&'static str, &'static str) {
 
 pub(crate) fn spelling(tree: &TokenTree) -> Option<&str> {
     match tree {
-        TokenTree::Token { spelling, .. } => Some(spelling),
+        TokenTree::Token { spelling, .. } | TokenTree::Interpolated { spelling, .. } => {
+            Some(spelling)
+        }
         TokenTree::Group { .. } | TokenTree::Fragment { .. } => None,
     }
 }
@@ -46,6 +48,19 @@ fn write_source(
         bytes[start..tree.span().start - offset].copy_from_slice(leading);
     }
     match tree {
+        TokenTree::Interpolated {
+            spelling,
+            span,
+            expressions,
+            ..
+        } => {
+            bytes[span.start - offset..span.end - offset].copy_from_slice(spelling.as_bytes());
+            for (_, children) in expressions {
+                for child in children {
+                    write_source(child, offset, bytes, contexts, fragments);
+                }
+            }
+        }
         TokenTree::Token {
             spelling,
             span,

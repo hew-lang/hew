@@ -1791,7 +1791,7 @@ impl Checker {
             if key == name
                 && self
                     .type_namespace_owners
-                    .contains_key(&(None, name.to_string()))
+                    .contains_key(&(None, Ident::new(name)))
             {
                 continue;
             }

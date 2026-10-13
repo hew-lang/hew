@@ -17,7 +17,7 @@ impl Checker {
         let view = ["mailbox", "policy"]
             .into_iter()
             .find(|view| *view == name.name.as_str())?;
-        (self.env.lookup_ref(name.name.as_str()).is_none()
+        (self.env.lookup_ref(name).is_none()
             && !self.fn_def_spans.contains_key(name.name.as_str())
             && !scoped_module_item_name(self.canonical_fn_owner(), name.name.as_str())
                 .is_some_and(|owner| self.fn_def_spans.contains_key(&owner))

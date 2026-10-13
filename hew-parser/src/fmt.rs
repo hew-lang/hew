@@ -4259,8 +4259,16 @@ impl<'a> Formatter<'a> {
             self.flush_inline_comments(expr.1.start);
         }
         match &expr.0 {
-            Expr::MacroCall(_) => {
-                self.write(self.source.get(expr.1.clone()).unwrap_or_default());
+            Expr::MacroCall(call) => {
+                if let Some(source) = self.source.get(expr.1.clone()) {
+                    self.write(source);
+                } else {
+                    self.write(&call.path.to_string());
+                    self.write("!");
+                    let mut input = String::new();
+                    call.input.write_source(&mut input);
+                    self.write(input.trim_start());
+                }
                 self.prev_source_pos = expr.1.end;
                 while self.next_comment < self.comments.len()
                     && self.comments[self.next_comment].span.start < expr.1.end

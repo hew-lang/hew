@@ -795,8 +795,7 @@ impl Parser<'_> {
             Token::InterpolatedString(s) => {
                 let s = s.to_string();
                 self.advance();
-                let parts =
-                    parse_string_parts(&s, 2, 1, "{", start, &self.contexts, &mut self.errors);
+                let parts = self.parse_string_parts(&s, start);
                 Expr::InterpolatedString(parts)
             }
             Token::RegexLiteral(s) => {
@@ -927,14 +926,23 @@ impl Parser<'_> {
                 if self.peek() == Some(&Token::Bang) {
                     self.advance();
                     self.expect(&Token::LeftParen)?;
-                    let mut args = Vec::new();
-                    while self.peek() != Some(&Token::RightParen) {
-                        args.push(self.parse_expr()?);
-                        if !self.eat(&Token::Comma) {
-                            break;
+                    let suspended =
+                        (name.name.as_str() == "stringify").then(|| self.expander.take());
+                    let args = (|| {
+                        let mut args = Vec::new();
+                        while self.peek() != Some(&Token::RightParen) {
+                            args.push(self.parse_expr()?);
+                            if !self.eat(&Token::Comma) {
+                                break;
+                            }
                         }
+                        self.expect(&Token::RightParen)?;
+                        Some(args)
+                    })();
+                    if let Some(expander) = suspended {
+                        self.expander = expander;
                     }
-                    self.expect(&Token::RightParen)?;
+                    let args = args?;
                     return Some((
                         Expr::MacroInvocation { name, args },
                         start..self.peek_span().start,

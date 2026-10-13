@@ -722,11 +722,7 @@ impl Checker {
                         }
                         continue;
                     }
-                    if !self.register_type_namespace_name(
-                        Some(module_full_path),
-                        td.name.name.as_str(),
-                        span,
-                    ) {
+                    if !self.register_type_namespace_name(Some(module_full_path), td.name, span) {
                         continue;
                     }
                     let saved_importer_module =
@@ -820,11 +816,7 @@ impl Checker {
                     if !tr.visibility.is_pub() {
                         continue;
                     }
-                    if !self.register_type_namespace_name(
-                        Some(module_full_path),
-                        tr.name.name.as_str(),
-                        span,
-                    ) {
+                    if !self.register_type_namespace_name(Some(module_full_path), tr.name, span) {
                         continue;
                     }
                     let info = self.trait_info_from_decl(
@@ -909,11 +901,7 @@ impl Checker {
                     self.type_def_spans
                         .entry(qualified_type)
                         .or_insert_with(|| span.clone());
-                    if !self.register_type_namespace_name(
-                        Some(module_short),
-                        ad.name.name.as_str(),
-                        span,
-                    ) {
+                    if !self.register_type_namespace_name(Some(module_short), ad.name, span) {
                         continue;
                     }
                     // The actor's signatures resolve in its declaring module.
@@ -1517,11 +1505,7 @@ impl Checker {
                         }
                         continue;
                     }
-                    if !self.register_type_namespace_name(
-                        Some(module_full_path),
-                        td.name.name.as_str(),
-                        span,
-                    ) {
+                    if !self.register_type_namespace_name(Some(module_full_path), td.name, span) {
                         continue;
                     }
                     // Qualified authority is always published: the source
@@ -1936,11 +1920,7 @@ impl Checker {
                     }
                     let actor_already_registered = self.type_def_at(&qualified_actor);
                     if actor_already_registered.is_none()
-                        && !self.register_type_namespace_name(
-                            Some(module_full_path),
-                            ad.name.name.as_str(),
-                            span,
-                        )
+                        && !self.register_type_namespace_name(Some(module_full_path), ad.name, span)
                     {
                         continue;
                     }
@@ -2028,11 +2008,7 @@ impl Checker {
                         continue;
                     }
                     if self.type_def_at(&qualified).is_none()
-                        && !self.register_type_namespace_name(
-                            Some(module_full_path),
-                            sd.name.name.as_str(),
-                            span,
-                        )
+                        && !self.register_type_namespace_name(Some(module_full_path), sd.name, span)
                     {
                         continue;
                     }

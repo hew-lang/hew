@@ -22,6 +22,7 @@ fn owner(map: &ExpansionMap, span: &Span) -> Option<ExpansionId> {
 
 struct LoopTarget {
     owner: Option<ExpansionId>,
+    source_label: Option<Ident>,
     label: Ident,
     required: bool,
 }
@@ -65,10 +66,10 @@ impl<'a> Control<'a> {
     fn loop_jump(&mut self, label: &mut Option<Ident>, span: &Span) -> Result<(), ExpansionError> {
         let written = owner(self.map, span);
         let selected = self.loops.iter().rposition(|target| {
-            target.owner == written && label.is_none_or(|label| label == target.label)
+            target.owner == written && label.is_none_or(|label| Some(label) == target.source_label)
         });
         if let Some(index) = selected {
-            if label.is_none() && index + 1 != self.loops.len() {
+            if label.is_some() || index + 1 != self.loops.len() {
                 let target = &mut self.loops[index];
                 *label = Some(target.label);
                 target.required = true;
@@ -78,7 +79,9 @@ impl<'a> Control<'a> {
         if written.is_some() {
             return Err(self.fail("E_MACRO_ESCAPING_JUMP: a template break or continue needs a loop written by that template", span));
         }
-        if self.loops.iter().any(|target| target.owner.is_some()) {
+        if self.loops.iter().any(|target| target.owner.is_some())
+            || self.function.is_some_and(|owner| owner.is_some())
+        {
             return Err(self.fail(
                 "E_MACRO_CAPTURED_JUMP: captured break or continue has no enclosing caller loop",
                 span,
@@ -116,8 +119,7 @@ impl<'a> Control<'a> {
         span: &Span,
     ) -> Result<(), ExpansionError> {
         let written = owner(self.map, span);
-        let generated = label.is_none();
-        let loop_label = label.unwrap_or_else(|| loop {
+        let loop_label = loop {
             let spelling = format!("__macro_loop_{}", self.next_label);
             self.next_label += 1;
             if !self
@@ -128,15 +130,16 @@ impl<'a> Control<'a> {
             {
                 break Ident::new(&spelling);
             }
-        });
+        };
         self.loops.push(LoopTarget {
             owner: written,
+            source_label: *label,
             label: loop_label,
             required: false,
         });
         self.block(body)?;
         let target = self.loops.pop().expect("loop was pushed");
-        if generated && target.required {
+        if target.required {
             *label = Some(loop_label);
         }
         Ok(())

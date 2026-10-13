@@ -662,13 +662,13 @@ impl Checker {
 
     /// One field of the place a pattern destructures.
     fn place_field(
-        place: Option<&(String, crate::env::PlacePath)>,
+        place: Option<&(Ident, crate::env::PlacePath)>,
         field: &str,
-    ) -> Option<(String, crate::env::PlacePath)> {
+    ) -> Option<(Ident, crate::env::PlacePath)> {
         place.map(|(root, path)| {
             let mut path = path.clone();
             path.push(field.to_string());
-            (root.clone(), path)
+            (*root, path)
         })
     }
 

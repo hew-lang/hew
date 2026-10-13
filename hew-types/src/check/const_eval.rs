@@ -47,7 +47,7 @@ use hew_parser::ast::{BinaryOp, Expr, Literal, Spanned, UnaryOp};
 /// contract unchanged.
 #[derive(Debug, Default, Clone)]
 pub struct ConstEnv {
-    values: HashMap<String, i128>,
+    values: HashMap<hew_parser::ast::Ident, i128>,
 }
 
 #[allow(
@@ -64,13 +64,13 @@ impl ConstEnv {
         }
     }
 
-    pub fn insert(&mut self, name: impl Into<String>, value: i128) {
-        self.values.insert(name.into(), value);
+    pub fn insert(&mut self, name: impl crate::env::LexicalName, value: i128) {
+        self.values.insert(name.lexical_key(), value);
     }
 
     #[must_use]
-    pub fn get(&self, name: &str) -> Option<i128> {
-        self.values.get(name).copied()
+    pub fn get(&self, name: impl crate::env::LexicalName) -> Option<i128> {
+        self.values.get(&name.lexical_key()).copied()
     }
 }
 
@@ -189,7 +189,7 @@ pub fn eval_integer_const_expr(
     target: ConstIntegerTarget,
 ) -> Result<i128, ConstEvalError> {
     eval_integer_const_expr_with_values(expr, target, |expr| match &expr.0 {
-        Expr::Ident(name) => env.get(name.name.as_str()),
+        Expr::Ident(name) => env.get(*name),
         _ => None,
     })
 }

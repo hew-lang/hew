@@ -1115,7 +1115,7 @@ impl Checker {
             // Known compile-time numeric literal identifiers can coerce to
             // compatible numeric types using the same literal-kind rules.
             (Expr::Ident(name), ty) if ty.is_numeric() => {
-                if let Some(cv) = self.const_values.get(name.name.as_str()).cloned() {
+                if let Some(cv) = self.const_values.get(name).cloned() {
                     match (&cv, expected) {
                         (ConstValue::Integer(value), ty) if ty.is_integer() => {
                             if !expected.is_numeric_literal() {
@@ -1153,23 +1153,15 @@ impl Checker {
                             // `lookup_with_depth` which tracks the scope index
                             // and pushes `lambda_capture_facts` when the binding
                             // is from an outer scope — `env.lookup` would not.
-                            self.expect_inferable_literal_binding(
-                                name.name.as_str(),
-                                expected,
-                                span,
-                            );
-                            let _ = self.synthesize_identifier(name.name.as_str(), span);
+                            self.expect_inferable_literal_binding(*name, expected, span);
+                            let _ = self.synthesize_identifier(*name, span);
                             self.record_value_path_resolution(expr, span);
                             self.record_type(span, expected);
                             return expected.clone();
                         }
                         (ConstValue::Integer(_), ty) if ty.is_float() => {
-                            self.expect_inferable_literal_binding(
-                                name.name.as_str(),
-                                expected,
-                                span,
-                            );
-                            let _ = self.synthesize_identifier(name.name.as_str(), span);
+                            self.expect_inferable_literal_binding(*name, expected, span);
+                            let _ = self.synthesize_identifier(*name, span);
                             self.record_value_path_resolution(expr, span);
                             self.record_type(span, expected);
                             return expected.clone();
@@ -1187,12 +1179,8 @@ impl Checker {
                                 );
                                 return Ty::Error;
                             }
-                            self.expect_inferable_literal_binding(
-                                name.name.as_str(),
-                                expected,
-                                span,
-                            );
-                            let _ = self.synthesize_identifier(name.name.as_str(), span);
+                            self.expect_inferable_literal_binding(*name, expected, span);
+                            let _ = self.synthesize_identifier(*name, span);
                             self.record_value_path_resolution(expr, span);
                             self.record_type(span, expected);
                             return expected.clone();

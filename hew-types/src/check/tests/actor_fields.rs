@@ -1374,9 +1374,12 @@ fn main() -> i64 {
             "fn main() {}",
         );
 
-        let mut identities: Vec<_> = collect_program_actors(&program)
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let output = checker.check_program(&program);
+        assert!(output.errors.is_empty(), "{:#?}", output.errors);
+        let mut identities: Vec<_> = collect_program_actors(&program, &checker.defs)
             .into_iter()
-            .map(|(identity, _)| identity)
+            .map(|(identity, _)| checker.defs.path(identity))
             .collect();
         identities.sort();
         assert_eq!(

@@ -2192,7 +2192,7 @@ fn derived_intliteral_identifier_coerces_without_const_values() {
     checker.check_stmt(&source_stmt, &(0..14));
 
     assert!(
-        !checker.const_values.contains_key("n"),
+        !checker.const_values.contains_key(&Ident::new("n")),
         "derived literals should not register const_values"
     );
 
@@ -2263,7 +2263,7 @@ fn const_default_width_registers_in_const_values() {
     checker.check_const(&decl, &(0..3));
 
     assert!(matches!(
-        checker.const_values.get("N"),
+        checker.const_values.get(&Ident::new("N")),
         Some(ConstValue::Integer(100))
     ));
 
@@ -2299,7 +2299,7 @@ fn const_explicit_width_not_in_const_values() {
     checker.check_const(&decl, &(0..3));
 
     assert!(
-        !checker.const_values.contains_key("N"),
+        !checker.const_values.contains_key(&Ident::new("N")),
         "explicit-width consts should not register const_values"
     );
 }

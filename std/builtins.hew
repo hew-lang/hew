@@ -40,7 +40,9 @@ pub type ActorId {
 }
 
 impl Display for ActorId {
-    fn fmt(self) -> string { to_string(self.value) }
+    fn fmt(self) -> string {
+        to_string(self.value)
+    }
 }
 
 /// The authenticated origin of a received handler call.
@@ -53,11 +55,13 @@ pub enum Caller {
 
 /// One handler delivery, consumed by exactly one of `proceed` or `refuse`.
 #[linear]
-pub type Call<A> {}
+pub type Call<A> {
+}
 
 /// A completed handler delivery, returned by its interceptor.
 #[linear]
-pub type Outcome<A> {}
+pub type Outcome<A> {
+}
 
 /// Complete remote actor location.
 pub type Location {

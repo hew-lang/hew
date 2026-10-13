@@ -490,6 +490,15 @@ else needs `impl Display for {rendered}`)"
         clippy::too_many_lines,
         reason = "multi-branch variant resolution: unqualified, qualified-in-type_defs, and qualified-in-fn_sigs each need distinct handling"
     )]
+    pub(in crate::check) fn type_decl_has_bare_variants(&self, id: crate::NominalId) -> bool {
+        matches!(
+            self.defs.kind(id.declaration()),
+            crate::DeclarationKind::Type
+                | crate::DeclarationKind::Machine
+                | crate::DeclarationKind::MachineEventType
+        )
+    }
+
     pub(in crate::check) fn resolve_identifier_variant(&mut self, name: &str, span: &Span) -> Ty {
         // `Machine::State` / `Enum::Variant` is a value expression, so it
         // bypasses the ordinary TypeExpr resolver. Apply the same published
@@ -507,7 +516,7 @@ else needs `impl Display for {rendered}`)"
         let mut found = None;
         // Pass 1: user-declared types.
         for (id, td) in &self.type_defs {
-            if crate::actor_protocol::is_interceptor_member(&self.defs, id.declaration()) {
+            if !self.type_decl_has_bare_variants(*id) {
                 continue;
             }
             let type_name = self.defs.path(id.declaration());
@@ -528,7 +537,7 @@ else needs `impl Display for {rendered}`)"
         // Pass 2: builtin/imported types (only when no user type matched).
         if found.is_none() {
             for (id, td) in &self.type_defs {
-                if crate::actor_protocol::is_interceptor_member(&self.defs, id.declaration()) {
+                if !self.type_decl_has_bare_variants(*id) {
                     continue;
                 }
                 let type_name = self.defs.path(id.declaration());

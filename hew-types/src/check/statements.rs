@@ -989,9 +989,10 @@ impl Checker {
         // User enums: scan every type definition for a unit variant of this
         // name, exactly as the use-side's `resolve_identifier_variant` does.
         // A bare name that is a unit variant of *any* known enum is a pattern.
-        self.type_defs
-            .values()
-            .any(|td| matches!(td.variants.get(name), Some(VariantDef::Unit)))
+        self.type_defs.iter().any(|(id, td)| {
+            self.type_decl_has_bare_variants(*id)
+                && matches!(td.variants.get(name), Some(VariantDef::Unit))
+        })
     }
 
     /// Does an identifier in `let`/binding position name a unit variant — a

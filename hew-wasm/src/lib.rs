@@ -772,6 +772,7 @@ fn hir_kind_str(kind: &hew_hir::HirDiagnosticKind) -> &'static str {
     match kind {
         K::NotYetImplemented { .. } => "NotYetImplemented",
         K::ConstIntegerEvaluation { .. } => "ConstIntegerEvaluation",
+        K::ConstDependencyCycle { .. } => "ConstDependencyCycle",
         K::UnresolvedSymbol { .. } => "UnresolvedSymbol",
         K::ImportMissing { .. } => "ImportMissing",
         K::UnresolvedBuiltinOverload { .. } => "UnresolvedBuiltinOverload",

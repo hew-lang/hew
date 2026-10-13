@@ -68,8 +68,11 @@ pub enum HirDiagnosticKind {
     /// arithmetic form is supported and must stop before artifact emission.
     ConstIntegerEvaluation {
         /// Stable semantic class: `arithmetic-overflow`, `division-by-zero`,
-        /// or `out-of-range`.
+        /// `out-of-range`, or `unresolved-reference`.
         class: String,
+    },
+    ConstDependencyCycle {
+        name: String,
     },
     /// A syntactic construct that is outside the current vertical slice.
     /// The `construct` names the unsupported form; `owning_pass` says which

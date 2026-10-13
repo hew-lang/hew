@@ -161,11 +161,20 @@ impl LowerCtx {
         }
         let entry = self.source_const_entries.get(&declaration)?.clone();
         if !self.folding_constants.insert(declaration) {
-            self.unsupported(
-                entry.initializer.1,
-                "cyclic constant initializer",
-                "const-fold",
-            );
+            let kind = HirDiagnosticKind::ConstDependencyCycle {
+                name: self.defs.path(declaration).to_string(),
+            };
+            if !self
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.kind == kind)
+            {
+                self.diagnostics.push(HirDiagnostic::new(
+                    kind,
+                    entry.initializer.1,
+                    "cyclic constant initializer",
+                ));
+            }
             return None;
         }
         let previous_module = self.current_module_idx;
@@ -206,6 +215,14 @@ impl LowerCtx {
     ) -> HirConstValue {
         if let Some(value) = self.constant_at(&span) {
             return value;
+        }
+        if self.diagnostics.iter().any(|diagnostic| {
+            matches!(
+                diagnostic.kind,
+                HirDiagnosticKind::ConstDependencyCycle { .. }
+            )
+        }) {
+            return Self::const_error_value(declared_ty);
         }
         if let Some(value) = self.fold_aggregate_const_expr(expr, declared_ty, &span) {
             return value;
@@ -291,11 +308,18 @@ impl LowerCtx {
             // declared type, so the folded value passes through exactly.
             Some(Ok(value)) => return HirConstValue::Integer(value),
             Some(Err(hew_types::check::const_eval::ConstEvalError::UnknownConst(_))) => {
-                self.unsupported(
-                    span,
-                    "const references in initializers are not yet supported",
-                    "const-fold",
-                );
+                if !self.diagnostics.iter().any(|diagnostic| {
+                    matches!(
+                        diagnostic.kind,
+                        HirDiagnosticKind::ConstDependencyCycle { .. }
+                    )
+                }) {
+                    self.const_integer_evaluation_error(
+                        span,
+                        "unresolved-reference",
+                        "constant reference could not be evaluated",
+                    );
+                }
             }
             Some(Err(
                 hew_types::check::const_eval::ConstEvalError::ArithmeticOverflow
@@ -330,6 +354,10 @@ impl LowerCtx {
             }
         }
 
+        Self::const_error_value(declared_ty)
+    }
+
+    fn const_error_value(declared_ty: &ResolvedTy) -> HirConstValue {
         // Fail-closed placeholder. A diagnostic was already emitted, so
         // compilation will not proceed; the placeholder only needs to match
         // the declared type's value shape so downstream structural invariants

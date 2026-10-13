@@ -717,6 +717,7 @@ impl Checker {
                     // A peer's registry source does not replace the resolved
                     // directory module's namespace at the import site.
                     target.get_or_insert(registry_module);
+                    self.assign_module_packages();
                     if self.defs.module_has_source_declarations(registry_module) {
                         self.declare_minted_items_in_scope(&[registry_module], registry_module);
                     } else {

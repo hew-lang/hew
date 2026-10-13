@@ -1,13 +1,19 @@
-import std.stream;
+#[resource]
+type Input {
+    label: string;
+}
 
-fn open() -> Stream<string> {
-    match stream.open("resource-read.bin") {
-        .Ok(input) => input.lines(),
-        .Err(_) => panic("fixture open failed"),
+impl Input {
+    fn close(consume self) {
+        println(self.label);
     }
 }
 
-fn take(consume input: Stream<string>, value: i64) {
+fn open() -> Input {
+    Input { label: "closed" }
+}
+
+fn take(consume input: Input, value: i64) {
     input.close();
     println(value);
 }

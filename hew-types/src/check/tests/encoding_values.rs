@@ -106,12 +106,15 @@ fn encoding_values_select_only_explicit_eq_methods() {
         let module: Vec<String> = ["std", "encoding", format].map(str::to_string).into();
         let output = check_source_in_canonical_std_module(&source, &module);
         assert!(output.errors.is_empty(), "{:?}", output.errors);
-        let expected = output
+        let module = output
             .defs
-            .lookup_path(&format!(
-                "std.encoding.{format}.Value::<impl Eq for std.encoding.{format}.Value>::eq"
-            ))
-            .unwrap();
+            .module_for_path(&format!("std.encoding.{format}"));
+        let expected = output
+            .impl_method_declaration_ids
+            .values()
+            .copied()
+            .find(|id| output.defs.module(*id) == module && output.defs.name(*id).as_str() == "eq")
+            .expect("the source Eq method keeps its declaration");
         let mut service = TypeFactService::new(output.type_fact_context, output.type_facts);
         for opaque in [false, true] {
             let mut resolved = ResolvedTy::from_ty(&encoding_ty(kind)).unwrap();

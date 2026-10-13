@@ -697,23 +697,35 @@ impl Checker {
 
     /// Whether the current file may name `declaration`; reports the first
     /// refusal per declaration.
+    pub(super) fn declaration_is_visible_from(
+        &self,
+        declaration: crate::DefId,
+        file: crate::ModuleId,
+    ) -> bool {
+        use hew_parser::ast::Visibility;
+        let Some(owner) = self.defs.module(declaration) else {
+            return true;
+        };
+        let owner = self.scopes.namespace_of(owner);
+        let here = self.scopes.namespace_of(file);
+        match self.defs.visibility(declaration) {
+            Visibility::Pub => true,
+            Visibility::Private => owner == here,
+            Visibility::Package => owner == here || self.defs.same_package(owner, here),
+        }
+    }
+
     pub(super) fn check_declaration_visible(
         &mut self,
         declaration: crate::DefId,
         span: &hew_parser::ast::Span,
     ) -> bool {
-        use hew_parser::ast::Visibility;
         let (Some(site), Some(owner)) = (self.scope_site(), self.defs.module(declaration)) else {
             return true;
         };
         let owner = self.scopes.namespace_of(owner);
-        let here = self.scopes.namespace_of(site.file);
         let visibility = self.defs.visibility(declaration);
-        let visible = match visibility {
-            Visibility::Pub => true,
-            Visibility::Private => owner == here,
-            Visibility::Package => owner == here || self.defs.same_package(owner, here),
-        };
+        let visible = self.declaration_is_visible_from(declaration, site.file);
         if !visible && self.reported_type_visibility_violations.insert(declaration) {
             let declaration_span = self.defs.site(declaration).map_or_else(
                 || span.clone(),

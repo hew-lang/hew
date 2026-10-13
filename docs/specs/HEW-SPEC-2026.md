@@ -1210,6 +1210,7 @@ vector and map literals with constant leaves, including constant references,
 record updates, vector spreads, fixed array repeats and compile-time inputs
 (§12.8). Integer arithmetic follows the declared integer type's range and
 overflow rules. Ordinary function calls are not evaluated at compile time.
+Constant references are independent of declaration order; cyclic initializers are rejected.
 Each use materializes an independent value; consuming or mutating one use
 does not change the declaration or another use.
 

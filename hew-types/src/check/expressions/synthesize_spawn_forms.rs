@@ -1359,7 +1359,7 @@ impl Checker {
         let mut resolved_module_variant_name = None;
         if let Some(dot) = name
             .find('.')
-            .filter(|_| !resolved && dotted_struct_variant.is_none())
+            .filter(|_| !resolved && !name.contains("::") && dotted_struct_variant.is_none())
         {
             let module_short = &name[..dot];
             if self.module_binding_in_current_file(module_short) {

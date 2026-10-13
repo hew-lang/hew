@@ -485,11 +485,7 @@ impl Checker {
         let super::super::scope::Resolution::Nominal(owner) = self.resolve_type_path(path)? else {
             return None;
         };
-        matches!(
-            self.defs.kind(owner.declaration()),
-            crate::DeclarationKind::Actor | crate::DeclarationKind::Supervisor
-        )
-        .then(|| self.defs.path(owner.declaration()).to_string())
+        Some(self.defs.path(owner.declaration()).to_string())
     }
 
     pub(in crate::check) fn canonical_supervisor_child_type(

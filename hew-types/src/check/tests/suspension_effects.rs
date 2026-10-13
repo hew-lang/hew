@@ -68,8 +68,8 @@ fn deferred_pure_scopes_inherit_contents_without_admitting_suspension() {
 fn lazy_generator_creators_do_not_inherit_deferred_body_effects() {
     let source = r"
 gen fn delayed() -> i64 { sleep(1ms); yield 1; }
-fn create() { let unused = delayed(); }
-fn create_block() { let unused = gen { sleep(1ms); yield 1; }; }
+fn create() -> Generator<i64, ()> { delayed() }
+fn create_block() -> Generator<i64, ()> { gen { sleep(1ms); yield 1; } }
 fn consume() { for value in delayed() { println(value); } }
 fn main() {
     create();

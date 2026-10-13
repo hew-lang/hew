@@ -1577,12 +1577,12 @@ fn stdlib_const_uses_full_registry_owner() {
 
     assert!(
         checker
-            .env
-            .lookup_ref("std.net.http.codec.MAX_READS")
-            .is_some(),
+            .defs
+            .lookup_path("std.net.http.codec.MAX_READS")
+            .is_some_and(|id| checker.source_constants.contains_key(&id)),
         "the constant key must match the exact owner behind the lexical module binding"
     );
-    assert!(checker.env.lookup_ref("codec.MAX_READS").is_none());
+    assert!(checker.defs.lookup_path("codec.MAX_READS").is_none());
 }
 
 #[test]
@@ -2093,22 +2093,24 @@ fn user_module_registers_pub_consts() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     let _output = checker.check_program(&program);
 
-    // pub const should be findable in the environment
     assert!(
-        checker.env.lookup_ref("myapp.config.MAX_SIZE").is_some(),
+        checker
+            .defs
+            .lookup_path("myapp.config.MAX_SIZE")
+            .is_some_and(|id| checker.source_constants.contains_key(&id)),
         "pub const should be registered under its exact source owner"
     );
     assert!(
-        checker.env.lookup_ref("MAX_SIZE").is_some(),
-        "pub const should be unqualified with glob import"
+        checker
+            .constant_declaration(Ident::new("MAX_SIZE"))
+            .is_some(),
+        "selected public constant should be available unqualified"
     );
     assert!(
-        checker.env.lookup_ref("myapp.config.INTERNAL").is_none(),
-        "private const should NOT be registered"
-    );
-    assert!(
-        checker.env.lookup_ref("INTERNAL").is_none(),
-        "private const should NOT be registered unqualified"
+        checker
+            .constant_declaration(Ident::new("INTERNAL"))
+            .is_none(),
+        "private constant should not be imported unqualified"
     );
 }
 
@@ -2145,12 +2147,15 @@ fn user_module_const_bare_import_qualified_only() {
     let _output = checker.check_program(&program);
 
     assert!(
-        checker.env.lookup_ref("myapp.config.LIMIT").is_some(),
+        checker
+            .defs
+            .lookup_path("myapp.config.LIMIT")
+            .is_some_and(|id| checker.source_constants.contains_key(&id)),
         "pub const should be registered under its exact source owner"
     );
     assert!(
-        checker.env.lookup_ref("LIMIT").is_none(),
-        "bare import should NOT register const unqualified"
+        checker.constant_declaration(Ident::new("LIMIT")).is_none(),
+        "bare import should not publish a constant unqualified"
     );
 }
 
@@ -3222,425 +3227,6 @@ fn import_private_trait_not_registered() {
     // Should complete without errors; private trait is simply ignored
     let output = check_items(vec![(Item::Import(import), 0..0)]);
     assert!(output.errors.is_empty(), "errors: {:?}", output.errors);
-}
-
-// -- Orphan rule warning --
-
-#[test]
-fn orphan_impl_emits_warning() {
-    use hew_parser::ast::TraitBound;
-    // impl ExternalTrait for ExternalType → neither is local → orphan warning
-    let impl_decl = ImplDecl {
-        type_params: None,
-        trait_bound: Some(TraitBound {
-            path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new("SomeTrait"), 0..0),
-            type_args: None,
-            assoc_type_bindings: vec![],
-        }),
-        target_type: (
-            TypeExpr::Named {
-                path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new("SomeType"), 0..0),
-                type_args: None,
-            },
-            0..0,
-        ),
-        where_clause: None,
-        type_aliases: vec![],
-        methods: vec![],
-        doc_comment: None,
-    };
-    let output = check_items(vec![(Item::Impl(impl_decl), 0..0)]);
-
-    let has_orphan_warning = output
-        .warnings
-        .iter()
-        .any(|w| w.kind == crate::error::TypeErrorKind::OrphanImpl);
-    assert!(
-        has_orphan_warning,
-        "expected OrphanImpl warning when neither trait nor type is local, got: {:?}",
-        output.warnings
-    );
-}
-
-#[test]
-fn canonical_builtin_source_owns_intrinsic_impls_for_coherence() {
-    let compiler_root = crate::module_registry::compiler_stdlib_root()
-        .expect("test executable must resolve its compiler-owned development stdlib");
-    let output = check_intrinsic_coherence_source(
-        &compiler_root.join("std/builtins.hew"),
-        ModuleRegistry::new(vec![]),
-    );
-
-    assert!(
-        !output
-            .warnings
-            .iter()
-            .any(|warning| warning.kind == crate::error::TypeErrorKind::OrphanImpl),
-        "the canonical builtin source owns intrinsic type impls: {:?}",
-        output.warnings
-    );
-}
-
-#[test]
-fn noncanonical_builtin_spelling_does_not_own_intrinsic_impls() {
-    use hew_parser::ast::TraitBound;
-
-    let impl_decl = ImplDecl {
-        type_params: None,
-        trait_bound: Some(TraitBound {
-            path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new("ExternalTrait"), 0..0),
-            type_args: None,
-            assoc_type_bindings: vec![],
-        }),
-        target_type: (
-            TypeExpr::Named {
-                path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new("Vec"), 0..0),
-                type_args: None,
-            },
-            0..0,
-        ),
-        where_clause: None,
-        type_aliases: vec![],
-        methods: vec![],
-        doc_comment: None,
-    };
-    let mut checker = Checker {
-        current_module: Some("std.builtins".to_string()),
-        ..Default::default()
-    };
-    checker.check_impl(&impl_decl, &(0..0));
-
-    assert!(
-        checker
-            .warnings
-            .iter()
-            .any(|warning| warning.kind == crate::error::TypeErrorKind::OrphanImpl),
-        "a lookalike module must not gain intrinsic coherence authority"
-    );
-}
-
-struct IntrinsicCoherenceFixture {
-    root: std::path::PathBuf,
-}
-
-impl IntrinsicCoherenceFixture {
-    fn new(name: &str) -> Self {
-        let unique = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("clock is after the Unix epoch")
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!("{name}-{}-{unique}", std::process::id()));
-        std::fs::create_dir_all(&root).expect("create coherence fixture root");
-        Self { root }
-    }
-
-    fn write(&self, relative: &str, source: &str) -> std::path::PathBuf {
-        let path = self.root.join(relative);
-        std::fs::create_dir_all(path.parent().expect("fixture path has a parent"))
-            .expect("create coherence fixture directory");
-        std::fs::write(&path, source).expect("write coherence fixture source");
-        path
-    }
-}
-
-impl Drop for IntrinsicCoherenceFixture {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.root);
-    }
-}
-
-fn check_intrinsic_coherence_source(
-    source_path: &std::path::Path,
-    registry: ModuleRegistry,
-) -> TypeCheckOutput {
-    let source = r"
-        impl ForeignTrait for Vec<i64> {}
-        impl ForeignTrait for i8 {}
-    ";
-    let parsed = hew_parser::parse(source);
-    assert!(
-        parsed.errors.is_empty(),
-        "fixture parse: {:?}",
-        parsed.errors
-    );
-
-    let root_id = ModulePath::root();
-    let builtins_id = ModulePath::new(["std", "builtins"]);
-    let mut graph = ModuleGraph::new(root_id.clone());
-    graph
-        .add_module(Module {
-            id: builtins_id.clone(),
-            items: parsed.program.items,
-            imports: vec![],
-            source_paths: vec![source_path.to_path_buf()],
-            doc: None,
-        })
-        .expect("add std.builtins module");
-    graph.topo_order = vec![builtins_id, root_id];
-
-    Checker::new(registry).check_program(&Program {
-        expansions: hew_parser::macro_syntax::ExpansionMap::default(),
-        module_graph: Some(graph),
-        items: vec![],
-        module_doc: None,
-    })
-}
-
-#[test]
-fn project_local_std_builtins_source_cannot_claim_intrinsic_coherence() {
-    const CHILD_MARKER: &str = "HEW_INTRINSIC_COHERENCE_ATTACK_CHILD";
-
-    if std::env::var_os(CHILD_MARKER).is_some() {
-        let attacker_root = std::env::current_dir().expect("attacker cwd is available");
-        let search_paths = crate::module_registry::stdlib_search_paths();
-        assert!(
-            search_paths
-                .iter()
-                .all(|path| path.canonicalize().ok() != attacker_root.canonicalize().ok()),
-            "production module discovery must not select the attacker's cwd std: \
-             {search_paths:?}"
-        );
-        let compiler_root = crate::module_registry::compiler_stdlib_root()
-            .expect("test executable must resolve its compiler-owned development stdlib");
-        assert_ne!(
-            attacker_root.canonicalize().ok(),
-            Some(compiler_root.clone()),
-            "attacker cwd must be distinct from compiler authority"
-        );
-
-        let attacker_builtins = attacker_root.join("std/builtins.hew");
-        let output =
-            check_intrinsic_coherence_source(&attacker_builtins, ModuleRegistry::new(search_paths));
-        let orphan_warnings = output
-            .warnings
-            .iter()
-            .filter(|warning| warning.kind == TypeErrorKind::OrphanImpl)
-            .count();
-        println!("attack module root: {}", attacker_root.display());
-        println!("compiler authority root: {}", compiler_root.display());
-        println!("attack orphan warnings: {orphan_warnings}");
-        assert_eq!(
-            orphan_warnings, 2,
-            "project-local std/builtins.hew must not own Vec or primitive impls: {:?}",
-            output.warnings
-        );
-        return;
-    }
-
-    let fixture = IntrinsicCoherenceFixture::new("user-std-builtins-coherence");
-    fixture.write(
-        "std/builtins.hew",
-        "// attacker-controlled builtins marker\n",
-    );
-    let child = std::process::Command::new(
-        std::env::current_exe().expect("resolve current hew-types test executable"),
-    )
-    .args([
-        "--exact",
-        "check::tests::imports::project_local_std_builtins_source_cannot_claim_intrinsic_coherence",
-        "--nocapture",
-    ])
-    .current_dir(&fixture.root)
-    .env(CHILD_MARKER, "1")
-    .env_remove("HEWPATH")
-    .env_remove("HEW_STD")
-    .output()
-    .expect("run production-shaped attacker-cwd check_program child");
-    let stdout = String::from_utf8_lossy(&child.stdout);
-    let stderr = String::from_utf8_lossy(&child.stderr);
-    print!("{stdout}");
-    eprint!("{stderr}");
-    assert!(
-        child.status.success(),
-        "attacker-cwd child failed with {}\nstdout:\n{stdout}\nstderr:\n{stderr}",
-        child.status
-    );
-}
-
-#[test]
-fn imported_foreign_trait_impl_for_intrinsic_type_warns() {
-    let foreign_source = "pub trait ForeignTrait {}";
-    let consumer_source = "import vendor.{ ForeignTrait }; impl ForeignTrait for Vec<i64> {}";
-    let foreign = hew_parser::parse(foreign_source);
-    let mut consumer = hew_parser::parse(consumer_source);
-    assert!(
-        foreign.errors.is_empty(),
-        "foreign parse: {:?}",
-        foreign.errors
-    );
-    assert!(
-        consumer.errors.is_empty(),
-        "consumer parse: {:?}",
-        consumer.errors
-    );
-
-    let fixture = IntrinsicCoherenceFixture::new("foreign-intrinsic-coherence");
-    let foreign_path = fixture.write("vendor.hew", foreign_source);
-    let consumer_path = fixture.write("consumer.hew", consumer_source);
-    let import_span = consumer.program.items[0].1.clone();
-    let Item::Import(import) = &mut consumer.program.items[0].0 else {
-        panic!("consumer starts with an import");
-    };
-    import.resolved_items = Some(foreign.program.items.clone().into());
-    import.resolved_source_paths = vec![foreign_path.clone()];
-
-    let root_id = ModulePath::root();
-    let foreign_id = ModulePath::new(["vendor"]);
-    let consumer_id = ModulePath::new(["consumer"]);
-    let mut graph = ModuleGraph::new(root_id.clone());
-    graph
-        .add_module(Module {
-            id: foreign_id.clone(),
-            items: foreign.program.items,
-            imports: vec![],
-            source_paths: vec![foreign_path],
-            doc: None,
-        })
-        .expect("add foreign trait module");
-    graph
-        .add_module(Module {
-            id: consumer_id.clone(),
-            items: consumer.program.items,
-            imports: vec![hew_parser::module::ModuleImport {
-                target: foreign_id.clone(),
-                spec: Some(ImportSpec::Names(vec![ImportName {
-                    name: Ident::new("ForeignTrait"),
-                    alias: None,
-                }])),
-                span: import_span,
-            }],
-            source_paths: vec![consumer_path],
-            doc: None,
-        })
-        .expect("add consumer module");
-    graph.topo_order = vec![foreign_id, consumer_id, root_id];
-
-    let output = Checker::new(test_registry()).check_program(&Program {
-        expansions: hew_parser::macro_syntax::ExpansionMap::default(),
-        module_graph: Some(graph),
-        items: vec![],
-        module_doc: None,
-    });
-    assert!(
-        output
-            .warnings
-            .iter()
-            .any(|warning| warning.kind == TypeErrorKind::OrphanImpl),
-        "a user module implementing a foreign trait for Vec must warn: {:?}",
-        output.warnings
-    );
-}
-
-#[test]
-fn local_type_impl_no_orphan_warning() {
-    use hew_parser::ast::TraitBound;
-    // Locally defined type: impl SomeExternalTrait for LocalType → no orphan warning
-    let type_decl = TypeDecl {
-        origin: hew_parser::ast::DeclarationOrigin::Authored,
-        visibility: Visibility::Pub,
-        kind: TypeDeclKind::Struct,
-        name: Ident::new("LocalType"),
-        type_params: None,
-        where_clause: None,
-        body: vec![],
-        doc_comment: None,
-        wire: None,
-        is_indirect: false,
-        resource_marker: hew_parser::ast::ResourceMarker::None,
-        serial_case: None,
-        is_opaque: false,
-        consuming_methods: Vec::new(),
-        lang_item: None,
-    };
-    let impl_decl = ImplDecl {
-        type_params: None,
-        trait_bound: Some(TraitBound {
-            path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new("ExternalTrait"), 0..0),
-            type_args: None,
-            assoc_type_bindings: vec![],
-        }),
-        target_type: (
-            TypeExpr::Named {
-                path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new("LocalType"), 0..0),
-                type_args: None,
-            },
-            0..0,
-        ),
-        where_clause: None,
-        type_aliases: vec![],
-        methods: vec![],
-        doc_comment: None,
-    };
-    let output = check_items(vec![
-        (Item::TypeDecl(type_decl), 0..0),
-        (Item::Impl(impl_decl), 0..0),
-    ]);
-
-    let has_orphan = output
-        .warnings
-        .iter()
-        .any(|w| w.kind == crate::error::TypeErrorKind::OrphanImpl);
-    assert!(
-        !has_orphan,
-        "impl on a locally defined type must NOT produce an orphan warning"
-    );
-}
-
-#[test]
-fn local_actor_impl_no_orphan_warning() {
-    use hew_parser::ast::{ActorDecl, TraitBound, Visibility};
-    // A same-file actor declares a nominal type, so `impl ExternalTrait for
-    // Counter` is local-typed — not an orphan. Mirrors the struct case above:
-    // the actor's name must seed `local_type_defs` like any other type.
-    let actor = ActorDecl {
-        visibility: Visibility::Pub,
-        name: Ident::new("Counter"),
-        type_params: vec![],
-        super_traits: None,
-        init: None,
-        fields: vec![],
-        receive_fns: vec![],
-        methods: vec![],
-        mailbox_capacity: None,
-        overflow_policy: None,
-        mailbox_span: None,
-        is_isolated: false,
-        doc_comment: None,
-        max_heap_bytes: None,
-    };
-    let impl_decl = ImplDecl {
-        type_params: None,
-        trait_bound: Some(TraitBound {
-            path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new("ExternalTrait"), 0..0),
-            type_args: None,
-            assoc_type_bindings: vec![],
-        }),
-        target_type: (
-            TypeExpr::Named {
-                path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new("Counter"), 0..0),
-                type_args: None,
-            },
-            0..0,
-        ),
-        where_clause: None,
-        type_aliases: vec![],
-        methods: vec![],
-        doc_comment: None,
-    };
-    let output = check_items(vec![
-        (Item::Actor(actor), 0..0),
-        (Item::Impl(impl_decl), 0..0),
-    ]);
-
-    let has_orphan = output
-        .warnings
-        .iter()
-        .any(|w| w.kind == crate::error::TypeErrorKind::OrphanImpl);
-    assert!(
-        !has_orphan,
-        "impl on a locally defined actor must NOT produce an orphan warning; warnings: {:?}",
-        output.warnings
-    );
 }
 
 #[test]

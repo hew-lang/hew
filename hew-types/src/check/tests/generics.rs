@@ -2245,128 +2245,28 @@ fn negated_literal_let_binding_coerces_signed() {
 }
 
 #[test]
-fn const_default_width_registers_in_const_values() {
-    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-    let decl = ConstDecl {
-        visibility: Visibility::Private,
-        name: Ident::new("N"),
-        ty: (
-            TypeExpr::Named {
-                path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new("i64"), 0..0),
-                type_args: None,
-            },
-            0..0,
-        ),
-        value: make_int_literal(100, 0..3),
-        doc_comment: None,
-    };
-    checker.check_const(&decl, &(0..3));
-
-    assert!(matches!(
-        checker.const_values.get(&Ident::new("N")),
-        Some(ConstValue::Integer(100))
-    ));
-
-    let ident = (Expr::Ident(Ident::new("N")), 10..11);
-    let ty = checker.check_against(&ident.0, &ident.1, &Ty::I32);
-    assert_eq!(ty, Ty::I32);
-    assert!(
-        checker.errors.is_empty(),
-        "unexpected errors: {:?}",
-        checker.errors
-    );
-}
-
-#[test]
-fn const_explicit_width_not_in_const_values() {
-    // Explicit-width consts (`const N: i32 = 100`) must not be registered
-    // in `const_values` because they have a known non-literal type and cannot
-    // be widened freely at use sites.
-    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-    let decl = ConstDecl {
-        visibility: Visibility::Private,
-        name: Ident::new("N"),
-        ty: (
-            TypeExpr::Named {
-                path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new("i32"), 0..0),
-                type_args: None,
-            },
-            0..0,
-        ),
-        value: make_int_literal(100, 0..3),
-        doc_comment: None,
-    };
-    checker.check_const(&decl, &(0..3));
-
-    assert!(
-        !checker.const_values.contains_key(&Ident::new("N")),
-        "explicit-width consts should not register const_values"
-    );
+fn default_width_constant_coerces_to_a_fitting_integer_type() {
+    let output = check_source("const N: i64 = 100; fn value() -> i32 { N }");
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
 }
 
 #[test]
 fn const_explicit_width_assigned_to_wider_type_is_rejected() {
-    // `const N: i32 = 100; let y: i64 = N;` must be a type error now that
-    // implicit integer widening is removed.  The caller must write `N as i64`.
-    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-    let decl = ConstDecl {
-        visibility: Visibility::Private,
-        name: Ident::new("N"),
-        ty: (
-            TypeExpr::Named {
-                path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new("i32"), 0..0),
-                type_args: None,
-            },
-            0..0,
-        ),
-        value: make_int_literal(100, 0..3),
-        doc_comment: None,
-    };
-    checker.check_const(&decl, &(0..3));
-
-    let target_stmt = Stmt::Let {
-        pattern: (Pattern::Identifier(Ident::new("y")), 10..11),
-        ty: Some((
-            TypeExpr::Named {
-                path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new("i64"), 0..0),
-                type_args: None,
-            },
-            14..17,
-        )),
-        value: Some((Expr::Ident(Ident::new("N")), 20..21)),
-        else_block: None,
-    };
-    checker.check_stmt(&target_stmt, &(10..21));
-
-    let binding = checker.env.lookup_ref("N").expect("N should be defined");
-    assert_eq!(binding.ty, Ty::I32);
-
-    // The widening rejection must fire exactly once, on the assignment span
-    // (10..21), not on the const declaration span (0..3).
-    let widening_errors: Vec<_> = checker
-        .errors
-        .iter()
-        .filter(|e| {
-            e.message.contains("cannot implicitly convert")
-                && e.message.contains("i32")
-                && e.message.contains("i64")
-        })
-        .collect();
-    assert_eq!(
-        widening_errors.len(),
-        1,
-        "expected exactly one widening-rejection error, got: {:?}",
-        checker.errors
-    );
-    // No error should reference the const decl span (0..3) — the decl itself
-    // is well-typed; only the assignment is rejected.
+    let source = "const N: i32 = 100; fn main() { let y: i64 = N; }";
+    let output = check_source(source);
+    assert_eq!(output.errors.len(), 1, "{:?}", output.errors);
+    let error = &output.errors[0];
     assert!(
-        !checker
-            .errors
-            .iter()
-            .any(|e| e.span.start < 3 && e.span.end <= 3),
-        "unexpected error on const decl span: {:?}",
-        checker.errors
+        error.message.contains("cannot implicitly convert"),
+        "{error:?}"
+    );
+    assert!(
+        error.message.contains("i32") && error.message.contains("i64"),
+        "{error:?}"
+    );
+    assert!(
+        error.span.start >= source.find("let y").unwrap(),
+        "{error:?}"
     );
 }
 

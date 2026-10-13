@@ -327,7 +327,7 @@ else needs `impl Display for {rendered}`)"
         }
         // A local/parameter in an inner body scope shadows imports normally.
         // Only an outer import-scope binding can be ill-formed here.
-        if !matches!(self.env.lookup_ref_with_depth(name), Some((0, _))) {
+        if matches!(self.env.lookup_ref_with_depth(name), Some((depth, _)) if depth > 0) {
             return false;
         }
         if self.current_module.is_none() && self.root_value_bindings.contains(name) {

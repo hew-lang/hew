@@ -1,5 +1,3 @@
-import callgraph_reach_fixture.runner.native_loop;
-
 import callgraph_reach_fixture.runner.native_loop.{NativeConfig};
 
 fn genuinely_uncalled() -> i64 {

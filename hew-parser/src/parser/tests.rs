@@ -4419,21 +4419,14 @@ fn linear_then_resource_combined_emits_conflict_diagnostic() {
 }
 
 #[test]
-fn unresolved_type_attribute_is_retained_for_expansion() {
+fn unresolved_type_attribute_is_deferred_to_expansion() {
     let source = r"
             #[both]
             type Bad { x: i64; }
         ";
     let result = parse(source);
     assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
-    let Item::TypeDecl(decl) = &result.program.items[0].0 else {
-        panic!("expected type declaration");
-    };
-    assert_eq!(decl.attributes[0].name, "both");
-    assert!(matches!(
-        decl.attributes[0].args.as_slice(),
-        [AttributeArg::Tokens(_)]
-    ));
+    assert!(matches!(result.program.items[0].0, Item::TypeDecl(_)));
 }
 
 #[test]

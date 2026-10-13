@@ -271,14 +271,15 @@ impl Checker {
                 continue;
             }
             if crate::ResolvedTy::from_ty(&ty).ok().is_some_and(|ty| {
-                crate::value_class::classify_ty(&ty, &classes).is_ok_and(|(class, _)| {
-                    matches!(
-                        class,
+                matches!(
+                    crate::value_class::classify_ty(&ty, &classes),
+                    Ok((
                         crate::value_class::ValueClass::BitCopy
                             | crate::value_class::ValueClass::View
-                            | crate::value_class::ValueClass::Linear
-                    )
-                })
+                            | crate::value_class::ValueClass::Linear,
+                        _
+                    )) | Err(crate::value_class::ClassError::RecursiveInstantiation { .. })
+                )
             }) {
                 continue;
             }

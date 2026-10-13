@@ -460,6 +460,7 @@ impl Checker {
     /// Whether `ty` has a declared impl of `trait_id`, directly or through an
     /// impl of a trait extending it. An alias answers for its target.
     pub(in crate::check) fn type_implements_trait(&self, ty: &Ty, trait_id: crate::DefId) -> bool {
+        let ty = &ty.materialize_literal_defaults();
         if let Some(key) = Self::impl_self_key(ty) {
             if self
                 .trait_impls

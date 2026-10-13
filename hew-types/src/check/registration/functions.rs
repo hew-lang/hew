@@ -2014,11 +2014,19 @@ impl Checker {
                     .collect();
                 format!("<{}>", rendered.join(", "))
             });
-        let source_owner = self
-            .current_declaration_module()
-            .map_or("#synthetic-root", |module| self.defs.module_path(module));
+        // A foreign receiver's owner does not identify the source impl;
+        // in particular, a user override must not reuse its prelude method.
+        let receiver_declaration = self.lookup_declaration(&receiver);
+        let source_owner = self.current_declaration_module().filter(|source| {
+            receiver_declaration
+                .and_then(|receiver| self.defs.module(receiver))
+                .is_some_and(|owner| owner != *source)
+        });
+        let source_prefix = source_owner.map_or_else(String::new, |module| {
+            format!("{}.", self.defs.module_path(module))
+        });
         let path = format!(
-            "{source_owner}::{receiver}::<impl {trait_identity}{trait_args} for {declared_receiver}>::{}",
+            "{source_prefix}{receiver}::<impl {trait_identity}{trait_args} for {declared_receiver}>::{}",
             method.name
         );
         let occurrence = crate::DeclarationOccurrence::new_with_synthetic_ordinal(
@@ -2030,7 +2038,6 @@ impl Checker {
         );
         // Rechecking an admitted source body keeps its declaration even when
         // the body is presented through a different lexical import surface.
-        let receiver_declaration = self.lookup_declaration(&receiver);
         let declaration = self.defs.declaration(occurrence).map_or_else(
             || {
                 self.defs

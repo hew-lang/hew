@@ -3335,7 +3335,6 @@ fn assert_primitive_trait_dispatch_records_metadata(
         parsed.errors
     );
     let mut checker = Checker::new(test_registry());
-    checker.checking_embedded_builtins = true;
     let output = checker.check_program(&parsed.program);
     assert!(
         output.errors.is_empty(),
@@ -3364,7 +3363,6 @@ fn assert_primitive_trait_dispatch_records_metadata(
 fn primitive_impl_dispatch_resolves_int_receiver() {
     assert_primitive_trait_dispatch_records_metadata(
         r#"
-            pub trait Display { fn fmt(self) -> string; }
             impl Display for i64 {
                 fn fmt(self) -> string { "" }
             }
@@ -3374,7 +3372,7 @@ fn primitive_impl_dispatch_resolves_int_receiver() {
             }
         "#,
         "i64",
-        "Display",
+        "std.builtins.Display",
     );
 }
 
@@ -3382,7 +3380,6 @@ fn primitive_impl_dispatch_resolves_int_receiver() {
 fn primitive_impl_dispatch_resolves_bool_receiver() {
     assert_primitive_trait_dispatch_records_metadata(
         r#"
-            pub trait Display { fn fmt(self) -> string; }
             impl Display for bool {
                 fn fmt(self) -> string { "" }
             }
@@ -3392,7 +3389,7 @@ fn primitive_impl_dispatch_resolves_bool_receiver() {
             }
         "#,
         "bool",
-        "Display",
+        "std.builtins.Display",
     );
 }
 
@@ -3400,7 +3397,6 @@ fn primitive_impl_dispatch_resolves_bool_receiver() {
 fn primitive_impl_dispatch_resolves_char_receiver() {
     assert_primitive_trait_dispatch_records_metadata(
         r#"
-            pub trait Display { fn fmt(self) -> string; }
             impl Display for char {
                 fn fmt(self) -> string { "" }
             }
@@ -3410,7 +3406,7 @@ fn primitive_impl_dispatch_resolves_char_receiver() {
             }
         "#,
         "char",
-        "Display",
+        "std.builtins.Display",
     );
 }
 
@@ -3420,7 +3416,6 @@ fn primitive_impl_dispatch_resolves_i32_receiver() {
     // as their `Ty::I32` variant — `i32` here, not `i64`.
     assert_primitive_trait_dispatch_records_metadata(
         r#"
-            pub trait Display { fn fmt(self) -> string; }
             impl Display for i32 {
                 fn fmt(self) -> string { "" }
             }
@@ -3430,7 +3425,7 @@ fn primitive_impl_dispatch_resolves_i32_receiver() {
             }
         "#,
         "i32",
-        "Display",
+        "std.builtins.Display",
     );
 }
 
@@ -3463,8 +3458,8 @@ fn primitive_impl_dispatch_resolves_vec_receiver() {
     // Vec routes through `check_vec_method`'s not-found arm.
     assert_primitive_trait_dispatch_records_metadata(
         r#"
-            pub trait Display { fn fmt(self) -> string; }
-            impl Display for Vec<i32> {
+            pub trait RenderVec { fn fmt(self) -> string; }
+            impl RenderVec for Vec<i32> {
                 fn fmt(self) -> string { "" }
             }
             fn main() {
@@ -3473,7 +3468,7 @@ fn primitive_impl_dispatch_resolves_vec_receiver() {
             }
         "#,
         "Vec",
-        "Display",
+        "RenderVec",
     );
 }
 
@@ -3519,17 +3514,17 @@ fn primitive_impl_dispatch_resolves_ufcs_form_for_int_receiver() {
     // The UFCS dispatcher intercepts before that lookup.
     assert_primitive_trait_dispatch_records_metadata(
         r#"
-            pub trait Display { fn fmt(self) -> string; }
-            impl Display for i64 {
+            pub trait RenderPrimitive { fn fmt(self) -> string; }
+            impl RenderPrimitive for i64 {
                 fn fmt(self) -> string { "" }
             }
             fn main() {
                 let x: i64 = 42;
-                let _ = Display.fmt(x);
+                let _ = RenderPrimitive.fmt(x);
             }
         "#,
         "i64",
-        "Display",
+        "RenderPrimitive",
     );
 }
 
@@ -3781,7 +3776,6 @@ fn primitive_trait_dispatch_int_literal_receiver() {
     // `canonical_primitive_or_builtin_key` short-circuited on the literal.
     assert_primitive_trait_dispatch_records_metadata(
         r#"
-            pub trait Display { fn fmt(self) -> string; }
             impl Display for i64 {
                 fn fmt(self) -> string { "" }
             }
@@ -3790,7 +3784,7 @@ fn primitive_trait_dispatch_int_literal_receiver() {
             }
         "#,
         "i64",
-        "Display",
+        "std.builtins.Display",
     );
 }
 
@@ -3801,7 +3795,6 @@ fn primitive_trait_dispatch_float_literal_receiver() {
     // before canonical-key lookup.
     assert_primitive_trait_dispatch_records_metadata(
         r#"
-            pub trait Display { fn fmt(self) -> string; }
             impl Display for f64 {
                 fn fmt(self) -> string { "" }
             }
@@ -3810,7 +3803,7 @@ fn primitive_trait_dispatch_float_literal_receiver() {
             }
         "#,
         "f64",
-        "Display",
+        "std.builtins.Display",
     );
 }
 
@@ -3822,16 +3815,16 @@ fn primitive_trait_dispatch_ufcs_int_literal() {
     // and the trait-qualified path mis-arities (sig.params=[] vs args=[42]).
     assert_primitive_trait_dispatch_records_metadata(
         r#"
-            pub trait Display { fn fmt(self) -> string; }
-            impl Display for i64 {
+            pub trait RenderPrimitive { fn fmt(self) -> string; }
+            impl RenderPrimitive for i64 {
                 fn fmt(self) -> string { "" }
             }
             fn main() {
-                let _ = Display.fmt(42);
+                let _ = RenderPrimitive.fmt(42);
             }
         "#,
         "i64",
-        "Display",
+        "RenderPrimitive",
     );
 }
 

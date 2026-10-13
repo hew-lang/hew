@@ -13,9 +13,7 @@ use crate::{DeclarationKind, DeclarationOccurrence, DefId};
 
 impl Checker {
     pub(in crate::check) fn assign_module_packages(&mut self) {
-        let Some(provider) = self.input_provider.clone() else {
-            return;
-        };
+        let provider = self.input_provider.clone();
         let sources: Vec<_> = self
             .defs
             .modules()
@@ -26,6 +24,18 @@ impl Checker {
             })
             .collect();
         for (module, source) in sources {
+            let Some(provider) = &provider else {
+                let package = if self
+                    .module_registry
+                    .source_has_stdlib_authority(&source, self.defs.module_path(module))
+                {
+                    PackageOrigin::StandardLibrary
+                } else {
+                    PackageOrigin::Compilation
+                };
+                self.defs.set_module_package(module, package);
+                continue;
+            };
             match provider.package_anchor(&source) {
                 Ok(anchor) => {
                     let package = match anchor {

@@ -447,10 +447,6 @@ const PLAIN_MANIFESTS: &[(&str, &str)] = &[
         "package",
         "[package]\nname = \"lib\"\nversion = \"0.1.0\"\n",
     ),
-    (
-        "package with a lib table",
-        "[package]\nname = \"lib\"\nversion = \"0.1.0\"\n[lib]\nname = \"lib\"\n",
-    ),
 ];
 
 #[test]

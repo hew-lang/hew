@@ -396,6 +396,20 @@ impl Checker {
                             .ok()
                     })
                 });
+                if path.segments.len() > 1 {
+                    let declaration = match resolution {
+                        Some(super::super::scope::Resolution::Nominal(id)) => {
+                            Some(id.declaration())
+                        }
+                        Some(super::super::scope::Resolution::Variant(owner, _)) => owner
+                            .declaration(&self.defs)
+                            .map(crate::NominalId::declaration),
+                        _ => None,
+                    };
+                    if declaration.is_some_and(|id| !self.check_declaration_visible(id, span)) {
+                        return Ty::Error;
+                    }
+                }
                 let name = match resolution {
                     Some(super::super::scope::Resolution::Nominal(id)) => {
                         self.defs.path(id.declaration()).to_string()

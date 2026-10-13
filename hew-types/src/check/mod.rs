@@ -1252,7 +1252,9 @@ impl Checker {
         let namespace = self.scopes.namespace_of(target);
         if decl.path.segments.is_empty() {
             for (name, binding) in self.scopes.items(namespace) {
-                self.scopes.bind_import(file, name, binding, site);
+                if self.binding_is_importable(file, binding) {
+                    self.scopes.bind_import(file, name, binding, site);
+                }
             }
             if let Some(name) = decl
                 .file_path
@@ -1293,11 +1295,23 @@ impl Checker {
                 }
                 for selected in names {
                     if let Some(binding) = self.scopes.item(namespace, selected.name.name) {
-                        let bound = selected.alias.unwrap_or(selected.name);
-                        self.scopes.bind_import(file, bound.name, binding, site);
+                        if self.binding_is_importable(file, binding) {
+                            let bound = selected.alias.unwrap_or(selected.name);
+                            self.scopes.bind_import(file, bound.name, binding, site);
+                        }
                     }
                 }
             }
+        }
+    }
+
+    fn binding_is_importable(&self, file: crate::ModuleId, binding: scope::Binding) -> bool {
+        match binding.resolution() {
+            scope::Resolution::Nominal(id) => {
+                self.declaration_is_visible_from(id.declaration(), file)
+            }
+            scope::Resolution::Def(id) => self.declaration_is_visible_from(id, file),
+            _ => true,
         }
     }
 

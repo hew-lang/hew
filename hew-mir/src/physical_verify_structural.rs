@@ -146,6 +146,10 @@ pub(crate) fn verify_structural_glue(module: &PhysicalModule) -> Result<(), Phys
     Ok(())
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "Keep module verification in the dependency order of its physical tables"
+)]
 pub(crate) fn verify_physical_module(
     module: &PhysicalModule,
 ) -> Result<BTreeMap<super::CallableId, super::PhysicalDebugAvailability>, PhysicalError> {

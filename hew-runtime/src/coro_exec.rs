@@ -722,8 +722,7 @@ pub(crate) mod test_support {
                 frame.write(Self::new(suspends_before_done));
                 (*frame).destroy = Some(scratch_destroy_and_free);
             }
-            let handle = frame.cast::<c_void>();
-            handle
+            frame.cast::<c_void>()
         }
     }
 

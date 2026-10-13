@@ -53,6 +53,7 @@ pub struct ForkTransferFact {
 #[derive(Debug, Clone)]
 struct Invocation {
     owner: Option<EffectBody>,
+    receiver: Option<Ty>,
     /// The callee value's type when the call dispatches through a value.
     callee: Option<Ty>,
     /// Source spelling of the callee for diagnostics.
@@ -687,6 +688,10 @@ impl Checker {
                 key,
                 Invocation {
                     owner: self.effect_graph.current_body.clone(),
+                    receiver: match expr {
+                        Expr::MethodCall { receiver, .. } => self.callee_value_type(receiver),
+                        _ => None,
+                    },
                     callee,
                     name: format!("{name}(...)"),
                     deferred: self.deferred_body.is_some(),
@@ -865,7 +870,12 @@ impl Checker {
                         | CallTarget::ImplMethod(id)
                         | CallTarget::StaticTraitMethod { method: id, .. },
                     ) => {
-                        let actuals = self.call_cleanup_substitutions(*id, key, substitutions);
+                        let actuals = self.call_cleanup_substitutions(
+                            *id,
+                            key,
+                            invocation.receiver.as_ref(),
+                            substitutions,
+                        );
                         self.body_cleanup_suspends(
                             &EffectBody::Declaration(*id),
                             graph,
@@ -915,13 +925,39 @@ impl Checker {
         &self,
         declaration: crate::DefId,
         key: &SpanKey,
+        receiver: Option<&Ty>,
         enclosing: &HashMap<crate::ParamHead, Ty>,
     ) -> HashMap<crate::ParamHead, Ty> {
-        self.fn_sigs
-            .get(&declaration)
-            .into_iter()
-            .flat_map(|signature| {
-                signature.type_params.iter().copied().zip(
+        let Some(signature) = self.fn_sigs.get(&declaration) else {
+            return HashMap::new();
+        };
+        let mut substitutions = HashMap::new();
+        if let (Some(method), Some(receiver)) = (&signature.impl_method, receiver) {
+            if let Ty::Named { args, .. } = self
+                .subst
+                .resolve(receiver)
+                .substitute_type_params_parallel(enclosing)
+            {
+                substitutions.extend(
+                    crate::method_resolution::impl_receiver_substitution(
+                        &method.receiver_parameters,
+                        &method.receiver_args,
+                        &args,
+                    )
+                    .unwrap_or_default(),
+                );
+            }
+        }
+        let parameters: Vec<_> = signature
+            .type_params
+            .iter()
+            .copied()
+            .filter(|parameter| !substitutions.contains_key(parameter))
+            .collect();
+        substitutions.extend(
+            parameters
+                .into_iter()
+                .zip(
                     self.call_type_args
                         .get(key)
                         .into_iter()
@@ -931,9 +967,9 @@ impl Checker {
                                 .resolve(ty)
                                 .substitute_type_params_parallel(enclosing)
                         }),
-                )
-            })
-            .collect()
+                ),
+        );
+        substitutions
     }
 
     fn invocation_suspends(
@@ -961,7 +997,12 @@ impl Checker {
                     || self.body_cleanup_suspends(
                         &body,
                         graph,
-                        &self.call_cleanup_substitutions(*id, key, &HashMap::new()),
+                        &self.call_cleanup_substitutions(
+                            *id,
+                            key,
+                            invocation.receiver.as_ref(),
+                            &HashMap::new(),
+                        ),
                         bodies,
                         false,
                         &mut HashSet::new(),

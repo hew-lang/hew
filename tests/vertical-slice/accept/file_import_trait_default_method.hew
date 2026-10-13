@@ -1,12 +1,7 @@
-// Regression: a trait DEFAULT method reached through a file import must
-// resolve on the implementing type. `register_file_import_items` gated the
-// imported trait's `trait_defs` entry on `pub`, so an impl of a non-pub
-// file-imported trait registered its explicit methods but inherited none of
-// the trait's default bodies — `t.simple()` failed with
-// "no method `simple` on `RootThing`" while the identical same-file shape
-// resolved. The impl below overrides only the required method, so every
-// default call here is served by the imported trait's body.
-import "file_import_trait_default_method_lib.hew";
+// An explicitly imported trait contributes both its leaf default and the
+// default that dispatches through a required method. The root implementation
+// overrides only the required method.
+import file_import_trait_default_method_lib.{Greet};
 
 type RootThing {
     label: string;

@@ -3261,13 +3261,9 @@ type MutableContainer<T> {
 
 **Conditional implementations:**
 
-```hew
-// Vec<T> is Send if T is Send
-impl<T: Send> Send for Vec<T> {}
-
-// Vec<T> is Frozen if T is Frozen
-impl<T: Frozen> Frozen for Vec<T> {}
-```
+`Vec<T>` is `Send` when `T` is `Send`, and `Frozen` when `T` is `Frozen`.
+These implementations belong to the standard library; application code cannot
+redeclare an implementation of a foreign trait for a foreign type.
 
 Internal atomic reference counts do not introduce another source type or relax
 the checked `Send` and `Frozen` rules.

@@ -200,7 +200,7 @@ fn directory_peer_declarations_publish_under_the_assembling_module() {
     graph.topo_order = vec![package, root];
     graph.item_sources.insert("pkg".to_string(), vec![peer]);
     let program = Program {
-        expansions: Default::default(),
+        expansions: hew_parser::macro_syntax::ExpansionMap::default(),
         module_graph: Some(graph),
         items: Vec::new(),
         module_doc: None,

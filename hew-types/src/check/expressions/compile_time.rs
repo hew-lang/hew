@@ -205,14 +205,14 @@ impl Checker {
             )
         })?;
         let original = self.expansions.invocation_origin(span);
-        let source = original
-            .as_ref()
-            .map(|(path, _)| path.as_path())
-            .unwrap_or_else(|| {
+        let source = original.as_ref().map_or_else(
+            || {
                 self.current_item_source
                     .as_deref()
                     .unwrap_or_else(|| provider.root_source())
-            });
+            },
+            |(path, _)| path.as_path(),
+        );
         let span = original.as_ref().map_or(span, |(_, span)| span);
         let filename = source
             .file_name()

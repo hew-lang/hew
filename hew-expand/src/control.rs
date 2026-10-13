@@ -1,4 +1,7 @@
-use hew_parser::ast::*;
+use hew_parser::ast::{
+    condition_exprs_mut, Block, Expr, Ident, Item, MatchArm, Span, Spanned, Stmt, StringPart,
+    TraitItem, TypeBodyItem,
+};
 use hew_parser::macro_syntax::{ExpansionId, ExpansionMap, Origin};
 
 use crate::ExpansionError;
@@ -16,7 +19,34 @@ fn owner(map: &ExpansionMap, span: &Span) -> Option<ExpansionId> {
         .find(|(generated, _)| generated.contains(&span.start))
     {
         Some((_, Origin::Caller { span, .. })) => owner(map, span),
-        _ => Some(ExpansionId(index as u32)),
+        _ => Some(ExpansionId(
+            u32::try_from(index).expect("registered expansion ID fits u32"),
+        )),
+    }
+}
+
+fn captured_body(map: &ExpansionMap, span: &Span) -> bool {
+    let Some(expansion) = map
+        .expansions
+        .iter()
+        .find(|expansion| expansion.synthetic.contains(&span.start))
+    else {
+        return false;
+    };
+    if expansion
+        .captured_bodies
+        .iter()
+        .any(|body| body.start == span.start)
+    {
+        return true;
+    }
+    match expansion
+        .origins
+        .iter()
+        .find(|(generated, _)| generated.contains(&span.start))
+    {
+        Some((_, Origin::Caller { span, .. })) => captured_body(map, span),
+        _ => false,
     }
 }
 
@@ -27,9 +57,13 @@ struct LoopTarget {
     required: bool,
 }
 
+struct FunctionTarget {
+    owner: Option<ExpansionId>,
+}
+
 pub(crate) struct Control<'a> {
     map: &'a ExpansionMap,
-    function: Option<Option<ExpansionId>>,
+    function: Option<FunctionTarget>,
     loops: Vec<LoopTarget>,
     next_label: usize,
 }
@@ -44,7 +78,7 @@ impl<'a> Control<'a> {
         }
     }
 
-    fn fail(&self, message: &str, span: &Span) -> ExpansionError {
+    fn fail(message: &str, span: &Span) -> ExpansionError {
         ExpansionError {
             message: message.into(),
             span: span.clone(),
@@ -53,14 +87,22 @@ impl<'a> Control<'a> {
 
     fn return_jump(&self, span: &Span) -> Result<(), ExpansionError> {
         let written = owner(self.map, span);
-        if self.function == Some(written) || written.is_none() && self.function.is_none() {
+        if self
+            .function
+            .as_ref()
+            .is_some_and(|target| target.owner == written)
+            || written.is_none() && self.function.is_none()
+        {
             return Ok(());
         }
-        Err(self.fail(if written.is_some() {
-            "E_MACRO_ESCAPING_JUMP: a template return or `?` needs a function written by that template"
-        } else {
-            "E_MACRO_CAPTURED_JUMP: captured return or `?` cannot cross a template function boundary"
-        }, span))
+        Err(Self::fail(
+            if written.is_some() {
+                "E_MACRO_ESCAPING_JUMP: a template return or `?` needs a function written by that template"
+            } else {
+                "E_MACRO_CAPTURED_JUMP: captured return or `?` cannot cross a template function boundary"
+            },
+            span,
+        ))
     }
 
     fn loop_jump(&mut self, label: &mut Option<Ident>, span: &Span) -> Result<(), ExpansionError> {
@@ -77,12 +119,15 @@ impl<'a> Control<'a> {
             return Ok(());
         }
         if written.is_some() {
-            return Err(self.fail("E_MACRO_ESCAPING_JUMP: a template break or continue needs a loop written by that template", span));
+            return Err(Self::fail("E_MACRO_ESCAPING_JUMP: a template break or continue needs a loop written by that template", span));
         }
         if self.loops.iter().any(|target| target.owner.is_some())
-            || self.function.is_some_and(|owner| owner.is_some())
+            || self
+                .function
+                .as_ref()
+                .is_some_and(|target| target.owner.is_some())
         {
-            return Err(self.fail(
+            return Err(Self::fail(
                 "E_MACRO_CAPTURED_JUMP: captured break or continue has no enclosing caller loop",
                 span,
             ));
@@ -91,7 +136,32 @@ impl<'a> Control<'a> {
     }
 
     fn function_block(&mut self, block: &mut Block, span: &Span) -> Result<(), ExpansionError> {
-        let previous = self.function.replace(owner(self.map, span));
+        let mut function_owner = owner(self.map, span);
+        let nodes: Vec<_> = block
+            .stmts
+            .iter()
+            .map(|(_, span)| span)
+            .chain(block.trailing_expr.iter().map(|expr| &expr.1))
+            .collect();
+        if let Some(body) = self
+            .map
+            .expansions
+            .iter()
+            .flat_map(|expansion| &expansion.captured_bodies)
+            .find(|body| {
+                span.start < body.start
+                    && body.end <= span.end
+                    && !nodes.is_empty()
+                    && nodes
+                        .iter()
+                        .all(|node| body.start < node.start && node.start < body.end)
+            })
+        {
+            function_owner = owner(self.map, body);
+        }
+        let previous = self.function.replace(FunctionTarget {
+            owner: function_owner,
+        });
         let loops = std::mem::take(&mut self.loops);
         let result = self.block(block);
         self.loops = loops;
@@ -104,7 +174,9 @@ impl<'a> Control<'a> {
         body: &mut Spanned<Expr>,
         span: &Span,
     ) -> Result<(), ExpansionError> {
-        let previous = self.function.replace(owner(self.map, span));
+        let previous = self.function.replace(FunctionTarget {
+            owner: owner(self.map, span),
+        });
         let loops = std::mem::take(&mut self.loops);
         let result = self.expr(body);
         self.loops = loops;
@@ -148,7 +220,7 @@ impl<'a> Control<'a> {
     pub(crate) fn item(&mut self, item: &mut Item, span: &Span) -> Result<(), ExpansionError> {
         match item {
             Item::Function(function) => {
-                self.function_block(&mut function.body, &function.fn_span)?
+                self.function_block(&mut function.body, &function.fn_span)?;
             }
             Item::Const(constant) => self.expr(&mut constant.value)?,
             Item::TypeDecl(declaration) => {
@@ -351,10 +423,19 @@ impl<'a> Control<'a> {
         Ok(())
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "exhaustive expression traversal shares control-flow scope"
+    )]
     pub(crate) fn expr(
         &mut self,
         (expression, span): &mut Spanned<Expr>,
     ) -> Result<(), ExpansionError> {
+        if captured_body(self.map, span) {
+            if let Expr::Block(block) = expression {
+                return self.function_block(block, span);
+            }
+        }
         match expression {
             Expr::PostfixTry(value) | Expr::ReturnError(value) => {
                 self.return_jump(span)?;
@@ -367,10 +448,10 @@ impl<'a> Control<'a> {
                 }
             }
             Expr::Lambda { body, .. } | Expr::SpawnLambdaActor { body, .. } => {
-                self.function_expr(body, span)?
+                self.function_expr(body, span)?;
             }
             Expr::GenBlock { body } | Expr::ForkBlock { body } => {
-                self.function_block(body, span)?
+                self.function_block(body, span)?;
             }
             Expr::Block(block) | Expr::Scope { body: block } => self.block(block)?,
             Expr::UnsafeBlock(block) => self.block(block)?,

@@ -17,6 +17,8 @@ struct Definition {
     source: PathBuf,
 }
 
+type ResolvedDefinition<'a> = (&'a Definition, Option<(PathBuf, Span)>);
+
 #[derive(Debug)]
 struct MacroImport {
     target: ModulePath,
@@ -141,17 +143,39 @@ impl Registry {
                         format!("duplicate macro `{}`", declaration.name),
                     ));
                 }
-                if hew_parser::macro_syntax::is_builtin_macro(declaration.name.name.as_str()) {
+                if hew_parser::macro_syntax::is_builtin_macro(declaration.name.name.as_str())
+                    || hew_parser::parser::is_builtin_attribute(declaration.name.name.as_str())
+                {
                     return Err((
                         source.clone(),
                         span.clone(),
-                        "this macro name is reserved for a built-in".into(),
+                        "E_MACRO_RESERVED_NAME: this macro name is reserved for a built-in".into(),
                     ));
                 }
                 let patterns = declaration
                     .rules
                     .iter()
-                    .map(|rule| Pattern::compile(&rule.pattern))
+                    .map(|rule| {
+                        let mut pattern = Pattern::compile(&rule.pattern)?;
+                        if let Some(attribute) = &rule.attribute {
+                            if rule.category != ExpansionCategory::Items {
+                                return Err(crate::ExpansionError {
+                                    message:
+                                        "E_MACRO_BAD_CATEGORY: an attribute rule must produce items"
+                                            .into(),
+                                    span: rule.span.clone(),
+                                });
+                            }
+                            if pattern.captures.contains_key(&attribute.name.name) {
+                                return Err(crate::ExpansionError {
+                                    message: "duplicate macro capture".into(),
+                                    span: rule.span.clone(),
+                                });
+                            }
+                            pattern.attribute = Some(attribute.clone());
+                        }
+                        Ok(pattern)
+                    })
                     .collect::<Result<Vec<_>, _>>()
                     .map_err(|error| (source.clone(), error.span, error.message))?;
                 for (pattern, rule) in patterns.iter().zip(&declaration.rules) {
@@ -188,7 +212,81 @@ impl Registry {
         tree: &hew_parser::macro_syntax::TokenTree,
         definition: &Definition,
     ) -> Result<(), (PathBuf, Span, String)> {
-        use hew_parser::macro_syntax::TokenTree;
+        use hew_parser::macro_syntax::{Delimiter, TokenTree};
+        if let TokenTree::Group {
+            delimiter: Delimiter::Attribute,
+            children,
+            span,
+            ..
+        } = tree
+        {
+            let mut segments = Vec::new();
+            let mut index = 0;
+            while let Some(TokenTree::Token {
+                spelling,
+                context,
+                span,
+                ..
+            }) = children.get(index)
+            {
+                if spelling == "$" {
+                    return Ok(());
+                }
+                segments.push((
+                    Ident {
+                        name: hew_parser::ast::Symbol::intern(spelling),
+                        ctx: *context,
+                    },
+                    span.clone(),
+                ));
+                index += 1;
+                if children.get(index).and_then(crate::tokens::spelling) != Some(".") {
+                    break;
+                }
+                index += 1;
+            }
+            if segments.len() == 1
+                && hew_parser::parser::is_builtin_attribute(segments[0].0.name.as_str())
+            {
+                return Ok(());
+            }
+            if !segments.is_empty() {
+                let input = children
+                    .get(index)
+                    .cloned()
+                    .unwrap_or_else(|| TokenTree::Group {
+                        delimiter: Delimiter::Parenthesis,
+                        span: span.clone(),
+                        children: Vec::new(),
+                        leading: String::new(),
+                        closing: String::new(),
+                    });
+                let call = MacroCall {
+                    path: hew_parser::ast::Path { segments },
+                    input,
+                };
+                let (target, _) = self
+                    .definition(&call, &definition.source)
+                    .map_err(|error| {
+                        (
+                            definition.source.clone(),
+                            span.clone(),
+                            format!("E_UNKNOWN_ATTRIBUTE: {error}"),
+                        )
+                    })?;
+                if definition.declaration.visibility == Visibility::Pub
+                    && target.declaration.visibility != Visibility::Pub
+                {
+                    return Err((
+                        definition.source.clone(),
+                        span.clone(),
+                        "E_MACRO_PRIVATE_REFERENCE: a public macro cannot invoke a private macro"
+                            .into(),
+                    ));
+                }
+            }
+            return Ok(());
+        }
         let children = match tree {
             TokenTree::Group { children, .. }
             | TokenTree::Fragment {
@@ -284,7 +382,7 @@ impl Registry {
         &self,
         call: &MacroCall,
         source: &Path,
-    ) -> Result<(&Definition, Option<(PathBuf, Span)>), String> {
+    ) -> Result<ResolvedDefinition<'_>, String> {
         let Some((first, _)) = call.path.segments.first() else {
             return Err("empty macro path".into());
         };
@@ -400,12 +498,18 @@ impl Registry {
     }
 }
 
-impl ExpansionProvider for Registry {
-    fn begin(
+impl Registry {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "ordered expansion transaction records matching syntax and provenance"
+    )]
+    fn begin_expansion(
         &mut self,
         call: &MacroCall,
         category: ExpansionCategory,
         source: &Path,
+        function: Option<&hew_parser::macro_syntax::FunctionInput>,
+        attribute_span: Option<Span>,
     ) -> Result<ExpansionInput, String> {
         if self.active.len() >= 64 {
             let mut chain: Vec<_> = self
@@ -427,15 +531,44 @@ impl ExpansionProvider for Registry {
         if self.active.is_empty() {
             self.remaining_nodes = 1_000_000;
         }
-        let (definition, imported) = self.definition(call, source)?;
+        let (definition, imported) = self.definition(call, source).map_err(|error| {
+            if function.is_some() {
+                format!("E_UNKNOWN_ATTRIBUTE: {error}")
+            } else {
+                error
+            }
+        })?;
         let matched = definition
             .patterns
             .iter()
             .zip(&definition.declaration.rules)
             .find_map(|(pattern, rule)| {
-                pattern
-                    .matches(&call.input)
-                    .map(|captures| (pattern, rule, captures))
+                match (&rule.attribute, function) {
+                    (None, None) => {}
+                    (Some(attribute), Some(input)) => {
+                        if attribute.method
+                            && !input
+                                .function
+                                .params
+                                .first()
+                                .is_some_and(|param| param.is_receiver)
+                        {
+                            return None;
+                        }
+                        if attribute.fails
+                            && !input.function.return_type.as_ref().is_some_and(|(ty, _)| {
+                                matches!(ty, hew_parser::ast::TypeExpr::Fallible { .. })
+                            })
+                        {
+                            return None;
+                        }
+                    }
+                    _ => return None,
+                }
+                pattern.matches(&call.input).map(|mut captures| {
+                    captures.function = function.cloned();
+                    (pattern, rule, captures)
+                })
             })
             .ok_or_else(|| {
                 let shapes = definition
@@ -450,7 +583,19 @@ impl ExpansionProvider for Registry {
                     })
                     .collect::<Vec<_>>()
                     .join(" or ");
-                format!("no macro rule matches this input; expected {shapes}")
+                if function.is_some() {
+                    if definition.declaration.rules.iter().any(|rule| {
+                        rule.attribute
+                            .as_ref()
+                            .is_some_and(|attribute| attribute.fails)
+                    }) {
+                        "E_UNKNOWN_ATTRIBUTE: no matching rule: expected a fallible function".into()
+                    } else {
+                        "E_UNKNOWN_ATTRIBUTE: no matching attribute rule".into()
+                    }
+                } else {
+                    format!("no macro rule matches this input; expected {shapes}")
+                }
             })?;
         let (pattern, rule, captures) = matched;
         if rule.category != category {
@@ -495,12 +640,14 @@ impl ExpansionProvider for Registry {
         self.remaining_nodes = remaining_nodes;
         self.next_offset += generated.source.len() + 1;
         self.map.expansions.push(Expansion {
+            captured_bodies: generated.captured_bodies,
             name: macro_name,
             file: source.to_path_buf(),
             synthetic: generated.offset..generated.offset + generated.source.len(),
             invocation: Origin::Caller {
                 file: source.to_path_buf(),
-                span: call.path.segments[0].1.start..call.input.span().end,
+                span: attribute_span
+                    .unwrap_or_else(|| call.path.segments[0].1.start..call.input.span().end),
             },
             callee: Origin::Caller {
                 file: source.to_path_buf(),
@@ -537,6 +684,50 @@ impl ExpansionProvider for Registry {
             fragments: generated.fragments,
         })
     }
+}
+
+impl ExpansionProvider for Registry {
+    fn begin(
+        &mut self,
+        call: &MacroCall,
+        category: ExpansionCategory,
+        source: &Path,
+    ) -> Result<ExpansionInput, String> {
+        self.begin_expansion(call, category, source, None, None)
+    }
+    fn begin_attribute(
+        &mut self,
+        call: &MacroCall,
+        function: &hew_parser::macro_syntax::FunctionInput,
+        span: Span,
+        source: &Path,
+    ) -> Result<ExpansionInput, String> {
+        self.begin_expansion(
+            call,
+            ExpansionCategory::Items,
+            source,
+            Some(function),
+            Some(span),
+        )
+    }
+    fn resolve_attribute(&self, call: &MacroCall, source: &Path) -> Result<(), String> {
+        let (definition, _) = self
+            .definition(call, source)
+            .map_err(|error| format!("E_UNKNOWN_ATTRIBUTE: {error}"))?;
+        if definition
+            .declaration
+            .rules
+            .iter()
+            .zip(&definition.patterns)
+            .any(|(rule, pattern)| {
+                rule.attribute.is_some() && pattern.matches(&call.input).is_some()
+            })
+        {
+            Ok(())
+        } else {
+            Err("E_UNKNOWN_ATTRIBUTE: no matching attribute rule".into())
+        }
+    }
 
     fn complete(&mut self) {
         self.active.pop();
@@ -551,6 +742,10 @@ impl ExpansionProvider for Registry {
     }
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "both template categories share placeholder parsing and provenance checks"
+)]
 fn validate_template(
     pattern: &Pattern,
     rule: &hew_parser::macro_syntax::MacroRule,
@@ -576,6 +771,7 @@ fn validate_template(
     };
     let map = ExpansionMap {
         expansions: vec![Expansion {
+            captured_bodies: generated.captured_bodies.clone(),
             name: String::new(),
             file: source.to_path_buf(),
             synthetic: offset..offset + generated.source.len(),
@@ -647,12 +843,16 @@ fn validate_template(
                 .map(|()| TemplateBody::Expr(expression))
         }
         ExpansionCategory::Items => {
-            let parsed = hew_parser::parse_generated(
+            let mut parser = hew_parser::parser::Parser::with_contexts(
                 &generated.source,
                 offset,
                 generated.contexts,
-                generated.fragments,
-            );
+            )
+            .with_fragments(generated.fragments);
+            if rule.attribute.is_some() {
+                parser.allow_macro_receivers();
+            }
+            let parsed = parser.finish_expanded();
             if let Some(error) = parsed
                 .errors
                 .iter()
@@ -670,12 +870,25 @@ fn validate_template(
                 });
             }
             let mut items = parsed.program.items;
+            if rule.attribute.is_some() {
+                crate::attributes::validate_carrier(&items, &generated.origins, &rule.span)?;
+                crate::attributes::validate_bodies(
+                    &items,
+                    &generated.captured_bodies,
+                    &generated.source,
+                    offset,
+                )
+                .map_err(|error| crate::ExpansionError {
+                    message: error.message,
+                    span: original(&error.span),
+                })?;
+            }
             for (item, span) in &mut items {
                 if matches!(item, Item::Import(_) | Item::Macro(_)) {
                     return Err(crate::ExpansionError {
                         message: "an items macro cannot introduce imports or macro declarations"
                             .into(),
-                        span: original(&span),
+                        span: original(span),
                     });
                 }
                 control

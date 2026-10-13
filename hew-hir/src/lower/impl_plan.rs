@@ -645,7 +645,7 @@ pub(super) fn builtin_callable_impl_program() -> Option<Program> {
         })
         .collect();
     Some(Program {
-        expansions: Default::default(),
+        expansions: hew_parser::macro_syntax::ExpansionMap::default(),
         items,
         module_doc: None,
         module_graph: None,

@@ -40,7 +40,7 @@ fn typecheck_with_modules(root_source: &str, modules: &[(&[&str], &str)]) -> Typ
         .collect();
     items.extend(common::parse_program(root_source).items);
     let program = Program {
-        expansions: Default::default(),
+        expansions: hew_parser::macro_syntax::ExpansionMap::default(),
         items,
         module_doc: None,
         module_graph: None,

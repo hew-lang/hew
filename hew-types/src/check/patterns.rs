@@ -695,11 +695,11 @@ impl Checker {
                     if let Some((root, path)) =
                         Self::place_field(scrutinee_place.as_ref(), &field.name)
                     {
-                        self.record_pattern_place_transfer(&root, path, &field.ty, &field.span);
+                        self.record_pattern_place_transfer(root, path, &field.ty, &field.span);
                     }
                     self.check_shadowing(name, &field.span);
                     self.env.define_with_span(
-                        name.clone(),
+                        *name,
                         field.ty.clone(),
                         is_mutable,
                         field.span.clone(),
@@ -1081,7 +1081,7 @@ impl Checker {
                     return;
                 }
                 if let Some((root, path)) = scrutinee_place {
-                    self.record_pattern_place_transfer(&root, path, ty, span);
+                    self.record_pattern_place_transfer(root, path, ty, span);
                 }
                 self.check_shadowing(*name, span);
                 self.env.define_with_span(
@@ -2615,7 +2615,7 @@ impl Checker {
                     field_idx,
                     def_span: self
                         .env
-                        .lookup_ref(&binding_name)
+                        .lookup_ref(binding_name)
                         .and_then(|binding| binding.def_span.clone()),
                     binding_name: binding_name.to_string(),
                     ty,

@@ -73,7 +73,7 @@ impl Checker {
     /// partial-consume rule decides it.
     pub(in crate::check) fn reads_resource_handle_field(&self, expr: &Expr) -> bool {
         self.expr_place(expr)
-            .is_some_and(|(root, path)| self.resource_handle_owner(&root, &path).is_some())
+            .is_some_and(|(root, path)| self.resource_handle_owner(root, &path).is_some())
     }
 
     /// The depth of the nearest `#[resource]` record on `path` whose `close`
@@ -201,16 +201,16 @@ impl Checker {
         }
         if !path.is_empty() {
             if self.reject_borrowed_consumption(expr, span)
-                || self.reject_partial_place_consumption(&root, &path, span)
+                || self.reject_partial_place_consumption(root, &path, span)
             {
                 return;
             }
-            self.env.mark_place_moved(&root, path, span.clone());
+            self.env.mark_place_moved(root, path, span.clone());
             return;
         }
         let released_at = self
             .env
-            .lookup_ref(&root)
+            .lookup_ref(root)
             .and_then(|binding| binding.released_at.clone());
         if let Some(released_at) = released_at {
             let mut error = TypeError::new(
@@ -226,7 +226,7 @@ impl Checker {
             }
             self.errors.push(error);
         }
-        self.env.mark_moved(&root, span.clone());
+        self.env.mark_moved(root, span.clone());
     }
 
     /// A selected field may move only when every enclosing value supports

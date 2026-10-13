@@ -5428,6 +5428,9 @@ exist yet on some branches).
 
 ## Declarative macros
 
+For schema-driven generation with declared file inputs, see
+[source generation](guides/source-generation.md).
+
 Use [declarative macros](guides/macros.md) to generate declarations or reusable
 syntax patterns with caller-safe bindings.
 

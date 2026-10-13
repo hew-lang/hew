@@ -781,7 +781,7 @@ impl Checker {
                         let type_params = if wfn.type_params.is_empty() {
                             Vec::new()
                         } else {
-                            self.declaration_parameter_heads(&format!(
+                            self.declaration_parameter_heads(format!(
                                 "{canonical_owner}.{}",
                                 wfn.name
                             ))
@@ -1130,10 +1130,6 @@ impl Checker {
     /// Republish selected public names from an already-registered Hew source
     /// into one importing scope. This deliberately performs no declaration
     /// registration and therefore cannot create duplicate defs.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one import publication dispatcher handles every namespace without re-registering declarations"
-    )]
     pub(super) fn publish_imported_hew_bindings(
         &mut self,
         module_short: &str,
@@ -1294,7 +1290,7 @@ impl Checker {
                         continue;
                     }
                     let ty = self.resolve_registered_annotation_ty_no_holes(&cd.ty);
-                    self.register_source_constant(Some(&owner), cd, ty);
+                    self.register_source_constant(Some(owner), cd, ty);
                     let source_identity = format!("{owner}.{}", cd.name);
                     self.record_published_bare_const(cd.name.name.as_str(), &source_identity);
                     self.file_import_const_exports

@@ -1,19 +1,4 @@
-//! The closed attribute table (HEW-SPEC-2026 §12.6).
-//!
-//! The attribute set is closed: every `#[name]` the parser accepts, and every
-//! position it is legal in, is listed in [`legal_positions`]. An attribute
-//! whose name is not in the table, or that appears in a position the table
-//! does not list for it, is `E_UNKNOWN_ATTRIBUTE` (User channel) — this is
-//! the one diagnostic path every attribute-consuming call site in the parser
-//! routes through via [`Parser::validate_attributes_for`].
-//!
-//! Substrate attributes (`lang_item`, `intrinsic`, `diagnostic_item`,
-//! `overload`, `runtime_capability`, `abi`) are recognised here at the
-//! positions they occupy in `std/`; restricting them to `std/` itself is a
-//! separate, existing authority (`RESERVED_SUBSTRATE_ATTRIBUTES` in
-//! `hew-types::stdlib_authority`) that runs after parsing. The two checks
-//! compose: this table says a name+position pair is *known*, the authority
-//! check says a substrate name is only *usable* inside `std/`.
+//! Built-in attribute names and their legal positions. Other names resolve during macro expansion.
 
 #[allow(
     clippy::wildcard_imports,
@@ -108,6 +93,11 @@ fn legal_positions(name: &str) -> Option<&'static [AttrPosition]> {
     })
 }
 
+#[must_use]
+pub fn is_builtin_attribute(name: &str) -> bool {
+    legal_positions(name).is_some()
+}
+
 impl Parser<'_> {
     /// Validate literal shapes before positional strings lose their token kind.
     pub(crate) fn validate_test_attribute_arguments(
@@ -152,6 +142,37 @@ impl Parser<'_> {
     pub(crate) fn validate_attributes_for(&mut self, attrs: &[Attribute], position: AttrPosition) {
         let has_test = attrs.iter().any(|a| a.name == "test" || a.name == "bench");
         for attr in attrs {
+            if !is_builtin_attribute(&attr.name) {
+                if self.expander.is_some()
+                    && (!matches!(
+                        position,
+                        AttrPosition::FreeFn
+                            | AttrPosition::ImplMethod
+                            | AttrPosition::TraitMethod
+                            | AttrPosition::ActorMemberFn
+                    ) || attrs.iter().any(|attr| attr.name == "on"))
+                {
+                    if let [AttributeArg::Tokens(call)] = attr.args.as_slice() {
+                        let resolved = self
+                            .expander
+                            .as_ref()
+                            .unwrap()
+                            .borrow()
+                            .resolve_attribute(call, &self.macro_source);
+                        if let Err(message) = resolved {
+                            self.error_at(message, attr.span.clone());
+                            continue;
+                        }
+                    }
+                    let hint = if position == AttrPosition::ActorReceiveFn {
+                        "; use #[intercept] for receive handlers"
+                    } else {
+                        ""
+                    };
+                    self.error_at(format!("E_ATTRIBUTE_MACRO_POSITION: attribute macros require a function body{hint}"), attr.span.clone());
+                }
+                continue;
+            }
             if attr.name == "bench" && attrs.iter().any(|other| other.name == "test") {
                 self.error_at_with_kind_and_hint(
                     "a function cannot be both a test and a benchmark [E_ATTRIBUTE_ARGUMENT]"

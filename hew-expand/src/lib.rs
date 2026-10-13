@@ -1,5 +1,6 @@
 //! Expansion of parsed declarative macro fragments before semantic checking.
 
+mod attributes;
 mod matcher;
 mod tokens;
 mod transcribe;
@@ -34,11 +35,19 @@ use hew_parser::{ParseDiagnosticKind, ParseError, Severity};
 /// # Errors
 ///
 /// Returns the source and diagnostic for invalid macro definitions or expansions.
+///
+/// # Panics
+///
+/// Panics if the module graph does not contain its root module.
+#[allow(
+    clippy::result_large_err,
+    reason = "cold diagnostics retain the parser error without a separate allocation"
+)]
 pub fn expand_program(
     program: &mut Program,
     sources: BTreeMap<PathBuf, String>,
 ) -> Result<(), (PathBuf, ParseError)> {
-    let Some(graph) = program.module_graph.as_ref() else {
+    let Some(graph) = program.module_graph.as_mut() else {
         return Ok(());
     };
     let registry = Rc::new(RefCell::new(registry::Registry::new(graph, sources)));
@@ -76,10 +85,6 @@ pub fn expand_program(
         }
         replacements.insert(module.id.clone(), (items, item_sources));
     }
-    let graph = program
-        .module_graph
-        .as_mut()
-        .expect("graph remains present");
     for (id, (items, item_sources)) in replacements {
         graph.modules.get_mut(&id).expect("known module").items = items;
         graph.item_sources.insert(id.dotted(), item_sources);
@@ -99,6 +104,10 @@ pub fn expand_program(
 
 type ExpandedItems = BTreeMap<(PathBuf, usize, usize), Vec<Spanned<Item>>>;
 
+#[allow(
+    clippy::result_large_err,
+    reason = "cold diagnostics use the same parser error as expand_program"
+)]
 fn expand_item(
     item: &Spanned<Item>,
     source: &Path,
@@ -140,7 +149,7 @@ fn expand_item(
                 .get(source)
                 .and_then(|text| text.get(item.1.clone()))
                 .map(str::to_owned);
-            if let Some(text) = text.filter(|text| text.contains('!')) {
+            if let Some(text) = text.filter(|text| text.contains('!') || text.contains("#[")) {
                 let before = registry.borrow().map.expansions.len();
                 let expander: SharedExpander = registry.clone();
                 let result =

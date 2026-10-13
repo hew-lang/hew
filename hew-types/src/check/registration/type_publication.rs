@@ -2108,10 +2108,10 @@ impl Checker {
         ad: &ActorDecl,
         module_short: Option<&str>,
     ) {
-        let identity = self
-            .named_item_declaration(ad.name)
-            .map(|id| self.defs.path(id).to_string())
-            .unwrap_or_else(|| Self::actor_identity(module_short, ad.name.name.as_str()));
+        let identity = self.named_item_declaration(ad.name).map_or_else(
+            || Self::actor_identity(module_short, ad.name.name.as_str()),
+            |id| self.defs.path(id).to_string(),
+        );
         self.register_actor_decl_as(ad, &identity);
         self.known_types.insert(identity.clone());
         // A generic actor's own params (`actor Worker<T>`) are in scope for every

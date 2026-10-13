@@ -448,7 +448,7 @@ impl Checker {
             .map(|name| {
                 fields
                     .iter()
-                    .find(|field| field.name.name.as_str() == &*name)
+                    .find(|field| field.name.name.as_str() == *name)
                     .and_then(|field| field.pattern.as_ref())
                     .map_or(&WILDCARD, |(pattern, _)| pattern)
             })

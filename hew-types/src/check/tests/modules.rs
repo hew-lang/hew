@@ -707,7 +707,7 @@ fn module_graph_body_prefers_same_module_private_helper_over_global_bare_name() 
     mg.topo_order = vec![alpha_id, beta_id, root_id];
 
     let program = Program {
-        expansions: Default::default(),
+        expansions: hew_parser::macro_syntax::ExpansionMap::default(),
         module_graph: Some(mg),
         items: vec![],
         module_doc: None,
@@ -785,7 +785,7 @@ fn adopting_declaration_keeps_its_own_provenance() {
     mg.topo_order = vec![alpha_id, beta_id, root_id];
 
     let output = Checker::new(ModuleRegistry::new(vec![])).check_program(&Program {
-        expansions: Default::default(),
+        expansions: hew_parser::macro_syntax::ExpansionMap::default(),
         items: vec![],
         module_graph: Some(mg),
         module_doc: None,
@@ -890,7 +890,7 @@ fn same_module_span_colliding_drifting_declarations_conflict() {
     mg.topo_order = vec![pkg_id, root_id];
 
     let output = Checker::new(ModuleRegistry::new(vec![])).check_program(&Program {
-        expansions: Default::default(),
+        expansions: hew_parser::macro_syntax::ExpansionMap::default(),
         items: vec![],
         module_graph: Some(mg),
         module_doc: None,
@@ -1013,7 +1013,7 @@ fn module_graph_body_prefers_same_module_private_extern_over_global_bare_name() 
     mg.topo_order = vec![alpha_id, beta_id, root_id];
 
     let program = Program {
-        expansions: Default::default(),
+        expansions: hew_parser::macro_syntax::ExpansionMap::default(),
         module_graph: Some(mg),
         items: vec![],
         module_doc: None,
@@ -1129,7 +1129,7 @@ mod module_body_diagnostic_envelope {
         mg.topo_order = vec![mod_id, root_id];
 
         Program {
-            expansions: Default::default(),
+            expansions: hew_parser::macro_syntax::ExpansionMap::default(),
             module_graph: Some(mg),
             items: vec![],
             module_doc: None,
@@ -1224,7 +1224,7 @@ mod module_body_diagnostic_envelope {
             consumes_self: false,
         };
         let program = Program {
-            expansions: Default::default(),
+            expansions: hew_parser::macro_syntax::ExpansionMap::default(),
             module_graph: None,
             items: vec![(Item::Function(fn_decl), 0..20)],
             module_doc: None,
@@ -1309,7 +1309,7 @@ mod module_body_diagnostic_envelope {
         mg.topo_order = vec![alpha_id, beta_id, root_id];
 
         let program = Program {
-            expansions: Default::default(),
+            expansions: hew_parser::macro_syntax::ExpansionMap::default(),
             module_graph: Some(mg),
             items: vec![],
             module_doc: None,
@@ -1696,7 +1696,7 @@ mod warning_source_attribution {
         mg.topo_order = vec![module_id, root_id];
 
         Program {
-            expansions: Default::default(),
+            expansions: hew_parser::macro_syntax::ExpansionMap::default(),
             module_graph: Some(mg),
             items: vec![],
             module_doc: None,
@@ -1738,7 +1738,7 @@ mod warning_source_attribution {
         mg.topo_order = vec![submod_id, root_id];
 
         Program {
-            expansions: Default::default(),
+            expansions: hew_parser::macro_syntax::ExpansionMap::default(),
             module_graph: Some(mg),
             // Root-module items live in program.items (not in Module.items for root).
             items: vec![(Item::Function(main_fn), 0..10)],
@@ -1784,7 +1784,7 @@ mod warning_source_attribution {
         let main_fn = make_trivial_fn("main");
 
         let program = Program {
-            expansions: Default::default(),
+            expansions: hew_parser::macro_syntax::ExpansionMap::default(),
             module_graph: None,
             items: vec![
                 (Item::Import(import_decl), 0..20),
@@ -1957,7 +1957,7 @@ mod warning_source_attribution {
         mg.topo_order = vec![mod_a_id, mod_b_id, root_id];
 
         let program = Program {
-            expansions: Default::default(),
+            expansions: hew_parser::macro_syntax::ExpansionMap::default(),
             module_graph: Some(mg),
             items: vec![],
             module_doc: None,
@@ -2115,7 +2115,7 @@ mod warning_source_attribution {
         mg.topo_order = vec![mod_a_id, mod_b_id, root_id];
 
         let program = Program {
-            expansions: Default::default(),
+            expansions: hew_parser::macro_syntax::ExpansionMap::default(),
             module_graph: Some(mg),
             items: vec![],
             module_doc: None,
@@ -2225,7 +2225,7 @@ mod warning_source_attribution {
         mg.topo_order = vec![owner_module_b_id, root_id];
 
         let program = Program {
-            expansions: Default::default(),
+            expansions: hew_parser::macro_syntax::ExpansionMap::default(),
             module_graph: Some(mg),
             items: vec![],
             module_doc: None,
@@ -2648,7 +2648,7 @@ fn bad(r: Result<i64, string>) -> i64 fails i64 {
         mg.topo_order = vec![mymod_id, root_id];
 
         let program = Program {
-            expansions: Default::default(),
+            expansions: hew_parser::macro_syntax::ExpansionMap::default(),
             module_graph: Some(mg),
             items: vec![],
             module_doc: None,
@@ -2688,7 +2688,7 @@ fn bad(r: Result<i64, string>) -> i64 fails i64 {
     fn root_extern_fn_infer_param_fails_closed_without_source_module() {
         let extern_item = make_extern_block_with_infer_param("root_extfn");
         let program = Program {
-            expansions: Default::default(),
+            expansions: hew_parser::macro_syntax::ExpansionMap::default(),
             module_graph: None,
             items: vec![(extern_item, 0..30)],
             module_doc: None,
@@ -2821,7 +2821,7 @@ fn root_and_imported_compiles_mint_one_fn_sig_identity() {
     .unwrap();
     mg.topo_order = vec![oracle_id, root_id.clone()];
     let import_program = Program {
-        expansions: Default::default(),
+        expansions: hew_parser::macro_syntax::ExpansionMap::default(),
         module_graph: Some(mg),
         items: vec![],
         module_doc: None,
@@ -2846,7 +2846,7 @@ fn root_and_imported_compiles_mint_one_fn_sig_identity() {
         .unwrap();
     root_mg.topo_order = vec![root_id];
     let root_program = Program {
-        expansions: Default::default(),
+        expansions: hew_parser::macro_syntax::ExpansionMap::default(),
         module_graph: Some(root_mg),
         items: vec![(Item::Function(shared_helper), 0..10)],
         module_doc: None,

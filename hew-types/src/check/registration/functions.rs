@@ -115,7 +115,6 @@ impl Checker {
 
     pub(super) fn collect_item_type_param_names(&mut self, item: &Item) {
         match item {
-            Item::Macro(_) | Item::MacroCall(_) => {}
             Item::Supervisor(sd) => {
                 self.insert_type_param_names(&sd.type_params);
                 for method in &sd.methods {
@@ -216,7 +215,6 @@ impl Checker {
                     let saved_source_type_defs = std::mem::take(&mut self.source_type_defs);
                     for (item, _) in &module.items {
                         match item {
-                            Item::Macro(_) | Item::MacroCall(_) => {}
                             Item::TypeDecl(td) => {
                                 self.local_type_defs.insert(td.name.to_string());
                                 self.source_type_defs.insert(td.name.to_string());
@@ -322,7 +320,6 @@ impl Checker {
     )]
     pub(in crate::check) fn collect_function_item(&mut self, item: &Item, span: &Span) {
         match item {
-            Item::Macro(_) | Item::MacroCall(_) => {}
             Item::Function(fd) => {
                 if self.reject_protected_prelude_declaration(fd.name.name.as_str(), span) {
                     return;
@@ -334,12 +331,10 @@ impl Checker {
                 // `current_module` (None = root): it is the display/provenance
                 // axis, and the legacy root render at publication boundaries
                 // derives from it.
-                let scoped_name = self
-                    .named_item_declaration(fd.name)
-                    .map(|id| self.defs.path(id).to_string())
-                    .unwrap_or_else(|| {
-                        Self::declared_fn_identity(self.canonical_fn_owner(), fd.name.name.as_str())
-                    });
+                let scoped_name = self.named_item_declaration(fd.name).map_or_else(
+                    || Self::declared_fn_identity(self.canonical_fn_owner(), fd.name.name.as_str()),
+                    |id| self.defs.path(id).to_string(),
+                );
                 if let Some((prev_span, _)) = self.fn_def_spans.get(&scoped_name) {
                     // Root diagnostics render the bare leaf, exactly as the
                     // declaration is spelled in source.
@@ -845,7 +840,11 @@ impl Checker {
                 let owner = self.current_module.clone();
                 self.register_source_constant(owner.as_deref(), declaration, ty);
             }
-            Item::TypeAlias(_) | Item::Machine(_) | Item::Record(_) => {
+            Item::Macro(_)
+            | Item::MacroCall(_)
+            | Item::TypeAlias(_)
+            | Item::Machine(_)
+            | Item::Record(_) => {
                 // Records have no method body items in v0.5; method registration
                 // is a no-op here.  TODO(A-4): if records gain methods, register
                 // them via a `register_record_methods` pass here.
@@ -1093,12 +1092,13 @@ impl Checker {
         // identical to the key the same declaration mints when its module is
         // imported. The side registries (`fn_sig_inference_holes`,
         // `intrinsic_declarations`) are co-minted under this same key.
-        let key = declaration
-            .map(|id| self.defs.path(id).to_string())
-            .unwrap_or_else(|| {
+        let key = declaration.map_or_else(
+            || {
                 scoped_module_item_name(self.canonical_fn_owner(), name)
                     .unwrap_or_else(|| name.to_string())
-            });
+            },
+            |id| self.defs.path(id).to_string(),
+        );
         match declaration {
             Some(declaration) => self.insert_fn_sig(&key, declaration, sig),
             None => self.insert_fn_sig_at(&key, sig),

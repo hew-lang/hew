@@ -148,7 +148,11 @@ impl Parser<'_> {
                 self.validate_attributes_for(&attrs, AttrPosition::ActorMemberFn);
                 let hook_attrs: Vec<_> = attrs
                     .into_iter()
-                    .filter(|attr| is_lifecycle_hook_attr(&attr.name) || attr.name == "intercept")
+                    .filter(|attr| {
+                        is_lifecycle_hook_attr(&attr.name)
+                            || attr.name == "intercept"
+                            || !super::attributes::is_builtin_attribute(&attr.name)
+                    })
                     .collect();
                 let fn_start = self.peek_span().start;
                 self.advance();
@@ -156,7 +160,7 @@ impl Parser<'_> {
                     self.parse_function(fn_start, false, Visibility::Private, hook_attrs)
                 {
                     method.doc_comment = doc_comment;
-                    methods.push(method);
+                    methods.extend(self.expand_member_attributes(method));
                     self.refuse_mark_after_body();
                 } else {
                     // parse_function emitted its own diagnostic.  Skip to the

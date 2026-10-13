@@ -1367,7 +1367,7 @@ mod tests {
         );
         items.extend(root.program.items);
         let program = Program {
-            expansions: Default::default(),
+            expansions: hew_parser::macro_syntax::ExpansionMap::default(),
             items,
             module_doc: None,
             module_graph: None,

@@ -65,6 +65,15 @@ pub fn format_expanded_item(item: &Item, span: &Span) -> String {
     f.output
 }
 
+/// Render one expanded default trait method with hygiene contexts.
+#[must_use]
+pub fn format_expanded_trait_method(method: &TraitMethod) -> String {
+    let mut f = Formatter::new("", Vec::new());
+    f.show_contexts = true;
+    f.format_trait_method(method);
+    f.output
+}
+
 /// Render one expanded expression with hygiene contexts.
 #[must_use]
 pub fn format_expanded_expression(expr: &Expr, span: &Span) -> String {
@@ -2760,6 +2769,17 @@ impl<'a> Formatter<'a> {
                             }
                         }
                         AttributeArg::Duration(ns) => self.write(&format_duration_ns(*ns)),
+                        AttributeArg::Tokens(call) => {
+                            if let crate::macro_syntax::TokenTree::Group { children, .. } =
+                                &call.input
+                            {
+                                let mut source = String::new();
+                                for tree in children {
+                                    tree.write_source(&mut source);
+                                }
+                                self.write(source.trim());
+                            }
+                        }
                     }
                 }
                 self.write(")");

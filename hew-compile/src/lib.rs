@@ -8,27 +8,35 @@ use hew_parser::ast::{ImportDecl, Item, Program, Spanned};
 use hew_parser::module::ModulePath;
 use serde::{de::DeserializeOwned, Deserialize};
 
+/// Build identity shared by the compiler driver and its frontend consumers.
+pub const VERSION: &str = env!("HEW_VERSION");
+
 mod compile_time;
 mod coverage;
-mod deterministic_admission;
+mod host_admission;
 pub use coverage::{SourceCoverageCounter, SourceCoverageMap};
 mod host;
 
-/// Source entries checked for operations the deterministic driver cannot
-/// schedule. A dispatcher supplies each deterministic test separately so a
-/// real-time sibling does not affect its admission verdict.
+/// Source entries checked against their host-operation admission profile.
+/// Each deterministic test is checked separately from its real-time siblings.
 #[derive(Debug, Clone, Default)]
-pub enum DeterministicAdmission {
+pub enum HostAdmission {
     #[default]
     Off,
     ProcessEntry,
     Tests(Vec<hew_types::DeclarationOccurrence>),
+    /// Build-time generation, starting at `main`, with restricted host access.
+    Generate,
 }
 
-fn require_deterministic_typecheck(options: &FrontendOptions) -> Result<(), FrontendFailure> {
-    if options.no_typecheck
-        && !matches!(options.deterministic_admission, DeterministicAdmission::Off)
-    {
+fn require_host_typecheck(options: &FrontendOptions) -> Result<(), FrontendFailure> {
+    if options.no_typecheck && !matches!(options.host_admission, HostAdmission::Off) {
+        if matches!(options.host_admission, HostAdmission::Generate) {
+            return Err(FrontendFailure::coded_message(
+                "E_GENERATE_TYPECHECK_REQUIRED",
+                "generator host-operation admission requires type checking",
+            ));
+        }
         return Err(FrontendFailure::coded_message(
             "E_DETERMINISTIC_TYPECHECK_REQUIRED",
             "deterministic host-operation admission requires type checking",
@@ -86,8 +94,8 @@ pub struct FrontendOptions {
     pub entry_selection: Option<hew_types::DeclarationOccurrence>,
     /// Exact test roots for one compiled dispatcher, in selection order.
     pub test_entry_selections: Vec<hew_types::DeclarationOccurrence>,
-    /// Compile-time host-operation admission for selected deterministic roots.
-    pub deterministic_admission: DeterministicAdmission,
+    /// Compile-time host-operation admission for the selected execution profile.
+    pub host_admission: HostAdmission,
     /// The sole deterministic production peer for a selected `_test.hew`
     /// root. Arbitrary sibling discovery is intentionally not supported.
     pub companion: Option<PathBuf>,
@@ -2034,18 +2042,18 @@ pub fn typecheck_program(
     options.documents.insert(input, source);
     let _ = options.documents.read_bytes(Path::new(input));
     let options = &options;
-    require_deterministic_typecheck(options)?;
+    require_host_typecheck(options)?;
     let (result, mut diagnostics) =
         typecheck_program_with_diagnostics(program, source, input, options, None);
     if type_check_failed(&result) {
         return Err(FrontendFailure::new("type errors found", diagnostics));
     }
     if let Some(output) = result.tco.as_ref() {
-        let refused = deterministic_admission::check(program, output, source, input, options);
+        let refused = host_admission::check(program, output, source, input, options);
         if !refused.is_empty() {
             diagnostics.extend(refused);
             return Err(FrontendFailure::new(
-                "deterministic host operations found",
+                "host operations refused by the execution profile",
                 diagnostics,
             ));
         }
@@ -2085,7 +2093,7 @@ pub fn check_program(
     options.documents.insert(source_label, source);
     let _ = options.documents.read_bytes(Path::new(source_label));
     let options = &options;
-    require_deterministic_typecheck(options)?;
+    require_host_typecheck(options)?;
     let project = project_context_for_program(source, options)?;
     let mut diagnostics = Vec::new();
 
@@ -2107,12 +2115,11 @@ pub fn check_program(
         return Err(FrontendFailure::new("type errors found", diagnostics));
     }
     if let Some(output) = tcr.tco.as_ref() {
-        let refused =
-            deterministic_admission::check(&program, output, source, source_label, options);
+        let refused = host_admission::check(&program, output, source, source_label, options);
         if !refused.is_empty() {
             diagnostics.extend(refused);
             return Err(FrontendFailure::new(
-                "deterministic host operations found",
+                "host operations refused by the execution profile",
                 diagnostics,
             ));
         }
@@ -4208,7 +4215,7 @@ fn run_frontend_after_parse_with_dependency_cache(
     entry_selection: Option<hew_types::DeclarationOccurrence>,
     cache: Option<&mut hew_types::check::DependencyAnalysisCache>,
 ) -> DocumentFrontendState {
-    if let Err(failure) = require_deterministic_typecheck(options) {
+    if let Err(failure) = require_host_typecheck(options) {
         return state.stop(failure);
     }
     if let Err(failure) = resolve_imports_internal(
@@ -4250,11 +4257,11 @@ fn run_frontend_after_parse_with_dependency_cache(
         .and_then(|result| result.tco.as_ref())
     {
         let refused =
-            deterministic_admission::check(&state.program, output, &project.source, input, options);
+            host_admission::check(&state.program, output, &project.source, input, options);
         if !refused.is_empty() {
             state.diagnostics.extend(refused);
             return state.stop(FrontendFailure::message_only(
-                "deterministic host operations found",
+                "host operations refused by the execution profile",
             ));
         }
     }
@@ -4905,7 +4912,7 @@ mod tests {
             &input,
             &FrontendOptions {
                 test_entry_selections: vec![selection],
-                deterministic_admission: crate::DeterministicAdmission::Tests(vec![selection]),
+                host_admission: crate::HostAdmission::Tests(vec![selection]),
                 ..FrontendOptions::default()
             },
         )

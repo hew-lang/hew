@@ -34,6 +34,7 @@ mod diagnostic_json;
 mod doc;
 mod eval;
 mod explain_cow;
+mod generate;
 mod help;
 mod host;
 mod link;
@@ -433,7 +434,7 @@ fn emit_module_with_triple(
             address_sanitizer: link::address_sanitizer_requested(),
             debug_source: debug.then_some(source_path).flatten(),
             link_freestanding_wasm,
-            build_info: Some(env!("HEW_VERSION")),
+            build_info: Some(hew_compile::VERSION),
         },
     )
     .map_err(|error| {
@@ -2144,9 +2145,13 @@ fn cmd_fmt(a: &args::FmtArgs) {
             std::process::exit(1);
         }
 
-        let formatted = format_for_display("<stdin>", &source).unwrap_or_else(|| {
-            std::process::exit(1);
-        });
+        let formatted = if hew_pkg::generate::is_generated(&source) {
+            source.clone()
+        } else {
+            format_for_display("<stdin>", &source).unwrap_or_else(|| {
+                std::process::exit(1);
+            })
+        };
 
         if a.check {
             if formatted != source {
@@ -2204,6 +2209,9 @@ fn cmd_fmt(a: &args::FmtArgs) {
             }
         };
 
+        if hew_pkg::generate::is_generated(&source) {
+            continue;
+        }
         let Some(formatted) = format_for_display(&file, &source) else {
             had_errors = true;
             continue;
@@ -2414,6 +2422,10 @@ fn migration_files(root: &Path) -> Result<Vec<PathBuf>, String> {
 /// previews the same report without writing. Each file is replaced
 /// atomically; an I/O failure stops the run and names what was and was not
 /// written. A second run changes nothing.
+#[expect(
+    clippy::too_many_lines,
+    reason = "keeps per-file migration checks, diagnostics and write decisions together"
+)]
 fn migrate_files(files: &[PathBuf], exclude: &[PathBuf], check: bool) -> Result<bool, ()> {
     let excluded_roots = exclude
         .iter()
@@ -2449,6 +2461,9 @@ fn migrate_files(files: &[PathBuf], exclude: &[PathBuf], check: bool) -> Result<
             );
             continue;
         };
+        if hew_pkg::generate::is_generated(source) {
+            continue;
+        }
         match hew_parser::fmt::migrate_syntax(source) {
             Ok(migrated) => planned.push((file, original, migrated)),
             Err(error) => {
@@ -2854,7 +2869,7 @@ fn cmd_completions(a: &args::CompletionsArgs) {
 }
 
 fn cmd_version() {
-    println!("hew {}", env!("HEW_VERSION"));
+    println!("hew {}", hew_compile::VERSION);
 }
 
 /// `hew env`: print the resolved package-manager environment, one

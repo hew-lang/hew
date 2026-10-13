@@ -5744,29 +5744,21 @@ fn record_rest_patterns_round_trip_through_formatter() {
     );
 }
 
-// ── Closed attribute table (HEW-SPEC-2026 §12.6, issue #3261) ─────────
-//
-// These exercise `Parser::validate_attributes_for` directly through `parse`,
-// independent of the vertical-slice harness: an invented attribute name is
-// refused everywhere, a real name in the wrong position is refused too, and
-// the `#[test]`-only trio (`ignore`/`should_panic`/`serial`) is refused
-// without a co-occurring `#[test]`.
-
+// Built-in positions remain parser-owned; other names resolve after imports.
 #[test]
-fn unrecognised_attribute_name_rejected_on_free_fn() {
-    // The issue's own repro: an invented attribute name on a free function
-    // must fail closed, not disappear silently.
-    let source = "#[bogus]\nfn helper() -> i64 { 1 }\nfn main() { helper(); }";
-    let result = parse(source);
-    assert!(
-        result
-            .errors
-            .iter()
-            .any(|e| e.message.contains("unrecognised attribute `#[bogus]`")
-                && e.message.contains("E_UNKNOWN_ATTRIBUTE")),
-        "expected E_UNKNOWN_ATTRIBUTE for #[bogus], got: {:?}",
-        result.errors
-    );
+fn unresolved_attribute_arguments_retain_token_trees() {
+    for name in ["bogus", "noncancellable", "module.decorator"] {
+        let source = format!("#[{name}(1 + call(2), [3, 4])] fn helper() {{}}");
+        let result = parse(&source);
+        assert!(result.errors.is_empty(), "{:?}", result.errors);
+        let Item::Function(function) = &result.program.items[0].0 else {
+            panic!("function");
+        };
+        assert!(matches!(
+            function.attributes[0].args.as_slice(),
+            [AttributeArg::Tokens(_)]
+        ));
+    }
 }
 
 #[test]
@@ -5825,22 +5817,6 @@ fn test_trio_attrs_accepted_with_co_occurring_test_attr() {
             result.errors
         );
     }
-}
-
-#[test]
-fn noncancellable_attribute_no_longer_recognised() {
-    // `#[noncancellable]` is removed in edition 2026 (§12.6): it is now an
-    // ordinary unrecognised name, not a special-cased parse.
-    let source = "#[noncancellable]\nfn helper() {}\nfn main() { helper(); }";
-    let result = parse(source);
-    assert!(
-        result.errors.iter().any(|e| e
-            .message
-            .contains("unrecognised attribute `#[noncancellable]`")
-            && e.message.contains("E_UNKNOWN_ATTRIBUTE")),
-        "expected E_UNKNOWN_ATTRIBUTE for #[noncancellable], got: {:?}",
-        result.errors
-    );
 }
 
 #[test]

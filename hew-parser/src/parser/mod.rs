@@ -946,3 +946,5 @@ pub fn parse(source: &str) -> ParseResult {
         errors: parser.errors,
     }
 }
+
+pub use attributes::is_builtin_attribute;

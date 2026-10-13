@@ -229,7 +229,21 @@ pub enum ExpansionCategory {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AttributePattern {
+    pub name: Ident,
+    pub method: bool,
+    pub fails: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FunctionInput {
+    pub function: crate::ast::FnDecl,
+    pub tokens: Vec<TokenTree>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MacroRule {
+    pub attribute: Option<AttributePattern>,
     pub pattern: TokenTree,
     pub template: TokenTree,
     pub category: ExpansionCategory,
@@ -258,6 +272,10 @@ pub struct ExpansionInput {
 }
 
 pub trait ExpansionProvider: std::fmt::Debug {
+    /// Begin expanding a macro invocation in the requested grammar category.
+    ///
+    /// # Errors
+    /// Returns a diagnostic if resolution, matching or expansion fails.
     fn begin(
         &mut self,
         call: &MacroCall,
@@ -265,8 +283,30 @@ pub trait ExpansionProvider: std::fmt::Debug {
         source: &std::path::Path,
     ) -> Result<ExpansionInput, String>;
 
+    /// Begin expanding an attribute macro around its captured function.
+    ///
+    /// # Errors
+    /// Returns a diagnostic if resolution, matching or expansion fails.
+    fn begin_attribute(
+        &mut self,
+        call: &MacroCall,
+        function: &FunctionInput,
+        span: Span,
+        source: &std::path::Path,
+    ) -> Result<ExpansionInput, String>;
+
+    /// Resolve an attribute macro before parsing its carrier.
+    ///
+    /// # Errors
+    /// Returns a diagnostic if the path does not resolve to an attribute macro.
+    fn resolve_attribute(&self, call: &MacroCall, source: &std::path::Path) -> Result<(), String>;
+
     fn complete(&mut self);
 
+    /// Register a macro declaration encountered during expansion.
+    ///
+    /// # Errors
+    /// Returns a diagnostic if the declaration is invalid or conflicts with a name.
     fn declare(
         &mut self,
         declaration: &MacroDecl,
@@ -324,6 +364,7 @@ pub enum Origin {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Expansion {
+    pub captured_bodies: Vec<Span>,
     pub name: String,
     pub file: PathBuf,
     pub synthetic: Span,

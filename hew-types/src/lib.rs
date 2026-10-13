@@ -124,9 +124,10 @@ pub use type_facts::{
 pub use value_class::{ClassContext, ClassError, DeclarationMarker, DeclaredType, ValueClass};
 pub use vec_authority::VecElementToken;
 pub use wasm_capabilities_generated::{
-    wasm_capability_ids, DeterministicOperation, WasmCapabilityId, WasmFeatureDisposition,
+    wasm_capability_ids, HostOperation, WasmCapabilityId, WasmFeatureDisposition,
     WasmFunctionRejection, WasmModuleRejection, WasmUnsupportedFeature,
     DETERMINISTIC_ENDPOINT_REJECTIONS, DETERMINISTIC_FUNCTION_REJECTIONS,
+    GENERATE_ENDPOINT_REJECTIONS, GENERATE_FUNCTION_REJECTIONS,
     NATIVE_ONLY_WASM_FUNCTION_REJECTIONS, NATIVE_ONLY_WASM_MODULES,
     NATIVE_ONLY_WASM_MODULE_REJECTIONS,
 };

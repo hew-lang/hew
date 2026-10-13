@@ -109,9 +109,9 @@ impl Checker {
                 ));
             }
         } else if let Some((root, path)) = place {
-            self.env.discount_mutation_receiver_read(&root);
-            self.env.mark_written(&root);
-            self.reject_borrowed_parameter_mutation(&root, &path, span);
+            self.env.discount_mutation_receiver_read(root);
+            self.env.mark_written(root);
+            self.reject_borrowed_parameter_mutation(root, &path, span);
         }
     }
 

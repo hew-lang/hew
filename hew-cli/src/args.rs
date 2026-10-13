@@ -29,7 +29,7 @@ REPL commands:
 #[derive(Debug, Parser)]
 #[command(
     name = "hew",
-    version = env!("HEW_VERSION"),
+    version = hew_compile::VERSION,
     about,
     propagate_version = true
 )]
@@ -57,6 +57,8 @@ pub enum Command {
     ///
     /// Uses O0 by default; pass `--release` to use the O2 release pipeline.
     Build(BuildArgs),
+    /// Run declared source generators, or check their committed output.
+    Generate(GenerateArgs),
     /// Generate documentation.
     Doc(DocArgs),
     /// Interactive REPL or evaluate expression.
@@ -393,10 +395,10 @@ impl RunArgs {
     pub fn to_compile_options(&self) -> crate::compile::CompileOptions {
         crate::compile::CompileOptions {
             target: self.target.clone(),
-            deterministic_admission: if self.deterministic {
-                hew_compile::DeterministicAdmission::ProcessEntry
+            host_admission: if self.deterministic {
+                hew_compile::HostAdmission::ProcessEntry
             } else {
-                hew_compile::DeterministicAdmission::Off
+                hew_compile::HostAdmission::Off
             },
             ..self.common.base_compile_options()
         }
@@ -1044,6 +1046,15 @@ pub struct ExpandArgs {
     /// Select the innermost expansion at this one-based LINE:COL.
     #[arg(long)]
     pub at: Option<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct GenerateArgs {
+    /// Package directory (defaults to the enclosing package).
+    pub input: Option<PathBuf>,
+    /// Regenerate in scratch space and refuse changed output.
+    #[arg(long)]
+    pub check: bool,
 }
 
 // ---------------------------------------------------------------------------

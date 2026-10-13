@@ -115,7 +115,7 @@ fn test_yield_outside_generator() {
         consumes_self: false,
     };
     let program = Program {
-        expansions: Default::default(),
+        expansions: hew_parser::macro_syntax::ExpansionMap::default(),
         module_graph: None,
         items: vec![(Item::Function(fd), 0..30)],
         module_doc: None,
@@ -183,7 +183,7 @@ fn test_receive_gen_fn_returns_stream() {
         max_heap_bytes: None,
     };
     let program = Program {
-        expansions: Default::default(),
+        expansions: hew_parser::macro_syntax::ExpansionMap::default(),
         module_graph: None,
         items: vec![(Item::Actor(actor), 0..0)],
         module_doc: None,
@@ -445,7 +445,7 @@ fn test_stream_annotation_resolves_to_stream_type() {
     };
 
     let program = Program {
-        expansions: Default::default(),
+        expansions: hew_parser::macro_syntax::ExpansionMap::default(),
         module_graph: None,
         items: vec![(Item::Function(fn_decl), 0..0)],
         module_doc: None,
@@ -505,7 +505,7 @@ fn test_actor_stream_name_no_longer_aliases_stream() {
     };
 
     let program = Program {
-        expansions: Default::default(),
+        expansions: hew_parser::macro_syntax::ExpansionMap::default(),
         module_graph: None,
         items: vec![(Item::Function(fn_decl), 0..0)],
         module_doc: None,
@@ -572,7 +572,7 @@ fn test_stream_canonical_name_still_resolves_after_actor_stream_removal() {
     };
 
     let program = Program {
-        expansions: Default::default(),
+        expansions: hew_parser::macro_syntax::ExpansionMap::default(),
         module_graph: None,
         items: vec![(Item::Function(fn_decl), 0..0)],
         module_doc: None,

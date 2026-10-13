@@ -763,6 +763,42 @@ fn contextual_macros_native_and_vm() {
 
 #[cfg(unix)]
 #[test]
+fn attribute_macros_native_and_vm() {
+    set_test_hewpath();
+    ensure_native_toolchain();
+    ensure_parity_runner_built();
+    let mut inputs = hew_compile::SourceSet::in_memory();
+    inputs.insert(
+        "attribute_macros_library.hew",
+        include_str!("../../tests/core-acceptance/cases/attribute_macros_library.hew"),
+    );
+    assert_case_with_inputs(
+        &ParityCase {
+            test_name: "attribute_macros",
+            source_rel: "tests/core-acceptance/cases/attribute-macros.hew",
+        },
+        "",
+        inputs,
+    );
+    for (source, expected) in [
+        ("#[missing(1 + call(2), [3, 4])] fn f() {} fn main() {}", "E_UNKNOWN_ATTRIBUTE"),
+        ("#[missing] type T {} fn main() {}", "E_UNKNOWN_ATTRIBUTE"),
+        ("macro m { #[()] $f:fn => expr { 1 } } fn main() {}", "E_MACRO_BAD_CATEGORY"),
+        ("macro m { #[()] $f:fn => items { fn other() {} } } fn main() {}", "E_MACRO_NAME_CARRIER"),
+        ("macro m { #[()] $f:fn => items { fn $f.name() { loop { $f.body; break; } } } } fn main() {}", "E_MACRO_BODY_PLACEMENT"),
+        ("macro m { #[()] $f:fn fails => items { $f } } #[m] fn f() {} fn main() {}", "expected a fallible function"),
+        ("macro test { () => expr { 1 } } fn main() {}", "E_MACRO_RESERVED_NAME"),
+        ("macro m { #[()] $f:fn => items { $f } } actor A { #[m] receive fn f() {} } fn main() {}", "E_ATTRIBUTE_MACRO_POSITION"),
+    ] {
+        let analysis = hew_wasm::analyze(source).expect("browser diagnostic output");
+        assert!(analysis.contains(expected), "{expected}: {analysis}");
+        let result = compile_to_sandbox_bytecode_with_inputs(source, Some(SANDBOX_PROFILE), hew_compile::SourceSet::in_memory()).expect("frontend diagnostic output");
+        assert!(result.diagnostics.iter().any(|diagnostic| diagnostic.message.contains(expected)), "{expected}: {:?}", result.diagnostics);
+    }
+}
+
+#[cfg(unix)]
+#[test]
 fn compile_time_inputs_native_and_vm() {
     set_test_hewpath();
     ensure_native_toolchain();

@@ -2888,7 +2888,7 @@ mod utf8_floor_tests {
             .unwrap();
         graph.topo_order = vec![floor_id, root_id];
         Program {
-            expansions: Default::default(),
+            expansions: hew_parser::macro_syntax::ExpansionMap::default(),
             module_graph: Some(graph),
             ..root.program
         }

@@ -86,7 +86,7 @@ fn main() {
     graph.topo_order = vec![imported_id, root_id];
 
     Program {
-        expansions: Default::default(),
+        expansions: hew_parser::macro_syntax::ExpansionMap::default(),
         items: root.program.items,
         module_graph: Some(graph),
         ..root.program

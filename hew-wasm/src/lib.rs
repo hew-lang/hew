@@ -642,6 +642,18 @@ fn parse_and_type_check_with_inputs(
         .diagnostics
         .into_iter()
         .filter_map(|diagnostic| {
+            if let hew_compile::FrontendDiagnosticKind::Parse(error) = diagnostic.kind {
+                if parse_result
+                    .errors
+                    .iter()
+                    .any(|parsed| parsed.span == error.span && parsed.message == error.message)
+                {
+                    return None;
+                }
+                let mut converted = parse_error_to_wasm(error);
+                converted.source_module = diagnostic.filename;
+                return Some(converted);
+            }
             let hew_compile::FrontendDiagnosticKind::Message(message) = diagnostic.kind else {
                 return None;
             };

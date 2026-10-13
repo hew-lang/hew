@@ -2473,7 +2473,7 @@ impl Checker {
             }
         }
         self.declare_item_type_parameter_scopes(module, item_ordinal, item, span);
-        if matches!(item, Item::Trait(_)) {
+        if let Item::Trait(decl) = item {
             if let Some(module) = module {
                 let occurrence = crate::DeclarationOccurrence::new_with_synthetic_ordinal(
                     Some(module),
@@ -2485,6 +2485,18 @@ impl Checker {
                 if let Some(owner) = self.defs.declaration(occurrence) {
                     self.scopes
                         .declare_receiver_parameter(module, owner, span.clone());
+                    for method in decl.items.iter().filter_map(|item| match item {
+                        hew_parser::ast::TraitItem::Method(method) => Some(method),
+                        hew_parser::ast::TraitItem::AssociatedType { .. } => None,
+                    }) {
+                        if method.span.start < span.start || method.span.end > span.end {
+                            self.scopes.declare_receiver_parameter(
+                                module,
+                                owner,
+                                method.span.clone(),
+                            );
+                        }
+                    }
                 }
             }
         }
@@ -2611,6 +2623,14 @@ impl Checker {
                         &method.span,
                         method.type_params.as_deref().unwrap_or_default(),
                     );
+                    if method.span.start < span.start || method.span.end > span.end {
+                        declare(
+                            Kind::Trait,
+                            0,
+                            &method.span,
+                            decl.type_params.as_deref().unwrap_or_default(),
+                        );
+                    }
                 }
             }
             Item::Actor(decl) => {
@@ -2630,6 +2650,9 @@ impl Checker {
                         &method.fn_span,
                         method.type_params.as_deref().unwrap_or_default(),
                     );
+                    if method.fn_span.start < span.start || method.fn_span.end > span.end {
+                        declare(Kind::Actor, 0, &method.fn_span, &decl.type_params);
+                    }
                 }
             }
             Item::Supervisor(decl) => {

@@ -627,7 +627,7 @@ pub fn sha256_prefixed(data: &[u8]) -> String {
     format_sha256(&Sha256::digest(data))
 }
 
-fn format_sha256(hash: &[u8]) -> String {
+pub(crate) fn format_sha256(hash: &[u8]) -> String {
     use std::fmt::Write as _;
 
     let mut hex = String::with_capacity(hash.len() * 2);

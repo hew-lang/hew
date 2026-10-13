@@ -62,6 +62,10 @@ pub(crate) fn rename_error_to_jsonrpc(
     }
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "keeps checked identity and ordered source-location fallbacks in one request"
+)]
 pub(crate) fn goto_definition(
     server: &HewLanguageServer,
     params: &GotoDefinitionParams,

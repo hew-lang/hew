@@ -1,4 +1,7 @@
-use super::*;
+use super::{
+    Arc, Expr, Fragment, FragmentInputs, FragmentKind, Literal, ParseError, ParseResult, Parser,
+    Pattern, Rc, Span, Spanned, Token, TokenContexts, TypeExpr, UnaryOp,
+};
 
 /// A parsed grammar fragment and the byte boundary it consumed.
 #[derive(Debug)]
@@ -112,7 +115,10 @@ impl Parser<'_> {
             Fragment::Expr(expression) | Fragment::Literal(expression) => expression,
             Fragment::Block((block, span)) => (Expr::Block(block), span),
             Fragment::Ident(_) => return Ok(None),
-            _ => return Err(self.invalid_fragment_position(&fragment, "an expression")),
+            _ => {
+                self.invalid_fragment_position(&fragment, "an expression");
+                return Err(());
+            }
         };
         self.consume_fragment(&expression.1);
         if let Some(expander) = self.expander.as_ref() {
@@ -143,7 +149,10 @@ impl Parser<'_> {
         let pattern = match fragment {
             Fragment::Pat(pattern) => pattern,
             Fragment::Ident(_) | Fragment::Literal(_) => return Ok(None),
-            _ => return Err(self.invalid_fragment_position(&fragment, "a pattern")),
+            _ => {
+                self.invalid_fragment_position(&fragment, "a pattern");
+                return Err(());
+            }
         };
         self.consume_fragment(&pattern.1);
         Ok(Some(pattern))
@@ -156,7 +165,10 @@ impl Parser<'_> {
         let ty = match fragment {
             Fragment::Ty(ty) => ty,
             Fragment::Ident(_) => return Ok(None),
-            _ => return Err(self.invalid_fragment_position(&fragment, "a type")),
+            _ => {
+                self.invalid_fragment_position(&fragment, "a type");
+                return Err(());
+            }
         };
         self.consume_fragment(&ty.1);
         Ok(Some(ty))

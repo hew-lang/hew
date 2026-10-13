@@ -113,8 +113,7 @@ impl Checker {
         let Some((root, path)) = self.expr_place(expr) else {
             return;
         };
-        if self.is_current_closure_capture(&root) || !self.env.place_borrows_parameter(&root, &path)
-        {
+        if self.is_current_closure_capture(root) || !self.env.place_borrows_parameter(root, &path) {
             return;
         }
         let parameters = self
@@ -147,7 +146,7 @@ impl Checker {
             return Some(span.clone());
         }
         let (root, path) = self.expr_place(expr)?;
-        let binding = self.env.lookup_ref(&root)?;
+        let binding = self.env.lookup_ref(root)?;
         if let Some(field) = path.first() {
             if crate::ResolvedTy::from_ty(&self.subst.resolve(&binding.ty))
                 .is_ok_and(|ty| crate::actor_protocol::is_interceptor_view(&ty, field))
@@ -700,8 +699,8 @@ impl Checker {
                         }
                     }
                     if let Some((root, _)) = place {
-                        self.env.discount_mutation_receiver_read(&root);
-                        self.env.mark_written(&root);
+                        self.env.discount_mutation_receiver_read(root);
+                        self.env.mark_written(root);
                     }
                 } else {
                     let error = place.as_ref().and_then(|(root, _)| self.private_capture_mutation_error(root, &callee.1))
@@ -781,7 +780,7 @@ impl Checker {
         let Some((root, path)) = self.expr_place(expr) else {
             return false;
         };
-        self.reject_borrowed_place_consumption(&root, &path, span)
+        self.reject_borrowed_place_consumption(root, &path, span)
     }
 
     /// The same refusal keyed by the place itself, for consuming uses that
@@ -933,10 +932,10 @@ impl Checker {
         } else if let Some((root, path)) = self.expr_place(&receiver.0) {
             if self
                 .env
-                .place_move_conflict(&root, &path)
+                .place_move_conflict(root, &path)
                 .is_some_and(|(kind, _, _)| kind == crate::env::PlaceConflict::WholeOfPartial)
             {
-                self.report_place_use_after_move(&root, &path, &receiver.1);
+                self.report_place_use_after_move(root, &path, &receiver.1);
             }
         }
     }

@@ -102,7 +102,7 @@ fn multi_module_program(root_src: &str, modules: &[(&str, &str)]) -> Program {
         })
         .expect("root module");
     Program {
-        expansions: Default::default(),
+        expansions: hew_parser::macro_syntax::ExpansionMap::default(),
         items: root_items,
         module_graph: Some(graph),
         ..root.program

@@ -43,7 +43,7 @@ fn program_with_module(mod_path: &[&str], module_source: &str) -> hew_parser::as
     mg.topo_order = vec![mod_id, root_id];
 
     hew_parser::ast::Program {
-        expansions: Default::default(),
+        expansions: hew_parser::macro_syntax::ExpansionMap::default(),
         module_graph: Some(mg),
         items: vec![],
         module_doc: None,
@@ -154,7 +154,7 @@ fn user_code_unused_variable_still_warns_with_stdlib_present() {
     mg.topo_order = vec![mod_id, root_id];
 
     let program = hew_parser::ast::Program {
-        expansions: Default::default(),
+        expansions: hew_parser::macro_syntax::ExpansionMap::default(),
         module_graph: Some(mg),
         items: root_parsed.program.items,
         module_doc: None,

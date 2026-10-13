@@ -1,0 +1,93 @@
+import attribute_macros_library as wrappers;
+import attribute_macros_library.{layer as observed};
+
+macro forward {
+    #[()] $m:method => items {
+        $m.vis fn $m.name $m.generics ($m.params) $m.ret $m.where { self.once($m.args) }
+        fn once $m.generics ($m.params) $m.ret $m.where $m.body
+    }
+    #[()] $f:fn => items {
+        $f.vis fn $f.name $f.generics ($f.params) $f.ret $f.where { once($f.args) }
+        fn once $f.generics ($f.params) $f.ret $f.where $f.body
+    }
+}
+macro fallible {
+    #[()] $f:fn fails => items {
+        $f.vis fn $f.name $f.generics ($f.params) $f.ret $f.where { $f.body }
+    }
+}
+macro mixed {
+    #[()] $f:fn => items { $f }
+    ($value:expr) => expr { $value + 1 }
+}
+
+macro nested {
+    #[()] $f:fn => items { #[observed("generated")] $f }
+}
+macro receiver_only {
+    #[()] $m:method => items { fn $m.name($m.receiver) $m.ret { $m.body } }
+}
+#[observed("pending")]
+#[nested]
+fn nested_answer() -> i64 { return 7; }
+
+#[wrappers.layer("outer")]
+#[observed("inner")]
+fn answer(value: i64) -> i64 { return value + 1; }
+
+#[forward]
+fn identity<T>(value: T) -> T where T: Clone { return value; }
+
+#[fallible]
+#[observed("fallible")]
+fn checked(value: i64) -> i64 fails string {
+    if value < 0 { return error "negative"; }
+    let parsed = ok(value)?;
+    return parsed + 1;
+}
+fn ok(value: i64) -> i64 fails string { value }
+
+type Counter { value: i64; }
+impl Counter {
+    #[forward]
+    fn read(self, increment: i64) -> i64 { return self.value + increment; }
+    #[receiver_only]
+    fn increment(var self) -> i64 { self.value += 1; return self.value; }
+    fn ordinary_increment(var self) -> i64 { { self.value += 1; return self.value; } }
+}
+trait DefaultAnswer {
+    #[observed("trait")]
+    fn[suspends] answer(self) -> i64 { return 42; }
+}
+impl DefaultAnswer for Counter {}
+
+actor Worker {
+    #[observed("actor")]
+    fn local() -> i64 { return 42; }
+    receive fn answer() -> i64 { local() }
+}
+
+#[mixed]
+gen fn values() -> i64 { yield 5; }
+
+#[test]
+#[mixed]
+fn retained_test() { assert(answer(41) == 42); }
+
+fn main() {
+    println(answer(41));
+    println(identity("generic"));
+    println(checked(41).expect("success"));
+    println(checked(-1).is_err());
+    var counter = Counter { value: 40 };
+    println(counter.read(2));
+    println(counter.increment());
+    println(counter.ordinary_increment());
+    println(counter.answer());
+    let worker = spawn Worker;
+    println(worker.answer().expect("reply"));
+    println(mixed!(41));
+    println(nested_answer());
+    let stream = values();
+    println(match stream.next() { .Some(value) => value, .None => 0 });
+}

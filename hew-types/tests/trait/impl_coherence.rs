@@ -126,7 +126,7 @@ fn canonical_io_lazy_registration_completes_impl_identities() {
         .expect("canonical io fixture");
     graph.topo_order = vec![module_id, root_id];
     let program = Program {
-        expansions: Default::default(),
+        expansions: hew_parser::macro_syntax::ExpansionMap::default(),
         items: vec![],
         module_graph: Some(graph),
         module_doc: None,

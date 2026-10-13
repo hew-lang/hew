@@ -16,6 +16,7 @@ pub struct Capture {
 
 #[derive(Debug, Clone, Default)]
 pub struct Captures {
+    pub(crate) function: Option<hew_parser::macro_syntax::FunctionInput>,
     pub(crate) values: HashMap<Symbol, Vec<Capture>>,
     pub(crate) repetitions: HashMap<usize, usize>,
 }
@@ -109,6 +110,7 @@ enum Element {
 
 #[derive(Debug, Clone)]
 pub struct Pattern {
+    pub(crate) attribute: Option<hew_parser::macro_syntax::AttributePattern>,
     elements: Vec<Element>,
     pub(crate) captures: HashMap<Symbol, CaptureSpec>,
     repetitions: usize,
@@ -130,6 +132,7 @@ impl Pattern {
             return Err(error(tree, "a macro pattern must use parentheses"));
         };
         let mut pattern = Self {
+            attribute: None,
             elements: Vec::new(),
             captures: HashMap::new(),
             repetitions: 0,
@@ -157,7 +160,10 @@ impl Pattern {
     }
 
     pub(crate) fn placeholders(&self) -> Captures {
-        let mut captures = Captures::default();
+        let mut captures = Captures {
+            function: self.attribute.as_ref().map(crate::attributes::placeholder),
+            ..Captures::default()
+        };
         for (&name, spec) in &self.captures {
             let text = match spec.kind {
                 FragmentKind::Ident => format!("__capture_{name}"),
@@ -186,6 +192,7 @@ impl Pattern {
         captures
     }
 
+    #[allow(clippy::too_many_lines, reason = "one cursor-driven pattern grammar")]
     fn compile_sequence(
         &mut self,
         trees: &[TokenTree],
@@ -363,6 +370,10 @@ fn match_sequence(
     result
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "backtracking shares one capture checkpoint state"
+)]
 fn match_sequence_inner(
     mut elements: &[Element],
     input: &[TokenTree],

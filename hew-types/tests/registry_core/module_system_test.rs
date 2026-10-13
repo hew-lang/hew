@@ -131,7 +131,7 @@ fn test_module_graph_preserved_through_pipeline() {
 
     // Attach graph to a program and run type checker — must not panic
     let program = Program {
-        expansions: Default::default(),
+        expansions: hew_parser::macro_syntax::ExpansionMap::default(),
         items: vec![],
         module_doc: None,
         module_graph: Some(graph),
@@ -159,7 +159,7 @@ fn test_qualified_name_resolution() {
     );
 
     let program = Program {
-        expansions: Default::default(),
+        expansions: hew_parser::macro_syntax::ExpansionMap::default(),
         items: vec![(Item::Import(import), 0..0)],
         module_doc: None,
         module_graph: None,
@@ -310,7 +310,7 @@ fn test_private_items_not_visible() {
     );
 
     let program = Program {
-        expansions: Default::default(),
+        expansions: hew_parser::macro_syntax::ExpansionMap::default(),
         items: vec![(Item::Import(import), 0..0)],
         module_doc: None,
         module_graph: None,
@@ -368,7 +368,7 @@ fn test_pub_type_accessible_qualified() {
     );
 
     let program = Program {
-        expansions: Default::default(),
+        expansions: hew_parser::macro_syntax::ExpansionMap::default(),
         items: vec![(Item::Import(import), 0..0)],
         module_doc: None,
         module_graph: None,
@@ -432,7 +432,7 @@ fn test_pub_type_import_coexists_with_local_same_name() {
     );
 
     let program = Program {
-        expansions: Default::default(),
+        expansions: hew_parser::macro_syntax::ExpansionMap::default(),
         items: vec![
             (Item::TypeDecl(local_type), 0..0),
             (Item::Import(import), 0..0),
@@ -499,7 +499,7 @@ fn two_modules_export_same_type_name_coexist() {
         vec![(Item::TypeDecl(pub_struct("Value")), 0..0)],
     );
     let program = Program {
-        expansions: Default::default(),
+        expansions: hew_parser::macro_syntax::ExpansionMap::default(),
         items: vec![
             (Item::Import(import_a), 0..0),
             (Item::Import(import_b), 0..0),
@@ -541,7 +541,7 @@ fn same_module_duplicate_type_name_still_errors() {
         ],
     );
     let program = Program {
-        expansions: Default::default(),
+        expansions: hew_parser::macro_syntax::ExpansionMap::default(),
         items: vec![(Item::Import(import), 0..0)],
         module_doc: None,
         module_graph: None,
@@ -574,7 +574,7 @@ fn qualified_same_name_types_resolve_to_own_module_def() {
         vec![(Item::TypeDecl(pub_struct("Value")), 0..0)],
     );
     let program = Program {
-        expansions: Default::default(),
+        expansions: hew_parser::macro_syntax::ExpansionMap::default(),
         items: vec![
             (Item::Import(import_a), 0..0),
             (Item::Import(import_b), 0..0),
@@ -650,7 +650,7 @@ fn qualified_param_type_carries_module_into_resolved_sig() {
         consumes_self: false,
     };
     let program = Program {
-        expansions: Default::default(),
+        expansions: hew_parser::macro_syntax::ExpansionMap::default(),
         items: vec![
             (Item::Import(import_a), 0..0),
             (Item::Import(import_b), 0..0),
@@ -823,7 +823,7 @@ fn same_bare_name_member_field_binds_to_own_module_identity() {
             })
             .collect();
         let program = Program {
-            expansions: Default::default(),
+            expansions: hew_parser::macro_syntax::ExpansionMap::default(),
             items,
             module_doc: None,
             module_graph: Some(graph),
@@ -882,7 +882,7 @@ fn same_bare_name_types_register_independent_divergent_field_layouts() {
         )],
     );
     let program = Program {
-        expansions: Default::default(),
+        expansions: hew_parser::macro_syntax::ExpansionMap::default(),
         items: vec![
             (Item::Import(import_narrow), 0..0),
             (Item::Import(import_wide), 0..0),
@@ -968,7 +968,7 @@ fn colliding_unqualified_imports_are_typed_error() {
         consumes_self: false,
     };
     let program = Program {
-        expansions: Default::default(),
+        expansions: hew_parser::macro_syntax::ExpansionMap::default(),
         items: vec![
             (Item::Import(import_a), 0..0),
             (Item::Import(import_b), 0..0),
@@ -1048,7 +1048,7 @@ fn unqualified_unpublished_type_is_not_in_scope_not_ambiguous() {
         consumes_self: false,
     };
     let program = Program {
-        expansions: Default::default(),
+        expansions: hew_parser::macro_syntax::ExpansionMap::default(),
         items: vec![
             (Item::Import(import_a), 0..0),
             (Item::Import(import_b), 0..0),
@@ -1141,7 +1141,7 @@ fn test_two_modules_same_fn_no_collision() {
     );
 
     let program = Program {
-        expansions: Default::default(),
+        expansions: hew_parser::macro_syntax::ExpansionMap::default(),
         items: vec![
             (Item::Import(import_a), 0..0),
             (Item::Import(import_b), 0..0),
@@ -1244,7 +1244,7 @@ fn test_actor_bare_import_registers_type_and_methods() {
     );
 
     let program = Program {
-        expansions: Default::default(),
+        expansions: hew_parser::macro_syntax::ExpansionMap::default(),
         items: vec![(Item::Import(import), 0..0)],
         module_doc: None,
         module_graph: None,
@@ -1302,7 +1302,7 @@ fn test_actor_selected_import_registers_unqualified() {
     );
 
     let program = Program {
-        expansions: Default::default(),
+        expansions: hew_parser::macro_syntax::ExpansionMap::default(),
         items: vec![(Item::Import(import), 0..0)],
         module_doc: None,
         module_graph: None,
@@ -1345,7 +1345,7 @@ fn test_actor_named_import_selective() {
     );
 
     let program = Program {
-        expansions: Default::default(),
+        expansions: hew_parser::macro_syntax::ExpansionMap::default(),
         items: vec![(Item::Import(import), 0..0)],
         module_doc: None,
         module_graph: None,
@@ -1386,7 +1386,7 @@ fn test_actor_multiple_receive_fns() {
     );
 
     let program = Program {
-        expansions: Default::default(),
+        expansions: hew_parser::macro_syntax::ExpansionMap::default(),
         items: vec![(Item::Import(import), 0..0)],
         module_doc: None,
         module_graph: None,
@@ -1419,7 +1419,7 @@ fn test_actor_and_function_coexist_in_module() {
     );
 
     let program = Program {
-        expansions: Default::default(),
+        expansions: hew_parser::macro_syntax::ExpansionMap::default(),
         items: vec![(Item::Import(import), 0..0)],
         module_doc: None,
         module_graph: None,
@@ -1464,7 +1464,7 @@ fn test_module_graph_same_fn_different_modules_no_collision() {
     graph.compute_topo_order().expect("no cycles");
 
     let program = Program {
-        expansions: Default::default(),
+        expansions: hew_parser::macro_syntax::ExpansionMap::default(),
         items: vec![],
         module_doc: None,
         module_graph: Some(graph),
@@ -1500,7 +1500,7 @@ fn test_unresolved_import_fail_closed() {
     };
 
     let program = Program {
-        expansions: Default::default(),
+        expansions: hew_parser::macro_syntax::ExpansionMap::default(),
         items: vec![(Item::Import(import), 0..20)],
         module_doc: None,
         module_graph: None,
@@ -1527,7 +1527,7 @@ fn test_import_with_resolved_items_is_not_unresolved() {
     let import = make_user_import(&["myapp", "utils"], None, vec![]);
 
     let program = Program {
-        expansions: Default::default(),
+        expansions: hew_parser::macro_syntax::ExpansionMap::default(),
         items: vec![(Item::Import(import), 0..20)],
         module_doc: None,
         module_graph: None,

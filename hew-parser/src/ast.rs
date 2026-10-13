@@ -288,6 +288,8 @@ pub struct Program {
 /// A single attribute argument — either positional or key-value.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum AttributeArg {
+    /// Unresolved macro attribute arguments, retaining syntax contexts.
+    Tokens(crate::macro_syntax::MacroCall),
     /// Positional argument, e.g. `camelCase` in `#[json(camelCase)]`.
     Positional(String),
     /// Key-value argument, e.g. `since = 1` in `#[wire(since = 1)]`.
@@ -304,7 +306,7 @@ impl AttributeArg {
         match self {
             AttributeArg::Positional(s) => s,
             AttributeArg::KeyValue { value, .. } => value,
-            AttributeArg::Duration(_) => "",
+            AttributeArg::Duration(_) | AttributeArg::Tokens(_) => "",
         }
     }
 

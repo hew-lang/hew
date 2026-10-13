@@ -353,10 +353,10 @@ impl Checker {
         decl: &hew_parser::ast::TypeAliasDecl,
         span: &Span,
     ) {
-        let path = self
-            .named_item_declaration(decl.name)
-            .map(|id| self.defs.path(id).to_string())
-            .unwrap_or_else(|| decl.name.to_string());
+        let path = self.named_item_declaration(decl.name).map_or_else(
+            || decl.name.to_string(),
+            |id| self.defs.path(id).to_string(),
+        );
         let Some(declaration) = self.require_declaration_path(&path, span) else {
             return;
         };
@@ -710,8 +710,7 @@ impl Checker {
 
         let canonical_name = self
             .type_declaration_identity(td)
-            .map(|id| self.defs.path(id).to_string())
-            .unwrap_or_else(|| td.name.to_string());
+            .map_or_else(|| td.name.to_string(), |id| self.defs.path(id).to_string());
         let stored_key = self.authoritative_type_def_key(&canonical_name);
         let Some(stored) = self.type_def_at(&stored_key) else {
             return;
@@ -1006,8 +1005,7 @@ impl Checker {
         // leaving the gate to read whichever module won the bare-key race.
         let canonical_name = self
             .type_declaration_identity(td)
-            .map(|id| self.defs.path(id).to_string())
-            .unwrap_or_else(|| td.name.to_string());
+            .map_or_else(|| td.name.to_string(), |id| self.defs.path(id).to_string());
         let guard_key = canonical_name.clone();
         if self.type_def_at(guard_key.as_str()).is_some() {
             return;
@@ -1328,8 +1326,7 @@ impl Checker {
         }
         let canonical_name = self
             .type_declaration_identity(td)
-            .map(|id| self.defs.path(id).to_string())
-            .unwrap_or_else(|| td.name.to_string());
+            .map_or_else(|| td.name.to_string(), |id| self.defs.path(id).to_string());
         let Some(head) = self.nominal_head_for_key(&canonical_name) else {
             // A rejected duplicate declaration has no owner to register.
             let span = self
@@ -1596,8 +1593,7 @@ impl Checker {
             .collect();
         let declaration_name = self
             .named_item_declaration(rd.name)
-            .map(|id| self.defs.path(id).to_string())
-            .unwrap_or_else(|| rd.name.to_string());
+            .map_or_else(|| rd.name.to_string(), |id| self.defs.path(id).to_string());
         let return_type = self.named_ty_for_key(&declaration_name, enum_return_args);
 
         let mut fields: HashMap<String, Ty> = HashMap::new();

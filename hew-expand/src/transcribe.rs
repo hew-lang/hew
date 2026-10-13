@@ -23,6 +23,7 @@ pub struct TokenOrigin {
 
 #[derive(Debug)]
 pub struct Generated {
+    pub captured_bodies: Vec<Span>,
     pub source: String,
     pub offset: usize,
     pub contexts: Arc<TokenContexts>,
@@ -53,6 +54,7 @@ pub fn transcribe(
     let mut writer = Writer {
         pattern,
         captures,
+        captured_bodies: Vec::new(),
         context,
         remaining_nodes,
         source: String::new(),
@@ -63,6 +65,7 @@ pub fn transcribe(
     };
     writer.template_sequence(children, None)?;
     Ok(Generated {
+        captured_bodies: writer.captured_bodies,
         source: writer.source,
         offset,
         contexts: Arc::new(writer.contexts),
@@ -72,6 +75,7 @@ pub fn transcribe(
 }
 
 struct Writer<'a> {
+    captured_bodies: Vec<Span>,
     pattern: &'a Pattern,
     captures: &'a Captures,
     context: SyntaxContext,
@@ -84,6 +88,7 @@ struct Writer<'a> {
 }
 
 impl Writer<'_> {
+    #[allow(clippy::too_many_lines, reason = "one cursor-driven template grammar")]
     fn template_sequence(
         &mut self,
         trees: &[TokenTree],
@@ -128,6 +133,40 @@ impl Writer<'_> {
                 continue;
             }
             let name = capture_name(next)?;
+            if let Some(spec) = self
+                .pattern
+                .attribute
+                .as_ref()
+                .filter(|spec| spec.name.name == name)
+            {
+                let input = self
+                    .captures
+                    .function
+                    .as_ref()
+                    .ok_or_else(|| error(next, "missing function capture"))?;
+                let projection = if trees.get(cursor + 2).and_then(spelling) == Some(".") {
+                    Some(
+                        trees
+                            .get(cursor + 3)
+                            .and_then(spelling)
+                            .ok_or_else(|| error(next, "expected function projection"))?,
+                    )
+                } else {
+                    None
+                };
+                let tokens = crate::attributes::projection(input, spec, projection, next)?;
+                self.leading(tree.leading());
+                let start = self.offset + self.source.len();
+                for (index, token) in tokens.iter().enumerate() {
+                    self.capture_tree(token, index == 0)?;
+                }
+                if projection == Some("body") {
+                    self.captured_bodies
+                        .push(start..self.offset + self.source.len());
+                }
+                cursor += if projection.is_some() { 4 } else { 2 };
+                continue;
+            }
             let spec = self
                 .pattern
                 .captures
@@ -221,7 +260,18 @@ impl Writer<'_> {
                 );
             }
             TokenTree::Token { spelling, span, .. } => {
-                self.token(spelling, span.clone(), self.context, OriginKind::Template);
+                let context = if spelling == "self" {
+                    self.captures
+                        .function
+                        .as_ref()
+                        .and_then(|input| {
+                            input.function.params.iter().find(|param| param.is_receiver)
+                        })
+                        .map_or(self.context, |param| param.name.ctx)
+                } else {
+                    self.context
+                };
+                self.token(spelling, span.clone(), context, OriginKind::Template);
             }
             TokenTree::Group {
                 delimiter,
@@ -384,7 +434,7 @@ impl Writer<'_> {
             } else {
                 match tree {
                     TokenTree::Group { children, .. } => {
-                        self.collect_repetition_groups(children, groups)?
+                        self.collect_repetition_groups(children, groups)?;
                     }
                     TokenTree::Interpolated { expressions, .. } => {
                         for (_, children) in expressions {

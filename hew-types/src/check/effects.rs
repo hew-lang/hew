@@ -540,7 +540,7 @@ impl Checker {
                 let Some((root, path)) = self.expr_place(&target.0) else {
                     return;
                 };
-                let Some(binding) = self.env.lookup_ref(&root).map(|binding| binding.id) else {
+                let Some(binding) = self.env.lookup_ref(root).map(|binding| binding.id) else {
                     return;
                 };
                 let origin = self.expression_callable_origin(&value.0, &value.1);

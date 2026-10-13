@@ -2,6 +2,7 @@
 
 mod analysis;
 mod convert;
+mod generation;
 mod handlers;
 mod hierarchy;
 mod navigation;
@@ -141,6 +142,7 @@ const TOKEN_MODIFIERS: &[SemanticTokenModifier] = &[
     SemanticTokenModifier::READONLY,    // bit 1
 ];
 const RUN_TEST_COMMAND: &str = "hew.runTest";
+const GENERATE_COMMAND: &str = "hew.generate";
 const REMOVE_UNUSED_IMPORTS_KIND: &str = "source.removeUnusedImports";
 
 fn modifier_bit(m: &SemanticTokenModifier) -> u32 {
@@ -243,7 +245,7 @@ fn build_server_capabilities() -> ServerCapabilities {
             resolve_provider: Some(false),
         }),
         execute_command_provider: Some(ExecuteCommandOptions {
-            commands: vec![RUN_TEST_COMMAND.to_string()],
+            commands: vec![RUN_TEST_COMMAND.to_string(), GENERATE_COMMAND.to_string()],
             work_done_progress_options: WorkDoneProgressOptions::default(),
         }),
         workspace_symbol_provider: Some(OneOf::Left(true)),
@@ -796,24 +798,26 @@ impl LanguageServer for HewLanguageServer {
         &self,
         params: tower_lsp_server::ls_types::DidChangeWatchedFilesParams,
     ) {
-        let changed: HashSet<_> = params
-            .changes
-            .into_iter()
-            .map(|event| source_file_key(&event.uri))
-            .collect();
+        let changed: HashSet<_> = params.changes.into_iter().map(|event| event.uri).collect();
+        let changed_paths = changed
+            .iter()
+            .filter_map(uri::FileUriExt::to_checked_file_path)
+            .map(|path| workspace::normalize_workspace_path(&path))
+            .collect::<HashSet<_>>();
+        let changed_keys: HashSet<_> = changed.iter().map(source_file_key).collect();
         let dependents: Vec<_> = self
             .documents
             .iter()
             .filter_map(|document| {
-                document
-                    .dependency_uris
-                    .as_ref()
-                    .is_some_and(|inputs| {
-                        inputs
-                            .iter()
-                            .any(|uri| changed.contains(&source_file_key(uri)))
-                    })
-                    .then(|| (document.key().clone(), document.source.clone()))
+                (document.dependency_uris.as_ref().is_some_and(|inputs| {
+                    inputs
+                        .iter()
+                        .any(|uri| changed_keys.contains(&source_file_key(uri)))
+                }) || document
+                    .key()
+                    .to_checked_file_path()
+                    .is_some_and(|path| generation::affected_by(&path, &changed_paths)))
+                .then(|| (document.key().clone(), document.source.clone()))
             })
             .collect();
         for (uri, source) in dependents {
@@ -3122,7 +3126,10 @@ impl Worker {
             .execute_command_provider
             .expect("execute command support should be advertised")
             .commands;
-        assert_eq!(commands, vec![RUN_TEST_COMMAND.to_string()]);
+        assert_eq!(
+            commands,
+            vec![RUN_TEST_COMMAND.to_string(), GENERATE_COMMAND.to_string()]
+        );
     }
 
     #[test]

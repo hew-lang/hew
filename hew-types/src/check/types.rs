@@ -4395,7 +4395,7 @@ impl Checker {
     )]
     pub fn new(module_registry: ModuleRegistry) -> Self {
         Self {
-            expansions: Default::default(),
+            expansions: std::sync::Arc::default(),
             input_provider: None,
             input_references: HashMap::new(),
             compile_time_values: HashMap::new(),

@@ -274,7 +274,7 @@ Each module's README states its own scope. The doctrine here is about
   runtime owns this. Your message types compile through the runtime's
   CBOR envelope automatically. User code does not import `envelope.rs`.
 - **Talking to a non-Hew consumer that wants to read your message
-  types:** see §3 — this is consumer-interop, deferred.
+  types:** see §3 for declared source-generation steps.
 
 ### Anti-pattern: do not look for codecs in `std.encoding.wire`
 
@@ -288,48 +288,24 @@ and the tagged-schema layer. Code that needs wire bytes or text calls
 
 ---
 
-## 3. Consumer interop tooling — deferred to v0.5.1+
+## 3. Consumer interop tooling
 
-### Decision
+Schema-to-Hew generators are ordinary Hew programs declared through
+`[[generate]]` in `hew.toml`. `hew generate` owns inputs, output directories,
+content stamps, formatting and scratch-space verification. Generated files are
+ordinary source, shipped in package archives; registry consumers do not execute
+the generator.
 
-OpenAPI generators, `proto-gen`-style toolchains, and any other
-"schema-first generator that produces Hew types from a non-Hew schema"
-surface are **out of scope** for v0.5.
+The reference JSON Schema generator in `examples/generate/jsonschema` covers
+object records with scalar properties and optional fields, then decodes a JSON
+document into its generated record. It makes no claim to implement the entire
+JSON Schema standard. OpenAPI and Protobuf service generators can use the same
+package mechanism when implemented; their support is not implied by the driver.
 
-> **WHEN-obsolete:** when a v0.5.1+ consumer-interop effort lands. That
-> effort's plan must reference this section by name and state which of
-> {OpenAPI, gRPC/Protobuf service stubs, AsyncAPI, JSON Schema} it
-> commits to.
->
-> **WHAT-real-solution-looks-like:** a `hew gen` (or equivalent)
-> command that consumes a non-Hew schema file and emits Hew type
-> declarations under a stable module layout, with tests covering at
-> least one round-trip from external schema → generated Hew types →
-> emitted wire bytes that the external ecosystem accepts.
-
-### Why the scope cut
-
-- v0.5 is the substrate cutover. Re-introducing a schema-driven code
-  generator (the path HBF + the retired C++/MLIR codegen represented)
-  is the surface we deliberately collapsed. Adding a separate
-  consumer-interop generator in the same release would re-open that
-  surface under a different name.
-- The existing stdlib `protobuf` module is **wire-level** (encode and
-  decode the bytes), not **schema-level** (consume `.proto` files and
-  emit types). The first is small and contained. The second is a
-  toolchain commitment that wants its own dedicated effort.
-- Until that effort exists, users with consumer-interop needs can:
-  hand-author the Hew types that match the external schema, use the
-  stdlib wire-level module to encode/decode them, and document the
-  schema-to-Hew mapping in their own project.
-
-### What this doctrine forbids in the interim
-
-- Do not land partial OpenAPI / proto-gen tooling under
-  `std.encoding.*` or anywhere else in the workspace as a "preview"
-  surface. If it is not the effort's deliverable, it does not ship.
-- Do not advertise OpenAPI / proto-gen support in user-facing docs,
-  examples, or release notes for v0.5.x.
+This replaces the earlier v0.5 ban on generation tooling. The compiler's
+format-neutral data model and codecs remain the authority for serialization.
+Generators emit normal Hew types and do not introduce a second wire metadata
+or codec system.
 
 ---
 

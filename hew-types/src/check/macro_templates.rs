@@ -3,7 +3,11 @@ use super::Checker;
 use crate::env::TypeEnv;
 use crate::error::TypeErrorKind;
 use crate::{Ty, TypeError};
-use hew_parser::ast::*;
+use hew_parser::ast::{
+    Block, ConditionItem, Expr, FnDecl, Ident, Item, MatchArm, NominalPatternPayload, Param, Path,
+    Pattern, PatternField, Program, RecordKind, Span, Spanned, Stmt, StringPart, TraitBound,
+    TraitItem, TypeBodyItem, TypeExpr, TypeParam, VariantKind, Visibility, WhereClause,
+};
 use hew_parser::macro_syntax::{MacroTemplate, Origin, TemplateBody};
 
 impl Checker {
@@ -36,7 +40,7 @@ impl Checker {
                 }
             };
             if let Err(error) = result {
-                self.errors.push(error);
+                self.errors.push(*error);
             }
         }
     }
@@ -57,17 +61,17 @@ impl TemplateNames<'_> {
         matches!(self.template.origin(span), Some(Origin::Caller { .. }))
     }
 
-    fn fail(&self, message: String, span: &Span) -> TypeError {
+    fn fail(&self, message: String, span: &Span) -> Box<TypeError> {
         let original = match self.template.origin(span) {
             Some(Origin::Template { span, .. } | Origin::Caller { span, .. }) => span.clone(),
             None => span.clone(),
         };
         let mut error = TypeError::new(TypeErrorKind::InvalidOperation, original, message);
         error.source_module = Some(self.template.source.to_string_lossy().into_owned());
-        error
+        Box::new(error)
     }
 
-    fn path(&mut self, path: &Path, namespace: Namespace) -> Result<(), TypeError> {
+    fn path(&mut self, path: &Path, namespace: Namespace) -> Result<(), Box<TypeError>> {
         let Some((name, span)) = path.segments.first() else {
             return Ok(());
         };
@@ -152,7 +156,7 @@ impl TemplateNames<'_> {
         }
     }
 
-    fn bound(&mut self, bound: &TraitBound) -> Result<(), TypeError> {
+    fn bound(&mut self, bound: &TraitBound) -> Result<(), Box<TypeError>> {
         self.path(&bound.path, Namespace::Type)?;
         for ty in bound.type_args.iter().flatten() {
             self.ty(ty)?;
@@ -167,7 +171,7 @@ impl TemplateNames<'_> {
         &mut self,
         params: &[TypeParam],
         clause: Option<&WhereClause>,
-    ) -> Result<(), TypeError> {
+    ) -> Result<(), Box<TypeError>> {
         for parameter in params {
             self.types.define(parameter.name, Ty::Error, false);
         }
@@ -187,7 +191,7 @@ impl TemplateNames<'_> {
         Ok(())
     }
 
-    fn ty(&mut self, (ty, span): &Spanned<TypeExpr>) -> Result<(), TypeError> {
+    fn ty(&mut self, (ty, span): &Spanned<TypeExpr>) -> Result<(), Box<TypeError>> {
         if self.captured(span) {
             return Ok(());
         }
@@ -244,7 +248,7 @@ impl TemplateNames<'_> {
         Ok(())
     }
 
-    fn pattern(&mut self, (pattern, span): &Spanned<Pattern>) -> Result<(), TypeError> {
+    fn pattern(&mut self, (pattern, span): &Spanned<Pattern>) -> Result<(), Box<TypeError>> {
         match pattern {
             Pattern::Identifier(name) => self.bind(*name),
             Pattern::NominalPath { path, payload } => {
@@ -279,7 +283,7 @@ impl TemplateNames<'_> {
         }
         Ok(())
     }
-    fn payload(&mut self, payload: &NominalPatternPayload) -> Result<(), TypeError> {
+    fn payload(&mut self, payload: &NominalPatternPayload) -> Result<(), Box<TypeError>> {
         match payload {
             NominalPatternPayload::Tuple(patterns) => {
                 for pattern in patterns {
@@ -290,7 +294,7 @@ impl TemplateNames<'_> {
         }
         Ok(())
     }
-    fn pattern_fields(&mut self, fields: &[PatternField]) -> Result<(), TypeError> {
+    fn pattern_fields(&mut self, fields: &[PatternField]) -> Result<(), Box<TypeError>> {
         for field in fields {
             if let Some(pattern) = &field.pattern {
                 self.pattern(pattern)?;
@@ -304,7 +308,7 @@ impl TemplateNames<'_> {
         &mut self,
         params: &[Param],
         result: Option<&Spanned<TypeExpr>>,
-    ) -> Result<(), TypeError> {
+    ) -> Result<(), Box<TypeError>> {
         for param in params {
             self.ty(&param.ty)?;
             self.bind(param.name);
@@ -314,7 +318,7 @@ impl TemplateNames<'_> {
         }
         Ok(())
     }
-    fn function(&mut self, function: &mut FnDecl) -> Result<(), TypeError> {
+    fn function(&mut self, function: &mut FnDecl) -> Result<(), Box<TypeError>> {
         self.push();
         self.generics(
             function.type_params.as_deref().unwrap_or_default(),
@@ -325,7 +329,7 @@ impl TemplateNames<'_> {
         self.pop();
         Ok(())
     }
-    fn conditions(&mut self, conditions: &mut [ConditionItem]) -> Result<(), TypeError> {
+    fn conditions(&mut self, conditions: &mut [ConditionItem]) -> Result<(), Box<TypeError>> {
         for condition in conditions {
             match condition {
                 ConditionItem::Let { pattern, expr } => {
@@ -337,7 +341,11 @@ impl TemplateNames<'_> {
         }
         Ok(())
     }
-    fn item(&mut self, item: &mut Item, _span: &Span) -> Result<(), TypeError> {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one exhaustive AST dispatch keeps template scope transitions visible"
+    )]
+    fn item(&mut self, item: &mut Item, _span: &Span) -> Result<(), Box<TypeError>> {
         self.push();
         match item {
             Item::Function(function) => self.function(function)?,
@@ -566,7 +574,7 @@ impl TemplateNames<'_> {
         Ok(())
     }
 
-    fn block(&mut self, block: &mut Block) -> Result<(), TypeError> {
+    fn block(&mut self, block: &mut Block) -> Result<(), Box<TypeError>> {
         self.push();
         for statement in &mut block.stmts {
             self.stmt(statement)?;
@@ -578,7 +586,11 @@ impl TemplateNames<'_> {
         Ok(())
     }
 
-    fn stmt(&mut self, (statement, _span): &mut Spanned<Stmt>) -> Result<(), TypeError> {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one exhaustive AST dispatch keeps template scope transitions visible"
+    )]
+    fn stmt(&mut self, (statement, _span): &mut Spanned<Stmt>) -> Result<(), Box<TypeError>> {
         match statement {
             Stmt::Let {
                 pattern,
@@ -676,24 +688,19 @@ impl TemplateNames<'_> {
                 self.block(body)?;
                 self.pop();
             }
-            Stmt::Break { value, .. } => {
+            Stmt::Break { value, .. } | Stmt::Return(value) => {
                 if let Some(value) = value {
                     self.expr(value)?;
                 }
             }
             Stmt::Continue { .. } => {}
-            Stmt::Return(value) => {
-                if let Some(value) = value {
-                    self.expr(value)?;
-                }
-            }
             Stmt::Defer { body, .. } => self.expr(body)?,
             Stmt::Expression(expression) => self.expr(expression)?,
         }
         Ok(())
     }
 
-    fn arms(&mut self, arms: &mut [MatchArm]) -> Result<(), TypeError> {
+    fn arms(&mut self, arms: &mut [MatchArm]) -> Result<(), Box<TypeError>> {
         for arm in arms {
             self.push();
             self.pattern(&arm.pattern)?;
@@ -706,7 +713,11 @@ impl TemplateNames<'_> {
         Ok(())
     }
 
-    fn expr(&mut self, (expression, span): &mut Spanned<Expr>) -> Result<(), TypeError> {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one exhaustive AST dispatch keeps template scope transitions visible"
+    )]
+    fn expr(&mut self, (expression, span): &mut Spanned<Expr>) -> Result<(), Box<TypeError>> {
         if self.captured(span) {
             return Ok(());
         }
@@ -714,7 +725,7 @@ impl TemplateNames<'_> {
             Expr::PostfixTry(value) | Expr::ReturnError(value) => {
                 self.expr(value)?;
             }
-            Expr::Return(value) => {
+            Expr::Return(value) | Expr::Yield(value) => {
                 if let Some(value) = value {
                     self.expr(value)?;
                 }
@@ -812,11 +823,6 @@ impl TemplateNames<'_> {
             Expr::Cast { expr, ty } => {
                 self.expr(expr)?;
                 self.ty(ty)?;
-            }
-            Expr::Yield(value) => {
-                if let Some(value) = value {
-                    self.expr(value)?;
-                }
             }
             Expr::MacroInvocation { name, .. } if name.name.as_str() == "stringify" => {}
             Expr::Tuple(values)

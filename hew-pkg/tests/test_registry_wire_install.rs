@@ -40,7 +40,15 @@ fn registry_wire_command_child() {
     };
     let arguments: Vec<String> = serde_json::from_str(&arguments).unwrap();
     let command = FixtureCommand::parse_from(std::iter::once("hew".to_owned()).chain(arguments));
-    hew_pkg::cli::dispatch(&command.command);
+    hew_pkg::cli::dispatch(&command.command, |root| {
+        let manifest = hew_pkg::manifest::parse_manifest(&root.join("hew.toml"))
+            .map_err(|error| error.to_string())?;
+        if manifest.generate.is_empty() {
+            Ok(())
+        } else {
+            Err("generation requires the Hew compiler driver".into())
+        }
+    });
 }
 
 #[derive(Clone)]

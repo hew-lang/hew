@@ -34,6 +34,8 @@
 #   - deterministic = "admit" (default) | "refuse" is independent of WASM.
 #     Refuse rows name exact checker declaration paths and/or trusted endpoint
 #     symbols. They never classify a user declaration by its leaf spelling.
+#   - generate uses the same explicit admit/refuse schema, with independent
+#     generate_functions and generate_endpoints for build-time generators.
 
 manifest_version = 1
 
@@ -71,7 +73,7 @@ use_case = "WASI execution — `hew build --target=wasm32-wasi`"
 runnable = true
 
 # ---------------------------------------------------------------------------
-# Feature disposition table (32 rows; mirror of the markdown table).
+# Feature disposition table (mirror of the markdown table).
 # Row order matches docs/wasm-capability-matrix.md top-to-bottom.
 # ---------------------------------------------------------------------------
 
@@ -284,6 +286,9 @@ categories = ["runtime", "streams"]
 
 [[feature]]
 id = "filesystem-streams"
+generate = "refuse"
+generate_functions = ["std.stream.open"]
+generate_endpoints = ["hew_stream_from_file_read", "hew_file_read_stream_open"]
 enum_variant = "FilesystemStreams"
 label = "File-backed stream operations"
 prose_label = "`std.fs.read` and `std.stream.open` (file-stream ownership path)"
@@ -298,6 +303,9 @@ native_only_functions = ["std.fs.read", "std.stream.open"]
 
 [[feature]]
 id = "termination-signals"
+generate = "refuse"
+generate_functions = ["std.os.shutdown_signal"]
+generate_endpoints = ["hew_shutdown_signal_stream"]
 deterministic = "refuse"
 deterministic_functions = ["std.os.shutdown_signal"]
 deterministic_endpoints = ["hew_shutdown_signal_stream"]
@@ -313,6 +321,9 @@ native_only_functions = ["std.os.shutdown_signal"]
 
 [[feature]]
 id = "descriptor-readiness"
+generate = "refuse"
+generate_functions = ["std.io.watch_readable"]
+generate_endpoints = ["hew_io_watch_readable"]
 deterministic = "refuse"
 deterministic_functions = ["std.io.watch_readable"]
 deterministic_endpoints = ["hew_io_watch_readable"]
@@ -328,6 +339,8 @@ native_only_functions = ["std.io.watch_readable"]
 
 [[feature]]
 id = "http-client"
+generate = "refuse"
+generate_endpoints = ["hew_http_request_hew"]
 deterministic = "refuse"
 deterministic_endpoints = ["hew_http_request_hew"]
 enum_variant = "HttpClient"
@@ -356,6 +369,15 @@ native_only_functions = [
 
 [[feature]]
 id = "smtp"
+generate = "refuse"
+generate_endpoints = [
+  "hew_smtp_connect",
+  "hew_smtp_connect_tls",
+  "hew_smtp_send",
+  "hew_smtp_send_html",
+  "hew_smtp_send_once",
+  "hew_smtp_send_html_once",
+]
 deterministic = "refuse"
 deterministic_endpoints = [
   "hew_smtp_connect",
@@ -379,6 +401,15 @@ native_only_modules = ["smtp"]
 
 [[feature]]
 id = "websocket"
+generate = "refuse"
+generate_endpoints = [
+  "hew_ws_connect",
+  "hew_ws_send_text",
+  "hew_ws_send_binary",
+  "hew_ws_recv_next",
+  "hew_ws_server_new",
+  "hew_ws_server_accept",
+]
 deterministic = "refuse"
 deterministic_endpoints = [
   "hew_ws_connect",
@@ -402,6 +433,15 @@ native_only_modules = ["websocket"]
 
 [[feature]]
 id = "http-server"
+generate = "refuse"
+generate_endpoints = [
+  "hew_http_server_new",
+  "hew_http_server_recv",
+  "hew_http_respond_bridge",
+  "hew_http_respond_text",
+  "hew_http_respond_json",
+  "hew_http_respond_stream",
+]
 deterministic = "refuse"
 deterministic_endpoints = [
   "hew_http_server_new",
@@ -425,6 +465,27 @@ native_only_modules = ["http"]
 
 [[feature]]
 id = "tcp-networking"
+generate = "refuse"
+generate_functions = [
+  "std.net.listen",
+  "std.net.connect",
+  "std.net.connect_timeout",
+  "std.net.Listener.accept",
+  "std.net.Listener.incoming",
+  "std.net.Connection.read",
+  "std.net.Connection.write",
+  "std.net.broadcast_except",
+]
+generate_endpoints = [
+  "hew_tcp_listen",
+  "hew_tcp_accept",
+  "hew_tcp_incoming",
+  "hew_tcp_connect",
+  "hew_tcp_connect_timeout",
+  "hew_tcp_read",
+  "hew_tcp_write",
+  "hew_tcp_broadcast_except",
+]
 deterministic = "refuse"
 deterministic_functions = [
   "std.net.listen",
@@ -460,6 +521,23 @@ native_only_modules = ["net"]
 
 [[feature]]
 id = "process-execution"
+generate = "refuse"
+generate_functions = [
+  "std.process.run",
+  "std.process.run_argv",
+  "std.process.start",
+  "std.process.Child.wait",
+  "std.process.Child.try_wait",
+  "std.process.Child.terminate",
+  "std.process.Child.kill",
+]
+generate_endpoints = [
+  "hew_process_start_shell",
+  "hew_process_start",
+  "hew_process_exit_stream",
+  "hew_process_poll",
+  "hew_process_signal",
+]
 deterministic = "refuse"
 deterministic_functions = [
   "std.process.run",
@@ -491,6 +569,12 @@ native_only_modules = ["process"]
 
 [[feature]]
 id = "tls"
+generate = "refuse"
+generate_endpoints = [
+  "hew_tls_connect",
+  "hew_tls_read_result",
+  "hew_tls_write_result",
+]
 deterministic = "refuse"
 deterministic_endpoints = [
   "hew_tls_connect",
@@ -511,6 +595,21 @@ native_only_modules = ["tls"]
 
 [[feature]]
 id = "quic"
+generate = "refuse"
+generate_endpoints = [
+  "hew_quic_new_client",
+  "hew_quic_new_client_with_ca",
+  "hew_quic_new_server",
+  "hew_quic_new_server_with_tls",
+  "hew_quic_endpoint_connect",
+  "hew_quic_endpoint_accept",
+  "hew_quic_conn_open_stream",
+  "hew_quic_conn_accept_stream",
+  "hew_quic_stream_send",
+  "hew_quic_stream_recv",
+  "hew_quic_stream_send_timeout_hew",
+  "hew_quic_stream_recv_timeout_hew",
+]
 deterministic = "refuse"
 deterministic_endpoints = [
   "hew_quic_new_client",
@@ -540,6 +639,14 @@ native_only_modules = ["quic"]
 
 [[feature]]
 id = "dns"
+generate = "refuse"
+generate_functions = [
+  "std.net.dns.resolve",
+  "std.net.dns.lookup_host",
+  "std.net.dns.resolve_timed",
+  "std.net.dns.lookup_host_timed",
+]
+generate_endpoints = ["hew_dns_resolve", "hew_dns_lookup_host"]
 deterministic = "refuse"
 deterministic_functions = [
   "std.net.dns.resolve",
@@ -562,6 +669,27 @@ native_only_modules = ["dns"]
 
 [[feature]]
 id = "std-os"
+generate = "refuse"
+generate_functions = [
+  "std.os.env",
+  "std.os.set_env",
+  "std.os.remove_env",
+  "std.os.has_env",
+  "std.os.home_dir",
+  "std.os.hostname",
+  "std.os.pid",
+  "std.os.temp_dir",
+]
+generate_endpoints = [
+  "hew_env_get",
+  "hew_env_set",
+  "hew_env_remove",
+  "hew_env_has",
+  "hew_home_dir",
+  "hew_hostname",
+  "hew_pid",
+  "hew_temp_dir",
+]
 enum_variant = "OsEnv"
 label = "std.os environment and path operations"
 prose_label = "`std.os.*` (args, env, cwd, home, hostname, pid, temp-dir)"
@@ -576,6 +704,22 @@ native_only_modules = ["os"]
 
 [[feature]]
 id = "distributed"
+generate = "refuse"
+generate_endpoints = [
+  "hew_node_api_start_config",
+  "hew_node_api_connect",
+  "hew_node_api_connect_string",
+  "hew_node_set_transport",
+  "hew_node_api_register_by_pid_string",
+  "hew_node_api_lookup_location_string",
+  "hew_node_api_send_location",
+  "hew_node_api_shutdown",
+  "hew_node_monitor_location",
+  "hew_node_link_remote_location",
+  "hew_remote_call_new",
+  "hew_remote_call_poll",
+  "hew_remote_call_take",
+]
 deterministic = "refuse"
 deterministic_endpoints = [
   "hew_node_api_start_config",
@@ -605,6 +749,13 @@ tracking_label = "WASM-TODO(distributed):"
 
 [[feature]]
 id = "stdin-input"
+generate = "refuse"
+generate_functions = [
+  "std.io.read_line",
+  "std.io.read_all",
+  "std.io.scanner.from_stdin",
+]
+generate_endpoints = ["hew_stdin_read_line"]
 label = "Standard input reads"
 checker = "pass"
 runtime = "implemented"
@@ -620,6 +771,9 @@ deterministic_endpoints = ["hew_stdin_read_line"]
 
 [[feature]]
 id = "crypto-random"
+generate = "refuse"
+generate_functions = ["std.crypto.crypto.random_bytes"]
+generate_endpoints = ["hew_random_bytes_hew", "hew_random_bytes"]
 enum_variant = "CryptoRandom"
 label = "std.crypto.crypto.random_bytes operations"
 prose_label = "`std.crypto.crypto.random_bytes`"
@@ -633,6 +787,9 @@ tracking_label = "WASM-TODO(crypto-random):"
 
 [[feature]]
 id = "crypto-encrypt"
+generate = "refuse"
+generate_functions = ["std.crypto.encrypt.seal"]
+generate_endpoints = ["hew_encrypt_try_seal_base64_hew", "hew_encrypt_seal"]
 enum_variant = "CryptoEncrypt"
 label = "std.crypto.encrypt operations"
 prose_label = "`std.crypto.encrypt.*`"
@@ -658,6 +815,38 @@ categories = ["stdlib", "crypto"]
 tracking = "WASM-TODO"
 tracking_label = "WASM-TODO(crypto-sign):"
 native_only_modules = ["sign"]
+
+[[feature]]
+id = "unseeded-random"
+label = "Unseeded UUID and password-salt generation"
+checker = "pass"
+runtime = "implemented"
+runtime_status = "Native UUID and password helpers use host entropy rather than the seeded program PRNG"
+categories = ["stdlib", "random"]
+generate = "refuse"
+generate_functions = [
+  "std.misc.uuid.v4",
+  "std.misc.uuid.v7",
+  "std.crypto.password.hash",
+  "std.crypto.password.hash_custom",
+]
+generate_endpoints = [
+  "hew_uuid_v4",
+  "hew_uuid_v7",
+  "hew_password_hash",
+  "hew_password_hash_custom",
+]
+
+[[feature]]
+id = "filesystem-inspection"
+label = "Filesystem inspection outside std.fs"
+checker = "pass"
+runtime = "implemented"
+runtime_status = "Path metadata and glob expansion read the host filesystem directly"
+categories = ["stdlib", "filesystem"]
+generate = "refuse"
+generate_functions = ["std.path.glob", "std.path.is_file", "std.path.is_dir"]
+generate_endpoints = ["hew_glob", "hew_path_is_file", "hew_path_is_dir"]
 
 # ---------------------------------------------------------------------------
 # WASM-TODO backlog (mirror of the backlog table).

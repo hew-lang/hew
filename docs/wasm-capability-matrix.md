@@ -93,6 +93,8 @@ The **Checker disposition** column documents what the type checker emits when
 | `crypto-random` | `std.crypto.crypto.random_bytes` | std.crypto.crypto.random_bytes operations | Reject (`CryptoRandom`) | the std.crypto.random_bytes secure entropy source (ring::SystemRandom) is native-only and absent from the wasm32 link set; no cryptographically secure wasm32 implementation exists yet; generating key material on wasm32 would not be secure | Secure entropy source is native-only; fail-closed rejection until wasm32 cryptographic entropy exists | WASM-TODO(crypto-random): |
 | `crypto-encrypt` | `std.crypto.encrypt.*` | std.crypto.encrypt operations | Reject (`CryptoEncrypt`) | the std.crypto.encrypt module is backed by a native-only staticlib companion crate (std/crypto/encrypt) that is absent from the wasm32 link set; no wasm32 AES-GCM seal/open implementation exists yet | Native-only AES-256-GCM companion crate; not linked for wasm32 | WASM-TODO(crypto-encrypt): |
 | `crypto-sign` | `std.crypto.sign.*` | std.crypto.sign operations | Reject (`CryptoSign`) | the std.crypto.sign module is backed by a native-only staticlib companion crate (std/crypto/sign) that is absent from the wasm32 link set; no wasm32 Ed25519 implementation exists yet | Native-only Ed25519 companion crate; not linked for wasm32 | WASM-TODO(crypto-sign): |
+| `unseeded-random` | Unseeded UUID and password-salt generation | Unseeded UUID and password-salt generation | Pass | — | Native UUID and password helpers use host entropy rather than the seeded program PRNG | — |
+| `filesystem-inspection` | Filesystem inspection outside std.fs | Filesystem inspection outside std.fs | Pass | — | Path metadata and glob expansion read the host filesystem directly | — |
 
 ---
 

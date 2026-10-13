@@ -58,7 +58,7 @@ mod non_root_module_inference_scope {
         // Dependencies (non-root) come before the root in topo order.
         mg.topo_order = vec![mod_id, root_id];
         Program {
-            expansions: Default::default(),
+            expansions: hew_parser::macro_syntax::ExpansionMap::default(),
             module_graph: Some(mg),
             items: vec![],
             module_doc: None,
@@ -191,7 +191,7 @@ mod non_root_module_inference_scope {
         mg.add_module(module).unwrap();
         mg.topo_order = vec![mod_id, root_id];
         let program = Program {
-            expansions: Default::default(),
+            expansions: hew_parser::macro_syntax::ExpansionMap::default(),
             module_graph: Some(mg),
             items: vec![(Item::Function(root_fn), 40..80)],
             module_doc: None,
@@ -259,7 +259,7 @@ mod non_root_module_inference_scope {
         mg.add_module(non_root).unwrap();
         mg.topo_order = vec![mod_id, root_id];
         let program = Program {
-            expansions: Default::default(),
+            expansions: hew_parser::macro_syntax::ExpansionMap::default(),
             module_graph: Some(mg),
             items: vec![],
             module_doc: None,
@@ -349,7 +349,7 @@ mod non_root_module_inference_scope {
         mg.add_module(non_root).unwrap();
         mg.topo_order = vec![mod_id, root_id];
         let program = Program {
-            expansions: Default::default(),
+            expansions: hew_parser::macro_syntax::ExpansionMap::default(),
             module_graph: Some(mg),
             items: vec![],
             module_doc: None,
@@ -418,7 +418,7 @@ mod non_root_module_inference_scope {
         mg.add_module(non_root).unwrap();
         mg.topo_order = vec![mod_id, root_id];
         let program = Program {
-            expansions: Default::default(),
+            expansions: hew_parser::macro_syntax::ExpansionMap::default(),
             module_graph: Some(mg),
             items: vec![],
             module_doc: None,
@@ -544,7 +544,7 @@ mod non_root_module_inference_scope {
             lang_item: None,
         };
         let program = Program {
-            expansions: Default::default(),
+            expansions: hew_parser::macro_syntax::ExpansionMap::default(),
             module_graph: None,
             items: vec![(Item::Trait(trait_decl), 0..30)],
             module_doc: None,
@@ -591,7 +591,7 @@ mod non_root_module_inference_scope {
             lang_item: None,
         };
         let program = Program {
-            expansions: Default::default(),
+            expansions: hew_parser::macro_syntax::ExpansionMap::default(),
             module_graph: None,
             items: vec![(Item::Trait(trait_decl), 0..30)],
             module_doc: None,
@@ -700,7 +700,7 @@ mod non_root_module_inference_scope {
             doc_comment: None,
         };
         let program = Program {
-            expansions: Default::default(),
+            expansions: hew_parser::macro_syntax::ExpansionMap::default(),
             module_graph: None,
             items: vec![
                 (Item::Trait(trait_decl), 0..30),
@@ -869,7 +869,7 @@ mod non_root_module_inference_scope {
         mg.add_module(non_root).unwrap();
         mg.topo_order = vec![mod_id, root_id];
         let program = Program {
-            expansions: Default::default(),
+            expansions: hew_parser::macro_syntax::ExpansionMap::default(),
             module_graph: Some(mg),
             items: vec![],
             module_doc: None,

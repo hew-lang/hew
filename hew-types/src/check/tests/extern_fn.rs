@@ -243,7 +243,7 @@ fn duplicate_extern_symbol_accepts_cross_module_alias_qualified_contracts() {
     graph.topo_order = vec![stream_id, net_id, root_id];
 
     let output = Checker::new(ModuleRegistry::new(vec![])).check_program(&Program {
-        expansions: Default::default(),
+        expansions: hew_parser::macro_syntax::ExpansionMap::default(),
         items: vec![],
         module_graph: Some(graph),
         module_doc: None,
@@ -742,7 +742,7 @@ fn check_peer_assembled_extern(divergent: bool) -> TypeCheckOutput {
 
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     checker.check_program(&Program {
-        expansions: Default::default(),
+        expansions: hew_parser::macro_syntax::ExpansionMap::default(),
         items: vec![],
         module_graph: Some(mg),
         module_doc: None,
@@ -849,7 +849,7 @@ fn divergent_same_named_peer_nominals_are_refused_as_a_redefinition() {
 
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     let output = checker.check_program(&Program {
-        expansions: Default::default(),
+        expansions: hew_parser::macro_syntax::ExpansionMap::default(),
         items: vec![],
         module_graph: Some(mg),
         module_doc: None,
@@ -912,7 +912,7 @@ fn distinctly_named_peer_declarations_assemble_without_a_redefinition() {
 
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     let output = checker.check_program(&Program {
-        expansions: Default::default(),
+        expansions: hew_parser::macro_syntax::ExpansionMap::default(),
         items: vec![],
         module_graph: Some(mg),
         module_doc: None,
@@ -1055,7 +1055,7 @@ fn check_import_lexical_extern(shape: &ImportLexicalShape) -> TypeCheckOutput {
 
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     checker.check_program(&Program {
-        expansions: Default::default(),
+        expansions: hew_parser::macro_syntax::ExpansionMap::default(),
         items: vec![],
         module_graph: Some(mg),
         module_doc: None,

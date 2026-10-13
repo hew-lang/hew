@@ -934,12 +934,10 @@ impl Checker {
         // rc1-F1 stage A: body checking resolves the same canonical key
         // `register_fn_sig_with_name` minted — root items included — so
         // `current_function` (a `fn_sigs`-family key) is always canonical.
-        let fn_name = self
-            .named_item_declaration(fd.name)
-            .map(|id| self.defs.path(id).to_string())
-            .unwrap_or_else(|| {
-                self.canonical_fn_identity(self.canonical_fn_owner(), fd.name.name.as_str())
-            });
+        let fn_name = self.named_item_declaration(fd.name).map_or_else(
+            || self.canonical_fn_identity(self.canonical_fn_owner(), fd.name.name.as_str()),
+            |id| self.defs.path(id).to_string(),
+        );
         self.check_function_as(fd, &fn_name);
     }
 

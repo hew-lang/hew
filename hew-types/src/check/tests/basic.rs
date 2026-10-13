@@ -1853,7 +1853,7 @@ fn typecheck_actor_receive_fn_registered() {
         max_heap_bytes: None,
     };
     let program = Program {
-        expansions: Default::default(),
+        expansions: hew_parser::macro_syntax::ExpansionMap::default(),
         module_graph: None,
         items: vec![(Item::Actor(actor), 0..0)],
         module_doc: None,
@@ -2130,7 +2130,7 @@ fn checker_reuse_does_not_leak_result_shadowing_into_stdlib() {
     mg.add_module(module).unwrap();
     mg.topo_order = vec![mod_id, root_id];
     let program = Program {
-        expansions: Default::default(),
+        expansions: hew_parser::macro_syntax::ExpansionMap::default(),
         module_graph: Some(mg),
         items: vec![],
         module_doc: None,
@@ -2248,7 +2248,7 @@ fn call(listener: Listener) -> i64 {
         .expect("add user net module");
     module_graph.topo_order = vec![module_id, root_id];
     let second_program = Program {
-        expansions: Default::default(),
+        expansions: hew_parser::macro_syntax::ExpansionMap::default(),
         module_graph: Some(module_graph),
         items: vec![],
         module_doc: None,

@@ -267,7 +267,7 @@ impl Checker {
         if self.place_write_depth == 0 || self.place_base_depth > 0 {
             if let Some((root, mut path)) = self.expr_place(&object.0) {
                 path.push(field.to_string());
-                self.report_place_use_after_move(&root, &path, span);
+                self.report_place_use_after_move(root, &path, span);
             }
         }
         let resolved = self.normalize_for_use(&obj_ty);
@@ -691,7 +691,7 @@ impl Checker {
             let (ty, source) = self.synthesize_select_source(&arm.source.0, &arm.source.1);
             if matches!(source, Some(super::CheckedSelectSource::TaskAwait { .. })) {
                 if let Some((root, path)) = self.expr_place(&arm.source.0) {
-                    if let Some(binding) = self.env.lookup_ref(&root) {
+                    if let Some(binding) = self.env.lookup_ref(root) {
                         self.prepared_select_tasks
                             .push(super::types::PreparedSelectTask {
                                 binding: binding.id,
@@ -702,7 +702,7 @@ impl Checker {
                     // A timer win leaves a whole-task arm's task running; the
                     // scope-exit lint reports it if nothing else joins it.
                     if timeout.is_some() && path.is_empty() {
-                        self.env.note_timed_select_task(&root, &arm.source.1);
+                        self.env.note_timed_select_task(root, &arm.source.1);
                     }
                 }
             }

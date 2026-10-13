@@ -1,0 +1,9 @@
+import models.service;
+
+import std.encoding.json;
+
+fn main() {
+    let config = json.decode<service.Service>("{\"name\":\"gateway\",\"port\":8080}").expect("decode generated model");
+    println(f"{config.name}:{config.port}");
+    println(config.description.is_none());
+}

@@ -95,7 +95,7 @@ fn check_source_in_module_with_prelude_policy(
     mg.add_module(module).unwrap();
     mg.topo_order = vec![mod_id, root_id];
     let program = Program {
-        expansions: Default::default(),
+        expansions: hew_parser::macro_syntax::ExpansionMap::default(),
         module_graph: Some(mg),
         items: vec![],
         module_doc: None,
@@ -144,7 +144,7 @@ pub(super) fn check_source_in_canonical_std_module(
     mg.add_module(module).unwrap();
     mg.topo_order = vec![mod_id, root_id];
     let program = Program {
-        expansions: Default::default(),
+        expansions: hew_parser::macro_syntax::ExpansionMap::default(),
         module_graph: Some(mg),
         items: vec![],
         module_doc: None,
@@ -266,7 +266,7 @@ pub(super) fn make_user_import(
 /// Helper: type-check a program with given items.
 pub(super) fn check_items(items: Vec<Spanned<Item>>) -> TypeCheckOutput {
     let program = Program {
-        expansions: Default::default(),
+        expansions: hew_parser::macro_syntax::ExpansionMap::default(),
         module_graph: None,
         items,
         module_doc: None,
@@ -403,7 +403,7 @@ pub(super) fn make_program_with_module_graph(non_root_items: Vec<Spanned<Item>>)
     mg.topo_order = vec![non_root_id, root_id];
 
     Program {
-        expansions: Default::default(),
+        expansions: hew_parser::macro_syntax::ExpansionMap::default(),
         module_graph: Some(mg),
         items: vec![],
         module_doc: None,

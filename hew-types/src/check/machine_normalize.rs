@@ -728,8 +728,12 @@ impl Builder {
                 }
             }
         }
-        let parsed =
-            hew_parser::parse_generated(&source, 0, Arc::new(contexts), Default::default());
+        let parsed = hew_parser::parse_generated(
+            &source,
+            0,
+            Arc::new(contexts),
+            hew_parser::macro_syntax::FragmentInputs::default(),
+        );
         if !parsed.errors.is_empty() {
             return Err(self.error(format!(
                 "could not normalize machine declarations: {:?}",

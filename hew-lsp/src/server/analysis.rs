@@ -232,6 +232,10 @@ pub(super) fn analyze_document(
         &state.diagnostics,
         state.stopped.as_ref(),
     );
+    diagnostics_by_uri
+        .entry(uri.clone())
+        .or_default()
+        .extend(super::generation::diagnostics(&root_path));
 
     let mut type_output = state.typecheck_result.take().and_then(|result| result.tco);
     // HIR and semantic diagnostics below read the checker's own indices; only

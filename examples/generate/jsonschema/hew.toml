@@ -1,0 +1,10 @@
+[package]
+name = "jsonschema_example"
+version = "0.1.0"
+
+[[generate]]
+name = "schema"
+run = "tools/schema.hew"
+args = ["schema.json", "models"]
+inputs = ["schema.json"]
+outputs = "models"

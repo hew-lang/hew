@@ -67,3 +67,54 @@ inspection and does not encode hygiene in compilable source. The language server
 exposes the same view through `hew/expandMacro`, and generated declarations link
 back to their invocation and selected rule. The formatter preserves macro bodies
 and invocation arguments as source token trees.
+
+## Attribute macros
+
+An attribute rule wraps a function with ordinary generated declarations:
+
+```hew
+macro logged {
+    #[($label:literal)] $f:fn => items {
+        $f.vis fn $f.name $f.generics ($f.params) $f.ret $f.where {
+            println($label);
+            $f.body
+        }
+    }
+}
+
+#[logged("answer")]
+fn answer() -> i64 { return 42; }
+```
+
+Use `#[logged]` for an empty argument pattern, or qualify an imported macro as
+`#[observability.logged("answer")]`. A macro may contain both attribute and
+`!` rules; each invocation considers only its own rule form.
+
+`$f:fn` matches a free function or method. `$m:method` requires a receiver;
+place this rule first when a forwarding wrapper needs a different method call.
+Append `fails` to require a fallible function. Attribute rules always produce
+`items` and preserve exactly one function named by the caller's `$f.name`.
+
+The whole `$f` inserts the function. Its projections are `.vis`, `.name`,
+`.generics`, `.params`, `.args`, `.ret`, `.where` and `.body`. `.params` inserts
+parameters without parentheses; `.args` inserts non-receiver forwarding
+arguments. `.ret` includes the complete return and `fails` clauses. A `method`
+capture also permits `.receiver`. Optional clauses insert nothing when absent.
+These are projections of function captures; `$value.len()` on an expression
+capture remains ordinary member access.
+
+Place `$f.body` as a generated function's body, or directly as a statement or tail within it,
+at most once per function. Its `return`, `?` and `return error` target that
+function. A closure, loop or nested block cannot surround the projected body.
+Caller bindings retain their contexts and cannot see template locals.
+
+Attribute macros apply to free functions, impl methods, default trait methods
+with bodies, and plain actor methods. They cannot rewrite receive handlers,
+lifecycle hooks, extern functions, bodiless trait signatures or type headers.
+Use `#[intercept]` for per-delivery actor behaviour.
+
+The attribute nearest the function expands first: in `#[outer] #[inner] fn f`,
+`outer` runs around `inner`. Other attributes are held aside and reattached to
+the function carrying the caller's name, so `#[test]` remains discoverable.
+Built-in attribute and macro names are reserved. Unresolved attribute names
+remain errors after macro resolution.

@@ -1605,7 +1605,7 @@ impl Checker {
                 };
                 if !matches!(&target.0, Expr::Ident(_)) {
                     if let Some(name) = self.assignment_root_binding_name(&target.0) {
-                        if self.env.unassigned(&name) {
+                        if self.env.unassigned(name) {
                             self.report_error(TypeErrorKind::LocalUninitialized, &target.1,
                                 format!("E_LOCAL_UNINITIALIZED: local `{name}` must hold a whole value before a field or indexed store"));
                         }
@@ -1785,7 +1785,7 @@ impl Checker {
                 if let Some((root, path)) = self.expr_place(&target.0) {
                     if path.is_empty() {
                         self.reject_prepared_task_access(
-                            &root,
+                            root,
                             &path,
                             span,
                             TypeErrorKind::OwnMutateBorrowed,
@@ -1820,7 +1820,7 @@ impl Checker {
                             // Replacing the root acquires a fresh local value;
                             // a projection instead writes through its owner.
                             if !path.is_empty() {
-                                self.reject_borrowed_parameter_mutation(&root, &path, span);
+                                self.reject_borrowed_parameter_mutation(root, &path, span);
                             }
                         }
                     }
@@ -1911,9 +1911,9 @@ impl Checker {
                             .insert(SpanKey::in_module(&target.1, self.current_module_idx));
                     }
                     if let Some((root, path)) = self.expr_place(&target.0) {
-                        self.env.reinit_place(&root, &path);
+                        self.env.reinit_place(root, &path);
                         if path.is_empty() {
-                            self.env.set_collection_borrow(&root, collection_borrow);
+                            self.env.set_collection_borrow(root, collection_borrow);
                         }
                     }
                 }
@@ -1931,10 +1931,10 @@ impl Checker {
                 {
                     if method.0.name.as_str() == "set" {
                         if let Some(name) = self.assignment_root_binding_name(&receiver.0) {
-                            self.env.mark_written(&name);
+                            self.env.mark_written(name);
                             // `x.set(v)` replaces the binding's value: the
                             // receiver and argument reads belong to the write.
-                            outer_mutation = Some(self.env.begin_mutation(&name));
+                            outer_mutation = Some(self.env.begin_mutation(name));
                         }
                     }
                 }

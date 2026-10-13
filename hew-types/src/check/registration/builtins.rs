@@ -312,6 +312,12 @@ impl Checker {
             return;
         }
         let builtins_module = self.defs.mint_module("std.builtins", &[]);
+        if self.defs.module_source(builtins_module).is_none() {
+            self.defs.set_module_package(
+                builtins_module,
+                crate::def_table::PackageOrigin::StandardLibrary,
+            );
+        }
         for (item_ordinal, (item, span)) in parsed.program.items.iter().enumerate() {
             self.mint_item_declaration_identities(
                 Some(builtins_module),

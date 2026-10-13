@@ -18,7 +18,11 @@ impl Display for Override {
     }
 }
 
-type NamedMap = HashMap<string, i64>;
+type LabelledMap {
+    values: HashMap<string, i64>;
+}
+
+type NamedMap = LabelledMap;
 
 impl Display for NamedMap {
     fn fmt(self) -> string {
@@ -38,7 +42,7 @@ fn main() {
     values.push(6);
     var map: HashMap<string, i64> = HashMap.new();
     map.insert("answer", 42);
-    let named: NamedMap = HashMap.new();
+    let named: NamedMap = LabelledMap { values: HashMap.new() };
     let nested = Nested { status: .Some(.Ok(8)), pair: (9, true) };
     println(f"{point:?}");
     println(f"{tuple:?}");

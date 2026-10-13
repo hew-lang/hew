@@ -44,6 +44,7 @@ fn ask_error_id(err: ActorError) -> i64 {
         ActorError.EncodeFailed => 8,
         ActorError.ConnectionDropped => 9,
         ActorError.Partition => 10,
+        ActorError.Refused => 11,
     }
 }
 
@@ -93,6 +94,7 @@ fn test_ask_error_taxonomy_variants() {
     assert(ask_error_id(ActorError.EncodeFailed) == 8);
     assert(ask_error_id(ActorError.ConnectionDropped) == 9);
     assert(ask_error_id(ActorError.Partition) == 10);
+    assert(ask_error_id(ActorError.Refused) == 11);
 }
 
 #[test]

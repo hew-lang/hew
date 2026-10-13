@@ -420,7 +420,15 @@ pub(super) fn materialized_default_body_plan(
         );
         let method = trait_method_to_fn_decl(&default_method.method);
         let impl_parameters = impl_type_parameters(ctx, impl_decl);
+        let previous_module = std::mem::replace(
+            &mut ctx.current_module_name,
+            default_method.source_module.clone(),
+        );
+        let previous_file =
+            std::mem::replace(&mut ctx.current_module_idx, default_method.file_index);
         ctx.register_impl_method_fn_entry_at(&method, &impl_parameters, &symbol);
+        ctx.current_module_name = previous_module;
+        ctx.current_module_idx = previous_file;
         out.push((declaration, symbol));
     }
     out

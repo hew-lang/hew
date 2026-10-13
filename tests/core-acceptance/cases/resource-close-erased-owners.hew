@@ -49,7 +49,7 @@ actor Worker {
         };
         {
             let ticket = Ticket { audit: audit, id: 3 };
-            let _unused: fn[once]() -> i64 = move || ticket.id;
+            let _unused: fn[once, suspends]() -> i64 = move || ticket.id;
         };
         {
             let callback = {

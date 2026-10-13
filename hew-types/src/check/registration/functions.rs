@@ -2014,8 +2014,11 @@ impl Checker {
                     .collect();
                 format!("<{}>", rendered.join(", "))
             });
+        let source_owner = self
+            .current_declaration_module()
+            .map_or("#synthetic-root", |module| self.defs.module_path(module));
         let path = format!(
-            "{receiver}::<impl {trait_identity}{trait_args} for {declared_receiver}>::{}",
+            "{source_owner}::{receiver}::<impl {trait_identity}{trait_args} for {declared_receiver}>::{}",
             method.name
         );
         let occurrence = crate::DeclarationOccurrence::new_with_synthetic_ordinal(

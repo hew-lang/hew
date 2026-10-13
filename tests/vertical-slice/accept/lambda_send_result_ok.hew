@@ -34,6 +34,7 @@ fn main() -> i64 {
             ActorError.EncodeFailed => 9,
             ActorError.ConnectionDropped => 10,
             ActorError.Partition => 11,
+            ActorError.Refused => 12,
         }
     }
 }

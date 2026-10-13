@@ -236,7 +236,15 @@ impl LowerCtx {
             self.direct_method_return_ty(&callee, args, span, "generic for-in into_iter")?;
         let (elem_ty, next_call) = self.for_iter_next_call_for_ty(&ret_ty, span)?;
         let call = self.make_direct_method_call(callee.clone(), iterable, &ret_ty, span.clone());
-        self.record_var_self_direct_monomorphisation(&callee, &receiver_ty, span, call.site);
+        if let HirExprKind::Call { target, .. } = &call.kind {
+            self.record_var_self_direct_monomorphisation(
+                &callee,
+                target,
+                &receiver_ty,
+                span,
+                call.site,
+            );
+        }
         Some((call, ret_ty, elem_ty, next_call))
     }
 
@@ -1593,12 +1601,15 @@ impl LowerCtx {
                     // call expression's own site (`hew-sir/src/lower_var_self.rs`),
                     // so a generic iterator's `next` is otherwise reported as
                     // missing its checker-resolved type arguments.
-                    self.record_var_self_direct_monomorphisation(
-                        &target_label,
-                        &iter_ty,
-                        &iterable.1,
-                        next.site,
-                    );
+                    if let HirExprKind::VarSelfMethodCall { call_target, .. } = &next.kind {
+                        self.record_var_self_direct_monomorphisation(
+                            &target_label,
+                            call_target,
+                            &iter_ty,
+                            &iterable.1,
+                            next.site,
+                        );
+                    }
                     // This call root is compiler-generated and therefore has
                     // no authored checker span. Keep its fact in the disjoint
                     // generated-site domain. The closed builtin cursors clone

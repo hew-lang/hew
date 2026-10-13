@@ -32,6 +32,7 @@ fn main() {
             ActorError.EncodeFailed => println("encode failed"),
             ActorError.ConnectionDropped => println("connection dropped"),
             ActorError.Partition => println("partition"),
+            ActorError.Refused => println("refused"),
         }
     }
     match counter.divide(0) {
@@ -47,6 +48,7 @@ fn main() {
             ActorError.EncodeFailed => println("encode failed"),
             ActorError.ConnectionDropped => println("connection dropped"),
             ActorError.Partition => println("partition"),
+            ActorError.Refused => println("refused"),
         }
     }
     stop(counter);

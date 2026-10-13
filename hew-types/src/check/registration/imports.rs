@@ -714,7 +714,9 @@ impl Checker {
                     let registry_module = self
                         .defs
                         .mint_module(&canonical_owner, resolved_source_path.as_slice());
-                    target = Some(registry_module);
+                    // A peer's registry source does not replace the resolved
+                    // directory module's namespace at the import site.
+                    target.get_or_insert(registry_module);
                     if self.defs.module_has_source_declarations(registry_module) {
                         self.declare_minted_items_in_scope(&[registry_module], registry_module);
                     } else {

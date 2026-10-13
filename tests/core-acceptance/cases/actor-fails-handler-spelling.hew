@@ -58,6 +58,7 @@ fn main() {
             ActorError.EncodeFailed => println("encode failed"),
             ActorError.ConnectionDropped => println("connection dropped"),
             ActorError.Partition => println("partition"),
+            ActorError.Refused => println("refused"),
         }
     }
     match ledger.note(5) {

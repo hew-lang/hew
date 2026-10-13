@@ -1254,6 +1254,19 @@ impl Checker {
             for (name, binding) in self.scopes.items(namespace) {
                 self.scopes.bind_import(file, name, binding, site);
             }
+            if let Some(name) = decl
+                .file_path
+                .as_deref()
+                .and_then(|path| std::path::Path::new(path).file_stem())
+                .and_then(std::ffi::OsStr::to_str)
+            {
+                self.scopes.bind_import(
+                    file,
+                    hew_parser::ast::Symbol::intern(name),
+                    scope::Binding::Module(target),
+                    site,
+                );
+            }
             return;
         }
         match &decl.spec {

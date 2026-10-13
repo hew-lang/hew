@@ -28,6 +28,7 @@ fn main() {
             ActorError.EncodeFailed => println("encode failed"),
             ActorError.ConnectionDropped => println("connection dropped"),
             ActorError.Partition => println("partition"),
+            ActorError.Refused => println("refused"),
         }
     }
     match vault.withdraw(500) {
@@ -43,6 +44,7 @@ fn main() {
             ActorError.EncodeFailed => println("encode failed"),
             ActorError.ConnectionDropped => println("connection dropped"),
             ActorError.Partition => println("partition"),
+            ActorError.Refused => println("refused"),
         }
     }
     stop(vault);
@@ -62,6 +64,7 @@ fn main() {
             ActorError.EncodeFailed => println("encode failed"),
             ActorError.ConnectionDropped => println("connection dropped"),
             ActorError.Partition => println("partition"),
+            ActorError.Refused => println("refused"),
         }
     }
 }

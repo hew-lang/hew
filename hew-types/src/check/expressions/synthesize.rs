@@ -384,12 +384,8 @@ impl Checker {
                 type_args,
                 base,
             } => {
-                let name = if let Some(super::super::scope::Resolution::Nominal(id)) =
-                    self.resolve_type_path(path)
-                {
-                    self.defs.path(id.declaration()).to_string()
-                } else {
-                    let resolution = self.scope_site().and_then(|site| {
+                let resolution = self.resolve_type_path(path).or_else(|| {
+                    self.scope_site().and_then(|site| {
                         self.scopes
                             .resolve(
                                 &self.env,
@@ -398,8 +394,13 @@ impl Checker {
                                 &path.segments,
                             )
                             .ok()
-                    });
-                    if let Some(super::super::scope::Resolution::Variant(owner, _)) = resolution {
+                    })
+                });
+                let name = match resolution {
+                    Some(super::super::scope::Resolution::Nominal(id)) => {
+                        self.defs.path(id.declaration()).to_string()
+                    }
+                    Some(super::super::scope::Resolution::Variant(owner, _)) => {
                         let owner = owner
                             .declaration(&self.defs)
                             .expect("variant owner declaration");
@@ -408,12 +409,12 @@ impl Checker {
                             self.defs.path(owner.declaration()),
                             path.segments.last().expect("variant path").0
                         )
-                    } else {
-                        path.to_string()
                     }
+                    _ => path.to_string(),
                 };
                 let ty = self.check_struct_init(
                     &name,
+                    resolution,
                     fields,
                     type_args.as_deref(),
                     base.as_deref(),

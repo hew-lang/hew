@@ -1165,11 +1165,19 @@ impl Checker {
     pub(in crate::check) fn check_struct_init(
         &mut self,
         name: &str,
+        resolution: Option<super::super::scope::Resolution>,
         fields: &[(Ident, Spanned<Expr>)],
         type_args: Option<&[Spanned<TypeExpr>]>,
         base: Option<&Spanned<Expr>>,
         span: &Span,
     ) -> Ty {
+        let resolved = matches!(
+            resolution,
+            Some(
+                super::super::scope::Resolution::Nominal(_)
+                    | super::super::scope::Resolution::Variant(_, _)
+            )
+        );
         // Every field is initialized exactly once: a base supplies the fields
         // the literal does not name, and naming one twice leaves no reading
         // that says which value wins.
@@ -1190,7 +1198,7 @@ impl Checker {
         // binding for `Type.Variant`, or the exact export table for
         // `module.Type.Variant`. The resulting registry key retains the full
         // declaration owner and never scans by final segment.
-        let dotted_struct_variant = if name.contains("::") {
+        let dotted_struct_variant = if resolved || name.contains("::") {
             None
         } else {
             let segments = name.split('.').collect::<Vec<_>>();
@@ -1288,7 +1296,10 @@ impl Checker {
         // export table as annotation-position qualified types. The lexical
         // alias is never a nominal identity: carry the declaration's full
         // source owner into the shared record-initialiser path.
-        let module_record_name = if dotted_struct_variant.is_none() && !name.contains("::") {
+        let module_record_name = if !resolved
+            && dotted_struct_variant.is_none()
+            && !name.contains("::")
+        {
             let segments = name.split('.').collect::<Vec<_>>();
             match segments.as_slice() {
                 [module_short, type_name]
@@ -1346,7 +1357,10 @@ impl Checker {
         // actionable signal.  Success cases (both type and variant exist) fall
         // through to the existing struct/enum-variant init logic.
         let mut resolved_module_variant_name = None;
-        if let Some(dot) = name.find('.').filter(|_| dotted_struct_variant.is_none()) {
+        if let Some(dot) = name
+            .find('.')
+            .filter(|_| !resolved && dotted_struct_variant.is_none())
+        {
             let module_short = &name[..dot];
             if self.module_binding_in_current_file(module_short) {
                 let after_dot = &name[dot + 1..];

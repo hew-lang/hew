@@ -1895,6 +1895,7 @@ fn typecheck_program_with_dependency_cache(
     checker.set_input_provider(Arc::new(compile_time::Inputs::new(
         input,
         options.documents.clone(),
+        hew_types::module_registry::stdlib_search_paths(),
     )));
     if options.enable_wasm_target {
         checker.enable_wasm_target();

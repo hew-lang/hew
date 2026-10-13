@@ -225,7 +225,10 @@ fn lsp_compile_time_input_navigation_and_watched_creation() {
     assert!(hover["result"].to_string().contains("message.txt"));
     assert!(hover["result"].to_string().contains("10 bytes"));
     let definition = session.request("textDocument/definition", position);
-    assert_eq!(definition["result"]["uri"], file_uri(&asset));
+    assert_eq!(
+        definition["result"]["uri"],
+        file_uri(&asset.canonicalize().expect("canonical asset path"))
+    );
 }
 
 impl TestProject {

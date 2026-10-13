@@ -87,7 +87,8 @@ impl TypeFactService {
     /// The one `Serializable` admission check. `tagged` adds the remote-payload
     /// rule: every record or enum reached must be `#[wire]`. `param` answers a
     /// bound on a type parameter of the code being checked.
-    pub(crate) fn data_error(
+    #[must_use]
+    pub fn data_error(
         &self,
         ty: &ResolvedTy,
         tagged: bool,

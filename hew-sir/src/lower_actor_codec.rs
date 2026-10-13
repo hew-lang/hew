@@ -22,7 +22,10 @@ impl InstanceService<'_> {
                     .protocol_descriptor
                     .handlers
                     .iter()
-                    .any(|handler| handler.remote_codec)
+                    .any(|handler| {
+                        handler.remote_member
+                            && self.actor_codec_eligible(&handler.param_tys, &handler.return_ty)
+                    })
                     .then(|| ResolvedTy::Named {
                         head: hew_types::TypeHead::Actor(hew_types::NominalHead::new(
                             hew_types::NominalId::of_declaration(actor.declaration),
@@ -37,6 +40,49 @@ impl InstanceService<'_> {
             self.require_actor(&ty)?;
         }
         Ok(())
+    }
+
+    pub(super) fn actor_codec_eligible(&self, params: &[ResolvedTy], reply: &ResolvedTy) -> bool {
+        params.iter().chain(std::iter::once(reply)).all(|ty| {
+            self.checked_facts
+                .data_error(ty, true, &|_, _| false)
+                .is_none()
+        })
+    }
+
+    pub(super) fn actor_wire_identity(
+        &self,
+        declaration: &str,
+        arguments: &[ResolvedTy],
+    ) -> Result<String, String> {
+        if arguments.is_empty() {
+            return Ok(declaration.to_string());
+        }
+        // Only rendering changes: nominal identities stay intact, while root
+        // source paths and import aliases never become portable type names.
+        fn portable(defs: &hew_types::DefTable, ty: &hew_types::Ty) -> hew_types::Ty {
+            let mut ty = ty.map_children_pub(&|child| portable(defs, child));
+            if let hew_types::Ty::Named {
+                head: hew_types::TypeHead::Nominal(nominal) | hew_types::TypeHead::Actor(nominal),
+                ..
+            } = &mut ty
+            {
+                *nominal = hew_types::NominalHead::new(
+                    nominal.id,
+                    &defs.dotted_declaration_path(nominal.id.declaration()),
+                );
+            }
+            ty
+        }
+        let arguments = arguments
+            .iter()
+            .map(|ty| {
+                ResolvedTy::from_ty(&portable(&self.module.defs, &ty.to_ty()))
+                    .map(|ty| ty.canonical_string())
+                    .map_err(|error| error.to_string())
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(format!("{declaration}<{}>", arguments.join(",")))
     }
 
     pub(super) fn resolve_actor_codec(

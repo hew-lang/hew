@@ -453,18 +453,19 @@ impl InstanceService<'_> {
                     ))
                 }
             };
-            let codec = if row.remote_codec {
+            let codec = if row.remote_member && self.actor_codec_eligible(&params, &return_ty) {
                 Some(self.resolve_actor_codec(&params, &return_ty)?)
             } else {
                 None
             };
+            let wire_identity = self.actor_wire_identity(&row.wire_identity, &substitution.args)?;
             self.actors[id.0 as usize]
                 .handlers
                 .push(crate::SemActorHandler {
                     declaration: handler.declaration,
                     name: handler.name.clone(),
                     message_id: row.msg_id,
-                    wire_identity: row.wire_identity.clone(),
+                    wire_identity,
                     every_ns: handler.every_ns,
                     callable,
                     params,
@@ -1289,9 +1290,6 @@ impl Builder<'_, '_> {
             .get(actor.0 as usize)
             .ok_or_else(|| "actor body has no state descriptor".to_string())?
             .clone();
-        if state_bindings.len() != descriptor.fields.len() {
-            return Err("actor body bindings differ from its complete state".into());
-        }
         let abi = &self.callable.signature.params[0];
         if abi.ty != descriptor.state_ty || abi.passing != SemParamPassing::BorrowMut {
             return Err("actor body requires its exclusive state receiver".into());
@@ -1304,6 +1302,20 @@ impl Builder<'_, '_> {
                 own: OwnKind::Guaranteed,
             },
         );
+        // A supervisor layer forwards the child's state seat to proceed(),
+        // but its source body has no bindings for the child's private fields.
+        if matches!(
+            self.callable.instance,
+            CallableInstance::ActorSupervisorIntercept { .. }
+        ) {
+            if !state_bindings.is_empty() {
+                return Err("supervisor interceptor unexpectedly binds actor fields".into());
+            }
+            return Ok(());
+        }
+        if state_bindings.len() != descriptor.fields.len() {
+            return Err("actor body bindings differ from its complete state".into());
+        }
         for (index, (binding, field)) in state_bindings.iter().zip(&descriptor.fields).enumerate() {
             if self.ty(&binding.ty) != field.ty {
                 return Err("actor field binding changes its declared type".into());

@@ -15,6 +15,9 @@ actor Store {
     receive fn count() -> i64 {
         calls
     }
+    receive fn identity() -> Store {
+        self
+    }
 }
 
 impl ActorMsg for Store {
@@ -25,9 +28,6 @@ impl ActorMsg for Store {
 actor Other {
     receive fn handle(value: string) -> string {
         value
-    }
-    receive fn identity() -> Other {
-        self
     }
 }
 
@@ -42,7 +42,36 @@ supervisor Service {
         println("intercepted");
         call.proceed()
     }
-    child other: Other;
+    child store: Store;
+}
+
+type LocalOnly {
+    value: string;
+}
+
+actor Echo<T> {
+    receive fn handle(value: T) -> T {
+        value
+    }
+}
+
+impl<T: Send> ActorMsg for Echo<T> {
+    type Msg = T;
+    type Reply = T;
+}
+
+actor Tagged<T> {
+    var marker: T;
+    var calls: i64 = 0;
+    receive fn handle(value: string) -> i64 {
+        calls = calls + 1;
+        calls
+    }
+}
+
+impl<T: Send> ActorMsg for Tagged<T> {
+    type Msg = string;
+    type Reply = i64;
 }
 
 fn pair() -> Pair {
@@ -73,14 +102,55 @@ fn main() {
     assert(right.ask(pair(), 1000).expect("completion") == "FIRSTSECOND");
     assert(store.count().expect("count") == 3);
 
-    // Supervisor interceptors specialize dispatch without changing actor type.
+    // Stateful supervisor interception forwards the same concrete actor state.
     let service = spawn Service;
-    let supervised_handle = service.other.identity().expect("supervised handle");
+    let supervised_handle = service.store.identity().expect("supervised handle");
     assert(Node.register("supervised", supervised_handle) == 0);
-    let supervised: RemotePid<Other> = Node.lookup("supervised").expect("lookup supervised");
-    assert(supervised.ask("first".to_upper(), 1000).expect("intercepted reply") == "FIRST");
-    supervised.send("second".to_upper()).expect("intercepted send");
-    assert(supervised.ask("third".to_upper(), 1000).expect("intercepted completion") == "THIRD");
+    let supervised: RemotePid<Store> = Node.lookup("supervised").expect("lookup supervised");
+    assert(supervised.ask(pair(), 1000).expect("intercepted reply") == "FIRSTSECOND");
+    supervised.send(pair()).expect("intercepted send");
+    assert(supervised.ask(pair(), 1000).expect("intercepted completion") == "FIRSTSECOND");
+    assert(supervised_handle.count().expect("supervised count") == 3);
+    // A local-only specialization needs no wire schema or codec.
+    let local = spawn Echo<LocalOnly>;
+    let local_reply = local.handle(LocalOnly { value: "local".to_upper() }).expect("local generic reply");
+    assert(local_reply.value == "LOCAL");
+    stop(local);
+    stopped(local);
+    let echo = spawn Echo<string>;
+    assert(Node.register("echo", echo) == 0);
+    let wrong_echo: RemotePid<Echo<Pair>> = Node.lookup("echo").expect("lookup echo");
+    match wrong_echo.ask(pair(), 1000) {
+        .Err(_) => {}
+        .Ok(_) => panic("wrong generic payload reached a handler"),
+    }
+    match wrong_echo.send(pair()) {
+        .Err(_) => {}
+        .Ok(_) => panic("wrong generic payload was accepted"),
+    }
+    let right_echo: RemotePid<Echo<string>> = Node.lookup("echo").expect("lookup echo");
+    assert(right_echo.ask("echo".to_upper(), 1000).expect("generic reply") == "ECHO");
+
+    // Distinct actor substitutions remain distinct even with identical messages.
+    let tagged = spawn Tagged<string> { marker: "marker".to_upper() };
+    assert(Node.register("tagged", tagged) == 0);
+    let wrong_tagged: RemotePid<Tagged<Pair>> = Node.lookup("tagged").expect("lookup tagged");
+    match wrong_tagged.ask("wrong".to_upper(), 1000) {
+        .Err(_) => {}
+        .Ok(_) => panic("wrong generic actor reached a handler"),
+    }
+    match wrong_tagged.send("wrong".to_upper()) {
+        .Err(_) => {}
+        .Ok(_) => panic("wrong generic actor was accepted"),
+    }
+    let right_tagged: RemotePid<Tagged<string>> = Node.lookup("tagged").expect("lookup tagged");
+    assert(right_tagged.ask("first".to_upper(), 1000).expect("generic state reply") == 1);
+    right_tagged.send("second".to_upper()).expect("generic state send");
+    assert(right_tagged.ask("third".to_upper(), 1000).expect("generic state completion") == 3);
+    stop(tagged);
+    stopped(tagged);
+    stop(echo);
+    stopped(echo);
     stop(service);
     stopped(service);
     stop(store);

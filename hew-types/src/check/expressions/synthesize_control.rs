@@ -551,9 +551,9 @@ impl Checker {
         reason = "literal coercion requires many match arms with range checks"
     )]
     pub(super) fn check_against_inner(&mut self, expr: &Expr, span: &Span, expected: &Ty) -> Ty {
-        // Resolve type variables so that Ty::Var(v) unified with e.g. Ty::I32
-        // is seen as Ty::I32 by the coercion arms below.
-        let resolved = self.subst.resolve(expected);
+        // Contextual literals and constructors need the concrete expected
+        // type, including an associated type selected by the receiver.
+        let resolved = self.normalize_for_use(expected);
         let expected = &resolved;
         // A struct literal's written path names its nominal by identity; it
         // meets the expected type only when both name one declaration.

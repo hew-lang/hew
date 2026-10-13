@@ -64,7 +64,10 @@ Wire version 3 carries the canonical dotted handler declaration
 from declaration ownership; import aliases, local dispatch indices and
 absolute source paths are not wire identities. Compilation roots have no
 portable module prefix; shared protocol modules provide their declared path.
-The receiver resolves the
+Generic actors append their concrete type arguments in canonical form, using
+portable declaration ownership for named types (`Actor.handler<string>`).
+Distinct actor substitutions remain distinct even when their payload layouts
+are identical. The receiver resolves the
 identity within the target actor's registered codecs. Handler reordering and
 local dispatch numbering therefore do not change the protocol.
 

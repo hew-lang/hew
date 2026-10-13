@@ -622,6 +622,7 @@ fn body_actor<'a>(function: &crate::SemFunction, actors: &'a [SemActor]) -> Opti
 pub(crate) fn verify_places(
     function: &crate::SemFunction,
     actors: Option<&[SemActor]>,
+    instance: Option<&crate::CallableInstance>,
 ) -> Result<(), String> {
     let places: Vec<_> = function
         .places
@@ -637,9 +638,17 @@ pub(crate) fn verify_places(
         .params
         .first()
         .ok_or("actor body has no state receiver")?;
+    let field_count = if matches!(
+        instance,
+        Some(crate::CallableInstance::ActorSupervisorIntercept { .. })
+    ) {
+        0
+    } else {
+        actor.fields.len()
+    };
     if receiver.ty != actor.state_ty
         || receiver.own != crate::OwnKind::Guaranteed
-        || places.len() != actor.fields.len()
+        || places.len() != field_count
     {
         return Err("actor body must borrow its complete exclusive state".into());
     }

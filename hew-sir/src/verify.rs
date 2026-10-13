@@ -1211,9 +1211,15 @@ fn check_function_with_context(
         ));
     }
     verify_function_callable_identity(function, callable_context, &mut diagnostics);
-    if let Err(reason) = verify_capture_places(function, callable_context)
-        .and_then(|()| crate::actor::verify_places(function, callable_context.map(|c| c.actors)))
-    {
+    if let Err(reason) = verify_capture_places(function, callable_context).and_then(|()| {
+        crate::actor::verify_places(
+            function,
+            callable_context.map(|c| c.actors),
+            callable_context
+                .and_then(|c| c.callable(function.callable))
+                .map(|c| &c.instance),
+        )
+    }) {
         diagnostics.push(diag(
             function,
             SirDiagnosticKind::InvalidCallable {

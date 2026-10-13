@@ -976,6 +976,14 @@ fn remote_ask_round_trip_returns_exact_values() {
         stdout.contains("PASS remote_ask get-count=42"),
         "expected exact get('count')=='42' from remote ask; client stdout:\n{stdout}"
     );
+    assert!(
+        stdout.contains("PASS remote_ask generic-identity"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("PASS remote_ask generic-point=3,4"),
+        "{stdout}"
+    );
     // Negative guard: no FAIL line may appear on a successful round-trip.
     assert!(
         !stdout.contains("FAIL "),

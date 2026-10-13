@@ -97,6 +97,17 @@ type WireResult {
     sum: i64 @2;
 }
 
+actor GenericEcho<T> {
+    receive fn handle(value: T) -> T {
+        value
+    }
+}
+
+impl<T: Send> ActorMsg for GenericEcho<T> {
+    type Msg = T;
+    type Reply = T;
+}
+
 actor KeyValue {
     var store: HashMap<string, string>;
     receive fn handle(req: KvReq) -> KvResp {
@@ -1017,6 +1028,10 @@ fn run_server(scenario: string) {
         let stopper = spawn SetupRaceStopper { monitor_target: monitor_target, link_target: link_target };
         let _ = fork stopper.run();
     }
+    if scenario == "remote_ask" {
+        Node.register("generic-number", spawn GenericEcho<u64>);
+        Node.register("generic-point", spawn GenericEcho<WirePoint>);
+    }
     let port = signal_server_listening(kx);
     if (os.env("HEW_DIST_RESTARTED") ?? "") == "1" {
         publish_atomic(kx, "server.restarted", "1");
@@ -1048,6 +1063,23 @@ fn run_server(scenario: string) {
         }
     }
     Node.shutdown();
+}
+
+fn lookup_generic_with_retry<T: Send>(name: string) -> Result<RemotePid<GenericEcho<T>>, LookupError> {
+    var attempts: i64 = 0;
+    loop {
+        let found: Result<RemotePid<GenericEcho<T>>, LookupError> = Node.lookup(name);
+        match found {
+            .Ok(pid) => return .Ok(pid),
+            .Err(error) => {
+                attempts = attempts + 1;
+                if attempts >= 50 {
+                    return .Err(error);
+                }
+                sleep(100ms);
+            }
+        }
+    }
 }
 
 fn scenario_remote_ask(kv: RemotePid<KeyValue>) -> i64 {
@@ -1112,6 +1144,23 @@ fn scenario_remote_ask(kv: RemotePid<KeyValue>) -> i64 {
             }
         }
     }
+    let number: RemotePid<GenericEcho<u64>> = lookup_generic_with_retry("generic-number").expect("generic number lookup");
+    let wrong: RemotePid<GenericEcho<i64>> = Node.lookup("generic-number").expect("wrong generic lookup");
+    // Positive integers have the same CBOR representation for these types.
+    // The concrete actor identity must reject the wrong substitution first.
+    match wrong.ask(7, 5000) {
+        .Err(_) => {}
+        .Ok(_) => {
+            println("FAIL remote_ask wrong-generic-accepted");
+            return 8;
+        }
+    }
+    assert(number.ask(42, 5000).expect("generic number reply") == 42);
+    println("PASS remote_ask generic-identity");
+    let points: RemotePid<GenericEcho<WirePoint>> = lookup_generic_with_retry("generic-point").expect("generic point lookup");
+    let point = points.ask(WirePoint { x: 3, y: 4 }, 5000).expect("generic point reply");
+    assert(point.x == 3 && point.y == 4);
+    println("PASS remote_ask generic-point=3,4");
     0
 }
 

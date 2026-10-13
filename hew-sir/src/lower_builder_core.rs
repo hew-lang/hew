@@ -557,6 +557,10 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         Ok(Some(value))
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "keeps the verified owned-value transfer alternatives in one lowering path"
+    )]
     pub(super) fn lower_owned_transfer(
         &mut self,
         expr: &HirExpr,

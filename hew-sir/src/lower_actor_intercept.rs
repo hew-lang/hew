@@ -1,9 +1,18 @@
 //! Compile each interceptor chain into the actor's ordinary callable graph.
 
-use super::*;
+use super::{
+    ActorWeave, BindingTarget, BlockArg, Builder, CallResult, CallUnwind, CallableId,
+    CallableInstance, Edge, HirExpr, InstanceService, InterceptorNext, OpId, Operand, OwnKind,
+    PreparedCallee, Provenance, ResolvedTy, SemOpKind, SemParamPassing, SemTerminator,
+    TypeSubstitution, ValueDef, ValueId,
+};
 use hew_types::actor_delivery::InterceptorOperation;
 
 impl InstanceService<'_> {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "builds and publishes one actor interceptor chain with its checked callable facts"
+    )]
     pub(super) fn weave_actor_interceptor(
         &mut self,
         actor: crate::ActorId,
@@ -450,10 +459,8 @@ impl Builder<'_, '_> {
         let ty = self.ty(&receiver.ty);
         if !operation.consumes() {
             let index = match operation {
-                Op::Caller => 1,
-                Op::HandlerName => 2,
-                Op::Failed => 1,
-                Op::Refused => 2,
+                Op::Caller | Op::Failed => 1,
+                Op::HandlerName | Op::Refused => 2,
                 _ => unreachable!(),
             };
             let mut loans = Vec::new();

@@ -1338,7 +1338,7 @@ impl Builder<'_, '_> {
         )?;
         let mut failures = vec![self.branch_candidate_test(condition)?];
         let fields =
-            self.borrow_variant_payload_fields(shape, predicate.variant_idx, source, &desired)?;
+            self.borrow_variant_payload_fields(shape, predicate.variant_idx, &source, &desired)?;
         for literal in &predicate.literals {
             let condition = self.lower_payload_literal_test(&fields, literal)?;
             failures.push(self.branch_candidate_test(condition)?);
@@ -1354,7 +1354,7 @@ impl Builder<'_, '_> {
         &mut self,
         shape: VariantShapeId,
         variant: u32,
-        source: Operand,
+        source: &Operand,
         desired: &crate::SemVariant,
     ) -> Result<Vec<Option<BlockArg>>, String> {
         let mut fields = Vec::with_capacity(desired.fields.len());
@@ -1455,7 +1455,7 @@ impl Builder<'_, '_> {
                 self.borrow_variant_payload_fields(
                     shape,
                     predicate.variant_idx,
-                    Operand { value: source },
+                    &Operand { value: source },
                     &desired,
                 )?
             } else {

@@ -269,8 +269,7 @@ pub unsafe extern "C" fn hew_cont_frame_alloc(size: u64) -> *mut c_void {
     crate::observe::record_coroutine_frame_alloc(size as u64);
     // SAFETY: the allocation is total = FRAME_HEADER + size bytes, so advancing
     // by FRAME_HEADER lands within the block with `size` usable bytes ahead.
-    let frame = unsafe { base.add(FRAME_HEADER).cast::<c_void>() };
-    frame
+    unsafe { base.add(FRAME_HEADER).cast::<c_void>() }
 }
 
 /// Release a frame previously returned by [`hew_cont_frame_alloc`].

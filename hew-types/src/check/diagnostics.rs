@@ -493,7 +493,11 @@ impl Checker {
         }
 
         // Outer-scope shadowing — severity depends on what is being shadowed.
-        if let Some(prev_span) = self.env.find_in_outer_scope(ident) {
+        if let Some(prev_span) = self.env.find_in_outer_scope(ident).or_else(|| {
+            self.constant_declaration(ident)
+                .filter(|id| self.defs.ident(*id) == ident)
+                .map(|_| None)
+        }) {
             match prev_span {
                 None => {
                     // Synthetic binding (actor field): hard error — bare field access would

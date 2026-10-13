@@ -20,12 +20,6 @@ impl Parser<'_> {
         }
     }
 
-    pub(crate) fn is_macro_declaration(&self) -> bool {
-        matches!(self.peek(), Some(Token::Identifier("macro")))
-            && matches!(self.peek_at(self.pos + 1), Some(Token::Identifier(_)))
-            && self.peek_at(self.pos + 2) == Some(&Token::LeftBrace)
-    }
-
     pub(crate) fn is_macro_call(&self) -> bool {
         let mut cursor = self.pos;
         loop {

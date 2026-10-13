@@ -1881,6 +1881,47 @@ fn cmd_check(a: &args::CheckArgs) {
 
 /// Body of `hew check`. Returns the process exit code; MUST NOT call
 /// `std::process::exit` (bypasses the [`JsonDiagnosticFlush`] guard).
+fn cmd_expand(args: &args::ExpandArgs) {
+    match hew_compile::run_file_frontend_to_expansion(
+        &args.input,
+        &hew_compile::FrontendOptions::default(),
+    ) {
+        Ok(state) => {
+            compile::render_frontend_diagnostics(&state.diagnostics);
+            let offset = args.at.as_deref().map(|position| {
+                let offset = position.split_once(':').and_then(|(line, column)| {
+                    let line = line.parse::<usize>().ok()?.checked_sub(1)?;
+                    let column = column.parse::<usize>().ok()?.checked_sub(1)?;
+                    let lines = hew_analysis::util::compute_line_offsets(&state.source);
+                    let start = *lines.get(line)?;
+                    let text = state.source[start..].lines().next()?;
+                    let byte = text.char_indices().nth(column).map(|(byte, _)| byte)
+                        .or_else(|| (text.chars().count() == column).then_some(text.len()))?;
+                    Some(start + byte)
+                });
+                offset.unwrap_or_else(|| {
+                    eprintln!("invalid expansion position `{position}`; expected LINE:COL within the file");
+                    std::process::exit(2);
+                })
+            });
+            let path =
+                std::fs::canonicalize(&args.input).unwrap_or_else(|_| args.input.clone().into());
+            let Some(text) = hew_analysis::expansion::render(&state.program, &path, offset) else {
+                eprintln!("no macro expansion at this position");
+                std::process::exit(1);
+            };
+            println!("{text}");
+        }
+        Err(failure) => {
+            let channel = compile::render_frontend_diagnostics(&failure.diagnostics);
+            if failure.diagnostics.is_empty() {
+                eprintln!("{}", failure.message);
+            }
+            std::process::exit(channel.unwrap_or(DiagChannel::User).exit_code());
+        }
+    }
+}
+
 fn cmd_check_run(a: &args::CheckArgs) -> i32 {
     let json = a.format == args::DiagnosticFormat::Json;
 

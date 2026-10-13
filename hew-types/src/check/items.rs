@@ -354,7 +354,7 @@ impl Checker {
         } else {
             child.span.clone()
         };
-        let identity = self.resolve_supervisor_child_type(&child.actor_type.to_string()); // TRANSITION(P1): deleted by A1 commit 2
+        let identity = self.resolve_supervisor_child_type(&child.actor_type);
         let definition = identity.as_ref().and_then(|name| self.type_def_at(name));
         if definition.is_some_and(|definition| {
             matches!(
@@ -421,7 +421,7 @@ impl Checker {
             let Some(identity) = self.resolve_checked_supervisor_child(sd, child, span) else {
                 continue;
             };
-            let target = (Expr::Ident(Ident::new(&identity)), child.span.clone()); // TRANSITION(P1): deleted by A1 commit 2
+            let target = (Expr::Ident(Ident::new(&identity)), child.span.clone());
             let handle = self.check_spawn(
                 &target,
                 &child.type_args,
@@ -434,7 +434,7 @@ impl Checker {
                 // Keyed by the declaration identity, as registration writes it:
                 // a module supervisor answers to `{module}.{name}`, and this is
                 // where each child's refined handle carrier is published.
-                let identity = self.declaration_identity(sd.name.name.as_str());
+                let identity = self.declaration_identity(sd.name);
                 if let Some(children) = self.supervisor_children.get_mut(&identity) {
                     let entries = if child.is_pool {
                         &mut children.pools
@@ -718,7 +718,7 @@ impl Checker {
             .map(|c| {
                 (
                     c.name.name.as_str(),
-                    self.canonical_supervisor_child_type(&c.actor_type.to_string()), // TRANSITION(P1): deleted by A1 commit 2
+                    self.canonical_supervisor_child_type(&c.actor_type),
                 )
             })
             .collect();
@@ -758,8 +758,7 @@ impl Checker {
                 // ── Type compatibility ──────────────────────────────────────
                 // The dependent child's actor init must have a param named `param_key`
                 // typed as `sibling_type`'s own actor-handle type.
-                let dependent_identity =
-                    self.canonical_supervisor_child_type(&child.actor_type.to_string()); // TRANSITION(P1): deleted by A1 commit 2
+                let dependent_identity = self.canonical_supervisor_child_type(&child.actor_type);
                 self.check_supervisor_wired_to_type_compat(
                     sd.name.name.as_str(),
                     child.name.name.as_str(),
@@ -1314,7 +1313,7 @@ impl Checker {
                         consumes_self: false,
                     };
                     let trait_declaration = self
-                        .lookup_declaration(&self.declaration_identity(td.name.name.as_str()))
+                        .lookup_declaration(&self.declaration_identity(td.name))
                         .expect("registered trait owns its default methods");
                     let qualified =
                         format!("{}::{}", self.defs.path(trait_declaration), method.name);
@@ -1363,7 +1362,7 @@ impl Checker {
         // max-heap table key must use the same identity the registration
         // pass authored, or a same-named actor from another module would be
         // consulted instead.
-        let identity = Self::actor_identity(self.current_module.as_deref(), ad.name.name.as_str());
+        let identity = self.declaration_identity(ad.name);
         let parameters = self.declaration_parameter_heads(&identity);
         let actor_ty = self.named_ty_for_key(
             &identity,
@@ -2913,15 +2912,14 @@ impl Checker {
         } else {
             None
         };
-        self.env.define(cd.name, actual, false);
-        if let Some(value) = const_value {
-            let binding_id = self
-                .env
-                .lookup_ref(cd.name)
-                .expect("constant binding was just defined")
-                .id;
-            self.const_values.insert(cd.name, value);
-            self.declared_const_bindings.insert(cd.name, binding_id);
+        if let Some(declaration) = self.constant_declaration(cd.name) {
+            self.source_constants.insert(
+                declaration,
+                super::types::SourceConstant {
+                    ty: actual,
+                    value: const_value,
+                },
+            );
         }
         self.record_root_value_binding(cd.name.name.as_str());
     }
@@ -3033,12 +3031,14 @@ impl Checker {
             type_args: _,
         } = &id.target_type.0
         {
-            let type_name = &named_path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
-                                                     // Resolve the whole target once, with the impl's parameters and
-                                                     // their bounds in scope: the bounds satisfy the target's declared
-                                                     // bounds (`impl<T: Clone> St<T>` for `St<T: Clone>`), and the
-                                                     // resolved type keeps the receiver's identity (a source `Option<T>`
-                                                     // is never rebuilt as the builtin).
+            let type_name = &self
+                .canonical_impl_target_identity(named_path)
+                .unwrap_or_else(|| named_path.to_string());
+            // Resolve the whole target once, with the impl's parameters and
+            // their bounds in scope: the bounds satisfy the target's declared
+            // bounds (`impl<T: Clone> St<T>` for `St<T: Clone>`), and the
+            // resolved type keeps the receiver's identity (a source `Option<T>`
+            // is never rebuilt as the builtin).
             let self_ty = self.resolve_impl_target(id);
             if let Some(tb) = &id.trait_bound {
                 let trait_id = self.resolve_trait_path(&tb.path);

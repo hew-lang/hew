@@ -106,12 +106,14 @@ impl Checker {
         let (canonical_type, builtin) = match &target.0 {
             Expr::Ident(surface) => {
                 if self.env.lookup_ref(surface).is_some()
-                    || self.module_binding_in_current_file(surface.name.as_str())
+                    || self.module_binding_in_current_file(surface)
                 {
                     return None;
                 }
                 let canonical = self
-                    .source_nominal_declaration(surface.name.as_str())
+                    .named_item_declaration(*surface)
+                    .map(|id| self.defs.path(id).to_string())
+                    .or_else(|| self.source_nominal_declaration(surface.name.as_str()))
                     .or_else(|| {
                         self.resolve_nominal_declaration(
                             NominalOrigin::Lexical,
@@ -154,7 +156,7 @@ impl Checker {
                 self.note_import_use(module_short.name.as_str());
                 let canonical = format!(
                     "{}.{}",
-                    self.canonical_module_import_owner(module_short.name.as_str()),
+                    self.canonical_module_import_owner(module_short),
                     field.0
                 );
                 let builtin = self.resolved_builtin_type(&canonical);
@@ -177,7 +179,9 @@ impl Checker {
     fn machine_event_type_head(&mut self, object: &Spanned<Expr>) -> Option<String> {
         let machine = match &object.0 {
             Expr::Ident(name) if self.env.lookup_ref(name).is_none() => self
-                .source_nominal_declaration(name.name.as_str())
+                .named_item_declaration(*name)
+                .map(|id| self.defs.path(id).to_string())
+                .or_else(|| self.source_nominal_declaration(name.name.as_str()))
                 .or_else(|| {
                     self.resolve_nominal_declaration(NominalOrigin::Lexical, name.name.as_str())
                 }),
@@ -195,7 +199,7 @@ impl Checker {
                 self.note_import_use(module.name.as_str());
                 Some(format!(
                     "{}.{}",
-                    self.canonical_module_import_owner(module.name.as_str()),
+                    self.canonical_module_import_owner(module),
                     machine.0
                 ))
             }

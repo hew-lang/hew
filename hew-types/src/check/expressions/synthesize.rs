@@ -294,7 +294,11 @@ impl Checker {
 
             // Field access
             Expr::FieldAccess { object, field } => {
-                let ty = self.check_field_access(object, field.0.name.as_str(), span);
+                let ty = self
+                    .qualified_constant_type(object, field, span)
+                    .unwrap_or_else(|| {
+                        self.check_field_access(object, field.0.name.as_str(), span)
+                    });
                 if !matches!(&ty, Ty::Error) {
                     self.record_value_path_resolution(expr, span);
                     self.record_field_resolution(object, field);
@@ -384,7 +388,31 @@ impl Checker {
                     Some(super::super::scope::Resolution::Nominal(id)) => {
                         self.defs.path(id.declaration()).to_string()
                     }
-                    _ => path.to_string(),
+                    _ => {
+                        let resolution = self.scope_site().and_then(|site| {
+                            self.scopes
+                                .resolve(
+                                    &self.env,
+                                    site,
+                                    super::super::scope::Namespace::Value,
+                                    &path.segments,
+                                )
+                                .ok()
+                        });
+                        if let Some(super::super::scope::Resolution::Variant(owner, _)) = resolution
+                        {
+                            let owner = owner
+                                .declaration(&self.defs)
+                                .expect("variant owner declaration");
+                            format!(
+                                "{}::{}",
+                                self.defs.path(owner.declaration()),
+                                path.segments.last().expect("variant path").0
+                            )
+                        } else {
+                            path.to_string()
+                        }
+                    }
                 };
                 let ty = self.check_struct_init(
                     &name,
@@ -854,35 +882,6 @@ impl Checker {
         target
     }
 
-    /// Build a [`ConstEnv`](crate::check::const_eval::ConstEnv) snapshot of the
-    /// integer `const` bindings currently in scope, for constexpr count/length
-    /// evaluation (e.g. the fixed-array repeat-length check). Float consts are
-    /// deliberately excluded — the const-eval sub-engine is integer-only.
-    ///
-    /// Only bindings with declared-const provenance (`declared_const_bindings`)
-    /// are admitted. The current lexical binding must match the declared
-    /// constant's binding ID, so a local or parameter cannot inherit a
-    /// same-named module constant's value. `const_values` also holds
-    /// literal-coercion entries for every unannotated immutable integer literal
-    /// (`let n = 4`), whose *value* is not a compile-time constant for length
-    /// purposes; admitting those would let a runtime-shaped local silently
-    /// satisfy a fixed-array length.
-    pub(super) fn const_eval_env(&self) -> crate::check::const_eval::ConstEnv {
-        let mut env = crate::check::const_eval::ConstEnv::new();
-        for (name, value) in &self.const_values {
-            let Some(declared_binding_id) = self.declared_const_bindings.get(name) else {
-                continue;
-            };
-            if self.env.lookup_ref(name).map(|binding| binding.id) != Some(*declared_binding_id) {
-                continue;
-            }
-            if let ConstValue::Integer(v) = value {
-                env.insert(name.clone(), *v);
-            }
-        }
-        env
-    }
-
     pub(in crate::check) fn synthesize_array_repeat(
         &mut self,
         value: &Spanned<Expr>,
@@ -1310,10 +1309,8 @@ impl Checker {
         if self.report_bare_const_scope_error(name, span) {
             return Ty::Error;
         }
-        if self.is_constant_identifier(ident) {
-            if let Some(binding) = self.env.lookup(ident) {
-                return binding.ty.clone();
-            }
+        if let Some(ty) = self.constant_type(ident) {
+            return ty;
         }
         // Module-qualified value constructor reference encoded as a flat
         // `Identifier("module.Type::Variant")` by `parse_dot_postfix` when no

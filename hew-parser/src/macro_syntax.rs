@@ -6,6 +6,15 @@ use crate::ast::{
     Block, Expr, Ident, Path, Pattern, Span, Spanned, SyntaxContext, TypeExpr, Visibility,
 };
 
+/// Built-ins share the macro call spelling but remain compiler-owned.
+#[must_use]
+pub fn is_builtin_macro(name: &str) -> bool {
+    matches!(
+        name,
+        "stringify" | "location" | "include_str" | "include_bytes" | "embed"
+    )
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Delimiter {
     Parenthesis,
@@ -319,6 +328,7 @@ pub struct Expansion {
     pub file: PathBuf,
     pub synthetic: Span,
     pub invocation: Origin,
+    pub callee: Origin,
     pub definition: Origin,
     pub parent: Option<ExpansionId>,
     pub origins: Vec<(Span, Origin)>,
@@ -390,6 +400,9 @@ impl ExpansionMap {
 
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.contexts.rows.is_empty() && self.expansions.is_empty() && self.sources.is_empty()
+        self.templates.is_empty()
+            && self.contexts.rows.is_empty()
+            && self.expansions.is_empty()
+            && self.sources.is_empty()
     }
 }

@@ -668,7 +668,7 @@ fn foo(p: Point) -> i64 {
         assert_eq!(plan.fields.len(), 2);
         assert_eq!(plan.fields[0].name, "x");
         assert_eq!(plan.fields[0].decl_idx, 0);
-        assert_eq!(plan.fields[0].sub, PlanSub::Binding("x".to_string()));
+        assert_eq!(plan.fields[0].sub, PlanSub::Binding(Ident::new("x")));
         assert_eq!(plan.fields[1].name, "y");
         assert_eq!(plan.fields[1].decl_idx, 1);
         assert_eq!(plan.fields[1].sub, PlanSub::Wildcard);
@@ -701,7 +701,7 @@ fn label(state: State) -> string {
         let plan = output.pattern_plans.values().next().unwrap();
         assert_eq!(plan.fields.len(), 1);
         assert_eq!(plan.fields[0].name, "label");
-        assert_eq!(plan.fields[0].sub, PlanSub::Binding("label".to_string()));
+        assert_eq!(plan.fields[0].sub, PlanSub::Binding(Ident::new("label")));
     }
 
     #[test]
@@ -773,7 +773,7 @@ fn foo(p: Point) -> i64 {
         );
         let plan = output.pattern_plans.values().next().unwrap();
         assert_eq!(plan.fields.len(), 2);
-        assert_eq!(plan.fields[0].sub, PlanSub::Binding("x".to_string()));
+        assert_eq!(plan.fields[0].sub, PlanSub::Binding(Ident::new("x")));
         assert_eq!(plan.fields[1].sub, PlanSub::Wildcard);
     }
 

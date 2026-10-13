@@ -1883,6 +1883,7 @@ dependencies = [
 name = "hew-expand"
 version = "0.6.1"
 dependencies = [
+ "hew-lexer",
  "hew-parser",
 ]
 

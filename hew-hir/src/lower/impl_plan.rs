@@ -52,12 +52,16 @@ impl LowerCtx {
         symbol_owner: &str,
         method_name: &str,
     ) -> String {
+        let symbol_owner = self.defs.owner(declaration).map_or_else(
+            || symbol_owner.to_string(),
+            |owner| self.defs.linkage_name(owner, symbol_owner),
+        );
         match self.collision_owner_suffix(declaration) {
             Some(suffix) => crate::node::HirImplBlock::method_symbol(
                 &format!("{symbol_owner}{suffix}"),
                 method_name,
             ),
-            None => crate::node::HirImplBlock::method_symbol(symbol_owner, method_name),
+            None => crate::node::HirImplBlock::method_symbol(&symbol_owner, method_name),
         }
     }
 
@@ -336,9 +340,7 @@ pub(super) fn plan_impl_block_symbols(
             &symbol_self_name,
             method.name.name.as_str(),
         );
-        if ctx.impl_method_symbol_collisions.contains(&declaration) {
-            ctx.register_impl_method_fn_entry_at(method, &impl_type_params, &symbol);
-        }
+        ctx.register_impl_method_fn_entry_at(method, &impl_type_params, &symbol);
         planned.push((declaration, symbol));
     }
     // A trait default the impl does NOT override is materialised as its own
@@ -380,7 +382,7 @@ pub(super) fn materialized_default_body_plan(
     let Some(trait_bound) = &impl_decl.trait_bound else {
         return Vec::new();
     };
-    let Some(owner_key) = ctx.trait_declaration(&trait_bound.path.to_string()) else {
+    let Some(owner_key) = ctx.trait_declaration(&trait_bound.path) else {
         // TRANSITION(P1): deleted by A1 commit 2
         return Vec::new();
     };
@@ -416,11 +418,9 @@ pub(super) fn materialized_default_body_plan(
             symbol_self_name,
             default_method.method.name.name.as_str(),
         );
-        if ctx.impl_method_symbol_collisions.contains(&declaration) {
-            let method = trait_method_to_fn_decl(&default_method.method);
-            let impl_parameters = impl_type_parameters(ctx, impl_decl);
-            ctx.register_impl_method_fn_entry_at(&method, &impl_parameters, &symbol);
-        }
+        let method = trait_method_to_fn_decl(&default_method.method);
+        let impl_parameters = impl_type_parameters(ctx, impl_decl);
+        ctx.register_impl_method_fn_entry_at(&method, &impl_parameters, &symbol);
         out.push((declaration, symbol));
     }
     out

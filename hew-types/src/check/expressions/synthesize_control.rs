@@ -1082,8 +1082,15 @@ impl Checker {
                     return Ty::Error;
                 }
                 self.check_against(&count.0, &count.1, &Ty::I64);
-                let const_env = self.const_eval_env();
-                match crate::check::const_eval::eval_const_expr(count, &const_env) {
+                let count_value = crate::check::const_eval::eval_integer_const_expr_with_values(
+                    count,
+                    crate::check::const_eval::ConstIntegerTarget::machine_usize_compat(),
+                    |expr| self.constant_integer_value(expr),
+                );
+                match count_value.and_then(|value| {
+                    u64::try_from(value)
+                        .map_err(|_| crate::check::const_eval::ConstEvalError::Overflow)
+                }) {
                     Ok(actual_count) if actual_count != *size => {
                         self.report_error(
                             TypeErrorKind::ArityMismatch,
@@ -1115,7 +1122,7 @@ impl Checker {
             // Known compile-time numeric literal identifiers can coerce to
             // compatible numeric types using the same literal-kind rules.
             (Expr::Ident(name), ty) if ty.is_numeric() => {
-                if let Some(cv) = self.const_values.get(name).cloned() {
+                if let Some(cv) = self.coercible_literal_value(*name).cloned() {
                     match (&cv, expected) {
                         (ConstValue::Integer(value), ty) if ty.is_integer() => {
                             if !expected.is_numeric_literal() {

@@ -23,7 +23,7 @@ impl Checker {
             super::Item::Actor(declaration) => declaration.name,
             _ => return,
         };
-        let identity = self.declaration_identity(name.name.as_str());
+        let identity = self.declaration_identity(name);
         let contains = self.type_def_at(&identity).is_some_and(|definition| {
             Self::structural_member_types_for_type(definition)
                 .iter()
@@ -109,7 +109,7 @@ impl Checker {
         &mut self,
         supervisor: &hew_parser::ast::SupervisorDecl,
     ) {
-        let identity = self.declaration_identity(supervisor.name.name.as_str());
+        let identity = self.declaration_identity(supervisor.name);
         for (index, method) in supervisor.methods.iter().enumerate() {
             let intercepts = method
                 .attributes
@@ -210,10 +210,8 @@ impl Checker {
     }
 
     pub(super) fn register_actor_intercept_types(&mut self, program: &Program) {
-        for (identity, actor) in collect_program_actors(program) {
-            let Some(owner) = self.defs.lookup_path(&identity) else {
-                continue;
-            };
+        for (owner, actor) in collect_program_actors(program, &self.defs) {
+            let identity = self.defs.path(owner);
             let Some(actor_def) = self
                 .type_defs
                 .get(&NominalId::from_minted_declaration(owner))
@@ -221,7 +219,7 @@ impl Checker {
             else {
                 continue;
             };
-            let Some(protocol) = self.actor_protocol_descriptors.get(&identity).cloned() else {
+            let Some(protocol) = self.actor_protocol_descriptors.get(identity).cloned() else {
                 continue;
             };
             for (kind, suffix) in [

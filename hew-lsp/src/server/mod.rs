@@ -154,6 +154,7 @@ fn modifier_bit(m: &SemanticTokenModifier) -> u32 {
 
 #[derive(Debug)]
 struct DocumentState {
+    expanded_program: Option<Box<hew_parser::ast::Program>>,
     source: String,
     /// Byte offsets of each line start, computed once per edit.
     line_offsets: Vec<usize>,
@@ -487,6 +488,37 @@ impl HewLanguageServer {
                 .to_checked_file_path()
                 .and_then(|path| path.parent().map(Path::to_path_buf))
         })
+    }
+
+    /// Show the innermost macro expansion at the requested source position.
+    ///
+    /// # Errors
+    ///
+    /// The protocol requires a result; absent documents and expansions return null.
+    #[expect(
+        clippy::unused_async,
+        reason = "custom_method requires an async handler"
+    )]
+    pub async fn expand_macro(
+        &self,
+        params: tower_lsp_server::ls_types::TextDocumentPositionParams,
+    ) -> Result<Option<String>> {
+        let Some(doc) = self.documents.get(&params.text_document.uri) else {
+            return Ok(None);
+        };
+        let Some(program) = doc.expanded_program.as_deref() else {
+            return Ok(None);
+        };
+        let Some(path) = params.text_document.uri.to_checked_file_path() else {
+            return Ok(None);
+        };
+        let path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+        let offset = position_to_offset(&doc.source, &doc.line_offsets, params.position);
+        Ok(hew_analysis::expansion::render(
+            program,
+            &path,
+            Some(offset),
+        ))
     }
 
     /// Return stable identities and ranges from the same discovery used by
@@ -1123,6 +1155,7 @@ mod tests {
     fn completions_include_keywords() {
         let parse_result = hew_parser::parse("");
         let doc = DocumentState {
+            expanded_program: None,
             source: String::new(),
             line_offsets: compute_line_offsets(""),
             parse_result,
@@ -1332,6 +1365,7 @@ mod tests {
         let type_output = checker.check_program(&parse_result.program);
 
         let doc = DocumentState {
+            expanded_program: None,
             source: source.to_string(),
             line_offsets: compute_line_offsets(source),
             parse_result,
@@ -1377,6 +1411,7 @@ mod tests {
         );
 
         let doc = DocumentState {
+            expanded_program: None,
             source: source.to_string(),
             line_offsets: compute_line_offsets(source),
             parse_result,
@@ -1462,6 +1497,7 @@ mod tests {
         let mut checker = Checker::new(registry);
         let type_output = checker.check_program(&parse_result.program);
         let doc = DocumentState {
+            expanded_program: None,
             source: source.to_string(),
             line_offsets: compute_line_offsets(source),
             parse_result,
@@ -1517,6 +1553,7 @@ mod tests {
         );
 
         let doc = DocumentState {
+            expanded_program: None,
             source: source.to_string(),
             line_offsets: compute_line_offsets(source),
             parse_result,
@@ -1548,6 +1585,7 @@ mod tests {
         let source = "actor Foo {}\nactor Bar {}\nfn baz() {}\nfn main() { let h = spawn  }";
         let parse_result = hew_parser::parse(source);
         let doc = DocumentState {
+            expanded_program: None,
             source: source.to_string(),
             line_offsets: compute_line_offsets(source),
             parse_result,
@@ -1593,6 +1631,7 @@ mod tests {
         let mut checker = Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
         let type_output = checker.check_program(&parse_result.program);
         let doc = DocumentState {
+            expanded_program: None,
             source: source.to_string(),
             line_offsets: compute_line_offsets(source),
             parse_result,
@@ -1635,6 +1674,7 @@ mod tests {
         let mut checker = Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
         let type_output = checker.check_program(&parse_result.program);
         let doc = DocumentState {
+            expanded_program: None,
             source: source.to_string(),
             line_offsets: compute_line_offsets(source),
             parse_result,
@@ -1676,6 +1716,7 @@ mod tests {
             parse_result.errors
         );
         let doc = DocumentState {
+            expanded_program: None,
             source: source.to_string(),
             line_offsets: compute_line_offsets(source),
             parse_result,
@@ -1747,6 +1788,7 @@ impl Worker {
             parse_result.errors
         );
         let doc = DocumentState {
+            expanded_program: None,
             source: source.to_string(),
             line_offsets: compute_line_offsets(source),
             parse_result,
@@ -4205,6 +4247,7 @@ fn label(colour: Colour) -> string {
         let parse_result = hew_parser::parse(source);
         let lo = compute_line_offsets(source);
         DocumentState {
+            expanded_program: None,
             source: source.to_string(),
             line_offsets: lo,
             parse_result,
@@ -4227,6 +4270,7 @@ fn label(colour: Colour) -> string {
         let mut checker = Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
         let type_output = checker.check_program(&parse_result.program);
         DocumentState {
+            expanded_program: None,
             source: source.to_string(),
             line_offsets: lo,
             parse_result,

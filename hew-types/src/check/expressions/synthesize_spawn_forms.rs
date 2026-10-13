@@ -143,7 +143,7 @@ impl Checker {
         } = &object.0
         {
             if let Expr::Ident(module_short) = &module.0 {
-                if self.module_binding_in_current_file(module_short.name.as_str())
+                if self.module_binding_in_current_file(module_short)
                     && self.env.lookup_ref(module_short).is_none()
                 {
                     let constructor = format!("{module_short}.{}::{}", type_name.0, field);
@@ -184,16 +184,7 @@ impl Checker {
             }
         }
 
-        // Pre-dispatch: module-qualified constant reference, e.g. `module.CONST_NAME`.
-        // Must run BEFORE `synthesize(object)` for the same reason as the variant
-        // arm above — the module short-name is not in env as a value binding.
-        //
-        // Gated on:
-        //   - object is a bare `Expr::Ident`
-        //   - field does NOT contain `::` (plain const name, not a variant)
-        //   - receiver is not a value binding or known type
-        //   - the lexical module binding resolves to an exact owner-qualified
-        //     constant key registered in env
+        // Module-qualified function references are selected before treating a module as a value.
         if let Expr::Ident(name) = &object.0 {
             if !field.contains("::") {
                 let receiver_is_binding = self.env.lookup_ref(*name).is_some();
@@ -208,17 +199,10 @@ impl Checker {
                             name.to_string(),
                         ))
                         .map_or_else(|| lexical_key.clone(), |owner| format!("{owner}.{field}"));
-                    if let Some(binding) = self.env.lookup_ref(&qualified_key) {
-                        let ty = binding.ty.clone();
-                        if self.module_binding_in_current_file(name.name.as_str()) {
-                            self.note_import_use(name.name.as_str());
-                        }
-                        return ty;
-                    }
                     // If the receiver looks like a module (known to self.modules) but
                     // the const is not exported, emit a targeted diagnostic rather than
                     // falling through to the generic "undefined variable `module`" error.
-                    if self.module_binding_in_current_file(name.name.as_str()) {
+                    if self.module_binding_in_current_file(name) {
                         if self.has_fn_sig(&qualified_key) {
                             self.note_import_use(name.name.as_str());
                             self.reject_wasm_native_only_module_function(
@@ -1984,7 +1968,7 @@ impl Checker {
             // local actor is a typed error naming the candidates — never
             // silent first-wins.
             Expr::Ident(name) => {
-                match self.resolve_bare_spawn_target_identity(name.name.as_str()) {
+                match self.resolve_bare_spawn_target_identity(name) {
                     super::types::BareActorResolution::Resolved(identity) => Some(identity),
                     super::types::BareActorResolution::Ambiguous(candidate_modules) => {
                         self.report_ambiguous_actor_reference(
@@ -2029,7 +2013,7 @@ impl Checker {
             // Handle module-qualified actor: spawn module.ActorName { args }
             Expr::FieldAccess { object, field } => {
                 if let Expr::Ident(module) = &object.0 {
-                    if self.module_binding_in_current_file(module.name.as_str()) {
+                    if self.module_binding_in_current_file(module) {
                         // Verify the qualifier resolves to something spawnable
                         // that is a public export of `module` before stripping
                         // it to the bare name. `module_type_exports` membership

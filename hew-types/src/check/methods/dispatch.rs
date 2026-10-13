@@ -288,11 +288,11 @@ impl Checker {
             // exact source owner, so resolve the binding before every authority
             // lookup. Never recover the owner from the final path segment: two
             // nested stdlib modules may share both a leaf and a function name.
-            let canonical_owner = self.canonical_module_import_owner(name.name.as_str());
+            let canonical_owner = self.canonical_module_import_owner(name);
             let key = self.canonical_fn_identity(Some(&canonical_owner), method);
             let looks_like_module_call = !receiver_is_binding
                 && !receiver_is_known_type
-                && (self.module_binding_in_current_file(name.name.as_str())
+                && (self.module_binding_in_current_file(name)
                     || self.module_fn_exports.contains(&key)
                     || self.has_fn_sig(&key));
             if looks_like_module_call {
@@ -302,7 +302,7 @@ impl Checker {
                         module_name: canonical_owner.clone(),
                     },
                 );
-                if self.module_binding_in_current_file(name.name.as_str()) {
+                if self.module_binding_in_current_file(name) {
                     self.note_import_use(name.name.as_str());
                 }
                 // Cross-module enum variant construction: e.g. `fs.IoError::TimedOut(0)`.
@@ -429,12 +429,12 @@ impl Checker {
                 if let Some(sig) = self.fn_sig(&key).cloned() {
                     self.record_call_edge(&key);
                     self.record_module_qualified_stdlib_call_rewrite_if_any(
-                        name.name.as_str(),
+                        &canonical_owner,
                         method,
                         span,
                     );
                     self.record_module_qualified_user_call_rewrite_if_any(
-                        name.name.as_str(),
+                        &canonical_owner,
                         method,
                         span,
                     );

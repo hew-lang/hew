@@ -147,8 +147,16 @@ pub(crate) fn walk_parse_result<'ast, V: AstVisitor<'ast>>(
     parse_result: &'ast ParseResult,
     visitor: &mut V,
 ) {
+    walk_program(source, &parse_result.program, visitor);
+}
+
+pub(crate) fn walk_program<'ast, V: AstVisitor<'ast>>(
+    source: Option<&str>,
+    program: &'ast hew_parser::ast::Program,
+    visitor: &mut V,
+) {
     let mut walker = AstWalker::new(source, visitor);
-    for (item, span) in &parse_result.program.items {
+    for (item, span) in &program.items {
         walker.walk_item(item, span, None);
     }
 }

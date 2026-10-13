@@ -735,15 +735,29 @@ fn assert_case(case: &ParityCase, stdin: &str) {
 #[cfg(unix)]
 #[test]
 fn contextual_macros_native_and_vm() {
+    let source = "macro add { ($x:expr) => expr { $x + 1 } } fn main() { println(add!(2)); }";
+    let expanded = hew_wasm::expand_macro(source, source.find("add!(2)").unwrap())
+        .expect("browser macro expansion");
+    assert!(expanded.contains("2 + 1"), "{expanded}");
     set_test_hewpath();
     ensure_native_toolchain();
     ensure_parity_runner_built();
-    assert_case(
+    let mut inputs = hew_compile::SourceSet::in_memory();
+    inputs.insert(
+        "contextual_macros_support.hew",
+        include_str!("../../tests/core-acceptance/cases/contextual_macros_support.hew"),
+    );
+    inputs.insert(
+        "contextual_macros_library.hew",
+        include_str!("../../tests/core-acceptance/cases/contextual_macros_library.hew"),
+    );
+    assert_case_with_inputs(
         &ParityCase {
             test_name: "contextual_macros",
             source_rel: "tests/core-acceptance/cases/contextual-macros.hew",
         },
         "",
+        inputs,
     );
 }
 

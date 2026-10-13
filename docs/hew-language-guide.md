@@ -5426,6 +5426,11 @@ Pass `--allow-empty` for the rare case where an empty result is
 legitimately fine (e.g. a generated/optional test directory that may not
 exist yet on some branches).
 
+## Declarative macros
+
+Use [declarative macros](guides/macros.md) to generate declarations or reusable
+syntax patterns with caller-safe bindings.
+
 ## Appendix A - FFI boundary types
 
 Hew uses `&T` only inside the parameter and return type trees of functions in

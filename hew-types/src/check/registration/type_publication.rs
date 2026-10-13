@@ -451,10 +451,13 @@ impl Checker {
     /// Only a qualified spelling is resolved: a bare name is the declaring
     /// scope's own lexical spelling and the surrounding registration already
     /// owns its qualification.
-    pub(in crate::check) fn canonical_impl_target_identity(&self, name: &str) -> Option<String> {
-        name.contains('.')
-            .then(|| self.canonical_nominal_name(name))
-            .flatten()
+    pub(in crate::check) fn canonical_impl_target_identity(
+        &mut self,
+        path: &hew_parser::ast::Path,
+    ) -> Option<String> {
+        self.resolve_type_path_head(path)
+            .and_then(|head| head.declaration(&self.defs))
+            .map(|owner| self.defs.path(owner.declaration()).to_string())
     }
 
     pub(super) fn stdlib_hew_source_identity(decl: &ImportDecl, module_path: &str) -> String {
@@ -910,33 +913,13 @@ impl Checker {
                     self.register_actor_base(ad, Some(module_full_path));
                     self.current_module = saved_importer_module;
                 }
-                // Register pub consts from C-backed stdlib modules that also
-                // ship Hew source (e.g. `std::misc::log` with `pub const JSON`).
-                // `register_user_module` handles this for pure-Hew user modules;
-                // this arm mirrors it for the stdlib Hew-source path so that
-                // `module.CONST` field access resolves in the type checker via
-                // the same `env.lookup_ref("{module}.{field}")` guard in
-                // `check_field_access`.
-                //
-                // SHIM (visibility): non-pub consts are not registered, so a
-                // cross-module `module.PRIVATE_CONST` reference fails closed with
-                // "module has no exported constant" rather than a dedicated
-                // E_VISIBILITY. WHY: const references resolve through the value
-                // env / field-access path, which has no visibility-enforcement
-                // consult point — unlike traits/actors/types which share the
-                // type-reference path. WHEN obsolete: when a const-visibility
-                // table + a field-access enforcement consult are added. WHAT the
-                // real solution is: record (visibility, decl_module) for every
-                // const here and check access_allowed in check_field_access,
-                // emitting visibility_violation. Tracked as a follow-on; the
-                // current message is already a clean fail-closed diagnostic.
+                // The declaration owns a constant's type; imports publish only its binding.
                 Item::Const(cd) => {
                     if !cd.visibility.is_pub() {
                         continue;
                     }
                     let ty = self.resolve_registered_annotation_ty_no_holes(&cd.ty);
-                    let qualified = format!("{module_full_path}.{}", cd.name);
-                    self.env.define(qualified, ty, false);
+                    self.register_source_constant(Some(module_full_path), cd, ty);
                 }
                 _ => {}
             }
@@ -1736,58 +1719,7 @@ impl Checker {
                         None
                     };
 
-                    // A whole-module import exposes the trait through the exact
-                    // qualified source binding (`alias.Trait`) rather than a
-                    // published bare name. Record the checker-owned declaration
-                    // IDs under that binding too, so call-target selection never
-                    // has to recover an owner from the trait's leaf spelling.
-                    let Some(trait_id) = self.require_declaration_path(&qualified, span) else {
-                        continue;
-                    };
-                    let qualified_binding = format!("{module_short}.{}", tr.name);
-                    for trait_item in &tr.items {
-                        let TraitItem::Method(method) = trait_item else {
-                            continue;
-                        };
-                        let Some(method_id) = self.require_declaration_path(
-                            &format!("{}::{}", self.defs.path(trait_id), method.name),
-                            &method.span,
-                        ) else {
-                            continue;
-                        };
-                        self.trait_method_ids_by_binding.insert(
-                            (
-                                self.current_module.clone(),
-                                self.current_module_idx,
-                                qualified_binding.clone(),
-                                method.name.to_string(),
-                            ),
-                            (trait_id, method_id),
-                        );
-                    }
-
-                    // If glob or named import, also register unqualified (using alias if present)
                     if let Some(binding_name) = import_binding {
-                        for trait_item in &tr.items {
-                            let TraitItem::Method(method) = trait_item else {
-                                continue;
-                            };
-                            let Some(method_id) = self.require_declaration_path(
-                                &format!("{}::{}", self.defs.path(trait_id), method.name),
-                                &method.span,
-                            ) else {
-                                continue;
-                            };
-                            self.trait_method_ids_by_binding.insert(
-                                (
-                                    self.current_module.clone(),
-                                    self.current_module_idx,
-                                    binding_name.clone(),
-                                    method.name.to_string(),
-                                ),
-                                (trait_id, method_id),
-                            );
-                        }
                         self.unqualified_to_module.insert(
                             (
                                 self.current_module.clone(),
@@ -1808,8 +1740,7 @@ impl Checker {
                     let ty = self.resolve_registered_annotation_ty_no_holes(&cd.ty);
                     self.current_module = saved_importer_module;
                     self.current_module_idx = importer_file_idx;
-                    let qualified = format!("{module_full_path}.{}", cd.name);
-                    self.env.define(qualified, ty.clone(), false);
+                    self.register_source_constant(Some(module_full_path), cd, ty);
                     if Self::should_import_name(cd.name.name.as_str(), spec) {
                         let binding_name = Self::resolve_import_name(spec, cd.name.name.as_str())
                             .unwrap_or_else(|| cd.name.to_string());
@@ -1817,7 +1748,6 @@ impl Checker {
                             &binding_name,
                             &format!("{module_full_path}.{}", cd.name),
                         );
-                        self.env.define(binding_name, ty, false);
                     }
                 }
                 Item::Impl(id) => {
@@ -2178,7 +2108,10 @@ impl Checker {
         ad: &ActorDecl,
         module_short: Option<&str>,
     ) {
-        let identity = Self::actor_identity(module_short, ad.name.name.as_str());
+        let identity = self
+            .named_item_declaration(ad.name)
+            .map(|id| self.defs.path(id).to_string())
+            .unwrap_or_else(|| Self::actor_identity(module_short, ad.name.name.as_str()));
         self.register_actor_decl_as(ad, &identity);
         self.known_types.insert(identity.clone());
         // A generic actor's own params (`actor Worker<T>`) are in scope for every

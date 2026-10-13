@@ -13,4 +13,5 @@ categories = ["compilers"]
 workspace = true
 
 [dependencies]
+hew-lexer = { path = "../hew-lexer" }
 hew-parser = { path = "../hew-parser" }

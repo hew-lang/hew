@@ -62,7 +62,7 @@ impl LowerCtx {
         span: &Span,
         context: &str,
     ) -> Option<ResolvedTy> {
-        let Some(sig) = self.fn_sigs_by_path.get(callee).cloned() else {
+        let Some(sig) = self.signatures().get(callee).cloned() else {
             self.unsupported(
                 span.clone(),
                 format!("{context} requires lowered method symbol `{callee}`"),
@@ -114,7 +114,7 @@ impl LowerCtx {
         };
         let name = head.registry_key();
         let callee = crate::node::HirImplBlock::method_symbol(name, "next");
-        let sig = self.fn_sigs_by_path.get(&callee).cloned()?;
+        let sig = self.signatures().get(&callee).cloned()?;
         if !sig.requires_mutable_receiver {
             self.unsupported(
                 span.clone(),
@@ -228,7 +228,7 @@ impl LowerCtx {
         };
         let name = head.registry_key();
         let callee = crate::node::HirImplBlock::method_symbol(name, "into_iter");
-        if !self.fn_sigs_by_path.contains_key(&callee) {
+        if !self.signatures().contains(&callee) {
             return None;
         }
         let receiver_ty = iterable.ty.clone();

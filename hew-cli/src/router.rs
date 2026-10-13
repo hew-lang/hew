@@ -7,6 +7,7 @@ use crate::args::{self, Cli, Command, ToolSubcommand};
 
 pub(crate) trait CommandDispatcher {
     fn compile(&mut self, args: &args::CompileArgs);
+    fn expand(&mut self, args: &args::ExpandArgs);
     fn run(&mut self, args: &args::RunArgs);
     fn debug(&mut self, args: &args::DebugArgs);
     fn check(&mut self, args: &args::CheckArgs);
@@ -34,6 +35,10 @@ pub(crate) trait CommandDispatcher {
 pub(crate) struct MainCommandDispatcher;
 
 impl CommandDispatcher for MainCommandDispatcher {
+    fn expand(&mut self, args: &args::ExpandArgs) {
+        crate::cmd_expand(args);
+    }
+
     fn compile(&mut self, args: &args::CompileArgs) {
         crate::cmd_compile(args);
     }
@@ -157,6 +162,7 @@ pub(crate) fn dispatch_command(command: Option<&Command>, dispatcher: &mut impl 
         },
         Some(Command::Tool(tool)) => match &tool.command {
             ToolSubcommand::Compile(args) => dispatcher.compile(args),
+            ToolSubcommand::Expand(args) => dispatcher.expand(args),
             ToolSubcommand::PlaygroundVerify(args) => dispatcher.playground_verify(args),
         },
         Some(Command::Completions(args)) => dispatcher.completions(args),
@@ -328,9 +334,7 @@ mod tests {
             Some(crate::args::Command::Compile(compile)) => compile,
             Some(crate::args::Command::Tool(tool)) => match tool.command {
                 crate::args::ToolSubcommand::Compile(compile) => compile,
-                crate::args::ToolSubcommand::PlaygroundVerify(_) => {
-                    panic!("expected a compile command, got playground-verify")
-                }
+                other => panic!("expected a compile command, got {other:?}"),
             },
             other => panic!("expected a compile command, got {other:?}"),
         }
@@ -583,6 +587,10 @@ mod tests {
 
         fn new_project(&mut self, _args: &crate::args::NewArgs) {
             self.calls.push("new".to_string());
+        }
+
+        fn expand(&mut self, _args: &crate::args::ExpandArgs) {
+            self.calls.push("expand".to_string());
         }
 
         fn playground_verify(&mut self, _args: &crate::args::PlaygroundVerifyArgs) {

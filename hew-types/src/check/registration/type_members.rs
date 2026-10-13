@@ -299,7 +299,7 @@ impl Checker {
                         &mut trait_errors,
                     );
                     self.errors.extend(trait_errors);
-                    let declaration = self.declaration_identity(td.name.name.as_str());
+                    let declaration = self.declaration_identity(td.name);
                     if let Some(trait_id) = self.insert_trait_def(&declaration, info) {
                         self.register_trait_supers(trait_id, td);
                     }
@@ -319,7 +319,7 @@ impl Checker {
                     }
                     // Root items: `current_module` is cleared above, so the
                     // declaration identity is the bare name.
-                    let identity = self.declaration_identity(sd.name.name.as_str());
+                    let identity = self.declaration_identity(sd.name);
                     self.register_supervisor_decl_as(sd, &identity);
                     self.local_type_defs.insert(identity.clone());
                     self.source_type_defs.insert(identity);
@@ -709,7 +709,7 @@ impl Checker {
         }
 
         let canonical_name = self
-            .named_item_declaration(td.name)
+            .type_declaration_identity(td)
             .map(|id| self.defs.path(id).to_string())
             .unwrap_or_else(|| td.name.to_string());
         let stored_key = self.authoritative_type_def_key(&canonical_name);
@@ -1005,7 +1005,7 @@ impl Checker {
         // guard on the bare name skipped the second module's `Reply` entirely,
         // leaving the gate to read whichever module won the bare-key race.
         let canonical_name = self
-            .named_item_declaration(td.name)
+            .type_declaration_identity(td)
             .map(|id| self.defs.path(id).to_string())
             .unwrap_or_else(|| td.name.to_string());
         let guard_key = canonical_name.clone();
@@ -1085,10 +1085,7 @@ impl Checker {
                     fields.insert(name.to_string(), field_ty);
                 }
                 TypeBodyItem::Variant(variant) => {
-                    let declaration_name = self.current_module.as_ref().map_or_else(
-                        || td.name.to_string(),
-                        |module| format!("{module}.{}", td.name),
-                    );
+                    let declaration_name = canonical_name.clone();
                     let variant_member_kind =
                         if td.origin == hew_parser::ast::DeclarationOrigin::MachineState {
                             crate::DeclarationKind::MachineState
@@ -1330,7 +1327,7 @@ impl Checker {
             }
         }
         let canonical_name = self
-            .named_item_declaration(td.name)
+            .type_declaration_identity(td)
             .map(|id| self.defs.path(id).to_string())
             .unwrap_or_else(|| td.name.to_string());
         let Some(head) = self.nominal_head_for_key(&canonical_name) else {
@@ -1412,10 +1409,7 @@ impl Checker {
                 }
                 TypeBodyItem::Variant(variant) => {
                     variant_order.push(variant.name.to_string());
-                    let declaration_name = self.current_module.as_ref().map_or_else(
-                        || td.name.to_string(),
-                        |module| format!("{module}.{}", td.name),
-                    );
+                    let declaration_name = canonical_name.clone();
                     let variant_member_kind =
                         if td.origin == hew_parser::ast::DeclarationOrigin::MachineState {
                             crate::DeclarationKind::MachineState
@@ -1881,7 +1875,7 @@ impl Checker {
             .iter()
             .map(|name| Ty::param(*name))
             .collect();
-        let machine_identity = self.declaration_identity(md.name.name.as_str());
+        let machine_identity = self.declaration_identity(md.name);
         let machine_ty = self.named_ty_for_key(&machine_identity, machine_generic_args.clone());
 
         let event_type_name = format!("{}.Event", md.name);
@@ -1950,7 +1944,7 @@ impl Checker {
         let all_field_types = self.expand_for_marker_registration(&all_field_types);
         self.registry.register_type(
             self.head_of_declaration(
-                self.nominal_head_for_key(&self.declaration_identity(md.name.name.as_str()))
+                self.nominal_head_for_key(&self.declaration_identity(md.name))
                     .expect("registered type has a declaration")
                     .id,
             ),
@@ -1958,7 +1952,7 @@ impl Checker {
         );
         self.registry.register_type_params(
             self.head_of_declaration(
-                self.nominal_head_for_key(&self.declaration_identity(md.name.name.as_str()))
+                self.nominal_head_for_key(&self.declaration_identity(md.name))
                     .expect("registered type has a declaration")
                     .id,
             ),

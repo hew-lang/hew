@@ -1,7 +1,6 @@
 //! Pattern flattening, match-arm planning and destructuring lowering.
 
 use super::*;
-use hew_parser::ast::Ident;
 
 /// Flatten a (potentially nested) `Pattern::Or` tree into its leaf patterns,
 /// preserving source spans. A pattern that is not an `Or` returns a
@@ -729,7 +728,7 @@ impl LowerCtx {
             };
             let field_pattern = match field.sub {
                 hew_types::PlanSub::Binding(name) => {
-                    (Pattern::Identifier(Ident::new(&name)), field.span.clone())
+                    (Pattern::Identifier(name), field.span.clone())
                 }
                 hew_types::PlanSub::Wildcard => (Pattern::Wildcard, field.span.clone()),
                 hew_types::PlanSub::Literal(literal) => {
@@ -738,7 +737,7 @@ impl LowerCtx {
                 hew_types::PlanSub::Nested(_) => {
                     let Some(source_pattern) = fields
                         .iter()
-                        .find(|source| source.name == Ident::new(&field.name))
+                        .find(|source| source.name.name.as_str() == field.name)
                         .and_then(|source| source.pattern.clone())
                     else {
                         self.diagnostics.push(HirDiagnostic::new(

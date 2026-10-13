@@ -8153,6 +8153,50 @@ equality require runtime decoding, since compile-time embedding does not
 execute user methods. The input obeys the same package confinement and
 compilation dependency rules as `include_str!`.
 
+### 12.9 Declarative macros
+
+Macros occupy a separate module namespace. A declaration has the form
+`[pub] macro name { (pattern) => expr { expression } ... }`; an `items`
+rule instead produces ordinary declarations. `name!(...)` invokes an expression
+or item rule; module qualification and named imports apply. The first rule whose
+pattern matches the complete input wins. A category or type error never selects
+a later rule.
+
+Captures use `$name:ident`, `expr`, `ty`, `pat`, `block` or `literal`.
+Fragments are parsed syntax: substituting an expression preserves its precedence.
+Other pattern tokens match literally. `$(...),*`, `$(...),+` and `$(...)?`
+express non-nested repetition. The optional form has no separator. An expression
+capture may be followed only by `,`, `;` or a closing delimiter; a type capture
+additionally permits `=`; a pattern capture permits `=>`, `,`, `|`, `if` or a
+closing delimiter. These follow sets are checked at definition. A template
+repetition must reference repeated captures from one pattern repetition group.
+
+Captured identifiers retain their caller context. Template identifiers carry an
+expansion context: introduced bindings are fresh, and free references resolve in
+the defining module. Caller-supplied identifiers may deliberately name generated
+declarations, fields and parameters. A public macro may reference only public
+items. Unbound template names and invalid public references are errors even when
+the macro is unused.
+
+Expansion does not evaluate arguments. Each occurrence evaluates where it is
+inserted and receives the ordinary ownership and suspension checks. A captured
+jump retains its caller target. Template-written `return`, `?`, `break` and
+`continue` may target only a function or loop introduced by the template.
+
+Expansion follows module resolution and precedes type checking for every host.
+It is bounded to 64 nested invocations and one million generated nodes per
+outermost invocation. Macro definitions cannot execute code, inspect types,
+read files or access the network. Built-in compile-time input operations retain
+their separately specified host capabilities.
+
+The formatter preserves macro bodies and invocation arguments as token trees.
+`hew tool expand file.hew [--at LINE:COL]` displays expanded syntax and syntax
+context annotations; this display is not guaranteed to recompile. The language
+server's `hew/expandMacro` request and browser's `expand_macro` export share that
+view. Diagnostics retain caller and definition origins.
+
+See [Declarative macros](../guides/macros.md) for examples.
+
 ## 13. Self-Hosting Roadmap
 
 > See HEW-FUTURE.md §6.1 for the self-hosting roadmap — targeted for

@@ -1027,12 +1027,23 @@ pub struct ToolCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum ToolSubcommand {
+    /// Show macro-expanded source with hygiene context annotations.
+    Expand(ExpandArgs),
     /// Compile a .hew file through the v0.5 IR ladder.
     Compile(CompileArgs),
     /// Compile and run each runnable playground example and verify its stdout
     /// against the checked-in `.expected` file.
     #[command(name = "playground-verify")]
     PlaygroundVerify(PlaygroundVerifyArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct ExpandArgs {
+    /// Hew source file to expand.
+    pub input: String,
+    /// Select the innermost expansion at this one-based LINE:COL.
+    #[arg(long)]
+    pub at: Option<String>,
 }
 
 // ---------------------------------------------------------------------------

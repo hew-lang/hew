@@ -365,7 +365,7 @@ impl Checker {
                 if let Some(state_field) =
                     self.actor_self_state_field(&object.0, field.0.name.as_str())
                 {
-                    return Some(Ident::new(state_field));
+                    return Some(state_field);
                 }
                 self.assignment_root_binding_name(&object.0)
             }
@@ -1593,11 +1593,9 @@ impl Checker {
                     Expr::FieldAccess { object, field } => {
                         match self.actor_self_state_field(&object.0, field.0.name.as_str()) {
                             Some(state_field) => {
-                                let state_field = state_field.to_string();
                                 self.record_actor_self_state_field(&target.1);
                                 receiver_field = Some(field.clone());
-                                receiver_target =
-                                    (Expr::Ident(Ident::new(&state_field)), target.1.clone());
+                                receiver_target = (Expr::Ident(state_field), target.1.clone());
                                 &receiver_target
                             }
                             None => target,

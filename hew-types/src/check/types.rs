@@ -7,7 +7,7 @@ use crate::traits::TraitRegistry;
 use crate::ty::{Substitution, Ty, TypeVar};
 use crate::type_facts::{TypeFactContext, TypeFacts, TypeInstanceKey};
 use crate::{BuiltinType, WasmUnsupportedFeature};
-use hew_parser::ast::Symbol;
+use hew_parser::ast::{Ident, Symbol};
 use hew_parser::ast::{ImportSpec, Literal, Span, Spanned, TraitMethod, TypeExpr, Visibility};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
@@ -25,8 +25,6 @@ pub(super) struct ReportableImport {
 /// files are assembled into the same directory module.
 pub type ImportBindingKey = (Option<String>, u32, String);
 
-/// Trait method identity exposed through one file-local import binding.
-pub type TraitImportBindingKey = (Option<String>, u32, String, String);
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -734,16 +732,8 @@ pub struct TypeCheckOutput {
     /// owner-qualified source spelling `Trait::method`. This is the sole
     /// checker-to-HIR authority for static-trait implementation indexing.
     pub trait_method_ids: HashMap<String, (crate::DefId, crate::DefId)>,
-    /// Trait declarations selected by exact lexical bindings.
-    pub trait_bindings: HashMap<ImportBindingKey, crate::DefId>,
     /// Default bodies retain declaration identity and their checked source scope.
     pub trait_defaults: HashMap<crate::DefId, Vec<ResolvedTraitDefault>>,
-    /// Canonical trait/method identities published through each exact source
-    /// binding. The key is `(module, binding spelling, method)`; HIR uses it
-    /// when an impl names an imported trait bare or through an alias, rather
-    /// than inferring an owner from a leaf name. This also records a bare trait
-    /// reference resolved unambiguously through a module import.
-    pub trait_method_ids_by_binding: HashMap<TraitImportBindingKey, (crate::DefId, crate::DefId)>,
     /// Checker-allocated impl-method declaration identities keyed by their
     /// linker presentation.  The key is a compatibility projection only;
     /// HIR uses the stored ID directly and never constructs one from it.
@@ -1409,7 +1399,7 @@ pub enum PatternKind {
 /// Canonical checker classification of one record-pattern field.
 #[derive(Debug, Clone, PartialEq)]
 pub enum PlanSub {
-    Binding(String),
+    Binding(Ident),
     Wildcard,
     Literal(Literal),
     Nested(SpanKey),
@@ -2805,6 +2795,8 @@ pub enum ReceiverUpdate {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ImplMethodProvenance {
     pub declaration: crate::DefId,
+    /// The exact trait declaration and method implemented by this body.
+    pub trait_method: Option<(crate::DefId, crate::DefId)>,
     /// Nominal declaration, absent for primitive receiver types.
     pub receiver: Option<crate::DefId>,
     /// Resolved impl receiver arguments and the binders they instantiate.
@@ -3493,13 +3485,6 @@ pub struct Checker {
     /// Checker-owned canonical declaration ids for trait methods. Keys are
     /// owner-qualified source spellings, never linker symbols.
     pub(super) trait_method_ids: HashMap<String, (crate::DefId, crate::DefId)>,
-    pub(super) trait_bindings: HashMap<ImportBindingKey, crate::DefId>,
-    /// Source-owned trait method IDs as exposed through an exact source
-    /// binding. Lookup registries may retain short compatibility keys, but
-    /// call targets use this full-path table and never mint identities from
-    /// those keys.
-    pub(super) trait_method_ids_by_binding:
-        HashMap<TraitImportBindingKey, (crate::DefId, crate::DefId)>,
     /// Declaration identities for impl methods, keyed by the checker-selected
     /// dispatch symbol. These are allocated while registering the source impl
     /// and selected at the call site; receiver monomorphisations must not mint
@@ -4180,13 +4165,8 @@ pub struct Checker {
     /// resolution passes don't emit duplicate diagnostics.
     /// Compile-time known numeric literal values used by later coercion sites.
     pub(super) const_values: HashMap<hew_parser::ast::Ident, ConstValue>,
-    /// Lexical bindings in `const_values` that originate from a real `const`
-    /// declaration (or other declared constexpr authority), as opposed to the
-    /// literal-coercion entries `check_let` inserts for every unannotated
-    /// immutable integer/float literal binding. The binding identity prevents a
-    /// local or parameter with the same name from inheriting a module constant's
-    /// value during constexpr length/count evaluation (e.g. fixed-array repeats).
-    pub(super) declared_const_bindings: HashMap<hew_parser::ast::Ident, TypeBindingId>,
+    /// Source constants are owned by their declarations, independently of lexical aliases.
+    pub(super) source_constants: HashMap<crate::DefId, SourceConstant>,
     /// Inferred type arguments for generic function calls that omit explicit
     /// type annotations.  Populated in `check_call` after argument unification.
     pub(super) call_type_args: HashMap<SpanKey, Vec<Ty>>,
@@ -4352,6 +4332,12 @@ pub(super) struct IntegerTypeInfo {
     pub(super) signed: bool,
 }
 
+#[derive(Debug, Clone)]
+pub(super) struct SourceConstant {
+    pub ty: Ty,
+    pub value: Option<ConstValue>,
+}
+
 /// Known compile-time numeric literal value (for later coercion checks).
 #[derive(Debug, Clone)]
 pub(super) enum ConstValue {
@@ -4515,8 +4501,6 @@ impl Checker {
             aggregate_field_candidates: HashMap::new(),
             callable_return_candidates: HashMap::new(),
             trait_method_ids: HashMap::new(),
-            trait_bindings: HashMap::new(),
-            trait_method_ids_by_binding: HashMap::new(),
             impl_method_declaration_ids: HashMap::new(),
             consuming_inherent_methods: HashSet::new(),
             root_value_bindings: HashSet::new(),
@@ -4668,7 +4652,7 @@ impl Checker {
             wasm_warning_spans: HashSet::new(),
             wasm_reject_spans: HashSet::new(),
             const_values: HashMap::new(),
-            declared_const_bindings: HashMap::new(),
+            source_constants: HashMap::new(),
             call_type_args: HashMap::new(),
             record_init_type_args: HashMap::new(),
             builtin_result_output_type_args: HashMap::new(),

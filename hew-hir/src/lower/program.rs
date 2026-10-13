@@ -350,8 +350,7 @@ pub fn lower_program_with_mono_cap(
                                 .iter()
                                 .map(|m| m.name.name.as_str())
                                 .collect();
-                            if let Some(default_owner) = ctx.trait_declaration(&tb.path.to_string())
-                            {
+                            if let Some(default_owner) = ctx.trait_declaration(&tb.path) {
                                 // TRANSITION(P1): deleted by A1 commit 2
                                 if let Some(defaults) =
                                     ctx.trait_defaults.get(&default_owner).cloned()
@@ -664,8 +663,7 @@ pub fn lower_program_with_mono_cap(
                                             .iter()
                                             .map(|m| m.name.name.as_str())
                                             .collect();
-                                        if let Some(default_owner) =
-                                            ctx.trait_declaration(&tb.path.to_string())
+                                        if let Some(default_owner) = ctx.trait_declaration(&tb.path)
                                         // TRANSITION(P1): deleted by A1 commit 2
                                         {
                                             if let Some(defaults) =

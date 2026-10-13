@@ -22,6 +22,7 @@
       "const",
       "mut",
       "fn",
+      "macro",
       "gen",
       "pub",
       "import",
@@ -91,6 +92,7 @@
     "const",
     "mut",
     "fn",
+    "macro",
     "if",
     "else",
     "match",
@@ -249,7 +251,8 @@
       "@",
       ".",
       "::",
-      "#["
+      "#[",
+      "$"
     ],
     "path_separators": {
       "primary": ".",

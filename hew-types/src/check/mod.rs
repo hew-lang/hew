@@ -35,6 +35,7 @@ mod cleanup_effects;
 mod closure_inference;
 mod coerce;
 pub mod const_eval;
+mod constants;
 mod dependency_analysis;
 mod diagnostics;
 mod macro_templates;
@@ -815,6 +816,34 @@ impl Checker {
             scope::Resolution::Nominal(id) => Some(id.declaration()),
             _ => None,
         }
+    }
+
+    pub(super) fn type_declaration_identity(
+        &self,
+        declaration: &hew_parser::ast::TypeDecl,
+    ) -> Option<crate::DefId> {
+        if let hew_parser::ast::DeclarationOrigin::MachineEventType {
+            machine_start,
+            machine_end,
+            machine_ordinal,
+        } = declaration.origin
+        {
+            let owner =
+                self.defs
+                    .declaration(crate::DeclarationOccurrence::new_with_synthetic_ordinal(
+                        self.current_declaration_module(),
+                        &(machine_start..machine_end),
+                        machine_ordinal,
+                        crate::DeclarationKind::Machine,
+                        0,
+                    ))?;
+            return self.defs.member_of_kind(
+                owner,
+                hew_parser::ast::sym::EVENT,
+                crate::DeclarationKind::MachineEventType,
+            );
+        }
+        self.named_item_declaration(declaration.name)
     }
 
     /// Select a free-function signature in the current source file. Explicit
@@ -1947,18 +1976,6 @@ impl Checker {
         // Declares one row and answers its identity, which a member row takes
         // as its owner.
         let mut minted_types: Vec<crate::DefId> = Vec::new();
-        let item_context = match item {
-            Item::Function(declaration) => declaration.name.ctx,
-            Item::Const(declaration) => declaration.name.ctx,
-            Item::TypeDecl(declaration) => declaration.name.ctx,
-            Item::TypeAlias(declaration) => declaration.name.ctx,
-            Item::Record(declaration) => declaration.name.ctx,
-            Item::Trait(declaration) => declaration.name.ctx,
-            Item::Actor(declaration) => declaration.name.ctx,
-            Item::Supervisor(declaration) => declaration.name.ctx,
-            Item::Machine(declaration) => declaration.name.ctx,
-            _ => hew_parser::ast::SyntaxContext::ROOT,
-        };
         let item_visibility = match item {
             Item::Const(decl) => decl.visibility,
             Item::TypeDecl(decl) => decl.visibility,
@@ -1977,7 +1994,7 @@ impl Checker {
         };
         let mut declare = |kind: Kind,
                            ordinal: usize,
-                           name: Symbol,
+                           name: hew_parser::ast::Ident,
                            owner: Option<crate::DefId>,
                            path: String,
                            alias: bool|
@@ -1985,7 +2002,7 @@ impl Checker {
             let occurrence =
                 Occurrence::new_with_synthetic_ordinal(module, span, item_ordinal, kind, ordinal);
             let mut minted = None;
-            if alias && item_context != hew_parser::ast::SyntaxContext::ROOT {
+            if alias && name.ctx != hew_parser::ast::SyntaxContext::ROOT {
                 return None;
             }
             let collision = if alias {
@@ -2003,15 +2020,7 @@ impl Checker {
                     }
                 }
             } else {
-                match self.defs.declare(
-                    occurrence,
-                    hew_parser::ast::Ident {
-                        name,
-                        ctx: item_context,
-                    },
-                    owner,
-                    path.clone(),
-                ) {
+                match self.defs.declare(occurrence, name, owner, path.clone()) {
                     Ok(id) => {
                         minted = Some(id);
                         if matches!(kind, Kind::Type | Kind::Record | Kind::MachineEventType) {
@@ -2019,20 +2028,13 @@ impl Checker {
                         }
                         if let Some(owner) = owner {
                             let resolution = scope::Resolution::of_member(&self.defs, id);
-                            self.scopes.declare_member(owner, name, resolution);
+                            self.scopes.declare_member(owner, name.name, resolution);
                         } else {
                             self.defs.set_visibility(id, item_visibility);
                             if let (Some(namespace_module), Some(binding)) =
                                 (namespace_module, scope::Binding::of_item(&self.defs, id))
                             {
-                                self.scopes.declare_item(
-                                    namespace_module,
-                                    hew_parser::ast::Ident {
-                                        name,
-                                        ctx: item_context,
-                                    },
-                                    binding,
-                                );
+                                self.scopes.declare_item(namespace_module, name, binding);
                             }
                         }
                         self.nominal_namespace_claims
@@ -2126,7 +2128,7 @@ impl Checker {
                 declare(
                     Kind::ImplBlock,
                     0,
-                    Symbol::intern("impl"),
+                    hew_parser::ast::Ident::new("impl"),
                     None,
                     format!(
                         "{}.<impl@{}:{}>",
@@ -2138,25 +2140,39 @@ impl Checker {
                 );
             }
             Item::Const(decl) => {
-                let name = decl.name.name;
-                declare(Kind::Const, 0, name, None, owner_path(name.as_str()), false);
-                if let Some(alias) = nominal_alias(name.as_str()) {
+                let name = decl.name;
+                declare(
+                    Kind::Const,
+                    0,
+                    name,
+                    None,
+                    owner_path(name.name.as_str()),
+                    false,
+                );
+                if let Some(alias) = nominal_alias(name.name.as_str()) {
                     declare(Kind::Const, 0, name, None, alias, true);
                 }
             }
             Item::Function(decl) => {
-                let name = decl.name.name;
-                declare(Kind::Function, 0, name, None, fn_path(name.as_str()), false);
+                let name = decl.name;
+                declare(
+                    Kind::Function,
+                    0,
+                    name,
+                    None,
+                    fn_path(name.name.as_str()),
+                    false,
+                );
             }
             Item::ExternBlock(block) => {
                 for (index, decl) in block.functions.iter().enumerate() {
-                    let name = decl.name.name;
+                    let name = decl.name;
                     declare(
                         Kind::ExternFunction,
                         index,
                         name,
                         None,
-                        fn_path(name.as_str()),
+                        fn_path(name.name.as_str()),
                         false,
                     );
                 }
@@ -2169,19 +2185,19 @@ impl Checker {
                 let (name, path, kind, parent) = if let Some((parent, path)) = &machine_event_owner
                 {
                     (
-                        Symbol::intern("Event"),
+                        hew_parser::ast::Ident::new("Event"),
                         path.clone(),
                         Kind::MachineEventType,
                         Some(*parent),
                     )
                 } else {
-                    let name = decl.name.name;
+                    let name = decl.name;
                     let kind = if decl.origin == hew_parser::ast::DeclarationOrigin::MachineState {
                         Kind::Machine
                     } else {
                         Kind::Type
                     };
-                    (name, owner_path(name.as_str()), kind, None)
+                    (name, owner_path(name.name.as_str()), kind, None)
                 };
                 if generated_event && parent.is_none() {
                     return;
@@ -2210,7 +2226,7 @@ impl Checker {
                     declare(
                         member_kind,
                         index,
-                        variant.name.name,
+                        variant.name,
                         owner,
                         format!("{path}::{member_path} {}", variant.name),
                         false,
@@ -2229,7 +2245,7 @@ impl Checker {
                     declare(
                         Kind::TypeMethod,
                         index,
-                        method.name.name,
+                        method.name,
                         owner,
                         format!("{path}::{}", method.name),
                         false,
@@ -2237,40 +2253,40 @@ impl Checker {
                 }
             }
             Item::TypeAlias(decl) => {
-                let name = decl.name.name;
+                let name = decl.name;
                 declare(
                     Kind::TypeAlias,
                     0,
                     name,
                     None,
-                    owner_path(name.as_str()),
+                    owner_path(name.name.as_str()),
                     false,
                 );
                 if matches!(namespace, NominalNamespace::RootBare) {
-                    if let Some(alias) = nominal_alias(name.as_str()) {
+                    if let Some(alias) = nominal_alias(name.name.as_str()) {
                         declare(Kind::TypeAlias, 0, name, None, alias, true);
                     }
                 }
             }
             Item::Record(decl) => {
-                let name = decl.name.name;
+                let name = decl.name;
                 declare(
                     Kind::Record,
                     0,
                     name,
                     None,
-                    owner_path(name.as_str()),
+                    owner_path(name.name.as_str()),
                     false,
                 );
-                if let Some(alias) = nominal_alias(name.as_str()) {
+                if let Some(alias) = nominal_alias(name.name.as_str()) {
                     declare(Kind::Record, 0, name, None, alias, true);
                 }
             }
             Item::Trait(decl) => {
-                let name = decl.name.name;
-                let path = owner_path(name.as_str());
+                let name = decl.name;
+                let path = owner_path(name.name.as_str());
                 let owner = declare(Kind::Trait, 0, name, None, path.clone(), false);
-                if let Some(alias) = nominal_alias(name.as_str()) {
+                if let Some(alias) = nominal_alias(name.name.as_str()) {
                     declare(Kind::Trait, 0, name, None, alias, true);
                 }
                 for (index, method) in decl
@@ -2285,7 +2301,7 @@ impl Checker {
                     declare(
                         Kind::TraitMethod,
                         index,
-                        method.name.name,
+                        method.name,
                         owner,
                         format!("{path}::{}", method.name),
                         false,
@@ -2293,17 +2309,17 @@ impl Checker {
                 }
             }
             Item::Actor(decl) => {
-                let name = decl.name.name;
-                let path = owner_path(name.as_str());
+                let name = decl.name;
+                let path = owner_path(name.name.as_str());
                 let owner = declare(Kind::Actor, 0, name, None, path.clone(), false);
-                if let Some(alias) = nominal_alias(name.as_str()) {
+                if let Some(alias) = nominal_alias(name.name.as_str()) {
                     declare(Kind::Actor, 0, name, None, alias, true);
                 }
                 if decl.init.is_some() {
                     declare(
                         Kind::ActorInit,
                         0,
-                        Symbol::intern("init"),
+                        hew_parser::ast::Ident::new("init"),
                         owner,
                         format!("{path}::<init>"),
                         false,
@@ -2322,7 +2338,7 @@ impl Checker {
                     let enum_owner = declare(
                         kind,
                         0,
-                        Symbol::intern(suffix),
+                        hew_parser::ast::Ident::new(suffix),
                         owner,
                         enum_path.clone(),
                         false,
@@ -2331,7 +2347,7 @@ impl Checker {
                         declare(
                             Kind::Variant,
                             offset + index,
-                            receive.name.name,
+                            receive.name,
                             enum_owner,
                             format!("{enum_path}::{}", receive.name),
                             false,
@@ -2342,7 +2358,7 @@ impl Checker {
                     declare(
                         Kind::ActorReceive,
                         index,
-                        receive.name.name,
+                        receive.name,
                         owner,
                         format!("{path}::{}", receive.name),
                         false,
@@ -2352,7 +2368,7 @@ impl Checker {
                     declare(
                         Kind::ActorMethod,
                         index,
-                        method.name.name,
+                        method.name,
                         owner,
                         format!("{path}::{}", method.name),
                         false,
@@ -2360,16 +2376,16 @@ impl Checker {
                 }
             }
             Item::Supervisor(decl) => {
-                let name = decl.name.name;
-                let path = owner_path(name.as_str());
+                let name = decl.name;
+                let path = owner_path(name.name.as_str());
                 let owner = declare(Kind::Supervisor, 0, name, None, path.clone(), false);
-                if let Some(alias) = nominal_alias(name.as_str()) {
+                if let Some(alias) = nominal_alias(name.name.as_str()) {
                     declare(Kind::Supervisor, 0, name, None, alias, true);
                 }
                 declare(
                     Kind::SupervisorBootstrap,
                     0,
-                    Symbol::intern("bootstrap"),
+                    hew_parser::ast::Ident::new("bootstrap"),
                     owner,
                     format!("{path}::<bootstrap>"),
                     false,
@@ -2378,7 +2394,7 @@ impl Checker {
                     declare(
                         Kind::SupervisorMethod,
                         index,
-                        method.name.name,
+                        method.name,
                         owner,
                         format!("{path}::{}", method.name),
                         false,
@@ -2386,10 +2402,10 @@ impl Checker {
                 }
             }
             Item::Machine(decl) => {
-                let name = decl.name.name;
-                let path = owner_path(name.as_str());
+                let name = decl.name;
+                let path = owner_path(name.name.as_str());
                 let owner = declare(Kind::Machine, 0, name, None, path.clone(), false);
-                if let Some(alias) = nominal_alias(name.as_str()) {
+                if let Some(alias) = nominal_alias(name.name.as_str()) {
                     declare(Kind::Machine, 0, name, None, alias, true);
                 }
                 // Raw machines also reach checking when normalization reports
@@ -2398,7 +2414,7 @@ impl Checker {
                 declare(
                     Kind::MachineEventType,
                     0,
-                    Symbol::intern("Event"),
+                    hew_parser::ast::Ident::new("Event"),
                     owner,
                     format!("{path}.Event"),
                     false,
@@ -2408,7 +2424,7 @@ impl Checker {
                     let state_owner = declare(
                         Kind::MachineState,
                         index,
-                        state.name.name,
+                        state.name,
                         owner,
                         state_path.clone(),
                         false,
@@ -2417,7 +2433,7 @@ impl Checker {
                         declare(
                             Kind::MachineStateEntry,
                             index,
-                            Symbol::intern("entry"),
+                            hew_parser::ast::Ident::new("entry"),
                             state_owner,
                             format!("{state_path}::<entry>"),
                             false,
@@ -2427,7 +2443,7 @@ impl Checker {
                         declare(
                             Kind::MachineStateExit,
                             index,
-                            Symbol::intern("exit"),
+                            hew_parser::ast::Ident::new("exit"),
                             state_owner,
                             format!("{state_path}::<exit>"),
                             false,
@@ -2438,7 +2454,7 @@ impl Checker {
                     declare(
                         Kind::MachineEvent,
                         index,
-                        event.name.name,
+                        event.name,
                         owner,
                         format!("{path}::event {}", event.name),
                         false,
@@ -2448,7 +2464,7 @@ impl Checker {
                     declare(
                         Kind::MachineTransition,
                         index,
-                        Symbol::intern("transition"),
+                        hew_parser::ast::Ident::new("transition"),
                         owner,
                         format!("{path}::<transition#{index}>"),
                         false,
@@ -2845,8 +2861,6 @@ impl Checker {
             aggregate_field_candidates: self.aggregate_field_candidates.clone(),
             callable_return_candidates: self.callable_return_candidates.clone(),
             trait_method_ids: self.trait_method_ids.clone(),
-            trait_bindings: self.trait_bindings.clone(),
-            trait_method_ids_by_binding: self.trait_method_ids_by_binding.clone(),
             impl_method_declaration_ids: self.impl_method_declaration_ids.clone(),
             consuming_inherent_methods: self.consuming_inherent_methods.clone(),
             root_value_bindings: self.root_value_bindings.clone(),
@@ -2996,7 +3010,7 @@ impl Checker {
             wasm_warning_spans: self.wasm_warning_spans.clone(),
             wasm_reject_spans: self.wasm_reject_spans.clone(),
             const_values: self.const_values.clone(),
-            declared_const_bindings: self.declared_const_bindings.clone(),
+            source_constants: self.source_constants.clone(),
             call_type_args: self.call_type_args.clone(),
             record_init_type_args: self.record_init_type_args.clone(),
             builtin_result_output_type_args: self.builtin_result_output_type_args.clone(),
@@ -3947,9 +3961,7 @@ impl Checker {
             aggregate_field_candidates: std::mem::take(&mut self.aggregate_field_candidates),
             callable_return_candidates: std::mem::take(&mut self.callable_return_candidates),
             trait_method_ids: std::mem::take(&mut self.trait_method_ids),
-            trait_bindings: std::mem::take(&mut self.trait_bindings),
             trait_defaults,
-            trait_method_ids_by_binding: std::mem::take(&mut self.trait_method_ids_by_binding),
             impl_method_declaration_ids: std::mem::take(&mut self.impl_method_declaration_ids),
             consuming_inherent_methods: std::mem::take(&mut self.consuming_inherent_methods),
             root_value_bindings: std::mem::take(&mut self.root_value_bindings),
@@ -5462,40 +5474,41 @@ enum AnonContext {
     Other,
 }
 
-/// Collect every `actor` declaration in the program (root items + each
-/// module-graph module).
-///
-/// Returns `(owner_identity, actor_decl)` per actor. `owner_identity` is the
-/// full-path dotted declaration identity: module path `["a","b"]` yields
-/// `"a.b.Alpha"`, while root actors remain bare (`"Alpha"`). It is the sole
-/// semantic key used for signature lookup, descriptor publication, symbols,
-/// and collision attribution. Import aliases and leaf-qualified spellings are
-/// surface bindings and must not enter this declaration-identity walk.
-///
-/// The walk is read-only so it can run after the checker has frozen its
-/// mutable state.
-fn collect_program_actors(program: &Program) -> Vec<(String, &ActorDecl)> {
-    let mut actors: Vec<(String, &ActorDecl)> = Vec::new();
-    for (item, _) in &program.items {
-        if let Item::Actor(ad) = item {
-            actors.push((ad.name.to_string(), ad));
-        }
-    }
-    if let Some(mg) = &program.module_graph {
-        for (mod_id, module) in &mg.modules {
-            if *mod_id == mg.root {
-                continue;
+/// Collect actor source occurrences through the checker's declaration table.
+fn collect_program_actors<'a>(
+    program: &'a Program,
+    defs: &crate::DefTable,
+) -> Vec<(crate::DefId, &'a ActorDecl)> {
+    let mut actors = Vec::new();
+    let mut collect = |items: &'a [(Item, Span)],
+                       module: Option<&hew_parser::module::ModulePath>| {
+        for (index, (item, span)) in items.iter().enumerate() {
+            let Item::Actor(actor) = item else { continue };
+            let file = module
+                .and_then(|module| program.module_graph.as_ref()?.item_source(module, index))
+                .and_then(|source| defs.module_for_source(source))
+                .or_else(|| module.and_then(|module| defs.module_for_path(&module.dotted())))
+                .or_else(|| defs.root_module());
+            let occurrence = crate::DeclarationOccurrence::new_with_synthetic_ordinal(
+                file,
+                span,
+                index,
+                crate::DeclarationKind::Actor,
+                0,
+            );
+            if let Some(id) = defs.declaration(occurrence) {
+                actors.push((id, actor));
             }
-            let module_owner = mod_id.dotted();
-            for (item, _) in &module.items {
-                if let Item::Actor(ad) = item {
-                    let owner_identity = if module_owner.is_empty() {
-                        ad.name.to_string()
-                    } else {
-                        format!("{module_owner}.{}", ad.name)
-                    };
-                    actors.push((owner_identity.clone(), ad));
-                }
+        }
+    };
+    collect(
+        &program.items,
+        program.module_graph.as_ref().map(|graph| &graph.root),
+    );
+    if let Some(graph) = &program.module_graph {
+        for (id, module) in &graph.modules {
+            if *id != graph.root {
+                collect(&module.items, Some(id));
             }
         }
     }
@@ -5507,18 +5520,15 @@ fn collect_program_actors(program: &Program) -> Vec<(String, &ActorDecl)> {
 fn actor_handler_specs(
     defs: &crate::DefTable,
     fn_sigs: crate::check::types::FnSigView<'_>,
-    actor_identity: &str,
+    actor: crate::DefId,
     ad: &ActorDecl,
 ) -> Option<Vec<crate::actor_protocol::ActorHandlerSpec>> {
     let mut specs: Vec<crate::actor_protocol::ActorHandlerSpec> =
         Vec::with_capacity(ad.receive_fns.len());
-    // TRANSITION(A1c3): WHY actors are still collected by registration
-    // key. WHEN collection walks declarations, the actor is its id. WHAT:
-    // descriptors built per actor declaration.
-    let actor = defs.lookup_path(actor_identity);
+    let actor_identity = defs.path(actor);
     for rf in &ad.receive_fns {
         let declaration =
-            defs.member_of_kind(actor?, rf.name.name, crate::DeclarationKind::ActorReceive)?;
+            defs.member_of_kind(actor, rf.name.name, crate::DeclarationKind::ActorReceive)?;
         let sig = fn_sigs.of(declaration)?;
         let param_tys = sig
             .params
@@ -5560,10 +5570,11 @@ fn build_actor_protocol_descriptors(
 
     let mut descriptors: HashMap<String, crate::actor_protocol::ActorProtocolDescriptor> =
         HashMap::new();
-    for (actor_identity, ad) in collect_program_actors(program) {
+    for (actor, ad) in collect_program_actors(program, defs) {
+        let actor_identity = defs.path(actor).to_string();
         // A handler signature that failed to resolve already reported its
         // type error; a partial descriptor is never published.
-        let Some(specs) = actor_handler_specs(defs, fn_sigs, &actor_identity, ad) else {
+        let Some(specs) = actor_handler_specs(defs, fn_sigs, actor, ad) else {
             continue;
         };
 

@@ -694,6 +694,8 @@ const SYNTHETIC_ROOT_PATH: &str = "#synthetic-root";
 /// One declaration row.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct DefRow {
+    /// Unmarked source render; members inherit their owner's contextual linker render.
+    display_path: Option<String>,
     /// Display leaf: the declared spelling.
     name: Ident,
     kind: DeclarationKind,
@@ -782,6 +784,7 @@ impl DefTable {
         };
         for anchor in BuiltinAnchor::ALL {
             table.push_row(DefRow {
+                display_path: None,
                 name: Ident::new(anchor.spelling()),
                 kind: DeclarationKind::BuiltinType,
                 module: None,
@@ -792,6 +795,7 @@ impl DefTable {
         }
         for predicate in Predicate::ALL {
             table.push_row(DefRow {
+                display_path: None,
                 name: Ident::new(predicate.spelling()),
                 kind: DeclarationKind::Trait,
                 module: None,
@@ -802,6 +806,7 @@ impl DefTable {
         }
         for known in KnownDecl::ALL {
             let id = table.push_row(DefRow {
+                display_path: None,
                 name: Ident::new(known.leaf()),
                 kind: DeclarationKind::Type,
                 module: None,
@@ -852,6 +857,7 @@ impl DefTable {
             return *id;
         }
         let id = self.push_row(DefRow {
+            display_path: None,
             name: Ident::new(name),
             kind: DeclarationKind::Function,
             module: None,
@@ -939,6 +945,7 @@ impl DefTable {
         }
         let name = Symbol::intern(path.rsplit_once('.').map_or(path, |(_, leaf)| leaf));
         let id = self.push_row(DefRow {
+            display_path: None,
             name: Ident::from_symbol(name),
             kind,
             module: None,
@@ -1048,7 +1055,8 @@ impl DefTable {
     /// the owner chain.
     #[must_use]
     pub fn display(&self, id: DefId) -> &str {
-        crate::short_name(self.path(id))
+        let row = self.row(id);
+        crate::short_name(row.display_path.as_deref().unwrap_or(&row.path))
     }
 
     #[must_use]
@@ -1430,7 +1438,26 @@ impl DefTable {
         path: impl Into<String>,
     ) -> Result<DefId, DeclarationIdentityError> {
         let name = name.lexical_key();
-        let path = Self::contextual_path(path.into(), name.ctx);
+        let source_path = path.into();
+        let (path, display_path) = if let Some(owner) = owner {
+            let parent = self.row(owner);
+            let display = parent.display_path.as_deref().unwrap_or(&parent.path);
+            if let Some(suffix) = source_path.strip_prefix(&parent.path) {
+                (source_path.clone(), format!("{display}{suffix}"))
+            } else if let Some(suffix) = source_path.strip_prefix(display) {
+                (format!("{}{suffix}", parent.path), source_path.clone())
+            } else {
+                (
+                    Self::contextual_path(source_path.clone(), name.ctx),
+                    source_path.clone(),
+                )
+            }
+        } else {
+            (
+                Self::contextual_path(source_path.clone(), name.ctx),
+                source_path,
+            )
+        };
         if let Some(&established) = self.by_occurrence.get(&occurrence) {
             if self.path(established) == path {
                 return Ok(established);
@@ -1467,6 +1494,7 @@ impl DefTable {
             });
         }
         let id = self.push_row(DefRow {
+            display_path: Some(display_path),
             name,
             kind: occurrence.kind(),
             module: occurrence.module(),
@@ -1568,6 +1596,7 @@ impl DefTable {
             self.path(declaring_trait),
         );
         let id = self.push_row(DefRow {
+            display_path: None,
             name: Ident::from_symbol(method),
             kind: DeclarationKind::DefaultImplMethod,
             module: None,
@@ -1586,6 +1615,7 @@ impl DefTable {
         }
         let path = crate::actor_protocol::LAMBDA_ACTOR_PROTOCOL_PATH;
         let id = self.push_row(DefRow {
+            display_path: None,
             name: Ident::new(path),
             kind: DeclarationKind::RequestProtocol,
             module: None,
@@ -1733,6 +1763,7 @@ impl DefTable {
             return established;
         }
         let id = self.push_row(DefRow {
+            display_path: None,
             name: Ident::new(path),
             kind: DeclarationKind::Function,
             module: None,

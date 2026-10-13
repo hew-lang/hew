@@ -88,21 +88,8 @@ pub(super) fn normalize(
     if !contains_machine {
         return Ok(None);
     }
-    let max_span = program
-        .items
-        .iter()
-        .map(|(_, span)| span.end)
-        .chain(
-            program
-                .module_graph
-                .iter()
-                .flat_map(|graph| graph.modules.values())
-                .flat_map(|module| module.items.iter().map(|(_, span)| span.end)),
-        )
-        .max()
-        .unwrap_or(0);
     let mut builder = Builder {
-        next_span: max_span + 1,
+        next_span: next_free_span(program),
         source_spans: HashMap::new(),
         origin: 0..0,
         expansions: HashMap::new(),
@@ -172,6 +159,31 @@ pub(super) fn normalize(
         implied_displays: Vec::new(),
         implied_context: None,
     })))
+}
+
+/// The first position beyond authored items and every macro expansion.
+pub(super) fn next_free_span(program: &Program) -> usize {
+    program
+        .items
+        .iter()
+        .map(|(_, span)| span.end)
+        .chain(
+            program
+                .module_graph
+                .iter()
+                .flat_map(|graph| graph.modules.values())
+                .flat_map(|module| module.items.iter().map(|(_, span)| span.end)),
+        )
+        .chain(
+            program
+                .expansions
+                .expansions
+                .iter()
+                .map(|expansion| expansion.synthetic.end),
+        )
+        .max()
+        .unwrap_or(0)
+        + 1
 }
 
 /// Whether two item lists are the same declarations: the root module carries
@@ -299,6 +311,13 @@ struct Builder {
     transitions: HashMap<(String, String), Vec<(String, Span)>>,
 }
 
+fn machine_companion(machine: &MachineDecl, suffix: &str) -> Ident {
+    Ident {
+        name: hew_parser::ast::Symbol::intern(&format!("{}{suffix}", machine.name)),
+        ctx: machine.name.ctx,
+    }
+}
+
 const OUTPUTS: &str = "_$machine_outputs";
 const DISPOSITION: &str = "_$machine_disposition";
 const CANDIDATE: &str = "_$machine_candidate";
@@ -317,14 +336,14 @@ impl Builder {
     fn stmt(&mut self, stmt: Stmt) -> Spanned<Stmt> {
         (stmt, self.span())
     }
-    fn ident(&mut self, name: impl std::fmt::Display) -> Spanned<Expr> {
-        self.expr(Expr::Ident(Ident::new(&name.to_string())))
+    fn ident(&mut self, name: impl crate::env::LexicalName) -> Spanned<Expr> {
+        self.expr(Expr::Ident(name.lexical_key()))
     }
-    fn ty(&mut self, name: impl std::fmt::Display) -> Spanned<TypeExpr> {
+    fn ty(&mut self, name: impl crate::env::LexicalName) -> Spanned<TypeExpr> {
         let span = self.span();
         (
             TypeExpr::Named {
-                path: Path::single(Ident::new(&name.to_string()), span.clone()),
+                path: Path::single(name.lexical_key(), span.clone()),
                 type_args: None,
             },
             span,
@@ -352,11 +371,11 @@ impl Builder {
     }
     fn let_value(
         &mut self,
-        name: &str,
+        name: impl crate::env::LexicalName,
         ty: Option<Spanned<TypeExpr>>,
         value: Spanned<Expr>,
     ) -> Spanned<Stmt> {
-        let pattern = (Pattern::Identifier(Ident::new(name)), self.span());
+        let pattern = (Pattern::Identifier(name.lexical_key()), self.span());
         self.stmt(Stmt::Let {
             pattern,
             ty,
@@ -471,7 +490,7 @@ impl Builder {
                     value: i128::from(default),
                     radix: IntRadix::Decimal,
                 }));
-                Some(self.let_value(param.name.name.as_str(), Some(ty), literal))
+                Some(self.let_value(param.name, Some(ty), literal))
             })
             .collect()
     }
@@ -538,8 +557,7 @@ impl Builder {
             // Register the rejected state declaration through the ordinary
             // namespace authority, without bodies that would add cascades.
             if crate::ty::is_reserved_type_name(machine.name.name.as_str()) {
-                let mut declaration =
-                    self.enum_decl(machine.name.name.as_str(), &[], machine.visibility);
+                let mut declaration = self.enum_decl(machine.name, &[], machine.visibility);
                 declaration.origin = DeclarationOrigin::MachineState;
                 result[ordinal] = (Item::TypeDecl(declaration), span.clone());
                 continue;
@@ -636,7 +654,7 @@ impl Builder {
         state_enum.type_params.clone_from(&params);
         state_enum.where_clause.clone_from(&machine.where_clause);
         let mut event_enum = self.enum_decl(
-            format!("{}.Event", machine.name),
+            machine_companion(machine, ".Event"),
             &machine
                 .events
                 .iter()
@@ -652,7 +670,7 @@ impl Builder {
         event_enum.type_params.clone_from(&params);
         event_enum.where_clause.clone_from(&machine.where_clause);
         let mut output_enum = self.enum_decl(
-            format!("{}Output", machine.name),
+            machine_companion(machine, "Output"),
             &machine
                 .emits
                 .iter()
@@ -663,7 +681,7 @@ impl Builder {
         output_enum.type_params.clone_from(&params);
         output_enum.where_clause.clone_from(&machine.where_clause);
         let disposition_enum = self.enum_decl(
-            format!("{}StepDisposition", machine.name),
+            machine_companion(machine, "StepDisposition"),
             &[
                 (Ident::new("Taken"), Vec::new()),
                 (Ident::new("Ignored"), Vec::new()),
@@ -686,7 +704,32 @@ impl Builder {
         // These shells contain only ordinary source syntax. All copied source
         // expressions are transformed below, with fresh node spans.
         let source = format!("type {name}Step{generic} {{ outputs: Vec<{name}Output{generic}>; disposition: {name}StepDisposition; }} impl{generic} {name}{generic} {{ fn step(var self, event: {name}.Event{generic}) -> {name}Step{generic} {{}} fn state_name(self) -> string {{}} }}", name = machine.name);
-        let parsed = hew_parser::parse(&source);
+        let mut contexts = hew_parser::macro_syntax::TokenContexts::default();
+        let machine_names = [
+            machine.name,
+            machine_companion(machine, "Output"),
+            machine_companion(machine, "Step"),
+            machine_companion(machine, "StepDisposition"),
+        ];
+        for (token, span) in hew_lexer::Lexer::new(&source) {
+            if let hew_lexer::Token::Identifier(spelling) = token {
+                if let Some(name) = machine_names
+                    .iter()
+                    .find(|name| name.name.as_str() == spelling)
+                    .or_else(|| {
+                        machine
+                            .type_params
+                            .iter()
+                            .map(|param| &param.name)
+                            .find(|name| name.name.as_str() == spelling)
+                    })
+                {
+                    contexts.insert(span.start..span.end, name.ctx);
+                }
+            }
+        }
+        let parsed =
+            hew_parser::parse_generated(&source, 0, Arc::new(contexts), Default::default());
         if !parsed.errors.is_empty() {
             return Err(self.error(format!(
                 "could not normalize machine declarations: {:?}",
@@ -784,7 +827,7 @@ impl Builder {
 
     fn enum_decl(
         &mut self,
-        name: impl std::fmt::Display,
+        name: impl crate::env::LexicalName,
         variants: &[VariantFields],
         visibility: Visibility,
     ) -> TypeDecl {
@@ -792,7 +835,7 @@ impl Builder {
             origin: DeclarationOrigin::MachineCompanion,
             visibility,
             kind: TypeDeclKind::Enum,
-            name: Ident::new(&name.to_string()),
+            name: name.lexical_key(),
             type_params: None,
             where_clause: None,
             body: variants
@@ -880,7 +923,7 @@ impl Builder {
                     &transition.body.0,
                     transition.target_state,
                     transition.source_state,
-                    machine.name,
+                    machine,
                 )
             {
                 return Err(missing_target_refusal(transition, machine));
@@ -922,7 +965,7 @@ impl Builder {
         );
         let empty = self.expr(Expr::Array(Vec::new()));
         let outputs = self.var(OUTPUTS, Some(outputs_ty), empty);
-        let disposition_ty = self.ty(format!("{}StepDisposition", machine.name));
+        let disposition_ty = self.ty(machine_companion(machine, "StepDisposition"));
         let taken = self.variant(Ident::new("Taken"), Vec::new(), Vec::new());
         let disposition = self.var(DISPOSITION, Some(disposition_ty), taken);
         let mut state_arms = Vec::new();
@@ -984,7 +1027,7 @@ impl Builder {
         // ordinary candidate/output failure cleanup precedes any commit.
         let output_value = self.ident(OUTPUTS);
         let disposition_value = self.ident(DISPOSITION);
-        let report_path = Path::single(Ident::new(&format!("{}Step", machine.name)), self.span());
+        let report_path = Path::single(machine_companion(machine, "Step"), self.span());
         let report = self.expr(Expr::StructInit {
             path: report_path,
             fields: vec![
@@ -1077,10 +1120,7 @@ impl Builder {
         let span = self.span();
         (
             TypeExpr::Named {
-                path: Path::single(
-                    Ident::new(&format!("{}{suffix}", machine.name)),
-                    span.clone(),
-                ),
+                path: Path::single(machine_companion(machine, suffix), span.clone()),
                 type_args: (!args.is_empty()).then_some(args),
             },
             span,
@@ -1212,14 +1252,16 @@ impl Builder {
     ) -> Result<(), TypeError> {
         match expr {
             Expr::Ident(name) if name.name.as_str() == "self" => return Err(self.self_refusal()),
-            Expr::Ident(name) if name.name.as_str() == "state" => {
+            Expr::Ident(name)
+                if name.name.as_str() == "state" && name.ctx == machine.body_context =>
+            {
                 *expr = self.state_value(machine, state).0;
             }
             Expr::Ident(name) if machine.states.iter().any(|state| state.name == *name) => {
                 let name = *name;
                 *expr = self.qualified_variant(machine, name, Vec::new()).0;
             }
-            Expr::FieldAccess { object, field } if matches!(&object.0, Expr::Ident(name) if name.name.as_str() == "state") =>
+            Expr::FieldAccess { object, field } if matches!(&object.0, Expr::Ident(name) if name.name.as_str() == "state" && name.ctx == machine.body_context) =>
             {
                 let field = field.0;
                 if !state.fields.iter().any(|(name, _)| *name == field) {
@@ -1229,7 +1271,7 @@ impl Builder {
                 }
                 *expr = Expr::Ident(Ident::new(&format!("_$machine_state_{field}")));
             }
-            Expr::FieldAccess { object, field } if matches!(&object.0, Expr::Ident(name) if name.name.as_str() == "event") =>
+            Expr::FieldAccess { object, field } if matches!(&object.0, Expr::Ident(name) if name.name.as_str() == "event" && name.ctx == machine.body_context) =>
             {
                 let field = field.0;
                 if !event.fields.iter().any(|(name, _)| *name == field) {
@@ -1685,14 +1727,16 @@ fn rules_for<'a>(
 /// payload, so a rule whose source and target are the same state produces that
 /// state by naming it, and one whose source is a wildcard or a different state
 /// does not.
-fn returns_variant(expr: &Expr, target: Ident, source: Ident, machine: Ident) -> bool {
+fn returns_variant(expr: &Expr, target: Ident, source: Ident, machine: &MachineDecl) -> bool {
     match expr {
         Expr::ContextVariant(context) => context.name == target,
-        Expr::Ident(name) if name.name.as_str() == "state" => source == target,
+        Expr::Ident(name) if name.name.as_str() == "state" && name.ctx == machine.body_context => {
+            source == target
+        }
         Expr::Ident(name) => *name == target,
-        Expr::StructInit { path, .. } => path_names_state(path, target, machine),
+        Expr::StructInit { path, .. } => path_names_state(path, target, machine.name),
         Expr::FieldAccess { object, field } => {
-            field.0 == target && matches!(&object.0, Expr::Ident(name) if *name == machine)
+            field.0 == target && matches!(&object.0, Expr::Ident(name) if *name == machine.name)
         }
         Expr::Block(block) => block
             .trailing_expr

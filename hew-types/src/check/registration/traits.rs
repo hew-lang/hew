@@ -78,7 +78,7 @@ impl Checker {
             // rendered spelling. WHEN supervisor children resolve through
             // `Scope`, the child is its declaration. WHAT: resolve the
             // written path to the actor's `NominalId`.
-            let child_type = self.canonical_supervisor_child_type(&c.actor_type.to_string());
+            let child_type = self.canonical_supervisor_child_type(&c.actor_type);
             let entry = (
                 c.name.to_string(),
                 self.named_ty_for_key(&child_type, type_args),
@@ -108,8 +108,8 @@ impl Checker {
     }
 
     pub(in crate::check) fn register_actor_decl(&mut self, ad: &ActorDecl) {
-        let identity = ad.name;
-        self.register_actor_decl_as(ad, identity.name.as_str());
+        let identity = self.declaration_identity(ad.name);
+        self.register_actor_decl_as(ad, &identity);
     }
 
     /// Register an actor declaration under an explicit identity key.
@@ -319,7 +319,7 @@ impl Checker {
     /// Duplicate keys raise `TypeError::duplicate_definition` against the
     /// trait's span so the registry remains one-binding-per-key.
     pub(in crate::check) fn register_trait_lang_items(&mut self, td: &TraitDecl, span: Span) {
-        let trait_path = self.declaration_identity(td.name.name.as_str());
+        let trait_path = self.declaration_identity(td.name);
         let Some(trait_id) = self.require_declaration_path(&trait_path, &span) else {
             return;
         };
@@ -752,17 +752,6 @@ impl Checker {
         let ids = (trait_id, method_id);
         self.trait_method_ids
             .insert(self.defs.path(method_id).to_string(), ids);
-        if self.registration_is_flat_file_import {
-            self.trait_method_ids_by_binding.insert(
-                (
-                    None,
-                    self.current_module_idx,
-                    self.defs.name(trait_id).to_string(),
-                    method.name.to_string(),
-                ),
-                ids,
-            );
-        }
         if self.fn_sigs.contains_key(&method_id) {
             return;
         }
@@ -966,22 +955,6 @@ impl Checker {
                 .collect();
             defaults.insert(trait_id, bodies);
         }
-        for (binding, trait_id) in &self.trait_bindings {
-            let prefix = format!("{}::", self.defs.path(*trait_id));
-            for (key, ids) in &self.trait_method_ids {
-                if let Some(method) = key.strip_prefix(&prefix) {
-                    self.trait_method_ids_by_binding.insert(
-                        (
-                            binding.0.clone(),
-                            binding.1,
-                            binding.2.clone(),
-                            method.to_string(),
-                        ),
-                        *ids,
-                    );
-                }
-            }
-        }
         self.current_module = saved_module;
         self.current_module_idx = saved_file;
         defaults
@@ -1075,18 +1048,8 @@ impl Checker {
         impl_methods: &[FnDecl],
         impl_span: &Span,
     ) {
-        let trait_name = &trait_bound.path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
+        let trait_name = &trait_bound.path.to_string();
         let trait_id = self.resolve_trait_path(&trait_bound.path);
-        if let Some(declaration) = trait_id {
-            self.trait_bindings.insert(
-                (
-                    self.current_module.clone(),
-                    self.current_module_idx,
-                    trait_name.clone(),
-                ),
-                declaration,
-            );
-        }
         let ordering_predicate = matches!(
             trait_id.and_then(crate::DefTable::as_predicate),
             Some(crate::Predicate::Ord | crate::Predicate::PartialOrd)
@@ -1241,7 +1204,7 @@ impl Checker {
         method: &FnDecl,
         impl_sig: &FnSig,
     ) {
-        let trait_name = trait_bound.path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
+        let trait_name = trait_bound.path.to_string();
         let Some(primary) = self.resolve_trait_path(&trait_bound.path) else {
             return;
         };

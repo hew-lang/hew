@@ -427,9 +427,7 @@ impl Parser<'_> {
         let max_heap_attr = attrs.iter().find(|a| a.name == "max_heap").cloned();
 
         let item = match self.peek() {
-            Some(Token::Identifier("macro")) if self.is_macro_declaration() => {
-                Item::Macro(self.parse_macro_decl(Visibility::Private)?)
-            }
+            Some(Token::Macro) => Item::Macro(self.parse_macro_decl(Visibility::Private)?),
             Some(Token::Identifier(_)) if self.is_macro_call() => {
                 Item::MacroCall(self.parse_macro_call()?)
             }
@@ -444,9 +442,7 @@ impl Parser<'_> {
             Some(Token::Pub | Token::Package) => {
                 let vis = self.parse_visibility();
                 match self.peek() {
-                    Some(Token::Identifier("macro")) if self.is_macro_declaration() => {
-                        Item::Macro(self.parse_macro_decl(vis)?)
-                    }
+                    Some(Token::Macro) => Item::Macro(self.parse_macro_decl(vis)?),
                     Some(Token::Fn | Token::Gen) => {
                         self.parse_fn_with_modifiers(vis, attrs, &doc_comment)?
                     }

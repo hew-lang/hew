@@ -38,6 +38,32 @@ pub use codec::execute_codec;
 
 use wasm_bindgen::prelude::*;
 
+/// Render the macro expansion at a byte offset using the shared frontend.
+///
+/// # Errors
+///
+/// Returns an error when loading or expansion fails, or no expansion covers the offset.
+#[wasm_bindgen]
+pub fn expand_macro(source: &str, offset: usize) -> Result<String, JsValue> {
+    let mut options = hew_compile::FrontendOptions {
+        documents: hew_compile::SourceSet::in_memory(),
+        project_dir: Some(".".into()),
+        no_typecheck: true,
+        ..Default::default()
+    };
+    sandbox::add_embedded_standard_library(&mut options);
+    let state = hew_compile::run_source_frontend(source, "playground.hew", &options);
+    if let Some(failure) = state.stopped {
+        return Err(JsValue::from_str(&failure.message));
+    }
+    hew_analysis::expansion::render(
+        &state.program,
+        std::path::Path::new("playground.hew"),
+        Some(offset),
+    )
+    .ok_or_else(|| JsValue::from_str("no macro expansion at this position"))
+}
+
 // ── Diagnostics API ──────────────────────────────────────────────────────
 
 /// Analyze Hew source code and return diagnostics, tokens, and symbols as JSON.

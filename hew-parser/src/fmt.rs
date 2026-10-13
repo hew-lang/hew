@@ -47,6 +47,33 @@ pub fn format_program(program: &Program) -> String {
     f.output
 }
 
+/// Render expanded syntax with display-only hygiene context annotations.
+#[must_use]
+pub fn format_expanded_program(program: &Program) -> String {
+    let mut f = Formatter::new("", Vec::new());
+    f.show_contexts = true;
+    f.format_program(program);
+    f.output
+}
+
+/// Render one expanded declaration with hygiene contexts.
+#[must_use]
+pub fn format_expanded_item(item: &Item, span: &Span) -> String {
+    let mut f = Formatter::new("", Vec::new());
+    f.show_contexts = true;
+    f.format_item(item, span.start, span.end);
+    f.output
+}
+
+/// Render one expanded expression with hygiene contexts.
+#[must_use]
+pub fn format_expanded_expression(expr: &Expr, span: &Span) -> String {
+    let mut f = Formatter::new("", Vec::new());
+    f.show_contexts = true;
+    f.format_expr(&(expr.clone(), span.clone()));
+    f.output
+}
+
 /// Format one expression as canonical Hew source text: the text a failed
 /// `assert` reports for its condition.
 #[must_use]
@@ -222,6 +249,7 @@ fn rewrite_path_separators(source: &str) -> String {
 
 struct Formatter<'a> {
     output: String,
+    show_contexts: bool,
     indent: usize,
     source: &'a str,
     /// The source's tokens, from the lexer that also yields its comments.
@@ -270,6 +298,7 @@ impl<'a> Formatter<'a> {
             .collect();
         Self {
             output: String::new(),
+            show_contexts: false,
             indent: 0,
             source,
             tokens,
@@ -432,6 +461,9 @@ impl<'a> Formatter<'a> {
     /// token, so a comment keeps its place between the same two tokens.
     fn write_ident(&mut self, ident: Ident) {
         self.write(ident.name.as_str());
+        if self.show_contexts && ident.ctx != crate::ast::SyntaxContext::ROOT {
+            let _ = write!(self.output, "/*ctx:{}*/", ident.ctx.row());
+        }
     }
 
     fn write(&mut self, s: &str) {

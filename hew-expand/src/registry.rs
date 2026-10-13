@@ -15,7 +15,6 @@ struct Definition {
     declaration: MacroDecl,
     patterns: Vec<Pattern>,
     source: PathBuf,
-    span: Span,
 }
 
 #[derive(Debug)]
@@ -99,10 +98,10 @@ impl Registry {
                     .entry(source.clone())
                     .or_default()
                     .push(MacroImport {
+                        span: span.clone(),
                         target,
                         qualifier,
                         spec: import.spec.clone(),
-                        span: span.clone(),
                         file_import: import.file_path.is_some(),
                     });
             }
@@ -142,10 +141,7 @@ impl Registry {
                         format!("duplicate macro `{}`", declaration.name),
                     ));
                 }
-                if matches!(
-                    declaration.name.name.as_str(),
-                    "stringify" | "location" | "include_str" | "include_bytes" | "embed"
-                ) {
+                if hew_parser::macro_syntax::is_builtin_macro(declaration.name.name.as_str()) {
                     return Err((
                         source.clone(),
                         span.clone(),
@@ -175,10 +171,111 @@ impl Registry {
                         declaration: declaration.clone(),
                         patterns,
                         source: source.clone(),
-                        span: span.clone(),
                     },
                 );
             }
+        }
+        for definition in self.definitions.values() {
+            for rule in &definition.declaration.rules {
+                self.validate_macro_references(&rule.template, definition)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_macro_references(
+        &self,
+        tree: &hew_parser::macro_syntax::TokenTree,
+        definition: &Definition,
+    ) -> Result<(), (PathBuf, Span, String)> {
+        use hew_parser::macro_syntax::TokenTree;
+        let children = match tree {
+            TokenTree::Group { children, .. }
+            | TokenTree::Fragment {
+                tokens: children, ..
+            } => children,
+            TokenTree::Interpolated { expressions, .. } => {
+                for (_, children) in expressions {
+                    self.validate_macro_reference_tokens(children, definition)?;
+                }
+                return Ok(());
+            }
+            TokenTree::Token { .. } => return Ok(()),
+        };
+        self.validate_macro_reference_tokens(children, definition)
+    }
+
+    fn validate_macro_reference_tokens(
+        &self,
+        children: &[hew_parser::macro_syntax::TokenTree],
+        definition: &Definition,
+    ) -> Result<(), (PathBuf, Span, String)> {
+        use crate::tokens::spelling;
+        use hew_parser::macro_syntax::TokenTree;
+        let identifier = |tree: &TokenTree| {
+            let TokenTree::Token {
+                spelling,
+                span,
+                context,
+                ..
+            } = tree
+            else {
+                return None;
+            };
+            let mut tokens = hew_lexer::Lexer::new(spelling);
+            matches!(tokens.next(), Some((hew_lexer::Token::Identifier(_), _))).then(|| {
+                (
+                    Ident {
+                        name: hew_parser::ast::Symbol::intern(spelling),
+                        ctx: *context,
+                    },
+                    span.clone(),
+                )
+            })
+        };
+        let mut index = 0;
+        while index < children.len() {
+            if let Some(head) = identifier(&children[index]) {
+                let mut path = vec![head];
+                let mut cursor = index + 1;
+                while children.get(cursor).and_then(spelling) == Some(".") {
+                    let Some(segment) = children.get(cursor + 1).and_then(identifier) else {
+                        break;
+                    };
+                    path.push(segment);
+                    cursor += 2;
+                }
+                if children.get(cursor).and_then(spelling) == Some("!") {
+                    if let Some(input @ TokenTree::Group { .. }) = children.get(cursor + 1) {
+                        let captured =
+                            index > 0 && matches!(spelling(&children[index - 1]), Some("$" | "."));
+                        let builtin = path.len() == 1
+                            && hew_parser::macro_syntax::is_builtin_macro(path[0].0.name.as_str());
+                        if !captured && !builtin {
+                            let span = path[0].1.clone();
+                            let call = MacroCall {
+                                path: hew_parser::ast::Path { segments: path },
+                                input: input.clone(),
+                            };
+                            let (target, _) =
+                                self.definition(&call, &definition.source)
+                                    .map_err(|error| {
+                                        (definition.source.clone(), span.clone(), error)
+                                    })?;
+                            if definition.declaration.visibility == Visibility::Pub
+                                && target.declaration.visibility != Visibility::Pub
+                            {
+                                return Err((definition.source.clone(), span, "E_MACRO_PRIVATE_REFERENCE: a public macro cannot invoke a private macro".into()));
+                            }
+                        }
+                        // Invocation input remains syntax data until a rule selects its fragment kinds.
+                        index = cursor + 2;
+                        continue;
+                    }
+                }
+            }
+            self.validate_macro_references(&children[index], definition)?;
+            index += 1;
         }
         Ok(())
     }
@@ -364,7 +461,7 @@ impl ExpansionProvider for Registry {
         }
         let macro_name = definition.declaration.name.to_string();
         let definition_source = definition.source.clone();
-        let definition_span = definition.span.clone();
+        let definition_span = rule.span.clone();
         let id = ExpansionId(
             self.map
                 .expansions
@@ -404,6 +501,10 @@ impl ExpansionProvider for Registry {
             invocation: Origin::Caller {
                 file: source.to_path_buf(),
                 span: call.path.segments[0].1.start..call.input.span().end,
+            },
+            callee: Origin::Caller {
+                file: source.to_path_buf(),
+                span: call.path.segments[0].1.start..call.path.segments.last().unwrap().1.end,
             },
             definition: Origin::Template {
                 file: definition_source.clone(),
@@ -479,6 +580,10 @@ fn validate_template(
             file: source.to_path_buf(),
             synthetic: offset..offset + generated.source.len(),
             invocation: Origin::Caller {
+                file: source.to_path_buf(),
+                span: rule.span.clone(),
+            },
+            callee: Origin::Caller {
                 file: source.to_path_buf(),
                 span: rule.span.clone(),
             },

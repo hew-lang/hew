@@ -600,10 +600,7 @@ impl Checker {
             .map(|(decl_idx, (name, field_ty))| {
                 let (sub, field_span) = if let Some(field) = listed.get(name.as_str()) {
                     match &field.pattern {
-                        None => (
-                            PlanSub::Binding(field.name.to_string()),
-                            field.name_span.clone(),
-                        ),
+                        None => (PlanSub::Binding(field.name), field.name_span.clone()),
                         Some((Pattern::Wildcard, sub_span)) => {
                             (PlanSub::Wildcard, sub_span.clone())
                         }
@@ -626,7 +623,7 @@ impl Checker {
                                     sub_span.clone(),
                                 )
                             } else {
-                                (PlanSub::Binding(binding.to_string()), sub_span.clone())
+                                (PlanSub::Binding(*binding), sub_span.clone())
                             }
                         }
                         Some((_, sub_span)) => (
@@ -707,7 +704,7 @@ impl Checker {
                         is_mutable,
                         field.span.clone(),
                     );
-                    self.record_local_resolution(Ident::new(name), &field.span);
+                    self.record_local_resolution(*name, &field.span);
                 }
                 // A wildcard field names nothing, so it takes nothing: the
                 // field stays owned by the place the pattern destructures.
@@ -723,7 +720,7 @@ impl Checker {
                 PlanSub::Nested(_) => {
                     if let Some((subpattern, sub_span)) = source_fields
                         .iter()
-                        .find(|source| source.name == Ident::new(&field.name))
+                        .find(|source| source.name.name.as_str() == field.name)
                         .and_then(|source| source.pattern.as_ref())
                     {
                         self.pattern_place =
@@ -2264,7 +2261,7 @@ impl Checker {
                                     };
                                     Some(PayloadBinding {
                                         field_idx: field.decl_idx as usize,
-                                        binding_name: binding_name.clone(),
+                                        binding_name: binding_name.to_string(),
                                         def_span: self
                                             .env
                                             .lookup_ref(binding_name)
@@ -2374,7 +2371,7 @@ impl Checker {
                                             };
                                             Some(PayloadBinding {
                                                 field_idx: field.decl_idx as usize,
-                                                binding_name: binding_name.clone(),
+                                                binding_name: binding_name.to_string(),
                                                 def_span: self
                                                     .env
                                                     .lookup_ref(binding_name)
@@ -2620,7 +2617,7 @@ impl Checker {
                         .env
                         .lookup_ref(&binding_name)
                         .and_then(|binding| binding.def_span.clone()),
-                    binding_name,
+                    binding_name: binding_name.to_string(),
                     ty,
                 }),
                 PlanSub::Wildcard => {}

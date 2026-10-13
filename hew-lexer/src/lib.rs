@@ -180,6 +180,8 @@ pub enum Token<'src> {
     Mut,
     #[token("fn")]
     Fn,
+    #[token("macro")]
+    Macro,
     #[token("if")]
     If,
     #[token("else")]
@@ -630,6 +632,7 @@ define_keywords! {
     Const      => "const",
     Mut        => "mut",
     Fn         => "fn",
+    Macro      => "macro",
     If         => "if",
     Else       => "else",
     Match      => "match",

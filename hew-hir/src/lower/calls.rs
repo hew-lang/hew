@@ -693,77 +693,6 @@ impl LowerCtx {
         )
     }
 
-    /// Return the checker-authored declaration identities for a trait method.
-    /// An absent entry is intentionally propagated as `None`: static-dispatch
-    /// indexing must fail closed instead of constructing an id from HIR text.
-    pub(super) fn trait_method_identity(
-        &self,
-        declaring_trait: &str,
-        method_name: &str,
-    ) -> Option<(hew_types::DefId, hew_types::DefId)> {
-        // An imported trait alias is a lexical binding, not an owner prefix.
-        // Consult the checker-published binding fact first; a bare trait bound
-        // inside the active module then has one exact canonical-owner fallback.
-        // Never reinterpret a final path segment as this module's owner.
-        if let Some(ids) = self.trait_method_ids_by_binding.get(&(
-            self.current_module_name.clone(),
-            self.current_module_idx,
-            declaring_trait.to_string(),
-            method_name.to_string(),
-        )) {
-            return Some(*ids);
-        }
-        if let Some(module) = self.current_module_name.as_deref() {
-            let key = format!("{module}.{declaring_trait}::{method_name}");
-            if let Some(ids) = self.trait_method_ids.get(&key) {
-                return Some(*ids);
-            }
-        }
-        self.trait_method_ids
-            .get(&format!("{declaring_trait}::{method_name}"))
-            .copied()
-            .or_else(|| {
-                self.lowering_injected_items
-                    .then(|| {
-                        self.trait_method_ids
-                            .get(&format!("std.builtins.{declaring_trait}::{method_name}"))
-                    })
-                    .flatten()
-                    .copied()
-            })
-            .or_else(|| {
-                // The prelude iterator may be available without a lexical
-                // import binding.  Its lang-item binding carries the exact
-                // checker-minted declaration identities; compare only its
-                // checker-published surface names, never a hard-coded leaf or
-                // a scan over declaration-ID strings. Local/import bindings
-                // above remain higher priority.
-                let binding = self
-                    .lang_items
-                    .get(hew_types::LangItem::IteratorNext.key())?;
-                if declaring_trait == binding.trait_name
-                    && binding.method_name.as_deref() == Some(method_name)
-                {
-                    Some((binding.trait_id, binding.method_id?))
-                } else {
-                    None
-                }
-            })
-            .or_else(|| {
-                // Display has the same prelude shape.  The method-level
-                // lang-item is the single exact authority, including if the
-                // stdlib later renames the trait or method.
-                let binding = self.lang_items.get(hew_types::LANG_ITEM_DISPLAY_FMT)?;
-                if declaring_trait == binding.trait_name
-                    && binding.method_name.as_deref() == Some(method_name)
-                {
-                    Some((binding.trait_id, binding.method_id?))
-                } else {
-                    None
-                }
-            })
-    }
-
     pub(super) fn register_trait_default_fn_entry(
         &mut self,
         self_name: &str,
@@ -779,14 +708,17 @@ impl LowerCtx {
         self.current_module_idx = previous_file;
     }
 
-    pub(super) fn trait_declaration(&self, binding: &str) -> Option<hew_types::DefId> {
-        self.trait_bindings
-            .get(&(
-                self.current_module_name.clone(),
-                self.current_module_idx,
-                binding.to_string(),
-            ))
-            .copied()
+    pub(super) fn trait_declaration(
+        &self,
+        path: &hew_parser::ast::Path,
+    ) -> Option<hew_types::DefId> {
+        let (_, span) = path.segments.last()?;
+        match self.resolutions.get(&self.mk_key(span))? {
+            Resolution::Def(id) if self.defs.kind(*id) == hew_types::DeclarationKind::Trait => {
+                Some(*id)
+            }
+            _ => None,
+        }
     }
 
     pub(super) fn ordinary_call_target(&self, span: &Span) -> Option<CallTarget> {

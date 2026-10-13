@@ -3940,6 +3940,22 @@ pub fn run_file_frontend_to_typecheck(
     run_document_frontend_from(input, None, options, RootSelection::AsWritten).into_result()
 }
 
+/// Load and expand a source file without requiring the expanded program to type-check.
+///
+/// # Errors
+///
+/// Returns the shared frontend's loading, parsing or expansion failure.
+pub fn run_file_frontend_to_expansion(
+    input: &str,
+    options: &FrontendOptions,
+) -> Result<FileFrontendState, FrontendFailure> {
+    let options = FrontendOptions {
+        no_typecheck: true,
+        ..options.clone()
+    };
+    run_file_frontend_to_typecheck(input, &options)
+}
+
 /// What the shared frontend produced for one document.
 ///
 /// The editor surfaces need the diagnostics and whatever the pipeline managed

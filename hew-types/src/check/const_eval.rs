@@ -137,7 +137,7 @@ impl ConstIntegerTarget {
         Some(Self { min, max })
     }
 
-    const fn machine_usize_compat() -> Self {
+    pub(super) const fn machine_usize_compat() -> Self {
         Self {
             min: 0,
             max: u64::MAX as i128,

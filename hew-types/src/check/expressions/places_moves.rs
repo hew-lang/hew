@@ -398,7 +398,7 @@ impl Checker {
                 if let Some(state_field) =
                     self.actor_self_state_field(&object.0, field.0.name.as_str())
                 {
-                    return Some((hew_parser::ast::Ident::new(state_field), PlacePath::new()));
+                    return Some((state_field, PlacePath::new()));
                 }
                 let (root, mut path) = self.expr_place(&object.0)?;
                 path.push(field.0.to_string());
@@ -430,18 +430,29 @@ impl Checker {
     /// access on the receiver value and is left alone. A name that is not a
     /// declared state field is left alone too, so [`Self::check_field_access`]
     /// can report it against the actor.
-    pub(in crate::check) fn actor_self_state_field<'a>(
+    pub(in crate::check) fn actor_self_state_field(
         &self,
         object: &Expr,
-        field: &'a str,
-    ) -> Option<&'a str> {
+        field: &str,
+    ) -> Option<hew_parser::ast::Ident> {
         if !self.is_actor_self_receiver(object) {
             return None;
         }
-        self.current_actor_fields
+        let index = self
+            .current_actor_fields
             .iter()
-            .any(|f| f.name == field)
-            .then_some(field)
+            .position(|candidate| candidate.name == field)?;
+        let Ty::Named { head, .. } = self.current_actor_type.as_ref()? else {
+            return None;
+        };
+        let owner = head.nominal()?;
+        self.actor_field_binding_ids
+            .iter()
+            .find_map(|(binding, &(candidate, field_index))| {
+                (candidate == owner && field_index as usize == index)
+                    .then(|| self.env.binding_name_by_id(*binding).map(|(name, _)| *name))
+                    .flatten()
+            })
     }
 
     /// Publish the receiver resolution for one `self.field` projection at
@@ -464,9 +475,8 @@ impl Checker {
     /// belongs to [`Self::check_field_access`], which reports it against the
     /// actor rather than letting the receiver be synthesised as a value.
     pub(in crate::check) fn is_actor_self_receiver(&self, object: &Expr) -> bool {
-        matches!(object, Expr::Ident(name) if name.name.as_str() == "self")
+        matches!(object, Expr::Ident(name) if name.name.as_str() == "self" && self.env.lookup_ref(name).is_none())
             && self.current_actor_type.is_some()
-            && self.env.lookup_ref("self").is_none()
     }
 
     /// Render a place for diagnostics: `h.sock`, or plain `h` for the root.

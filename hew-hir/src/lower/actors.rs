@@ -162,7 +162,7 @@ impl LowerCtx {
             node: self.ids.node(),
             declaration,
             bootstrap_declaration,
-            name: decl.name.to_string(),
+            name: self.defs.linkage_name(declaration, decl.name.name.as_str()),
             type_params: self
                 .declaration_type_parameters
                 .get(&declaration)
@@ -471,10 +471,7 @@ impl LowerCtx {
         // supplies `decl_module` from the original module graph; root actors
         // use the bare name. Never retry a module actor by leaf name because
         // two nested modules may legitimately export the same actor leaf.
-        let actor_identity = decl_module.map_or_else(
-            || decl.name.to_string(),
-            |module| format!("{module}.{}", decl.name),
-        );
+        let actor_identity = self.defs.path(declaration).to_string();
         let protocol_descriptor = self
             .actor_protocol_descriptors
             .get(actor_identity.as_str())
@@ -503,7 +500,7 @@ impl LowerCtx {
             id: self.ids.item(),
             node: self.ids.node(),
             declaration,
-            name: decl.name.to_string(),
+            name: self.defs.linkage_name(declaration, decl.name.name.as_str()),
             // File-import items are flattened for source-order lowering, but
             // flattening does not erase declaration ownership.  The third
             // pass supplies their checker-aligned module identity here; a

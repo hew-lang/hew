@@ -502,6 +502,10 @@ impl TemplateNames<'_> {
                 }
             }
             Item::Machine(machine) => {
+                for state in &machine.states {
+                    self.bind(state.name);
+                    self.types.define(state.name, Ty::Error, false);
+                }
                 self.types.define(Ident::new("Self"), Ty::Error, false);
                 self.bind(Ident::new("self"));
                 self.bind(Ident::new("event"));
@@ -814,6 +818,7 @@ impl TemplateNames<'_> {
                     self.expr(value)?;
                 }
             }
+            Expr::MacroInvocation { name, .. } if name.name.as_str() == "stringify" => {}
             Expr::Tuple(values)
             | Expr::Race(values)
             | Expr::MacroInvocation { args: values, .. } => {

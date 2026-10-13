@@ -907,10 +907,8 @@ impl Parser<'_> {
             }
             Token::Identifier(name) => {
                 if self.is_macro_call()
-                    && !(matches!(
-                        *name,
-                        "include_str" | "include_bytes" | "location" | "stringify" | "embed"
-                    ) && self.peek_at(self.pos + 1) == Some(&Token::Bang))
+                    && !(crate::macro_syntax::is_builtin_macro(name)
+                        && self.peek_at(self.pos + 1) == Some(&Token::Bang))
                 {
                     let call = self.parse_macro_call()?;
                     if self.expander.is_some() {

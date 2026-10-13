@@ -379,8 +379,7 @@ impl Checker {
                 // already registered; restore it only if import registration
                 // replaced its bare compatibility slot with a non-actor type.
                 let module_identity = self.current_module.clone();
-                let identity =
-                    Self::actor_identity(module_identity.as_deref(), ad.name.name.as_str());
+                let identity = self.declaration_identity(ad.name);
                 let local_actor_needs_restore = self
                     .type_def_at(&identity)
                     .is_none_or(|definition| definition.kind != TypeDefKind::Actor);
@@ -461,7 +460,7 @@ impl Checker {
                                                                // resolution looks the receiver up under. Leaving it as
                                                                // written registers the methods where nothing can find
                                                                // them, and the impl is silently ignored.
-                    let canonical_target = self.canonical_impl_target_identity(target_name);
+                    let canonical_target = self.canonical_impl_target_identity(named_path);
                     let type_name = canonical_target.as_ref().unwrap_or(target_name);
                     let prev_impl_surface_target = self
                         .current_impl_surface_target
@@ -762,7 +761,7 @@ impl Checker {
                         let method_name = method.name;
                         let type_name = td.name;
                         if let Some((owner, member)) = self
-                            .lookup_declaration(&self.declaration_identity(type_name.name.as_str()))
+                            .lookup_declaration(&self.declaration_identity(type_name))
                             .and_then(|owner| {
                                 self.defs
                                     .member_of_kind(
@@ -802,7 +801,7 @@ impl Checker {
                 }
             }
             Item::Trait(td) => {
-                let trait_path = self.declaration_identity(td.name.name.as_str());
+                let trait_path = self.declaration_identity(td.name);
                 let Some(trait_id) = self.require_declaration_path(&trait_path, span) else {
                     return;
                 };
@@ -830,7 +829,7 @@ impl Checker {
                 self.register_import(id, Some(span));
             }
             Item::Supervisor(supervisor) => {
-                let identity = self.declaration_identity(supervisor.name.name.as_str());
+                let identity = self.declaration_identity(supervisor.name);
                 let scope = self.enter_primary_sig_scope(&[(Some(&supervisor.type_params), None)]);
                 for method in &supervisor.methods {
                     self.register_fn_sig_with_name(
@@ -841,7 +840,12 @@ impl Checker {
                 }
                 self.exit_primary_sig_scope(scope);
             }
-            Item::Const(_) | Item::TypeAlias(_) | Item::Machine(_) | Item::Record(_) => {
+            Item::Const(declaration) => {
+                let ty = self.resolve_registered_annotation_ty_no_holes(&declaration.ty);
+                let owner = self.current_module.clone();
+                self.register_source_constant(owner.as_deref(), declaration, ty);
+            }
+            Item::TypeAlias(_) | Item::Machine(_) | Item::Record(_) => {
                 // Records have no method body items in v0.5; method registration
                 // is a no-op here.  TODO(A-4): if records gain methods, register
                 // them via a `register_record_methods` pass here.
@@ -1503,19 +1507,6 @@ impl Checker {
                     declaration_id,
                 );
             }
-            if let Some(ids) = implemented_trait
-                .and_then(|trait_id| self.trait_method_ids_of(trait_id, method.name.name.as_str()))
-            {
-                self.trait_method_ids_by_binding.insert(
-                    (
-                        self.current_module.clone(),
-                        self.current_module_idx,
-                        bound.path.to_string(), // TRANSITION(P1): deleted by A1 commit 2
-                        method.name.to_string(),
-                    ),
-                    ids,
-                );
-            }
         }
         // Push impl-level bounds onto the resolver's stack so the method
         // signature can reference `T.Bar` where `T` is an impl type param
@@ -1625,6 +1616,9 @@ impl Checker {
         let mut sig = FnSig {
             impl_method: Some(super::types::ImplMethodProvenance {
                 declaration: declaration_id,
+                trait_method: implemented_trait.and_then(|trait_id| {
+                    self.trait_method_ids_of(trait_id, method.name.name.as_str())
+                }),
                 receiver: self.lookup_declaration(
                     &self
                         .canonical_nominal_name(type_name)
@@ -2033,10 +2027,11 @@ impl Checker {
         );
         // Rechecking an admitted source body keeps its declaration even when
         // the body is presented through a different lexical import surface.
+        let receiver_declaration = self.lookup_declaration(&receiver);
         let declaration = self.defs.declaration(occurrence).map_or_else(
             || {
                 self.defs
-                    .declare(occurrence, method.name.name, None, path.clone())
+                    .declare(occurrence, method.name, receiver_declaration, path.clone())
             },
             Ok,
         );

@@ -304,6 +304,7 @@ pub(super) fn analyze_document(
 
     let dependency_uris = dependency_uris(&state.program, type_output.as_ref());
     DocumentState {
+        expanded_program: (!state.program.expansions.is_empty()).then(|| Box::new(state.program)),
         source: source.to_string(),
         line_offsets,
         parse_result,

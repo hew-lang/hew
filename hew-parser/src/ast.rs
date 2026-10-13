@@ -1994,6 +1994,8 @@ pub struct MachineDecl {
     #[serde(default)]
     pub visibility: Visibility,
     pub name: Ident,
+    /// Context of the implicit `state` and `event` bindings inside the body.
+    pub body_context: SyntaxContext,
     /// Optional generic type parameters declared as `machine Name<T, U> { ... }`
     /// or `machine Name<T: Trait> { ... }`.
     ///

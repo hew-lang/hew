@@ -1153,52 +1153,15 @@ impl Checker {
                     }
                 }
                 Item::Trait(decl) if decl.visibility.is_pub() => {
-                    let canonical = format!("{module_full_path}.{}", decl.name);
-                    let Some(trait_id) = self.lookup_declaration(&canonical) else {
-                        continue;
-                    };
-                    let mut bindings = vec![format!("{module_short}.{}", decl.name)];
                     if let Some(binding) = publication.bare_binding(decl.name.name.as_str()) {
                         self.unqualified_to_module.insert(
                             (
                                 self.current_module.clone(),
                                 self.current_module_idx,
-                                binding.clone(),
+                                binding,
                             ),
                             module_full_path.to_string(),
                         );
-                        bindings.push(binding);
-                    }
-                    for binding in bindings {
-                        self.trait_bindings.insert(
-                            (
-                                self.current_module.clone(),
-                                self.current_module_idx,
-                                binding.clone(),
-                            ),
-                            trait_id,
-                        );
-                        for method in &decl.items {
-                            let TraitItem::Method(method) = method else {
-                                continue;
-                            };
-                            let Some(method_id) = self.lookup_declaration(&format!(
-                                "{}::{}",
-                                self.defs.path(trait_id),
-                                method.name
-                            )) else {
-                                continue;
-                            };
-                            self.trait_method_ids_by_binding.insert(
-                                (
-                                    self.current_module.clone(),
-                                    self.current_module_idx,
-                                    binding.clone(),
-                                    method.name.to_string(),
-                                ),
-                                (trait_id, method_id),
-                            );
-                        }
                     }
                 }
                 Item::TypeAlias(decl) if decl.visibility.is_pub() => {
@@ -1331,13 +1294,7 @@ impl Checker {
                         continue;
                     }
                     let ty = self.resolve_registered_annotation_ty_no_holes(&cd.ty);
-                    self.env
-                        .define(format!("{owner}.{}", cd.name), ty.clone(), false);
-                    self.env.define(cd.name.to_string(), ty, false);
-                    // The value environment is one flat scope, so the bare
-                    // binding is visible program-wide once defined. The export
-                    // record is what makes it in scope only where the import
-                    // was written; the use-time gate reads both.
+                    self.register_source_constant(Some(&owner), cd, ty);
                     let source_identity = format!("{owner}.{}", cd.name);
                     self.record_published_bare_const(cd.name.name.as_str(), &source_identity);
                     self.file_import_const_exports

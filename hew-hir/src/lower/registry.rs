@@ -305,8 +305,23 @@ impl LowerCtx {
         method: &FnDecl,
         impl_type_params: &[hew_types::ParamHead],
     ) {
-        let symbol =
-            crate::node::HirImplBlock::method_symbol(self_type_name, method.name.name.as_str());
+        let symbol = self
+            .source_declaration(&method.fn_span, hew_types::DeclarationKind::ImplMethod, 0)
+            .map_or_else(
+                || {
+                    crate::node::HirImplBlock::method_symbol(
+                        self_type_name,
+                        method.name.name.as_str(),
+                    )
+                },
+                |declaration| {
+                    self.emitted_impl_method_symbol(
+                        declaration,
+                        self_type_name,
+                        method.name.name.as_str(),
+                    )
+                },
+            );
         self.register_impl_method_fn_entry_at(method, impl_type_params, &symbol);
     }
 

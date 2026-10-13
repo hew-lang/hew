@@ -84,6 +84,11 @@ pub(crate) fn goto_definition(
             range: Range::default(),
         }));
     }
+    if let Some(locations) =
+        super::super::navigation::macro_definition_locations(uri, &doc, offset, &server.documents)
+    {
+        return Some(GotoDefinitionResponse::Array(locations));
+    }
     if let Some(location) =
         super::super::navigation::identity_definition_location(uri, &doc, offset, &server.documents)
     {

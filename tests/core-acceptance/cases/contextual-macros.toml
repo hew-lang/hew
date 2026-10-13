@@ -1,10 +1,10 @@
 [[case]]
 id = "contextual-macros"
-intent = "Parsed captures retain precedence, caller bindings and loop targets while repeated expansions create distinct helper functions, constants, generic types and closure captures."
+intent = "Parsed captures retain precedence, caller bindings and loop targets while repeated expansions create distinct helper functions, constants, generic types, trait implementations, actors, machines and closure captures."
 source = "cases/contextual-macros.hew"
 suites = ["acceptance", "safety"]
 timeout_seconds = 30
 
 [case.expected]
-stdout = "8\n13\n6\n14\n3\n6\nOWNED\nvalue: 4\ntrue\n2\n"
+stdout = "8\n13\n6\n14\n3\n6\nOWNED\nvalue: 4\ntrue\n2\n3\n7\n42\n3\n9\n"
 exit = 0

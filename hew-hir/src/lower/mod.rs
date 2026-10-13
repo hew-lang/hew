@@ -921,8 +921,6 @@ fn machine_event_surface_type(machine: &str) -> String {
     format!("{machine}.Event")
 }
 
-type TraitMethodBindingKey = (Option<String>, u32, String, String);
-
 #[derive(Debug)]
 struct LowerCtx {
     compile_time_values: HashMap<SpanKey, hew_types::compile_time::ConstantValue>,
@@ -986,21 +984,13 @@ struct LowerCtx {
     diagnostics: Vec<HirDiagnostic>,
     /// Checker-owned function and method signatures used for iterator dispatch
     /// and concrete call instantiation.
-    /// TRANSITION(B1): signatures by the keys the checker published.
-    fn_sigs_by_path: HashMap<String, hew_types::FnSig>,
+    fn_sigs: HashMap<hew_types::DefId, hew_types::FnSig>,
+    fn_sig_keys: HashMap<String, hew_types::DefId>,
+    builtin_fn_sigs: HashMap<hew_parser::ast::Symbol, hew_types::FnSig>,
     /// Checker-selected targets for ordinary calls, keyed by the call span.
     /// Missing facts lower as an explicit unsupported target; HIR never
     /// guesses from the callee spelling.
     direct_call_targets: HashMap<SpanKey, CallTarget>,
-    /// Checker-published canonical `(trait, method)` declaration identities,
-    /// keyed by owner-qualified source method paths. HIR only carries these
-    /// declaration facts; it does not rebuild IDs from method spellings.
-    trait_method_ids: HashMap<String, (hew_types::DefId, hew_types::DefId)>,
-    /// Checker-published canonical trait identities addressed through an exact
-    /// importer binding.  This resolves default-method ownership for `impl
-    /// AliasTrait for Type` without a leaf-name or suffix lookup.
-    trait_method_ids_by_binding:
-        HashMap<TraitMethodBindingKey, (hew_types::DefId, hew_types::DefId)>,
     /// Checker-owned impl-method declaration identities.  Keys are linker
     /// presentation strings retained only to locate the already-allocated ID;
     /// HIR never constructs an ID from a method spelling.
@@ -1515,7 +1505,6 @@ struct LowerCtx {
     /// function body.
     current_fn_type_params: HashSet<hew_types::ParamHead>,
     /// Checker-selected trait bindings and default source bodies.
-    trait_bindings: HashMap<(Option<String>, u32, String), hew_types::DefId>,
     trait_defaults: HashMap<hew_types::DefId, Vec<hew_types::ResolvedTraitDefault>>,
     /// Source-declared type names visible in the root namespace, including
     /// declarations flattened from file imports. These identities must be

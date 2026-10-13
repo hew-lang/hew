@@ -1,3 +1,4 @@
+import contextual_macros_support.{answer as imported_answer};
 macro twice {
     ($value:expr) => expr { $value + $value }
 }
@@ -8,9 +9,12 @@ macro create {
     ($name:ident, $value:literal) => items {
         type Hidden<T> { value: T; }
         const VALUE: i64 = $value;
+        trait Read { fn read(self) -> i64; }
+        impl Read for Hidden<i64> { fn read(self) -> i64 { self.value } }
         fn helper() -> i64 {
             let item: Hidden<i64> = Hidden { value: VALUE };
-            item.value + VALUE
+            let reader: dyn Read = item;
+            reader.read() + VALUE
         }
         fn $name() -> i64 { helper() }
     }
@@ -29,6 +33,35 @@ macro here { () => expr { location!().line } }
 macro under_loop {
     ($body:block) => expr { { loop { $body; break; } } }
 }
+macro counter {
+    ($name:ident, $value:literal) => items {
+        actor Hidden {
+            receive fn value() -> i64 { $value }
+        }
+        fn $name() -> i64 { let counter = spawn Hidden; counter.value().expect("actor replies") }
+    }
+}
+counter!(first_actor, 3)
+counter!(second_actor, 7)
+macro machine_value {
+    ($name:ident, $value:expr) => items {
+        machine Hidden {
+            events { Tick; }
+            state Idle;
+            state Done { value: i64; }
+            on Tick: Idle => Done { value: $value }
+            default { state }
+        }
+        fn $name() -> i64 {
+            var current: Hidden = .Idle;
+            let _ = current.step(.Tick);
+            match current { .Done { value } => value, _ => 0 }
+        }
+    }
+}
+const state: i64 = 9;
+machine_value!(first_machine, 3)
+machine_value!(second_machine, state)
 fn main() {
     let value = 3;
     println(twice!(value + 1));
@@ -46,4 +79,9 @@ fn main() {
         under_loop!({ if count == 2 { break; } });
     }
     println(count);
+    println(first_actor());
+    println(second_actor());
+    println(imported_answer!());
+    println(first_machine());
+    println(second_machine());
 }

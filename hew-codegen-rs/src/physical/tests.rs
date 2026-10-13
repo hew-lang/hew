@@ -88,13 +88,23 @@ fn borrowed_field_chain_emits_no_vector_clone_for_its_reads() {
 
 #[test]
 fn vector_descriptor_matches_the_runtime_c_abi() {
-    use hew_runtime::vec::HewValueLayout;
+    use hew_runtime::vec::{HewValueLayout, HewVec};
     use std::mem::{align_of, offset_of, size_of};
 
     let triple = native_emission_triple();
     let physical = physical_target_for_triple(&triple).unwrap();
     let target = TargetData::create(&physical.data_layout);
     let ctx = Context::create();
+    let header = collections::vector_header_type(&ctx, &target);
+    for (index, expected) in [offset_of!(HewVec, data), offset_of!(HewVec, len)]
+        .into_iter()
+        .enumerate()
+    {
+        assert_eq!(
+            target.offset_of_element(&header, u32::try_from(index).unwrap()),
+            Some(expected as u64)
+        );
+    }
     let descriptor = value_descriptor_type(&ctx, &target);
     assert_eq!(
         target.get_abi_size(&descriptor),

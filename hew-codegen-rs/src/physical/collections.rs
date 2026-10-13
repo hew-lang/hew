@@ -2,7 +2,68 @@
 
 use super::*;
 
+/// The C-ABI `HewVec` prefix used by checked element access.
+pub(super) fn vector_header_type<'ctx>(
+    ctx: &'ctx Context,
+    target: &TargetData,
+) -> inkwell::types::StructType<'ctx> {
+    ctx.struct_type(
+        &[
+            ctx.ptr_type(AddressSpace::default()).into(),
+            ctx.ptr_sized_int_type(target, None).into(),
+        ],
+        false,
+    )
+}
+
 impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
+    fn vector_length(&self, vector: PointerValue<'ctx>) -> CodegenResult<IntValue<'ctx>> {
+        let target = TargetData::create(&self.module.target.data_layout);
+        let word = self.ctx.ptr_sized_int_type(&target, None);
+        let slot = self
+            .builder
+            .build_struct_gep(
+                vector_header_type(self.ctx, &target),
+                vector,
+                1,
+                "vector.len.slot",
+            )
+            .llvm_ctx("address vector length")?;
+        let length = self
+            .builder
+            .build_load(word, slot, "vector.len")
+            .llvm_ctx("load vector length")?
+            .into_int_value();
+        self.builder
+            .build_int_z_extend_or_bit_cast(length, self.ctx.i64_type(), "vector.length")
+            .llvm_ctx("widen vector length")
+    }
+
+    fn vector_element_slot(
+        &self,
+        vector: PointerValue<'ctx>,
+        index: IntValue<'ctx>,
+        element: BasicTypeEnum<'ctx>,
+    ) -> CodegenResult<PointerValue<'ctx>> {
+        // `data` is the first C-ABI field. The checked target layout supplies
+        // the element stride; no descriptor dispatch is needed for scalars.
+        let data = self
+            .builder
+            .build_load(
+                self.ctx.ptr_type(AddressSpace::default()),
+                vector,
+                "vector.data",
+            )
+            .llvm_ctx("load vector buffer")?
+            .into_pointer_value();
+        // SAFETY: the caller has checked index against the live vector length.
+        unsafe {
+            self.builder
+                .build_in_bounds_gep(element, data, &[index], "vector.element")
+                .llvm_ctx("address checked vector element")
+        }
+    }
+
     fn new_array_storage(
         &self,
         glue: PhysicalVectorId,
@@ -172,15 +233,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
         index: IntValue<'ctx>,
         failure: &PhysicalEdge,
     ) -> CodegenResult<()> {
-        let pointer = self.ctx.ptr_type(AddressSpace::default());
-        let length_fn = get_or_declare_external(
-            self.llvm,
-            "hew_vec_len",
-            self.ctx.i64_type().fn_type(&[pointer.into()], false),
-        )?;
-        let length = self
-            .runtime_call_value(length_fn, &[vector.into()], "vector.index.length")?
-            .into_int_value();
+        let length = self.vector_length(vector)?;
         // Unsigned comparison also rejects every negative signed index.
         let in_bounds = self
             .builder
@@ -226,6 +279,16 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
         };
         let pointer = self.ctx.ptr_type(AddressSpace::default());
         let i64_ty = self.ctx.i64_type();
+        let element_layout = self.module.target.layout(&glue.element.ty).ok_or_else(|| {
+            CodegenError::FailClosed("vector element lacks its target layout".into())
+        })?;
+        let scalar = glue.element.own == OwnKind::None
+            && glue.element.clone == Some(CloneAction::Bitwise)
+            && glue.element.destroy.is_none()
+            && matches!(
+                element_layout.repr,
+                PhysicalRepr::Integer { .. } | PhysicalRepr::Float { .. }
+            );
         if operation == PhysicalVectorOp::New {
             let descriptor = self
                 .llvm
@@ -247,14 +310,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
         match operation {
             PhysicalVectorOp::New => unreachable!("new handled before receiver loading"),
             PhysicalVectorOp::Len => {
-                let function = get_or_declare_external(
-                    self.llvm,
-                    "hew_vec_len",
-                    i64_ty.fn_type(&[pointer.into()], false),
-                )?;
-                let length =
-                    self.runtime_call_value(function, &[vector.into()], "vector.length")?;
-                self.store(result, length)?;
+                self.store(result, self.vector_length(vector)?.into())?;
             }
             PhysicalVectorOp::Contains => {
                 return self.emit_vector_contains(
@@ -306,6 +362,20 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 let index = self.load(source(1)?, "vector.set.index")?.into_int_value();
                 self.emit_vector_index_guard(vector, index, failure()?)?;
                 let moved = matches!(transfers.get(2), Some(ArgumentTransfer::Move(_)));
+                if scalar {
+                    let element = llvm_type(self.ctx, &element_layout.repr)?;
+                    let slot = self.vector_element_slot(vector, index, element)?;
+                    let replacement = self.load(source(2)?, "vector.replacement")?;
+                    self.builder
+                        .build_store(slot, replacement)
+                        .llvm_ctx("replace scalar vector element")?;
+                    if moved {
+                        self.clear_owned(source(2)?)?;
+                    }
+                    self.clear_owned(receiver)?;
+                    self.store(result, vector.into())?;
+                    return self.emit_result_edge(Some(result), normal);
+                }
                 let function = get_or_declare_external(
                     self.llvm,
                     if moved {
@@ -333,42 +403,52 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 release::drain(&self.value_emitter(), self.frame.as_ref(), cursor)?;
             }
             PhysicalVectorOp::Index
+            | PhysicalVectorOp::IndexBorrow
             | PhysicalVectorOp::Get { .. }
             | PhysicalVectorOp::GetBorrow { .. } => {
-                let element_layout =
-                    self.module.target.layout(&glue.element.ty).ok_or_else(|| {
-                        CodegenError::FailClosed("vector element lacks its target layout".into())
-                    })?;
                 let element_ty = llvm_type(self.ctx, &element_layout.repr)?;
-                let output = if operation == PhysicalVectorOp::Index {
+                let output = if matches!(
+                    operation,
+                    PhysicalVectorOp::Index | PhysicalVectorOp::IndexBorrow
+                ) {
                     self.slots[result.0 as usize]
                 } else {
                     values.entry_scratch(element_ty, "vector.get.element")?
                 };
                 // A borrowed read aliases the slot the vector still owns; the
                 // owning read hands back a fresh owner.
-                let function = get_or_declare_external(
-                    self.llvm,
-                    if matches!(operation, PhysicalVectorOp::GetBorrow { .. }) {
-                        "hew_vec_borrow_owned"
-                    } else {
-                        "hew_vec_get_clone"
-                    },
-                    self.ctx
-                        .bool_type()
-                        .fn_type(&[pointer.into(), i64_ty.into(), pointer.into()], false),
-                )?;
-                let found = self
-                    .runtime_call_value(
+                let index = self.load(source(1)?, "vector.index")?.into_int_value();
+                let found = if scalar {
+                    self.builder
+                        .build_int_compare(
+                            IntPredicate::ULT,
+                            index,
+                            self.vector_length(vector)?,
+                            "vector.found",
+                        )
+                        .llvm_ctx("check scalar vector read bounds")?
+                } else {
+                    let function = get_or_declare_external(
+                        self.llvm,
+                        if matches!(
+                            operation,
+                            PhysicalVectorOp::GetBorrow { .. } | PhysicalVectorOp::IndexBorrow
+                        ) {
+                            "hew_vec_borrow_owned"
+                        } else {
+                            "hew_vec_get_clone"
+                        },
+                        self.ctx
+                            .bool_type()
+                            .fn_type(&[pointer.into(), i64_ty.into(), pointer.into()], false),
+                    )?;
+                    self.runtime_call_value(
                         function,
-                        &[
-                            vector.into(),
-                            self.load(source(1)?, "vector.index")?.into(),
-                            output.into(),
-                        ],
+                        &[vector.into(), index.into(), output.into()],
                         "vector.found",
                     )?
-                    .into_int_value();
+                    .into_int_value()
+                };
                 let present = self
                     .ctx
                     .append_basic_block(self.value, "vector.element.present");
@@ -391,6 +471,16 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     self.emit_edge(failure()?)?;
                 }
                 self.builder.position_at_end(present);
+                if scalar {
+                    let slot = self.vector_element_slot(vector, index, element_ty)?;
+                    let element = self
+                        .builder
+                        .build_load(element_ty, slot, "vector.scalar")
+                        .llvm_ctx("read scalar vector element")?;
+                    self.builder
+                        .build_store(output, element)
+                        .llvm_ctx("initialize scalar vector read")?;
+                }
                 if let Some(option) = optional {
                     let element = self
                         .builder
@@ -398,43 +488,6 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                         .llvm_ctx("load vector element")?;
                     self.write_variant_value(self.slots[result.0 as usize], 0, &[element], option)?;
                 }
-            }
-            PhysicalVectorOp::IndexBorrow => {
-                let element_layout =
-                    self.module.target.layout(&glue.element.ty).ok_or_else(|| {
-                        CodegenError::FailClosed("vector element lacks its target layout".into())
-                    })?;
-                let _ = llvm_type(self.ctx, &element_layout.repr)?;
-                let function = get_or_declare_external(
-                    self.llvm,
-                    "hew_vec_borrow_owned",
-                    self.ctx
-                        .bool_type()
-                        .fn_type(&[pointer.into(), i64_ty.into(), pointer.into()], false),
-                )?;
-                let found = self
-                    .runtime_call_value(
-                        function,
-                        &[
-                            vector.into(),
-                            self.load(source(1)?, "vector.borrow.index")?.into(),
-                            self.slots[result.0 as usize].into(),
-                        ],
-                        "vector.borrow.found",
-                    )?
-                    .into_int_value();
-                let present = self
-                    .ctx
-                    .append_basic_block(self.value, "vector.borrow.present");
-                let absent = self
-                    .ctx
-                    .append_basic_block(self.value, "vector.borrow.absent");
-                self.builder
-                    .build_conditional_branch(found, present, absent)
-                    .llvm_ctx("select vector borrow outcome")?;
-                self.builder.position_at_end(absent);
-                self.emit_edge(failure()?)?;
-                self.builder.position_at_end(present);
             }
             PhysicalVectorOp::Append => {
                 let function = get_or_declare_external(

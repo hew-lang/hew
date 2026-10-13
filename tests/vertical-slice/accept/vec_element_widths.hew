@@ -12,6 +12,15 @@ fn main() -> i64 {
     println(bs2.len());
     println(bs2[0]);
     println(bs2[1]);
+    let bs_copy = bs.clone();
+    bs.set(0, false);
+    bs.set(1, bs[2]);
+    if bs[0] || !bs[1] || !bs_copy[0] || bs_copy[1] {
+        return 50;
+    }
+    if bs.get(-1).is_some() || bs.get(bs.len()).is_some() {
+        return 51;
+    }
     var cs: Vec<char> = Vec.new();
     cs.push('a');
     cs.push('Z');
@@ -70,6 +79,17 @@ fn main() -> i64 {
     }
     if f32s2[1] != 2.5 {
         return 71;
+    }
+    f32s.set(0, f32s[1]);
+    if f32s[0] != 2.5 || f32s2[0] != 1.5 {
+        return 72;
+    }
+    var f64s: Vec<f64> = Vec.new();
+    f64s.push(-1.25);
+    f64s.push(3.5);
+    f64s.set(1, f64s[0]);
+    if f64s[1] != -1.25 || f64s.get(-1).is_some() || f64s.get(2).is_some() {
+        return 73;
     }
     var points: Vec<Point> = Vec.new();
     points.push(Point { x: 1, y: 10 });

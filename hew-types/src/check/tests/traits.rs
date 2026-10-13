@@ -2114,7 +2114,7 @@ fn module_qualified_named_type_method_rejects_leaf_method_retry() {
 }
 
 #[test]
-fn generic_named_method_calls_record_method_type_args() {
+fn generic_named_method_calls_record_impl_and_method_type_args() {
     let source = r#"type Wrapper<T> {
     value: T;
 }
@@ -2149,13 +2149,13 @@ fn main() {
         "generic method call should type-check cleanly: {:?}",
         output.errors
     );
-    assert!(
-        output
-            .call_type_args
-            .values()
-            .any(|args| args == &vec![Ty::I64]),
-        "method call should record inferred method type args, got {:?}",
-        output.call_type_args
+    let call = "wrapper.map(to_len)";
+    let start = source.find(call).unwrap();
+    let key = SpanKey::in_module(&(start..start + call.len()), 0);
+    assert_eq!(
+        output.call_type_args.get(&key).map(Vec::as_slice),
+        Some([Ty::String, Ty::I64].as_slice()),
+        "the selected call records impl arguments followed by method arguments"
     );
 }
 

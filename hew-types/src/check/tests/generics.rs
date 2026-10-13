@@ -226,22 +226,18 @@ fn main() {
         2,
         "expected one entry per method call"
     );
-    assert!(
-        output
-            .call_type_args
-            .values()
-            .any(|args| args == &vec![crate::ty::Ty::I64]),
-        "expected one call to infer U=i64, got {:?}",
-        output.call_type_args
-    );
-    assert!(
-        output
-            .call_type_args
-            .values()
-            .any(|args| args == &vec![crate::ty::Ty::Bool]),
-        "expected one call to infer U=bool, got {:?}",
-        output.call_type_args
-    );
+    for (call, args) in [
+        ("b.transform(double)", [Ty::I64, Ty::I64]),
+        ("b.transform(is_even)", [Ty::I64, Ty::Bool]),
+    ] {
+        let start = source.find(call).unwrap();
+        let key = SpanKey::in_module(&(start..start + call.len()), 0);
+        assert_eq!(
+            output.call_type_args.get(&key).map(Vec::as_slice),
+            Some(args.as_slice()),
+            "{call} must retain T=i64 and infer its own U"
+        );
+    }
 }
 
 /// F4 regression: an explicit-turbofish generic call (`id<i64>(5)`) must

@@ -601,7 +601,7 @@ impl Checker {
                 &mut arm_exits,
                 span,
             );
-            self.env.pop_scope();
+            self.pop_scope_with_cleanup();
         }
         for (arm, scope, start, guard_diverges) in waiting {
             self.env.resume_scope(scope);
@@ -614,7 +614,7 @@ impl Checker {
                 &mut arm_exits,
                 span,
             );
-            self.env.pop_scope();
+            self.pop_scope_with_cleanup();
         }
         self.join_branch_ownership(&ownership_entry, &arm_exits, span);
         // Exhaustiveness check for enums/Option/Result
@@ -724,7 +724,7 @@ impl Checker {
             }
             source_tys.push(ty);
             sources.push(source);
-            self.env.pop_scope();
+            self.pop_scope_with_cleanup();
         }
         if let Some(checked) = sources.iter().cloned().collect::<Option<Vec<_>>>() {
             self.select_sources
@@ -759,7 +759,7 @@ impl Checker {
                 continue;
             }
             self.check_select_body(&arm.body, &mut result_ty, &mut arm_exits);
-            self.env.pop_scope();
+            self.pop_scope_with_cleanup();
         }
         if let Some(tc) = timeout {
             self.env.restore_ownership(&entry);
@@ -769,7 +769,7 @@ impl Checker {
             self.env.resume_scope(scope);
             self.env.restore_ownership(&start);
             self.check_select_body(&arm.body, &mut result_ty, &mut arm_exits);
-            self.env.pop_scope();
+            self.pop_scope_with_cleanup();
         }
         self.join_branch_ownership(&entry, &arm_exits, span);
         // No typed body: `!` only when every body diverges; otherwise each
@@ -1074,7 +1074,7 @@ impl Checker {
         self.task_scope_depth = prev_task_scope_depth;
         self.in_lambda_actor_body = prev_in_lambda_actor_body;
         self.in_generator = prev_in_generator;
-        self.env.pop_scope();
+        self.pop_scope_with_cleanup();
 
         if let Some(tps) = type_params {
             if !tps.is_empty() {
@@ -1130,6 +1130,10 @@ impl Checker {
             is_fork_body,
         );
         let capabilities = self.closure_capabilities(&capture_facts);
+        self.record_once_capture_cleanup(
+            SpanKey::in_module(span, self.current_module_idx),
+            &capture_facts,
+        );
         self.closure_capture_facts.insert(
             SpanKey::in_module(span, self.current_module_idx),
             capture_facts.clone(),

@@ -228,6 +228,7 @@ impl Checker {
                 self.env.unmark_moved(&root);
             }
         }
+        self.record_discard_cleanup_effect(expr, &ty);
         ty
     }
 
@@ -732,6 +733,7 @@ impl Checker {
         if let Some(value) = value {
             self.record_task_return(value);
         }
+        self.record_return_cleanup_effects();
     }
 
     fn check_return_operand_inner(&mut self, value: Option<&Spanned<Expr>>, span: &Span) {
@@ -889,7 +891,7 @@ impl Checker {
                         ownership: self.env.ownership_snapshot(),
                         diverges: Self::arm_skips_join(&then_ty),
                     };
-                    self.env.pop_scope();
+                    self.pop_scope_with_cleanup();
                     self.join_fall_through(&entry, then_exit, span);
                     Ty::Unit
                 }
@@ -1230,6 +1232,12 @@ impl Checker {
                 if plain_identifier.is_some() && collection_borrow.is_none() {
                     if let Some((value, span)) = value {
                         self.record_value_transfer(value, span);
+                    }
+                }
+                if matches!(pattern.0, Pattern::Wildcard) && collection_borrow.is_none() {
+                    if let Some((value, span)) = value {
+                        self.record_value_transfer(value, span);
+                        self.record_owned_cleanup_effect(&val_ty);
                     }
                 }
                 if let Some(name) = plain_identifier {
@@ -1839,6 +1847,9 @@ impl Checker {
                 let value_ty = self
                     .rebind_inferred_closure_binding(&target.0, value, &target_ty)
                     .unwrap_or_else(|| self.check_against(&value.0, &value.1, &target_ty));
+                if !first_store {
+                    self.record_assignment_cleanup_effect(target, &target_ty);
+                }
                 self.record_assigned_value_candidates(target, value);
                 let collection_borrow = self.collection_borrow_origin(&value.0, &value.1);
                 if collection_borrow.is_none() || !matches!(target.0, Expr::Ident(_)) {
@@ -1961,7 +1972,7 @@ impl Checker {
                     ownership: self.env.ownership_snapshot(),
                     diverges: Self::arm_skips_join(&then_ty),
                 };
-                self.env.pop_scope();
+                self.pop_scope_with_cleanup();
                 if let Some(else_expr) = else_body {
                     self.env.restore_ownership(&entry);
                     let else_ty = self.synthesize(&else_expr.0, &else_expr.1);
@@ -2300,7 +2311,7 @@ impl Checker {
                 if label.is_some() {
                     self.loop_labels.pop();
                 }
-                self.env.pop_scope();
+                self.pop_scope_with_cleanup();
             }
             Stmt::While {
                 label,
@@ -2353,7 +2364,7 @@ impl Checker {
                 if label.is_some() {
                     self.loop_labels.pop();
                 }
-                self.env.pop_scope();
+                self.pop_scope_with_cleanup();
             }
             Stmt::Break { label, value } => {
                 if self.reject_deferred_loop_exit(label.map(|ident| ident.name.as_str()), span) {
@@ -2496,7 +2507,7 @@ impl Checker {
                 ownership: self.env.ownership_snapshot(),
                 diverges: guard_diverges || Self::arm_skips_join(&arm_ty),
             });
-            self.env.pop_scope();
+            self.pop_scope_with_cleanup();
         }
         self.join_branch_ownership(&ownership_entry, &arm_exits, span);
 

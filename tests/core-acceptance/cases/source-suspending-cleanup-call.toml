@@ -1,0 +1,10 @@
+[[case]]
+id = "source-suspending-cleanup-call"
+intent = "An implicit resource close and once capture cleanup enter the suspension contract while their native calls resume through close."
+source = "cases/source-suspending-cleanup-call.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "closed 1\nclosed 2\ndone\n"
+exit = 0

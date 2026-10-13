@@ -31,6 +31,7 @@ mod bounds;
 mod branch_join;
 mod callables;
 mod calls;
+mod cleanup_effects;
 mod closure_inference;
 mod coerce;
 pub mod const_eval;
@@ -3369,7 +3370,9 @@ impl Checker {
         // before those facts are moved into the checked-program handoff.
         self.report_completion_call_cycles();
         let checked_impl_body_callees = self.checked_impl_body_callees();
+        self.call_type_args = resolved_call_type_args;
         let suspension_effects = self.finish_suspension_effects();
+        let mut resolved_call_type_args = std::mem::take(&mut self.call_type_args);
         let callable_argument_flows = self.finish_callable_argument_flows();
         self.finish_task_lifetimes(&callable_argument_flows);
         self.pending_callable_arguments.clear();

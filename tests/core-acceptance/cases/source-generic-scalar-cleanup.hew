@@ -1,0 +1,38 @@
+#[resource]
+type Ticket { id: i64; }
+
+impl Ticket {
+    fn close(consume self) {
+        sleep(1ms);
+        println(f"closed {self.id}");
+    }
+}
+
+fn discard<T>(consume value: T) {}
+
+fn scalar() {
+    discard(7);
+}
+
+fn kernel() {
+    let callback: fn() -> () = scalar;
+    callback();
+}
+
+fn make() -> Ticket {
+    Ticket { id: 3 }
+}
+
+fn inspect(ticket: Ticket) -> i64 {
+    ticket.id
+}
+
+fn main() {
+    let callback: fn() -> () = kernel;
+    callback();
+    let maker: fn() -> Ticket = make;
+    let ticket = maker();
+    let observer: fn(Ticket) -> i64 = inspect;
+    println(observer(ticket));
+    ticket.close();
+}

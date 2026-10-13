@@ -1,0 +1,10 @@
+[[case]]
+id = "source-generic-scalar-cleanup"
+intent = "A scalar generic consume and a moved resource return retain plain callable effects while the caller owns the eventual close."
+source = "cases/source-generic-scalar-cleanup.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "3\nclosed 3\n"
+exit = 0

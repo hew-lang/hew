@@ -2291,6 +2291,7 @@ impl Checker {
         // now return `Restart`/`Escalate`/`Kill` (or `panic(...)`) freely. The
         // standard return-type checking against `current_return_type` covers it.
         let _body_ty = self.check_block(&hook.body, None);
+        self.record_scope_cleanup_effects();
         self.effect_graph.current_body = previous_effect_body;
         self.crash_hook_consumed_fields.clear();
         self.current_return_type = None;
@@ -2815,6 +2816,7 @@ impl Checker {
         self.in_actor_handler_context = prev_actor_handler_context;
         self.current_return_type = None;
         self.current_function = prev_function;
+        self.record_scope_cleanup_effects();
         self.effect_graph.current_body = previous_effect_body;
         if rf.type_params.as_ref().is_some_and(|tp| !tp.is_empty()) {
             self.generic_ctx.pop();

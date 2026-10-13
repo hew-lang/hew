@@ -41,7 +41,7 @@ impl Checker {
 
     /// Read the selected declaration or lexical binding at the authored
     /// expression. An absent row is opaque; a spelling is never a candidate.
-    fn resolved_callable_candidate(&self, span: &Span) -> IndirectCallCandidates {
+    pub(super) fn resolved_callable_candidate(&self, span: &Span) -> IndirectCallCandidates {
         let key = SpanKey::in_module(span, self.current_module_idx);
         match self.scopes.resolutions().get(&key) {
             Some(Resolution::Local(id)) => self

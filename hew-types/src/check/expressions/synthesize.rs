@@ -1071,7 +1071,7 @@ impl Checker {
             ownership: self.env.ownership_snapshot(),
             diverges: Self::arm_skips_join(&body_ty),
         };
-        self.env.pop_scope();
+        self.pop_scope_with_cleanup();
         self.join_fall_through(&entry, taken, span);
         let payload = self.subst.resolve(&payload);
         if payload == Ty::Never {
@@ -1190,7 +1190,7 @@ impl Checker {
                 ownership: self.env.ownership_snapshot(),
                 diverges: Self::arm_skips_join(&then_ty),
             };
-            self.env.pop_scope();
+            self.pop_scope_with_cleanup();
             self.join_fall_through(&entry, then_exit, span);
             Ty::Unit
         }

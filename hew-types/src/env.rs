@@ -1789,6 +1789,13 @@ impl TypeEnv {
         self.scopes.iter().flat_map(HashMap::values)
     }
 
+    pub(crate) fn visible_bindings_from_depth(
+        &self,
+        depth: usize,
+    ) -> impl Iterator<Item = &Binding> {
+        self.scopes.iter().skip(depth).flat_map(HashMap::values)
+    }
+
     /// Yield `(name, binding id)` for every binding in the innermost (current)
     /// scope only.
     ///

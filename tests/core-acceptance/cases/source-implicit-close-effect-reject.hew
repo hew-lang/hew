@@ -1,0 +1,18 @@
+#[resource]
+type Ticket { id: i64; }
+
+impl Ticket {
+    fn close(consume self) {
+        sleep(1ms);
+        println(self.id);
+    }
+}
+
+fn release_at_exit() {
+    let ticket = Ticket { id: 1 };
+}
+
+fn main() {
+    let callback: fn() -> () = release_at_exit;
+    callback();
+}

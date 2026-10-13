@@ -42,6 +42,7 @@ pub(crate) fn code_lens(
         &doc.source,
         &doc.line_offsets,
         &doc.parse_result,
+        doc.expanded_program.as_deref(),
         &file,
         Some(&server.test_seeds),
     );

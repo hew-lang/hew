@@ -729,8 +729,8 @@ pub struct TypeCheckOutput {
     /// Symbolic return origins of checker-owned function bodies.
     pub callable_return_candidates: HashMap<super::effects::EffectBody, IndirectCallCandidates>,
     /// Canonical trait and trait-method declaration identities, keyed by the
-    /// owner-qualified source spelling `Trait::method`. This is the sole
-    /// checker-to-HIR authority for static-trait implementation indexing.
+    /// owner-qualified canonical path `Trait::method`. Impl methods publish
+    /// their resolved pair separately through `ImplMethodProvenance`.
     pub trait_method_ids: HashMap<String, (crate::DefId, crate::DefId)>,
     /// Default bodies retain declaration identity and their checked source scope.
     pub trait_defaults: HashMap<crate::DefId, Vec<ResolvedTraitDefault>>,

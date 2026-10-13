@@ -162,7 +162,7 @@ fn document_set(
     set
 }
 
-fn frontend_options(
+pub(super) fn frontend_options(
     root_path: &std::path::Path,
     root_source: &str,
     documents: &DashMap<Url, DocumentState>,

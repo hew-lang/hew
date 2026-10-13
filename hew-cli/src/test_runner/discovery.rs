@@ -80,15 +80,20 @@ impl DiscoveredTestFile {
     }
 }
 
-fn discover_entries(program: &Program, file: &str, benchmark: bool) -> Vec<TestCase> {
-    let mut tests = Vec::new();
-    let path = std::path::Path::new(file);
-    let companion = hew_compile::module_membership(path, &hew_compile::FrontendOptions::default())
-        .and_then(|membership| {
+fn test_companion(path: &std::path::Path) -> Option<std::path::PathBuf> {
+    hew_compile::module_membership(path, &hew_compile::FrontendOptions::default()).and_then(
+        |membership| {
             membership
                 .test_companion(&path.canonicalize().ok()?)
-                .map(|companion| companion.display().to_string())
-        });
+                .map(std::path::Path::to_path_buf)
+        },
+    )
+}
+
+fn discover_entries(program: &Program, file: &str, benchmark: bool) -> Vec<TestCase> {
+    let mut tests = Vec::new();
+    let companion =
+        test_companion(std::path::Path::new(file)).map(|companion| companion.display().to_string());
     let declarations = if benchmark {
         hew_analysis::test_discovery::discover_benchmarks(program)
     } else {
@@ -137,12 +142,28 @@ pub(super) fn discover_entries_in_file(
     benchmark: bool,
 ) -> Result<DiscoveredTestFile, String> {
     let source = std::fs::read_to_string(path).map_err(|e| format!("cannot read {path}: {e}"))?;
-    let result = hew_parser::parse(&source);
+    let mut options = hew_compile::FrontendOptions {
+        companion: test_companion(std::path::Path::new(path)),
+        ..hew_compile::FrontendOptions::default()
+    };
+    options.documents.insert(path, source.clone());
+    let (program, parse_errors) = match hew_compile::run_file_frontend_to_expansion(path, &options)
+    {
+        Ok(state) => (state.program, Vec::new()),
+        Err(failure) => {
+            let parsed = hew_parser::parse(&source);
+            if parsed.errors.is_empty() {
+                crate::compile::render_frontend_diagnostics(&failure.diagnostics);
+                return Err(failure.message);
+            }
+            (parsed.program, parsed.errors)
+        }
+    };
     Ok(DiscoveredTestFile {
         path: path.to_string(),
-        tests: discover_entries(&result.program, path, benchmark),
+        tests: discover_entries(&program, path, benchmark),
         source,
-        parse_errors: result.errors,
+        parse_errors,
     })
 }
 

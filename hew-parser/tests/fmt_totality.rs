@@ -702,12 +702,3 @@ fn fmt_supervisor_config_param_is_not_dropped() {
         "AST mismatch: supervisor config params were lost in format → reparse.\nFormatted:\n{formatted}"
     );
 }
-
-// ---------------------------------------------------------------------------
-// Backlog note (one-liner only, per audit recommendation):
-//
-// A proptest/Arbitrary fuzz layer over AST variants was evaluated and cut as
-// YAGNI for a solo engineer. The variant-coverage guards above give ~95% of
-// the leverage at ~20% of the maintenance cost. If the formatter grows complex
-// field-conditional logic that escapes variant-level coverage, revisit then.
-// ---------------------------------------------------------------------------

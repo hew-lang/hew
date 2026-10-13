@@ -16,10 +16,10 @@ struct hew_cabi_manifest_row {
   enum hew_cabi_manifest_ownership ownership;
 };
 
-#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1621u
+#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1619u
 #define HEW_CABI_MANIFEST_STATIC_COUNT 24u
 
-static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1621] = {
+static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1619] = {
     {"hew_actor_ask",
      "{\"native\": \"fn hew_actor_ask( *mut HewActor, i32, *mut c_void, usize, "
      ") -> *mut c_void\"}",
@@ -1678,20 +1678,9 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1621] = {
      "\"wasm32-wasip1\": \"fn hew_cont_frame_alloc( u64) -> *mut c_void\"}",
      "native,wasm32-wasip1", "non-declarable", "not-applicable",
      "length-or-count", HEW_CABI_OWNERSHIP_UNMEASURED},
-    {"hew_cont_frame_alloc_tracked",
-     "{\"native\": \"fn hew_cont_frame_alloc_tracked( u64) -> *mut c_void\", "
-     "\"wasm32-wasip1\": \"fn hew_cont_frame_alloc_tracked( u64) -> *mut "
-     "c_void\"}",
-     "native,wasm32-wasip1", "non-declarable", "not-applicable",
-     "length-or-count", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_cont_frame_free",
      "{\"native\": \"fn hew_cont_frame_free( *mut c_void)\", "
      "\"wasm32-wasip1\": \"fn hew_cont_frame_free( *mut c_void)\"}",
-     "native,wasm32-wasip1", "non-declarable", "not-applicable",
-     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
-    {"hew_cont_frame_handoff",
-     "{\"native\": \"fn hew_cont_frame_handoff( *mut c_void)\", "
-     "\"wasm32-wasip1\": \"fn hew_cont_frame_handoff( *mut c_void)\"}",
      "native,wasm32-wasip1", "non-declarable", "not-applicable",
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_cont_poll",

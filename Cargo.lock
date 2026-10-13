@@ -1847,6 +1847,7 @@ dependencies = [
  "cc",
  "hew-cabi",
  "hew-codec",
+ "hew-compile",
  "hew-hir",
  "hew-mir",
  "hew-parser",
@@ -1999,6 +2000,7 @@ name = "hew-runtime"
 version = "0.6.1"
 dependencies = [
  "bytes",
+ "cc",
  "cddl",
  "ciborium",
  "criterion",

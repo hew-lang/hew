@@ -393,9 +393,6 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         frame.suspend(self.ctx, &self.builder, poll, destroyed)?;
         self.builder.position_at_end(destroyed);
         self.builder
-            .build_store(frame.destroying, self.ctx.bool_type().const_int(1, false))
-            .llvm_ctx("mark destroyed sleep frame")?;
-        self.builder
             .build_unconditional_branch(cancelled)
             .llvm_ctx("run sleep cancellation cleanup")?;
         let mut join = self.exit_join("sleep.release");
@@ -565,9 +562,6 @@ pub(super) fn await_child<'ctx>(
         .build_unconditional_branch(poll)
         .llvm_ctx("poll resumed child")?;
     builder.position_at_end(destroy);
-    builder
-        .build_store(frame.destroying, ctx.bool_type().const_int(1, false))
-        .llvm_ctx("mark destroyed caller")?;
     free_handle("hew_cont_destroy", frame_slot)?;
     builder
         .build_unconditional_branch(outcome)

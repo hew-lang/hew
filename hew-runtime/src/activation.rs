@@ -1767,26 +1767,9 @@ unsafe fn finish_failed_resume(
         let _ = crate::actor::hew_actor_state_lock_release_after_panic(actor);
     }
 
-    // The actor slot remains the sole raw-allocation owner of the resumed
-    // handler root. Exclude it while raw-reclaiming nested synchronous child
-    // ramps; `abandon_resuming_after_crash` below removes/frees that root exactly
-    // once. Its typed field obligations are independent and run in swap unwind.
     if !checked {
-        let scheduler_root = a.suspended_cont.load(Ordering::Acquire);
-        // A child suspending-closure call that unwound inside the resume
-        // bypassed the driver's swap-pop and driver-channel teardown. Restore the
-        // outer reply routing, tear those channels down, and typed-drop abandoned
-        // frame slots before raw reclamation. Root field drops run here exactly
-        // once; only its raw frame allocation remains reserved for the actor-slot
-        // authority below.
+        // Restore reply routing before draining the dispatch-owned state escrow.
         crate::execution_context::reply_channel_swap_unwind();
-        // SAFETY: catch_unwind proves the active resume stack is dead. The drain
-        // frees only positively tracked nested frames and preserves
-        // `scheduler_root` for the actor-slot authority.
-        let _ = unsafe { crate::cont::reclaim_active_coroutine_frames_excluding(scheduler_root) };
-        // Frame/nested owners are newer and drain first. The dispatch registry then
-        // releases ordinary stack owners and finally the structurally valid actor
-        // state escrow, all before arena reset and raw state disposal.
         // SAFETY: catch_unwind proves the dispatch stack is abandoned and this recovery
         // path exclusively owns its cleanup scope.
         let outcome = unsafe { crate::cont::recover_dispatch_crash_cleanup_with_outcome(false) };

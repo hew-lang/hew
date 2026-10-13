@@ -581,25 +581,20 @@ pub(crate) mod test_support {
 
     /// Owning test handle for a scratch continuation frame.
     ///
-    /// The executor's continuation ABI may inspect the private allocator
-    /// header before the public frame pointer. A plain `Box<ScratchFrame>` is
-    /// therefore not a valid handle: cross-worker resume would read outside
-    /// that allocation before calling the outline. This owner routes every
-    /// synthetic frame through the same tracked, 16-byte-aligned allocator and
-    /// ramp handoff as generated coroutines, while retaining the payload for
-    /// post-destroy accounting assertions.
+    /// Executor-owned roots use the coroutine heap allocator so crash
+    /// abandonment can free their storage directly. This owner retains the
+    /// payload for post-destroy accounting in tests that keep ownership.
     pub struct ScratchFrameOwner {
         frame: NonNull<ScratchFrame>,
     }
 
     impl ScratchFrameOwner {
         pub fn new(suspends_before_done: u32) -> Self {
-            // SAFETY: the tracked allocator accepts the exact payload size and
+            // SAFETY: the frame allocator accepts the exact payload size and
             // returns storage released by this owner's Drop implementation.
-            let raw = unsafe {
-                cont::hew_cont_frame_alloc_tracked(std::mem::size_of::<ScratchFrame>() as u64)
-            }
-            .cast::<ScratchFrame>();
+            let raw =
+                unsafe { cont::hew_cont_frame_alloc(std::mem::size_of::<ScratchFrame>() as u64) }
+                    .cast::<ScratchFrame>();
             let frame = NonNull::new(raw).expect("scratch continuation frame allocation");
             // SAFETY: frame points to aligned, writable ScratchFrame-sized
             // storage and is not yet initialized.
@@ -608,9 +603,6 @@ pub(crate) mod test_support {
                     .as_ptr()
                     .write(ScratchFrame::new(suspends_before_done));
             }
-            // Model the generated ramp's normal return: ownership leaves this
-            // thread's active-ramp stack and is parked for any worker to resume.
-            cont::hew_cont_frame_handoff(frame.as_ptr().cast::<c_void>());
             Self { frame }
         }
 
@@ -618,7 +610,7 @@ pub(crate) mod test_support {
             self.frame.as_ptr().cast::<c_void>()
         }
 
-        /// Transfer the tracked allocation to an actor/executor while keeping
+        /// Transfer the heap allocation to an actor/executor while keeping
         /// the inspection-only scratch destroy outline (which does not free the
         /// outer frame). The test must later reconstruct exactly one owner with
         /// [`Self::from_handle`].
@@ -663,7 +655,7 @@ pub(crate) mod test_support {
         fn drop(&mut self) {
             // SAFETY: this owner is the sole allocation owner after all test
             // worker threads join. Run the Rust safety-net Drop, then release
-            // the exact tracked frame allocation.
+            // the exact frame allocation.
             unsafe {
                 self.frame.as_ptr().drop_in_place();
                 cont::hew_cont_frame_free(self.handle());
@@ -688,7 +680,7 @@ pub(crate) mod test_support {
         // its sole destroy call under the executor's FG1 transition.
         unsafe { scratch_destroy(frame) };
         // SAFETY: `into_executor_owned_handle` initialized a ScratchFrame in an
-        // exact tracked allocator payload. Run its now-no-op safety-net Drop,
+        // exact allocator payload. Run its now-no-op safety-net Drop,
         // then symmetrically free the frame allocation.
         unsafe {
             frame.cast::<ScratchFrame>().drop_in_place();
@@ -721,11 +713,9 @@ pub(crate) mod test_support {
         /// therefore frees both the frame-owned guard and the outer frame,
         /// matching the ownership contract of a real `CoroSplit` frame.
         pub fn into_executor_owned_handle(suspends_before_done: u32) -> *mut c_void {
-            // SAFETY: allocate the exact frame payload through the tracked
-            // coroutine allocator used by generated ramps.
-            let frame =
-                unsafe { cont::hew_cont_frame_alloc_tracked(std::mem::size_of::<Self>() as u64) }
-                    .cast::<Self>();
+            // SAFETY: allocate the exact payload using the coroutine allocator.
+            let frame = unsafe { cont::hew_cont_frame_alloc(std::mem::size_of::<Self>() as u64) }
+                .cast::<Self>();
             assert!(!frame.is_null(), "scratch continuation frame allocation");
             // SAFETY: frame is aligned, writable, and exactly Self-sized.
             unsafe {
@@ -733,7 +723,6 @@ pub(crate) mod test_support {
                 (*frame).destroy = Some(scratch_destroy_and_free);
             }
             let handle = frame.cast::<c_void>();
-            cont::hew_cont_frame_handoff(handle);
             handle
         }
     }
@@ -1361,10 +1350,6 @@ mod forced_ordering_probe {
             let actor = probe_actor();
             let frame = ScratchFrameOwner::new(1); // Ready on resume #1
             let handle = frame.handle();
-            assert!(
-                cont::frame_has_tracked_header_for_test(handle),
-                "forced-ordering handles must carry the header hew_cont_resume probes"
-            );
             assert_eq!(
                 handle as usize % cont::frame_alignment_for_test(),
                 0,

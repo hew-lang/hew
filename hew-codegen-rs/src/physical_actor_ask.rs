@@ -70,9 +70,6 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         frame.suspend(self.ctx, &self.builder, poll, destroyed)?;
         self.builder.position_at_end(destroyed);
         self.builder
-            .build_store(frame.destroying, self.ctx.bool_type().const_int(1, false))
-            .llvm_ctx("mark destroyed completion frame")?;
-        self.builder
             .build_unconditional_branch(cancelled)
             .llvm_ctx("abandon destroyed completion")?;
         // Every exit records its fault, then converges on one release: the

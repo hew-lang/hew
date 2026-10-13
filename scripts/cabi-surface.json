@@ -4238,21 +4238,6 @@
         "wasm32-wasip1"
       ],
       "classification": "non-declarable",
-      "extent": "length-or-count",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_cont_frame_alloc_tracked( u64) -> *mut c_void",
-        "wasm32-wasip1": "fn hew_cont_frame_alloc_tracked( u64) -> *mut c_void"
-      },
-      "symbol": "hew_cont_frame_alloc_tracked"
-    },
-    {
-      "availability": [
-        "native",
-        "wasm32-wasip1"
-      ],
-      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -4261,21 +4246,6 @@
         "wasm32-wasip1": "fn hew_cont_frame_free( *mut c_void)"
       },
       "symbol": "hew_cont_frame_free"
-    },
-    {
-      "availability": [
-        "native",
-        "wasm32-wasip1"
-      ],
-      "classification": "non-declarable",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_cont_frame_handoff( *mut c_void)",
-        "wasm32-wasip1": "fn hew_cont_frame_handoff( *mut c_void)"
-      },
-      "symbol": "hew_cont_frame_handoff"
     },
     {
       "availability": [

@@ -569,9 +569,6 @@ pub(crate) unsafe fn finish_dispatch_failure(
         }
         DispatchFailure::Unwind(payload) => {
             crate::execution_context::reply_channel_swap_unwind();
-            // SAFETY: catch_unwind proves synchronous ramp frames are dead.
-            let _ =
-                unsafe { crate::cont::reclaim_active_coroutine_frames_excluding(ptr::null_mut()) };
             // SAFETY: the scheduler owns the legacy state-recovery boundary.
             let outcome =
                 unsafe { crate::cont::recover_dispatch_crash_cleanup_with_outcome(false) };

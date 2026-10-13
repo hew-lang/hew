@@ -60,7 +60,7 @@ fn function<'a>(ir: &'a str, symbol: &str) -> &'a str {
 #[test]
 fn asks_of_one_handler_share_result_and_release_thunks() {
     let ir = ir_of(TWO_ASKS);
-    let ramp = function(&ir, "@\"__hew_main_body$resume$body\"(");
+    let ramp = function(&ir, "@\"__hew_main_body$resume\"(");
     assert_eq!(
         ramp.matches("call void @__hew_ask_result_").count(),
         2,
@@ -94,8 +94,7 @@ fn asks_of_one_handler_share_result_and_release_thunks() {
         "the ActorError tags live in one constant table"
     );
     assert!(
-        function(&ir, "@\"__hew_release_handle_actor_call$body\"(")
-            .contains("@hew_actor_call_cleanup_poll"),
+        function(&ir, "@__hew_release_handle_actor_call(").contains("@hew_actor_call_cleanup_poll"),
         "the drain lives in the thunk"
     );
 }
@@ -105,7 +104,7 @@ fn asks_of_one_handler_share_result_and_release_thunks() {
 #[test]
 fn every_ask_converges_its_exits_on_one_release() {
     let ir = ir_of(TWO_ASKS);
-    let ramp = function(&ir, "@\"__hew_main_body$resume$body\"(");
+    let ramp = function(&ir, "@\"__hew_main_body$resume\"(");
     let releases = ramp
         .lines()
         .filter(|line| line.starts_with("ask.release") && !line.contains(".from."))

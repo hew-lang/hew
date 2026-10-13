@@ -12,7 +12,7 @@ use std::cell::Cell;
 
 pub(super) struct Frame<'ctx> {
     pub state: PointerValue<'ctx>,
-    pub destroying: PointerValue<'ctx>,
+    destroying: PointerValue<'ctx>,
     pub finish: BasicBlock<'ctx>,
     entry: BasicBlock<'ctx>,
     suspend: FunctionValue<'ctx>,
@@ -54,7 +54,7 @@ fn token_call<'ctx>(
             function.get_type().as_type_ref(),
             function.as_value_ref(),
             args.as_mut_ptr(),
-            args.len() as u32,
+            u32::try_from(args.len()).expect("coroutine intrinsic argument count fits u32"),
             c"".as_ptr(),
         ))
     }
@@ -295,6 +295,7 @@ impl<'ctx> Frame<'ctx> {
     ) -> CodegenResult<()> {
         let function = self.entry.get_parent().unwrap();
         let suspend = ctx.append_basic_block(function, "coro.suspend");
+        let destroy = ctx.append_basic_block(function, "coro.destroy");
         let destroying = builder
             .build_load(ctx.bool_type(), self.destroying, "frame.suspend.destroying")
             .llvm_ctx("guard synchronous destruction")?
@@ -324,10 +325,17 @@ impl<'ctx> Frame<'ctx> {
                 self.exit,
                 &[
                     (ctx.i8_type().const_zero(), resumed),
-                    (ctx.i8_type().const_int(1, false), destroyed),
+                    (ctx.i8_type().const_int(1, false), destroy),
                 ],
             )
             .llvm_ctx("dispatch coroutine suspension")?;
+        builder.position_at_end(destroy);
+        builder
+            .build_store(self.destroying, ctx.bool_type().const_int(1, false))
+            .llvm_ctx("enter synchronous destruction")?;
+        builder
+            .build_unconditional_branch(destroyed)
+            .llvm_ctx("enter semantic cleanup")?;
         Ok(())
     }
 }

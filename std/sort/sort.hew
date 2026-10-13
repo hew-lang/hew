@@ -1,8 +1,8 @@
 //! Sorting utilities for vectors.
 //!
 //! Provides type-specific sort and reverse functions. Each returns a
-//! new vector — the original is never modified. Sorting uses iterative merge
-//! passes with O(n log n) comparisons.
+//! new vector — the original is never modified. Integer and string sorting
+//! use iterative merge passes with O(n log n) comparisons.
 //!
 //! # Examples
 //!
@@ -310,29 +310,15 @@ pub fn sort_strings_counted(v: Vec<string>) -> (Vec<string>, i64) {
     sort_strings_core(v)
 }
 
-// IEEE 754 total order compares positive encodings forwards and negative
-// encodings backwards, with every negative encoding before every positive one.
-fn float_total_less(a: f64, b: f64) -> bool {
-    let left = a.to_bits();
-    let right = b.to_bits();
-    let left_sign = left >> 63;
-    let right_sign = right >> 63;
-    if left_sign != right_sign {
-        left_sign > right_sign
-    } else if left_sign != 0 {
-        left > right
-    } else {
-        left < right
-    }
-}
-
 /// Sort a vector of floats in IEEE 754 total order.
 ///
 /// Returns a new sorted vector; the original is unchanged.
 /// Negative zero sorts before positive zero. NaNs retain their sign and payload
 /// and sort before negative infinity or after positive infinity, respectively.
 pub fn sort_floats(v: Vec<f64>) -> Vec<f64> {
-    sort_by_core(v, float_total_less)
+    unsafe {
+        hew_sort_floats(v)
+    }
 }
 
 /// Reverse a vector of integers.
@@ -372,4 +358,9 @@ pub fn reverse_floats(v: Vec<f64>) -> Vec<f64> {
         out.push(v[i]);
     }
     out
+}
+
+// ── FFI bindings ──────────────────────────────────────────────────────
+extern "C" {
+    fn hew_sort_floats(v: Vec<f64>) -> Vec<f64>;
 }

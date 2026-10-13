@@ -123,7 +123,7 @@ setup-result-payload = {
 ; Field numbers mirror the legacy HBF field ordering (fields 1-6) so that
 ; tooling and documentation can cross-reference both representations.
 ;
-; source_node_id is 0 on reply envelopes; non-zero on outbound ask requests.
+; Replies have nil target/source and a positive request_id.
 ; request_id is 0 for fire-and-forget; > 0 means a reply is expected (or this
 ; is a reply to a prior ask).
 
@@ -142,7 +142,7 @@ envelope-frame = {
 
 ; ── Primitive aliases ────────────────────────────────────────────────────────
 
-handler-identity = text ; canonical package.module.Actor.handler; at most 4096 UTF-8 bytes, no NUL
+handler-identity = text ; canonical package.module.Actor.handler; 1..4096 UTF-8 bytes, no NUL
 reply-status = 0 / 1    ; success / rejection; only for replies (nil target/source, positive request_id)
 
 wire-version = 3        ; current schema version; decoders reject unknown values

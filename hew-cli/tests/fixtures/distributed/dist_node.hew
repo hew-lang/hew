@@ -1053,14 +1053,14 @@ fn run_server(scenario: string) {
 fn scenario_remote_ask(kv: RemotePid<KeyValue>) -> i64 {
     // A successful write reply establishes completion before the read starts.
     match kv.ask(KvReq.Put(KvPut { key: "hello", val: "world" }), 5000) {
-        .Ok(KvResp.Ack) => {},
+        .Ok(KvResp.Ack) => {}
         _ => {
             println("FAIL remote_ask put-hello-completion");
             return 2;
         }
     }
     match kv.ask(KvReq.Put(KvPut { key: "count", val: "42" }), 5000) {
-        .Ok(KvResp.Ack) => {},
+        .Ok(KvResp.Ack) => {}
         _ => {
             println("FAIL remote_ask put-count-completion");
             return 3;

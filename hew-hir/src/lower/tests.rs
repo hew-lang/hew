@@ -828,6 +828,7 @@ fn checker_admitted_opaque_lifecycle_survives_into_exact_hir_authority() {
         .expect("add std.fs test module");
     graph.topo_order = vec![module_id, root_id];
     let program = Program {
+        expansions: Default::default(),
         module_graph: Some(graph),
         items: vec![],
         module_doc: None,
@@ -975,6 +976,7 @@ fn opaque_lifecycle_rejects_a_second_release_hidden_in_control_flow() {
         .expect("add std.fs test module");
     graph.topo_order = vec![module_id, root_id];
     let program = Program {
+        expansions: Default::default(),
         module_graph: Some(graph),
         items: vec![],
         module_doc: None,
@@ -3258,6 +3260,7 @@ pub fn make_error(msg: string) -> AppErr {
     mg.add_module(module).unwrap();
     mg.topo_order = vec![mod_id, root_id];
     let program = Program {
+        expansions: Default::default(),
         module_graph: Some(mg),
         items: vec![],
         module_doc: None,
@@ -3426,6 +3429,7 @@ fn named_import_enum_alias_resolves_variant_through_exact_source_owner() {
         .expect("add root module");
     graph.topo_order = vec![source_id, root_id];
     let program = Program {
+        expansions: Default::default(),
         items: root.program.items,
         module_graph: Some(graph),
         module_doc: None,
@@ -3593,6 +3597,7 @@ pub enum Switch {
             vec![beta_id, alpha_id, root_id]
         };
         let program = Program {
+            expansions: Default::default(),
             items: root.program.items,
             module_graph: Some(graph),
             module_doc: None,
@@ -3691,6 +3696,7 @@ pub fn make_error(msg: string) -> AppErr {
     mg.add_module(module).unwrap();
     mg.topo_order = vec![mod_id, root_id];
     let program = Program {
+        expansions: Default::default(),
         module_graph: Some(mg),
         items: vec![],
         module_doc: None,
@@ -3810,6 +3816,7 @@ fn same_short_name_actors_in_different_modules_canonicalize_independently() {
     }
     mg.topo_order = module_ids.into_iter().chain([root_id]).collect();
     let program = Program {
+        expansions: Default::default(),
         module_graph: Some(mg),
         items: vec![],
         module_doc: None,

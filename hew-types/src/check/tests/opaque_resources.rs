@@ -392,6 +392,7 @@ fn shipped_std_candidate_inventory() -> (
         (resources, modules)
     };
     let program = Program {
+        expansions: Default::default(),
         module_graph: Some(shipped_std_module_graph(&parsed_modules)),
         items: vec![],
         module_doc: None,
@@ -651,6 +652,7 @@ fn checker_with_registered_module(source: &str, module_path: &[&str]) -> Checker
     module_graph.add_module(module).expect("add module");
     module_graph.topo_order = vec![module_id, root_id];
     let program = Program {
+        expansions: Default::default(),
         module_graph: Some(module_graph),
         items: vec![],
         module_doc: None,
@@ -716,6 +718,7 @@ fn checker_with_resolved_module_graph(sources: &[(&[&str], &str)]) -> Checker {
         .chain(std::iter::once(root_id))
         .collect();
     let program = Program {
+        expansions: Default::default(),
         module_graph: Some(module_graph),
         items: vec![],
         module_doc: None,

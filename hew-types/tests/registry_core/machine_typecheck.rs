@@ -10,6 +10,7 @@ use hew_types::{Ty, TypeCheckOutput};
 
 fn check_items(items: Vec<Spanned<Item>>) -> TypeCheckOutput {
     let program = Program {
+        expansions: Default::default(),
         module_graph: None,
         items,
         module_doc: None,
@@ -1097,6 +1098,7 @@ fn imported_machine_unit_state_constructor_resolves() {
     graph.compute_topo_order().expect("no cycles");
 
     let program = Program {
+        expansions: Default::default(),
         items: vec![],
         module_doc: None,
         module_graph: Some(graph),
@@ -1189,6 +1191,7 @@ fn imported_machine_payload_state_struct_literal_resolves() {
     graph.compute_topo_order().expect("no cycles");
 
     let program = Program {
+        expansions: Default::default(),
         items: vec![],
         module_doc: None,
         module_graph: Some(graph),
@@ -1245,6 +1248,7 @@ fn imported_machine_exhaustiveness_runs() {
     graph.compute_topo_order().expect("no cycles");
 
     let program = Program {
+        expansions: Default::default(),
         items: vec![],
         module_doc: None,
         module_graph: Some(graph),
@@ -1304,6 +1308,7 @@ fn imported_generic_machine_type_params_survive_registration() {
     graph.compute_topo_order().expect("no cycles");
 
     let program = Program {
+        expansions: Default::default(),
         items: vec![],
         module_doc: None,
         module_graph: Some(graph),
@@ -1387,6 +1392,7 @@ fn two_modules_with_different_machines_no_collision() {
     graph.compute_topo_order().expect("no cycles");
 
     let program = Program {
+        expansions: Default::default(),
         items: vec![],
         module_doc: None,
         module_graph: Some(graph),

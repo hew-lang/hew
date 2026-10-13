@@ -2956,6 +2956,17 @@ impl Checker {
         // registration pass below resolves declaration identity through this
         // table, so it must be complete before any key is minted.
         self.mint_module_identities(program);
+        if !program.expansions.contexts.rows.is_empty() {
+            let mut contexts = scope::SyntaxContexts::new();
+            for row in &program.expansions.contexts.rows {
+                let module = self
+                    .defs
+                    .module_for_source(&row.definition_source)
+                    .expect("macro definition source has a minted module");
+                contexts.mint(row.parent, module);
+            }
+            *self.scopes.contexts_mut() = contexts;
+        }
         self.assign_module_packages();
         // Fresh extern authority per compile (rc1-F1 stage B): contracts are
         // minted by the registration passes below; a stale table would leak

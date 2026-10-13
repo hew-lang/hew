@@ -24,17 +24,26 @@ pub(crate) use hew_lexer::{sym, Token};
 use serde::Serialize;
 use std::cell::Cell;
 use std::rc::Rc;
+use std::sync::Arc;
+
+use crate::macro_syntax::{Fragment, FragmentInputs, FragmentKind, TokenContexts};
 
 mod actor_machine_supervisor;
 mod attributes;
 mod core;
 mod expressions;
+mod fragments;
 mod items;
+mod macros;
 mod patterns;
 mod precedence;
 mod statements;
 mod types;
 mod wire;
+
+pub use fragments::{
+    parse_fragment, parse_generated, parse_generated_fragment, FragmentParseResult,
+};
 
 // Re-export the precedence free fns so the area submodules reach them through
 // `use super::*` (the Pratt parser in `expressions` and the clone-prefix probe
@@ -431,6 +440,7 @@ pub(crate) fn parse_string_parts(
     suffix_len: usize,
     expr_open: &str,
     span_start: usize,
+    contexts: &Arc<TokenContexts>,
     errors: &mut Vec<ParseError>,
 ) -> Vec<StringPart> {
     let inner = &raw[prefix_len..raw.len() - suffix_len];
@@ -581,7 +591,7 @@ pub(crate) fn parse_string_parts(
                 // diagnostic emitted by the sub-parser therefore refers to the
                 // original source without any further rebasing.
                 let base = inner_offset + expr_start_byte;
-                let mut sub_parser = Parser::new_with_offset(expr_text, base);
+                let mut sub_parser = Parser::with_contexts(expr_text, base, Arc::clone(contexts));
                 let parsed = sub_parser.parse_expr();
                 errors.extend(sub_parser.errors);
                 if let Some(spanned_expr) = parsed {
@@ -735,6 +745,8 @@ pub struct Parser<'src> {
     /// carry, so a rule can ask whether two tokens share a line.
     pub(crate) source: &'src str,
     pub(crate) source_offset: usize,
+    pub(crate) contexts: Arc<TokenContexts>,
+    pub(crate) fragments: FragmentInputs,
     /// End byte of the most recently consumed token (absolute).
     ///
     /// For a full-program parse this starts at 0.  For an f-string sub-parser

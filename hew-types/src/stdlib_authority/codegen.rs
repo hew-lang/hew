@@ -236,6 +236,7 @@ pub fn derive_monitor_ref_projection(
         .collect::<Vec<_>>();
     ensure_monitor_projection_complete(&projected_declarations)?;
     Ok(hew_parser::fmt::format_program(&Program {
+        expansions: Default::default(),
         items: projected_items,
         module_doc: None,
         module_graph: None,

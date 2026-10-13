@@ -72,6 +72,7 @@ pub fn collect_calls_in_item(item: &Item, calls: &mut Vec<CallSite>) {
     let mut visitor = CallCollector::default();
     let parse_result = ParseResult {
         program: hew_parser::ast::Program {
+            expansions: Default::default(),
             items: vec![(item.clone(), 0..0)],
             module_doc: None,
             module_graph: None,

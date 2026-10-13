@@ -597,6 +597,7 @@ fn module_local_dyn_trait_method_records_vtable_call() {
 
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     let output = checker.check_program(&Program {
+        expansions: Default::default(),
         items: root.program.items,
         module_graph: Some(module_graph),
         module_doc: None,
@@ -3131,6 +3132,7 @@ pub fn make() -> Thing {
 
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     checker.check_program(&Program {
+        expansions: Default::default(),
         items: root.program.items,
         module_graph: Some(graph),
         module_doc: None,

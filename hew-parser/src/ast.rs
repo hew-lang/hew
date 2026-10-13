@@ -276,6 +276,11 @@ pub struct Program {
     pub module_doc: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub module_graph: Option<crate::module::ModuleGraph>,
+    #[serde(
+        default,
+        skip_serializing_if = "crate::macro_syntax::ExpansionMap::is_empty"
+    )]
+    pub expansions: crate::macro_syntax::ExpansionMap,
 }
 
 // ── Attributes ───────────────────────────────────────────────────────

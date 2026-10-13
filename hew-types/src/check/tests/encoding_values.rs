@@ -358,6 +358,7 @@ fn encoding_value_reexported_signature_preserves_original_owner() {
         .unwrap();
     graph.topo_order = vec![json, relay_id, root];
     let output = Checker::default().check_program(&Program {
+        expansions: Default::default(),
         items,
         module_graph: Some(graph),
         module_doc: None,
@@ -571,6 +572,7 @@ fn selected_encoding_import_preserves_result_and_option_try_payload_identity() {
         }
         graph.topo_order = vec![module, root];
         let output = Checker::default().check_program(&Program {
+            expansions: Default::default(),
             items,
             module_graph: Some(graph),
             module_doc: None,

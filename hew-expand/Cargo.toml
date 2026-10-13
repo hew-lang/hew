@@ -1,0 +1,16 @@
+[package]
+name = "hew-expand"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Hygienic declarative macro expansion for Hew"
+repository = "https://github.com/hew-lang/hew"
+readme = "../README.md"
+keywords = ["hew", "compiler", "macros"]
+categories = ["compilers"]
+
+[lints]
+workspace = true
+
+[dependencies]
+hew-parser = { path = "../hew-parser" }

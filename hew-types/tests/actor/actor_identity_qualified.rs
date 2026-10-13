@@ -40,6 +40,7 @@ fn typecheck_with_modules(root_source: &str, modules: &[(&[&str], &str)]) -> Typ
         .collect();
     items.extend(common::parse_program(root_source).items);
     let program = Program {
+        expansions: Default::default(),
         items,
         module_doc: None,
         module_graph: None,

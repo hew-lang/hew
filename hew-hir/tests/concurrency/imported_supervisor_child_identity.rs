@@ -74,6 +74,7 @@ fn file_import_program(
 
     (
         Program {
+            expansions: Default::default(),
             items: root_items,
             module_graph: Some(graph),
             module_doc: root.program.module_doc,
@@ -158,6 +159,7 @@ fn actor_import_program(
     graph.topo_order = vec![worker_id, root_id];
 
     Program {
+        expansions: Default::default(),
         items: root_items,
         module_graph: Some(graph),
         module_doc: root.program.module_doc,

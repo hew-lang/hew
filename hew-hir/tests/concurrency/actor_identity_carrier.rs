@@ -61,6 +61,7 @@ fn build_program_with_imported_module(imported_src: &str, root_src: &str) -> Pro
     graph.topo_order = vec![imported_id, root_id];
 
     Program {
+        expansions: Default::default(),
         items: root.program.items,
         module_graph: Some(graph),
         ..root.program

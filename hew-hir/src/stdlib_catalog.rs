@@ -2888,6 +2888,7 @@ mod utf8_floor_tests {
             .unwrap();
         graph.topo_order = vec![floor_id, root_id];
         Program {
+            expansions: Default::default(),
             module_graph: Some(graph),
             ..root.program
         }

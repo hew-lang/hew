@@ -71,6 +71,7 @@ fn build_program(root_src: &str) -> Program {
     graph.topo_order = vec![bank_id, root_id];
 
     Program {
+        expansions: Default::default(),
         items: root_items,
         module_graph: Some(graph),
         ..root.program

@@ -185,6 +185,7 @@ fn peer_files_resolve_same_module_alias_from_their_own_imports() {
 
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     let output = checker.check_program(&Program {
+        expansions: Default::default(),
         items: vec![],
         module_graph: Some(graph),
         module_doc: None,
@@ -298,6 +299,7 @@ fn early_lifecycle_seed_uses_the_importing_peer_file_index() {
 
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     let output = checker.check_program(&Program {
+        expansions: Default::default(),
         items: vec![],
         module_graph: Some(graph),
         module_doc: None,
@@ -439,6 +441,7 @@ pub fn score() -> i64 {
 
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     let output = checker.check_program(&Program {
+        expansions: Default::default(),
         items: root.program.items,
         module_graph: Some(graph),
         module_doc: None,
@@ -591,6 +594,7 @@ fn check_resolved_closableerr_import(
 
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     let output = checker.check_program(&Program {
+        expansions: Default::default(),
         items: root.program.items,
         module_graph: Some(module_graph),
         module_doc: None,
@@ -1260,6 +1264,7 @@ fn bare_import_type_registers_qualified_only() {
     );
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     let output = checker.check_program(&Program {
+        expansions: Default::default(),
         module_graph: None,
         items: vec![(Item::Import(import), 0..0)],
         module_doc: None,
@@ -1300,6 +1305,7 @@ fn named_import_type_publishes_bare_binding() {
     );
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     let output = checker.check_program(&Program {
+        expansions: Default::default(),
         module_graph: None,
         items: vec![(Item::Import(import), 0..0)],
         module_doc: None,
@@ -1335,6 +1341,7 @@ fn named_import_type_alias_publishes_alias_binding() {
     );
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     checker.check_program(&Program {
+        expansions: Default::default(),
         module_graph: None,
         items: vec![(Item::Import(import), 0..0)],
         module_doc: None,
@@ -1372,6 +1379,7 @@ fn alias_import_resolves_bare_binding_to_source_identity() {
     );
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     let output = checker.check_program(&Program {
+        expansions: Default::default(),
         module_graph: None,
         items: vec![(Item::Import(import), 0..0)],
         module_doc: None,
@@ -1411,6 +1419,7 @@ fn alias_import_does_not_conflate_with_same_named_export() {
     );
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     let output = checker.check_program(&Program {
+        expansions: Default::default(),
         module_graph: None,
         items: vec![(Item::Import(import), 0..0)],
         module_doc: None,
@@ -1453,6 +1462,7 @@ fn glob_import_type_publishes_bare_binding() {
     );
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     let output = checker.check_program(&Program {
+        expansions: Default::default(),
         module_graph: None,
         items: vec![(Item::Import(import), 0..0)],
         module_doc: None,
@@ -1846,6 +1856,7 @@ fn flat_file_owner_selection_ignores_same_leaf_package_owner() {
     );
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     checker.check_program(&Program {
+        expansions: Default::default(),
         module_graph: None,
         items: vec![(Item::Import(flat), 0..0), (Item::Import(package), 0..0)],
         module_doc: None,
@@ -1921,6 +1932,7 @@ fn same_leaf_named_imports_publish_one_resolved_ty_spelling_per_owner() {
 
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     let output = checker.check_program(&Program {
+        expansions: Default::default(),
         items,
         module_graph: None,
         module_doc: None,
@@ -2073,6 +2085,7 @@ fn user_module_registers_pub_consts() {
     );
 
     let program = Program {
+        expansions: Default::default(),
         module_graph: None,
         items: vec![(Item::Import(import), 0..0)],
         module_doc: None,
@@ -2123,6 +2136,7 @@ fn user_module_const_bare_import_qualified_only() {
     );
 
     let program = Program {
+        expansions: Default::default(),
         module_graph: None,
         items: vec![(Item::Import(import), 0..0)],
         module_doc: None,
@@ -2534,6 +2548,7 @@ fn stdlib_import_keeps_stream_open_stream_typed_after_fs_import() {
         resolved_source_paths: Vec::new(),
     };
     let program = Program {
+        expansions: Default::default(),
         module_graph: None,
         items: vec![
             (Item::Import(stream_import), 0..0),
@@ -2582,6 +2597,7 @@ fn file_import_without_resolved_items_emits_unresolved_error() {
         resolved_source_paths: Vec::new(),
     };
     let program = Program {
+        expansions: Default::default(),
         module_graph: None,
         items: vec![(Item::Import(import), 0..20)],
         module_doc: None,
@@ -2757,6 +2773,7 @@ fn flat_file_imported_pub_fn_publishes_root_call_target() {
 
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     let output = checker.check_program(&Program {
+        expansions: Default::default(),
         items: root.program.items,
         module_graph: Some(graph),
         module_doc: None,
@@ -2803,6 +2820,7 @@ fn repeated_stdlib_import_does_not_duplicate_hew_items() {
         resolved_source_paths: vec![fs_path],
     };
     let program = Program {
+        expansions: Default::default(),
         module_graph: None,
         items: vec![
             (Item::Import(import.clone()), 0..0),
@@ -3361,6 +3379,7 @@ fn check_intrinsic_coherence_source(
     graph.topo_order = vec![builtins_id, root_id];
 
     Checker::new(registry).check_program(&Program {
+        expansions: Default::default(),
         module_graph: Some(graph),
         items: vec![],
         module_doc: None,
@@ -3497,6 +3516,7 @@ fn imported_foreign_trait_impl_for_intrinsic_type_warns() {
     graph.topo_order = vec![foreign_id, consumer_id, root_id];
 
     let output = Checker::new(test_registry()).check_program(&Program {
+        expansions: Default::default(),
         module_graph: Some(graph),
         items: vec![],
         module_doc: None,
@@ -3707,6 +3727,7 @@ fn test_file_import_private_items_not_visible() {
     };
 
     let program = Program {
+        expansions: Default::default(),
         module_graph: None,
         items: vec![(Item::Import(import_decl), 0..0)],
         module_doc: None,
@@ -3770,6 +3791,7 @@ fn check_qualified_variant_root(root_source: &str) -> TypeCheckOutput {
     module_graph.topo_order = vec![m_id, root_id];
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     checker.check_program(&Program {
+        expansions: Default::default(),
         items: root.program.items,
         module_graph: Some(module_graph),
         module_doc: None,
@@ -3818,6 +3840,7 @@ fn check_qualified_machine_state_root(root_source: &str) -> (Checker, TypeCheckO
     module_graph.topo_order = vec![m_id, root_id];
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     let output = checker.check_program(&Program {
+        expansions: Default::default(),
         items: root.program.items,
         module_graph: Some(module_graph),
         module_doc: None,

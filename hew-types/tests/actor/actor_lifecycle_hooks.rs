@@ -109,6 +109,7 @@ fn typecheck_module_body(module_path: &[&str], source: &str) -> hew_types::TypeC
         .expect("root fixture must be unique");
     graph.topo_order = vec![module_id, root_id];
     let program = hew_parser::ast::Program {
+        expansions: Default::default(),
         items: vec![],
         module_doc: None,
         module_graph: Some(graph),
@@ -222,6 +223,7 @@ fn typecheck_link_monitor_import_edge(
         .expect("root fixture must be unique");
     graph.topo_order = vec![target_id, consumer_id, root_id];
     let program = hew_parser::ast::Program {
+        expansions: Default::default(),
         items: vec![],
         module_doc: None,
         module_graph: Some(graph),

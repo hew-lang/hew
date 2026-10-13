@@ -1345,6 +1345,7 @@ fn main() -> i64 {
         mg.topo_order = vec![alpha_id, beta_id, root_id];
 
         Program {
+            expansions: Default::default(),
             module_graph: Some(mg),
             items: root_parsed.program.items,
             module_doc: None,
@@ -1435,6 +1436,7 @@ fn main() -> i64 {
         mg.add_module(module).unwrap();
         mg.topo_order = vec![mod_id, root_id];
         let program = Program {
+            expansions: Default::default(),
             module_graph: Some(mg),
             items: vec![],
             module_doc: None,

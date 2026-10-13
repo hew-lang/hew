@@ -1865,6 +1865,7 @@ dependencies = [
 name = "hew-compile"
 version = "0.6.1"
 dependencies = [
+ "hew-expand",
  "hew-hir",
  "hew-lexer",
  "hew-mir",
@@ -1876,6 +1877,13 @@ dependencies = [
  "sha2 0.11.0",
  "tempfile",
  "toml",
+]
+
+[[package]]
+name = "hew-expand"
+version = "0.6.1"
+dependencies = [
+ "hew-parser",
 ]
 
 [[package]]

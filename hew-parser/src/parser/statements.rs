@@ -33,7 +33,7 @@ impl Parser<'_> {
     /// statement and expression position.
     pub(crate) fn parse_control_flow_label(&mut self) -> Option<Ident> {
         if let Some(Token::Label(l)) = self.peek() {
-            let name = Ident::new(&l[1..]);
+            let name = self.ident_at(&l[1..], &self.peek_span());
             self.advance();
             Some(name)
         } else {
@@ -114,6 +114,14 @@ impl Parser<'_> {
     }
 
     pub(crate) fn parse_block(&mut self) -> Option<Block> {
+        if let Some(fragment) = self.peek_fragment() {
+            if let Fragment::Block((block, span)) = fragment {
+                self.consume_fragment(&span);
+                return Some(block);
+            }
+            self.invalid_fragment_position(&fragment, "a block");
+            return None;
+        }
         self.expect(&Token::LeftBrace)?;
 
         let mut stmts = Vec::new();
@@ -970,8 +978,8 @@ impl Parser<'_> {
     /// Parse a labeled statement: `'label: while ...` or `'label: loop ...`
     pub(crate) fn parse_labeled_stmt(&mut self, start: usize) -> Option<Spanned<Stmt>> {
         let label_tok = self.advance()?;
-        let label = if let (Token::Label(l), _) = label_tok {
-            Ident::new(&l[1..])
+        let label = if let (Token::Label(l), span) = label_tok {
+            self.ident_at(&l[1..], &span)
         } else {
             return None;
         };

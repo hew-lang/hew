@@ -71,6 +71,7 @@ fn main() -> i64 {
     graph.topo_order = vec![a_id, b_id, root_id];
 
     Program {
+        expansions: Default::default(),
         items: root.program.items,
         module_graph: Some(graph),
         ..root.program

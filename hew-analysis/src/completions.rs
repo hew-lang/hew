@@ -1362,6 +1362,7 @@ mod tests {
         );
         items.extend(root.program.items);
         let program = Program {
+            expansions: Default::default(),
             items,
             module_doc: None,
             module_graph: None,

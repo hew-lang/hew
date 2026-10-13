@@ -56,6 +56,7 @@ impl Parser<'_> {
         }
 
         Program {
+            expansions: Default::default(),
             items,
             module_doc,
             module_graph: None,

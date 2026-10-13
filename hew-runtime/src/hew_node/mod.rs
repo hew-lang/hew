@@ -2234,9 +2234,15 @@ unsafe fn send_location(
         routing::hew_routing_lookup_location(node.routing_table, target)
     } {
         routing::LocationRoute::Local { actor_id } => {
-            if crate::lifetime::live_actors::get_actor_ptr_by_id(actor_id).is_none() {
+            let Some(target_dispatch) = crate::lifetime::live_actors::dispatch_ptr_by_id(actor_id)
+            else {
                 set_last_error("remote send refused: target actor slot is stale");
                 return HEW_ERR_STALE_REF;
+            };
+            // A name lookup does not prove the concrete actor payload layout.
+            if dispatch != target_dispatch {
+                set_last_error("remote send refused: target actor type does not match the caller");
+                return -1;
             }
             // This node owns the target: its fields move into the actor's
             // mailbox with the delivery a peer gives an inbound frame.

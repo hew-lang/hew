@@ -1459,15 +1459,15 @@ hew-fmt-fidelity: ## Check: prove every .hew source reprints faithfully through 
 		--test fmt_roundtrip_corpus --test fmt_fidelity -- --nocapture
 
 # Check that std/ and examples/ .hew sources are formatted.
-# Run `find std examples -name "*.hew" -print0 | xargs -0 hew fmt` to fix.
+# Run `find std examples -type f -name "*.hew" -print0 | xargs -0 hew fmt` to fix.
 hew-fmt-check: hew-native hew-fmt-fidelity
 	@echo "==> hew-fmt-check: checking std/ and examples/ .hew sources"
-	@total=$$(find std examples -name "*.hew" | wc -l | tr -d ' '); \
+	@total=$$(find std examples -type f -name "*.hew" | wc -l | tr -d ' '); \
 	bash scripts/lib/corpus-nonempty.sh hew-fmt-check-files "$$total" || exit 1; \
-	find std examples -name "*.hew" -print0 \
+	find std examples -type f -name "*.hew" -print0 \
 	    | xargs -0 "$(DEBUG_HEW)" fmt --check \
 	    && echo "hew-fmt-check passed: all $$total .hew sources are formatted." \
-	    || { echo "error: unformatted .hew sources found — run 'find std examples -name \"*.hew\" -print0 | xargs -0 hew fmt' to fix." >&2; exit 1; }
+	    || { echo "error: unformatted .hew sources found — run 'find std examples -type f -name \"*.hew\" -print0 | xargs -0 hew fmt' to fix." >&2; exit 1; }
 
 # Exercise representative migration inputs in an isolated copy so the proof
 # never edits the checkout. The second pass must leave the first-pass snapshot

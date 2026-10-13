@@ -2109,7 +2109,11 @@ impl Checker {
             if let Some(binding) = self
                 .impl_assoc_type_bindings
                 .get(&(key, trait_id, associated))
-                .and_then(|binding| binding.instantiate(&resolved_base))
+                .and_then(|bindings| {
+                    bindings
+                        .iter()
+                        .find_map(|binding| binding.instantiate(&resolved_base))
+                })
             {
                 return self.project_assoc_types(&binding);
             }

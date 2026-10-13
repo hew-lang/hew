@@ -1,0 +1,23 @@
+trait First {
+    fn label(self) -> string;
+}
+
+trait Second {
+    fn label(self) -> string;
+}
+
+impl First for bool {
+    fn label(self) -> string {
+        "first"
+    }
+}
+
+impl Second for bool {
+    fn label(self) -> string {
+        "second"
+    }
+}
+
+fn main() {
+    println(true.label());
+}

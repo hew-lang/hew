@@ -1,0 +1,19 @@
+[[case]]
+id = "package-coherence-orphan"
+source = "cases/package-coherence/reject/orphan.hew"
+intent = "An impl package must own the trait or the outer receiver declaration."
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "OrphanImpl"
+line = 5
+column = 1
+message = "cannot implement trait `Render` for `Widget`: this package owns neither the trait nor the outer receiver type"
+
+[[case.expected.diagnostics]]
+code = "OrphanImpl"
+line = 11
+column = 1
+message = "cannot implement trait `Render` for `Vec<Widget>`: this package owns neither the trait nor the outer receiver type"

@@ -3027,40 +3027,7 @@ impl Checker {
                                                      // is never rebuilt as the builtin).
             let self_ty = self.resolve_impl_target(id);
             if let Some(tb) = &id.trait_bound {
-                let type_is_local = self.local_type_defs.contains(type_name)
-                    || self.intrinsic_type_is_local_to_builtin_surface(type_name);
                 let trait_id = self.resolve_trait_path(&tb.path);
-                let trait_is_local = trait_id.is_some_and(|id| self.trait_is_local(id));
-                // hew-compile loads the prelude's Display impls as the
-                // std.builtins module, from the standard-library root every
-                // `std` module resolves from (the toolchain's std or
-                // `HEW_STD`), or source-less from the compiled-in text for an
-                // analysis with no search path. A lookalike module has neither.
-                let is_embedded_builtins_impl = self
-                    .checking_canonical_stdlib_source("std.builtins")
-                    && self.current_item_source.as_ref().is_none_or(|source| {
-                        crate::module_registry::is_canonical_stdlib_module_source(
-                            source,
-                            "std.builtins",
-                        )
-                    });
-                if !type_is_local && !trait_is_local && !is_embedded_builtins_impl {
-                    self.warnings.push(TypeError {
-                        severity: crate::error::Severity::Warning,
-                        kind: TypeErrorKind::OrphanImpl,
-                        span: span.clone(),
-                        message: format!(
-                            "impl `{}` for `{type_name}`: neither the trait nor the type is defined in this module",
-                            tb.path // TRANSITION(P1): deleted by A1 commit 2
-                        ),
-                        notes: vec![],
-                        suggestions: vec![
-                            "define the trait or the type in this module".to_string(),
-                            "this may be disallowed in a future version (orphan rule)".to_string(),
-                        ],
-                        source_module: self.current_module.clone(),
-                    });
-                }
                 if let Some(trait_id) = trait_id {
                     self.require_supertrait_impls(type_name, &self_ty, trait_id, span);
                 }
@@ -3107,19 +3074,6 @@ impl Checker {
                 self.generic_ctx.pop();
             }
         }
-    }
-
-    /// Compiler-intrinsic types have no source declaration to seed
-    /// `local_type_defs`. Their canonical declarative surface owns their impls
-    /// for coherence purposes, but only when the active item's canonical path
-    /// is below the stdlib root owned by the running compiler installation.
-    fn intrinsic_type_is_local_to_builtin_surface(&self, type_name: &str) -> bool {
-        self.current_item_source.as_ref().is_some_and(|source| {
-            crate::module_registry::is_canonical_stdlib_module_source(source, "std.builtins")
-        }) && (Ty::from_name(type_name).is_some()
-            || self
-                .resolved_builtin_type(type_name)
-                .is_some_and(|builtin| !builtin.requires_source_import()))
     }
 }
 

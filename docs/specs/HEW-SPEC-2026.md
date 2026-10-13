@@ -2109,6 +2109,21 @@ match.
 
 Traits define shared behaviour that types can implement. Hew has built-in marker traits and supports user-defined traits.
 
+An explicit trait impl must belong to the package defining the trait or the
+outer receiver type. A local type argument does not make a foreign receiver
+local: `Vec<Local>` still belongs to the standard library. Package identity is
+the canonical `hew.toml` anchor, independent of module depth or import aliases;
+sources without a manifest share the compilation package. The authenticated
+standard library is a distinct package. Explicit replacements of implicit
+prelude impls retain their existing override behaviour.
+
+Two impl heads for the same trait must not overlap.
+The checker freshens their generic parameters and compares both receiver and
+trait arguments by unification. Bounds do not establish disjointness. Thus
+`impl<T> Render for Wrapped<T>` conflicts with `impl Render for Wrapped<i64>`,
+while `impl Render for Wrapped<i64>` and `impl Render for Wrapped<string>` are
+permitted. Hew has no specialization or declaration-order tie breaker.
+
 **Trait declaration:**
 
 ```hew

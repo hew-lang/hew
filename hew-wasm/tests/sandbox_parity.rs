@@ -861,6 +861,51 @@ fn aggregate_constants_native_and_vm() {
 }
 
 #[cfg(unix)]
+#[test]
+fn package_coherence_native_and_vm() {
+    set_test_hewpath();
+    ensure_native_toolchain();
+    ensure_parity_runner_built();
+    let root = repo_root().join("tests/core-acceptance/cases/package-coherence");
+    let mut inputs = hew_compile::SourceSet::in_memory();
+    for path in [
+        "hew.toml",
+        "protocol/hew.toml",
+        "protocol/traits.hew",
+        "data/hew.toml",
+        "data/model.hew",
+        "data/roles/format.hew",
+    ] {
+        inputs.insert(
+            path,
+            std::fs::read_to_string(root.join(path)).expect("read package fixture"),
+        );
+    }
+    assert_case_with_inputs(
+        &ParityCase {
+            test_name: "package_coherence",
+            source_rel: "tests/core-acceptance/cases/package-coherence/main.hew",
+        },
+        "",
+        inputs.clone(),
+    );
+    let orphan = compile_to_sandbox_bytecode_with_inputs(
+        "import \"protocol/traits.hew\"; import \"data/model.hew\"; impl Render for Widget { fn render(self) -> string { \"foreign\" } } fn main() {}",
+        Some(SANDBOX_PROFILE),
+        inputs,
+    ).expect("compile virtual orphan fixture");
+    assert!(
+        orphan
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.kind == "OrphanImpl"),
+        "{:?}",
+        orphan.diagnostics
+    );
+    assert!(orphan.bytecode.is_none());
+}
+
+#[cfg(unix)]
 fn assert_case_with_inputs(case: &ParityCase, stdin: &str, inputs: hew_compile::SourceSet) {
     let repo_root = repo_root();
     let source_path = repo_root.join(case.source_rel);
@@ -917,6 +962,7 @@ fn assert_stderr_parity(case: &ParityCase, native: &Output, sandbox: &Output) {
 #[cfg(unix)]
 fn assert_exact_stdout(case: &ParityCase, native: &Output) {
     let expected = match case.test_name {
+        "package_coherence" => Some("blue\nwidget: blue\nnumbers: 2\nwords: 1\n1\none\ninteger: 42\ntext: hello\nyes\nno\nflag: yes\n"),
         "trap_residual" => Some(
             "repeat-value\nrepeat-count\n3\n7\n7\n7\n65535\n18446744073709551615\n-1\n255\n1\ntrue\n65\n42\nboom\n6\nnone\n",
         ),

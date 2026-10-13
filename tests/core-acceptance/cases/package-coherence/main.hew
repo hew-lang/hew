@@ -1,0 +1,99 @@
+import "protocol/traits.hew";
+
+import "data/model.hew";
+
+import "data/roles/format.hew";
+
+trait Label {
+    fn label(self) -> string;
+}
+
+impl Display for bool {
+    fn fmt(self) -> string {
+        if self {
+            "yes"
+        } else {
+            "no"
+        }
+    }
+}
+
+impl Label for Widget {
+    fn label(self) -> string {
+        self.label
+    }
+}
+
+trait Describe {
+    fn describe(self) -> string;
+}
+
+impl Describe for Vec<i64> {
+    fn describe(self) -> string {
+        f"numbers: {self.len()}"
+    }
+}
+
+impl Describe for Vec<string> {
+    fn describe(self) -> string {
+        f"words: {self.len()}"
+    }
+}
+
+impl Describe for Wrapped<i64> {
+    fn describe(self) -> string {
+        f"integer: {self.value}"
+    }
+}
+
+impl Describe for Wrapped<string> {
+    fn describe(self) -> string {
+        f"text: {self.value}"
+    }
+}
+
+fn show(value: dyn Render) {
+    println(value.render());
+}
+
+trait Content {
+    type Item;
+    fn content(self) -> Self.Item;
+}
+
+impl Content for Vec<i64> {
+    type Item = i64;
+    fn content(self) -> Self.Item {
+        self[0]
+    }
+}
+
+impl Content for Vec<string> {
+    type Item = string;
+    fn content(self) -> Self.Item {
+        self[0]
+    }
+}
+
+fn content_of<T: Content>(value: T) -> T.Item {
+    value.content()
+}
+
+fn main() {
+    let widget = Widget { label: "blue" };
+    println(widget.label());
+    show(widget);
+    let numbers: Vec<i64> = [1, 2];
+    let words: Vec<string> = ["one"];
+    println(numbers.describe());
+    println(words.describe());
+    let number: i64 = content_of(numbers);
+    let word: string = content_of(words);
+    println(number);
+    println(word);
+    println(Wrapped<i64> { value: 42 }.describe());
+    println(Wrapped<string> { value: "hello" }.describe());
+    println(true);
+    println(to_string(false));
+    println(f"flag: {true}");
+}

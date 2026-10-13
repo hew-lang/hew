@@ -303,7 +303,6 @@ impl Checker {
                     if let Some(trait_id) = self.insert_trait_def(&declaration, info) {
                         self.register_trait_supers(trait_id, td);
                     }
-                    self.local_trait_defs.insert(td.name.to_string());
                     // Harvest `#[lang_item("…")]` attributes into the
                     // lang-item registry so downstream passes (HIR f-string
                     // lowering) can discover the trait/method names by role

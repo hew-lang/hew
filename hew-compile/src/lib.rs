@@ -331,7 +331,7 @@ fn resolve_candidate(documents: &SourceSet, candidate: &Path) -> Option<PathBuf>
     if !documents.filesystem {
         return documents
             .contains(candidate)
-            .then(|| candidate.to_path_buf());
+            .then(|| compile_time::normalize(candidate));
     }
     match candidate.canonicalize() {
         Ok(canonical) => Some(canonical),
@@ -1639,9 +1639,8 @@ fn resolve_imports_internal(
         module_search_paths: options.module_search_paths.as_deref(),
         documents: &options.documents,
     };
-    let input_canonical = input_path
-        .canonicalize()
-        .unwrap_or_else(|_| input_path.to_path_buf());
+    let input_canonical = resolve_candidate(&options.documents, input_path)
+        .unwrap_or_else(|| input_path.to_path_buf());
     let undeclared = undeclared_imports(&input_canonical, &program.items, &import_ctx)?;
     if !undeclared.is_empty() {
         return Err(FrontendFailure::new(
@@ -2629,7 +2628,7 @@ fn build_module_graph_with_diagnostics(
     use hew_parser::module::{Module, ModuleGraph};
 
     let input_canonical =
-        std::fs::canonicalize(source_file).unwrap_or_else(|_| source_file.to_path_buf());
+        resolve_candidate(ctx.documents, source_file).unwrap_or_else(|| source_file.to_path_buf());
     let source_dir = input_canonical.parent().unwrap_or(Path::new("."));
 
     ctx.in_progress_imports.insert(input_canonical.clone());

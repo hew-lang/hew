@@ -1084,6 +1084,10 @@ impl Checker {
         }
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "Resolve the effect fixed point and report its source obligations in one pass"
+    )]
     pub(super) fn finish_suspension_effects(&mut self) -> SuspensionEffects {
         let graph = std::mem::take(&mut self.effect_graph);
         let mut bodies = graph.bodies.clone();
@@ -1158,8 +1162,8 @@ impl Checker {
             {
                 continue;
             }
-            if !bodies.get(&obligation.body).copied().unwrap_or(true)
-                && !self.body_cleanup_suspends(
+            let suspends = bodies.get(&obligation.body).copied().unwrap_or(true)
+                || self.body_cleanup_suspends(
                     &obligation.body,
                     &graph,
                     &HashMap::new(),
@@ -1167,15 +1171,15 @@ impl Checker {
                     true,
                     &mut HashSet::new(),
                 )
-                && !(obligation.once
+                || (obligation.once
                     && self.once_cleanup_suspends(
                         &obligation.body,
                         &graph,
                         &HashMap::new(),
                         &bodies,
                         true,
-                    ))
-            {
+                    ));
+            if !suspends {
                 continue;
             }
             let subject = match &obligation.body {

@@ -216,6 +216,10 @@ impl Checker {
         })
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "Keep the structural cleanup walk and its ownership filters together"
+    )]
     fn cleanup_value_suspends(
         &self,
         value: &CleanupValue,

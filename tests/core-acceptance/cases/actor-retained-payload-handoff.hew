@@ -1,0 +1,67 @@
+import std.bench;
+
+actor PayloadSink {
+    var payload: bytes = bytes.new();
+    var label: string = "";
+    var received: i64 = 0;
+
+    receive fn store(next: bytes, text: string) {
+        payload = next;
+        label = text;
+        received = received + 1;
+    }
+    receive fn snapshot() -> bytes {
+        payload
+    }
+    receive fn text() -> string {
+        label
+    }
+    receive fn count() -> i64 {
+        received
+    }
+}
+
+fn submit_handoff(sink: PayloadSink) {
+    let inbox = mailbox(sink, on_full: .Reject);
+    let body = "payload-transfer".to_bytes();
+    let text = "shared".to_upper();
+    inbox.store(body, text).expect("handoff admitted");
+}
+
+#[bench]
+fn retained_actor_handoff(b: bench.Bencher) {
+    let sink = spawn PayloadSink;
+    b.iter(|| submit_handoff(sink));
+    assert(sink.count().expect("completed handoffs") > 0);
+    stop(sink);
+    stopped(sink);
+}
+
+fn main() {
+    let sink = spawn PayloadSink;
+    let inbox = mailbox(sink, on_full: .Reject);
+    var caller = "abcd".to_bytes();
+    let preserved = caller;
+    let text = "before".to_upper();
+    inbox.store(caller, text).expect("snapshot admitted");
+    caller.set(0, 88);
+    assert(caller[0] == 88);
+    assert(preserved[0] == 97);
+    assert(text == "BEFORE");
+    let stored = sink.snapshot().expect("stored snapshot");
+    assert(stored == preserved);
+    var edited = stored;
+    edited.set(1, 89);
+    assert(edited[1] == 89);
+    assert(stored[1] == 98);
+    assert(sink.snapshot().expect("unchanged actor snapshot")[1] == 98);
+    for _ in 0..32 {
+        submit_handoff(sink);
+    }
+    assert(sink.count().expect("completed handoffs") == 33);
+    assert(sink.snapshot().expect("final payload") == "payload-transfer".to_bytes());
+    assert(sink.text().expect("final label") == "SHARED");
+    stop(sink);
+    stopped(sink);
+    println("retained actor payload handoff");
+}

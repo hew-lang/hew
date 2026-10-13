@@ -1,0 +1,11 @@
+[[case]]
+id = "actor-retained-payload-handoff"
+intent = "Last-use string and byte payloads transfer into actor mailboxes while live caller aliases and returned actor snapshots remain independent across mutation."
+source = "cases/actor-retained-payload-handoff.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+env = { HEW_ACTOR_LEAK_CHECK = "1" }
+
+[case.expected]
+stdout = "retained actor payload handoff\n"
+exit = 0

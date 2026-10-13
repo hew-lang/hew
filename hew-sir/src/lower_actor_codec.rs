@@ -23,7 +23,10 @@ impl InstanceService<'_> {
                     .handlers
                     .iter()
                     .any(|handler| {
-                        handler.remote_member
+                        handler
+                            .remote_receivers
+                            .iter()
+                            .any(|receiver| receiver.matches(&[]))
                             && self.actor_codec_eligible(&handler.param_tys, &handler.return_ty)
                     })
                     .then(|| ResolvedTy::Named {

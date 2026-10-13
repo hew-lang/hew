@@ -74,6 +74,22 @@ impl<T: Send> ActorMsg for Tagged<T> {
     type Reply = i64;
 }
 
+actor Specialized<T> {
+    receive fn handle(value: T) -> T {
+        value
+    }
+}
+
+impl ActorMsg for Specialized<string> {
+    type Msg = string;
+    type Reply = string;
+}
+
+impl<T: Send> ActorMsg for Specialized<Vec<T>> {
+    type Msg = Vec<T>;
+    type Reply = Vec<T>;
+}
+
 fn pair() -> Pair {
     Pair { first: "first".to_upper(), second: "second".to_upper() }
 }
@@ -147,6 +163,23 @@ fn main() {
     assert(right_tagged.ask("first".to_upper(), 1000).expect("generic state reply") == 1);
     right_tagged.send("second".to_upper()).expect("generic state send");
     assert(right_tagged.ask("third".to_upper(), 1000).expect("generic state completion") == 3);
+    let specialized = spawn Specialized<string>;
+    Node.register("specialized", specialized);
+    let remote_specialized: RemotePid<Specialized<string>> = Node.lookup("specialized").expect("specialized lookup");
+    assert(remote_specialized.ask("specialized".to_upper(), 1000).expect("specialized reply") == "SPECIALIZED");
+    let nested = spawn Specialized<Vec<string>>;
+    Node.register("nested", nested);
+    let remote_nested: RemotePid<Specialized<Vec<string>>> = Node.lookup("nested").expect("nested lookup");
+    let values = remote_nested.ask(["nested".to_upper()], 1000).expect("nested reply");
+    assert(values.get(0).expect("nested value") == "NESTED");
+    let unmatched = spawn Specialized<i64>;
+    assert(unmatched.handle(42).expect("unmatched local reply") == 42);
+    stop(unmatched);
+    stopped(unmatched);
+    stop(nested);
+    stopped(nested);
+    stop(specialized);
+    stopped(specialized);
     stop(tagged);
     stopped(tagged);
     stop(echo);

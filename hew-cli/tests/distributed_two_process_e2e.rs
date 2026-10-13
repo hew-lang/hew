@@ -984,6 +984,10 @@ fn remote_ask_round_trip_returns_exact_values() {
         stdout.contains("PASS remote_ask generic-point=3,4"),
         "{stdout}"
     );
+    assert!(
+        stdout.contains("PASS remote_ask specialized-echo"),
+        "{stdout}"
+    );
     // Negative guard: no FAIL line may appear on a successful round-trip.
     assert!(
         !stdout.contains("FAIL "),

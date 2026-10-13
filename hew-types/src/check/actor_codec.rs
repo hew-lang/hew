@@ -9,34 +9,65 @@ use crate::{ResolvedTy, Ty};
 const ACTOR_MSG: &str = "std.builtins.ActorMsg";
 
 impl Checker {
-    /// Select the receive member named by the declaration's `ActorMsg` impl.
-    /// Wire eligibility is checked with the concrete actor instance.
+    /// Select each receive member through its checked `ActorMsg` impl receiver.
+    /// Concrete instances reuse ordinary impl matching and wire admission.
     pub(super) fn select_actor_codecs(&mut self) {
+        let Some(trait_id) = self.assoc_carrier_trait(ACTOR_MSG) else {
+            return;
+        };
         let mut protocols = std::mem::take(&mut self.actor_protocol_descriptors);
         for (actor, protocol) in &mut protocols {
             let Some(nominal) = self.nominal_head_for_key(actor) else {
                 continue;
             };
-            let head = crate::TypeHead::Actor(nominal);
-            let Some(definition) = self.head_type_def(head) else {
+            let Some(definition) = self.head_type_def(crate::TypeHead::Actor(nominal)) else {
                 continue;
             };
-            let base = Ty::actor_handle(
-                nominal,
-                definition
+            let Some(key) = Self::impl_self_key(&Ty::actor_handle(nominal, Vec::new())) else {
+                continue;
+            };
+            let Some(bindings) = self.impl_assoc_type_bindings.get(&(
+                key,
+                trait_id,
+                hew_parser::ast::Symbol::intern("Msg"),
+            )) else {
+                continue;
+            };
+            for binding in bindings {
+                let receiver = self.normalize_for_use(&binding.receiver);
+                let Ty::Named { args, .. } = &receiver else {
+                    continue;
+                };
+                let Some((msg, reply)) = self.actor_msg_types(&receiver) else {
+                    continue;
+                };
+                let substitutions = definition
                     .type_params
                     .iter()
                     .copied()
-                    .map(Ty::param)
-                    .collect(),
-            );
-            let Some((msg, reply)) = self.actor_msg_types(&base) else {
-                continue;
-            };
-            let Some(index) = remote_member(protocol, &msg, &reply, ResolvedTy::to_ty) else {
-                continue;
-            };
-            protocol.handlers[index].remote_member = true;
+                    .zip(args.iter().cloned())
+                    .collect();
+                let Some(index) = remote_member(protocol, &msg, &reply, |ty| {
+                    self.normalize_for_use(
+                        &ty.to_ty().substitute_type_params_parallel(&substitutions),
+                    )
+                }) else {
+                    continue;
+                };
+                let Ok(args) = args
+                    .iter()
+                    .map(ResolvedTy::from_ty)
+                    .collect::<Result<Vec<_>, _>>()
+                else {
+                    continue;
+                };
+                protocol.handlers[index].remote_receivers.push(
+                    crate::actor_protocol::ActorRemoteReceiver {
+                        parameters: binding.parameters.clone(),
+                        args,
+                    },
+                );
+            }
         }
         self.actor_protocol_descriptors = protocols;
     }

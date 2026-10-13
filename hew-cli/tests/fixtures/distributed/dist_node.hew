@@ -108,6 +108,17 @@ impl<T: Send> ActorMsg for GenericEcho<T> {
     type Reply = T;
 }
 
+actor SpecializedEcho<T> {
+    receive fn handle(value: T) -> T {
+        value
+    }
+}
+
+impl ActorMsg for SpecializedEcho<string> {
+    type Msg = string;
+    type Reply = string;
+}
+
 actor KeyValue {
     var store: HashMap<string, string>;
     receive fn handle(req: KvReq) -> KvResp {
@@ -1031,6 +1042,7 @@ fn run_server(scenario: string) {
     if scenario == "remote_ask" {
         Node.register("generic-number", spawn GenericEcho<u64>);
         Node.register("generic-point", spawn GenericEcho<WirePoint>);
+        Node.register("specialized", spawn SpecializedEcho<string>);
     }
     let port = signal_server_listening(kx);
     if (os.env("HEW_DIST_RESTARTED") ?? "") == "1" {
@@ -1065,10 +1077,10 @@ fn run_server(scenario: string) {
     Node.shutdown();
 }
 
-fn lookup_generic_with_retry<T: Send>(name: string) -> Result<RemotePid<GenericEcho<T>>, LookupError> {
+fn lookup_generic_with_retry<T>(name: string) -> Result<RemotePid<T>, LookupError> {
     var attempts: i64 = 0;
     loop {
-        let found: Result<RemotePid<GenericEcho<T>>, LookupError> = Node.lookup(name);
+        let found: Result<RemotePid<T>, LookupError> = Node.lookup(name);
         match found {
             .Ok(pid) => return .Ok(pid),
             .Err(error) => {
@@ -1161,6 +1173,9 @@ fn scenario_remote_ask(kv: RemotePid<KeyValue>) -> i64 {
     let point = points.ask(WirePoint { x: 3, y: 4 }, 5000).expect("generic point reply");
     assert(point.x == 3 && point.y == 4);
     println("PASS remote_ask generic-point=3,4");
+    let specialized: RemotePid<SpecializedEcho<string>> = lookup_generic_with_retry("specialized").expect("specialized lookup");
+    assert(specialized.ask("specialized".to_upper(), 5000).expect("specialized reply") == "SPECIALIZED");
+    println("PASS remote_ask specialized-echo");
     0
 }
 

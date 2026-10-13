@@ -98,10 +98,28 @@ pub struct ActorHandlerDescriptor {
     /// `fails` clause, and for an error type whose rendering the checker
     /// cannot name — those handlers stay refused through a view.
     pub failure_display: Option<ReceiveFailureDisplay>,
-    /// This is the member a `RemotePid` addresses through the actor's
-    /// `ActorMsg` impl. Concrete instances admit the payloads through the
-    /// shared wire-data check before registering request and reply codecs.
-    pub remote_member: bool,
+    /// Checked `ActorMsg` impl receivers that select this member. Concrete
+    /// instances match these patterns before admitting their wire payloads.
+    pub remote_receivers: Vec<ActorRemoteReceiver>,
+}
+
+/// The receiver arguments of a checked `ActorMsg` implementation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActorRemoteReceiver {
+    pub parameters: Vec<crate::ParamHead>,
+    pub args: Vec<ResolvedTy>,
+}
+
+impl ActorRemoteReceiver {
+    #[must_use]
+    pub fn matches(&self, arguments: &[ResolvedTy]) -> bool {
+        crate::method_resolution::impl_receiver_substitution(
+            &self.parameters,
+            &self.args.iter().map(ResolvedTy::to_ty).collect::<Vec<_>>(),
+            &arguments.iter().map(ResolvedTy::to_ty).collect::<Vec<_>>(),
+        )
+        .is_some()
+    }
 }
 
 /// How one `fails` handler's declared error becomes fault text.
@@ -153,7 +171,7 @@ impl ActorProtocolDescriptor {
                     declared_failure: false,
                     symbol: spec.symbol.clone(),
                     failure_display: None,
-                    remote_member: false,
+                    remote_receivers: Vec::new(),
                 })
                 .collect(),
         }

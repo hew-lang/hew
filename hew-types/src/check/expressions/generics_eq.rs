@@ -394,8 +394,12 @@ impl Checker {
                 .fn_sig(&callee_key)
                 .and_then(|sig| sig.impl_method.as_ref())
             {
-                crate::method_resolution::impl_receiver_substitution(method, owner_args)
-                    .unwrap_or_default()
+                crate::method_resolution::impl_receiver_substitution(
+                    &method.receiver_parameters,
+                    &method.receiver_args,
+                    owner_args,
+                )
+                .unwrap_or_default()
             } else {
                 self.type_def_at(owner_name)
                     .into_iter()

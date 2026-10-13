@@ -453,7 +453,12 @@ impl InstanceService<'_> {
                     ))
                 }
             };
-            let codec = if row.remote_member && self.actor_codec_eligible(&params, &return_ty) {
+            let codec = if row
+                .remote_receivers
+                .iter()
+                .any(|receiver| receiver.matches(&substitution.args))
+                && self.actor_codec_eligible(&params, &return_ty)
+            {
                 Some(self.resolve_actor_codec(&params, &return_ty)?)
             } else {
                 None

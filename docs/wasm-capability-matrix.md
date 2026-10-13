@@ -223,10 +223,10 @@ dedicated checker warning/error for them.
 
 ## Generators on WASM — note
 
-`gen fn` uses explicit continuation frames emitted by
-`hew-codegen-rs/src/physical_coro.rs` and `physical_frames.rs`, with checked
-polling and cleanup through `hew-runtime/src/generator_checked.rs` and
-`cont.rs`. The emitter uses the target data layout, and these runtime modules
+`gen fn` uses LLVM's switched-resume coroutine lowering, emitted by
+`hew-codegen-rs/src/physical_coro.rs`, with checked polling and cleanup through
+`hew-runtime/src/generator_checked.rs` and `cont.rs`. LLVM constructs and
+optimizes frames using the target data layout, and these runtime modules
 are compiled for wasm32. WASI execution at O0 and O2 verifies scalar parameters
 and a named function supplied to a `fn[clone]` parameter through full consumption
 and early break, including producer defer cleanup.

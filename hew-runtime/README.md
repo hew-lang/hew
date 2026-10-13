@@ -27,6 +27,12 @@ make wasm-runtime-debug
 
 All public functions use `#[no_mangle] pub extern "C"` calling convention so they can be called from LLVM-generated code. The runtime's C interface is the contract between the Rust code generator and the Rust runtime.
 
+Coroutine frames use LLVM's switched-resume ABI. Two private helpers in
+`src/coro_llvm.cpp` use Clang coroutine builtins to call the generated resume and
+destroy entries with LLVM's calling convention. The supported LLVM toolchain
+supplies Clang; these helpers do not link a C++ runtime. Hew retains ownership,
+cleanup and scheduling semantics while LLVM constructs and optimizes frames.
+
 ## Distributed tracing
 
 The runtime contains trace-context storage, actor-dispatch hooks and a bounded

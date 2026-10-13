@@ -96,7 +96,7 @@ v0.8 with the rest of the supervision ergonomics work.
 
 `gen fn` functions compile and run, including parameterized forms with scalar
 parameters (e.g. `n: i64`) and cloneable function parameters (`fn[clone]`). The
-native compiler emits explicit continuation frames with checked polling and
+native compiler uses LLVM coroutine frame construction with checked polling and
 cleanup; `yield`, `.next()`, and `for x in generator()` are all live. A
 `gen fn` body may suspend; there is no `async gen fn` form, because the word
 marked nothing (HEW-SPEC-2026 §4.12). `receive gen fn` on actors returning

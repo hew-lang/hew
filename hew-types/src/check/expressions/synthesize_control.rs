@@ -616,7 +616,9 @@ impl Checker {
                 } else {
                     Expr::Ident(Ident::new(&qualified_name))
                 };
-                self.check_against(&compatibility_expr, span, expected)
+                let actual = self.check_against(&compatibility_expr, span, expected);
+                self.record_context_variant_resolution(expected, context.name.name, span);
+                actual
             }
             // Lambda with expected function type — propagate param types!
             (
@@ -1583,6 +1585,7 @@ impl Checker {
                         span,
                     )
                     .unwrap_or_else(|| self.synthesize(expr, span));
+                self.record_value_path_resolution(expr, span);
                 self.finish_named_arguments(
                     args,
                     || format!("method `{}`", method.0),

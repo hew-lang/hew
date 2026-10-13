@@ -1187,6 +1187,15 @@ name binds by name only inside braces.
 - Mutable bindings: `var`.
 - Type fields have no mutability qualifier. Field mutation is governed by the binding: a `var`-bound value allows `p.x = …`; a `let`-bound value rejects it. The same wall covers every place rooted at the binding — `p.x = …`, `v[0] = …`, `m["k"] = …`, and `t.0 = …` — and calling a method declared `var self` (§3.7.1), which is how a value-category type is mutated.
 
+**Constants.** A module-level `const NAME: T = value;` declares a compile-time
+value. Its initializer may contain scalar, record, enum, tuple, fixed array,
+vector and map literals with constant leaves, including constant references,
+record updates, vector spreads, fixed array repeats and compile-time inputs
+(§12.8). Integer arithmetic follows the declared integer type's range and
+overflow rules. Ordinary function calls are not evaluated at compile time.
+Each use materializes an independent value; consuming or mutating one use
+does not change the declaration or another use.
+
 **The binding wall (normative).** A `let` binding cannot be reassigned, and no
 place rooted at it can be assigned. `p.x = …`, `v[0] = …`, `m["k"] = …`, and
 `t.0 = …` on a `let` binding are all `MutabilityError` (User channel) carrying

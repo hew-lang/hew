@@ -359,6 +359,15 @@ impl Checker {
                     out.push(field.clone());
                     true
                 }
+                hew_parser::ast::Expr::MethodCall {
+                    receiver, method, ..
+                } => {
+                    if !segments(&receiver.0, &receiver.1, out) {
+                        return false;
+                    }
+                    out.push(method.clone());
+                    true
+                }
                 _ => false,
             }
         }

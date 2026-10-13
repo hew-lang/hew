@@ -18,7 +18,7 @@ use super::types::SpanKey;
 use crate::builtin_type::BuiltinType;
 use crate::def_table::{DeclarationKind, Predicate, TypeParamId};
 use crate::env::{TypeBindingId, TypeEnv};
-use crate::{DefId, DefTable, ModuleId, NominalId};
+use crate::{DefId, DefTable, ModuleId, NominalId, TypeHead};
 
 /// What a name is bound to in a module or the prelude.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -82,12 +82,28 @@ pub enum Resolution {
     Module(ModuleId),
     Builtin(BuiltinType),
     /// A variant of an enum, by declaration index.
-    Variant(NominalId, u32),
+    Variant(TypeHead, u32),
     /// A declared record field, by its nominal owner and declaration index.
     Field(NominalId, u32),
-    /// A member row under a nominal, trait or actor: a method, handler,
-    /// machine state or companion.
+    /// A member row under a nominal, trait or actor: a method, handler or companion.
     Member(DefId),
+}
+
+impl Resolution {
+    pub(super) fn of_member(defs: &DefTable, id: DefId) -> Self {
+        if matches!(
+            defs.kind(id),
+            DeclarationKind::Variant | DeclarationKind::MachineState
+        ) {
+            if let (Some(owner), Some(site)) = (defs.owner(id), defs.site(id)) {
+                return Self::Variant(
+                    TypeHead::of_declaration(defs, NominalId::of_declaration(owner)),
+                    site.ordinal(),
+                );
+            }
+        }
+        Binding::of_item(defs, id).map_or(Self::Member(id), Binding::resolution)
+    }
 }
 
 /// Which namespace a head identifier is looked up in. A type position never
@@ -238,7 +254,6 @@ pub struct Scopes {
     files: HashMap<ModuleId, FileScope>,
     prelude: HashMap<Symbol, Binding>,
     members: HashMap<(DefId, Symbol), Resolution>,
-    variants: HashMap<(NominalId, Symbol), u32>,
     source_type_params: Vec<GenericScope>,
     contexts: SyntaxContexts,
     resolutions: HashMap<SpanKey, Resolution>,
@@ -346,20 +361,6 @@ impl Scopes {
     /// Bind a member row under its owner.
     pub fn declare_member(&mut self, owner: DefId, name: Symbol, member: Resolution) {
         self.members.entry((owner, name)).or_insert(member);
-    }
-
-    /// Bind an enum's variants in declaration order.
-    ///
-    /// # Panics
-    ///
-    /// Panics when an enum declares more than `u32::MAX` variants.
-    pub fn declare_variants(&mut self, nominal: NominalId, variants: &[Symbol]) {
-        for (index, name) in variants.iter().enumerate() {
-            self.variants.insert(
-                (nominal, *name),
-                u32::try_from(index).expect("more than u32::MAX variants"),
-            );
-        }
     }
 
     /// Bind an import in one file's scope.
@@ -784,11 +785,7 @@ impl Scopes {
                 .get(&self.namespace_of(module))
                 .and_then(|items| items.get(&name))
                 .map(|binding| binding.resolution()),
-            Resolution::Nominal(nominal) => self
-                .variants
-                .get(&(nominal, name))
-                .map(|index| Resolution::Variant(nominal, *index))
-                .or_else(|| self.member(nominal.declaration(), name)),
+            Resolution::Nominal(nominal) => self.member(nominal.declaration(), name),
             Resolution::Def(owner) | Resolution::Member(owner) => self.member(owner, name),
             Resolution::Param(_)
             | Resolution::Local(_)
@@ -1043,7 +1040,12 @@ mod tests {
             "mb.X",
         );
         let shape_nominal = NominalId::from_minted_declaration(shape);
-        scopes.declare_variants(shape_nominal, &[Symbol::intern("Circle")]);
+        let shape_head = TypeHead::of_declaration(&defs, shape_nominal);
+        scopes.declare_member(
+            shape,
+            Symbol::intern("Circle"),
+            Resolution::Variant(shape_head, 0),
+        );
         scopes.bind_import(
             root,
             Symbol::intern("ma"),
@@ -1075,7 +1077,7 @@ mod tests {
         let variant = [at("ma", 20), at("Shape", 23), at("Circle", 29)];
         assert_eq!(
             scopes.resolve(&env, site, Namespace::Value, &variant),
-            Ok(Resolution::Variant(shape_nominal, 0))
+            Ok(Resolution::Variant(shape_head, 0))
         );
         let transitive = [at("mb", 40), at("X", 43)];
         assert_eq!(

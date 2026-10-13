@@ -97,7 +97,7 @@ impl LowerCtx {
     /// First-pass registration of a module-level `const`. Allocates a stable
     /// `ItemId` and records the declared (checker-resolved) type so const
     /// references resolve regardless of source order. The folded value is
-    /// produced later, canonically, in [`Self::lower_const`].
+    /// produced on demand by declaration identity.
     pub(super) fn register_const_entry(&mut self, decl: &ConstDecl, span: &Span, bare: bool) {
         let Some(declaration) = self.source_declaration(span, hew_types::DeclarationKind::Const, 0)
         else {
@@ -110,6 +110,8 @@ impl LowerCtx {
             ConstEntry {
                 id: self.ids.item(),
                 ty: self.lower_type(&decl.ty),
+                initializer: decl.value.clone(),
+                module_idx: self.current_module_idx,
             }
         };
         self.source_const_entries.insert(declaration, entry.clone());
@@ -139,14 +141,7 @@ impl LowerCtx {
         };
         let (id, ty) = (entry.id, entry.ty.clone());
 
-        let value = match self.compile_time_values.get(&self.mk_key(&decl.value.1)) {
-            Some(value) => value.clone(),
-            None => self.fold_const_expr(&decl.value.0, &ty, span.clone()),
-        };
-        if let HirConstValue::Integer(value) = &value {
-            self.folded_integer_consts
-                .insert(decl.name.to_string(), *value);
-        }
+        let value = self.fold_const_declaration(declaration)?.value;
 
         let value = self.lower_constant_value(&value, &ty, &decl.value.1, IntentKind::Consume);
         Some(crate::node::HirConst {
@@ -160,18 +155,45 @@ impl LowerCtx {
         })
     }
 
-    /// Fail-closed constant-fold for module-level `const` initializers.
-    ///
-    /// WHY this shape: integer const-evaluation is delegated wholesale to
-    /// [`hew_types::check::const_eval::eval_integer_const_expr`], the single sanctioned
-    /// constexpr authority (A620 / Q329 — const-eval must reuse `const_eval.rs`,
-    /// not fork a parallel evaluator). Only two things live here: the
-    /// string-literal short-circuit (strings are non-arithmetic and `const_eval`
-    /// is integer-only, so they legitimately stay HIR-local) and the
-    /// target-typed result → [`HirConstValue`] mapping with its
-    /// fail-closed diagnostics. Const *references* in initializers resolve via
-    /// the `ConstEnv`, populated only with same-module integer consts already
-    /// folded earlier in source order.
+    fn fold_const_declaration(&mut self, declaration: hew_types::DefId) -> Option<TypedConstant> {
+        if let Some(value) = self.folded_constants.get(&declaration) {
+            return Some(value.clone());
+        }
+        let entry = self.source_const_entries.get(&declaration)?.clone();
+        if !self.folding_constants.insert(declaration) {
+            self.unsupported(
+                entry.initializer.1,
+                "cyclic constant initializer",
+                "const-fold",
+            );
+            return None;
+        }
+        let previous_module = self.current_module_idx;
+        self.current_module_idx = entry.module_idx;
+        let value = self.fold_const_expr(&entry.initializer.0, &entry.ty, entry.initializer.1);
+        self.current_module_idx = previous_module;
+        self.folding_constants.remove(&declaration);
+        let constant = TypedConstant {
+            ty: entry.ty,
+            value,
+        };
+        self.folded_constants.insert(declaration, constant.clone());
+        Some(constant)
+    }
+
+    fn constant_at(&mut self, span: &Span) -> Option<HirConstValue> {
+        let key = self.mk_key(span);
+        if let Some(value) = self.compile_time_values.get(&key) {
+            return Some(value.clone());
+        }
+        let Resolution::Def(declaration) = *self.resolutions.get(&key)? else {
+            return None;
+        };
+        self.fold_const_declaration(declaration)
+            .map(|constant| constant.value)
+    }
+
+    /// Fold checked literal structure; integer arithmetic uses the shared evaluator.
     #[allow(
         clippy::too_many_lines,
         reason = "the explicit literal and shared-evaluator error mapping keeps every const failure class fail-closed"
@@ -182,6 +204,12 @@ impl LowerCtx {
         declared_ty: &ResolvedTy,
         span: std::ops::Range<usize>,
     ) -> HirConstValue {
+        if let Some(value) = self.constant_at(&span) {
+            return value;
+        }
+        if let Some(value) = self.fold_aggregate_const_expr(expr, declared_ty, &span) {
+            return value;
+        }
         if let Expr::ByteStringLiteral(bytes) | Expr::ByteArrayLiteral(bytes) = expr {
             return HirConstValue::Bytes(bytes.clone());
         }
@@ -192,6 +220,9 @@ impl LowerCtx {
         if let Expr::Literal(lit) = expr {
             match lit {
                 Literal::String(s) => return HirConstValue::String(s.clone()),
+                Literal::Bool(value) => return HirConstValue::Bool(*value),
+                Literal::Char(value) => return HirConstValue::Char(*value),
+                Literal::Duration(value) => return HirConstValue::Duration(*value),
                 Literal::Float(value) if Self::is_float_ty(declared_ty) => {
                     if Self::float_literal_fits_declared_ty(*value, declared_ty) {
                         return HirConstValue::Float(*value);
@@ -231,10 +262,8 @@ impl LowerCtx {
         // Delegate integer/arithmetic evaluation to the sanctioned engine.
         // `decl.value` is a `Spanned<Expr>`, but `fold_const_expr` is handed the
         // bare `Expr`; reconstruct the `Spanned` shape the engine expects. The
-        // `UnknownConst` is mapped to a fail-closed diagnostic below for
-        // forward references and unsupported const value shapes.
+        // `UnknownConst` is mapped to a fail-closed diagnostic below.
         let spanned: hew_parser::ast::Spanned<Expr> = (expr.clone(), span.clone());
-        let env = self.const_eval_env_from_folded_integer_consts();
         let target_width = if self.target_arch == TargetArch::Wasm32 {
             32
         } else {
@@ -245,7 +274,17 @@ impl LowerCtx {
             target_width,
         );
         match target.map(|target| {
-            hew_types::check::const_eval::eval_integer_const_expr(&spanned, &env, target)
+            hew_types::check::const_eval::eval_integer_const_expr_with_values(
+                &spanned,
+                target,
+                |expr| {
+                    if let HirConstValue::Integer(value) = self.constant_at(&expr.1)? {
+                        Some(value)
+                    } else {
+                        None
+                    }
+                },
+            )
         }) {
             // The const evaluator and the HIR carrier are both `i128`, and the
             // evaluator has already range-checked the value against the
@@ -317,16 +356,6 @@ impl LowerCtx {
             span,
             note,
         ));
-    }
-
-    pub(super) fn const_eval_env_from_folded_integer_consts(
-        &self,
-    ) -> hew_types::check::const_eval::ConstEnv {
-        let mut env = hew_types::check::const_eval::ConstEnv::new();
-        for (name, value) in &self.folded_integer_consts {
-            env.insert(name.clone(), *value);
-        }
-        env
     }
 
     /// True for the string primitive in either of its resolved spellings:

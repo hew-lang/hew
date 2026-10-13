@@ -845,6 +845,22 @@ fn typed_embedding_native_and_vm() {
 }
 
 #[cfg(unix)]
+#[test]
+fn aggregate_constants_native_and_vm() {
+    set_test_hewpath();
+    ensure_native_toolchain();
+    ensure_parity_runner_built();
+    assert_case_with_inputs(
+        &ParityCase {
+            test_name: "aggregate_constants",
+            source_rel: "tests/core-acceptance/cases/aggregate-constants.hew",
+        },
+        "",
+        hew_compile::SourceSet::in_memory(),
+    );
+}
+
+#[cfg(unix)]
 fn assert_case_with_inputs(case: &ParityCase, stdin: &str, inputs: hew_compile::SourceSet) {
     let repo_root = repo_root();
     let source_path = repo_root.join(case.source_rel);

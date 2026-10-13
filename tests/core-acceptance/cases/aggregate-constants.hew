@@ -1,0 +1,90 @@
+enum Mode {
+    Local;
+    Tcp(string, u16);
+    Limited { attempts: u8; }
+}
+
+type Config {
+    name: string;
+    ports: Vec<u16>;
+    mode: Mode;
+    labels: HashMap<string, string>;
+    enabled: bool;
+}
+
+const PORT: u16 = 8000;
+
+const COUNT: i64 = 3;
+
+const BASE: Config = Config { name: "primary", ports: [PORT + 80, 9000], mode: .Tcp("localhost", PORT + 80), labels: {"colour": "blue"}, enabled: true };
+
+const MIRROR: Config = Config { ..BASE, name: "mirror" };
+
+const ALL: (Vec<Config>, [u16; 3], Mode, string) = ([BASE, MIRROR], [PORT; COUNT], .Limited { attempts: 2 }, stringify!(source + data));
+
+const LOCAL: Mode = .Local;
+
+const DIRECT: Mode = Mode.Tcp("direct", 81);
+
+const HEAD: Vec<string> = ["a"];
+
+const LIST: Vec<string> = [..HEAD, "b"];
+
+const MARK: char = 'é';
+
+const DELAY: duration = 5ms;
+
+const EMPTY: () = ();
+
+const MAYBE: Option<u8> = .Some(7);
+
+const ABSENT: Option<u8> = .None;
+
+const RESULT: Result<i64, string> = .Ok(9);
+
+const MAYBE_DIRECT: Option<u8> = Option.Some(8);
+
+const RECORD_DIRECT: Mode = Mode.Limited { attempts: 4 };
+
+fn main() {
+    println(ALL.0[0].name);
+    println(ALL.0[1].name);
+    println(ALL.0[0].ports[0]);
+    println(ALL.0[0].labels["colour"]);
+    println(ALL.0[0].enabled);
+    println(ALL.1[2]);
+    match ALL.2 {
+        .Limited { attempts } => println(attempts),
+        _ => println(0),
+    }
+    println(ALL.3);
+    match BASE.mode {
+        .Tcp(host, port) => println(f"{host}:{port}"),
+        _ => println("local"),
+    }
+    match LOCAL {
+        .Local => println("local"),
+        _ => println("remote"),
+    }
+    match DIRECT {
+        .Tcp(host, port) => println(f"{host}:{port}"),
+        _ => println("local"),
+    }
+    println(LIST.len());
+    println(HEAD.len());
+    var ports = BASE.ports;
+    ports.push(9090);
+    println(BASE.ports.len());
+    println(ports.len());
+    println(MARK);
+    println(DELAY == 5ms);
+    println(EMPTY == ());
+    println(MAYBE.expect("present"));
+    println(ABSENT.is_none());
+    println(RESULT.expect("success"));
+    println(MAYBE_DIRECT.expect("present"));
+    match RECORD_DIRECT {
+        .Limited { attempts } => println(attempts),
+        _ => println(0),
+    }
+}

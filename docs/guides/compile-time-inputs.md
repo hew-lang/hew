@@ -92,6 +92,33 @@ The result contains ordinary Hew values and needs no decoder at runtime.
 Embedded files follow the same path, tracking and publication rules as
 included files.
 
+Ordinary constants also accept record, enum, tuple, fixed array, vector and
+map literals with constant leaves. Constant references, record updates, vector
+spreads, fixed array repeats and nested compile-time builtins compose with
+these literals:
+
+```hew
+type Config {
+    host: string;
+    port: u16;
+    labels: Vec<string>;
+}
+
+const DEFAULTS: Config = Config {
+    host: "localhost", port: 8080, labels: ["blue"],
+};
+const MIRROR: Config = Config { ..DEFAULTS, host: "mirror" };
+const PORTS: [u16; 3] = [8080; 3];
+
+fn main() {
+    println(MIRROR.host);
+    println(PORTS[0]);
+}
+```
+
+Integer arithmetic uses the declared integer type, including its overflow
+rules. Constant initializers do not execute ordinary function calls.
+
 An aggregate constant produces an independent value at each use. Passing
 `DEFAULTS` to a consuming parameter or changing a local collection taken
 from it leaves subsequent uses of `DEFAULTS` intact. A closure can refer to

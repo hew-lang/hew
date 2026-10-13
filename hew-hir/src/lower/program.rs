@@ -1978,17 +1978,12 @@ pub fn lower_program_with_mono_cap(
         }
     }
     let mut items: Vec<HirItem> = Vec::new();
-    let mut const_fold_module_idx = 0;
     for (item_idx, (item, span)) in program.items.iter().enumerate() {
         ctx.current_item_ordinal = item_idx;
         ctx.current_module_idx = file_import_module_idx.get(&item_idx).copied().unwrap_or(0);
         ctx.current_module_name = span_indices
             .module_name(ctx.current_module_idx)
             .map(str::to_string);
-        if ctx.current_module_idx != const_fold_module_idx {
-            ctx.folded_integer_consts.clear();
-            const_fold_module_idx = ctx.current_module_idx;
-        }
         let diag_start = ctx.diagnostics.len();
         match item {
             Item::TypeDecl(decl) => {
@@ -2336,7 +2331,6 @@ pub fn lower_program_with_mono_cap(
                     .collect();
                 let prev_module_consts = ctx.imported_module_consts.replace(module_consts_scope);
 
-                let previous_folded_integer_consts = std::mem::take(&mut ctx.folded_integer_consts);
                 for (item_idx, (item, span)) in module.items.iter().enumerate() {
                     ctx.current_item_ordinal = item_idx;
                     // Re-key per item: a directory module's peer files share
@@ -2660,7 +2654,6 @@ pub fn lower_program_with_mono_cap(
                 // Restore the const scope after lowering this module's bodies.
                 ctx.imported_module_consts = prev_module_consts;
                 ctx.imported_actor_rewrites = prev_actor_rewrites;
-                ctx.folded_integer_consts = previous_folded_integer_consts;
                 ctx.tag_diagnostics_since(diag_start, &source_module);
                 record_source_modules_for_items(
                     &items[item_start..],

@@ -258,11 +258,26 @@ pub fn declaration_target(
         Resolution::Def(id) | Resolution::Member(id) => (id, None),
         Resolution::Nominal(id) => (id.declaration(), None),
         Resolution::Field(id, index) => (id.declaration(), Some(index)),
+        Resolution::Variant(head, index) => {
+            let owner = head.declaration(&output.defs)?.declaration();
+            let id = [
+                hew_types::DeclarationKind::Variant,
+                hew_types::DeclarationKind::MachineState,
+            ]
+            .into_iter()
+            .flat_map(|kind| output.defs.members_of_kind(owner, kind))
+            .find(|id| {
+                output
+                    .defs
+                    .site(*id)
+                    .is_some_and(|site| site.ordinal() == index)
+            })?;
+            (id, None)
+        }
         Resolution::Param(_)
         | Resolution::Local(_)
         | Resolution::Module(_)
-        | Resolution::Builtin(_)
-        | Resolution::Variant(_, _) => return None,
+        | Resolution::Builtin(_) => return None,
     };
     let occurrence = output.defs.site(id)?;
     let source = occurrence

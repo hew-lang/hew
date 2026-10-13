@@ -8752,8 +8752,12 @@ mod source_analysis_batch_tests {
                     Resolution::Field(id, index) => {
                         format!("field:{}:{index}", identity(output, id.declaration()))
                     }
-                    Resolution::Variant(id, index) => {
-                        format!("variant:{}:{index}", identity(output, id.declaration()))
+                    Resolution::Variant(head, index) => {
+                        let owner = head.declaration(&output.defs).map_or_else(
+                            || format!("builtin:{:?}", head.builtin()),
+                            |id| identity(output, id.declaration()),
+                        );
+                        format!("variant:{owner}:{index}")
                     }
                     Resolution::Local(id) => format!("local:{}", local_sites[id]),
                     Resolution::Module(id) => format!(

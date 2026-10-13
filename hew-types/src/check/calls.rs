@@ -630,6 +630,7 @@ impl Checker {
         expected: &Ty,
         span: &Span,
     ) -> Option<Ty> {
+        self.record_value_path_resolution(&func.0, &func.1);
         if let Expr::ContextVariant(context) = &func.0 {
             if let Some(result) = self.dispatch_context_builtin_variant(
                 expected,
@@ -688,7 +689,8 @@ impl Checker {
 
         let resolved_expected = self.subst.resolve(expected);
 
-        if let Some(context_name) = contextual_name.map(|ident| ident.name.as_str()) {
+        if let Some(context_ident) = contextual_name {
+            let context_name = context_ident.name.as_str();
             let owner = func_name
                 .rsplit_once("::")
                 .map_or(func_name.as_str(), |(owner, _)| owner);
@@ -724,6 +726,7 @@ impl Checker {
                     return Some(Ty::Error);
                 }
             }
+            self.record_context_variant_resolution(&resolved_expected, context_ident.name, &func.1);
         }
 
         if let Some(targs) = type_args {

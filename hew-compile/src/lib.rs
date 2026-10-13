@@ -308,13 +308,16 @@ impl SourceSet {
     }
 }
 
-/// The canonical path of a buffer. An unsaved buffer has no file to resolve,
-/// but its directory does, so a spelling through a symlinked directory still
-/// names the same buffer.
+/// Resolve the existing prefix of an input, including missing directories.
 fn buffer_identity(path: &Path) -> Option<PathBuf> {
-    path.canonicalize()
-        .ok()
-        .or_else(|| Some(path.parent()?.canonicalize().ok()?.join(path.file_name()?)))
+    for ancestor in path.ancestors() {
+        if let Ok(canonical) = ancestor.canonicalize() {
+            return Some(compile_time::normalize(
+                &canonical.join(path.strip_prefix(ancestor).ok()?),
+            ));
+        }
+    }
+    None
 }
 
 /// The overlay used when a caller supplies no [`FrontendOptions`].

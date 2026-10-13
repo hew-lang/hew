@@ -188,15 +188,24 @@ fn lsp_compile_time_input_navigation_and_watched_creation() {
     let project = TestProject::new("compile-time-inputs");
     let source = "fn main() { println(include_str!(\"assets/message.txt\")); }\n";
     let main = project.write("main.hew", source);
+    #[cfg(unix)]
+    let main = {
+        let alias = project.0.join("editor");
+        std::os::unix::fs::symlink(&project.0, &alias).expect("create editor path alias");
+        alias.join(main.file_name().unwrap())
+    };
     let mut session = RenameSession::new(Some(&project), &[]);
     let initial = session.open(&main, source, 1);
-    assert!(initial["params"]["diagnostics"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|diagnostic| diagnostic["message"]
-            .as_str()
-            .is_some_and(|message| message.contains("E_INCLUDE_NOT_FOUND"))));
+    assert!(
+        initial["params"]["diagnostics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|diagnostic| diagnostic["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("E_INCLUDE_NOT_FOUND"))),
+        "expected a missing input diagnostic, got: {initial}"
+    );
 
     let asset = project.write("assets/message.txt", "Hew café\n");
     send(
@@ -216,7 +225,10 @@ fn lsp_compile_time_input_navigation_and_watched_creation() {
     assert!(hover["result"].to_string().contains("message.txt"));
     assert!(hover["result"].to_string().contains("10 bytes"));
     let definition = session.request("textDocument/definition", position);
-    assert_eq!(definition["result"]["uri"], file_uri(&asset));
+    assert_eq!(
+        definition["result"]["uri"],
+        file_uri(&asset.canonicalize().expect("canonical asset path"))
+    );
 }
 
 impl TestProject {

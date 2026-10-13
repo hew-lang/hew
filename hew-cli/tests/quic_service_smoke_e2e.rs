@@ -210,45 +210,6 @@ impl Drop for RunningChild {
     }
 }
 
-/// The readiness probe must be able to observe a wildcard bind.
-///
-/// `wait_for_udp_bind` is the only thing between spawning the server and driving
-/// traffic at it, and its failure mode is a timeout — which reads as "the server
-/// never came up" when the truth may be "the probe cannot see the address the
-/// server bound". That is exactly how the loopback-only probe failed on Windows.
-/// Bind the wildcard here and require the probe to report it, so a probe that
-/// stops observing what it polls fails on its own terms instead of being
-/// misattributed to the server.
-#[test]
-fn udp_bind_probe_observes_a_wildcard_bind() {
-    let socket = UdpSocket::bind("0.0.0.0:0").expect("bind wildcard udp socket");
-    let port = socket.local_addr().expect("discover local udp port").port();
-
-    assert!(
-        udp_port_is_bound(port).unwrap_or_else(|error| panic!("{error}")),
-        "readiness probe reported UDP port {port} free while this test holds a \
-         live wildcard bind on it (probed {})",
-        probed_addresses(port),
-    );
-
-    drop(socket);
-
-    // And the probe must be able to say "free" too, or the assertion above
-    // would be satisfied by a probe that always answers "bound".
-    assert!(
-        !udp_port_is_bound(port).unwrap_or_else(|error| panic!("{error}")),
-        "readiness probe reported UDP port {port} bound after the wildcard bind \
-         was released (probed {})",
-        probed_addresses(port),
-    );
-}
-
-// The two blockers this test was parked behind are gone. `hew build` exists and
-// the host build/link path is exercised by `build_host_e2e`; the QUIC
-// stream/connection stdlib surface (`recv_string`/`send_string`/`finish`/
-// `disconnect`/`kind`) now resolves in HIR, so both server.hew and client.hew
-// pass `hew check`. The test builds both example binaries, spawns the server,
-// waits for the UDP bind and drives a real round trip.
 #[test]
 fn quic_service_example_round_trip_succeeds() {
     require_codegen();

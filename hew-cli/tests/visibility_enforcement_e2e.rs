@@ -195,8 +195,7 @@ fn pub_type_cross_module_accepted() {
 fn package_fn_same_package_accepted() {
     // Set up a flat two-module package: both siblings in the same directory,
     // imported by a main file in the same directory.
-    // Package boundary = parent directory of declaring module.
-    // mod_a and main are in the same directory → same package.
+    // Both modules share one loose compilation unit.
     let dir = support::tempdir();
     fs::write(
         dir.path().join("mod_a.hew"),
@@ -225,13 +224,23 @@ fn package_fn_same_package_accepted() {
 /// A `package fn` accessed from a different package must be rejected.
 ///
 /// Layout: main.hew at tmp root (package root);
-/// subpkg/helper.hew at a subdirectory (package subpkg).
+/// subpkg/helper.hew belongs to a separate manifest-defined package.
 /// Cross-package access must emit `E_VISIBILITY_PACKAGE`.
 #[test]
 fn package_fn_cross_package_rejected() {
     let dir = support::tempdir();
     let subpkg = dir.path().join("subpkg");
     fs::create_dir(&subpkg).expect("create subpkg dir");
+    fs::write(
+        dir.path().join("hew.toml"),
+        "[package]\nname = \"app\"\nversion = \"0.1.0\"\n[dependencies]\nsubpkg = { path = \"subpkg\", version = \"0.1.0\" }\n",
+    )
+    .expect("write app manifest");
+    fs::write(
+        subpkg.join("hew.toml"),
+        "[package]\nname = \"subpkg\"\nversion = \"0.1.0\"\n",
+    )
+    .expect("write dependency manifest");
     fs::write(
         subpkg.join("helper.hew"),
         "package fn secret() -> i64 { 99 }\n",
@@ -300,7 +309,7 @@ fn package_type_same_package_accepted() {
 /// A `package type` referenced from a different package must be rejected.
 ///
 /// Layout: main.hew at tmp root (package root);
-/// subpkg/shapes.hew at a subdirectory (package subpkg).
+/// subpkg/shapes.hew belongs to a separate manifest-defined package.
 /// A qualified type reference across the package boundary must emit
 /// `E_VISIBILITY_PACKAGE` — the type path's `Package` branch in resolution.rs.
 #[test]
@@ -308,6 +317,16 @@ fn package_type_cross_package_rejected() {
     let dir = support::tempdir();
     let subpkg = dir.path().join("subpkg");
     fs::create_dir(&subpkg).expect("create subpkg dir");
+    fs::write(
+        dir.path().join("hew.toml"),
+        "[package]\nname = \"app\"\nversion = \"0.1.0\"\n[dependencies]\nsubpkg = { path = \"subpkg\", version = \"0.1.0\" }\n",
+    )
+    .expect("write app manifest");
+    fs::write(
+        subpkg.join("hew.toml"),
+        "[package]\nname = \"subpkg\"\nversion = \"0.1.0\"\n",
+    )
+    .expect("write dependency manifest");
     fs::write(
         subpkg.join("shapes.hew"),
         "package type Point {\n    x: i64;\n    y: i64;\n}\n\npub fn origin() -> i64 {\n    0\n}\n",

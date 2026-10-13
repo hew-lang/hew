@@ -438,22 +438,23 @@ fn objects_rebuild_when_a_header_changes() {
     assert_eq!(stdout(&run), "102\n");
 }
 
-/// A `hew.toml` is a package manifest only when it declares `[native]`; every
-/// other shape just marks a directory and must not stop a program from
-/// building.
+/// Valid manifests without `[native]` do not add a native build prerequisite.
 const PLAIN_MANIFESTS: &[(&str, &str)] = &[
     ("workspace only", "[workspace]\nmembers = []\n"),
     ("dependencies only", "[dependencies]\n"),
     ("empty", ""),
-    ("package without a version", "[package]\nname = \"p\"\n"),
+    (
+        "package",
+        "[package]\nname = \"lib\"\nversion = \"0.1.0\"\n",
+    ),
     (
         "package with a lib table",
-        "[package]\nname = \"p\"\nversion = \"0.1.0\"\n[lib]\nname = \"p\"\n",
+        "[package]\nname = \"lib\"\nversion = \"0.1.0\"\n[lib]\nname = \"lib\"\n",
     ),
 ];
 
 #[test]
-fn a_hew_toml_without_native_never_blocks_a_single_file_build() {
+fn valid_manifests_without_native_allow_a_single_file_build() {
     require_codegen();
     for (shape, text) in PLAIN_MANIFESTS {
         let dir = workspace();

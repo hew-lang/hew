@@ -105,7 +105,7 @@ fn work() {
     defer println("parent cleanup");
     let _child = fork {
         let result = started("capture");
-        let callback: fn[once]() -> () = move || { let _held = result; };
+        let callback: fn[once, suspends]() -> () = move || { let _held = result; };
         callback
     };
 }

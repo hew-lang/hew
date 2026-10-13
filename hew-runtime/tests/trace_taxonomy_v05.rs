@@ -68,6 +68,7 @@ const KNOWN_EVENT_NAMES: &[&str] = &[
     "crash",
     "stop",
     "send",
+    "actor.delivery_refused",
     "io_accept",
     "io_recv",
     "duplex_created",

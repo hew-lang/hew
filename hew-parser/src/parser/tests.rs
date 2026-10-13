@@ -1783,14 +1783,11 @@ fn parse_actor_on_upgrade_hook_attaches_to_method() {
 #[test]
 fn parse_attribute_key_value_missing_value_emits_error_without_empty_fallback() {
     let source = r"
-#[meta(rename = , version = 2)]
+#[export(rename = , version = 2)]
 fn demo() {}
 ";
     let result = parse(source);
-    // `meta` is not a recognised attribute name, so the closed table also
-    // reports `E_UNKNOWN_ATTRIBUTE` in addition to the key-value shape error
-    // this test targets — both diagnostics are expected.
-    assert_eq!(result.errors.len(), 2, "errors: {:?}", result.errors);
+    assert_eq!(result.errors.len(), 1, "errors: {:?}", result.errors);
     assert_eq!(
         result.errors[0].message,
         "invalid value for attribute `rename`: missing value"
@@ -1799,17 +1796,11 @@ fn demo() {}
         result.errors[0].hint.as_deref(),
         Some("expected identifier, string literal, or integer literal")
     );
-    assert!(
-        result.errors[1].message.contains("E_UNKNOWN_ATTRIBUTE"),
-        "errors: {:?}",
-        result.errors
-    );
-
     let Item::Function(func) = &result.program.items[0].0 else {
         panic!("expected function");
     };
     assert_eq!(func.attributes.len(), 1);
-    assert_eq!(func.attributes[0].name, "meta");
+    assert_eq!(func.attributes[0].name, "export");
     assert_eq!(func.attributes[0].args.len(), 1);
     assert!(matches!(
         &func.attributes[0].args[0],
@@ -4428,23 +4419,21 @@ fn linear_then_resource_combined_emits_conflict_diagnostic() {
 }
 
 #[test]
-fn unknown_type_marker_emits_diagnostic() {
-    // `E_UNKNOWN_ATTRIBUTE` (the closed-table diagnostic) supersedes the
-    // retired `E_UNKNOWN_TYPE_MARKER` for this position.
+fn unresolved_type_attribute_is_retained_for_expansion() {
     let source = r"
             #[both]
-            type Bad { x: int }
+            type Bad { x: i64; }
         ";
     let result = parse(source);
-    assert!(
-        !result.errors.is_empty(),
-        "expected E_UNKNOWN_ATTRIBUTE diagnostic but got none"
-    );
-    assert!(
-        result.errors[0].message.contains("E_UNKNOWN_ATTRIBUTE"),
-        "expected E_UNKNOWN_ATTRIBUTE in message, got: {:?}",
-        result.errors[0].message
-    );
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+    let Item::TypeDecl(decl) = &result.program.items[0].0 else {
+        panic!("expected type declaration");
+    };
+    assert_eq!(decl.attributes[0].name, "both");
+    assert!(matches!(
+        decl.attributes[0].args.as_slice(),
+        [AttributeArg::Tokens(_)]
+    ));
 }
 
 #[test]

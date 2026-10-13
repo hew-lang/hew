@@ -208,10 +208,11 @@ fn lsp_compile_time_input_navigation_and_watched_creation() {
     );
 
     let asset = project.write("assets/message.txt", "Hew café\n");
+    let watched_asset = main.parent().unwrap().join("assets/message.txt");
     send(
         &mut session.stdin,
         &json!({"jsonrpc":"2.0","method":"workspace/didChangeWatchedFiles",
-            "params":{"changes":[{"uri":file_uri(&asset),"type":1}]}}),
+            "params":{"changes":[{"uri":file_uri(&watched_asset),"type":1}]}}),
     );
     let updated = recv_until(&session.rx, Instant::now() + SESSION_BUDGET, |message| {
         message["method"] == "textDocument/publishDiagnostics"

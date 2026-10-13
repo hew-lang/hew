@@ -40,7 +40,7 @@ use self::navigation::{
     build_prepare_rename_response, build_workspace_edit, plan_workspace_rename,
 };
 use self::testing::failure_from_event;
-use self::uri::FileUriExt;
+use self::uri::{source_file_key, FileUriExt};
 #[cfg(test)]
 use self::workspace::build_code_lenses;
 #[cfg(test)]
@@ -764,7 +764,11 @@ impl LanguageServer for HewLanguageServer {
         &self,
         params: tower_lsp_server::ls_types::DidChangeWatchedFilesParams,
     ) {
-        let changed: HashSet<_> = params.changes.into_iter().map(|event| event.uri).collect();
+        let changed: HashSet<_> = params
+            .changes
+            .into_iter()
+            .map(|event| source_file_key(&event.uri))
+            .collect();
         let dependents: Vec<_> = self
             .documents
             .iter()
@@ -772,7 +776,11 @@ impl LanguageServer for HewLanguageServer {
                 document
                     .dependency_uris
                     .as_ref()
-                    .is_some_and(|inputs| inputs.iter().any(|uri| changed.contains(uri)))
+                    .is_some_and(|inputs| {
+                        inputs
+                            .iter()
+                            .any(|uri| changed.contains(&source_file_key(uri)))
+                    })
                     .then(|| (document.key().clone(), document.source.clone()))
             })
             .collect();

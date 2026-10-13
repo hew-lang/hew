@@ -34,3 +34,6 @@
 # would embed \r into an expectation compared byte-for-byte against the
 # program's LF-only output.
 /tests/core-acceptance/cases/*.toml text eol=lf
+
+# include_bytes! checks the fixture's exact UTF-8 byte length.
+/tests/core-acceptance/cases/compile-time-inputs-data/message.txt text eol=lf

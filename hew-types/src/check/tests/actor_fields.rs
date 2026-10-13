@@ -1381,7 +1381,7 @@ fn main() -> i64 {
             .into_iter()
             .map(|(identity, _)| checker.defs.path(identity))
             .collect();
-        identities.sort();
+        identities.sort_unstable();
         assert_eq!(
             identities,
             ["left.render.Worker", "right.render.Worker"],

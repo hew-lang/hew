@@ -499,6 +499,10 @@ fn user_extern_with_canonical_value_arguments_never_gains_encoding_authority() {
 }
 
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one cross-module fixture and its identity assertions"
+)]
 fn selected_encoding_import_preserves_result_and_option_try_payload_identity() {
     for (format, kind) in [
         ("json", BuiltinType::JsonValue),

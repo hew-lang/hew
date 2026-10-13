@@ -5593,23 +5593,6 @@ fn bare_wire_keyword_rejected_with_hint() {
         msg.contains("wire"),
         "error should mention 'wire', got: {msg}"
     );
-    // No Item::Wire variant can be constructed — match ensures the exhaustive check
-    for (item, _) in &result.program.items {
-        match item {
-            Item::TypeDecl(_)
-            | Item::TypeAlias(_)
-            | Item::Function(_)
-            | Item::Actor(_)
-            | Item::Machine(_)
-            | Item::Record(_)
-            | Item::Supervisor(_)
-            | Item::Impl(_)
-            | Item::Trait(_)
-            | Item::Import(_)
-            | Item::Const(_)
-            | Item::ExternBlock(_) => {}
-        }
-    }
 }
 
 #[test]

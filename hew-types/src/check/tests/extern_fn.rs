@@ -950,6 +950,10 @@ enum ImportLexicalShape {
 /// establishes `hew_zz`'s contract; module `nt` re-declares `hew_zz`
 /// spelling the parameter type BARE (`Tok`), declaring no `Tok` of its own.
 /// The bare name's meaning is decided by `nt`'s import set per `shape`.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one parameterized imported-extern fixture"
+)]
 fn check_import_lexical_extern(shape: &ImportLexicalShape) -> TypeCheckOutput {
     use std::path::PathBuf;
     let sm_source =

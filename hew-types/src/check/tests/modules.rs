@@ -2776,6 +2776,10 @@ fn bad(r: Result<i64, string>) -> i64 fails i64 {
 /// import registered `oracle_mod.shared_helper` — the same declaration had
 /// two identities depending on how the file was handed to the compiler.
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one cross-module fixture and its identity assertions"
+)]
 fn root_and_imported_compiles_mint_one_fn_sig_identity() {
     let shared_helper = FnDecl {
         origin: hew_parser::ast::DeclarationOrigin::Authored,

@@ -6,6 +6,16 @@ use hew_parser::ast::Symbol;
 use std::collections::HashMap;
 
 impl Checker {
+    pub(super) fn reject_interceptor_return(&mut self, ty: &crate::Ty, span: &super::Span) {
+        if self.normalize_for_use(ty).contains_interceptor_token() {
+            self.report_error(
+                super::TypeErrorKind::InterceptEscape,
+                span,
+                "Call and Outcome may be returned only by an interceptor".to_string(),
+            );
+        }
+    }
+
     pub(super) fn check_interceptor_storage(&mut self, item: &super::Item, span: &super::Span) {
         let name = match item {
             super::Item::TypeDecl(declaration) => declaration.name,
@@ -91,6 +101,7 @@ impl Checker {
             super::SpanKey::in_module(span, self.current_module_idx),
             ActorDeliveryCall::Intercept(operation),
         );
+        self.record_submission_suspension(span, operation.consumes());
         Some(result)
     }
 
@@ -216,6 +227,7 @@ impl Checker {
             for (kind, suffix) in [
                 (DeclarationKind::ActorRequestType, "Request"),
                 (DeclarationKind::ActorResponseType, "Response"),
+                (DeclarationKind::ActorStreamType, "<Stream>"),
             ] {
                 let Some(declaration) =
                     self.defs
@@ -234,6 +246,12 @@ impl Checker {
                                 .map(|(parameter, ty)| (parameter.name.to_string(), ty.to_ty()))
                                 .collect(),
                         )
+                    } else if kind == DeclarationKind::ActorStreamType {
+                        if let Some(element) = handler.return_ty.to_ty().as_stream() {
+                            VariantDef::Tuple(vec![crate::Ty::sink(element.clone())])
+                        } else {
+                            VariantDef::Unit
+                        }
                     } else if receive.is_generator || handler.return_ty == crate::ResolvedTy::Unit {
                         VariantDef::Unit
                     } else {

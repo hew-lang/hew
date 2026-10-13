@@ -127,9 +127,7 @@ impl InstanceService<'_> {
         chain: &[ResolvedTy],
     ) -> Result<crate::ActorId, String> {
         if let Some(actor) = self.actors.iter().find(|actor| {
-            self.actor_interceptor_chains
-                .get(&actor.id)
-                .is_some_and(|current| current == chain)
+            actor.interceptor_chain == chain
                 && exact.map_or_else(
                     || actor.admits_target(ty),
                     |name| self.module.defs.path(actor.declaration) == name,
@@ -198,6 +196,7 @@ impl InstanceService<'_> {
             id,
             declaration: source.declaration,
             handle_ty: ty.clone(),
+            interceptor_chain: chain.to_vec(),
             state_ty,
             fields,
             init: None,
@@ -213,7 +212,6 @@ impl InstanceService<'_> {
             coalesce: None,
             max_heap_bytes: source.max_heap_bytes,
         });
-        self.actor_interceptor_chains.insert(id, chain.to_vec());
         self.register_actor_bodies(id, &source, &substitution)?;
         // The key projection names message ids, so it is resolved once the
         // handlers exist.
@@ -470,6 +468,7 @@ impl InstanceService<'_> {
                     callable,
                     params,
                     return_ty,
+                    declared_failure: row.declared_failure,
                     stream,
                     failure_display,
                     codec,
@@ -617,6 +616,22 @@ pub(super) struct StartedActorCall {
 }
 
 impl Builder<'_, '_> {
+    fn supervised_spawn_role(&self, expression: &HirExpr) -> Option<crate::SemSupervisedRole> {
+        if expression.node != self.function.node {
+            return None;
+        }
+        let CallableInstance::SupervisorChild { supervisor, child } = &self.callable.instance
+        else {
+            return None;
+        };
+        self.service
+            .supervisors
+            .get(supervisor.0 as usize)?
+            .children
+            .get(*child as usize)
+            .map(|child| child.role)
+    }
+
     /// Evaluate payloads in the call's evaluation order, applying the same
     /// value coercions as ordinary calls, and return the owners in protocol
     /// order. Earlier owners stay live until all later arguments have
@@ -946,7 +961,13 @@ impl Builder<'_, '_> {
                 .is_some() =>
             {
                 let ty = self.ty(&expression.ty);
-                let id = self.service.require_supervisor(&ty)?;
+                let id = match self.supervised_spawn_role(expression) {
+                    Some(crate::SemSupervisedRole::Supervisor(id)) => id,
+                    Some(crate::SemSupervisedRole::Actor(_)) => {
+                        return Err("supervisor spawn has an actor child role".into())
+                    }
+                    None => self.service.require_supervisor(&ty)?,
+                };
                 let source = super::supervisor::declaration(self.service.module, &ty)
                     .ok_or("spawn lost its supervisor declaration")?;
                 if slots.len() != source.params.len() {
@@ -979,7 +1000,13 @@ impl Builder<'_, '_> {
                 let exact = ty
                     .is_builtin(hew_types::BuiltinType::ActorFn)
                     .then_some(actor_name.as_str());
-                let id = self.service.require_actor_declaration(&ty, exact)?;
+                let id = match self.supervised_spawn_role(expression) {
+                    Some(crate::SemSupervisedRole::Actor(id)) => id,
+                    Some(crate::SemSupervisedRole::Supervisor(_)) => {
+                        return Err("actor spawn has a supervisor child role".into())
+                    }
+                    None => self.service.require_actor_declaration(&ty, exact)?,
+                };
                 let declaration = self.service.actors[id.0 as usize].declaration;
                 let source = self
                     .service

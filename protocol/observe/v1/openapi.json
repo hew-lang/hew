@@ -1033,11 +1033,13 @@
               "supervisor_circuit_close",
               "supervisor_max_restarts",
               "supervisor_backoff",
+              "actor.delivery_refused",
               "lambda_spawned",
               "lambda_released",
               "unknown"
             ],
             "x-hew-actionable-values": [
+              "actor.delivery_refused",
               "send",
               "spawn",
               "crash",
@@ -1062,6 +1064,10 @@
           "handler_name": {
             "type": ["string", "null"],
             "description": "Selected message handler for destination_actor or an actor subject, or null when not applicable or unavailable."
+          },
+          "reason": {
+            "type": ["string", "null"],
+            "description": "Authored interceptor refusal reason. Absent or null for other events and older producers; never returned to a remote caller."
           }
         }
       },

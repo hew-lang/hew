@@ -237,7 +237,7 @@ impl std::fmt::Display for TraceStreamId {
 /// A richer internal trace record. The embedded [`HewTraceEvent`] remains the
 /// stable C ABI projection while Observe receives lossless sequence and actor
 /// endpoint metadata.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct TraceEventRecord {
     /// Monotonic sequence within `stream_id`, starting at one.
     pub sequence: u64,
@@ -273,6 +273,8 @@ pub struct TraceEventRecord {
     pub source_dispatch_ptr: usize,
     /// Destination dispatch function captured while the actor is live.
     pub destination_dispatch_ptr: usize,
+    /// Authored refusal text, retained only while the bounded record is live.
+    pub reason: Option<std::sync::Arc<str>>,
 }
 
 /// Correlation between the producer's monotonic clock and Unix wall time.
@@ -707,7 +709,7 @@ fn trace_snapshot_inner(
             .iter()
             .skip_while(|record| record.sequence < first_sequence)
             .take(limit)
-            .copied()
+            .cloned()
             .collect();
         let next_cursor = events.last().map_or_else(
             || after.unwrap_or(store.next_sequence.saturating_sub(1)),
@@ -845,6 +847,7 @@ fn record_event_with_attribution(
     destination_dispatch_ptr: usize,
     source_attribution: TraceActorAttribution,
     destination_attribution: TraceActorAttribution,
+    reason: Option<&str>,
 ) {
     #[cfg(test)]
     if let Some(barrier) = RECORD_PRE_LOCK_BARRIER.access(|slot| slot.clone()) {
@@ -888,6 +891,7 @@ fn record_event_with_attribution(
             destination_spawn_serial,
             source_dispatch_ptr,
             destination_dispatch_ptr,
+            reason: reason.map(std::sync::Arc::from),
         });
     });
 }
@@ -921,6 +925,7 @@ fn record_event_for_generation(generation: u64, event: HewTraceEvent) {
         0,
         TraceActorAttribution::NotApplicable,
         TraceActorAttribution::NotApplicable,
+        None,
     );
 }
 
@@ -977,8 +982,46 @@ pub(crate) fn record_supervisor_event(actor_id: u64, event_type: i32, discrimina
     record_lifecycle_event(actor_id, event_type, discriminator);
 }
 
-pub(crate) fn record_delivery_refused(actor_id: u64, message: i32) {
-    record_lifecycle_event(actor_id, SPAN_DELIVERY_REFUSED, message);
+pub(crate) fn record_delivery_refused(
+    context: &crate::execution_context::HewExecutionContext,
+    message: i32,
+    reason: &str,
+) {
+    let Some(generation) = recording_generation() else {
+        return;
+    };
+    // SAFETY: the installed dispatch context retains its actor during this call.
+    let actor = unsafe { context.actor.as_ref() };
+    let trace = context.trace;
+    record_event_with_attribution(
+        generation,
+        HewTraceEvent {
+            trace_id_hi: trace.trace_id_hi,
+            trace_id_lo: trace.trace_id_lo,
+            span_id: trace.span_id,
+            parent_span_id: trace.parent_span_id,
+            actor_id: context.actor_id,
+            event_type: SPAN_DELIVERY_REFUSED,
+            msg_type: message,
+            timestamp_ns: monotonic_ns(),
+        },
+        Some("actor"),
+        Some(context.actor_id),
+        Some(context.actor_id),
+        actor.map(|actor| actor.spawn_serial),
+        actor
+            .and_then(|actor| actor.dispatch)
+            .map_or(0, |dispatch| dispatch as usize),
+        None,
+        None,
+        None,
+        None,
+        0,
+        0,
+        TraceActorAttribution::NotApplicable,
+        TraceActorAttribution::NotApplicable,
+        Some(reason),
+    );
 }
 
 // ── C ABI ──────────────────────────────────────────────────────────────
@@ -1272,6 +1315,7 @@ pub(crate) fn record_send(
         destination_dispatch_ptr,
         source_attribution,
         TraceActorAttribution::LocalActor,
+        None,
     );
 }
 
@@ -1828,6 +1872,7 @@ mod tests {
             SPAN_SUPERVISOR_CIRCUIT_CLOSE,
             SPAN_SUPERVISOR_MAX_RESTARTS,
             SPAN_SUPERVISOR_BACKOFF,
+            SPAN_DELIVERY_REFUSED,
         ];
         for code in all_spans {
             assert!(
@@ -1849,7 +1894,7 @@ mod tests {
         assert!(event_type_name(i32::MAX).is_none());
         assert!(event_type_name(-1).is_none());
         // Any code beyond the last assigned SPAN_* must not resolve.
-        assert!(event_type_name(SPAN_SUPERVISOR_BACKOFF + 1).is_none());
+        assert!(event_type_name(SPAN_DELIVERY_REFUSED + 1).is_none());
     }
 
     /// S1 fail-closed: the producer drain must NEVER serialise an `event_type`
@@ -2728,7 +2773,7 @@ mod tests {
         record_send(Some(11), Some(111), 0xaaaa, 22, 222, 0xbbbb, 7);
 
         let snapshot = trace_snapshot(None, None, 1).expect("send snapshot");
-        let record = snapshot.events[0];
+        let record = &snapshot.events[0];
         assert_eq!(record.subject_kind, None);
         assert_eq!(record.source_attribution, TraceActorAttribution::LocalActor);
         assert_eq!(record.source_actor_id, Some(11));
@@ -2754,7 +2799,7 @@ mod tests {
         hew_trace_enable(1);
         record_send(None, None, 0, 22, 222, 0xbbbb, 7);
 
-        let record = trace_snapshot(None, None, 1)
+        let record = &trace_snapshot(None, None, 1)
             .expect("external send snapshot")
             .events[0];
         assert_eq!(record.source_actor_id, None);
@@ -2773,7 +2818,7 @@ mod tests {
         let _remote_source = enter_remote_trace_source();
         record_send(None, None, 0, 22, 222, 0xbbbb, 7);
 
-        let record = trace_snapshot(None, None, 1)
+        let record = &trace_snapshot(None, None, 1)
             .expect("remote send snapshot")
             .events[0];
         assert_eq!(record.source_actor_id, None);
@@ -2789,7 +2834,7 @@ mod tests {
         let _guard = setup();
         record_send(None, None, 0, 22, 222, 0xbbbb, 7);
 
-        let record = trace_snapshot(None, None, 1)
+        let record = &trace_snapshot(None, None, 1)
             .expect("context-only send snapshot")
             .events[0];
         assert_eq!(record.source_actor_id, None);

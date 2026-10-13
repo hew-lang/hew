@@ -1,0 +1,81 @@
+import std.failure;
+
+actor Producer {
+    #[intercept]
+    fn guard(call: Call<Self>) -> Outcome<Self> {
+        if call.handler_name() == "blocked" {
+            call.refuse("stream denied")
+        } else {
+            call.proceed()
+        }
+    }
+
+    receive gen fn blocked(text: string) -> string {
+        yield text;
+    }
+    receive gen fn accepted() -> string { yield "next delivery"; }
+    receive fn alive() -> bool { true }
+}
+
+#[test]
+fn interceptor_stream_refusal_faults_the_reader_without_crashing_the_actor() {
+    let producer = spawn Producer;
+    let denied = producer.blocked("owned refused stream request");
+    let failed = scope {
+        denied.recv();
+        false
+    } handle failure {
+        true
+    };
+    assert(failed);
+    assert(producer.alive().expect("refusal leaves producer alive"));
+    let next = producer.accepted();
+    assert(next.recv().expect("fresh stream item") == "next delivery");
+    assert(next.recv().is_none());
+    stop(producer);
+    stopped(producer);
+}
+
+actor FaultyProducer {
+    #[intercept]
+    fn guard(call: Call<Self>) -> Outcome<Self> {
+        let name = call.handler_name();
+        let outcome = call.proceed();
+        if name == "items" {
+            panic("after stream handler");
+        }
+        outcome
+    }
+
+    receive gen fn items(text: string) -> string {
+        yield text;
+    }
+    #[on(crash)]
+    fn crashed(info: failure.CrashInfo) -> failure.CrashAction {
+        assert(info.code == 212);
+        failure.CrashAction.Restart
+    }
+}
+
+supervisor Group {
+    child producer: FaultyProducer;
+}
+
+#[test]
+fn interceptor_fault_after_stream_handler_cannot_become_clean_eof() {
+    let group = spawn Group;
+    let producer = group.producer;
+    let input = producer.items("owned buffered item");
+    let failed = scope {
+        for text in input {
+            assert(text == "owned buffered item");
+        }
+        false
+    } handle failure {
+        true
+    };
+    assert(failed);
+    restarted(producer);
+    stop(group);
+    stopped(group);
+}

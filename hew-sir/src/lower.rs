@@ -553,8 +553,6 @@ struct InstanceService<'a> {
     closures: Vec<crate::SemClosure>,
     actors: Vec<crate::SemActor>,
     actor_sources: HashMap<CallableId, ActorBodySource>,
-    actor_interceptor_chains: HashMap<crate::ActorId, Vec<ResolvedTy>>,
-    supervisor_interceptor_chains: HashMap<crate::SupervisorId, Vec<ResolvedTy>>,
     supervisors: Vec<crate::SemSupervisor>,
     /// Bodies the lowering synthesizes outside the HIR item table.
     synthetic_sources: HashMap<CallableId, (HirFn, TypeSubstitution)>,

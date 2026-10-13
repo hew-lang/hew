@@ -327,7 +327,10 @@ pub(super) fn verify_calls(
     clippy::too_many_lines,
     reason = "keep physical region traversal and dependency validation together"
 )]
-pub(super) fn verify_regions(function: &PhysicalFunction) -> Result<Plan, PhysicalError> {
+pub(super) fn verify_regions(
+    module: &PhysicalModule,
+    function: &PhysicalFunction,
+) -> Result<Plan, PhysicalError> {
     let blocks: BTreeMap<_, _> = function.blocks.iter().map(|b| (b.id, b)).collect();
     let mut registrations = BTreeMap::new();
     for block in &function.blocks {
@@ -483,7 +486,9 @@ pub(super) fn verify_regions(function: &PhysicalFunction) -> Result<Plan, Physic
     }
     for block in &function.blocks {
         if let PhysicalTerminator::CheckedRaiseFault { kind, .. } = block.terminator {
-            if !raise_origin(block.id, kind, function, &mut BTreeSet::new()) {
+            let refused_entry = kind == TrapKind::ActorRefused
+                && interceptor_refusal_origin(module, function, block.id);
+            if !refused_entry && !raise_origin(block.id, kind, function, &mut BTreeSet::new()) {
                 return Err(PhysicalError::new(
                     "physical checked raise differs from its producing failure edge",
                 ));
@@ -526,6 +531,59 @@ fn drain_suffix(
     };
     visiting.remove(&id);
     valid
+}
+
+fn interceptor_refusal_origin(
+    module: &PhysicalModule,
+    function: &PhysicalFunction,
+    target: BlockId,
+) -> bool {
+    let Some(callable) = module.callables.get(function.callable.0 as usize) else {
+        return false;
+    };
+    let hew_sir::CallableInstance::ActorInterceptEntry { handler } = callable.instance else {
+        return false;
+    };
+    let Some(actor) = module.actors.iter().find(|actor| {
+        actor
+            .handlers
+            .get(handler as usize)
+            .is_some_and(|handler| handler.callable == callable.id)
+    }) else {
+        return false;
+    };
+    let outcome = hew_types::ResolvedTy::Named {
+        head: hew_types::KnownDecl::Outcome.head(),
+        args: vec![actor.handle_ty.clone()],
+        is_opaque: false,
+    };
+    let Some(fields) = hew_types::actor_protocol::interceptor_fields(&module.defs, &outcome) else {
+        return false;
+    };
+    let mut found = false;
+    let valid = function.blocks.iter().all(|block| {
+        if !edges(&block.terminator)
+            .iter()
+            .any(|edge| edge.target == target)
+        {
+            return true;
+        }
+        found = true;
+        let PhysicalTerminator::SwitchVariant { glue, arms, .. } = &block.terminator else {
+            return false;
+        };
+        let Some(glue) = module.variant_glue.get(glue.0 as usize) else {
+            return false;
+        };
+        glue.ty == fields[0].1
+            && arms
+                .iter()
+                .filter(|arm| arm.target.target == target)
+                .all(|arm| {
+                    glue.runtime_tag(hew_sir::RuntimeVariantRole::OptionNone) == Some(arm.variant)
+                })
+    });
+    found && valid
 }
 
 fn raise_origin(

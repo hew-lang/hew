@@ -885,7 +885,7 @@ impl<'m> Walker<'m> {
                                 callable: self.function_id(handler.callable)?,
                                 params: table_index(handler.params.len()),
                                 streams: handler.stream.is_some(),
-                                fallible: handler.failure_display.is_some(),
+                                fallible: handler.declared_failure,
                                 result_shape: self
                                     .module
                                     .variant_shape_for_type(&handler.return_ty)

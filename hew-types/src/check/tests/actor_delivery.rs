@@ -1,6 +1,7 @@
 use super::check_source;
 use crate::actor_delivery::{ActorDeliveryCall, SendPolicy};
 use crate::check::effects::SuspensionEffect;
+use crate::error::TypeErrorKind;
 
 /// A call through a mailbox view submits. A rejected submission hands the whole
 /// message back, and the two moves left on it — `.to(other)` and `.retry()` —
@@ -702,4 +703,34 @@ fn main() {}
 "#,
     );
     assert!(output.errors.is_empty(), "{:?}", output.errors);
+}
+
+#[test]
+fn interceptor_tokens_cannot_escape_through_generic_calls_or_captures() {
+    for (name, body) in [
+        ("generic call", "forward(call).proceed()"),
+        ("capture", "let later = || call.proceed(); later()"),
+        ("collection", "let pending = [call]; panic(\"unreachable\")"),
+    ] {
+        let source = format!(
+            r#"
+fn forward<T>(consume value: T) -> T {{ value }}
+actor Worker {{
+    #[intercept]
+    fn guard(call: Call<Self>) -> Outcome<Self> {{ {body} }}
+    receive fn value() -> i64 {{ 42 }}
+}}
+fn main() {{}}
+"#
+        );
+        let checked = check_source(&source);
+        assert!(
+            checked
+                .errors
+                .iter()
+                .any(|error| error.kind == TypeErrorKind::InterceptEscape),
+            "{name}: {:?}",
+            checked.errors
+        );
+    }
 }

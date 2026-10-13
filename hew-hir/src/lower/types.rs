@@ -54,8 +54,13 @@ impl LowerCtx {
             }
             hew_types::value_class::DeclarationMarker::None => ResourceMarker::None,
         };
-        // The ownership map currently keys resource/linear declarations by nominal identity.
-        if matches!(marker, ResourceMarker::Resource | ResourceMarker::Linear)
+        let interceptor_token = [hew_types::KnownDecl::Call, hew_types::KnownDecl::Outcome]
+            .into_iter()
+            .any(|known| declaration == hew_types::DefTable::known(known));
+        // Interceptor tokens have compiler-owned terminal operations and concrete
+        // actor-specific fields; user resources still need their declared methods.
+        if !interceptor_token
+            && matches!(marker, ResourceMarker::Resource | ResourceMarker::Linear)
             && !facts.type_params.is_empty()
         {
             self.diagnostics.push(HirDiagnostic::new(
@@ -71,9 +76,10 @@ impl LowerCtx {
             ResourceMarker::Resource => {
                 self.check_resource_close_discipline(decl, &span, declaration);
             }
-            ResourceMarker::Linear => {
+            ResourceMarker::Linear if !interceptor_token => {
                 self.check_linear_consume_discipline(decl, &span, declaration);
             }
+            ResourceMarker::Linear => {}
             ResourceMarker::None | ResourceMarker::BitCopy => {}
         }
 

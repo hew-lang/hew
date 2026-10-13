@@ -70,6 +70,17 @@ fn trace_required_nulls_and_unknown_values_are_distinct() {
     assert!(decoded.source_actor.is_none());
     assert_eq!(decoded.sequence, u64::MAX);
     assert_eq!(decoded.span_id, u64::MAX);
+    assert!(decoded.reason.is_none());
+
+    let mut refusal = trace.clone();
+    refusal["event_type"] = json!("actor.delivery_refused");
+    refusal["reason"] = json!("quota is exhausted");
+    let decoded: TraceEvent =
+        serde_json::from_value(refusal.clone()).expect("decode refusal reason");
+    assert_eq!(decoded.reason.as_deref(), Some("quota is exhausted"));
+    assert!(decoded.is_actionable());
+    refusal["reason"] = json!(42);
+    assert!(serde_json::from_value::<TraceEvent>(refusal).is_err());
 
     let mut missing = trace;
     missing

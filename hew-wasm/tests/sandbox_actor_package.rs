@@ -1520,3 +1520,80 @@ fn main() {
     lines.sort_unstable();
     assert_eq!(lines, ["closed 1", "closed 2", "handled 1"]);
 }
+
+#[test]
+fn actor_interceptor_preserves_turns_and_refuses_without_a_crash() {
+    let trace = execute(include_str!(
+        "../../tests/core-acceptance/cases/actor-interceptor-turn.hew"
+    ));
+    assert_eq!(
+        stdout(&trace),
+        "task\necho\nbefore\nafter\nhello\ntask\nblocked\nrefused\ntask\ncount\nbefore\nafter\n"
+    );
+    let refusal = trace["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|event| event["message"] == "actor.delivery_refused")
+        .expect("refusal is observable");
+    let details: serde_json::Value =
+        serde_json::from_str(refusal["text"].as_str().unwrap()).unwrap();
+    assert_eq!(details["handler"], "blocked");
+    assert_eq!(details["reason"], "blocked by guard");
+}
+
+#[test]
+fn actor_interceptor_chain_specializes_only_supervised_instances() {
+    let trace = execute(include_str!(
+        "../../tests/core-acceptance/cases/actor-interceptor-chain.hew"
+    ));
+    assert_eq!(stdout(&trace), "root before\nbranch before\nactor before\nhandler\nactor after\nbranch after\nroot after\nactor before\nhandler\nactor after\n");
+}
+
+#[test]
+fn actor_interceptor_faults_restart_the_child_before_and_after_proceed() {
+    let trace = execute(include_str!(
+        "../../tests/core-acceptance/cases/actor-interceptor-fault.hew"
+    ));
+    assert_eq!(
+        stdout(&trace),
+        "0\n1\ninterceptor faults restart the child\n"
+    );
+}
+
+#[test]
+fn actor_interceptor_distinguishes_declared_failures_from_result_values() {
+    let trace = execute(include_str!(
+        "../../tests/core-acceptance/cases/actor-interceptor-declared-failure.hew"
+    ));
+    assert_eq!(stdout(&trace), "declared failures remain distinct\n");
+}
+
+#[test]
+fn actor_interceptor_stream_preserves_typed_completion() {
+    let trace = execute(include_str!(
+        "../../tests/core-acceptance/cases/actor-interceptor-stream.hew"
+    ));
+    assert_eq!(
+        stdout(&trace),
+        "stream interception preserves typed completion\n"
+    );
+}
+
+#[test]
+fn actor_interceptor_refusal_retains_the_actual_cleanup_fault() {
+    let trace = execute(include_str!(
+        "../../tests/core-acceptance/cases/actor-interceptor-cleanup-fault.hew"
+    ));
+    assert_eq!(stdout(&trace), "refusal cleanup fault is preserved\n");
+    let crashes: Vec<_> = trace["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|event| event["message"] == "actor.crash")
+        .collect();
+    assert_eq!(crashes.len(), 1);
+    let details: serde_json::Value =
+        serde_json::from_str(crashes[0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(details["message"], "refused request cleanup failed");
+}

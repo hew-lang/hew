@@ -1,0 +1,59 @@
+import std.failure;
+
+actor Worker {
+    var handled: i64 = 0;
+
+    #[intercept]
+    fn guard(call: Call<Self>) -> Outcome<Self> {
+        let name = call.handler_name();
+        if name == "before" {
+            panic("before interceptor");
+        }
+        let outcome = call.proceed();
+        if name == "after" {
+            panic("after interceptor");
+        }
+        outcome
+    }
+
+    receive fn before(text: string) -> string {
+        handled = handled + 1;
+        text
+    }
+    receive fn after(text: string) -> string {
+        handled = handled + 1;
+        text
+    }
+    receive fn count() -> i64 { handled }
+
+    #[on(crash)]
+    fn crashed(info: failure.CrashInfo) -> failure.CrashAction {
+        assert(info.code != 0);
+        println(handled);
+        failure.CrashAction.Restart
+    }
+}
+
+supervisor Group {
+    intensity: 2 within 60s;
+    child worker: Worker;
+}
+
+fn main() {
+    let group = spawn Group;
+    let role = group.worker;
+    match role.before("owned request") {
+        .Err(.Trapped) => {}
+        _ => panic("before must trap"),
+    }
+    restarted(role);
+    match role.after("owned reply") {
+        .Err(.Trapped) => {}
+        _ => panic("after must trap"),
+    }
+    restarted(role);
+    assert(role.count().expect("restarted actor") == 0);
+    stop(group);
+    stopped(group);
+    println("interceptor faults restart the child");
+}

@@ -3102,7 +3102,7 @@ fn failed_vector_index_clears_a_previous_iteration_scalar_result() {
         &block.terminator,
         state,
         block.id,
-        &defer::verify_regions(function).unwrap(),
+        &defer::verify_regions(&physical, function).unwrap(),
     )
     .unwrap();
     let failed = &successors
@@ -3218,7 +3218,7 @@ fn selected_value_calls_keep_borrowed_operands_and_success_only_results() {
             &block.terminator,
             state,
             block.id,
-            &defer::verify_regions(function).unwrap(),
+            &defer::verify_regions(&module, function).unwrap(),
         )
         .unwrap();
         for (edge, outcome) in successors {

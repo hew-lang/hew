@@ -2873,6 +2873,36 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
+        "native": "fn hew_call_caller( *mut HewCallerStamp)",
+        "wasm32-wasip1": "fn hew_call_caller( *mut HewCallerStamp)"
+      },
+      "symbol": "hew_call_caller"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "non-declarable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_call_refusal_log( u32, *const hew_cabi::string::HewString, *const hew_cabi::string::HewString, )",
+        "wasm32-wasip1": "fn hew_call_refusal_log( u32, *const hew_cabi::string::HewString, *const hew_cabi::string::HewString, )"
+      },
+      "symbol": "hew_call_refusal_log"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "non-declarable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
         "native": "fn hew_callable_clone( *const HewCallableValue, *mut HewCallableValue, ) -> i32",
         "wasm32-wasip1": "fn hew_callable_clone( *const HewCallableValue, *mut HewCallableValue, ) -> i32"
       },

@@ -713,6 +713,17 @@ impl Checker {
         if sig.param_ownership.get(index) != Some(&crate::env::ParameterOwnership::Consume) {
             return;
         }
+        if self
+            .expr_types
+            .get(&super::SpanKey::in_module(span, self.current_module_idx))
+            .is_some_and(|ty| self.normalize_for_use(ty).contains_interceptor_token())
+        {
+            self.report_error(
+                super::TypeErrorKind::InterceptEscape,
+                span,
+                "Call and Outcome cannot be consumed by another source callable".to_string(),
+            );
+        }
         if !self.reject_borrowed_consumption(expr, span) {
             self.mark_expr_moved(expr, span);
         }

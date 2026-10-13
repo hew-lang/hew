@@ -121,6 +121,7 @@ enum SandboxExitCode {
 }
 
 const TRAP_EXIT_CODES: Readonly<Record<TrapKind, SandboxExitCode>> = {
+  actor_refused: SandboxExitCode.InternalError,
   integer_overflow: SandboxExitCode.IntegerOverflow,
   shift_out_of_range: SandboxExitCode.ShiftOutOfRange,
   divide_by_zero: SandboxExitCode.DivideByZero,

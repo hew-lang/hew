@@ -342,6 +342,11 @@ def rust_output(spec: dict) -> str:
             field = snake_name(model, wire_name)
             if field != wire_name and serde_mode != "none":
                 output.append(f'    #[serde(rename = "{wire_name}")]')
+            optional = wire_name not in spec["components"]["schemas"][model].get(
+                "required", []
+            )
+            if optional and serde_mode in {"both", "deserialize"}:
+                output.append("    #[serde(default)]")
             underlying_name = ref_name(non_nullable_schema(prop))
             module = None
             if is_nullable(prop) and underlying_name == "UInt64Decimal":
@@ -367,7 +372,11 @@ def rust_output(spec: dict) -> str:
                     output.append(
                         f'    #[serde(serialize_with = "{module}::serialize")]'
                     )
-            elif is_nullable(prop) and serde_mode in {"both", "deserialize"}:
+            elif (
+                is_nullable(prop)
+                and not optional
+                and serde_mode in {"both", "deserialize"}
+            ):
                 output.append(
                     '    #[serde(deserialize_with = "deserialize_required_nullable")]'
                 )
@@ -542,8 +551,10 @@ def rust_output(spec: dict) -> str:
     for model, schema in model_schemas(spec).items():
         required = set(schema.get("required", []))
         properties = schema.get("properties", {})
-        if set(properties) != required:
-            raise ValueError(f"{model}: v1 model fields must all be required")
+        if any(
+            not is_nullable(properties[name]) for name in set(properties) - required
+        ):
+            raise ValueError(f"{model}: optional model fields must be nullable")
         if model == "TraceSubject":
             lines.extend(
                 [
@@ -907,7 +918,20 @@ def swift_output(spec: dict) -> str:
         )
         for wire_name, prop in properties.items():
             field = camel(snake_name(model, wire_name))
-            lines.append(f"        {field} = {swift_decode_expression(prop, field)}")
+            if wire_name not in schema.get("required", []):
+                lines.extend(
+                    [
+                        f"        if values.contains(.{field}) {{",
+                        f"            {field} = {swift_decode_expression(prop, field)}",
+                        "        } else {",
+                        f"            {field} = nil",
+                        "        }",
+                    ]
+                )
+            else:
+                lines.append(
+                    f"        {field} = {swift_decode_expression(prop, field)}"
+                )
         if model == "TraceSubject":
             lines.extend(
                 [
@@ -1012,7 +1036,8 @@ def ts_output(spec: dict) -> str:
     for model, schema in models.items():
         lines.append(f"export interface {model} {{")
         for wire_name, prop in schema["properties"].items():
-            lines.append(f"  {wire_name}: {ts_type(prop)};")
+            optional = "?" if wire_name not in schema.get("required", []) else ""
+            lines.append(f"  {wire_name}{optional}: {ts_type(prop)};")
         lines.extend(["  [key: string]: unknown;", "}", ""])
     lines.extend(
         [
@@ -1039,7 +1064,10 @@ def ts_output(spec: dict) -> str:
             ]
         )
         for wire_name, prop in schema["properties"].items():
-            lines.append(f"    {wire_name}: {ts_decoder(prop, f'input.{wire_name}')},")
+            decoded = ts_decoder(prop, f"input.{wire_name}")
+            if wire_name not in schema.get("required", []):
+                decoded = f"input.{wire_name} === undefined ? null : {decoded}"
+            lines.append(f"    {wire_name}: {decoded},")
         lines.append(f"  }} as {model};")
         if model == "TraceSubject":
             lines.append("  validateTraceSubject(output.kind, output.actor);")

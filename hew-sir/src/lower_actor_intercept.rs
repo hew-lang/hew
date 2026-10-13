@@ -10,25 +10,76 @@ impl InstanceService<'_> {
         source: &hew_hir::HirActorDecl,
         substitution: &TypeSubstitution,
     ) -> Result<(), String> {
-        let Some(declaration) = source.protocol_descriptor.interceptor else {
+        let originals = self.actors[actor.0 as usize].handlers.clone();
+        let mut next = InterceptorNext::Handlers(originals.clone());
+        let mut outermost = None;
+        if let Some(declaration) = source.protocol_descriptor.interceptor {
+            let interceptor = self.actors[actor.0 as usize]
+                .methods
+                .iter()
+                .copied()
+                .find(|callable| {
+                    self.callable(*callable)
+                        .is_some_and(|body| body.declaration == declaration)
+                })
+                .ok_or("actor interceptor has no registered body")?;
+            self.actor_sources
+                .get_mut(&interceptor)
+                .ok_or("interceptor source is absent")?
+                .weave = Some(ActorWeave::Interceptor { next });
+            next = InterceptorNext::Layer(interceptor);
+            outermost = Some(interceptor);
+        }
+        let chain = self.actors[actor.0 as usize].interceptor_chain.clone();
+        for (index, supervisor_ty) in chain.iter().enumerate().rev() {
+            let supervisor = super::supervisor::declaration(self.module, supervisor_ty)
+                .ok_or("interceptor chain has no supervisor declaration")?
+                .clone();
+            let method = supervisor
+                .interceptor
+                .as_ref()
+                .ok_or("interceptor chain names a supervisor without an interceptor")?;
+            let instance = crate::actor::local_actor_instance(supervisor_ty)
+                .ok_or("interceptor supervisor lacks its type arguments")?;
+            let mut arguments = instance.args;
+            arguments.push(self.actors[actor.0 as usize].handle_ty.clone());
+            if arguments.len() != method.type_params.len() {
+                return Err(
+                    "supervisor interceptor type arguments differ from its declaration".into(),
+                );
+            }
+            let specialized = TypeSubstitution {
+                params: method.type_params.clone(),
+                args: arguments,
+            };
+            let interceptor = self.register_actor_body(
+                actor,
+                source,
+                &specialized,
+                method.declaration,
+                &[],
+                &method.params,
+                specialized.apply(&method.return_ty),
+                &method.body,
+                &format!("supervisor_intercept_{index}"),
+                true,
+                None,
+            )?;
+            self.table.callables[interceptor.0 as usize].instance =
+                CallableInstance::ActorSupervisorIntercept {
+                    layer: u32::try_from(index).map_err(|_| "interceptor layer exceeds u32")?,
+                };
+            self.actors[actor.0 as usize].methods.push(interceptor);
+            self.actor_sources
+                .get_mut(&interceptor)
+                .ok_or("supervisor interceptor source is absent")?
+                .weave = Some(ActorWeave::Interceptor { next });
+            next = InterceptorNext::Layer(interceptor);
+            outermost = Some(interceptor);
+        }
+        let Some(interceptor) = outermost else {
             return Ok(());
         };
-        let interceptor = self.actors[actor.0 as usize]
-            .methods
-            .iter()
-            .copied()
-            .find(|callable| {
-                self.callable(*callable)
-                    .is_some_and(|body| body.declaration == declaration)
-            })
-            .ok_or("actor interceptor has no registered body")?;
-        let originals = self.actors[actor.0 as usize].handlers.clone();
-        self.actor_sources
-            .get_mut(&interceptor)
-            .ok_or("interceptor source is absent")?
-            .weave = Some(ActorWeave::Interceptor {
-            next: InterceptorNext::Handlers(originals.clone()),
-        });
         for (index, (handler, original)) in
             source.receive_handlers.iter().zip(originals).enumerate()
         {
@@ -56,6 +107,13 @@ impl InstanceService<'_> {
                 handler: index,
                 interceptor,
             });
+            self.table.callables[wrapper.0 as usize].instance =
+                CallableInstance::ActorInterceptEntry {
+                    handler: u32::try_from(index).map_err(|_| "handler index exceeds u32")?,
+                };
+            self.actors[actor.0 as usize]
+                .methods
+                .push(original.callable);
             self.actors[actor.0 as usize].handlers[index].callable = wrapper;
         }
         Ok(())
@@ -297,9 +355,6 @@ impl Builder<'_, '_> {
         interceptor: CallableId,
     ) -> Result<(), String> {
         let descriptor = self.service.actors[actor.0 as usize].handlers[handler].clone();
-        if descriptor.stream.is_some() {
-            return Err("stream interceptor carrier is not yet lowered".into());
-        }
         let call_ty = self.intercept_type(hew_types::KnownDecl::Call, actor);
         let fields = self.intercept_fields(&call_ty)?;
         let mut arguments = Vec::new();
@@ -343,7 +398,12 @@ impl Builder<'_, '_> {
             &ResolvedTy::U32,
             SemOpKind::ConstInteger(i128::from(descriptor.message_id)),
         )?;
-        let call = self.intercept_record(&call_ty, vec![request, caller, name, message])?;
+        let stream = self.intercept_variant(
+            &fields[4].1,
+            u32::try_from(handler).map_err(|_| "handler index exceeds u32")?,
+            self.stream_sink.iter().map(|(sink, _)| *sink).collect(),
+        )?;
+        let call = self.intercept_record(&call_ty, vec![request, caller, name, message, stream])?;
         let outcome = self
             .intercept_invoke(interceptor, vec![call])?
             .ok_or("interceptor returned no outcome")?;
@@ -365,26 +425,16 @@ impl Builder<'_, '_> {
             let response = &branch.fields[0];
             let shape = self.service.require_variant_shape(&response.ty)?;
             let shape_info = self.service.variant_shapes[shape.0 as usize].clone();
-            let variants = self.emit_variant_switch(shape, &shape_info, response.value)?;
-            let state = self.control_state();
-            for variant in variants {
-                self.restore_control_state(&state);
-                self.current = variant.block;
-                self.owned_live = variant.owned_live;
-                if variant.variant as usize != handler {
-                    for field in variant.fields {
-                        self.intercept_drop(field.value)?;
-                    }
-                    self.set_terminator(SemTerminator::Unreachable)?;
-                } else {
-                    self.finish_return_value(variant.fields.first().map(|field| {
-                        crate::BoundaryOperand {
-                            operand: Operand { value: field.value },
-                            decision: crate::BoundaryDecision::Move,
-                        }
-                    }))?;
-                }
-            }
+            let fields = self.emit_variant_destructure(
+                shape,
+                u32::try_from(handler).map_err(|_| "handler index exceeds u32")?,
+                &shape_info,
+                response.value,
+            )?;
+            self.finish_return_value(fields.first().map(|field| crate::BoundaryOperand {
+                operand: Operand { value: field.value },
+                decision: crate::BoundaryDecision::Move,
+            }))?;
         }
         Ok(())
     }
@@ -448,10 +498,10 @@ impl Builder<'_, '_> {
             &ResolvedTy::Unit,
         )?;
         self.end_call_loans(&loans)?;
-        for part in parts {
-            self.intercept_drop(part)?;
+        for part in &parts[..4] {
+            self.intercept_drop(*part)?;
         }
-        self.intercept_outcome(&self.ty(&expression.ty), None, None, true)
+        self.intercept_outcome(&self.ty(&expression.ty), None, None, true, parts[4])
     }
 
     fn intercept_outcome(
@@ -460,6 +510,7 @@ impl Builder<'_, '_> {
         response: Option<ValueId>,
         failed: Option<ValueId>,
         refused: bool,
+        stream: ValueId,
     ) -> Result<ValueId, String> {
         let response_ty = self.intercept_fields(ty)?[0].1.clone();
         let shape = self.service.require_variant_shape(&response_ty)?;
@@ -480,7 +531,7 @@ impl Builder<'_, '_> {
             None => self.intercept_bool(false)?,
         };
         let refused = self.intercept_bool(refused)?;
-        self.intercept_record(ty, vec![response, failed, refused])
+        self.intercept_record(ty, vec![response, failed, refused, stream])
     }
 
     fn lower_intercept_handlers(
@@ -497,7 +548,7 @@ impl Builder<'_, '_> {
         };
         let response_ty = &args[0];
         let parts = self.intercept_parts(call, call_ty)?;
-        for part in &parts[1..] {
+        for part in &parts[1..4] {
             self.intercept_drop(*part)?;
         }
         let shape = self.service.require_variant_shape(&request_ty)?;
@@ -517,35 +568,57 @@ impl Builder<'_, '_> {
             let handler = handlers
                 .get(branch.variant as usize)
                 .ok_or("request variant has no original handler")?;
-            let reply = self.intercept_invoke(
-                handler.callable,
-                branch.fields.iter().map(|field| field.value).collect(),
+            let stream_ty = self.intercept_fields(call_ty)?[4].1.clone();
+            let stream_shape = self.service.require_variant_shape(&stream_ty)?;
+            let stream_descriptor = self.service.variant_shapes[stream_shape.0 as usize].clone();
+            let sinks = self.emit_variant_destructure(
+                stream_shape,
+                branch.variant,
+                &stream_descriptor,
+                parts[4],
             )?;
-            let failed =
-                if let Some(reply) = reply.filter(|_| matches!(&handler.return_ty, ResolvedTy::Named { head, .. } if *head == hew_types::TypeHead::Builtin(hew_types::BuiltinType::Result))) {
-                    let result_shape = self.service.require_variant_shape(&handler.return_ty)?;
-                    let tag = self.service.variant_shapes[result_shape.0 as usize]
-                        .runtime_tags
-                        .iter()
-                        .find_map(|(role, tag)| {
-                            (*role == crate::RuntimeVariantRole::ResultErr).then_some(*tag)
-                        })
-                        .ok_or("failed handler lacks its Err variant")?;
-                    Some(self.emit_typed(
-                        Provenance::Synthesized,
-                        &ResolvedTy::Bool,
-                        SemOpKind::VariantIs {
-                            shape: result_shape,
-                            variant: tag,
-                            source: Operand { value: reply },
-                        },
-                    )?)
-                } else {
-                    None
-                };
+            let mut arguments: Vec<_> = branch.fields.iter().map(|field| field.value).collect();
+            let mut retained = Vec::new();
+            for sink in sinks {
+                retained.push(
+                    self.intercept_runtime(
+                        hew_types::RuntimeCallFamily::SinkClone,
+                        vec![sink.value],
+                        &sink.ty,
+                    )?
+                    .ok_or("stream sink clone returned no value")?,
+                );
+                arguments.push(sink.value);
+            }
+            // Keep the producer alive until every outer interceptor returns.
+            // A refusal or fault then reaches the reader through normal cleanup.
+            let stream = self.intercept_variant(&stream_ty, branch.variant, retained)?;
+            let reply = self.intercept_invoke(handler.callable, arguments)?;
+            let failed = if let Some(reply) = reply.filter(|_| handler.declared_failure) {
+                let result_shape = self.service.require_variant_shape(&handler.return_ty)?;
+                let tag = self.service.variant_shapes[result_shape.0 as usize]
+                    .runtime_tags
+                    .iter()
+                    .find_map(|(role, tag)| {
+                        (*role == crate::RuntimeVariantRole::ResultErr).then_some(*tag)
+                    })
+                    .ok_or("failed handler lacks its Err variant")?;
+                Some(self.emit_typed(
+                    Provenance::Synthesized,
+                    &ResolvedTy::Bool,
+                    SemOpKind::VariantIs {
+                        shape: result_shape,
+                        variant: tag,
+                        source: Operand { value: reply },
+                    },
+                )?)
+            } else {
+                None
+            };
             let response =
                 self.intercept_variant(response_ty, branch.variant, reply.into_iter().collect())?;
-            let outcome = self.intercept_outcome(outcome_ty, Some(response), failed, false)?;
+            let outcome =
+                self.intercept_outcome(outcome_ty, Some(response), failed, false, stream)?;
             self.owned_live.remove(&outcome);
             self.set_terminator(SemTerminator::Goto(Edge {
                 target: join,
@@ -555,6 +628,7 @@ impl Builder<'_, '_> {
         self.restore_control_state(&inherited);
         self.current = join;
         self.owned_live.remove(&parts[0]);
+        self.owned_live.remove(&parts[4]);
         self.owned_live.insert(result, outcome_ty.clone());
         Ok(result)
     }

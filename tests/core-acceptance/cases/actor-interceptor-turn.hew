@@ -1,3 +1,5 @@
+fn handler_name<A>(call: Call<A>) -> string { call.handler_name() }
+
 actor Worker {
     var delivered: i64 = 0;
 
@@ -7,15 +9,31 @@ actor Worker {
             .Task => println("task"),
             _ => println("other"),
         }
-        let name = call.handler_name();
+        match call.request {
+            .echo { text } => assert(text == "hello"),
+            .blocked { text } => assert(text == "unused owned payload"),
+            _ => {}
+        }
+        let name = handler_name(call);
         println(name);
         if name == "blocked" {
-            call.refuse("blocked by guard")
+            let denied = call.refuse("blocked by guard");
+            assert(denied.refused());
+            assert(!denied.failed());
+            if let .Some(_) = denied.response {
+                panic("refusal has no response");
+            }
+            denied
         } else {
             println("before");
             let result = call.proceed();
             assert(!result.failed());
             assert(!result.refused());
+            match result.response {
+                .Some(.echo(text)) => assert(text == "hello"),
+                .Some(.count(value)) => assert(value == 1),
+                _ => panic("wrong response variant"),
+            }
             println("after");
             result
         }

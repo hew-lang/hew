@@ -77,6 +77,8 @@ pub struct SemActorHandler {
     /// `Sink<T>`, owned by the body until its turn ends.
     pub params: Vec<ResolvedTy>,
     pub return_ty: ResolvedTy,
+    /// Checker-selected `fails` semantics, independent of error rendering.
+    pub declared_failure: bool,
     /// `receive gen fn`: the element type each `yield` sends to the sink.
     pub stream: Option<ResolvedTy>,
     /// How this handler's declared failure renders when a one-way submission
@@ -164,6 +166,8 @@ pub struct SemActor {
     pub id: ActorId,
     pub declaration: DefId,
     pub handle_ty: ResolvedTy,
+    /// Outer-to-inner supervisor interceptors specialized into this instance.
+    pub interceptor_chain: Vec<ResolvedTy>,
     pub state_ty: ResolvedTy,
     pub fields: Vec<SemActorField>,
     pub init: Option<CallableId>,
@@ -179,8 +183,8 @@ pub struct SemActor {
     pub exit: Option<CallableId>,
     /// `#[on(down)]`: receives the typed monitor DOWN notification.
     pub down: Option<CallableId>,
-    /// Plain `fn` items, entered only from this actor's own bodies with the
-    /// same exclusive state seat.
+    /// Private direct callees: plain methods, supervisor interceptor layers and
+    /// original handlers behind wrappers. Each borrows this actor's state seat.
     pub methods: Vec<CallableId>,
     pub handlers: Vec<SemActorHandler>,
     pub mailbox_capacity: Option<u32>,
@@ -516,6 +520,14 @@ impl SemActor {
             return Err("actor descriptor is not at its canonical index".into());
         }
         self.validate_handle()?;
+        for (layer, _) in self.interceptor_chain.iter().enumerate() {
+            if !self.methods.iter().filter_map(|id| module.callable(*id)).any(|callable| {
+                matches!(callable.instance, crate::CallableInstance::ActorSupervisorIntercept { layer: index }
+                    if index as usize == layer)
+            }) {
+                return Err("actor interceptor chain omits a specialized supervisor layer".into());
+            }
+        }
         if self.state_ty
             != ResolvedTy::Tuple(self.fields.iter().map(|field| field.ty.clone()).collect())
         {

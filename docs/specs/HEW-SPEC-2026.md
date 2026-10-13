@@ -651,6 +651,69 @@ complete; use `stopped(worker)` alone to observe an earlier stop request.
 - Lambda actors cannot implement traits
 - Lambda actors cannot be named children in supervisor declarations
 
+### 2.1.4 Actor Interceptors
+
+An actor may declare one `#[intercept]` method around its receive handlers:
+
+```hew
+actor Store {
+    #[intercept]
+    fn guard(call: Call<Self>) -> Outcome<Self> {
+        if call.handler_name() == "erase" {
+            call.refuse("read-only store")
+        } else {
+            let outcome = call.proceed();
+            match outcome.response {
+                .Some(.read(value)) => println(value),
+                _ => {}
+            }
+            outcome
+        }
+    }
+
+    receive fn read() -> string { "stored value" }
+    receive fn erase() {}
+}
+```
+
+`Call<A>` owns one delivery. Its `request` field lends an `A.Request` enum,
+with one record variant per handler named after that handler and containing
+its parameters. `handler_name()` returns the handler's name. `caller()`
+returns `Caller.Task`, `Caller.Actor(ActorId)`, `Caller.Timer` or
+`Caller.Node(NodeId)` for an authenticated peer delivery. `ActorId` is an
+opaque incarnation identity with equality, hashing and display; it does not
+grant access to the actor.
+
+The interceptor must consume its call exactly once with `proceed()` or
+`refuse(reason)` and return the resulting `Outcome<A>`. Neither token may
+escape into fields, collections, closures or messages. Interceptors inspect
+requests and responses through borrows and cannot replace either value.
+
+`proceed()` invokes the next interceptor and then the handler. The returned
+outcome lends `response: Option<A.Response>`: `Some` contains the exact
+handler variant and its result; `None` means a layer refused the delivery.
+A unit or stream-start handler has a variant without a payload. A `fails E`
+handler carries its complete `Result<R, E>`. `failed()` reports that handler's
+declared failure, while `refused()` reports an interceptor refusal. An
+ordinary `Result`-valued handler does not count as a declared failure.
+
+A supervisor may declare one stateless generic interceptor with the signature
+`#[intercept] fn guard<A>(call: Call<A>) -> Outcome<A>`. Delivery enters the
+outermost supervisor's interceptor, each nested supervisor's, and then the
+actor's. Completion returns through these layers in reverse order. All layers
+execute within the receiving actor's turn. Refusal skips all inner layers.
+
+A refused completion call returns `Err(ActorError.Refused)` without crashing
+the actor. Mailbox acceptance remains an admission result; a later refusal
+emits an `actor.delivery_refused` event and warning containing the reason.
+A refused stream start faults the reader when it reads instead of returning
+clean end-of-stream, and leaves the producer actor alive. A panic before or
+after `proceed()` follows ordinary actor fault and supervision rules.
+
+Interceptors cover receive deliveries, including stream starts and `#[every]`
+ticks. Lifecycle hooks, system messages, replies and stream items do not
+enter an interceptor.
+
 ### 2.2 Failure model
 
 - Functions do not throw exceptions for control flow.
@@ -7896,6 +7959,7 @@ refuses the name it does not know rather than dropping it.
 | `#[real_time]` | `#[test]` function | Runs on the threaded scheduler with the host clock instead of the deterministic single-thread driver and virtual clock. |
 | `#[on(kind)]` | actor member `fn` | Lifecycle hook; `kind` is one of `start`, `stop`, `crash`, `exit`, `down` (§9.1.2). |
 | `#[every(<duration>)]` | actor `receive fn` | Periodic receive handler (§2.1.2). |
+| `#[intercept]` | actor or supervisor method | Typed receive interceptor (§2.1.4). |
 | `#[max_heap(N)]` | actor declaration | Per-actor arena ceiling; a breach is an unrecoverable actor failure (§2.1). |
 | `#[extern_symbol(name)]` | `fn` inside an `extern "C"` block or an `impl` block | Binds the declaration to a named C-ABI symbol (§3.9.1). Not legal on an actor member. |
 | `#[offload]` | `fn` inside an `extern "C"` block | A call parks its task while the function runs on the blocking pool (§3.9.1, §4.7). Takes no arguments. |

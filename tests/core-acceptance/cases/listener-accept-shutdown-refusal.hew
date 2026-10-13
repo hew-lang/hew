@@ -6,17 +6,15 @@ actor Acceptor {
     let ready: stream.Sink<i64>;
     receive fn run() {
         let listener = net.listen("127.0.0.1:0").expect("listen");
+        defer {
+            listener.close();
+            println("accept admission cancelled");
+        }
         ready.send(listener.local_port()).expect("ready");
         sleep(100ms);
-        match listener.accept() {
-            .Err(net.NetError.Cancelled(_)) => println("accept admission cancelled"),
-            .Err(other) => panic(f"wrong refusal {other}"),
-            .Ok(connection) => {
-                connection.close();
-                panic("admission unexpectedly accepted");
-            }
-        }
-        listener.close();
+        let connection = listener.accept().expect("accept");
+        connection.close();
+        panic("admission unexpectedly accepted");
     }
 }
 

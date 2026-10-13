@@ -107,6 +107,12 @@ pub(crate) fn run_module_pipeline(
             inkwell::passes::PassBuilderOptions::create(),
         )
         .map_err(|error| CodegenError::Llvm(format!("{pipeline} pass pipeline failed: {error}")))?;
+    unsafe extern "C" {
+        fn hewLLVMStabilizeDebugPhiValues(module: inkwell::llvm_sys::prelude::LLVMModuleRef);
+    }
+    // SAFETY: the shim only updates debug records and their pointer storage in
+    // this live module, after coroutine splitting has selected frame addresses.
+    unsafe { hewLLVMStabilizeDebugPhiValues(module.as_mut_ptr()) };
     module.verify().map_err(|error| {
         CodegenError::LlvmVerify(format!("module rejected after optimization: {error}"))
     })

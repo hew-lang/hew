@@ -1,18 +1,19 @@
-// The two `DIBuilder` variant-part entry points the LLVM-C API does not
-// expose. Without them an enum DIE can only list every variant's payload at
-// once, and a debugger renders the inactive ones as live data.
-//
-// Nothing else belongs here: every other debug node this backend builds has an
-// LLVM-C entry point that inkwell already wraps.
+// LLVM debug operations without an LLVM-C entry point. Variant parts preserve
+// enum payload identity; pointer-value locations need explicit storage after
+// coroutine splitting so the backend keeps address and value indirection apart.
 
 #include "llvm-c/DebugInfo.h"
 #include "llvm-c/Types.h"
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/DIBuilder.h"
 #include "llvm/IR/DebugInfoMetadata.h"
+#include "llvm/IR/DebugProgramInstruction.h"
+#include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/Metadata.h"
+#include "llvm/IR/Module.h"
 #include "llvm/IR/Value.h"
 #include "llvm/Support/Casting.h"
 
@@ -79,4 +80,42 @@ extern "C" LLVMMetadataRef hewLLVMDIBuilderCreateVariantPart(
       align_in_bits, DINode::FlagPublic, discriminator_node,
       unwrapBuilder(builder)->getOrCreateArray(nodes));
   return reinterpret_cast<LLVMMetadataRef>(part);
+}
+
+// CoroSplit stabilizes frame arguments this way in resumed functions. A ramp's
+// frame is a pointer PHI, which otherwise lowers as a spill address before its
+// field offsets are applied. Preserve the pointer value before those offsets.
+extern "C" void hewLLVMStabilizeDebugPhiValues(LLVMModuleRef module) {
+  auto *ir = reinterpret_cast<Module *>(module);
+  if (!ir->getNamedMetadata("llvm.dbg.cu"))
+    return;
+  for (auto &function : *ir) {
+    SmallVector<std::pair<DbgVariableRecord *, PHINode *>, 8> records;
+    for (auto &block : function)
+      for (auto &instruction : block)
+        for (auto &record : instruction.getDbgRecordRange())
+          if (auto *variable = dyn_cast<DbgVariableRecord>(&record))
+            if (variable->isDbgValue() && !variable->hasArgList() &&
+                variable->getNumVariableLocationOps() == 1)
+              if (auto *phi =
+                      dyn_cast<PHINode>(variable->getVariableLocationOp(0)))
+                if (phi->getType()->isPointerTy())
+                  records.push_back({variable, phi});
+
+    DenseMap<PHINode *, AllocaInst *> slots;
+    for (auto [variable, phi] : records) {
+      auto &slot = slots[phi];
+      if (!slot) {
+        IRBuilder<> entry(&function.getEntryBlock(),
+                          function.getEntryBlock().getFirstInsertionPt());
+        slot = entry.CreateAlloca(phi->getType(), nullptr, "debug.phi.value");
+        IRBuilder<> definition(phi->getParent(),
+                               phi->getParent()->getFirstInsertionPt());
+        definition.CreateStore(phi, slot);
+      }
+      variable->replaceVariableLocationOp(phi, slot);
+      variable->setExpression(DIExpression::prepend(variable->getExpression(),
+                                                    DIExpression::DerefBefore));
+    }
+  }
 }

@@ -149,7 +149,15 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 .build_store(slots[storage_id.0 as usize], loaded)
                 .llvm_ctx("store physical parameter")?;
             if let Some((emitter, function_debug, _)) = &debug {
-                emitter.local_value(function_debug, *storage_id, loaded, prologue)?;
+                // Resumable parameter stores execute after coroutine initialization.
+                emitter.local_value(
+                    function_debug,
+                    *storage_id,
+                    loaded,
+                    builder
+                        .get_insert_block()
+                        .expect("parameter store has a block"),
+                )?;
             }
             param_index += 1;
         }

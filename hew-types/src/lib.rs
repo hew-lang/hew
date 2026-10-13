@@ -46,7 +46,7 @@ mod wasm_capabilities_generated;
 
 mod callable;
 pub use callable::{
-    CallableFailureDomain, ClosureCaptureAccess, ClosureCaptureAcquisition,
+    CallableFailureDomain, CallableTypeParameter, ClosureCaptureAccess, ClosureCaptureAcquisition,
     ClosureCaptureConsumption,
 };
 
@@ -98,7 +98,9 @@ pub use lowering_facts::{
     DropKind, HashSetAbi, HashSetElementType, LoweringFact, LoweringFactError, LoweringKind,
 };
 pub use mangle::mangle_resolved_ty;
-pub use resolved_ty::{BoundaryError, NominalInstance, ResolvedTraitBound, ResolvedTy};
+pub use resolved_ty::{
+    substitute_type_params, BoundaryError, NominalInstance, ResolvedTraitBound, ResolvedTy,
+};
 pub use runtime_call::{
     vector_element_type, AsyncSuspendKind, DescriptorError, EncodingFormat, EncodingOp,
     MathIntrinsic, RuntimeArgumentContract, RuntimeArgumentEffect, RuntimeCReturn,

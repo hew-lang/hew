@@ -13,7 +13,21 @@ impl LowerCtx {
         field_ty: &ResolvedTy,
         span: Span,
     ) -> (HirExprKind, ResolvedTy) {
-        let ret_ty = match field_ty {
+        let instantiated = if matches!(field_ty, ResolvedTy::GenericCallable { .. }) {
+            self.call_type_args
+                .get(&self.mk_key(&span))
+                .and_then(|arguments| {
+                    arguments
+                        .iter()
+                        .map(ResolvedTy::from_ty)
+                        .collect::<Result<Vec<_>, _>>()
+                        .ok()
+                })
+                .and_then(|arguments| field_ty.instantiate_callable(&arguments))
+        } else {
+            None
+        };
+        let ret_ty = match instantiated.as_ref().unwrap_or(field_ty) {
             ResolvedTy::Function { ret, .. } | ResolvedTy::Closure { ret, .. } => (**ret).clone(),
             other => {
                 self.diagnostics.push(HirDiagnostic::new(

@@ -50,6 +50,17 @@ pub struct SemCaptureField {
     pub consumption: ClosureCaptureConsumption,
 }
 
+/// One concrete application shared by callable environment descriptors.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct CallableSpecializationId(pub u32);
+
+/// A concrete body borrowing or consuming its family's single environment.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SemClosureEntry {
+    pub body: CallableId,
+    pub specialization: Option<CallableSpecializationId>,
+}
+
 /// The semantic identity and contents of one owned closure environment.
 /// Its body signature starts with this exact closure type as receiver.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -58,7 +69,7 @@ pub struct SemClosure {
     pub generator_yield: Option<ResolvedTy>,
     pub id: ClosureId,
     pub instance: ClosureInstanceKey,
-    pub body: CallableId,
+    pub entries: Vec<SemClosureEntry>,
     pub ty: ResolvedTy,
     pub fields: Vec<SemCaptureField>,
 }
@@ -70,7 +81,7 @@ pub struct SemClosure {
 pub fn callable_parts(
     ty: &ResolvedTy,
 ) -> Result<(&[ResolvedTy], &ResolvedTy, CallableCapabilities), String> {
-    match ty {
+    match ty.callable_body() {
         ResolvedTy::Function {
             params,
             ret,
@@ -133,7 +144,29 @@ pub fn verify_callable_coercion(
     target: &ResolvedTy,
     facts: &TypeFactTable,
 ) -> Result<(), String> {
-    let (source_params, source_ret, source_caps) = callable_parts(source)?;
+    let alpha_source = match (source, target) {
+        (ResolvedTy::GenericCallable { .. }, ResolvedTy::GenericCallable { parameters, .. }) => {
+            let arguments: Vec<_> = parameters
+                .iter()
+                .map(|parameter| ResolvedTy::TypeParam {
+                    name: parameter.parameter,
+                })
+                .collect();
+            Some(
+                source
+                    .instantiate_callable(&arguments)
+                    .ok_or_else(|| "callable coercion changes quantifier arity".to_string())?,
+            )
+        }
+        (ResolvedTy::GenericCallable { .. }, _) | (_, ResolvedTy::GenericCallable { .. }) => {
+            return Err(
+                "quantifier elimination requires an explicit callable specialization".to_string(),
+            );
+        }
+        _ => None,
+    };
+    let (source_params, source_ret, source_caps) =
+        callable_parts(alpha_source.as_ref().unwrap_or(source))?;
     let (target_params, target_ret, target_caps) = callable_parts(target)?;
     if source_params != target_params || source_ret != target_ret {
         return Err("callable coercion changes an invariant argument or result type".to_string());
@@ -144,9 +177,10 @@ pub fn verify_callable_coercion(
     if let ResolvedTy::Closure {
         captures: target_captures,
         ..
-    } = target
+    } = target.callable_body()
     {
-        if !matches!(source, ResolvedTy::Closure { captures, .. } if captures == target_captures) {
+        if !matches!(source.callable_body(), ResolvedTy::Closure { captures, .. } if captures == target_captures)
+        {
             return Err(
                 "callable coercion invents or changes a concrete capture shape".to_string(),
             );
@@ -207,6 +241,10 @@ impl SemClosure {
     ///
     /// # Errors
     /// Refuses inconsistent semantic identities, field types or capabilities.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "checks one closure environment and all of its invocation entries"
+    )]
     pub fn validate(&self, module: &SemModule) -> Result<(), String> {
         if module.closure(self.id) != Some(self) {
             return Err("closure identity differs from its canonical table position".to_string());
@@ -214,26 +252,11 @@ impl SemClosure {
         let parent = module
             .callable(self.instance.enclosing)
             .ok_or_else(|| "closure has no exact enclosing callable instance".to_string())?;
-        let body = module
-            .callable(self.body)
-            .ok_or_else(|| "closure has no exact body callable".to_string())?;
-        if self.instance.enclosing.0 >= self.body.0
-            || body.instance != CallableInstance::Closure(self.id)
-            || body.kind != SemCallableKind::HewClosure
-            || body.function != parent.function
-            || body.declaration != parent.declaration
-            || body.source_origin != parent.source_origin
-        {
-            return Err(
-                "closure body identity or provenance differs from its enclosing instance"
-                    .to_string(),
-            );
-        }
         let ResolvedTy::Closure {
             captures,
             capabilities,
             ..
-        } = &self.ty
+        } = self.ty.callable_body()
         else {
             return Err(
                 "closure descriptor requires its concrete capture-bearing type".to_string(),
@@ -285,23 +308,65 @@ impl SemClosure {
             }
             OwnKind::of_ty(yielded, &module.type_facts)?;
         }
-        let mut signature = callable_value_signature(&self.ty, &module.type_facts)?;
-        signature.params.insert(
-            0,
-            SemAbiParam {
-                ty: self.ty.clone(),
-                passing: match capabilities.call {
-                    CallableCallMode::Read => SemParamPassing::Borrow,
-                    CallableCallMode::Var => SemParamPassing::BorrowMut,
-                    CallableCallMode::Once => SemParamPassing::Consume,
+        if !matches!(self.ty, ResolvedTy::GenericCallable { .. }) && self.entries.len() != 1 {
+            return Err("monomorphic closure requires exactly one invocation entry".to_string());
+        }
+        let mut specializations = std::collections::BTreeSet::new();
+        for entry in &self.entries {
+            if !specializations.insert(entry.specialization) {
+                return Err("closure repeats an invocation specialization".to_string());
+            }
+            let body = module
+                .callable(entry.body)
+                .ok_or_else(|| "closure has no exact body callable".to_string())?;
+            if self.instance.enclosing.0 >= entry.body.0
+                || body.instance != CallableInstance::Closure(self.id)
+                || body.kind != SemCallableKind::HewClosure
+                || body.function != parent.function
+                || body.declaration != parent.declaration
+                || body.source_origin != parent.source_origin
+            {
+                return Err(
+                    "closure body identity or provenance differs from its enclosing instance"
+                        .to_string(),
+                );
+            }
+            let invocation_ty = match entry.specialization {
+                Some(id) => self
+                    .ty
+                    .instantiate_callable(
+                        module
+                            .callable_specializations
+                            .get(id.0 as usize)
+                            .ok_or_else(|| {
+                                "closure specialization has no type arguments".to_string()
+                            })?,
+                    )
+                    .ok_or_else(|| {
+                        "closure entry arguments disagree with its scheme".to_string()
+                    })?,
+                None if !matches!(self.ty, ResolvedTy::GenericCallable { .. }) => self.ty.clone(),
+                None => return Err("generic closure has an unspecialized invocation".to_string()),
+            };
+            let mut signature = callable_value_signature(&invocation_ty, &module.type_facts)?;
+            signature.params.insert(
+                0,
+                SemAbiParam {
+                    ty: self.ty.clone(),
+                    passing: match capabilities.call {
+                        CallableCallMode::Read => SemParamPassing::Borrow,
+                        CallableCallMode::Var => SemParamPassing::BorrowMut,
+                        CallableCallMode::Once => SemParamPassing::Consume,
+                    },
+                    caller_visible_projection: capabilities.call == CallableCallMode::Var,
                 },
-                caller_visible_projection: capabilities.call == CallableCallMode::Var,
-            },
-        );
-        if body.signature != signature {
-            return Err(
-                "closure body signature differs from its receiver and source arguments".to_string(),
             );
+            if body.signature != signature {
+                return Err(
+                    "closure body signature differs from its receiver and source arguments"
+                        .to_string(),
+                );
+            }
         }
         Ok(())
     }
@@ -399,7 +464,10 @@ mod tests {
                     enclosing: CallableId(0),
                     literal: HirNodeId(7),
                 },
-                body: CallableId(1),
+                entries: vec![SemClosureEntry {
+                    body: CallableId(1),
+                    specialization: None,
+                }],
                 ty,
                 fields: vec![SemCaptureField {
                     binding: BindingId(4),
@@ -657,6 +725,7 @@ mod tests {
                         },
                     ],
                     terminator: SemTerminator::IndirectCall {
+                        specialization: None,
                         id: crate::OpId(2),
                         targets: crate::CallableTargets::default(),
                         callee: BoundaryOperand {

@@ -1853,17 +1853,17 @@ impl Checker {
                     if self.env.lookup_ref(obj_name).is_some() {
                         let field_ty = self.synthesize(&func.0, &func.1);
                         let resolved = self.subst.resolve(&field_ty);
-                        return self.check_call_with_type(&resolved, func, args, span);
+                        return self.check_call_with_type(&resolved, func, type_args, args, span);
                     }
                     format!("{obj_name}::{}", field.0)
                 } else {
                     let func_ty = self.synthesize(&func.0, &func.1);
-                    return self.check_call_with_type(&func_ty, func, args, span);
+                    return self.check_call_with_type(&func_ty, func, type_args, args, span);
                 }
             }
             _ => {
                 let func_ty = self.synthesize(&func.0, &func.1);
-                return self.check_call_with_type(&func_ty, func, args, span);
+                return self.check_call_with_type(&func_ty, func, type_args, args, span);
             }
         };
 
@@ -2616,40 +2616,6 @@ impl Checker {
             } else {
                 self.synthesize(&func.0, &func.1);
             }
-            if let Some(sig) = binding
-                .def_span
-                .as_ref()
-                .and_then(|def_span| {
-                    self.lambda_poly_sig_map
-                        .get(&SpanKey::in_module(def_span, self.current_module_idx))
-                })
-                .cloned()
-            {
-                let result = self
-                    .apply_instantiated_call_signature_with_assoc(
-                        &sig.call_sig,
-                        type_args,
-                        args,
-                        span,
-                        // A function value's type carries no parameter names.
-                        SignatureArgApplication::PositionalOnly {
-                            arity_context: "this function".to_string(),
-                        },
-                        // Record at every generic call site, turbofish or
-                        // inferred — see the resolved-fn path above.
-                        // `record_concrete_call_type_args` defers any
-                        // still-`Ty::Var` arg to the output-boundary prune, which
-                        // keeps the checker output fail-closed.
-                        true,
-                        // A lambda value has no `fn_sigs` key, so no generic body can have
-                        // raised an obligation against it.
-                        None,
-                    )
-                    .return_type;
-                self.check_callable_receiver(&binding.ty, func);
-                return result;
-            }
-
             let func_ty = binding.ty.clone();
             // Explicit fail-closed gate: a regular fn-closure must not capture a
             // lambda-actor handle (`actor(M) -> R`) and call it with call syntax.
@@ -2695,7 +2661,7 @@ impl Checker {
                 }
             }
 
-            let ret = self.check_call_with_type(&func_ty, func, args, span);
+            let ret = self.check_call_with_type(&func_ty, func, type_args, args, span);
             return ret;
         }
 
@@ -2885,12 +2851,31 @@ impl Checker {
         &mut self,
         func_ty: &Ty,
         func: &Spanned<Expr>,
+        type_args: Option<&[Spanned<TypeExpr>]>,
         args: &[CallArg],
         span: &Span,
     ) -> Ty {
         self.record_direct_call_target(span, CallTarget::IndirectFunctionValue);
         self.record_indirect_call_candidates(span, func);
         let resolved = self.normalize_for_use(func_ty);
+        if let Some(sig) = Self::generic_callable_signature(&resolved) {
+            let owner = self.generic_callable_owner(&resolved);
+            let applied = self.apply_instantiated_call_signature_with_assoc(
+                &sig,
+                type_args,
+                args,
+                span,
+                SignatureArgApplication::PositionalOnly {
+                    arity_context: "this function".into(),
+                },
+                true,
+                owner.as_deref().map(|key| GenericCallee::Function { key }),
+            );
+            self.reject_interceptor_return(&applied.return_type, span);
+            self.check_callable_receiver(func_ty, func);
+            return applied.return_type;
+        }
+
         match resolved {
             Ty::Function { params, ret, .. } | Ty::Closure { params, ret, .. } => {
                 if self.refuse_named_arguments(args, "a function value", span) {

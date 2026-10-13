@@ -1270,7 +1270,7 @@ impl LowerCtx {
                     .get(&key)
                     .cloned()
                     .unwrap_or(ResolvedTy::Unit);
-                self.record_static_trait_type_args(&span, site);
+                self.record_call_type_args(&span, site);
                 let lowered_args = self.lower_call_args(args, &span);
                 (
                     self.make_binder_trait_call(&call, lowered_args, ret_ty.clone(), &span),
@@ -1426,7 +1426,7 @@ impl LowerCtx {
                     }
                 }
 
-                self.record_static_trait_type_args(&span, site);
+                self.record_call_type_args(&span, site);
 
                 if requires_mutable_receiver {
                     let lowered_receiver = self.lower_expr(receiver, IntentKind::Consume);

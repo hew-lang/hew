@@ -97,7 +97,7 @@ impl LowerCtx {
     /// Preserve method-level instantiation facts until SIR selects the impl
     /// from the concrete receiver. Impl parameters are bound there separately;
     /// the checker recorded only the method's parameters at this call site.
-    pub(super) fn record_static_trait_type_args(&mut self, span: &Span, site: SiteId) {
+    pub(super) fn record_call_type_args(&mut self, span: &Span, site: SiteId) {
         let Some(arguments) = self.call_type_args.get(&self.mk_key(span)).cloned() else {
             return;
         };
@@ -110,11 +110,11 @@ impl LowerCtx {
                 Err(error) => {
                     self.diagnostics.push(HirDiagnostic::new(
                         HirDiagnosticKind::CheckerBoundaryViolation {
-                            name: "static trait method type arguments".to_string(),
+                            name: "call type arguments".to_string(),
                             reason: error.to_string(),
                         },
                         span.clone(),
-                        "static trait method requires checker-resolved type arguments",
+                        "call requires checker-resolved type arguments",
                     ));
                     return;
                 }

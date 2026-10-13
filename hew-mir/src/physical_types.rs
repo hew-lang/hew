@@ -413,7 +413,7 @@ pub struct PhysicalOffload {
 pub struct PhysicalClosure {
     pub generator_yield: Option<ResolvedTy>,
     pub id: ClosureId,
-    pub body: CallableId,
+    pub entries: Vec<hew_sir::SemClosureEntry>,
     pub ty: ResolvedTy,
 }
 
@@ -713,6 +713,7 @@ pub enum PhysicalOp {
     CallableCoerce {
         dest: StorageId,
         source: StorageId,
+        specialization: Option<hew_sir::CallableSpecializationId>,
     },
     /// Box the concrete value and pair it with its table's constant.
     DynMake {
@@ -1186,6 +1187,7 @@ pub enum PhysicalTerminator {
     },
     IndirectCall {
         targets: hew_sir::CallableTargets,
+        specialization: Option<hew_sir::CallableSpecializationId>,
         callee: ArgumentTransfer,
         signature: PhysicalCallSignature,
         args: Vec<ArgumentTransfer>,
@@ -1332,6 +1334,7 @@ pub struct PhysicalModule {
         BTreeMap<(ResolvedTy, hew_types::ValueCapability), PhysicalValueCapability>,
     pub target: PhysicalTarget,
     pub closures: Vec<PhysicalClosure>,
+    pub callable_specializations: Vec<Vec<ResolvedTy>>,
     pub vtables: Vec<PhysicalVtable>,
     /// `#[offload]` externs, indexed by [`hew_sir::OffloadId`].
     pub offloads: Vec<PhysicalOffload>,

@@ -891,7 +891,12 @@ fn type_expr_to_ty_with_params_and_context(
                 context,
             )],
         ),
-        TypeExpr::Infer => Ty::Error,
+        // Quantified annotations require the binders minted by source registration.
+        TypeExpr::Infer
+        | TypeExpr::Function {
+            type_params: Some(_),
+            ..
+        } => Ty::Error,
         TypeExpr::ActorFn {
             params,
             return_type,
@@ -919,6 +924,7 @@ fn type_expr_to_ty_with_params_and_context(
         }
         TypeExpr::Function {
             capabilities,
+            type_params: None,
             params,
             return_type,
         } => Ty::Function {

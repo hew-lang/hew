@@ -1,0 +1,9 @@
+fn main() -> i64 {
+    let captured = "owned".to_upper();
+    let once: fn[once]<T>(T) -> (string, T) = move |<T> value: T| -> (string, T) {
+        (captured, value)
+    };
+    once(1);
+    once<string>("second");
+    0
+}

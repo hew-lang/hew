@@ -455,6 +455,7 @@ impl Checker {
             | Ty::Array(_, _)
             | Ty::Slice(_)
             | Ty::Named { .. }
+            | Ty::GenericCallable { .. }
             | Ty::Function { .. }
             | Ty::Closure { .. }
             | Ty::Pointer { .. }
@@ -692,9 +693,7 @@ impl Checker {
         // `append` gives the receiver its own copy of every source element, so
         // an element that owns a closure environment has nothing to copy: a
         // shallow buffer copy would leave two owners of one environment.
-        if vec_method == VecMethod::Append
-            && matches!(elem_ty, Ty::Function { .. } | Ty::Closure { .. })
-        {
+        if vec_method == VecMethod::Append && elem_ty.callable_signature().is_some() {
             self.report_vec_symbol_unsupported(
                 vec_method,
                 &elem_ty,
@@ -721,7 +720,7 @@ impl Checker {
             abi: crate::vec_authority::classify_element(&elem_ty, self.type_def_view()),
             is_owned: self.element_owns_heap(&elem_ty),
             is_copy_layout,
-            is_function_like: matches!(elem_ty, Ty::Function { .. } | Ty::Closure { .. }),
+            is_function_like: elem_ty.callable_signature().is_some(),
             is_abstract,
         };
         match crate::vec_authority::resolve_runtime_symbol(
@@ -933,7 +932,7 @@ impl Checker {
             );
             return true;
         }
-        if matches!(elem_ty, Ty::Function { .. } | Ty::Closure { .. }) {
+        if elem_ty.callable_signature().is_some() {
             self.report_error(
                 TypeErrorKind::InvalidOperation,
                 span,

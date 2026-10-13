@@ -1,0 +1,97 @@
+type Identity {
+    apply: fn<T>(T) -> T;
+}
+
+fn make_identity() -> fn<T>(T) -> T {
+    |<T> value: T| -> T {
+        value
+    }
+}
+
+fn make_labeler() -> fn<T: Eq>(T) -> (string, bool, T) {
+    var label = "captured".to_upper();
+    let labeler = |<T: Eq> value: T| -> (string, bool, T) {
+        (label, value == value, value)
+    };
+    label = "changed";
+    labeler
+}
+
+fn make_once_label<L>(consume label: L) -> fn[once, suspends]<T>(T) -> (L, T) {
+    move |<T> value: T| -> (L, T) {
+        (label, value)
+    }
+}
+
+fn equal_values<E>(first: E, second: E) -> bool {
+    first == second
+}
+
+fn make_outer_test<L>(consume label: L) -> fn[once, suspends]<T>(T) -> bool {
+    move |<T> value: T| -> bool {
+        equal_values(label, label)
+    }
+}
+
+fn make_mixed_test<L: Eq>(consume label: L) -> fn[once, suspends]<T: Eq>(T) -> bool {
+    move |<T: Eq> value: T| -> bool {
+        let pair = (label, value);
+        pair == pair
+    }
+}
+
+fn apply_twice(f: fn[clone]<T>(T) -> T) -> bool {
+    f(49) == 49 && f<string>("argument") == "argument"
+}
+
+fn main() -> i64 {
+    let direct = |<T> value: T| -> T {
+        value
+    };
+    assert(direct(41) == 41);
+    assert(direct<string>("direct".to_upper()) == "DIRECT");
+    let number: fn(i64) -> i64 = direct;
+    assert(number(45) == 45);
+    assert(apply_twice(direct));
+    let stored = Identity { apply: make_identity() };
+    assert(stored.apply(42) == 42);
+    assert(stored.apply<string>("stored".to_upper()) == "STORED");
+    let labeler = make_labeler();
+    let (first_label, first_equal, first_value) = labeler(43);
+    assert(first_label == "CAPTURED" && first_equal && first_value == 43);
+    let (second_label, second_equal, second_value) = labeler<string>("labelled".to_upper());
+    assert(second_label == "CAPTURED" && second_equal && second_value == "LABELLED");
+    let count = 0;
+    var counted = capture(var count) |<T> value: T| -> (i64, T) {
+        count += 1;
+        sleep(1ms);
+        (count, value)
+    };
+    let (first_count, counted_number) = counted(44);
+    let (second_count, text) = counted<string>("shared".to_upper());
+    assert(first_count == 1 && counted_number == 44);
+    assert(second_count == 2 && text == "SHARED");
+    assert(count == 0);
+    var copied = clone counted;
+    let (copy_count, _) = copied(45);
+    let (original_count, _) = counted("original");
+    assert(copy_count == 3 && original_count == 3);
+    let outer = make_once_label("outer".to_upper());
+    let (outer_label, outer_number) = outer(46);
+    assert(outer_label == "OUTER" && outer_number == 46);
+    let view: fn[once, suspends](i64) -> (string, i64) = make_once_label("view".to_upper());
+    let (view_label, view_number) = view(47);
+    assert(view_label == "VIEW" && view_number == 47);
+    let chosen = if number(45) == 46 {
+        |<T> value: T| value
+    } else {
+        |<U> value: U| value
+    };
+    assert(chosen(48) == 48 && chosen<string>("chosen") == "chosen");
+    let outer_test = make_outer_test(50);
+    assert(outer_test("outer obligation"));
+    let mixed_test = make_mixed_test(51);
+    assert(mixed_test("mixed obligation"));
+    println("generic closure composition");
+    0
+}

@@ -524,6 +524,9 @@ pub(super) fn scan_expr_for_call_shape(
         HirExprKind::CancellationTokenIsCancelled { receiver }
         | HirExprKind::GeneratorNext { receiver, .. }
         | HirExprKind::RecordCloneCall { src: receiver, .. }
+        | HirExprKind::CallableSpecialize {
+            source: receiver, ..
+        }
         | HirExprKind::SubsumedValue {
             source: receiver, ..
         } => {

@@ -339,7 +339,8 @@ pub(crate) fn release_may_fault(
         let result = match ty {
             // A callable environment may capture a resource and an erased
             // vtable drop is not known until run time.
-            ResolvedTy::Function { .. }
+            ResolvedTy::GenericCallable { .. }
+            | ResolvedTy::Function { .. }
             | ResolvedTy::Closure { .. }
             | ResolvedTy::TraitObject { .. } => true,
             _ if ty.is_builtin(hew_types::BuiltinType::Stream)

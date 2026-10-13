@@ -1,8 +1,8 @@
 //! Binding-resolved callable construction and invocation contracts.
 
 use super::{
-    Checker, ClosureCaptureFact, Expr, HashSet, MarkerTrait, ResolvedTy, Span, Spanned, Ty,
-    TypeError, TypeErrorKind,
+    Checker, ClosureCaptureFact, Expr, HashMap, HashSet, MarkerTrait, ResolvedTy, Span, Spanned,
+    Ty, TypeError, TypeErrorKind,
 };
 use crate::env::{TypeBindingId, TypeEnv};
 use crate::{
@@ -655,9 +655,8 @@ impl Checker {
     }
 
     pub(super) fn check_callable_receiver(&mut self, ty: &Ty, callee: &Spanned<Expr>) {
-        let (Ty::Function { capabilities, .. } | Ty::Closure { capabilities, .. }) =
-            self.normalize_for_use(ty)
-        else {
+        let normalized = self.normalize_for_use(ty);
+        let Some((capabilities, _, _)) = normalized.callable_signature() else {
             return;
         };
         let place = self.expr_place(&callee.0);
@@ -870,7 +869,7 @@ impl Checker {
     }
 
     pub(super) fn callable_erasure_loses_obligation(&self, expected: &Ty, actual: &Ty) -> bool {
-        match (expected, actual) {
+        match (expected.callable_body(), actual.callable_body()) {
             (Ty::Function { .. }, Ty::Closure { .. }) => {
                 let Ok(actual) = ResolvedTy::from_ty(actual) else {
                     return false;
@@ -924,7 +923,7 @@ impl Checker {
             let field = (Ident::new(method), span.clone());
             self.record_field_resolution(receiver, &field);
             let callable_ty = field_ty.to_ty();
-            if matches!(&callable_ty, Ty::Function { .. } | Ty::Closure { .. }) {
+            if callable_ty.callable_signature().is_some() {
                 let candidates = self.callable_field_candidates(receiver, &field);
                 self.indirect_call_candidates.insert(key, candidates);
             }
@@ -971,11 +970,74 @@ impl Checker {
         self.subst.resolve(left)
     }
 
+    fn join_quantified_callables(&mut self, left: &Ty, right: &Ty) -> Option<Ty> {
+        let (
+            Ty::GenericCallable {
+                parameters: left_params,
+                callable: left_body,
+            },
+            Ty::GenericCallable {
+                parameters: right_params,
+                callable: right_body,
+            },
+        ) = (left, right)
+        else {
+            return None;
+        };
+        if left_params.len() != right_params.len() {
+            return None;
+        }
+        let alpha: HashMap<_, _> = right_params
+            .iter()
+            .zip(left_params)
+            .map(|(right, left)| (right.parameter, Ty::param(left.parameter)))
+            .collect();
+        let right_body = right_body.substitute_type_params_parallel(&alpha);
+        let callable = self.join_callable_types(left_body, &right_body)?;
+        let parameters = left_params
+            .iter()
+            .zip(right_params)
+            .map(|(left, right)| {
+                let mut parameter = left.clone();
+                for bound in &right.bounds {
+                    let bound = crate::TraitObjectBound {
+                        trait_name: bound.trait_name.clone(),
+                        trait_id: bound.trait_id,
+                        args: bound
+                            .args
+                            .iter()
+                            .map(|ty| ty.substitute_type_params_parallel(&alpha))
+                            .collect(),
+                        assoc_bindings: bound
+                            .assoc_bindings
+                            .iter()
+                            .map(|(name, ty)| {
+                                (name.clone(), ty.substitute_type_params_parallel(&alpha))
+                            })
+                            .collect(),
+                    };
+                    if !parameter.bounds.contains(&bound) {
+                        parameter.bounds.push(bound);
+                    }
+                }
+                crate::TraitObjectBound::sort_canonical(&mut parameter.bounds);
+                parameter
+            })
+            .collect();
+        Some(Ty::GenericCallable {
+            parameters,
+            callable: Box::new(callable),
+        })
+    }
+
     pub(super) fn join_callable_types(&mut self, left: &Ty, right: &Ty) -> Option<Ty> {
         if left == right {
             return Some(left.clone());
         }
         match (left, right) {
+            (Ty::GenericCallable { .. }, Ty::GenericCallable { .. }) => {
+                self.join_quantified_callables(left, right)
+            }
             (
                 Ty::Function {
                     capabilities: lc,

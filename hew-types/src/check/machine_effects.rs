@@ -343,7 +343,11 @@ fn collect_released_resources(
                 );
             }
             for member in &declaration.members {
-                let member = crate::value_class::substitute(member, &declaration.type_params, args);
+                let member = crate::resolved_ty::substitute_type_params(
+                    member,
+                    &declaration.type_params,
+                    args,
+                );
                 collect_released_resources(&member, output, found, seen);
             }
         }
@@ -388,7 +392,7 @@ fn unstageable_field(
             let Ok(ty) = ResolvedTy::from_ty(ty) else {
                 continue;
             };
-            let ty = crate::value_class::substitute(&ty, &definition.type_params, args);
+            let ty = crate::resolved_ty::substitute_type_params(&ty, &definition.type_params, args);
             if facts
                 .require(&ty)
                 .is_ok_and(|facts| facts.clone == CloneKind::None)

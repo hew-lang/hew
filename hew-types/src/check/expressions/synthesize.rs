@@ -8,7 +8,6 @@
 )]
 use super::super::branch_join::{BranchArmExit, BranchBody};
 use super::super::coerce::{cast_is_valid, common_integer_type, common_numeric_type};
-use super::super::types::GenericLambdaSig;
 #[allow(
     clippy::wildcard_imports,
     reason = "submodules mirror the legacy check namespace during the split"

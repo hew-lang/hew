@@ -118,6 +118,36 @@ pub struct TraitObjectBound {
 }
 
 impl TraitObjectBound {
+    fn fmt_with_numeric_names(
+        &self,
+        f: &mut fmt::Formatter<'_>,
+        i64_name: &str,
+        f64_name: &str,
+    ) -> fmt::Result {
+        write!(f, "{}", self.trait_name)?;
+        if !self.args.is_empty() || !self.assoc_bindings.is_empty() {
+            write!(f, "<")?;
+            let mut needs_comma = false;
+            for arg in &self.args {
+                if needs_comma {
+                    write!(f, ", ")?;
+                }
+                arg.fmt_with_numeric_names(f, i64_name, f64_name)?;
+                needs_comma = true;
+            }
+            for (name, ty) in &self.assoc_bindings {
+                if needs_comma {
+                    write!(f, ", ")?;
+                }
+                write!(f, "{name} = ")?;
+                ty.fmt_with_numeric_names(f, i64_name, f64_name)?;
+                needs_comma = true;
+            }
+            write!(f, ">")?;
+        }
+        Ok(())
+    }
+
     /// Order a trait object's bounds canonically, so every spelling of one
     /// set of traits is one type (R1): declared traits by identity first, then
     /// compiler predicates, then unresolved bounds (already reported).
@@ -532,6 +562,12 @@ pub enum Ty {
         params: Vec<Ty>,
         /// Return type
         ret: Box<Ty>,
+    },
+
+    /// A callable whose own binders are instantiated independently at each use.
+    GenericCallable {
+        parameters: Vec<crate::CallableTypeParameter<TraitObjectBound>>,
+        callable: Box<Ty>,
     },
 
     /// The concrete type of one closure literal or of a named function used
@@ -1102,6 +1138,34 @@ impl Ty {
                 write!(f, ") -> ")?;
                 ret.fmt_with_numeric_names(f, i64_name, f64_name)
             }
+            Ty::GenericCallable {
+                parameters,
+                callable,
+            } => {
+                let (capabilities, params, ret) = callable
+                    .callable_signature()
+                    .expect("quantified callable wraps a callable signature");
+                write!(f, "fn{capabilities}<")?;
+                for (index, parameter) in parameters.iter().enumerate() {
+                    if index != 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}", parameter.parameter)?;
+                    for (index, bound) in parameter.bounds.iter().enumerate() {
+                        write!(f, "{}", if index == 0 { ": " } else { " + " })?;
+                        bound.fmt_with_numeric_names(f, i64_name, f64_name)?;
+                    }
+                }
+                write!(f, ">(")?;
+                for (index, param) in params.iter().enumerate() {
+                    if index != 0 {
+                        write!(f, ", ")?;
+                    }
+                    param.fmt_with_numeric_names(f, i64_name, f64_name)?;
+                }
+                write!(f, ") -> ")?;
+                ret.fmt_with_numeric_names(f, i64_name, f64_name)
+            }
             Ty::Pointer {
                 is_mutable,
                 pointee,
@@ -1119,57 +1183,16 @@ impl Ty {
             }
             Ty::TraitObject { traits } => {
                 write!(f, "dyn ")?;
-                if traits.len() == 1 {
-                    let bound = &traits[0];
-                    write!(f, "{}", bound.trait_name)?;
-                    if !bound.args.is_empty() || !bound.assoc_bindings.is_empty() {
-                        write!(f, "<")?;
-                        let mut needs_comma = false;
-                        for arg in &bound.args {
-                            if needs_comma {
-                                write!(f, ", ")?;
-                            }
-                            arg.fmt_with_numeric_names(f, i64_name, f64_name)?;
-                            needs_comma = true;
-                        }
-                        for (assoc_name, assoc_ty) in &bound.assoc_bindings {
-                            if needs_comma {
-                                write!(f, ", ")?;
-                            }
-                            write!(f, "{assoc_name} = ")?;
-                            assoc_ty.fmt_with_numeric_names(f, i64_name, f64_name)?;
-                            needs_comma = true;
-                        }
-                        write!(f, ">")?;
-                    }
-                } else {
+                if traits.len() != 1 {
                     write!(f, "(")?;
-                    for (i, bound) in traits.iter().enumerate() {
-                        if i > 0 {
-                            write!(f, " + ")?;
-                        }
-                        write!(f, "{}", bound.trait_name)?;
-                        if !bound.args.is_empty() || !bound.assoc_bindings.is_empty() {
-                            write!(f, "<")?;
-                            let mut needs_comma = false;
-                            for arg in &bound.args {
-                                if needs_comma {
-                                    write!(f, ", ")?;
-                                }
-                                arg.fmt_with_numeric_names(f, i64_name, f64_name)?;
-                                needs_comma = true;
-                            }
-                            for (assoc_name, assoc_ty) in &bound.assoc_bindings {
-                                if needs_comma {
-                                    write!(f, ", ")?;
-                                }
-                                write!(f, "{assoc_name} = ")?;
-                                assoc_ty.fmt_with_numeric_names(f, i64_name, f64_name)?;
-                                needs_comma = true;
-                            }
-                            write!(f, ">")?;
-                        }
+                }
+                for (index, bound) in traits.iter().enumerate() {
+                    if index != 0 {
+                        write!(f, " + ")?;
                     }
+                    bound.fmt_with_numeric_names(f, i64_name, f64_name)?;
+                }
+                if traits.len() != 1 {
                     write!(f, ")")?;
                 }
                 Ok(())
@@ -1919,6 +1942,35 @@ impl Ty {
             || self.any_child(&Self::contains_callable)
     }
 
+    /// The callable contract beneath its source-owned quantifiers.
+    #[must_use]
+    pub fn callable_body(&self) -> &Self {
+        match self {
+            Self::GenericCallable { callable, .. } => callable.callable_body(),
+            _ => self,
+        }
+    }
+
+    /// The callable contract, before instantiating any quantified binders.
+    #[must_use]
+    pub fn callable_signature(&self) -> Option<(crate::CallableCapabilities, &[Ty], &Ty)> {
+        match self {
+            Self::Function {
+                capabilities,
+                params,
+                ret,
+            }
+            | Self::Closure {
+                capabilities,
+                params,
+                ret,
+                ..
+            } => Some((*capabilities, params, ret)),
+            Self::GenericCallable { callable, .. } => callable.callable_signature(),
+            _ => None,
+        }
+    }
+
     /// Check if this type contains a specific type variable (occurs check).
     #[must_use]
     pub fn contains_var(&self, v: TypeVar) -> bool {
@@ -1976,6 +2028,32 @@ impl Ty {
     /// Leaf types (primitives, Var, Error) return `self.clone()`.
     pub(crate) fn map_children(&self, f: &mut impl FnMut(&Ty) -> Ty) -> Ty {
         match self {
+            Ty::GenericCallable {
+                parameters,
+                callable,
+            } => Ty::GenericCallable {
+                parameters: parameters
+                    .iter()
+                    .map(|parameter| crate::CallableTypeParameter {
+                        parameter: parameter.parameter,
+                        bounds: parameter
+                            .bounds
+                            .iter()
+                            .map(|bound| TraitObjectBound {
+                                trait_name: bound.trait_name.clone(),
+                                trait_id: bound.trait_id,
+                                args: bound.args.iter().map(&mut *f).collect(),
+                                assoc_bindings: bound
+                                    .assoc_bindings
+                                    .iter()
+                                    .map(|(name, ty)| (name.clone(), f(ty)))
+                                    .collect(),
+                            })
+                            .collect(),
+                    })
+                    .collect(),
+                callable: Box::new(f(callable)),
+            },
             Ty::Tuple(elems) => Ty::Tuple(elems.iter().map(&mut *f).collect()),
             Ty::Array(elem, size) => Ty::Array(Box::new(f(elem)), *size),
             Ty::Slice(elem) => Ty::Slice(Box::new(f(elem))),
@@ -2047,6 +2125,18 @@ impl Ty {
     /// Check if any child type satisfies a predicate (boolean fold).
     fn any_child(&self, f: &impl Fn(&Ty) -> bool) -> bool {
         match self {
+            Ty::GenericCallable {
+                parameters,
+                callable,
+            } => {
+                f(callable)
+                    || parameters.iter().any(|parameter| {
+                        parameter.bounds.iter().any(|bound| {
+                            bound.args.iter().any(f)
+                                || bound.assoc_bindings.iter().any(|(_, ty)| f(ty))
+                        })
+                    })
+            }
             Ty::Tuple(elems) => elems.iter().any(f),
             Ty::Array(elem, _) | Ty::Slice(elem) => f(elem),
             Ty::Named { args, .. } => args.iter().any(f),
@@ -2070,6 +2160,31 @@ impl Ty {
     /// Whether this type contains a resolved generic binder.
     #[must_use]
     pub fn has_type_parameters(&self) -> bool {
+        if let Self::GenericCallable {
+            parameters,
+            callable,
+        } = self
+        {
+            let bound = parameters
+                .iter()
+                .map(|parameter| (parameter.parameter, Self::Unit))
+                .collect();
+            return callable
+                .substitute_type_params_parallel(&bound)
+                .has_type_parameters()
+                || parameters.iter().any(|parameter| {
+                    parameter.bounds.iter().any(|bound_type| {
+                        bound_type
+                            .args
+                            .iter()
+                            .chain(bound_type.assoc_bindings.iter().map(|(_, ty)| ty))
+                            .any(|ty| {
+                                ty.substitute_type_params_parallel(&bound)
+                                    .has_type_parameters()
+                            })
+                    })
+                });
+        }
         matches!(
             self,
             Ty::Named {
@@ -2082,6 +2197,10 @@ impl Ty {
     /// Whether this type contains the selected generic binder.
     #[must_use]
     pub fn mentions_type_param(&self, parameter: ParamHead) -> bool {
+        if matches!(self, Self::GenericCallable { parameters, .. } if parameters.iter().any(|bound| bound.parameter == parameter))
+        {
+            return false;
+        }
         self.as_type_param(parameter)
             || self.any_child(&|child| child.mentions_type_param(parameter))
     }
@@ -2089,6 +2208,10 @@ impl Ty {
     /// Substitute one declaration-owned generic parameter.
     #[must_use]
     pub fn substitute_type_param(&self, parameter: ParamHead, replacement: &Ty) -> Ty {
+        if matches!(self, Self::GenericCallable { parameters, .. } if parameters.iter().any(|bound| bound.parameter == parameter))
+        {
+            return self.clone();
+        }
         if self.as_type_param(parameter) {
             return replacement.clone();
         }
@@ -2098,6 +2221,18 @@ impl Ty {
     /// Substitute bound parameters simultaneously without rewriting replacements.
     #[must_use]
     pub fn substitute_type_params_parallel(&self, map: &HashMap<ParamHead, Ty>) -> Ty {
+        if let Self::GenericCallable { parameters, .. } = self {
+            let outer = map
+                .iter()
+                .filter(|(parameter, _)| {
+                    !parameters
+                        .iter()
+                        .any(|bound| bound.parameter == **parameter)
+                })
+                .map(|(parameter, ty)| (*parameter, ty.clone()))
+                .collect();
+            return self.map_children(&mut |child| child.substitute_type_params_parallel(&outer));
+        }
         if let Ty::Named {
             head: TypeHead::Param(parameter),
             args,

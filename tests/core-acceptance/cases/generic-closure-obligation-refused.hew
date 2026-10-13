@@ -1,0 +1,9 @@
+fn make_equal() -> fn<T>(T) -> bool {
+    |<T> value: T| -> bool { value == value }
+}
+
+fn main() -> i64 {
+    let equal = make_equal();
+    let _result = equal(|n: i64| n);
+    0
+}

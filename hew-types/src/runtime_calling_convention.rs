@@ -255,9 +255,11 @@ impl RuntimeCallingConvention {
             // (the boxing/unboxing emission lives in codegen's vec-op
             // marshalling); it deliberately avoids a 16-byte element
             // width class and any `_layout` witness entry.
-            Ty::Pointer { .. } | Ty::Borrow { .. } | Ty::Function { .. } | Ty::Closure { .. } => {
-                Self::Pointer
-            }
+            Ty::Pointer { .. }
+            | Ty::Borrow { .. }
+            | Ty::GenericCallable { .. }
+            | Ty::Function { .. }
+            | Ty::Closure { .. } => Self::Pointer,
 
             // LayoutDescriptor: every value-shaped Ty *and* every
             // `Ty::Named` (fail-closed: callers must consult

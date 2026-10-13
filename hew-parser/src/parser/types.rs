@@ -303,6 +303,7 @@ impl Parser<'_> {
             Some(Token::Fn) => {
                 self.advance();
                 let capabilities = self.parse_callable_capabilities()?;
+                let type_params = self.parse_opt_type_params()?;
                 self.expect(&Token::LeftParen)?;
 
                 let mut params = Vec::new();
@@ -324,6 +325,7 @@ impl Parser<'_> {
 
                 TypeExpr::Function {
                     capabilities,
+                    type_params,
                     params,
                     return_type,
                 }

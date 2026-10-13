@@ -95,72 +95,9 @@ fn assert_resolved_return_hole(source: &str, sig_name: &str, expected_parameter:
     );
 }
 
-fn ty_contains_unresolved_var(ty: &Ty) -> bool {
-    match ty {
-        Ty::Var(_) => true,
-        Ty::Tuple(elems) => elems.iter().any(ty_contains_unresolved_var),
-        Ty::Array(elem, _) | Ty::Slice(elem) => ty_contains_unresolved_var(elem),
-        Ty::Named { args, .. } => args.iter().any(ty_contains_unresolved_var),
-        Ty::Function { params, ret, .. } => {
-            params.iter().any(ty_contains_unresolved_var) || ty_contains_unresolved_var(ret)
-        }
-        Ty::Closure {
-            params,
-            ret,
-            captures,
-            ..
-        } => {
-            params.iter().any(ty_contains_unresolved_var)
-                || ty_contains_unresolved_var(ret)
-                || captures.iter().any(ty_contains_unresolved_var)
-        }
-        Ty::Pointer { pointee, .. } | Ty::Borrow { pointee } => ty_contains_unresolved_var(pointee),
-        Ty::TraitObject { traits } => traits
-            .iter()
-            .flat_map(|bound| bound.args.iter())
-            .any(ty_contains_unresolved_var),
-        Ty::I8
-        | Ty::I16
-        | Ty::I32
-        | Ty::I64
-        | Ty::U8
-        | Ty::U16
-        | Ty::U32
-        | Ty::U64
-        | Ty::Isize
-        | Ty::Usize
-        | Ty::F32
-        | Ty::F64
-        | Ty::IntLiteral
-        | Ty::FloatLiteral
-        | Ty::Bool
-        | Ty::Char
-        | Ty::String
-        | Ty::Bytes
-        | Ty::CancellationToken
-        | Ty::Duration
-        | Ty::Unit
-        | Ty::Never
-        | Ty::Error => false,
-        // Task<T> is compiler-internal; checking its inner type for inference
-        // variables is still meaningful if Task<T> were ever produced during
-        // type-checking (today it is only produced during HIR lowering after
-        // the checker has run, so this arm is structurally unreachable here).
-        Ty::Task(inner) => ty_contains_unresolved_var(inner),
-        // AssocType { base, .. }: recurse into the base carrier, matching the
-        // Task<T> precedent. A still-unresolved projection carrier is itself
-        // a checker-internal leak, but this helper is for inference-var
-        // detection specifically.
-        Ty::AssocType { base, .. } => ty_contains_unresolved_var(base),
-    }
-}
-
 fn assert_expr_type_output_has_no_unresolved_ty_vars(output: &hew_types::TypeCheckOutput) {
     assert!(
-        output
-            .expr_types
-            .values()
-            .all(|ty| !ty_contains_unresolved_var(ty)),
+        output.expr_types.values().all(|ty| !ty.has_inference_var()),
         "expr_types leaked unresolved Ty::Var: {:?}",
         output.expr_types
     );
@@ -1453,18 +1390,14 @@ fn main() {
         .get("id")
         .unwrap_or_else(|| panic!("expected function signature for id"));
     assert!(
-        sig.params.iter().all(|ty| !ty_contains_unresolved_var(ty))
-            && !ty_contains_unresolved_var(&sig.return_type),
+        sig.params.iter().all(|ty| !ty.has_inference_var()) && !sig.return_type.has_inference_var(),
         "signature id leaked unresolved Ty::Var: {sig:?}"
     );
     let ty_def = output
         .type_def_at_path("Box")
         .unwrap_or_else(|| panic!("expected type def for Box"));
     assert!(
-        ty_def
-            .fields
-            .values()
-            .all(|ty| !ty_contains_unresolved_var(ty)),
+        ty_def.fields.values().all(|ty| !ty.has_inference_var()),
         "Box fields leaked unresolved Ty::Var: {:?}",
         ty_def.fields
     );

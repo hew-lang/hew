@@ -213,7 +213,10 @@ fn factory_body(module: &sir::SemModule, weak_once: bool, invoke: bool) -> sir::
     let receiver = if weak_once {
         ops.push(op(
             2,
-            sir::SemOpKind::CallableCoerce { source: operand(1) },
+            sir::SemOpKind::CallableCoerce {
+                source: operand(1),
+                specialization: None,
+            },
             Some((2, exposed.clone(), OwnKind::Owned)),
         ));
         2
@@ -261,6 +264,7 @@ fn factory_body(module: &sir::SemModule, weak_once: bool, invoke: bool) -> sir::
                 args: vec![],
                 ops,
                 terminator: sir::SemTerminator::IndirectCall {
+                    specialization: None,
                     targets: sir::CallableTargets::default(),
                     id: sir::OpId(4),
                     callee: boundary(receiver, decision),
@@ -393,7 +397,10 @@ fn counter_module(
                 enclosing: CallableId(0),
                 literal: hew_hir::HirNodeId(7),
             },
-            body: CallableId(1),
+            entries: vec![sir::SemClosureEntry {
+                body: CallableId(1),
+                specialization: None,
+            }],
             ty,
             fields: vec![sir::SemCaptureField {
                 binding: hew_hir::BindingId(0),

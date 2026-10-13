@@ -7,3 +7,13 @@ fn closures() -> i32 {
     let twice = |x: i32| -> i32 { inc(inc(x)) };
     twice(closure_probe(5))
 }
+
+fn generic_identity() -> fn<T>(T) -> T {
+    |<T> value: T| -> T { value }
+}
+
+fn quantified_closures() -> i64 {
+    let identity = generic_identity();
+    assert(identity<string>("editor") == "editor");
+    identity(9)
+}

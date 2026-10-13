@@ -844,8 +844,34 @@ impl Builder<'_, '_> {
             CallTarget::IndirectFunctionValue => {
                 let ty = self.ty(&callee.ty);
                 self.service.require_type_facts(&ty)?;
-                let signature =
-                    crate::callable_value_signature(&ty, self.service.checked_facts.rows())?;
+                let (invocation_ty, specialization) =
+                    if matches!(ty, ResolvedTy::GenericCallable { .. }) {
+                        let arguments = self
+                            .service
+                            .module
+                            .call_site_type_args
+                            .get(&expr.site)
+                            .ok_or_else(|| {
+                                "generic callable invocation has no checked type arguments"
+                                    .to_string()
+                            })?
+                            .iter()
+                            .map(|argument| self.ty(argument))
+                            .collect::<Vec<_>>();
+                        let invocation = ty.instantiate_callable(&arguments).ok_or_else(|| {
+                            "generic callable arguments disagree with its quantifiers".to_string()
+                        })?;
+                        let specialization = self
+                            .service
+                            .request_callable_specialization(&ty, arguments)?;
+                        (invocation, Some(specialization))
+                    } else {
+                        (ty.clone(), None)
+                    };
+                let signature = crate::callable_value_signature(
+                    &invocation_ty,
+                    self.service.checked_facts.rows(),
+                )?;
                 let (_, _, capabilities) = crate::callable_parts(&ty)?;
                 let value = if capabilities.call == hew_types::CallableCallMode::Once {
                     self.lower_consuming_value(callee)?
@@ -864,6 +890,7 @@ impl Builder<'_, '_> {
                             decision,
                         },
                         site: expr.site,
+                        specialization,
                     },
                     signature,
                     None,

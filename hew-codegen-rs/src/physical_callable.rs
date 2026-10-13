@@ -475,7 +475,7 @@ use hew_mir::physical::{ClosureId, PhysicalClosure, StorageOrigin};
 
 fn callable_descriptor_type(ctx: &Context) -> inkwell::types::StructType<'_> {
     let pointer = ctx.ptr_type(AddressSpace::default());
-    ctx.struct_type(&[pointer.into(); 5], false)
+    ctx.struct_type(&[pointer.into(); 6], false)
 }
 
 fn callable_carrier<'ctx>(
@@ -502,6 +502,16 @@ fn function_descriptor_symbol(id: CallableId) -> String {
 }
 fn closure_descriptor_symbol(id: ClosureId) -> String {
     format!("__hew_callable_closure_{}", id.0)
+}
+
+fn closure_entry_descriptor_symbol(
+    id: ClosureId,
+    specialization: Option<hew_mir::physical::CallableSpecializationId>,
+) -> String {
+    specialization.map_or_else(
+        || closure_descriptor_symbol(id),
+        |entry| format!("__hew_callable_closure_{}_entry_{}", id.0, entry.0),
+    )
 }
 
 fn invocation_suspends(
@@ -536,13 +546,18 @@ fn invocation_suspends(
 impl<'ctx> ModuleEmitter<'ctx, '_> {
     pub(super) fn emit_callable_descriptors(&self) -> CodegenResult<()> {
         for closure in &self.module.closures {
-            let body = callable(self.module, closure.body)?;
-            self.emit_callable_descriptor(
-                &closure_descriptor_symbol(closure.id),
-                body,
-                &closure.ty,
-                Some(closure),
-            )?;
+            for entry in &closure.entries {
+                let body = callable(self.module, entry.body)?;
+                self.emit_callable_descriptor(
+                    &closure_entry_descriptor_symbol(closure.id, entry.specialization),
+                    body,
+                    &closure.ty,
+                    Some(closure),
+                )?;
+            }
+            if matches!(closure.ty, ResolvedTy::GenericCallable { .. }) {
+                self.emit_callable_family_descriptor(closure)?;
+            }
         }
         let mut functions = BTreeMap::new();
         for function in &self.module.functions {
@@ -560,6 +575,68 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                 None,
             )?;
         }
+        Ok(())
+    }
+
+    fn emit_callable_family_descriptor(&self, closure: &PhysicalClosure) -> CodegenResult<()> {
+        let pointer = self.ctx.ptr_type(AddressSpace::default());
+        let index = self
+            .module
+            .environment_glue
+            .iter()
+            .position(|glue| glue.ty == closure.ty)
+            .ok_or_else(|| {
+                CodegenError::FailClosed("generic closure lacks an environment recipe".into())
+            })?;
+        let environment = self
+            .llvm
+            .get_global(&environment_descriptor_symbol(index))
+            .ok_or_else(|| {
+                CodegenError::FailClosed("generic closure lacks its environment layout".into())
+            })?;
+        let mut entries = vec![pointer.const_null(); self.module.callable_specializations.len()];
+        for entry in &closure.entries {
+            let id = entry.specialization.ok_or_else(|| {
+                CodegenError::FailClosed("generic closure has a monomorphic entry".into())
+            })?;
+            let descriptor = self
+                .llvm
+                .get_global(&closure_entry_descriptor_symbol(closure.id, Some(id)))
+                .ok_or_else(|| {
+                    CodegenError::FailClosed(
+                        "generic closure invocation lacks its descriptor".into(),
+                    )
+                })?;
+            entries[id.0 as usize] = descriptor.as_pointer_value();
+        }
+        let table_pointer = if entries.is_empty() {
+            pointer.const_null()
+        } else {
+            let values = pointer.const_array(&entries);
+            let table = self.llvm.add_global(
+                values.get_type(),
+                None,
+                &format!("{}_entries", closure_descriptor_symbol(closure.id)),
+            );
+            table.set_linkage(Linkage::Internal);
+            table.set_constant(true);
+            table.set_initializer(&values);
+            table.as_pointer_value()
+        };
+        let descriptor_ty = callable_descriptor_type(self.ctx);
+        let descriptor =
+            self.llvm
+                .add_global(descriptor_ty, None, &closure_descriptor_symbol(closure.id));
+        descriptor.set_linkage(Linkage::Internal);
+        descriptor.set_constant(true);
+        descriptor.set_initializer(&descriptor_ty.const_named_struct(&[
+            environment.as_pointer_value().into(),
+            pointer.const_null().into(),
+            pointer.const_null().into(),
+            pointer.const_null().into(),
+            pointer.const_null().into(),
+            table_pointer.into(),
+        ]));
         Ok(())
     }
 
@@ -656,6 +733,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
             once.as_global_value().as_pointer_value().into(),
             synchronous_borrow.into(),
             synchronous_once.into(),
+            pointer.const_null().into(),
         ]));
         Ok(())
     }
@@ -1027,6 +1105,70 @@ pub(super) fn capture_parameter_slot<'ctx>(
 }
 
 impl<'ctx> FunctionEmitter<'_, 'ctx> {
+    fn select_callable_descriptor(
+        &self,
+        descriptor: PointerValue<'ctx>,
+        specialization: Option<hew_mir::physical::CallableSpecializationId>,
+    ) -> CodegenResult<PointerValue<'ctx>> {
+        let Some(id) = specialization else {
+            return Ok(descriptor);
+        };
+        let pointer = self.ctx.ptr_type(AddressSpace::default());
+        let table_slot = self
+            .builder
+            .build_struct_gep(
+                callable_descriptor_type(self.ctx),
+                descriptor,
+                5,
+                "callable.specializations",
+            )
+            .llvm_ctx("select callable specialization table")?;
+        let table = self
+            .builder
+            .build_load(pointer, table_slot, "callable.specialization.table")
+            .llvm_ctx("load callable specialization table")?
+            .into_pointer_value();
+        // SAFETY: SIR selected this index in the module's descriptor table.
+        let slot = unsafe {
+            self.builder.build_in_bounds_gep(
+                pointer,
+                table,
+                &[self.ctx.i32_type().const_int(u64::from(id.0), false)],
+                "callable.specialization.slot",
+            )
+        }
+        .llvm_ctx("select concrete callable entry")?;
+        Ok(self
+            .builder
+            .build_load(pointer, slot, "callable.specialization")
+            .llvm_ctx("load concrete callable descriptor")?
+            .into_pointer_value())
+    }
+
+    pub(super) fn emit_callable_coerce(
+        &self,
+        dest: StorageId,
+        source: StorageId,
+        specialization: Option<hew_mir::physical::CallableSpecializationId>,
+    ) -> CodegenResult<()> {
+        let mut carrier = self.load(source, "callable.coerce")?.into_struct_value();
+        if specialization.is_some() {
+            let descriptor = self
+                .builder
+                .build_extract_value(carrier, 1, "callable.family")
+                .llvm_ctx("load generic callable descriptor")?
+                .into_pointer_value();
+            let selected = self.select_callable_descriptor(descriptor, specialization)?;
+            carrier = self
+                .builder
+                .build_insert_value(carrier, selected, 1, "callable.specialized")
+                .llvm_ctx("select invocation while preserving environment")?
+                .into_struct_value();
+        }
+        self.store(dest, carrier.into())?;
+        self.clear_owned(source)
+    }
+
     pub(super) fn set_capture_initialized(
         &self,
         id: StorageId,
@@ -1123,6 +1265,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
     pub(super) fn emit_indirect_call(&self, call: &PhysicalTerminator) -> CodegenResult<()> {
         let PhysicalTerminator::IndirectCall {
             targets,
+            specialization,
             callee,
             signature,
             args,
@@ -1158,11 +1301,16 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 .module
                 .closures
                 .iter()
-                .find(|closure| closure.body == target)
-                .map_or_else(
-                    || function_descriptor_symbol(target),
-                    |closure| closure_descriptor_symbol(closure.id),
-                );
+                .find_map(|closure| {
+                    closure
+                        .entries
+                        .iter()
+                        .find(|entry| entry.body == target)
+                        .map(|entry| {
+                            closure_entry_descriptor_symbol(closure.id, entry.specialization)
+                        })
+                })
+                .unwrap_or_else(|| function_descriptor_symbol(target));
             self.llvm
                 .get_global(&name)
                 .ok_or_else(|| {
@@ -1170,7 +1318,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 })?
                 .as_pointer_value()
         } else {
-            loaded_descriptor
+            self.select_callable_descriptor(loaded_descriptor, *specialization)?
         };
         let entry_slot = self
             .builder

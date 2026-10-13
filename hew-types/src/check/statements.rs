@@ -338,12 +338,15 @@ impl Checker {
         };
         // `Ty::Closure` is the type of one closure literal; a written binding
         // type is a `Ty::Function`, which needs no widening.
-        if !matches!(self.subst.resolve(target_ty), Ty::Closure { .. }) {
+        if !matches!(
+            self.subst.resolve(target_ty).callable_body(),
+            Ty::Closure { .. }
+        ) {
             return None;
         }
         let value_ty = self.synthesize(&value.0, &value.1);
         if !matches!(
-            self.subst.resolve(&value_ty),
+            self.subst.resolve(&value_ty).callable_body(),
             Ty::Closure { .. } | Ty::Function { .. }
         ) {
             return None;
@@ -1151,23 +1154,7 @@ impl Checker {
                 } else {
                     pattern
                 };
-                // Consume the scratch field unconditionally so stale state
-                // never accumulates across statements.  Only register the
-                // generic call signature in lambda_poly_sig_map when the binding value is
-                // *directly* a generic lambda expression — indirect nesting
-                // (a generic lambda buried inside a call argument, etc.) must
-                // not be treated as a let-bound generic lambda.
-                let generic_sig = self.last_lambda_generic_sig.take();
-                let value_is_direct_generic_lambda = value.as_ref().is_some_and(|(val, _)| {
-                    matches!(
-                        val,
-                        Expr::Lambda {
-                            type_params: Some(tps),
-                            ..
-                        } if !tps.is_empty()
-                    )
-                });
-                if ty.is_none() && !value_is_direct_generic_lambda {
+                if ty.is_none() {
                     let more_specific_hole_vars: Vec<_> = self.deferred_inference_holes
                         [deferred_hole_mark..]
                         .iter()
@@ -1270,18 +1257,6 @@ impl Checker {
                     }
                     self.env
                         .set_collection_borrow(*name, collection_borrow.clone());
-                    // Register generic lambda binding for call-site inference.
-                    // Both guards must hold: the scratch field was populated
-                    // AND the let value is itself (not just contains) a generic
-                    // lambda expression.
-                    if value_is_direct_generic_lambda {
-                        if let Some(sig) = generic_sig {
-                            self.lambda_poly_sig_map.insert(
-                                SpanKey::in_module(&pattern.1, self.current_module_idx),
-                                sig,
-                            );
-                        }
-                    }
                     // Track let-bound numeric literals for later coercion at
                     // use sites. Only an unannotated immutable binding records
                     // its literal value here; an annotated binding already has
@@ -1524,7 +1499,6 @@ impl Checker {
                         self.record_value_transfer(value, span);
                     }
                 }
-                let generic_sig = self.last_lambda_generic_sig.take();
                 let val_ty = if ty.is_none() {
                     self.infer_integer_literal_binding_type(value.as_ref(), val_ty)
                         .materialize_literal_defaults()
@@ -1536,16 +1510,7 @@ impl Checker {
                         self.record_type(vs, &val_ty);
                     }
                 }
-                let value_is_direct_generic_lambda = value.as_ref().is_some_and(|(val, _)| {
-                    matches!(
-                        val,
-                        Expr::Lambda {
-                            type_params: Some(tps),
-                            ..
-                        } if !tps.is_empty()
-                    )
-                });
-                if ty.is_none() && !value_is_direct_generic_lambda {
+                if ty.is_none() {
                     let more_specific_hole_vars: Vec<_> = self.deferred_inference_holes
                         [deferred_hole_mark..]
                         .iter()
@@ -1574,12 +1539,6 @@ impl Checker {
                 self.record_binding_value_candidates(*name, value.as_ref());
                 self.record_local_resolution(*name, name_span);
                 self.env.set_collection_borrow(*name, collection_borrow);
-                if value_is_direct_generic_lambda {
-                    if let Some(sig) = generic_sig {
-                        self.lambda_poly_sig_map
-                            .insert(SpanKey::in_module(span, self.current_module_idx), sig);
-                    }
-                }
             }
             Stmt::Assign { target, op, value } => {
                 // `self.count = ...` in an actor body writes the state binding

@@ -48,7 +48,51 @@ impl ResolvedTy {
     /// A named type renders by its head's declaration spelling.
     #[must_use]
     pub fn canonical_string(&self) -> String {
+        self.canonical_string_with_binders(&std::collections::BTreeMap::new())
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one canonical descriptor match covers every resolved type"
+    )]
+    fn canonical_string_with_binders(
+        &self,
+        binders: &std::collections::BTreeMap<crate::TypeParamId, usize>,
+    ) -> String {
+        let render = |ty: &Self| ty.canonical_string_with_binders(binders);
+        let list = |types: &[Self]| types.iter().map(render).collect::<Vec<_>>().join(",");
+        let head_name = |head: &crate::TypeHead| match head {
+            crate::TypeHead::Param(parameter) if binders.contains_key(&parameter.id) => {
+                format!("${}", binders[&parameter.id])
+            }
+            _ => head.registry_key().to_string(),
+        };
         match self {
+            ResolvedTy::GenericCallable {
+                parameters,
+                callable,
+            } => {
+                let mut scope = binders.clone();
+                for parameter in parameters {
+                    let index = scope.len();
+                    scope.insert(parameter.parameter.id, index);
+                }
+                let parameters = parameters
+                    .iter()
+                    .map(|parameter| {
+                        let bounds = ResolvedTy::TraitObject {
+                            traits: parameter.bounds.clone(),
+                        }
+                        .canonical_string_with_binders(&scope);
+                        format!("{}:{bounds}", scope[&parameter.parameter.id])
+                    })
+                    .collect::<Vec<_>>()
+                    .join(",");
+                format!(
+                    "forall<{parameters}>{}",
+                    callable.canonical_string_with_binders(&scope)
+                )
+            }
             ResolvedTy::I8 => "i8".into(),
             ResolvedTy::I16 => "i16".into(),
             ResolvedTy::I32 => "i32".into(),
@@ -70,30 +114,26 @@ impl ResolvedTy {
             ResolvedTy::Unit => "unit".into(),
             ResolvedTy::Never => "never".into(),
             ResolvedTy::Tuple(elems) => {
-                let inner: Vec<String> = elems.iter().map(Self::canonical_string).collect();
+                let inner: Vec<String> = elems.iter().map(render).collect();
                 format!("({})", inner.join(","))
             }
             ResolvedTy::Array(elem, n) => {
-                format!("[{};{}]", elem.canonical_string(), n)
+                format!("[{};{}]", render(elem), n)
             }
             ResolvedTy::Slice(elem) => {
-                format!("[{}]", elem.canonical_string())
+                format!("[{}]", render(elem))
             }
-            ResolvedTy::Named { head, args, .. } if args.is_empty() => head.registry_key().into(),
+            ResolvedTy::Named { head, args, .. } if args.is_empty() => head_name(head),
             ResolvedTy::Named { head, args, .. } => {
-                let arg_strs: Vec<String> = args.iter().map(Self::canonical_string).collect();
-                format!("{}<{}>", head.registry_key(), arg_strs.join(","))
+                let arg_strs: Vec<String> = args.iter().map(render).collect();
+                format!("{}<{}>", head_name(head), arg_strs.join(","))
             }
             ResolvedTy::Function {
                 capabilities,
                 params,
                 ret,
             } => {
-                format!(
-                    "fn{capabilities}({})->{}",
-                    canonical_type_list(params),
-                    ret.canonical_string()
-                )
+                format!("fn{capabilities}({})->{}", list(params), render(ret))
             }
             ResolvedTy::Closure {
                 params,
@@ -101,11 +141,11 @@ impl ResolvedTy {
                 captures,
                 capabilities,
             } => {
-                let cap_strs: Vec<String> = captures.iter().map(Self::canonical_string).collect();
+                let cap_strs: Vec<String> = captures.iter().map(render).collect();
                 format!(
                     "closure{capabilities}({})->{}{{{}}}",
-                    canonical_type_list(params),
-                    ret.canonical_string(),
+                    list(params),
+                    render(ret),
                     cap_strs.join(",")
                 )
             }
@@ -113,16 +153,16 @@ impl ResolvedTy {
                 is_mutable: true,
                 pointee,
             } => {
-                format!("*mut {}", pointee.canonical_string())
+                format!("*mut {}", render(pointee))
             }
             ResolvedTy::Pointer {
                 is_mutable: false,
                 pointee,
             } => {
-                format!("*const {}", pointee.canonical_string())
+                format!("*const {}", render(pointee))
             }
             ResolvedTy::Borrow { pointee } => {
-                format!("&{}", pointee.canonical_string())
+                format!("&{}", render(pointee))
             }
             ResolvedTy::TraitObject { traits } => {
                 let bound_strs: Vec<String> = traits
@@ -131,12 +171,11 @@ impl ResolvedTy {
                         if b.args.is_empty() && b.assoc_bindings.is_empty() {
                             b.trait_name.clone()
                         } else {
-                            let mut arg_strs: Vec<String> =
-                                b.args.iter().map(Self::canonical_string).collect();
+                            let mut arg_strs: Vec<String> = b.args.iter().map(render).collect();
                             arg_strs.extend(
                                 b.assoc_bindings
                                     .iter()
-                                    .map(|(name, ty)| format!("{name}={}", ty.canonical_string())),
+                                    .map(|(name, ty)| format!("{name}={}", render(ty))),
                             );
                             format!("{}<{}>", b.trait_name, arg_strs.join(","))
                         }
@@ -147,12 +186,14 @@ impl ResolvedTy {
             // Task<T> is compiler-internal and not wire-serialisable; the
             // canonical string uses the same `<task<T>>` spelling as `Display`
             // so diagnostic output is consistent.
-            ResolvedTy::Task(inner) => format!("<task<{}>>", inner.canonical_string()),
+            ResolvedTy::Task(inner) => format!("<task<{}>>", render(inner)),
             // An abstract parameter mangles to its bare name. A `TypeParam`
             // only appears in pre-monomorphisation (polymorphic) form; once
             // substituted it becomes a concrete `ResolvedTy` with its own
             // canonical string, so this never feeds a final linkable symbol.
-            ResolvedTy::TypeParam { name } => name.spelling.to_string(),
+            ResolvedTy::TypeParam { name } => binders
+                .get(&name.id)
+                .map_or_else(|| name.spelling.to_string(), |index| format!("${index}")),
         }
     }
 
@@ -219,12 +260,4 @@ impl ResolvedTy {
         }
         Self::from_ty(ty)
     }
-}
-
-fn canonical_type_list(types: &[ResolvedTy]) -> String {
-    types
-        .iter()
-        .map(ResolvedTy::canonical_string)
-        .collect::<Vec<_>>()
-        .join(",")
 }

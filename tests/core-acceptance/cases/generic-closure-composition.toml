@@ -1,0 +1,10 @@
+[[case]]
+id = "generic-closure-composition"
+intent = "Quantified closures retain one captured environment across inferred and explicit type applications, returned and stored values, bounded equality, and monomorphic invocation views."
+source = "cases/generic-closure-composition.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "generic closure composition\n"
+exit = 0

@@ -244,6 +244,9 @@ pub(super) fn collect_captures_walk(
         HirExprKind::CancellationTokenIsCancelled { receiver }
         | HirExprKind::GeneratorNext { receiver, .. }
         | HirExprKind::RecordCloneCall { src: receiver, .. }
+        | HirExprKind::CallableSpecialize {
+            source: receiver, ..
+        }
         | HirExprKind::SubsumedValue {
             source: receiver, ..
         } => {
@@ -506,6 +509,9 @@ pub(super) fn collect_general_closure_captures_walk(
         HirExprKind::CancellationTokenIsCancelled { receiver }
         | HirExprKind::GeneratorNext { receiver, .. }
         | HirExprKind::RecordCloneCall { src: receiver, .. }
+        | HirExprKind::CallableSpecialize {
+            source: receiver, ..
+        }
         | HirExprKind::SubsumedValue {
             source: receiver, ..
         } => {

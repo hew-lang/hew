@@ -630,6 +630,7 @@ impl Checker {
                 &resolved,
                 Ty::Tuple(_)
                     | Ty::Array(_, _)
+                    | Ty::GenericCallable { .. }
                     | Ty::Function { .. }
                     | Ty::Closure { .. }
                     | Ty::Named {
@@ -642,6 +643,7 @@ impl Checker {
                 &resolved,
                 Ty::Tuple(_)
                     | Ty::Array(_, _)
+                    | Ty::GenericCallable { .. }
                     | Ty::Function { .. }
                     | Ty::Closure { .. }
                     | Ty::Named {

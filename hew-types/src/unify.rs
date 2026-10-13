@@ -274,6 +274,50 @@ fn relate_types(subst: &mut Substitution, a: &Ty, b: &Ty, weaken: bool) -> Resul
         // Structural: slices
         (Ty::Slice(a_elem), Ty::Slice(b_elem)) => relate(subst, a_elem, b_elem),
 
+        (
+            Ty::GenericCallable {
+                parameters: left,
+                callable: left_callable,
+            },
+            Ty::GenericCallable {
+                parameters: right,
+                callable: right_callable,
+            },
+        ) => {
+            if left.len() != right.len() {
+                return Err(UnifyError::ArityMismatch {
+                    expected: left.len(),
+                    actual: right.len(),
+                });
+            }
+            let rename = right
+                .iter()
+                .zip(left)
+                .map(|(right, left)| (right.parameter, Ty::param(left.parameter)))
+                .collect();
+            for (left, right) in left.iter().zip(right) {
+                let Ty::TraitObject { traits: actual } = (Ty::TraitObject {
+                    traits: right.bounds.clone(),
+                })
+                .substitute_type_params_parallel(&rename) else {
+                    unreachable!("substitution preserves the trait-bound container")
+                };
+                if !actual.iter().all(|bound| left.bounds.contains(bound))
+                    || (!weaken && !left.bounds.iter().all(|bound| actual.contains(bound)))
+                {
+                    return Err(UnifyError::Mismatch {
+                        expected: a_resolved.clone(),
+                        actual: b_resolved.clone(),
+                    });
+                }
+            }
+            relate(
+                subst,
+                left_callable,
+                &right_callable.substitute_type_params_parallel(&rename),
+            )
+        }
+
         // Callable signatures are invariant. A value coercion can weaken
         // receiver capability and forget independent duplication evidence.
         (

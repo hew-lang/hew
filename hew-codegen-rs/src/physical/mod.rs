@@ -306,7 +306,7 @@ fn realize_layout(
             CodegenError::FailClosed(format!("{}: {}", ty.user_facing(), error.message))
         })?;
     }
-    let captures = match ty {
+    let captures = match ty.callable_body() {
         ResolvedTy::Closure { captures, .. } => Some(captures.as_slice()),
         ResolvedTy::Function { .. } => Some([].as_slice()),
         _ => None,
@@ -724,7 +724,8 @@ fn primitive_repr(
         | ResolvedTy::Array(_, _) => PhysicalRepr::Pointer,
         // A trait object is the runtime's two-word `HewTraitObject`:
         // the boxed value and its dispatch table.
-        ResolvedTy::Function { .. }
+        ResolvedTy::GenericCallable { .. }
+        | ResolvedTy::Function { .. }
         | ResolvedTy::Closure { .. }
         | ResolvedTy::TraitObject { .. } => PhysicalRepr::Struct(vec![
             pointer_layout(ctx, target)?,

@@ -8079,7 +8079,27 @@ fn label(colour: Colour) -> string {
             "v05_closures",
             include_str!("../../tests/fixtures/v05_closures.hew"),
             "closure_probe",
-            &["closure_probe", "closures"],
+            &[
+                "closure_probe",
+                "closures",
+                "generic_identity",
+                "quantified_closures",
+            ],
+        );
+        let source = include_str!("../../tests/fixtures/v05_closures.hew");
+        let doc = make_typed_doc(source);
+        assert_no_hard_type_errors("v05_closures", &doc);
+        let hover = hew_analysis::hover::hover(
+            source,
+            &doc.parse_result,
+            doc.type_output.as_ref(),
+            source.rfind("generic_identity").unwrap(),
+        )
+        .expect("quantified return type has hover information");
+        assert!(
+            hover.contents.contains("fn<T>(T) -> T"),
+            "{}",
+            hover.contents
         );
     }
 

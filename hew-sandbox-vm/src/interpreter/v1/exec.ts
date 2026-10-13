@@ -887,7 +887,8 @@ class ExecutorV1 {
         const shape = this.closureAt(op.closure);
         this.define(act, op.dst, {
           kind: "closure",
-          body: shape.body,
+          entries: shape.entries,
+          specialization: null,
           environment: {
             kind: "record",
             typeId: "",
@@ -896,12 +897,28 @@ class ExecutorV1 {
         });
         return;
       }
-      case "callable.coerce":
-        // A coercion only weakens the callable's proved capabilities; SIR
-        // refuses one that changes an argument, a result or a capture shape,
-        // so the value itself is unchanged.
-        this.define(act, op.dst, this.read(act, op.source));
+      case "callable.coerce": {
+        const callable = this.read(act, op.source);
+        if (op.specialization === null) {
+          this.define(act, op.dst, callable);
+        } else {
+          if (
+            callable.kind !== "closure" ||
+            !callable.entries.some(
+              (entry) => entry.specialization === op.specialization,
+            )
+          ) {
+            throw new Error(
+              "callable specialization has no checked invocation entry",
+            );
+          }
+          this.define(act, op.dst, {
+            ...callable,
+            specialization: op.specialization,
+          });
+        }
         return;
+      }
       case "dyn.make":
         this.define(act, op.dst, {
           kind: "dyn",
@@ -1357,7 +1374,7 @@ class ExecutorV1 {
         const callee = this.boundary(act, term.callee);
         const args = term.args.map((operand) => this.boundary(act, operand));
         this.current = this.activate(
-          this.functionAt(calleeFunction(callee)),
+          this.functionAt(calleeFunction(callee, term.specialization)),
           callee.kind === "closure" ? [callee.environment, ...args] : args,
           act,
           term.result,
@@ -4069,12 +4086,22 @@ function sendErrorRole(reason: string): RuntimeVariantRole {
   }
 }
 
-function calleeFunction(value: VmValue): number {
+function calleeFunction(
+  value: VmValue,
+  specialization: number | null = null,
+): number {
   switch (value.kind) {
     case "function":
       return Number(value.id);
-    case "closure":
-      return value.body;
+    case "closure": {
+      const selected = specialization ?? value.specialization;
+      const entry = value.entries.find(
+        (candidate) => candidate.specialization === selected,
+      );
+      if (!entry)
+        throw new Error("callable has no selected concrete invocation entry");
+      return entry.body;
+    }
     default:
       throw new TypeError(
         `indirect.call expected a callable value, got ${value.kind}`,

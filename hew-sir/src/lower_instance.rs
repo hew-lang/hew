@@ -33,6 +33,9 @@ impl<'a> InstanceService<'a> {
             synthetic_sources: HashMap::new(),
             closures_by_instance: HashMap::new(),
             closure_sources: Vec::new(),
+            callable_specializations: Vec::new(),
+            callable_demands: BTreeMap::new(),
+            callable_coercions: BTreeSet::new(),
             vtables: Vec::new(),
             vtables_by_erasure: HashMap::new(),
             offloads: Vec::new(),
@@ -1070,10 +1073,27 @@ impl<'a> InstanceService<'a> {
             // Actor handlers have synthesized HIR functions outside the
             // ordinary item table; nested closures must retain that source too.
             let parent = self.input_for_callable(closure.instance.enclosing)?;
+            let mut substitution = substitution.clone();
+            let entry = closure
+                .entries
+                .iter()
+                .find(|entry| entry.body == callable)
+                .ok_or_else(|| "closure body has no invocation entry".to_string())?;
+            if let Some(id) = entry.specialization {
+                let ResolvedTy::GenericCallable { parameters, .. } = &closure.ty else {
+                    return Err("monomorphic closure has a generic entry".to_string());
+                };
+                substitution
+                    .params
+                    .extend(parameters.iter().map(|parameter| parameter.parameter));
+                substitution
+                    .args
+                    .extend(self.callable_specializations[id.0 as usize].iter().cloned());
+            }
             return Ok(LoweringInput {
                 function: parent.function,
                 callable: callable_meta,
-                substitution: substitution.clone(),
+                substitution,
                 source: BodySource::Closure(expression.clone()),
             });
         }
@@ -1381,13 +1401,8 @@ impl<'a> InstanceService<'a> {
         let HirExprKind::Closure { captures, .. } = &expression.kind else {
             return Err("closure demand requires a checked literal".to_string());
         };
-        let parent = self
-            .callable(enclosing)
-            .cloned()
-            .ok_or_else(|| "closure has no enclosing instance".to_string())?;
         let ty = substitution.apply(&expression.ty);
         self.require_type_facts(&ty)?;
-        let (_, _, capabilities) = crate::callable_parts(&ty)?;
         let fields: Vec<_> = captures
             .iter()
             .map(|capture| crate::SemCaptureField {
@@ -1400,11 +1415,73 @@ impl<'a> InstanceService<'a> {
         for field in &fields {
             self.require_type_facts(&field.ty)?;
         }
-        let mut signature = crate::callable_value_signature(&ty, self.checked_facts.rows())?;
+        let id = crate::ClosureId(
+            u32::try_from(self.closures.len())
+                .map_err(|_| "closure count exceeds u32".to_string())?,
+        );
+        self.closures.push(crate::SemClosure {
+            generator_yield: None,
+            id,
+            instance,
+            entries: Vec::new(),
+            ty: ty.clone(),
+            fields,
+        });
+        self.closure_sources
+            .push((Box::new(expression.clone()), substitution.clone()));
+        self.closures_by_instance.insert(instance, id);
+        if matches!(ty, ResolvedTy::GenericCallable { .. }) {
+            self.fulfil_callable_demands()?;
+        } else {
+            self.request_closure_entry(id, None)?;
+        }
+        Ok(id)
+    }
+
+    pub(super) fn request_closure_entry(
+        &mut self,
+        closure: crate::ClosureId,
+        specialization: Option<crate::CallableSpecializationId>,
+    ) -> Result<CallableId, String> {
+        let environment = self
+            .closures
+            .get(closure.0 as usize)
+            .cloned()
+            .ok_or_else(|| "closure entry has no environment".to_string())?;
+        if let Some(entry) = environment
+            .entries
+            .iter()
+            .find(|entry| entry.specialization == specialization)
+        {
+            return Ok(entry.body);
+        }
+        if self.table.callables.len() >= SIR_GENERIC_INSTANCE_CAP + self.table.admissible.len() {
+            return Err("callable specialization limit exceeded".to_string());
+        }
+        let invocation_ty = match specialization {
+            Some(id) => environment
+                .ty
+                .instantiate_callable(
+                    self.callable_specializations
+                        .get(id.0 as usize)
+                        .ok_or_else(|| "closure entry has no type arguments".to_string())?,
+                )
+                .ok_or_else(|| {
+                    "closure entry arguments do not match its quantifiers".to_string()
+                })?,
+            None if !matches!(environment.ty, ResolvedTy::GenericCallable { .. }) => {
+                environment.ty.clone()
+            }
+            None => return Err("generic closure entry requires concrete arguments".to_string()),
+        };
+        self.require_type_facts(&invocation_ty)?;
+        let (_, _, capabilities) = crate::callable_parts(&invocation_ty)?;
+        let mut signature =
+            crate::callable_value_signature(&invocation_ty, self.checked_facts.rows())?;
         signature.params.insert(
             0,
             SemAbiParam {
-                ty: ty.clone(),
+                ty: environment.ty.clone(),
                 passing: match capabilities.call {
                     hew_types::CallableCallMode::Read => SemParamPassing::Borrow,
                     hew_types::CallableCallMode::Var => SemParamPassing::BorrowMut,
@@ -1414,37 +1491,28 @@ impl<'a> InstanceService<'a> {
             },
         );
         self.require_signature_shapes(&signature)?;
-        let id = crate::ClosureId(
-            u32::try_from(self.closures.len())
-                .map_err(|_| "closure count exceeds u32".to_string())?,
-        );
+        let parent = self
+            .callable(environment.instance.enclosing)
+            .cloned()
+            .ok_or_else(|| "closure entry has no enclosing instance".to_string())?;
         let body = CallableId(
             u32::try_from(self.table.callables.len())
                 .map_err(|_| "callable count exceeds u32".to_string())?,
         );
-        let symbol = format!("{}$closure${}", parent.symbol, expression.node.0);
-        if self
-            .table
-            .callables
-            .iter()
-            .any(|callable| callable.symbol == symbol)
-        {
-            return Err("closure symbol conflicts with another exact callable".to_string());
-        }
-        self.closures.push(crate::SemClosure {
-            generator_yield: None,
-            id,
-            instance,
-            body,
-            ty,
-            fields,
-        });
-        self.closure_sources
-            .push((Box::new(expression.clone()), substitution.clone()));
-        self.closures_by_instance.insert(instance, id);
+        let suffix = specialization.map_or_else(String::new, |id| format!("$entry${}", id.0));
+        let symbol = format!(
+            "{}$closure${}{}",
+            parent.symbol, environment.instance.literal.0, suffix
+        );
+        self.closures[closure.0 as usize]
+            .entries
+            .push(crate::SemClosureEntry {
+                body,
+                specialization,
+            });
         self.table.callables.push(SemCallable {
             id: body,
-            instance: CallableInstance::Closure(id),
+            instance: CallableInstance::Closure(closure),
             symbol,
             signature,
             kind: SemCallableKind::HewClosure,
@@ -1453,7 +1521,102 @@ impl<'a> InstanceService<'a> {
         self.states.push(CallableState::Queued);
         self.statuses.push(None);
         self.pending.push_back(body);
+        Ok(body)
+    }
+
+    pub(super) fn request_callable_specialization(
+        &mut self,
+        scheme: &ResolvedTy,
+        arguments: Vec<ResolvedTy>,
+    ) -> Result<crate::CallableSpecializationId, String> {
+        if scheme.instantiate_callable(&arguments).is_none() {
+            return Err("callable specialization disagrees with its checked scheme".to_string());
+        }
+        for argument in &arguments {
+            if !is_supported_instance_type_arg(self.module, &self.checked_facts, argument) {
+                return Err(
+                    "callable specialization requires concrete semantic arguments".to_string(),
+                );
+            }
+        }
+        let index = if let Some(index) = self
+            .callable_specializations
+            .iter()
+            .position(|known| known == &arguments)
+        {
+            index
+        } else {
+            let index = self.callable_specializations.len();
+            if index >= SIR_GENERIC_INSTANCE_CAP {
+                return Err("callable specialization limit exceeded".to_string());
+            }
+            self.callable_specializations.push(arguments);
+            index
+        };
+        let id = crate::CallableSpecializationId(
+            u32::try_from(index)
+                .map_err(|_| "callable specialization count exceeds u32".to_string())?,
+        );
+        self.callable_demands
+            .entry(scheme.clone())
+            .or_default()
+            .insert(id);
+        self.fulfil_callable_demands()?;
         Ok(id)
+    }
+
+    pub(super) fn register_callable_coercion(
+        &mut self,
+        source: &ResolvedTy,
+        target: &ResolvedTy,
+    ) -> Result<(), String> {
+        if matches!(
+            (source, target),
+            (
+                ResolvedTy::GenericCallable { .. },
+                ResolvedTy::GenericCallable { .. }
+            )
+        ) {
+            self.callable_coercions
+                .insert((source.clone(), target.clone()));
+            self.fulfil_callable_demands()?;
+        }
+        Ok(())
+    }
+
+    fn fulfil_callable_demands(&mut self) -> Result<(), String> {
+        loop {
+            let mut changed = false;
+            for (source, target) in &self.callable_coercions {
+                let demands = self
+                    .callable_demands
+                    .get(target)
+                    .cloned()
+                    .unwrap_or_default();
+                let source_demands = self.callable_demands.entry(source.clone()).or_default();
+                for demand in demands {
+                    changed |= source_demands.insert(demand);
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+        let entries: Vec<_> = self
+            .closures
+            .iter()
+            .flat_map(|closure| {
+                self.callable_demands
+                    .get(&closure.ty)
+                    .into_iter()
+                    .flatten()
+                    .map(move |id| (closure.id, *id))
+            })
+            .collect();
+        for (closure, specialization) in entries {
+            self.request_closure_entry(closure, Some(specialization))?;
+        }
+        Ok(())
     }
 
     pub(super) fn request_instance(
@@ -1635,6 +1798,7 @@ impl<'a> InstanceService<'a> {
             used_templates,
             mut functions,
             closures,
+            callable_specializations,
             actors,
             supervisors,
             vtables,
@@ -1721,6 +1885,7 @@ impl<'a> InstanceService<'a> {
             supervisors,
             resources,
             closures,
+            callable_specializations,
             vtables,
             callables: table.callables,
             generic_templates,

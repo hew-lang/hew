@@ -70,6 +70,7 @@ pub struct SemActorHandler {
     pub declaration: DefId,
     pub name: String,
     pub message_id: u32,
+    pub wire_identity: String,
     /// Periodic cadence selected from the checked duration literal.
     pub every_ns: Option<i64>,
     pub callable: CallableId,

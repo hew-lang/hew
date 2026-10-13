@@ -55,16 +55,14 @@ authority beside the scope, and a token that can be held past its scope is a
 liveness fact the compiler cannot check. A caller who needs to preempt one
 computation gives it its own scope.
 
-### 1.3 Read-after-send barrier
+### 1.3 Read after a completed write
 
-**[Target: v0.7 / needs more design]**
+**[Covered by ordinary actor calls]**
 
-`close(actor)` and `closed(actor)` are normative (HEW-SPEC-2026 §4.10).
-The "awaited read acts as a barrier" rule that accompanied them in earlier
-drafts is historical, not a separate current API. Ordinary actor calls now
-wait for handler completion; that does not promise durability or certainty
-after a transport failure. Track
-under #1236.
+Wait for a write's successful reply before issuing the read (HEW-SPEC-2026
+§2.1). A mailbox admission result is not completion. A later successful read
+does not establish that a discarded, refused, cancelled or failed earlier
+submission ran. No separate barrier API or durability guarantee is planned.
 
 ### 1.4 `select{}` arm: stream-next
 

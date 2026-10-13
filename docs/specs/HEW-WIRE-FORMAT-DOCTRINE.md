@@ -44,18 +44,35 @@ that conform to that schema live in
   are CBOR maps keyed by small integers. `frame_type` (key `2`) selects the
   branch.
 - An `envelope-frame` carries one actor-to-actor message and includes
-  `version`, `frame_type`, exact target/source `Location` values, `msg_type`,
+  `version`, `frame_type`, exact target/source `Location` values, `message`,
   `payload` (the user-level serialised body, as `bstr`), and `request_id`.
 - A `Location` carries a 16-byte key-derived `NodeId`, non-zero actor slot,
   and non-zero durable session incarnation. Receiver-local route slots do not
   enter the frame.
-- `version` is fixed at `2`. Decoders **must** reject unknown
+- `version` is fixed at `3`. Decoders **must** reject unknown
   versions with `UnknownVersion`; they must not best-effort parse a frame
   whose version they do not recognise.
 
 The Rust mirror is `EnvelopeFrame` (and `ControlFrame`) in
 [`hew-runtime/src/envelope.rs`][envelope-rs] starting near line 30. The
 CDDL integer keys are mirrored as field-doc comments on each Rust mirror field.
+
+### Handler identity and reply status
+
+Wire version 3 carries the canonical dotted handler declaration
+(`package.module.Actor.handler`) in envelope key 5. The checker renders this
+from declaration ownership; import aliases, local dispatch indices and
+absolute source paths are not wire identities. Compilation roots have no
+portable module prefix; shared protocol modules provide their declared path.
+The receiver resolves the
+identity within the target actor's registered codecs. Handler reordering and
+local dispatch numbering therefore do not change the protocol.
+
+Replies use key 5 status `0` for success or `1` for rejection, with no target
+or source and a positive request ID. These statuses are separate from the
+handler text namespace. The connection handshake requires protocol version
+3, and envelope decoders reject other versions before dispatch. There is no
+numeric handler-hash compatibility path.
 
 ### The message body — CDDL-described tagged CBOR
 

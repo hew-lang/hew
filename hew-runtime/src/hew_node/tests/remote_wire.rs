@@ -47,7 +47,11 @@ fn two_node_remote_send_delivery() {
         hew_node_send_location(
             node1.as_ptr(),
             &raw const target,
-            inbound_test_request_codec(send_probe_dispatch, msg_type_sent),
+            inbound_test_request_codec(
+                send_probe_dispatch,
+                msg_type_sent,
+                c"tests.SendProbe.handle",
+            ),
             msg_type_sent,
             TEST_U32_REQUEST.cast(),
             std::mem::size_of::<u32>(),
@@ -115,7 +119,7 @@ fn two_node_remote_ask_reply_records_remote_attribution() {
     let _trace_guard = crate::tracing::tracing_test_guard();
     let _real_sched;
     crate::registry::hew_registry_clear();
-    register_test_u32_codec(test_dispatch(), 1);
+    register_test_u32_codec(test_dispatch(), 1, c"tests.Counter.handle");
 
     let (node1, _node1_port, node2, node2_port) = start_authorized_tcp_pair(303, 304);
     _real_sched = init_real_scheduler();
@@ -243,7 +247,11 @@ fn two_node_remote_send_delivery_quic_mesh() {
         hew_node_send_location(
             node1.as_ptr(),
             &raw const target,
-            inbound_test_request_codec(send_probe_dispatch_qm, msg_type_sent),
+            inbound_test_request_codec(
+                send_probe_dispatch_qm,
+                msg_type_sent,
+                c"tests.SendProbeQm.handle",
+            ),
             msg_type_sent,
             TEST_U32_REQUEST.cast(),
             std::mem::size_of::<u32>(),
@@ -485,7 +493,7 @@ fn two_node_remote_ask_reply() {
     let _real_sched;
     crate::registry::hew_registry_clear();
     // Remote ask requires a registered codec for the payload msg_type.
-    register_test_u32_codec(test_dispatch(), 1);
+    register_test_u32_codec(test_dispatch(), 1, c"tests.Counter.handle");
 
     // Node 1 (initiator) starts first → CURRENT_NODE = node1, LOCAL_NODE_ID = 311.
     // Node 2 (responder) starts after; CURRENT_NODE stays as node1. Both nodes
@@ -567,7 +575,7 @@ fn two_node_remote_call_wakes_on_wire_reply() {
     let _guard = crate::runtime_test_guard();
     let _real_sched;
     crate::registry::hew_registry_clear();
-    register_test_u32_codec(test_dispatch(), 1);
+    register_test_u32_codec(test_dispatch(), 1, c"tests.Counter.handle");
 
     // Cross-bound SPKI→NodeId credentials → Strict authorized connection.
     let (node1, _node1_port, node2, node2_port) = start_authorized_quic_mesh_pair(321, 322);
@@ -1015,14 +1023,14 @@ fn two_node_worker_limit_still_reports_worker_at_capacity() {
 
     let saved = INBOUND_ASK_ACTIVE.swap(INBOUND_ASK_WORKER_LIMIT, Ordering::AcqRel);
     let target = remote_pid_for_node(&node2, actor_id);
-    // SAFETY: this is a remote void ask; null payload/size are valid.
+    // SAFETY: the registered request value is live; the reply is unit.
     let (_, status) = unsafe {
         ask_for_test(
             &raw const target,
-            test_dispatch(),
+            inbound_test_codec(noop_dispatch, 0),
             1,
-            ptr::null_mut(),
-            0,
+            TEST_U32_REQUEST.cast_mut(),
+            std::mem::size_of::<u32>(),
             NO_ASK_DEADLINE_MS,
             0,
         )
@@ -1038,93 +1046,6 @@ fn two_node_worker_limit_still_reports_worker_at_capacity() {
         err,
         AskError::WorkerAtCapacity as i32,
         "worker-limit rejection must keep reporting WorkerAtCapacity"
-    );
-
-    // SAFETY: actor and nodes were allocated in this test and remain valid here.
-    unsafe {
-        let _ = crate::actor::hew_actor_free(actor);
-        assert_eq!(hew_node_stop(node1.as_ptr()), 0);
-        assert_eq!(hew_node_stop(node2.as_ptr()), 0);
-    }
-    crate::registry::hew_registry_clear();
-}
-
-#[test]
-fn two_node_pre_rejection_peer_gets_timeout_not_wrong_error() {
-    let _guard = crate::runtime_test_guard();
-    let _real_sched;
-    crate::registry::hew_registry_clear();
-
-    // Authenticated pair: an outbound ask is refused (Unauthorized) before it
-    // is sent unless the target connection is the exact authenticated owner
-    // (issue #2652). The pre-rejection fallback under test needs the ask to
-    // actually reach node2, so the peers are mutually credentialed.
-    let (node1, _node1_port, node2, node2_port) = start_authorized_tcp_pair(330, 331);
-
-    _real_sched = init_real_scheduler();
-
-    crate::pid::hew_pid_set_local_node(331);
-    let actor = spawn_remote_test_actor(noop_dispatch);
-    crate::pid::hew_pid_set_local_node(330);
-    assert!(!actor.is_null(), "actor spawn failed");
-    // SAFETY: actor was just spawned and is valid here.
-    let actor_id = unsafe { (*actor).id };
-    assert_eq!(crate::pid::hew_pid_node(actor_id), 331);
-
-    let connect_addr = CString::new(format!("331@127.0.0.1:{node2_port}")).unwrap();
-    // SAFETY: node1 and connect_addr are valid for this connection attempt.
-    unsafe { connect_with_retry(node1.as_ptr(), &connect_addr) };
-    // SAFETY: both node pointers remain valid until teardown.
-    unsafe { wait_for_handshake(node1.as_ptr(), node2.as_ptr()) };
-
-    // SAFETY: node2 conn_mgr is live for the duration of this test.
-    let peer_flags =
-        unsafe { connection::hew_connmgr_feature_flags_for_node((*node2.as_ptr()).conn_mgr, 330) };
-    assert!(
-        connection::supports_ask_rejection(peer_flags),
-        "handshake should record ask-rejection support before we simulate the old peer"
-    );
-    // SAFETY: node2 conn_mgr is live; this mutates only test state.
-    unsafe {
-        connection::hew_connmgr_force_peer_flags_for_node(
-            (*node2.as_ptr()).conn_mgr,
-            330,
-            peer_flags & !connection::HEW_FEATURE_SUPPORTS_ASK_REJECTION,
-        );
-    }
-    // SAFETY: node2 conn_mgr remains live while the nodes are running in this scope.
-    let stripped_flags =
-        unsafe { connection::hew_connmgr_feature_flags_for_node((*node2.as_ptr()).conn_mgr, 330) };
-    assert!(
-        !connection::supports_ask_rejection(stripped_flags),
-        "test setup must strip ask-rejection support from node2's view of node1"
-    );
-
-    let saved = INBOUND_ASK_ACTIVE.swap(INBOUND_ASK_WORKER_LIMIT, Ordering::AcqRel);
-    let target = remote_pid_for_node(&node2, actor_id);
-    // SAFETY: this is a remote void ask; null payload/size are valid.
-    let (_, status) = unsafe {
-        ask_for_test(
-            &raw const target,
-            test_dispatch(),
-            1,
-            ptr::null_mut(),
-            0,
-            TEST_REMOTE_ASK_TIMEOUT_MS,
-            0,
-        )
-    };
-    let err = status;
-    INBOUND_ASK_ACTIVE.store(saved, Ordering::Release);
-
-    assert!(
-        status != AskError::None as i32,
-        "pre-rejection peer fallback must return null instead of a void-success sentinel"
-    );
-    assert_eq!(
-        err,
-        AskError::Timeout as i32,
-        "pre-rejection peer fallback must time out instead of returning WorkerAtCapacity"
     );
 
     // SAFETY: actor and nodes were allocated in this test and remain valid here.

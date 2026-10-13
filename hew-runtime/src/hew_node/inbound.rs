@@ -30,19 +30,6 @@ use std::thread;
 /// workloads are unaffected while still preventing unbounded growth.
 pub(crate) const INBOUND_ASK_WORKER_LIMIT: usize = 64;
 
-/// Sentinel `msg_type` value used in reply envelopes to signal that the
-/// inbound ask was **rejected** (worker-limit exceeded) rather than answered.
-///
-/// Normal reply envelopes carry `msg_type = 0`. The connection reader checks
-/// for this sentinel to call [`fail_remote_reply`] instead of
-/// [`complete_remote_reply`], ensuring both void and non-void asks fail
-/// closed with [`AskError::WorkerAtCapacity`] on the originating node.
-///
-/// The value `65535` is the maximum valid `msg_type` in the Hew wire
-/// protocol (`0..=MAX_MSG_TYPE`).  Reply envelopes always use `msg_type = 0`
-/// by convention, so `65535` is unambiguous as a rejection marker.
-pub(crate) const HEW_REPLY_REJECT_MSG_TYPE: i32 = 65_535;
-
 /// Count of currently active inbound ask-handler threads.
 ///
 /// Incremented before spawning, decremented by [`InboundAskGuard`] when the
@@ -163,7 +150,7 @@ impl TestGate {
 }
 
 #[cfg(test)]
-pub(super) static INBOUND_ASK_ERROR_FEATURE_FLAGS_HOOK: std::sync::LazyLock<TestGate> =
+pub(super) static INBOUND_ASK_ERROR_REPLY_HOOK: std::sync::LazyLock<TestGate> =
     std::sync::LazyLock::new(TestGate::default);
 #[cfg(test)]
 pub(super) static NODE_STOP_BEFORE_CONNMGR_FREE_HOOK: std::sync::LazyLock<TestGate> =
@@ -177,22 +164,14 @@ pub(super) static NODE_STOP_BEFORE_CONNMGR_FREE_HOOK: std::sync::LazyLock<TestGa
 #[cfg(test)]
 pub(super) static INBOUND_ROUTER_AFTER_INCREMENT_HOOK: std::sync::LazyLock<TestGate> =
     std::sync::LazyLock::new(TestGate::default);
-/// Fires at the TOP of `handle_inbound_ask`, BEFORE the up-front feature-flags
-/// capture acquires the `CURRENT_NODE` read lock. Lets a test wedge an uncounted
-/// straggler worker (one driven directly, past the drain ceiling) so a
-/// concurrent `hew_node_stop` on THAT worker's node can complete teardown —
-/// including freeing the node's `conn_mgr` — while the worker is parked. On
-/// release, the worker evaluates the capture's barrier: the fix returns `None`
-/// via this node's `shutdown_started` flag instead of dereferencing the freed
-/// `conn_mgr`. Proves the capture is safe for a SECONDARY node whose teardown
-/// does not zero the global `CURRENT_NODE`.
+/// Parks a worker before reply admission so shutdown can invalidate its manager.
 #[cfg(test)]
-pub(super) static INBOUND_ASK_FEATURE_FLAGS_CAPTURE_HOOK: std::sync::LazyLock<TestGate> =
+pub(super) static INBOUND_ASK_REPLY_ADMISSION_HOOK: std::sync::LazyLock<TestGate> =
     std::sync::LazyLock::new(TestGate::default);
 
 pub(super) unsafe extern "C" fn node_inbound_router(
     target_actor_id: u64,
-    msg_type: i32,
+    identity: *const std::ffi::c_char,
     data: *mut u8,
     size: usize,
     request_id: u64,
@@ -200,44 +179,31 @@ pub(super) unsafe extern "C" fn node_inbound_router(
     conn_mgr: *mut connection::HewConnMgr,
     peer: crate::node_identity::HewNodeId,
 ) {
+    // SAFETY: the reader supplies a NUL-terminated UTF-8 declaration for this call.
+    let identity = unsafe { std::ffi::CStr::from_ptr(identity) }
+        .to_str()
+        .expect("decoded wire identity")
+        .to_owned();
     let caller = crate::actor_caller::HewCallerStamp::peer(peer);
     if request_id > 0 && source_node_id > 0 {
         // Inbound remote ask — dispatch locally and send the reply back.
 
         // ── Backpressure: bounded concurrent inbound ask workers ─────────────
         //
-        // Optimistically increment the counter. If we were already at the
-        // limit we revert and — if the source peer understands the rejection
-        // sentinel (HEW_FEATURE_SUPPORTS_ASK_REJECTION) — send a rejection
-        // reply envelope back (msg_type = HEW_REPLY_REJECT_MSG_TYPE). The
-        // connection reader on the originating node dispatches this sentinel
-        // to `fail_remote_reply`, which sets ReplyStatus::Failed with reason
-        // WorkerAtCapacity so `hew_node_api_ask` returns the precise
-        // discriminant — fail-closed for both void and non-void asks.
-        //
-        // If the source peer does NOT advertise the feature flag (old node),
-        // we send no reply at all.  The originating ask will time out through
-        // its normal deadline path — this is the safe fail-closed fallback: an
-        // old peer that never sends the sentinel cannot misinterpret 65535 as
-        // a void-success, and we avoid the silent-success regression.
+        // Reserve an inbound worker before copying the payload. Capacity refusal
+        // is an explicit rejection outcome for every v3 peer.
         let prev = INBOUND_ASK_ACTIVE.fetch_add(1, Ordering::AcqRel);
         if prev >= INBOUND_ASK_WORKER_LIMIT {
             INBOUND_ASK_ACTIVE.fetch_sub(1, Ordering::AcqRel);
             // SAFETY: the inbound router is only called while `conn_mgr` is live.
-            let peer_flags =
-                unsafe { connection::hew_connmgr_feature_flags_for_node(conn_mgr, source_node_id) };
-            if connection::supports_ask_rejection(peer_flags) {
-                // SAFETY: conn_mgr is live for the duration of the inbound router call.
-                let shutdown = unsafe { connection::hew_connmgr_shutdown_flag(conn_mgr) };
-                if let Some(shutdown) = shutdown {
-                    send_rejection_reply(
-                        source_node_id,
-                        request_id,
-                        AskError::WorkerAtCapacity,
-                        conn_mgr,
-                        shutdown.as_ref(),
-                    );
-                }
+            if let Some(shutdown) = unsafe { connection::hew_connmgr_shutdown_flag(conn_mgr) } {
+                send_rejection_reply(
+                    source_node_id,
+                    request_id,
+                    AskError::WorkerAtCapacity,
+                    conn_mgr,
+                    shutdown.as_ref(),
+                );
             }
             return;
         }
@@ -331,7 +297,7 @@ pub(super) unsafe extern "C" fn node_inbound_router(
             let _remote_trace_source = crate::tracing::enter_remote_trace_source();
             handle_inbound_ask(
                 target_actor_id,
-                msg_type,
+                &identity,
                 &payload,
                 request_id,
                 source_node_id,
@@ -345,7 +311,7 @@ pub(super) unsafe extern "C" fn node_inbound_router(
         // address space before delivering it to the local mailbox.
         let _remote_trace_source = crate::tracing::enter_remote_trace_source();
         // SAFETY: data is valid for `size` bytes (reader_loop contract).
-        unsafe { deliver_inbound_send(target_actor_id, msg_type, data, size, caller) };
+        unsafe { deliver_inbound_send(target_actor_id, &identity, data, size, caller) };
     }
 }
 
@@ -363,11 +329,19 @@ pub(super) unsafe extern "C" fn node_inbound_router(
 /// `data` must be valid for `size` bytes (or null when `size == 0`).
 unsafe fn deliver_inbound_send(
     target_actor_id: u64,
-    msg_type: i32,
+    identity: &str,
     data: *mut u8,
     size: usize,
     caller: crate::actor_caller::HewCallerStamp,
 ) {
+    let Some(msg_type) = crate::lifetime::live_actors::dispatch_ptr_by_id(target_actor_id)
+        .and_then(|dispatch| crate::xnode_serial::local_message(dispatch, identity))
+    else {
+        set_last_error(format!(
+            "cross-node send refused unknown handler {identity}"
+        ));
+        return;
+    };
     let codec = crate::lifetime::live_actors::dispatch_ptr_by_id(target_actor_id)
         .and_then(|dispatch| crate::xnode_serial::lookup_request(dispatch, msg_type));
     let payload = if size == 0 {
@@ -401,13 +375,9 @@ unsafe fn deliver_inbound_send(
     clippy::needless_pass_by_value,
     reason = "spawned ask-handler thread must own the shutdown flag clone"
 )]
-#[expect(
-    clippy::too_many_arguments,
-    reason = "frame delivery carries authenticated identity and reply routing"
-)]
 pub(super) fn handle_inbound_ask(
     target_actor_id: u64,
-    msg_type: i32,
+    identity: &str,
     payload: &[u8],
     request_id: u64,
     source_node_id: u16,
@@ -416,60 +386,21 @@ pub(super) fn handle_inbound_ask(
     caller: crate::actor_caller::HewCallerStamp,
 ) {
     // Test seam: wedge a straggler worker at the top of the handler, BEFORE the
-    // feature-flags capture acquires the CURRENT_NODE read lock, so a test can
+    // reply admission acquires the CURRENT_NODE read lock, so a test can
     // let a concurrent secondary-node stop free `conn_mgr` while we are parked
     // here. No-op in production (Disabled mode).
     #[cfg(test)]
-    INBOUND_ASK_FEATURE_FLAGS_CAPTURE_HOOK.hit();
+    INBOUND_ASK_REPLY_ADMISSION_HOOK.hit();
 
-    // Capture the peer's negotiated feature flags ONCE, up front, under the
-    // SAME barrier that protects `send_reply_envelope` / `send_rejection_reply`:
-    // the CURRENT_NODE read lock AND THIS manager's `shutdown_started`
-    // (`reconnect_shutdown`) flag. The three fail-closed error paths below
-    // (decode failure, actor error, encode failure) need these flags to decide
-    // whether the peer understands the ask-rejection sentinel. Reading them at
-    // each error site dereferenced `conn_mgr` OUTSIDE any barrier: if the 5s
-    // Phase-1 drain ceiling expired and Phase 2 freed `conn_mgr`, a straggler
-    // dereferenced freed memory (use-after-free). The flags are negotiated once
-    // at handshake and never change for the connection's life, so a single
-    // guarded read at the top is equivalent to reading at each site.
-    //
-    // `*guard == 0` alone is INSUFFICIENT for a SECONDARY node. `hew_node_stop`
-    // zeroes CURRENT_NODE only for the node that owns it (`*guard == this node`);
-    // stopping a secondary node in a multi-node runtime leaves CURRENT_NODE
-    // pointing at a DIFFERENT (still-running) node, so `*guard != 0` and the
-    // old check passed — then `feature_flags_for_node` dereferenced the
-    // secondary node's ALREADY-FREED `conn_mgr`. What IS set per-node is
-    // `reconnect_shutdown`: `hew_node_stop` calls `mark_stopping` on the
-    // stopping node's own `conn_mgr` (regardless of CURRENT_NODE) INSIDE the
-    // CURRENT_NODE write lock, before Phase 2 frees it. `shutdown_started` is a
-    // clone of exactly that flag (captured in `node_inbound_router`). So the
-    // pairing is the same as `send_reply_envelope`:
-    //   • if this read holds the read lock first, stop's write lock blocks until
-    //     we release it → `conn_mgr` is valid for the `feature_flags_for_node`
-    //     call (which happens inside the closure, under the read lock);
-    //   • if stop took the write lock first, it set this node's
-    //     `shutdown_started = true` before releasing; we then observe that flag
-    //     here and return `None` (a straggler past the drain ceiling) WITHOUT
-    //     touching the soon-to-be-freed manager. The error paths skip the
-    //     rejection send, fail-closed.
-    let peer_flags: Option<u32> = with_current_node_read(|guard| {
-        if *guard == 0 || shutdown_started.load(Ordering::Acquire) {
-            return None;
-        }
-        // SAFETY: the CURRENT_NODE read lock held here blocks `hew_node_stop`'s
-        // write-lock teardown, and `shutdown_started` was observed false under
-        // that lock, so this node's `conn_mgr` cannot be freed for this read.
-        Some(unsafe { connection::hew_connmgr_feature_flags_for_node(conn_mgr.0, source_node_id) })
-    });
+    // Keep shutdown eligibility under the same barrier as reply publication.
+    // A secondary node can stop while CURRENT_NODE still names another node.
+    let can_reply =
+        with_current_node_read(|guard| *guard != 0 && !shutdown_started.load(Ordering::Acquire));
 
     let reject = |reason: AskError| {
         #[cfg(test)]
-        INBOUND_ASK_ERROR_FEATURE_FLAGS_HOOK.hit();
-        // `peer_flags` was captured up front under the CURRENT_NODE barrier;
-        // `None` means a straggler past the drain ceiling, so no rejection
-        // is sent and the originating ask resolves on its own deadline.
-        if peer_flags.is_some_and(connection::supports_ask_rejection) {
+        INBOUND_ASK_ERROR_REPLY_HOOK.hit();
+        if can_reply {
             send_rejection_reply(
                 source_node_id,
                 request_id,
@@ -486,6 +417,10 @@ pub(super) fn handle_inbound_ask(
     // codec registration for `msg_type` become a genuine DecodeFailure.
     let Some(dispatch) = crate::lifetime::live_actors::dispatch_ptr_by_id(target_actor_id) else {
         reject(AskError::ActorStopped);
+        return;
+    };
+    let Some(msg_type) = crate::xnode_serial::local_message(dispatch, identity) else {
+        reject(AskError::DecodeFailure);
         return;
     };
     // The codecs are keyed by the target actor type's dispatch pointer, so a
@@ -521,8 +456,8 @@ pub(super) fn handle_inbound_ask(
 
 /// Send a **rejection** reply envelope back to the source node.
 ///
-/// Rejection replies carry [`HEW_REPLY_REJECT_MSG_TYPE`] in the `msg_type`
-/// field plus a 1-byte [`AskError`] reason payload. The connection reader on
+/// Rejection replies carry explicit [`crate::envelope::EnvelopeMessage::Rejected`]
+/// status plus a 1-byte [`AskError`] reason payload. The connection reader on
 /// the receiving node recognises the sentinel and calls
 /// [`fail_remote_reply`] instead of [`complete_remote_reply`], preserving the
 /// remote rejection reason for the originating `hew_node_api_ask` caller.
@@ -561,14 +496,13 @@ fn send_rejection_reply(
         let reason_payload = [AskRejectionReasonCode::encode(reason)
             .expect("remote ask rejection reason must use a supported rejection-reason code")];
         // Encode the rejection envelope: request_id identifies the pending ask;
-        // source_node_id = 0 marks it as a reply; msg_type = HEW_REPLY_REJECT_MSG_TYPE
-        // distinguishes it from a normal (possibly void) success reply.
+        // explicit rejection status distinguishes it from a successful reply.
         // SAFETY: `reason_payload` is a stack byte array valid for its length.
         let bytes = match unsafe {
             encode_envelope_frame_from_raw_parts(
                 None,
                 None,
-                HEW_REPLY_REJECT_MSG_TYPE,
+                crate::envelope::EnvelopeMessage::Rejected,
                 reason_payload.as_ptr(),
                 reason_payload.len(),
                 request_id,
@@ -639,7 +573,7 @@ pub(super) fn send_reply_envelope(
             encode_envelope_frame_from_raw_parts(
                 None,
                 None,
-                0,
+                crate::envelope::EnvelopeMessage::Reply,
                 reply_data.as_ptr(),
                 reply_data.len(),
                 request_id,

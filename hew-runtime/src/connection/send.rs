@@ -150,11 +150,15 @@ pub unsafe extern "C" fn hew_connmgr_send(
     mgr: *mut HewConnMgr,
     conn_id: c_int,
     target: *const HewLocation,
-    msg_type: i32,
+    identity: *const std::ffi::c_char,
     data: *mut u8,
     size: usize,
 ) -> c_int {
-    cabi_guard!(mgr.is_null() || target.is_null(), -1);
+    cabi_guard!(mgr.is_null() || target.is_null() || identity.is_null(), -1);
+    // SAFETY: the caller supplies a NUL-terminated declaration identity.
+    let Ok(identity) = (unsafe { std::ffi::CStr::from_ptr(identity) }).to_str() else {
+        return -1;
+    };
     // SAFETY: caller guarantees `mgr` is valid.
     let mgr_ref = unsafe { &*mgr };
     // SAFETY: caller guarantees `target` is readable.
@@ -172,7 +176,7 @@ pub unsafe extern "C" fn hew_connmgr_send(
     let Some(encoded) = (unsafe {
         encode_envelope(
             target,
-            msg_type,
+            identity,
             data,
             size,
             MailboxPayloadClass::SerializedCrossNode as u8,
@@ -255,8 +259,7 @@ pub(crate) unsafe fn hew_connmgr_conn_id_for_node(mgr: *const HewConnMgr, node_i
 /// Return the negotiated feature flags for the active connection to `node_id`,
 /// or `0` if no active connection exists.
 ///
-/// Used by `node_inbound_router` to determine whether a peer understands the
-/// ask-rejection sentinel before sending `HEW_REPLY_REJECT_MSG_TYPE`.
+/// Used by membership gossip to check the negotiated control capability.
 ///
 /// # Safety
 ///
@@ -278,33 +281,6 @@ pub(crate) unsafe fn hew_connmgr_feature_flags_for_node(
         }
         0
     })
-}
-
-/// Overwrite the recorded feature flags for the active connection to `node_id`.
-///
-/// Test-only helper used to simulate an older peer after a normal handshake.
-///
-/// # Safety
-///
-/// `mgr` must be a valid pointer for the duration of the call.
-#[cfg(test)]
-pub(crate) unsafe fn hew_connmgr_force_peer_flags_for_node(
-    mgr: *mut HewConnMgr,
-    node_id: u16,
-    flags: u32,
-) {
-    if mgr.is_null() {
-        return;
-    }
-    // SAFETY: caller guarantees `mgr` is valid.
-    let mgr_ref = unsafe { &*mgr };
-    mgr_ref.connections.access(|conns| {
-        for c in conns.iter_mut() {
-            if c.state.load(Ordering::Acquire) == CONN_STATE_ACTIVE && c.peer_node_id == node_id {
-                c.peer_feature_flags = flags;
-            }
-        }
-    });
 }
 
 /// Return the number of active connections.
@@ -343,7 +319,7 @@ pub unsafe extern "C" fn hew_connmgr_count(mgr: *mut HewConnMgr) -> c_int {
 pub unsafe extern "C" fn hew_connmgr_broadcast(
     mgr: *mut HewConnMgr,
     target: *const HewLocation,
-    msg_type: i32,
+    identity: *const std::ffi::c_char,
     data: *mut u8,
     size: usize,
 ) -> c_int {
@@ -363,7 +339,7 @@ pub unsafe extern "C" fn hew_connmgr_broadcast(
     let mut success_count: c_int = 0;
     for cid in conn_ids {
         // SAFETY: mgr is valid, data/size from caller.
-        let rc = unsafe { hew_connmgr_send(mgr, cid, target, msg_type, data, size) };
+        let rc = unsafe { hew_connmgr_send(mgr, cid, target, identity, data, size) };
         if rc == 0 {
             success_count += 1;
         }

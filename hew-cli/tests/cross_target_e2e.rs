@@ -303,21 +303,21 @@ typedef void *(*Decode)(const unsigned char *, size_t, size_t *);
 typedef void (*Drop)(void *);
 static Encode encoders[2];
 static Decode decoders[2];
-extern void __real_hew_xnode_register_codec(const void *, int, Encode, Decode, Drop, size_t);
-extern void __real_hew_xnode_register_reply_codec(const void *, int, Encode, Decode, Drop, size_t);
+extern void __real_hew_xnode_register_codec(const void *, int, const char *, Encode, Decode, Drop, size_t);
+extern void __real_hew_xnode_register_reply_codec(const void *, int, const char *, Encode, Decode, Drop, size_t);
 extern void hew_ser_free_bytes(unsigned char *);
 extern void hew_actor_payload_free(void *);
 struct Ping { int64_t seq; };
 struct Message { uint8_t active; struct Ping ping; };
-void __wrap_hew_xnode_register_codec(const void *dispatch, int id, Encode encode, Decode decode, Drop drop, size_t size) {
+void __wrap_hew_xnode_register_codec(const void *dispatch, int id, const char *identity, Encode encode, Decode decode, Drop drop, size_t size) {
     assert(dispatch && !encoders[0] && drop && size == sizeof(struct Message));
     encoders[0] = encode; decoders[0] = decode;
-    __real_hew_xnode_register_codec(dispatch, id, encode, decode, drop, size);
+    __real_hew_xnode_register_codec(dispatch, id, identity, encode, decode, drop, size);
 }
-void __wrap_hew_xnode_register_reply_codec(const void *dispatch, int id, Encode encode, Decode decode, Drop drop, size_t size) {
+void __wrap_hew_xnode_register_reply_codec(const void *dispatch, int id, const char *identity, Encode encode, Decode decode, Drop drop, size_t size) {
     assert(dispatch && !encoders[1] && size == sizeof(int64_t));
     encoders[1] = encode; decoders[1] = decode;
-    __real_hew_xnode_register_reply_codec(dispatch, id, encode, decode, drop, size);
+    __real_hew_xnode_register_reply_codec(dispatch, id, identity, encode, decode, drop, size);
 }
 int32_t codec_probe(void) {
     assert(encoders[0] && encoders[1] && decoders[0] && decoders[1]);

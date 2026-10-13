@@ -90,11 +90,14 @@ fn setup_remote_ask(
             return RemoteAskSetupResult::Error(AskError::Unauthorized);
         };
 
+        let Some(codec) = crate::xnode_serial::lookup_request(dispatch, msg_type) else {
+            return RemoteAskSetupResult::Error(AskError::EncodeFailed);
+        };
         // Serialize the request value before it leaves this address space —
         // `data`/`size` is the raw in-memory struct (which may hold heap
         // pointers). The codec for `msg_type` encodes its CONTENTS; the receiver
-        // reconstructs the value. Fail closed if no codec is registered for a
-        // non-empty payload.
+        // reconstructs the value. Every request needs a registered descriptor
+        // for its declaration identity, including an empty payload.
         let serialized_req: Option<(*mut u8, usize)> = if size > 0 {
             let mut out_len: usize = 0;
             // SAFETY: data is a valid value of the message type; out_len valid.
@@ -145,7 +148,7 @@ fn setup_remote_ask(
             encode_envelope_frame_from_raw_parts(
                 Some(target),
                 source,
-                msg_type,
+                crate::envelope::EnvelopeMessage::Handler(codec.identity.to_owned()),
                 req_ptr,
                 req_len,
                 request_id,

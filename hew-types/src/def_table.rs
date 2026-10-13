@@ -668,6 +668,8 @@ pub struct ModuleId(u32);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ModuleEntry {
+    /// Whether this path was established by module ownership, rather than a private root identity.
+    portable: bool,
     /// Canonical dotted render (`std.process`, `mymod`). For every graph
     /// module this is its canonical dotted path; for the root unit it is the
     /// identity the same file would carry when imported (its file stem), so
@@ -1011,6 +1013,20 @@ impl DefTable {
         &self.row(id).path
     }
 
+    /// Render portable declaration ownership using module and member facts.
+    #[must_use]
+    pub fn dotted_declaration_path(&self, id: DefId) -> String {
+        if let Some(owner) = self.owner(id) {
+            return format!("{}.{}", self.dotted_declaration_path(owner), self.name(id));
+        }
+        match self.module(id) {
+            Some(module) if self.modules[module.0 as usize].portable => {
+                format!("{}.{}", self.module_path(module), self.name(id))
+            }
+            _ => self.name(id).to_string(),
+        }
+    }
+
     /// The diagnostic render of a definition: its path without the module
     /// qualification (`T::m`, `Shape`).
     ///
@@ -1157,7 +1173,7 @@ impl DefTable {
             if let Some(existing) = self.module_by_path.get(canonical_path) {
                 return *existing;
             }
-            return self.insert_module(canonical_path.to_string(), None);
+            return self.insert_module(canonical_path.to_string(), None, true);
         };
         if let Some(existing) = self.module_by_source.get(&key) {
             return *existing;
@@ -1177,7 +1193,7 @@ impl DefTable {
             }
             render.push_str("#mod");
         }
-        self.insert_module(render, Some(key))
+        self.insert_module(render, Some(key), true)
     }
 
     /// Mint the ROOT compilation unit's identity from its canonical source.
@@ -1224,7 +1240,7 @@ impl DefTable {
         } else {
             render
         };
-        let id = self.insert_module(render, Some(source_key));
+        let id = self.insert_module(render, Some(source_key), false);
         self.root = Some(id);
         self.root
     }
@@ -1236,7 +1252,7 @@ impl DefTable {
         if let Some(root) = self.root {
             return root;
         }
-        let id = self.insert_module(SYNTHETIC_ROOT_PATH.to_string(), None);
+        let id = self.insert_module(SYNTHETIC_ROOT_PATH.to_string(), None, false);
         self.root = Some(id);
         id
     }
@@ -1245,6 +1261,7 @@ impl DefTable {
         &mut self,
         canonical_path: String,
         canonical_source: Option<PathBuf>,
+        portable: bool,
     ) -> ModuleId {
         let id = ModuleId(
             u32::try_from(self.modules.len()).expect("more than u32::MAX modules in one compile"),
@@ -1254,6 +1271,7 @@ impl DefTable {
         }
         self.module_by_path.insert(canonical_path.clone(), id);
         self.modules.push(ModuleEntry {
+            portable,
             canonical_path,
             canonical_source,
         });
@@ -1295,7 +1313,7 @@ impl DefTable {
         while self.module_by_path.contains_key(&render) {
             render.push_str("#file");
         }
-        self.insert_module(render, Some(source_key))
+        self.insert_module(render, Some(source_key), true)
     }
 
     /// The minted module identity of a canonical source file, when any mint

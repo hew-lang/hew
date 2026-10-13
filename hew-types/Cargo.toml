@@ -25,7 +25,6 @@ hew-parser = { path = "../hew-parser" }
 hew-lexer = { path = "../hew-lexer" }
 serde.workspace = true
 serde_json.workspace = true
-siphasher = "1"
 stacker.workspace = true
 # `EnumIter` derive: makes `all_runtime_call_families()` compiler-complete.
 # A new `RuntimeCallFamily` variant is enumerated automatically, so a

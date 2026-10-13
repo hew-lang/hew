@@ -91,22 +91,6 @@ fn link_controls_from_wrong_authenticated_peer_are_rejected() {
 }
 
 #[test]
-fn ask_rejection_reply_requires_negotiated_feature_flag() {
-    assert!(is_ask_rejection_reply(
-        crate::hew_node::HEW_REPLY_REJECT_MSG_TYPE,
-        HEW_FEATURE_SUPPORTS_ASK_REJECTION
-    ));
-    assert!(
-        !is_ask_rejection_reply(crate::hew_node::HEW_REPLY_REJECT_MSG_TYPE, 0),
-        "sentinel replies from peers without the feature bit must stay on the normal reply path"
-    );
-    assert!(
-        !is_ask_rejection_reply(0, HEW_FEATURE_SUPPORTS_ASK_REJECTION),
-        "normal replies must not be reclassified as rejections"
-    );
-}
-
-#[test]
 fn registry_gossip_broadcast_targets_only_active_gossip_peers() {
     let sends = Box::into_raw(Box::new(Mutex::new(Vec::<(c_int, Vec<u8>)>::new())));
     let ops = Box::new(crate::transport::HewTransportOps {

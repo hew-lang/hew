@@ -17,7 +17,11 @@ fn run_registry_gossip_server_helper() {
     crate::pid::hew_pid_set_local_node(TWO_PROCESS_REGISTRY_SERVER_NODE);
 
     let worker = spawn_remote_test_actor(two_process_registry_dispatch);
-    inbound_test_request_codec(two_process_registry_dispatch, TWO_PROCESS_REGISTRY_MSG_TYPE);
+    inbound_test_request_codec(
+        two_process_registry_dispatch,
+        TWO_PROCESS_REGISTRY_MSG_TYPE,
+        c"tests.Registry.handle",
+    );
     assert!(!worker.is_null(), "server worker spawn failed");
     // SAFETY: actor was just spawned successfully.
     let worker_pid = unsafe { (*worker).id };
@@ -90,6 +94,7 @@ fn run_registry_gossip_client_helper() {
             inbound_test_request_codec(
                 two_process_registry_dispatch,
                 TWO_PROCESS_REGISTRY_MSG_TYPE,
+                c"tests.Registry.handle",
             ),
             TWO_PROCESS_REGISTRY_MSG_TYPE,
             TEST_U32_REQUEST.cast(),
@@ -126,7 +131,11 @@ fn wait_for_marker_file(path: &std::path::Path, timeout: Duration) -> bool {
 /// (stop + free — not merely stop) before the client asks it, reproducing
 /// a target that is genuinely gone rather than merely stopped-but-tracked.
 fn run_two_process_ask_dead_server_helper() {
-    register_test_u32_codec(dispatch_key(noop_dispatch), TWO_PROCESS_REGISTRY_MSG_TYPE);
+    register_test_u32_codec(
+        dispatch_key(noop_dispatch),
+        TWO_PROCESS_REGISTRY_MSG_TYPE,
+        c"tests.Registry.handle",
+    );
     let _real_sched = init_real_scheduler();
     crate::registry::hew_registry_clear();
 
@@ -274,7 +283,11 @@ fn run_two_process_ask_server_helper(
     // registered codec (fail-closed), keyed by the target actor's dispatch.
     // Register under the SAME dispatch fn this server spawns its echo actor
     // with so the inbound decode resolves the matching codec.
-    register_test_u32_codec(dispatch_key(dispatch), TWO_PROCESS_REGISTRY_MSG_TYPE);
+    register_test_u32_codec(
+        dispatch_key(dispatch),
+        TWO_PROCESS_REGISTRY_MSG_TYPE,
+        c"tests.Registry.handle",
+    );
     reset_two_process_ask_observed();
     // Install the runtime before touching the name registry (helper
     // subprocess holds no `runtime_test_guard`).
@@ -413,7 +426,11 @@ fn run_two_process_ask_client_setup(
 ) -> TwoProcessAskClient {
     // The cross-node send/ask path requires a registered codec for the
     // payload's msg_type (fail-closed). Register the test u32 codec.
-    register_test_u32_codec(test_dispatch(), TWO_PROCESS_REGISTRY_MSG_TYPE);
+    register_test_u32_codec(
+        test_dispatch(),
+        TWO_PROCESS_REGISTRY_MSG_TYPE,
+        c"tests.Registry.handle",
+    );
     // Install the runtime before touching the name registry (helper
     // subprocess holds no `runtime_test_guard`).
     let real_sched = init_real_scheduler();

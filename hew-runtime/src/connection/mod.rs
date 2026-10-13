@@ -90,17 +90,14 @@ pub const CONN_STATE_CLOSED: i32 = 3;
 
 const HEW_HANDSHAKE_SIZE: usize = 72;
 const HEW_HANDSHAKE_MAGIC: [u8; 4] = *b"HEW\x02";
-const HEW_PROTOCOL_VERSION: u16 = 2;
+const HEW_PROTOCOL_VERSION: u16 = 3;
 // Every node advertises Noise; a TCP peer whose record lacks this bit is a
 // plaintext peer and is refused (`ChannelRefusal::PlaintextPeer`).
 const HEW_FEATURE_SUPPORTS_ENCRYPTION: u32 = 1 << 0;
 const HEW_FEATURE_SUPPORTS_GOSSIP: u32 = 1 << 1;
 // Bit 2 (HEW_FEATURE_SUPPORTS_REMOTE_SPAWN) is reserved; not advertised until a
 // bootstrap-based remote-spawn path is implemented.
-/// Indicates that this node understands `HEW_REPLY_REJECT_MSG_TYPE = 65535` in
-/// reply envelopes.  A node MUST only send the rejection sentinel to peers that
-/// advertise this flag; old nodes would misinterpret it as a void-success reply.
-pub(crate) const HEW_FEATURE_SUPPORTS_ASK_REJECTION: u32 = 1 << 3;
+// Bit 3 was the v2 ask-rejection capability; v3 replies always carry status.
 const MAX_REGISTRY_GOSSIP_FLUSH_EVENTS: usize = 64;
 
 /// Ceiling on retry ATTEMPTS for a parked registry-gossip flush (finding:
@@ -520,7 +517,7 @@ struct ReconnectPlan {
 /// of which node is stored in the process-global `CURRENT_NODE`.
 type InboundRouter = unsafe extern "C" fn(
     u64,
-    i32,
+    *const std::ffi::c_char,
     *mut u8,
     usize,
     u64,

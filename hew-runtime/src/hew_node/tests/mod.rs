@@ -240,6 +240,7 @@ fn inbound_test_codec(
         crate::xnode_serial::hew_xnode_register_codec(
             key,
             1,
+            c"tests.Counter.handle".as_ptr(),
             test_u32_serialize,
             test_u32_deserialize,
             Some(test_u32_drop),
@@ -248,6 +249,7 @@ fn inbound_test_codec(
         crate::xnode_serial::hew_xnode_register_reply_codec(
             key,
             1,
+            c"tests.Counter.handle".as_ptr(),
             test_u32_serialize,
             test_u32_deserialize,
             Some(test_u32_drop),
@@ -261,6 +263,7 @@ fn inbound_test_codec(
 fn inbound_test_request_codec(
     dispatch: crate::internal::types::HewDispatchFn,
     msg_type: i32,
+    identity: &'static std::ffi::CStr,
 ) -> *const c_void {
     let key = dispatch_key(dispatch);
     // SAFETY: the thunks match the codec ABI.
@@ -268,6 +271,7 @@ fn inbound_test_request_codec(
         crate::xnode_serial::hew_xnode_register_codec(
             key,
             msg_type,
+            identity.as_ptr(),
             test_u32_serialize,
             test_u32_deserialize,
             Some(test_u32_drop),
@@ -322,12 +326,17 @@ unsafe extern "C" fn test_u32_drop(_value: *mut c_void) {}
 /// controlled payloads. `dispatch` MUST be the dispatch fn the target echo
 /// actor is spawned with (the inbound decode resolves it from the actor).
 /// Idempotent across helper processes (each registers in its own process).
-fn register_test_u32_codec(dispatch: *const c_void, msg_type: i32) {
+fn register_test_u32_codec(
+    dispatch: *const c_void,
+    msg_type: i32,
+    identity: &'static std::ffi::CStr,
+) {
     // SAFETY: the thunks match the codec ABI.
     unsafe {
         crate::xnode_serial::hew_xnode_register_codec(
             dispatch,
             msg_type,
+            identity.as_ptr(),
             test_u32_serialize,
             test_u32_deserialize,
             Some(test_u32_drop),
@@ -336,6 +345,7 @@ fn register_test_u32_codec(dispatch: *const c_void, msg_type: i32) {
         crate::xnode_serial::hew_xnode_register_reply_codec(
             dispatch,
             msg_type,
+            identity.as_ptr(),
             test_u32_serialize,
             test_u32_deserialize,
             Some(test_u32_drop),

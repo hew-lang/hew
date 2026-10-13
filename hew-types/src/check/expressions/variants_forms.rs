@@ -831,6 +831,37 @@ else needs `impl Display for {rendered}`)"
             .cloned()
     }
 
+    pub(in crate::check) fn record_context_variant_resolution(
+        &mut self,
+        expected: &Ty,
+        name: hew_parser::ast::Symbol,
+        span: &Span,
+    ) {
+        let Ty::Named { head, .. } = self.subst.resolve(expected) else {
+            return;
+        };
+        let Some(owner) = head.declaration(&self.defs) else {
+            return;
+        };
+        let declaration = self
+            .defs
+            .member_of_kind(owner.declaration(), name, crate::DeclarationKind::Variant)
+            .or_else(|| {
+                self.defs.member_of_kind(
+                    owner.declaration(),
+                    name,
+                    crate::DeclarationKind::MachineState,
+                )
+            });
+        if let (Some(declaration), Some(site)) = (declaration, self.scope_site()) {
+            self.scopes.record_resolution(
+                site,
+                span,
+                super::super::scope::Resolution::of_member(&self.defs, declaration),
+            );
+        }
+    }
+
     pub(in crate::check) fn require_unsafe(&mut self, name: &str, span: &Span) {
         // rc1-F1 stage B: `unsafe` gating is derived from the extern table's
         // declaration index — a call requires `unsafe` exactly when its

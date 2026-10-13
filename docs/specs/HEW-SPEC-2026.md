@@ -1204,6 +1204,15 @@ name binds by name only inside braces.
 - Mutable bindings: `var`.
 - Type fields have no mutability qualifier. Field mutation is governed by the binding: a `var`-bound value allows `p.x = …`; a `let`-bound value rejects it. The same wall covers every place rooted at the binding — `p.x = …`, `v[0] = …`, `m["k"] = …`, and `t.0 = …` — and calling a method declared `var self` (§3.7.1), which is how a value-category type is mutated.
 
+**Constants.** A module-level `const NAME: T = value;` declares a compile-time
+value. Its initializer may contain scalar, record, enum, tuple, fixed array,
+vector and map literals with constant leaves, including constant references,
+record updates, vector spreads, fixed array repeats and compile-time inputs
+(§12.8). Integer arithmetic follows the declared integer type's range and
+overflow rules. Ordinary function calls are not evaluated at compile time.
+Each use materializes an independent value; consuming or mutating one use
+does not change the declaration or another use.
+
 **The binding wall (normative).** A `let` binding cannot be reassigned, and no
 place rooted at it can be assigned. `p.x = …`, `v[0] = …`, `m["k"] = …`, and
 `t.0 = …` on a `let` binding are all `MutabilityError` (User channel) carrying
@@ -8055,8 +8064,8 @@ breaking change for callers that name it.
 
 ### 12.8 Compile-time inputs
 
-The compiler-provided invocations `include_str!(path)`, `include_bytes!(path)`
-and `stringify!(expression)` are expressions. Their names remain ordinary
+The compiler-provided invocations `include_str!(path)`, `include_bytes!(path)`,
+`stringify!(expression)`, `location!()` and `embed!(path)` are expressions. Their names remain ordinary
 identifiers outside invocation syntax. Invocations accept a trailing comma.
 
 `include_str!` and `include_bytes!` take exactly one string literal path and
@@ -8068,7 +8077,9 @@ Absolute paths are rejected. Dependencies can include their own package
 files. Missing files and invalid UTF-8 in `include_str!` are compile errors;
 `include_bytes!` accepts arbitrary bytes.
 
-```hew
+With `sql/schema.sql` and `assets/icon.png` relative to the source file:
+
+```hew,ignore
 const SCHEMA: string = include_str!("sql/schema.sql");
 const ICON: bytes = include_bytes!("assets/icon.png");
 
@@ -8086,6 +8097,28 @@ Included files are compilation inputs. Their contents become part of the
 compiled value; subsequent changes to those files do not affect an existing
 executable. A published package must contain every package file consumed by
 its frontend check.
+
+`location!()` takes no arguments and produces a constant `SourceLocation`
+record with `file: string`, `line: i64` and `column: i64`. The file is
+package-relative using `/` separators. Line and column are one-based;
+columns count Unicode characters. A constant initializer records its own
+invocation, rather than the place where the constant is later used.
+
+`embed!` takes one string literal path ending in `.json`, `.yaml`, `.yml` or
+`.toml`. It decodes the file against its concrete expected type during
+compilation, using the ordinary typed data decoder and `#[serial]` schema.
+It may appear in a constant initializer or an expression. Without an
+expected type it is an error; embedding does not infer types from data.
+The resulting records, variants and collections follow ordinary value and
+ownership semantics. Data errors are attributed to the consumed file.
+An aggregate constant is materialized as a fresh value at each use; consuming
+one materialization does not consume the constant declaration. A reference
+to a constant is therefore a value expression, rather than a mutable or
+consumable binding place.
+Duplicate map keys and set elements are errors. Keys using user-defined
+equality require runtime decoding, since compile-time embedding does not
+execute user methods. The input obeys the same package confinement and
+compilation dependency rules as `include_str!`.
 
 ## 13. Self-Hosting Roadmap
 

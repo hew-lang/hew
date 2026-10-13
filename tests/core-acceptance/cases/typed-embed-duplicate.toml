@@ -1,0 +1,15 @@
+[[case]]
+id = "typed-embed-duplicate"
+source = "cases/typed-embed-duplicate.hew"
+intent = "Embedded set construction rejects duplicate typed elements before code generation."
+kind = "check"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "InvalidOperation"
+file = "typed-embed-data/duplicate.json"
+line = 1
+column = 1
+message = "Duplicate: 1 repeats"

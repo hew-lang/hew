@@ -751,6 +751,13 @@ fn compile_time_inputs_native_and_vm() {
         "",
         inputs,
     );
+    assert_case(
+        &ParityCase {
+            test_name: "source_location",
+            source_rel: "tests/core-acceptance/cases/source-location.hew",
+        },
+        "",
+    );
     let mut inputs = hew_compile::SourceSet::in_memory();
     inputs.insert(
         "hew.toml",
@@ -782,6 +789,74 @@ fn compile_time_inputs_native_and_vm() {
             .any(|diagnostic| diagnostic.message.contains("E_INCLUDE_OUTSIDE_PACKAGE")),
         "{:?}",
         escaped.diagnostics
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn typed_embedding_native_and_vm() {
+    set_test_hewpath();
+    ensure_native_toolchain();
+    ensure_parity_runner_built();
+    let mut inputs = hew_compile::SourceSet::in_memory();
+    for (name, text) in [
+        (
+            "config.json",
+            include_str!("../../tests/core-acceptance/cases/typed-embed-data/config.json"),
+        ),
+        (
+            "config.yaml",
+            include_str!("../../tests/core-acceptance/cases/typed-embed-data/config.yaml"),
+        ),
+        (
+            "config.toml",
+            include_str!("../../tests/core-acceptance/cases/typed-embed-data/config.toml"),
+        ),
+    ] {
+        inputs.insert(format!("typed-embed-data/{name}"), text);
+    }
+    assert_case_with_inputs(
+        &ParityCase {
+            test_name: "typed_embed",
+            source_rel: "tests/core-acceptance/cases/typed-embed.hew",
+        },
+        "",
+        inputs,
+    );
+    let mut inputs = hew_compile::SourceSet::in_memory();
+    inputs.insert_bytes("broken.json", vec![0xff]);
+    let invalid_data = compile_to_sandbox_bytecode_with_inputs(
+        "fn main() { let text: string = embed!(\"broken.json\"); println(text); }",
+        Some(SANDBOX_PROFILE),
+        inputs,
+    )
+    .expect("frontend diagnostic output");
+    assert!(
+        invalid_data.diagnostics.iter().any(|diagnostic| {
+            diagnostic.message.contains("E_EMBED_DECODE")
+                && diagnostic
+                    .source_module
+                    .as_deref()
+                    .is_some_and(|source| source.ends_with("broken.json"))
+        }),
+        "{:?}",
+        invalid_data.diagnostics
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn aggregate_constants_native_and_vm() {
+    set_test_hewpath();
+    ensure_native_toolchain();
+    ensure_parity_runner_built();
+    assert_case_with_inputs(
+        &ParityCase {
+            test_name: "aggregate_constants",
+            source_rel: "tests/core-acceptance/cases/aggregate-constants.hew",
+        },
+        "",
+        hew_compile::SourceSet::in_memory(),
     );
 }
 

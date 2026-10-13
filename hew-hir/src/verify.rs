@@ -230,11 +230,8 @@ impl Verifier {
                     self.node(ef.node, ef.span.clone());
                 }
                 HirItem::Const(c) => {
-                    // Const declarations contribute only their HirNodeId
-                    // uniqueness — the initializer was constant-folded into a
-                    // value at lowering time, so there are no bindings, sites,
-                    // or expressions to verify.
                     self.node(c.node, c.span.clone());
+                    self.expr(&c.value);
                 }
             }
             self.current_source_module = None;

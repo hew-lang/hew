@@ -1,7 +1,7 @@
 use tower_lsp_server::jsonrpc::{Error, ErrorCode, Result};
 use tower_lsp_server::ls_types::{
-    GotoDefinitionParams, GotoDefinitionResponse, Location, PrepareRenameResponse, ReferenceParams,
-    RenameParams, WorkspaceEdit,
+    GotoDefinitionParams, GotoDefinitionResponse, Location, PrepareRenameResponse, Range,
+    ReferenceParams, RenameParams, WorkspaceEdit,
 };
 
 use super::super::{
@@ -81,7 +81,7 @@ pub(crate) fn goto_definition(
         let uri = tower_lsp_server::ls_types::Uri::from_checked_file_path(&input.path)?;
         return Some(GotoDefinitionResponse::Scalar(Location {
             uri,
-            range: Default::default(),
+            range: Range::default(),
         }));
     }
     if let Some(location) =
@@ -95,11 +95,11 @@ pub(crate) fn goto_definition(
             let authored_declaration = match resolution {
                 Resolution::Def(id) | Resolution::Member(id) => output.defs.site(id).is_some(),
                 Resolution::Nominal(id) => output.defs.site(id.declaration()).is_some(),
+                Resolution::Variant(head, _) => head
+                    .declaration(&output.defs)
+                    .is_some_and(|id| output.defs.site(id.declaration()).is_some()),
                 Resolution::Local(_) | Resolution::Field(_, _) => true,
-                Resolution::Param(_)
-                | Resolution::Module(_)
-                | Resolution::Builtin(_)
-                | Resolution::Variant(_, _) => false,
+                Resolution::Param(_) | Resolution::Module(_) | Resolution::Builtin(_) => false,
             };
             if authored_declaration {
                 // The checker made a positive identity claim. A missing source

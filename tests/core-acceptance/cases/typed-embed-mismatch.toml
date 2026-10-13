@@ -1,0 +1,15 @@
+[[case]]
+id = "typed-embed-mismatch"
+source = "cases/typed-embed-mismatch.hew"
+intent = "An embedded value with the wrong type names the consumed data file and field."
+kind = "check"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "InvalidOperation"
+file = "typed-embed-data/mismatch.json"
+line = 1
+column = 1
+message = ".port: expected integer, found string"

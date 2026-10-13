@@ -110,7 +110,11 @@ export function resolveRuntimeShim(
         ? () => {
             throw new Error("array mutation requires its resumable executor");
           }
-        : undefined;
+        : entry.detail === "IndexBorrow"
+          ? (_host, args) => sequenceElement(args)
+          : ["Len", "Index"].includes(String(entry.detail))
+            ? VECTOR_SHIMS[detailName(entry.detail)]
+            : undefined;
     case "Map":
     case "Set":
       return [
@@ -401,17 +405,7 @@ const VECTOR_SHIMS: Record<string, RuntimeShim | undefined> = {
       ? host.enumValue(shape, "OptionSome", [cloneValue(items[at]!)])
       : host.enumValue(shape, "OptionNone", []);
   },
-  Index: (_host, args) => {
-    const items = vec(args, 0).items;
-    const at = index(args, 1);
-    if (at < 0 || at >= items.length) {
-      throw new ShimFault(
-        "vector_bounds",
-        `vector index ${at} out of bounds for length ${items.length}`,
-      );
-    }
-    return cloneValue(items[at]!);
-  },
+  Index: (_host, args) => cloneValue(sequenceElement(args)),
   Len: (_host, args) => int(BigInt(vec(args, 0).items.length)),
   Slice: (_host, args) => {
     const items = vec(args, 0).items;
@@ -435,6 +429,18 @@ const VECTOR_SHIMS: Record<string, RuntimeShim | undefined> = {
     };
   },
 };
+
+function sequenceElement(args: VmValue[]): VmValue {
+  const items = vec(args, 0).items;
+  const at = index(args, 1);
+  if (at < 0 || at >= items.length) {
+    throw new ShimFault(
+      "vector_bounds",
+      `vector index ${at} out of bounds for length ${items.length}`,
+    );
+  }
+  return items[at]!;
+}
 
 function byteVector(items: readonly VmValue[]): VmValue {
   return { kind: "vector", elementType: "u8", items: items.map(cloneValue) };

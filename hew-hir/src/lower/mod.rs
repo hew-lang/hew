@@ -57,6 +57,7 @@ mod calls;
 mod captures;
 mod closures;
 mod collections;
+mod const_literals;
 mod consts;
 mod ctx;
 mod dispatch;
@@ -808,13 +809,14 @@ struct FnEntry {
 ///
 /// Populated in the first pass (`register_const_entry`) so that const
 /// references resolve to a stable `ItemId` regardless of source order. The
-/// folded value is NOT stored here — it is produced once, canonically, in the
-/// emit pass (`lower_const`) on the `HirItem::Const`. A const reference only
-/// needs the id (for `ResolvedRef::Const`) and the declared type.
+/// Initializers are folded on demand by declaration identity; references only
+/// need the id (for `ResolvedRef::Const`) and the declared type.
 #[derive(Debug, Clone)]
 struct ConstEntry {
     id: ItemId,
     ty: ResolvedTy,
+    initializer: Spanned<Expr>,
+    module_idx: u32,
 }
 ///
 /// Populated in the type-decl / record pre-pass and consulted at
@@ -1446,11 +1448,9 @@ struct LowerCtx {
     /// regardless of source order. See [`ConstEntry`].
     const_registry: HashMap<String, ConstEntry>,
     source_const_entries: HashMap<hew_types::DefId, ConstEntry>,
-    /// Same-module integer const values folded earlier in source order.
-    /// Populates `ConstEnv` for subsequent const initializers; values are not
-    /// used for ordinary expression lowering, which continues to resolve const
-    /// references through `const_registry`.
-    folded_integer_consts: HashMap<String, i128>,
+    /// Folded constants, keyed by checker identity.
+    folded_constants: HashMap<hew_types::DefId, hew_types::compile_time::TypedConstant>,
+    folding_constants: HashSet<hew_types::DefId>,
     /// Per-enum variant descriptors keyed by the enum's type name. Populated
     /// between the type-decl second pass and the source-order third pass so
     /// `Expr::Call` (tuple variant ctors like `Shape::Line(5)`) and

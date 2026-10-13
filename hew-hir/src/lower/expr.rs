@@ -393,15 +393,16 @@ impl LowerCtx {
         }
         let (kind, ty) = match &expr.0 {
             Expr::MacroInvocation { .. } => {
-                match self.compile_time_values.get(&self.mk_key(&span)) {
-                    Some(hew_types::compile_time::ConstantValue::String(text)) => (
-                        HirExprKind::Literal(HirLiteral::String(text.clone())),
-                        ResolvedTy::String,
-                    ),
-                    Some(hew_types::compile_time::ConstantValue::Bytes(bytes)) => (
-                        HirExprKind::Literal(HirLiteral::Bytes(bytes.clone())),
-                        ResolvedTy::Bytes,
-                    ),
+                match self.compile_time_values.get(&self.mk_key(&span)).cloned() {
+                    Some(value) => {
+                        if let Some(ty) = self.checker_expr_ty(&span, "compile-time input") {
+                            return self.lower_constant_value(&value, &ty, &span, intent);
+                        }
+                        (
+                            HirExprKind::Unsupported("untyped compile-time input".into()),
+                            ResolvedTy::Unit,
+                        )
+                    }
                     None => {
                         self.unsupported(
                             span.clone(),

@@ -4,7 +4,10 @@
 constant string or byte value. They use paths relative to the source file
 containing the invocation.
 
-```hew
+The following package example requires `sql/schema.sql` and `assets/logo.png`
+relative to the source file:
+
+```hew,ignore
 const SCHEMA: string = include_str!("sql/schema.sql");
 const LOGO: bytes = include_bytes!("assets/logo.png");
 
@@ -39,6 +42,87 @@ The LSP watches input changes; hovering over an included path shows its name
 and size, and go-to-definition opens the file. Publishing checks the package
 through the same frontend and rejects an archive that excludes a consumed
 input.
+
+`location!()` returns a `SourceLocation` record with `file: string`,
+`line: i64` and `column: i64`. Its file is relative to the package root;
+line and column start at one, and columns count Unicode characters. A
+constant retains its definition's location when used elsewhere.
+`SourceLocation` keeps source positions distinct from distributed actor
+`Location` values.
+
+```hew
+fn main() {
+    let here = location!();
+    println(here.file);
+    println(here.line);
+}
+```
+
+`embed!` decodes a JSON, YAML or TOML file during compilation. The expected
+type supplies its schema, including `#[serial]` field names and skipped
+fields, using the same decoder as `json.decode`, `yaml.decode` and
+`toml.decode`.
+
+With `config/defaults.toml` and `config/local.json` relative to the source file:
+
+```hew,ignore
+type Config {
+    host: string;
+    port: u16;
+    labels: Vec<string>;
+}
+
+const DEFAULTS: Config = embed!("config/defaults.toml");
+
+fn main() {
+    let local: Config = embed!("config/local.json");
+    println(f"{local.host}:{local.port}");
+    println(DEFAULTS.labels[0]);
+}
+```
+
+The filename must end in `.json`, `.yaml`, `.yml` or `.toml`. An invocation
+needs a concrete expected type, such as a binding annotation, a function
+parameter type or a return type. Data errors name the consumed file and
+failing field or element; syntax errors also retain their source position.
+Map keys and set elements with user-defined equality require runtime
+decoding because compilation cannot execute Hew methods. Structurally
+derived keys are supported, and duplicate keys or elements are rejected.
+The result contains ordinary Hew values and needs no decoder at runtime.
+Embedded files follow the same path, tracking and publication rules as
+included files.
+
+Ordinary constants also accept record, enum, tuple, fixed array, vector and
+map literals with constant leaves. Constant references, record updates, vector
+spreads, fixed array repeats and nested compile-time builtins compose with
+these literals:
+
+```hew
+type Config {
+    host: string;
+    port: u16;
+    labels: Vec<string>;
+}
+
+const DEFAULTS: Config = Config {
+    host: "localhost", port: 8080, labels: ["blue"],
+};
+const MIRROR: Config = Config { ..DEFAULTS, host: "mirror" };
+const PORTS: [u16; 3] = [8080; 3];
+
+fn main() {
+    println(MIRROR.host);
+    println(PORTS[0]);
+}
+```
+
+Integer arithmetic uses the declared integer type, including its overflow
+rules. Constant initializers do not execute ordinary function calls.
+
+An aggregate constant produces an independent value at each use. Passing
+`DEFAULTS` to a consuming parameter or changing a local collection taken
+from it leaves subsequent uses of `DEFAULTS` intact. A closure can refer to
+the constant without capturing a local owner.
 
 Set `[package] hew` in `hew.toml` to the compiler version requirement your
 package needs, for example `hew = ">=0.6.1"`. The shared frontend checks this

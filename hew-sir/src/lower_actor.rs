@@ -1,6 +1,6 @@
 //! Checked actor declarations and exclusive state bindings.
 
-use hew_types::actor_protocol::OverflowContract;
+use hew_types::actor_protocol::{CoalesceFallback, OverflowContract};
 
 use super::{
     function_source_origin, lower_initial_value_transfer, Binding, BindingTarget, BlockArg,
@@ -66,7 +66,6 @@ fn actor_coalesce(
     source: &hew_types::ActorProtocolDescriptor,
     handlers: &[crate::SemActorHandler],
 ) -> Result<Option<crate::SemActorCoalesce>, String> {
-    use hew_types::actor_protocol::CoalesceFallback;
     let OverflowContract::Coalesce { fallback } = source.mailbox.overflow() else {
         return Ok(None);
     };

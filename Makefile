@@ -673,9 +673,10 @@ sandbox-vm-test: sandbox-vm-deps
 # Native Hew <-> sandbox VM parity harness. The browser compiler package is
 # excluded from generic nextest runs and owned here with Node provisioned.
 SANDBOX_PARITY_ARGS ?=
+SANDBOX_PARITY_RUNNER ?= cargo test -p hew-wasm
 sandbox-parity: hew-native sandbox-vm-deps
 	npm --prefix hew-sandbox-vm run build
-	$(TEST_RUN_ENV) cargo test -p hew-wasm $(SANDBOX_PARITY_ARGS)
+	$(TEST_RUN_ENV) $(SANDBOX_PARITY_RUNNER) $(SANDBOX_PARITY_ARGS)
 
 # Browser analysis and source-to-VM execution need Node and the built VM, but
 # not LLVM. Native comparisons run with the complete package in sandbox-parity.

@@ -1,0 +1,19 @@
+type Key {
+    id: i64;
+}
+
+impl Hash for Key {
+    fn hash(self) -> i64 {
+        self.id
+    }
+}
+
+type Outer {
+    key: Key;
+}
+
+const ITEMS: HashSet<Outer> = embed!("typed-embed-data/custom-key.json");
+
+fn main() {
+    println(ITEMS.len());
+}

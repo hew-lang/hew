@@ -183,6 +183,11 @@ pub fn compile_to_sandbox_bytecode(
     compile_to_sandbox_bytecode_with_inputs(source, profile, hew_compile::SourceSet::in_memory())
 }
 
+/// Compile source and supplied inputs through the shared frontend and ownership SIR.
+///
+/// # Errors
+///
+/// Returns an internal error if verified semantics cannot be serialized.
 pub fn compile_to_sandbox_bytecode_with_inputs(
     source: &str,
     profile: Option<&str>,
@@ -377,6 +382,10 @@ pub fn compile_tests_to_sandbox_bytecode_js(source: &str, file: &str) -> String 
 ///
 /// `profile` should be `"sandbox-vm-export"` for the educational sandbox VM.
 /// An unrecognised profile is reported as a diagnostic with `bytecode: null`.
+///
+/// # Panics
+///
+/// Panics if the compiled output cannot be serialized as JSON.
 #[must_use]
 #[wasm_bindgen::prelude::wasm_bindgen(js_name = compileToSandboxBytecode)]
 pub fn compile_to_sandbox_bytecode_js(

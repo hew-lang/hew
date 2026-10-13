@@ -130,7 +130,7 @@ impl DependencyAnalysisCache {
         }
 
         let mut fork = seed.checker.fork_dependency_state();
-        fork.input_provider = checker.input_provider.clone();
+        fork.input_provider.clone_from(&checker.input_provider);
         if let Some(provider) = &fork.input_provider {
             fork.module_registry
                 .set_input_provider(std::sync::Arc::clone(provider));

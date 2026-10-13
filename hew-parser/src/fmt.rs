@@ -4618,9 +4618,10 @@ impl<'a> Formatter<'a> {
             }
             Expr::MacroInvocation { name, args } => {
                 self.write(name.name.as_str());
-                self.write("!(");
-                self.comma_sep(args, Self::format_expr);
-                self.write(")");
+                self.write("!");
+                self.own_call_parens(&expr.1);
+                let bounds = self.trailing_list(&expr.1, ")");
+                self.delimited_list("(", ")", args, bounds, false, true, Self::format_expr);
             }
             Expr::MethodCall {
                 receiver,

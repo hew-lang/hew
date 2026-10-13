@@ -254,13 +254,8 @@ impl Builder<'_, '_> {
                         _ => None,
                     })
                     .ok_or("const reference has no HIR declaration")?;
-                let literal = match &constant.value {
-                    hew_hir::HirConstValue::Integer(value) => HirLiteral::Integer(*value),
-                    hew_hir::HirConstValue::String(value) => HirLiteral::String(value.clone()),
-                    hew_hir::HirConstValue::Bytes(value) => HirLiteral::Bytes(value.clone()),
-                    hew_hir::HirConstValue::Float(value) => HirLiteral::Float(*value),
-                };
-                self.lower_literal(expr, &literal)
+                let value = constant.value.clone();
+                self.lower_expr(&value)
             }
             HirExprKind::BindingRef {
                 resolved: ResolvedRef::Item(item),

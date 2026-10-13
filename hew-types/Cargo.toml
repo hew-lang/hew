@@ -24,6 +24,7 @@ hew-codec = { path = "../hew-codec" }
 hew-parser = { path = "../hew-parser" }
 hew-lexer = { path = "../hew-lexer" }
 serde.workspace = true
+serde_json.workspace = true
 stacker.workspace = true
 # `EnumIter` derive: makes `all_runtime_call_families()` compiler-complete.
 # A new `RuntimeCallFamily` variant is enumerated automatically, so a
@@ -35,7 +36,6 @@ strum = { version = "0.28.0", features = ["derive"] }
 regex = "1"
 
 [dev-dependencies]
-serde_json.workspace = true
 # Integration tests build named types through the fixture constructors.
 hew-types = { path = ".", features = ["test"] }
 # W4.001 Stage C0b — `resolved_call_kernel_symbols` resolves Stage B

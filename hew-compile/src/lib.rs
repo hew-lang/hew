@@ -139,8 +139,18 @@ impl SourceSet {
         }
     }
 
+    /// Read an input and record its content fingerprint.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error if the input cannot be read or was not supplied.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the shared input table's mutex is poisoned.
     pub fn read_bytes(&self, path: &Path) -> std::io::Result<Vec<u8>> {
         use sha2::{Digest, Sha256};
+        use std::fmt::Write as _;
         let identity = if self.filesystem {
             buffer_identity(path).unwrap_or_else(|| path.to_path_buf())
         } else {
@@ -160,21 +170,25 @@ impl SourceSet {
                 "compilation input was not supplied",
             ));
         };
+        let fingerprint = Sha256::digest(&bytes).iter().fold(
+            String::with_capacity(64),
+            |mut fingerprint, byte| {
+                write!(fingerprint, "{byte:02x}").expect("writing to a String cannot fail");
+                fingerprint
+            },
+        );
         self.reads
             .lock()
             .expect("source input table poisoned")
-            .insert(
-                identity,
-                Some(
-                    Sha256::digest(&bytes)
-                        .iter()
-                        .map(|byte| format!("{byte:02x}"))
-                        .collect(),
-                ),
-            );
+            .insert(identity, Some(fingerprint));
         Ok(bytes)
     }
 
+    /// Return the inputs observed by this frontend run.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the shared input table's mutex is poisoned.
     #[must_use]
     pub fn inputs(&self) -> Vec<hew_types::compile_time::CompilationInput> {
         self.reads
@@ -1718,7 +1732,24 @@ fn type_diagnostic_to_frontend(
     root_filename: &str,
     diagnostic: hew_types::TypeError,
     module_source_map: &ModuleSourceMap,
+    documents: &SourceSet,
 ) -> FrontendDiagnostic {
+    if let Some(input) = diagnostic.source_module.as_ref().and_then(|origin| {
+        documents
+            .inputs()
+            .into_iter()
+            .find(|input| input.path.to_string_lossy() == origin.as_str())
+    }) {
+        if let Ok(bytes) = documents.read_bytes(&input.path) {
+            let source = String::from_utf8_lossy(&bytes);
+            return FrontendDiagnostic::type_(
+                &source,
+                &display_path(&input.path),
+                diagnostic,
+                module_source_map,
+            );
+        }
+    }
     let (source, filename) = if let Some(ref mod_name) = diagnostic.source_module {
         module_source_map
             .get(mod_name.as_str())
@@ -1903,11 +1934,23 @@ fn typecheck_program_with_dependency_cache(
         .iter()
         .cloned()
         .map(|diagnostic| {
-            type_diagnostic_to_frontend(source, input, diagnostic, &module_source_map)
+            type_diagnostic_to_frontend(
+                source,
+                input,
+                diagnostic,
+                &module_source_map,
+                &options.documents,
+            )
         })
         .collect::<Vec<_>>();
     diagnostics.extend(tco.warnings.iter().cloned().map(|diagnostic| {
-        type_diagnostic_to_frontend(source, input, diagnostic, &module_source_map)
+        type_diagnostic_to_frontend(
+            source,
+            input,
+            diagnostic,
+            &module_source_map,
+            &options.documents,
+        )
     }));
 
     let module_registry = checker.into_module_registry();
@@ -8709,8 +8752,12 @@ mod source_analysis_batch_tests {
                     Resolution::Field(id, index) => {
                         format!("field:{}:{index}", identity(output, id.declaration()))
                     }
-                    Resolution::Variant(id, index) => {
-                        format!("variant:{}:{index}", identity(output, id.declaration()))
+                    Resolution::Variant(head, index) => {
+                        let owner = head.declaration(&output.defs).map_or_else(
+                            || format!("builtin:{:?}", head.builtin()),
+                            |id| identity(output, id.declaration()),
+                        );
+                        format!("variant:{owner}:{index}")
                     }
                     Resolution::Local(id) => format!("local:{}", local_sites[id]),
                     Resolution::Module(id) => format!(

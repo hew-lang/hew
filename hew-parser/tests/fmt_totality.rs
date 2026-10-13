@@ -136,6 +136,7 @@ fn _variant_coverage_guard_expr(expr: &Expr) {
         Expr::Clone(_) => {}
         Expr::Literal(_) => {}
         Expr::Ident(_) => {}
+        Expr::MacroInvocation { .. } => {}
         Expr::ContextVariant(_) => {}
         Expr::GenericApplySuffix { .. } => {}
         Expr::RecordInitSuffix { .. } => {}

@@ -407,6 +407,7 @@ pub enum KnownDecl {
     HashMapIter,
     NodeConfig,
     PartitionPolicy,
+    SourceLocation,
     ActorId,
     Caller,
     Call,
@@ -414,7 +415,7 @@ pub enum KnownDecl {
 }
 
 impl KnownDecl {
-    pub const ALL: [Self; 22] = [
+    pub const ALL: [Self; 23] = [
         Self::ActorError,
         Self::Never,
         Self::ActorMailbox,
@@ -433,6 +434,7 @@ impl KnownDecl {
         Self::HashMapIter,
         Self::NodeConfig,
         Self::PartitionPolicy,
+        Self::SourceLocation,
         Self::ActorId,
         Self::Caller,
         Self::Call,
@@ -443,6 +445,7 @@ impl KnownDecl {
     #[must_use]
     pub const fn path(self) -> &'static str {
         match self {
+            Self::SourceLocation => "std.builtins.SourceLocation",
             Self::ActorError => "std.builtins.ActorError",
             Self::Never => "std.builtins.Never",
             Self::ActorMailbox => "std.builtins.ActorMailbox",
@@ -470,6 +473,7 @@ impl KnownDecl {
 
     const fn leaf(self) -> &'static str {
         match self {
+            Self::SourceLocation => "SourceLocation",
             Self::ActorError => "ActorError",
             Self::Never => "Never",
             Self::ActorMailbox => "ActorMailbox",

@@ -324,6 +324,26 @@ impl Checker {
     ) -> Option<Ty> {
         let builtin = head.builtin?;
         let variant = builtin.enum_variant(member)?;
+        let index = builtin
+            .generic_enum()?
+            .variants
+            .iter()
+            .position(|candidate| std::ptr::eq(candidate, variant))?;
+        let span = match usage {
+            DottedTypeMemberUse::Reference { span } | DottedTypeMemberUse::Call { span, .. } => {
+                *span
+            }
+        };
+        if let Some(site) = self.scope_site() {
+            self.scopes.record_resolution(
+                site,
+                span,
+                super::scope::Resolution::Variant(
+                    crate::TypeHead::Builtin(builtin),
+                    u32::try_from(index).expect("builtin variant index fits u32"),
+                ),
+            );
+        }
         let constructor = variant.name;
         let expected_arity = builtin.arity();
 

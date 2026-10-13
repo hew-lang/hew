@@ -1091,8 +1091,7 @@ impl Checker {
             let name = self.defs.name(id);
             match self.defs.owner(id) {
                 Some(owner) => {
-                    let resolution = scope::Binding::of_item(&self.defs, id)
-                        .map_or(scope::Resolution::Member(id), scope::Binding::resolution);
+                    let resolution = scope::Resolution::of_member(&self.defs, id);
                     self.scopes.declare_member(owner, name, resolution);
                 }
                 None => {
@@ -1958,10 +1957,7 @@ impl Checker {
                             minted_types.push(id);
                         }
                         if let Some(owner) = owner {
-                            let resolution = scope::Binding::of_item(&self.defs, id)
-                                .map_or(scope::Resolution::Member(id), |binding| {
-                                    binding.resolution()
-                                });
+                            let resolution = scope::Resolution::of_member(&self.defs, id);
                             self.scopes.declare_member(owner, name, resolution);
                         } else {
                             self.defs.set_visibility(id, item_visibility);

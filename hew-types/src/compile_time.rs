@@ -3,8 +3,16 @@ use std::path::{Path, PathBuf};
 /// Host-provided compilation inputs; the checker never reads the filesystem.
 pub trait InputProvider: std::fmt::Debug + Send + Sync {
     fn root_source(&self) -> &Path;
+    /// Resolve and read an include relative to its source.
+    ///
+    /// # Errors
+    /// Rejects paths outside the source package and inputs that cannot be read.
     fn include(&self, source: &Path, path: &str) -> Result<InputFile, InputError>;
     fn inputs(&self) -> Vec<CompilationInput>;
+    /// Read an input through the provider.
+    ///
+    /// # Errors
+    /// Returns the input's I/O error if it cannot be read.
     fn read(&self, path: &Path) -> std::io::Result<Vec<u8>>;
     fn exists(&self, path: &Path) -> bool;
 }
@@ -55,6 +63,28 @@ pub struct InputError {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ConstantValue {
+    Integer(i128),
+    Float(f64),
+    Duration(i64),
+    Bool(bool),
+    Char(char),
+    Unit,
     String(String),
     Bytes(Vec<u8>),
+    Record(Vec<(String, TypedConstant)>),
+    Tuple(Vec<TypedConstant>),
+    Array(Vec<TypedConstant>),
+    Vector(Vec<TypedConstant>),
+    Set(Vec<TypedConstant>),
+    Map(Vec<(TypedConstant, TypedConstant)>),
+    Variant {
+        index: usize,
+        fields: Vec<(String, TypedConstant)>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct TypedConstant {
+    pub ty: crate::ResolvedTy,
+    pub value: ConstantValue,
 }

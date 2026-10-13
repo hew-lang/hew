@@ -765,11 +765,6 @@ pub(crate) fn verify_physical_function(
         }
     }
     needs_fault?;
-    if function.frame_storage != super::frame::retained_storage(module, function)? {
-        return Err(PhysicalError::new(
-            "physical frame storage differs from its suspension and dependency contract",
-        ));
-    }
     Ok(availability)
 }
 

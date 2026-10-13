@@ -1548,14 +1548,6 @@ impl<'ctx> DecodeEmitter<'_, 'ctx> {
                 "wire.key.unique",
             )
             .llvm_ctx("check decoded key uniqueness")?;
-        if let Some(frame) = &self.frame {
-            frame.carry(
-                self.values.ctx,
-                self.values.builder,
-                unique,
-                "wire.key.unique.slot",
-            )?;
-        }
         Ok((
             unique,
             cursor.expect("codec insertion detaches displaced owners"),
@@ -1847,9 +1839,6 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 &[format, self.slots[input.0 as usize].into()],
             )?
         };
-        if let Some(frame) = &self.frame {
-            frame.carry(self.ctx, &self.builder, reader, "wire.reader.slot")?;
-        }
         let arguments = [reader.into(), decoded.into(), fault_out.into()];
         let status = if decode_is_resumable(self.module, plans, &plans.root, recipes) {
             suspend::invoke_child(

@@ -215,9 +215,6 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             selected.add_incoming(&[(code, *from)]);
         }
         let selected = selected.as_basic_value().into_int_value();
-        if let Some(frame) = &self.frame {
-            frame.carry(self.ctx, &self.builder, selected, "operation.exit.slot")?;
-        }
         Ok(selected)
     }
 
@@ -356,7 +353,6 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             "sleep.operation",
         )?
         .into_pointer_value();
-        frame.carry(self.ctx, &self.builder, operation, "sleep.operation.slot")?;
         let poll = self.ctx.append_basic_block(self.value, "sleep.poll");
         let poll_status = self.ctx.append_basic_block(self.value, "sleep.poll.status");
         let waiting = self.ctx.append_basic_block(self.value, "sleep.pending");
@@ -508,6 +504,27 @@ pub(super) fn await_child<'ctx>(
         let handle = builder
             .build_load(pointer, slot, "call.child.handle")
             .llvm_ctx("restore current child handle")?;
+        match name {
+            "hew_cont_resume" => {
+                return coro::handle_operation(
+                    ctx,
+                    llvm,
+                    builder,
+                    handle.into_pointer_value(),
+                    "llvm.coro.resume",
+                )
+            }
+            "hew_cont_destroy" => {
+                return coro::handle_operation(
+                    ctx,
+                    llvm,
+                    builder,
+                    handle.into_pointer_value(),
+                    "llvm.coro.destroy",
+                )
+            }
+            _ => {}
+        }
         let function = get_or_declare_external(
             llvm,
             name,

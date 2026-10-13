@@ -96,15 +96,17 @@ pub(crate) fn run_module_pipeline(
     machine: &TargetMachine,
     level: OptLevel,
 ) -> CodegenResult<()> {
-    if level == OptLevel::O2 {
-        module
-            .run_passes(
-                "default<O2>",
-                machine,
-                inkwell::passes::PassBuilderOptions::create(),
-            )
-            .map_err(|error| CodegenError::Llvm(format!("O2 pass pipeline failed: {error}")))?;
-    }
+    let pipeline = match level {
+        OptLevel::O0 => "default<O0>",
+        OptLevel::O2 => "default<O2>",
+    };
+    module
+        .run_passes(
+            pipeline,
+            machine,
+            inkwell::passes::PassBuilderOptions::create(),
+        )
+        .map_err(|error| CodegenError::Llvm(format!("{pipeline} pass pipeline failed: {error}")))?;
     module.verify().map_err(|error| {
         CodegenError::LlvmVerify(format!("module rejected after optimization: {error}"))
     })

@@ -297,8 +297,6 @@ fn environment_llvm<'ctx>(ctx: &'ctx Context, physical: &PhysicalModule) -> Modu
     builder
         .build_return(Some(&descriptor.as_pointer_value()))
         .unwrap();
-    carries::materialize(ctx, &llvm).unwrap();
-    coro::lower(ctx, &llvm, &machine).unwrap();
     llvm.verify().unwrap();
     llvm
 }

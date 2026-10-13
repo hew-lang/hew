@@ -35,9 +35,6 @@ impl FunctionEmitter<'_, '_> {
         let builder = self
             .runtime_call_value(new, &[], "structural.builder")?
             .into_pointer_value();
-        if let Some(frame) = &self.frame {
-            frame.carry(self.ctx, &self.builder, builder, "structural.builder.slot")?;
-        }
         self.builder
             .build_store(self.active_fault, ptr.const_null())
             .llvm_ctx("clear structural fault")?;
@@ -490,10 +487,6 @@ impl<'ctx> StructuralEmitter<'_, '_, 'ctx> {
             "structural.vector.len",
         )?
         .into_int_value();
-        if let Some(frame) = &self.frame {
-            frame.carry(self.ctx, self.builder, vector, "structural.vector.slot")?;
-            frame.carry(self.ctx, self.builder, len, "structural.vector.length.slot")?;
-        }
         let layout = self.structural_layout(structural_glue(self.module, element)?)?;
         let slot = self
             .builder

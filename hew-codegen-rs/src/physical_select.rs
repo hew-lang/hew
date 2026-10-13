@@ -46,7 +46,6 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         let operation =
             suspend::call_value(&self.builder, start, &[waker.into()], "select.operation")?
                 .into_pointer_value();
-        frame.carry(self.ctx, &self.builder, operation, "select.operation.slot")?;
         let context = get_or_declare_external(
             self.llvm,
             "hew_checked_task_select_set_context",

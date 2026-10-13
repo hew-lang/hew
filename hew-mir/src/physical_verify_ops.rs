@@ -652,9 +652,6 @@ fn debug_availability(
     function: &PhysicalFunction,
     incoming: BTreeMap<BlockId, Vec<FlowState>>,
 ) -> super::PhysicalDebugAvailability {
-    if function.frame_storage.is_empty() {
-        return BTreeMap::new();
-    }
     let Some(debug) = module.debug.functions.get(&function.callable) else {
         return BTreeMap::new();
     };
@@ -664,7 +661,6 @@ fn debug_availability(
             let available = debug
                 .locals
                 .keys()
-                .filter(|id| function.frame_storage.contains(id))
                 .copied()
                 .filter(|id| {
                     states.iter().all(|state| {

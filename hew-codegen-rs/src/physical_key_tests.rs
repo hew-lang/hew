@@ -189,18 +189,16 @@ fn engine<'ctx>(llvm: &Module<'ctx>, optimized: bool) -> ExecutionEngine<'ctx> {
                 function.set_linkage(Linkage::External);
             }
         }
-        let triple = native_emission_triple();
-        let machine =
-            crate::llvm::target_machine_for_triple_with_opt_level(&triple, OptLevel::O2).unwrap();
-        llvm.set_triple(&machine.get_triple());
-        llvm.run_passes(
-            "default<O2>",
-            &machine,
-            inkwell::passes::PassBuilderOptions::create(),
-        )
-        .unwrap();
-        llvm.verify().unwrap();
     }
+    let level = if optimized {
+        OptLevel::O2
+    } else {
+        OptLevel::O0
+    };
+    let triple = native_emission_triple();
+    let machine = crate::llvm::target_machine_for_triple_with_opt_level(&triple, level).unwrap();
+    llvm.set_triple(&machine.get_triple());
+    crate::llvm::run_module_pipeline(llvm, &machine, level).unwrap();
     let engine = llvm
         .create_jit_execution_engine(inkwell::OptimizationLevel::None)
         .unwrap();

@@ -27,8 +27,6 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         };
         let wait_edge =
             self.new_actor_wait_edge(self.load_actor_target(target, "ask.wait.target")?.into(), 0)?;
-        frame.carry(self.ctx, &self.builder, operation, "ask.operation.slot")?;
-        frame.carry(self.ctx, &self.builder, wait_edge, "ask.wait.edge.slot")?;
         let poll = self.ctx.append_basic_block(self.value, "ask.poll");
         let inspect = self.ctx.append_basic_block(self.value, "ask.inspect");
         let pending = self.ctx.append_basic_block(self.value, "ask.pending");
@@ -173,7 +171,6 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 "ask.request",
             )?
             .into_pointer_value();
-            frame.carry(self.ctx, &self.builder, wrapper, "ask.request.slot")?;
             let failed = self
                 .ctx
                 .append_basic_block(self.value, "ask.allocation.failed");

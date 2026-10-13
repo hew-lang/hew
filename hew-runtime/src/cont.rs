@@ -351,10 +351,9 @@ pub(crate) fn abort_if_crash_cleanup_finalizer_trap(kind: &str) {
 enum ActiveCoroutinePhase {
     /// A newly allocated coroutine ramp is executing before returning a handle.
     Ramp,
-    /// `hew_cont_resume` is driving the continuation body.
+    /// A test is modelling a tracked continuation activation.
+    #[cfg(test)]
     Resume,
-    /// `hew_cont_destroy` is driving a suspended frame's cleanup outline.
-    Destroy,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1600,25 +1599,6 @@ fn tracked_frame_contains_range(frame: *mut c_void, slot: *mut c_void, size: u64
     slot_start >= frame_start && slot_end <= frame_end
 }
 
-fn active_coroutine_enter_phase(frame: *mut c_void, phase: ActiveCoroutinePhase) -> bool {
-    // SAFETY: this helper is called only with a live continuation handle. The
-    // marker gates admission so untracked companion/environment allocations can
-    // never enter the raw crash-reclamation authority.
-    if frame.is_null() || !unsafe { frame_is_tracked(frame) } {
-        return false;
-    }
-    ACTIVE_COROUTINE_FRAMES.with(|active| {
-        active
-            .borrow_mut()
-            .push(ActiveCoroutineFrame { frame, phase });
-    });
-    true
-}
-
-fn active_coroutine_enter(frame: *mut c_void) -> bool {
-    active_coroutine_enter_phase(frame, ActiveCoroutinePhase::Resume)
-}
-
 fn active_coroutine_leave(frame: *mut c_void, phase: ActiveCoroutinePhase) -> bool {
     if frame.is_null() {
         return false;
@@ -1769,8 +1749,9 @@ pub(crate) unsafe fn reclaim_active_coroutine_frames_excluding(excluded: *mut c_
 ///
 /// # Safety
 ///
-/// `handle` must be a live frame from [`hew_cont_frame_alloc`] with an
-/// initialized [`CoroFramePrefix`], currently suspended and not completed.
+/// `handle` must be a live LLVM switched-resume frame with an initialized
+/// [`CoroFramePrefix`], currently suspended and not completed. Its storage may
+/// be supplied by the caller when LLVM elides the heap allocation.
 /// Resuming a completed or destroyed continuation is undefined behaviour the
 /// compiler's emission and the executor's [`ResumePoll`] discipline prevent.
 #[no_mangle]
@@ -1778,15 +1759,8 @@ pub unsafe extern "C-unwind" fn hew_cont_resume(handle: *mut c_void) {
     if handle.is_null() {
         return;
     }
-    let tracked = active_coroutine_enter(handle);
     // SAFETY: handle is a live, suspended coroutine frame per the fn contract.
     unsafe { coro_resume(handle) };
-    if tracked {
-        debug_assert!(
-            active_coroutine_leave(handle, ActiveCoroutinePhase::Resume),
-            "tracked coroutine resume returned with a mismatched active-frame stack"
-        );
-    }
 }
 
 /// Report whether a continuation has reached its terminal state.
@@ -1857,33 +1831,13 @@ pub unsafe extern "C-unwind" fn hew_cont_destroy(handle: *mut c_void) {
     if handle.is_null() {
         return;
     }
-    // Exactly-once reconciliation with the crash-reclamation authority. A frame
-    // a language unwind abandoned between suspend points belongs to that
-    // authority for the whole recovery: from the abandoned activation record
-    // `hew_cont_resume` left standing, through the drain's quarantine, to the
-    // drain's single free. Both a generated cleanup landing pad running ON the
-    // unwind edge (a `receive gen fn` pump dropping its faulted producer
-    // generator) and a crash-cleanup escrow thunk running after the catch reach
-    // this destroy for such a frame; neither may re-enter its cleanup outline or
-    // free it. Skip — do not consume the record; the drain, not this call,
-    // releases the frame.
+    // Explicitly tracked crash recovery owns these allocations. This check
+    // compares registered pointers; ordinary handles need no allocator header.
     if frame_is_crash_owned(handle) {
         return;
     }
-    // Make the frame registry discoverable to cleanup-outline deactivate /
-    // retire calls. The outline's eventual `hew_cont_frame_free` removes this
-    // active record; a hand-built/no-free destroy thunk falls back to the
-    // pointer-only leave below.
-    let tracked = active_coroutine_enter_phase(handle, ActiveCoroutinePhase::Destroy);
     // SAFETY: handle is a live, not-yet-destroyed coroutine frame per contract.
     unsafe { coro_destroy(handle) };
-    if tracked {
-        let left = active_coroutine_leave(handle, ActiveCoroutinePhase::Destroy);
-        debug_assert!(
-            left || !active_coroutine_contains(handle),
-            "tracked coroutine destroy returned with a mismatched active-frame stack"
-        );
-    }
 }
 
 /// Destroy a generator's coro **companion** — the heap block a `Generator<Y, R>`
@@ -3949,6 +3903,20 @@ mod tests {
             .with(|active| active.borrow().iter().map(|record| record.frame).collect())
     }
 
+    fn active_coroutine_enter(frame: *mut c_void) -> bool {
+        // SAFETY: these tests supply only tracked/untracked allocator payloads.
+        if frame.is_null() || !unsafe { frame_is_tracked(frame) } {
+            return false;
+        }
+        ACTIVE_COROUTINE_FRAMES.with(|active| {
+            active.borrow_mut().push(ActiveCoroutineFrame {
+                frame,
+                phase: ActiveCoroutinePhase::Resume,
+            })
+        });
+        true
+    }
+
     #[test]
     fn tracked_crash_frames_drain_in_lifo_order() {
         // SAFETY: allocate three tracked test frames and raw-free them exactly
@@ -4093,6 +4061,41 @@ mod tests {
             hew_cont_resume(ptr::null_mut());
             hew_cont_destroy(ptr::null_mut());
         }
+    }
+
+    #[test]
+    fn caller_owned_frame_resumes_and_destroys_without_allocator_metadata() {
+        #[repr(C)]
+        struct LocalFrame {
+            prefix: CoroFramePrefix,
+            visits: u32,
+        }
+        unsafe extern "C-unwind" fn resume(handle: *mut c_void) {
+            // SAFETY: the test passes its exclusively borrowed LocalFrame.
+            let frame = unsafe { &mut *handle.cast::<LocalFrame>() };
+            frame.visits += 1;
+            frame.prefix.resume = None;
+        }
+        unsafe extern "C-unwind" fn destroy(handle: *mut c_void) {
+            // SAFETY: the test retains its LocalFrame through destruction.
+            unsafe { (*handle.cast::<LocalFrame>()).visits += 10 };
+        }
+        let mut frame = LocalFrame {
+            prefix: CoroFramePrefix {
+                resume: Some(resume),
+                destroy: Some(destroy),
+            },
+            visits: 0,
+        };
+        let handle = (&raw mut frame).cast();
+        // SAFETY: the caller owns the frame and follows its suspend/done protocol.
+        unsafe {
+            assert!(!hew_cont_done(handle));
+            hew_cont_resume(handle);
+            assert!(hew_cont_done(handle));
+            hew_cont_destroy(handle);
+        }
+        assert_eq!(frame.visits, 11);
     }
 
     /// `coro_done` reads slot 0: a frame with a live resume fn-ptr is not done;

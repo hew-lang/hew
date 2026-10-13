@@ -1,6 +1,6 @@
-import "../protocol/blanket.hew";
+import "../../protocol/reject/blanket.hew";
 
-import "model.hew";
+import "../model.hew";
 
 impl Blanket for Widget {
     pub fn tag(self) -> i64 {

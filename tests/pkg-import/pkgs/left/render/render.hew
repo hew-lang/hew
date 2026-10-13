@@ -12,6 +12,10 @@ pub type Box<T> {
     value: T;
 }
 
+pub type Concrete {
+    value: i64;
+}
+
 // Deliberately shares both its leaf name and generic shape with
 // `right::render::Parcel`.  The owning module path is part of the layout key.
 pub enum Parcel<T> {
@@ -31,8 +35,8 @@ pub fn default_value<T: Render>(value: T) -> string {
     value.provided()
 }
 
-pub fn specialized_box() -> Box<i64> {
-    Box { value: 1 }
+pub fn concrete_box() -> Concrete {
+    Concrete { value: 1 }
 }
 
 pub fn generic_box() -> Box<bool> {
@@ -57,8 +61,8 @@ impl<T> Render for Box<T> {
     }
 }
 
-impl Render for Box<i64> {
+impl Render for Concrete {
     fn render(self) -> string {
-        "left-specialized"
+        "left-concrete"
     }
 }

@@ -69,10 +69,10 @@ pub(super) fn resolved_physical_path(path: &Path) -> std::io::Result<PathBuf> {
 }
 
 /// Use a canonical file URI for dependency keys, retaining non-file URIs and
-/// paths that do not yet exist so unsaved documents can still be indexed.
+/// resolving existing parents of missing paths for unsaved files and deletions.
 pub(super) fn source_file_key(uri: &Uri) -> Uri {
     uri.to_checked_file_path()
-        .and_then(|path| std::fs::canonicalize(path).ok())
+        .and_then(|path| resolved_physical_path(&path).ok())
         .and_then(Uri::from_checked_file_path)
         .unwrap_or_else(|| uri.clone())
 }

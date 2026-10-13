@@ -1,8 +1,9 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use hew_parser::ast::Symbol;
+use hew_parser::ast::{Pattern as SyntaxPattern, Spanned, Symbol};
 use hew_parser::macro_syntax::{Delimiter, Fragment, FragmentKind, TokenTree};
+use hew_parser::parser::Parser;
 
 use crate::tokens::{delimiters, source, spelling};
 use crate::ExpansionError;
@@ -17,6 +18,41 @@ pub struct Capture {
 pub struct Captures {
     pub(crate) values: HashMap<Symbol, Vec<Capture>>,
     pub(crate) repetitions: HashMap<usize, usize>,
+}
+
+#[derive(Debug, Default)]
+struct MatchState {
+    captures: Vec<(Symbol, Capture)>,
+    repetitions: Vec<(usize, usize)>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct Checkpoint {
+    captures: usize,
+    repetitions: usize,
+}
+
+impl MatchState {
+    fn checkpoint(&self) -> Checkpoint {
+        Checkpoint {
+            captures: self.captures.len(),
+            repetitions: self.repetitions.len(),
+        }
+    }
+
+    fn rewind(&mut self, checkpoint: Checkpoint) {
+        self.captures.truncate(checkpoint.captures);
+        self.repetitions.truncate(checkpoint.repetitions);
+    }
+
+    fn finish(self) -> Captures {
+        let mut result = Captures::default();
+        for (name, capture) in self.captures {
+            result.values.entry(name).or_default().push(capture);
+        }
+        result.repetitions.extend(self.repetitions);
+        result
+    }
 }
 
 impl Captures {
@@ -112,8 +148,11 @@ impl Pattern {
         else {
             return None;
         };
-        let (end, captures) = match_sequence(&self.elements, children, 0, Captures::default())?;
-        (end == children.len()).then_some(captures)
+        let (text, offset, contexts) = source(children);
+        let mut parser = Parser::with_contexts(&text, offset, Arc::new(contexts));
+        let mut state = MatchState::default();
+        let end = match_sequence(&self.elements, children, 0, &mut state, &mut parser)?;
+        (end == children.len()).then(|| state.finish())
     }
 
     fn compile_sequence(
@@ -275,112 +314,145 @@ fn match_sequence(
     elements: &[Element],
     input: &[TokenTree],
     cursor: usize,
-    captures: Captures,
-) -> Option<(usize, Captures)> {
-    let Some((first, rest)) = elements.split_first() else {
-        return Some((cursor, captures));
-    };
-    match first {
-        Element::Token(expected) => (input.get(cursor).and_then(spelling)
-            == Some(expected.as_str()))
-        .then(|| match_sequence(rest, input, cursor + 1, captures))?,
-        Element::Group(expected, elements) => {
-            let TokenTree::Group {
-                delimiter,
-                children,
-                ..
-            } = input.get(cursor)?
-            else {
-                return None;
-            };
-            if delimiter != expected {
-                return None;
-            }
-            let (end, captures) = match_sequence(elements, children, 0, captures)?;
-            (end == children.len()).then(|| match_sequence(rest, input, cursor + 1, captures))?
-        }
-        Element::Capture(name, kind) => {
-            let remaining = input.get(cursor..)?;
-            let (consumed, capture) = parse_capture(*kind, remaining)?;
-            let mut candidates = vec![(consumed, capture)];
-            if let Some(Element::Token(follow)) = rest.first() {
-                if remaining.get(consumed).and_then(spelling) != Some(follow.as_str()) {
-                    for end in (1..consumed).rev() {
-                        if remaining.get(end).and_then(spelling) == Some(follow.as_str()) {
-                            if let Some(candidate) = parse_capture(*kind, &remaining[..end]) {
-                                if candidate.0 == end {
-                                    candidates.push(candidate);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            for (consumed, capture) in candidates {
-                let mut trial = captures.clone();
-                trial.values.entry(*name).or_default().push(capture);
-                if let Some(result) = match_sequence(rest, input, cursor + consumed, trial) {
-                    return Some(result);
-                }
-            }
-            None
-        }
-        Element::Repeat {
-            id,
-            body,
-            separator,
-            kind,
-        } => {
-            let mut states = vec![(cursor, captures)];
-            loop {
-                let (mut next, captures) = states.last()?.clone();
-                if states.len() > 1 {
-                    if matches!(kind, RepeatKind::Optional) {
-                        break;
-                    }
-                    if let Some(separator) = separator {
-                        if input.get(next).and_then(spelling) != Some(separator.as_str()) {
-                            break;
-                        }
-                        next += 1;
-                    }
-                }
-                let Some((end, captures)) = match_sequence(body, input, next, captures) else {
-                    break;
-                };
-                if end == next {
-                    break;
-                }
-                states.push((end, captures));
-            }
-            for (count, (end, mut captures)) in states.into_iter().enumerate().rev() {
-                if kind.permits(count) {
-                    captures.repetitions.insert(*id, count);
-                    if let Some(result) = match_sequence(rest, input, end, captures) {
-                        return Some(result);
-                    }
-                }
-            }
-            None
-        }
+    state: &mut MatchState,
+    parser: &mut Parser<'_>,
+) -> Option<usize> {
+    let checkpoint = state.checkpoint();
+    let result = match_sequence_inner(elements, input, cursor, state, parser);
+    if result.is_none() {
+        state.rewind(checkpoint);
     }
+    result
 }
 
-fn parse_capture(kind: FragmentKind, trees: &[TokenTree]) -> Option<(usize, Capture)> {
-    if trees.is_empty() {
-        return None;
+fn match_sequence_inner(
+    mut elements: &[Element],
+    input: &[TokenTree],
+    mut cursor: usize,
+    state: &mut MatchState,
+    parser: &mut Parser<'_>,
+) -> Option<usize> {
+    while let Some((first, rest)) = elements.split_first() {
+        match first {
+            Element::Token(expected) => {
+                if input.get(cursor).and_then(spelling) != Some(expected.as_str()) {
+                    return None;
+                }
+                cursor += 1;
+            }
+            Element::Group(expected, body) => {
+                let TokenTree::Group {
+                    delimiter,
+                    children,
+                    ..
+                } = input.get(cursor)?
+                else {
+                    return None;
+                };
+                if delimiter != expected
+                    || match_sequence(body, children, 0, state, parser)? != children.len()
+                {
+                    return None;
+                }
+                cursor += 1;
+            }
+            Element::Capture(name, kind) => {
+                let remaining = input.get(cursor..)?;
+                let (consumed, capture) = parse_capture(*kind, remaining, parser)?;
+                let prefixes = match rest.first() {
+                    Some(Element::Token(follow)) if *kind == FragmentKind::Pat && follow == "|" => {
+                        pattern_prefixes(&capture, remaining)
+                    }
+                    _ => Vec::new(),
+                };
+                if prefixes.is_empty() {
+                    state.captures.push((*name, capture));
+                    cursor += consumed;
+                } else {
+                    let checkpoint = state.checkpoint();
+                    state.captures.push((*name, capture.clone()));
+                    if let Some(end) = match_sequence(rest, input, cursor + consumed, state, parser)
+                    {
+                        return Some(end);
+                    }
+                    state.rewind(checkpoint);
+                    for (consumed, pattern) in prefixes {
+                        let checkpoint = state.checkpoint();
+                        state.captures.push((
+                            *name,
+                            Capture {
+                                syntax: Arc::new(Fragment::Pat(pattern.clone())),
+                                tokens: Arc::from(&remaining[..consumed]),
+                            },
+                        ));
+                        if let Some(end) =
+                            match_sequence(rest, input, cursor + consumed, state, parser)
+                        {
+                            return Some(end);
+                        }
+                        state.rewind(checkpoint);
+                    }
+                    return None;
+                }
+            }
+            Element::Repeat {
+                id,
+                body,
+                separator,
+                kind,
+            } => {
+                let mut states = vec![(cursor, state.checkpoint())];
+                loop {
+                    let (mut next, _) = *states.last()?;
+                    if states.len() > 1 {
+                        if matches!(kind, RepeatKind::Optional) {
+                            break;
+                        }
+                        if let Some(separator) = separator {
+                            if input.get(next).and_then(spelling) != Some(separator.as_str()) {
+                                break;
+                            }
+                            next += 1;
+                        }
+                    }
+                    let Some(end) = match_sequence(body, input, next, state, parser) else {
+                        break;
+                    };
+                    if end == next {
+                        break;
+                    }
+                    states.push((end, state.checkpoint()));
+                }
+                for (count, (end, checkpoint)) in states.into_iter().enumerate().rev() {
+                    state.rewind(checkpoint);
+                    if kind.permits(count) {
+                        state.repetitions.push((*id, count));
+                        if let Some(end) = match_sequence(rest, input, end, state, parser) {
+                            return Some(end);
+                        }
+                    }
+                }
+                return None;
+            }
+        }
+        elements = rest;
     }
-    let (text, offset, contexts) = source(trees);
-    let parsed = hew_parser::parse_fragment(&text, offset, Arc::new(contexts), kind);
+    Some(cursor)
+}
+
+fn parse_capture(
+    kind: FragmentKind,
+    trees: &[TokenTree],
+    parser: &mut Parser<'_>,
+) -> Option<(usize, Capture)> {
+    let start = trees.first()?.span().start;
+    let parsed = parser.parse_fragment_at(start, kind);
     if !parsed.errors.is_empty() {
         return None;
     }
     let syntax = parsed.fragment?;
-    let end = offset + parsed.consumed;
-    let count = trees
-        .iter()
-        .take_while(|tree| tree.span().end <= end)
-        .count();
+    let end = start + parsed.consumed;
+    let count = trees.partition_point(|tree| tree.span().end <= end);
     if count == 0 || trees[count - 1].span().end != end {
         return None;
     }
@@ -391,6 +463,25 @@ fn parse_capture(kind: FragmentKind, trees: &[TokenTree]) -> Option<(usize, Capt
             tokens: Arc::from(&trees[..count]),
         },
     ))
+}
+
+fn pattern_prefixes<'a>(
+    capture: &'a Capture,
+    trees: &[TokenTree],
+) -> Vec<(usize, &'a Spanned<SyntaxPattern>)> {
+    let Fragment::Pat(pattern) = capture.syntax.as_ref() else {
+        return Vec::new();
+    };
+    let mut pattern = pattern;
+    let mut prefixes = Vec::new();
+    while let SyntaxPattern::Or(left, _) = &pattern.0 {
+        pattern = left;
+        let count = trees.partition_point(|tree| tree.span().end <= pattern.1.end);
+        if count > 0 && trees.get(count).and_then(spelling) == Some("|") {
+            prefixes.push((count, pattern));
+        }
+    }
+    prefixes
 }
 
 fn error(tree: &TokenTree, message: &str) -> ExpansionError {

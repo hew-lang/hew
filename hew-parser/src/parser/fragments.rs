@@ -30,19 +30,7 @@ pub fn parse_generated_fragment(
 ) -> FragmentParseResult {
     let mut parser = Parser::with_contexts(source, offset, contexts);
     parser.fragments = fragments;
-    let fragment = match kind {
-        FragmentKind::Ident => parser.expect_ident_spanned().map(Fragment::Ident),
-        FragmentKind::Expr => parser.parse_expr().map(Fragment::Expr),
-        FragmentKind::Ty => parser.parse_type().map(Fragment::Ty),
-        FragmentKind::Pat => parser.parse_pattern().map(Fragment::Pat),
-        FragmentKind::Block => {
-            let start = parser.peek_span().start;
-            parser
-                .parse_block()
-                .map(|block| Fragment::Block((block, start..parser.last_token_end)))
-        }
-        FragmentKind::Literal => parser.parse_literal_fragment().map(Fragment::Literal),
-    };
+    let fragment = parser.parse_fragment_kind(kind);
     FragmentParseResult {
         fragment,
         consumed: parser.last_token_end - offset,
@@ -68,6 +56,38 @@ pub fn parse_generated(
 }
 
 impl Parser<'_> {
+    /// Parse a fragment at a token boundary without re-lexing or changing the cursor.
+    #[must_use]
+    pub fn parse_fragment_at(&mut self, start: usize, kind: FragmentKind) -> FragmentParseResult {
+        let saved = self.save_pos();
+        self.pos = self.tokens.partition_point(|(_, span)| span.start < start);
+        self.last_token_end = start;
+        let error_start = self.errors.len();
+        let fragment = self.parse_fragment_kind(kind);
+        let result = FragmentParseResult {
+            fragment,
+            consumed: self.last_token_end - start,
+            errors: self.errors[error_start..].to_vec(),
+        };
+        self.restore_pos(saved);
+        result
+    }
+
+    fn parse_fragment_kind(&mut self, kind: FragmentKind) -> Option<Fragment> {
+        match kind {
+            FragmentKind::Ident => self.expect_ident_spanned().map(Fragment::Ident),
+            FragmentKind::Expr => self.parse_expr().map(Fragment::Expr),
+            FragmentKind::Ty => self.parse_type().map(Fragment::Ty),
+            FragmentKind::Pat => self.parse_pattern().map(Fragment::Pat),
+            FragmentKind::Block => {
+                let start = self.peek_span().start;
+                self.parse_block()
+                    .map(|block| Fragment::Block((block, start..self.last_token_end)))
+            }
+            FragmentKind::Literal => self.parse_literal_fragment().map(Fragment::Literal),
+        }
+    }
+
     pub(crate) fn peek_fragment(&self) -> Option<Fragment> {
         self.fragments.at(self.peek_span().start).cloned()
     }

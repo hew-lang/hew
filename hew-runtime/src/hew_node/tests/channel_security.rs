@@ -73,56 +73,61 @@ fn contains(haystack: &[u8], needle: &[u8]) -> bool {
 }
 
 #[test]
-fn tcp_dial_refuses_a_peer_without_noise() {
+fn tcp_dial_refuses_plaintext_and_previous_protocol_peers() {
     let _guard = crate::runtime_test_guard();
-    let dir = tempfile::tempdir().expect("key directory");
-    let (local, local_path) = mint_identity(dir.path(), "local.key");
-    let (plaintext_peer, _) = mint_identity(dir.path(), "peer.key");
-    let peer_pub = plaintext_peer.public();
-    let peer_node = crate::node_identity::NodeId::from_noise_static_key(&peer_pub);
-    // The peer's key is pinned, so only the missing channel can refuse it.
-    let (node, _port) = start_tcp_node_pinning(710, local, &local_path, &[(711, peer_pub)]);
+    for (offers_noise, version, reason) in [
+        (false, 3_u16, ChannelRefusal::PlaintextPeer.to_string()),
+        (true, 2_u16, "handshake protocol mismatch".to_owned()),
+    ] {
+        let dir = tempfile::tempdir().expect("key directory");
+        let (local, local_path) = mint_identity(dir.path(), "local.key");
+        let (plaintext_peer, _) = mint_identity(dir.path(), "peer.key");
+        let peer_pub = plaintext_peer.public();
+        let peer_node = crate::node_identity::NodeId::from_noise_static_key(&peer_pub);
+        // The peer's key is pinned, so only the missing channel can refuse it.
+        let (node, _port) = start_tcp_node_pinning(710, local, &local_path, &[(711, peer_pub)]);
 
-    let listener = TcpListener::bind("127.0.0.1:0").expect("plaintext peer listener");
-    let peer_addr = listener.local_addr().expect("listener address");
-    let peer = thread::spawn(move || {
-        let (mut stream, _) = listener.accept().expect("node dials the peer");
-        let _ = read_frame(&mut stream);
-        write_frame(
-            &mut stream,
-            &crate::connection::test_handshake_record(peer_node, 1, peer_pub, false),
+        let listener = TcpListener::bind("127.0.0.1:0").expect("plaintext peer listener");
+        let peer_addr = listener.local_addr().expect("listener address");
+        let peer = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("node dials the peer");
+            let _ = read_frame(&mut stream);
+            let mut handshake =
+                crate::connection::test_handshake_record(peer_node, 1, peer_pub, offers_noise);
+            handshake[4..6].copy_from_slice(&version.to_be_bytes());
+            write_frame(&mut stream, &handshake);
+            offer_plaintext_frame(&mut stream);
+            read_until_closed(&mut stream)
+        });
+
+        let target = CString::new(format!("711@{peer_addr}")).expect("connect target");
+        crate::hew_clear_error();
+        // SAFETY: the node and target are valid for the call.
+        let rc = unsafe { hew_node_connect(node.as_ptr(), target.as_ptr()) };
+        let error = last_error();
+        assert_eq!(
+            rc,
+            hew_cabi::node::NodeFailure::Refused as i32,
+            "a plaintext peer must be refused"
         );
-        offer_plaintext_frame(&mut stream);
-        read_until_closed(&mut stream)
-    });
+        assert!(
+            error.contains(&reason),
+            "the refusal must name {reason}, got: {error}"
+        );
+        // SAFETY: the node is live and started.
+        unsafe {
+            let mgr = (*node.as_ptr()).conn_mgr;
+            assert_eq!(connection::hew_connmgr_count(mgr), 0);
+            assert!(connection::hew_connmgr_conn_id_for_node(mgr, 711) < 0);
+        }
+        assert!(
+            peer.join().expect("plaintext peer thread").is_empty(),
+            "the node sends nothing after refusing the channel"
+        );
 
-    let target = CString::new(format!("711@{peer_addr}")).expect("connect target");
-    crate::hew_clear_error();
-    // SAFETY: the node and target are valid for the call.
-    let rc = unsafe { hew_node_connect(node.as_ptr(), target.as_ptr()) };
-    let error = last_error();
-    assert_eq!(
-        rc,
-        hew_cabi::node::NodeFailure::Refused as i32,
-        "a plaintext peer must be refused"
-    );
-    assert!(
-        error.contains(&ChannelRefusal::PlaintextPeer.to_string()),
-        "the refusal must name the missing channel, got: {error}"
-    );
-    // SAFETY: the node is live and started.
-    unsafe {
-        let mgr = (*node.as_ptr()).conn_mgr;
-        assert_eq!(connection::hew_connmgr_count(mgr), 0);
-        assert!(connection::hew_connmgr_conn_id_for_node(mgr, 711) < 0);
+        // SAFETY: the node is live until dropped.
+        unsafe { assert_eq!(hew_node_stop(node.as_ptr()), 0) };
     }
-    assert!(
-        peer.join().expect("plaintext peer thread").is_empty(),
-        "the node sends nothing after refusing the channel"
-    );
-
-    // SAFETY: the node is live until dropped.
-    unsafe { assert_eq!(hew_node_stop(node.as_ptr()), 0) };
 }
 
 #[test]
@@ -238,7 +243,7 @@ fn tcp_noise_channel_never_carries_node_traffic_in_the_clear() {
         crate::envelope::encode_envelope_frame_from_raw_parts(
             Some(location),
             None,
-            77,
+            crate::envelope::EnvelopeMessage::Handler("tests.Marker.handle".into()),
             marker.as_ptr(),
             marker.len(),
             0,
@@ -260,7 +265,7 @@ fn tcp_noise_channel_never_carries_node_traffic_in_the_clear() {
             mgr,
             conn_id,
             &raw const hew_location,
-            77,
+            c"tests.Marker.handle".as_ptr(),
             marker.as_mut_ptr(),
             marker.len(),
         )

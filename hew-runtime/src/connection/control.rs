@@ -28,7 +28,7 @@ use super::{HewConnMgr, CONN_STATE_ACTIVE};
 // Used by both plain and encryption-enabled send paths in `hew_connmgr_send`.
 pub(super) unsafe fn encode_envelope(
     target: Location,
-    msg_type: i32,
+    identity: &str,
     payload: *mut u8,
     payload_len: usize,
     payload_class: u8,
@@ -42,7 +42,7 @@ pub(super) unsafe fn encode_envelope(
         encode_envelope_frame_from_raw_parts(
             Some(target),
             None,
-            msg_type,
+            crate::envelope::EnvelopeMessage::Handler(identity.to_owned()),
             payload.cast_const(),
             payload_len,
             0,

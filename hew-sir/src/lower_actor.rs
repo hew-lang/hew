@@ -465,6 +465,7 @@ impl InstanceService<'_> {
                     declaration: handler.declaration,
                     name: handler.name.clone(),
                     message_id: row.msg_id,
+                    wire_identity: row.wire_identity.clone(),
                     every_ns: handler.every_ns,
                     callable,
                     params,

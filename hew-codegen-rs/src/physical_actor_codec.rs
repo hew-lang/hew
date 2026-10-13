@@ -101,6 +101,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                     registrations.push((
                         dispatch,
                         handler.message_id,
+                        handler.wire_identity.clone(),
                         encode,
                         decode,
                         drop,
@@ -123,7 +124,10 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         let size_ty = self
             .ctx
             .ptr_sized_int_type(&TargetData::create(&self.module.target.data_layout), None);
-        for (dispatch, message, encode, decode, drop, size, reply) in registrations {
+        for (dispatch, message, identity, encode, decode, drop, size, reply) in registrations {
+            let identity = builder
+                .build_global_string_ptr(&identity, "actor.wire.identity")
+                .llvm_ctx("emit wire declaration identity")?;
             self.codec_runtime(
                 &builder,
                 if reply {
@@ -138,6 +142,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                         .i32_type()
                         .const_int(u64::from(message), false)
                         .into(),
+                    identity.as_pointer_value().into(),
                     encode.as_global_value().as_pointer_value().into(),
                     decode.as_global_value().as_pointer_value().into(),
                     drop.into(),

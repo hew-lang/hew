@@ -16,7 +16,7 @@
 ; CP-1 coordination: A2 (QUIC stream framing) owns the transport container.
 ; The CDDL below describes what lives inside that container.
 ;
-; W2 will add handshake.cddl once the handshake codec lands.
+; The fixed-width connection handshake is specified in HEW-DIST-SPEC section 4.
 
 ; ── Top-level rule ───────────────────────────────────────────────────────────
 ;
@@ -132,7 +132,7 @@ envelope-frame = {
     frame_type:       2 => 1,            ; 1 = envelope
     target:           3 => location / nil, ; nil only for replies
     source:           4 => location / nil,
-    msg_type:         5 => int,          ; signed; valid range 0..=2^30-1 (zigzag legacy)
+    message:          5 => handler-identity / reply-status,
     payload:          6 => bstr,         ; serialised message body; 0..* bytes.
                                          ; The bytes inside this bstr are the
                                          ; per-`#[wire]`-type CBOR body described
@@ -142,7 +142,10 @@ envelope-frame = {
 
 ; ── Primitive aliases ────────────────────────────────────────────────────────
 
-wire-version = 2        ; current schema version; decoders reject unknown values
+handler-identity = text ; canonical package.module.Actor.handler; at most 4096 UTF-8 bytes, no NUL
+reply-status = 0 / 1    ; success / rejection; only for replies (nil target/source, positive request_id)
+
+wire-version = 3        ; current schema version; decoders reject unknown values
 node-id = bstr .size 16
 location = {
     node:        1 => node-id,

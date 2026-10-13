@@ -3085,41 +3085,12 @@ impl Checker {
 
         // Build the actor protocol descriptor side-table BEFORE body checking.
         //
-        // The descriptor maps each `receive fn` to its stable, hash-derived
-        // `msg_id` (`SipHash-1-3("Actor::handler")`). Body checking needs this
-        // map available because the active-mode `conn.attach(this)` coercion
-        // (`Actor`'s own actor-handle type → `TlsHandler`'s) consults
-        // `actor_satisfies_handler_trait`, which reads
-        // `self.actor_protocol_descriptors` to confirm an actor's `receive fn`s
-        // structurally satisfy the handler trait. Building it after body
-        // checking (the pre-Q90 placement) left the map empty during the
-        // coercion, so the predicate always failed and the attach surface had
-        // no working caller.
-        //
-        // `build_actor_protocol_descriptors` needs only `program` plus the
-        // registered fn signatures, both of which `collect_functions` has
-        // finalized by this point. Receive-fn parameter types are concrete
-        // declared annotations (no inference vars to resolve), so the
-        // descriptor built here is identical to one built from the post-
-        // substitution `resolved_fn_sigs` snapshot later in the pipeline; the
-        // published descriptor in `TypeCheckOutput` reads this same field
-        // rather than rebuilding.
-        //
-        // `fn_sigs` is borrowed immutably while `errors` is borrowed mutably;
-        // both are `self` fields, so swap `fn_sigs` out across the build to
-        // keep the borrow checker happy without cloning the whole signature map.
-        let fn_sigs_for_descriptors = std::mem::take(&mut self.fn_sigs);
+        // Calls and coercions consume the checked handler protocol during body checking.
         self.actor_protocol_descriptors = build_actor_protocol_descriptors(
             program,
             &self.defs,
-            FnSigView::new(
-                &fn_sigs_for_descriptors,
-                &self.fn_sig_keys,
-                &self.builtin_fn_sigs,
-            ),
-            &mut self.errors,
+            FnSigView::new(&self.fn_sigs, &self.fn_sig_keys, &self.builtin_fn_sigs),
         );
-        self.fn_sigs = fn_sigs_for_descriptors;
         self.register_actor_intercept_types(program);
     }
 
@@ -5495,6 +5466,7 @@ fn actor_handler_specs(
         let symbol = format!("{actor_identity}__{}", rf.name);
         specs.push(crate::actor_protocol::ActorHandlerSpec {
             declaration,
+            wire_identity: defs.dotted_declaration_path(declaration),
             name: rf.name.to_string(),
             param_tys,
             return_ty,
@@ -5508,31 +5480,14 @@ fn actor_handler_specs(
 /// each `receive fn`'s resolved type signature (param types + return type)
 /// drawn from `fn_sigs` by handler declaration.
 ///
-/// On collision: emits a `TypeErrorKind::ActorProtocolCollision` diagnostic
-/// against the second-colliding handler's span and **omits** the actor from
-/// the returned map. Downstream consumers must treat a missing entry
-/// fail-closed.
-///
-/// On unresolved signatures (e.g. an upstream type error left a handler
-/// param without a concrete `ResolvedTy`): silently skips the actor. The
-/// surfacing diagnostic is already emitted elsewhere; piling on with a
-/// derivative error here would be noise.
+/// Unresolved signatures have already reported their error and publish no partial protocol.
 fn build_actor_protocol_descriptors(
     program: &Program,
     defs: &crate::DefTable,
     fn_sigs: crate::check::types::FnSigView<'_>,
-    errors: &mut Vec<TypeError>,
 ) -> HashMap<String, crate::actor_protocol::ActorProtocolDescriptor> {
     let mut descriptors: HashMap<String, crate::actor_protocol::ActorProtocolDescriptor> =
         HashMap::new();
-    // Cross-actor collision tracking (defense-in-depth): every published
-    // handler's `(msg_id, actor, handler, span)`. `msg_id` is the 32-bit
-    // transport discriminant on every cross-node frame; two DISTINCT actors
-    // sharing it leave the wire protocol ambiguous. The runtime keys its codec
-    // registry by `(actor-type, msg_id)` so routing is correct in-process, but
-    // refusing the collision at the source of truth keeps the wire unambiguous
-    // for relays / mixed-binary peers (the `boundary-fail-closed` invariant).
-    let mut cross_actor_seen: Vec<(u32, String, String, std::ops::Range<usize>)> = Vec::new();
     for (actor_identity, ad) in collect_program_actors(program) {
         // A handler signature that failed to resolve already reported its
         // type error; a partial descriptor is never published.
@@ -5543,142 +5498,37 @@ fn build_actor_protocol_descriptors(
         // The descriptor is a source declaration fact, so its identity is the
         // actor's full owner path. Surface aliases remain resolver bindings and
         // never become protocol identities.
-        match crate::actor_protocol::ActorProtocolDescriptor::from_handlers(
+        let mut descriptor = crate::actor_protocol::ActorProtocolDescriptor::from_handlers(
             actor_identity.clone(),
             &specs,
-        ) {
-            Ok(mut descriptor) => {
-                use crate::actor_protocol::{CoalesceFallback, MailboxContract, OverflowContract};
-                use hew_parser::ast::{OverflowFallback, OverflowPolicy};
-                descriptor.mailbox =
-                    ad.mailbox_capacity
-                        .map_or(MailboxContract::Unbounded, |capacity| {
-                            let overflow = match ad.overflow_policy.as_ref() {
-                                None | Some(OverflowPolicy::Block) => OverflowContract::Block,
-                                Some(OverflowPolicy::DropNew) => OverflowContract::DropNew,
-                                Some(OverflowPolicy::DropOld) => OverflowContract::DropOld,
-                                Some(OverflowPolicy::Fail) => OverflowContract::Fail,
-                                Some(OverflowPolicy::Coalesce { fallback, .. }) => {
-                                    OverflowContract::Coalesce {
-                                        fallback: match fallback {
-                                            Some(OverflowFallback::DropOld) => {
-                                                CoalesceFallback::DropOld
-                                            }
-                                            Some(OverflowFallback::Fail) => CoalesceFallback::Fail,
-                                            // The checker rejects a blocking fallback before publishing HIR.
-                                            None
-                                            | Some(
-                                                OverflowFallback::DropNew | OverflowFallback::Block,
-                                            ) => CoalesceFallback::DropNew,
-                                        },
-                                    }
+        );
+        use crate::actor_protocol::{CoalesceFallback, MailboxContract, OverflowContract};
+        use hew_parser::ast::{OverflowFallback, OverflowPolicy};
+        descriptor.mailbox = ad
+            .mailbox_capacity
+            .map_or(MailboxContract::Unbounded, |capacity| {
+                let overflow = match ad.overflow_policy.as_ref() {
+                    None | Some(OverflowPolicy::Block) => OverflowContract::Block,
+                    Some(OverflowPolicy::DropNew) => OverflowContract::DropNew,
+                    Some(OverflowPolicy::DropOld) => OverflowContract::DropOld,
+                    Some(OverflowPolicy::Fail) => OverflowContract::Fail,
+                    Some(OverflowPolicy::Coalesce { fallback, .. }) => {
+                        OverflowContract::Coalesce {
+                            fallback: match fallback {
+                                Some(OverflowFallback::DropOld) => CoalesceFallback::DropOld,
+                                Some(OverflowFallback::Fail) => CoalesceFallback::Fail,
+                                // The checker rejects a blocking fallback before publishing HIR.
+                                None
+                                | Some(OverflowFallback::DropNew | OverflowFallback::Block) => {
+                                    CoalesceFallback::DropNew
                                 }
-                            };
-                            MailboxContract::Bounded { capacity, overflow }
-                        });
-                // Record each handler's msg_id for the cross-actor pass.
-                for h in &descriptor.handlers {
-                    let span = ad
-                        .receive_fns
-                        .iter()
-                        .find(|rf| rf.name == Ident::new(&h.name))
-                        .map_or(0..0, |rf| rf.span.clone());
-                    cross_actor_seen.push((h.msg_id, actor_identity.clone(), h.name.clone(), span));
-                }
-                descriptors.insert(actor_identity.clone(), descriptor);
-            }
-            Err(collision) => {
-                // Pin the diagnostic to the second-colliding handler's span
-                // so the user can jump straight to one of the two offenders.
-                // The diagnostic message names both, and the hint mentions
-                // the (not-yet-parseable) `#[msg_id(N)]` opt-in attribute
-                // so the wording stays accurate when the later Q87 slice
-                // lands the attribute.
-                let span = ad
-                    .receive_fns
-                    .iter()
-                    .find(|rf| rf.name == Ident::new(&collision.handler_b))
-                    .map_or(0..0, |rf| rf.span.clone());
-                let message = format!(
-                    "actor `{}` has two `receive fn`s with the same msg_id 0x{:08x}: `{}` and `{}`",
-                    collision.actor_name,
-                    collision.msg_id,
-                    collision.handler_a,
-                    collision.handler_b,
-                );
-                let mut err = TypeError::new(
-                    TypeErrorKind::ActorProtocolCollision {
-                        actor_name: collision.actor_name.clone(),
-                        handler_a: collision.handler_a.clone(),
-                        handler_b: collision.handler_b.clone(),
-                        msg_id: collision.msg_id,
-                    },
-                    span,
-                    message,
-                );
-                err = err.with_suggestion(format!(
-                    "rename `{}` or `{}` so their fully-qualified names hash to distinct \
-                     msg_ids; explicit `#[msg_id(N)]` pinning is reserved for a future \
-                     release (not yet supported)",
-                    collision.handler_a, collision.handler_b
-                ));
-                errors.push(err);
-                // Fail-closed: descriptor is absent from the map.
-            }
-        }
+                            },
+                        }
+                    }
+                };
+                MailboxContract::Bounded { capacity, overflow }
+            });
+        descriptors.insert(actor_identity, descriptor);
     }
-
-    report_cross_actor_msg_id_collisions(&cross_actor_seen, errors);
-
     descriptors
-}
-
-/// Defense-in-depth cross-actor pass: a `msg_id` shared by two DISTINCT actors
-/// is a 32-bit cross-node wire-discriminant collision. Emits one
-/// `CrossActorProtocolCollision` per colliding `msg_id` — the first
-/// distinct-actor pair found — pinned to the later actor's handler span. `seen`
-/// is every published handler's `(msg_id, actor, handler, span)` over the WHOLE
-/// program's actor set (so cross-module collisions are caught); intra-actor dups
-/// were already refused before this runs, so each entry is from a collision-free
-/// (within-its-actor) descriptor.
-fn report_cross_actor_msg_id_collisions(
-    seen: &[(u32, String, String, std::ops::Range<usize>)],
-    errors: &mut Vec<TypeError>,
-) {
-    let mut reported_msg_ids: Vec<u32> = Vec::new();
-    for i in 0..seen.len() {
-        let (msg_id_i, actor_i, handler_i, span_i) = &seen[i];
-        if reported_msg_ids.contains(msg_id_i) {
-            continue;
-        }
-        let Some((_, actor_j, handler_j, _)) = seen[..i]
-            .iter()
-            .find(|(mid, actor_j, _, _)| mid == msg_id_i && actor_j != actor_i)
-        else {
-            continue;
-        };
-        reported_msg_ids.push(*msg_id_i);
-        let message = format!(
-            "actors `{actor_j}` and `{actor_i}` have `receive fn`s with the same \
-             cross-node msg_id 0x{msg_id_i:08x}: `{actor_j}.{handler_j}` and \
-             `{actor_i}.{handler_i}` — the 32-bit wire discriminant is ambiguous"
-        );
-        let mut err = TypeError::new(
-            TypeErrorKind::CrossActorProtocolCollision {
-                actor_a: actor_j.clone(),
-                handler_a: handler_j.clone(),
-                actor_b: actor_i.clone(),
-                handler_b: handler_i.clone(),
-                msg_id: *msg_id_i,
-            },
-            span_i.clone(),
-            message,
-        );
-        err = err.with_suggestion(format!(
-            "rename `{actor_j}.{handler_j}` or `{actor_i}.{handler_i}` so their \
-             fully-qualified names hash to distinct msg_ids; explicit `#[msg_id(N)]` \
-             pinning is reserved for a future release (not yet supported)"
-        ));
-        errors.push(err);
-    }
 }

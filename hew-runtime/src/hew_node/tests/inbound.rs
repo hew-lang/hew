@@ -216,7 +216,7 @@ fn inbound_ask_active_counter_returns_to_baseline_after_round_trip() {
     let _guard = crate::runtime_test_guard();
     let _real_sched;
     crate::registry::hew_registry_clear();
-    register_test_u32_codec(test_dispatch(), 1);
+    register_test_u32_codec(test_dispatch(), 1, c"tests.Counter.handle");
 
     // Cross-bound SPKI→NodeId credentials → Strict authorized connection.
     let (node1, _node1_port, node2, node2_port) = start_authorized_quic_mesh_pair(320, 321);
@@ -289,7 +289,7 @@ fn inbound_ask_active_counter_returns_to_baseline_after_round_trip() {
 //
 // When INBOUND_ASK_ACTIVE is artificially saturated to
 // INBOUND_ASK_WORKER_LIMIT the inbound router sends a rejection reply
-// (HEW_REPLY_REJECT_MSG_TYPE).  The receiving node's connection reader
+// (explicit rejection status).  The receiving node's connection reader
 // calls `fail_remote_reply`, which sets ReplyStatus::Failed with reason
 // WorkerAtCapacity so that `hew_node_api_ask` returns the precise
 // discriminant — not a false-success void sentinel, and not the generic
@@ -376,7 +376,7 @@ fn over_limit_nonvoid_ask_fails_closed_with_worker_at_capacity() {
     let _guard = crate::runtime_test_guard();
     let _real_sched;
     crate::registry::hew_registry_clear();
-    register_test_u32_codec(test_dispatch(), 1);
+    register_test_u32_codec(test_dispatch(), 1, c"tests.Counter.handle");
 
     // Cross-bound SPKI→NodeId credentials → Strict authorized connection.
     let (node1, _node1_port, node2, node2_port) = start_authorized_quic_mesh_pair(324, 325);
@@ -480,7 +480,7 @@ fn inbound_router_no_spawn_after_shutdown_started() {
     unsafe {
         node_inbound_router(
             0,
-            1,
+            c"tests.Counter.handle".as_ptr(),
             ptr::null_mut(),
             0,
             1,
@@ -570,8 +570,8 @@ fn node_stop_waits_to_free_connmgr_until_inbound_ask_error_worker_drains() {
 
     impl Drop for HookResetGuard {
         fn drop(&mut self) {
-            INBOUND_ASK_ERROR_FEATURE_FLAGS_HOOK.release();
-            INBOUND_ASK_ERROR_FEATURE_FLAGS_HOOK.reset();
+            INBOUND_ASK_ERROR_REPLY_HOOK.release();
+            INBOUND_ASK_ERROR_REPLY_HOOK.reset();
             NODE_STOP_BEFORE_CONNMGR_FREE_HOOK.release();
             NODE_STOP_BEFORE_CONNMGR_FREE_HOOK.reset();
         }
@@ -582,7 +582,7 @@ fn node_stop_waits_to_free_connmgr_until_inbound_ask_error_worker_drains() {
     let _hook_reset = HookResetGuard;
     crate::registry::hew_registry_clear();
 
-    INBOUND_ASK_ERROR_FEATURE_FLAGS_HOOK.arm(true);
+    INBOUND_ASK_ERROR_REPLY_HOOK.arm(true);
     NODE_STOP_BEFORE_CONNMGR_FREE_HOOK.arm(false);
 
     let (node1, _node1_port, node2, node2_port) = start_authorized_tcp_pair(353, 354);
@@ -615,7 +615,7 @@ fn node_stop_waits_to_free_connmgr_until_inbound_ask_error_worker_drains() {
     unsafe {
         node_inbound_router(
             actor_id,
-            1,
+            c"tests.Counter.handle".as_ptr(),
             ptr::null_mut(),
             0,
             1,
@@ -626,7 +626,7 @@ fn node_stop_waits_to_free_connmgr_until_inbound_ask_error_worker_drains() {
     }
 
     assert!(
-        INBOUND_ASK_ERROR_FEATURE_FLAGS_HOOK.wait_until_entered(),
+        INBOUND_ASK_ERROR_REPLY_HOOK.wait_until_entered(),
         "inbound ask error path never reached the feature-flags lookup hook"
     );
     assert_eq!(
@@ -649,7 +649,7 @@ fn node_stop_waits_to_free_connmgr_until_inbound_ask_error_worker_drains() {
         "hew_node_stop must not reach conn_mgr free while an inbound-ask error worker still holds the manager"
     );
 
-    INBOUND_ASK_ERROR_FEATURE_FLAGS_HOOK.release();
+    INBOUND_ASK_ERROR_REPLY_HOOK.release();
 
     assert!(
         NODE_STOP_BEFORE_CONNMGR_FREE_HOOK.wait_until_entered(),
@@ -729,7 +729,7 @@ fn node_stop_drain_waits_for_router_wedged_after_counter_increment() {
         unsafe {
             node_inbound_router(
                 0,
-                1,
+                c"tests.Counter.handle".as_ptr(),
                 ptr::null_mut(),
                 0,
                 1,
@@ -830,8 +830,8 @@ fn handle_inbound_ask_capture_safe_for_secondary_node_freed_connmgr() {
     struct HookResetGuard;
     impl Drop for HookResetGuard {
         fn drop(&mut self) {
-            INBOUND_ASK_FEATURE_FLAGS_CAPTURE_HOOK.release();
-            INBOUND_ASK_FEATURE_FLAGS_CAPTURE_HOOK.reset();
+            INBOUND_ASK_REPLY_ADMISSION_HOOK.release();
+            INBOUND_ASK_REPLY_ADMISSION_HOOK.reset();
         }
     }
 
@@ -841,7 +841,7 @@ fn handle_inbound_ask_capture_safe_for_secondary_node_freed_connmgr() {
     crate::registry::hew_registry_clear();
 
     // Wedge any worker that reaches the top-of-handler capture hook.
-    INBOUND_ASK_FEATURE_FLAGS_CAPTURE_HOOK.arm(true);
+    INBOUND_ASK_REPLY_ADMISSION_HOOK.arm(true);
 
     // node1 starts FIRST and keeps CURRENT_NODE; node2 remains the secondary.
     let (node1, _node1_port, node2, node2_port) = start_authorized_tcp_pair(363, 364);
@@ -888,7 +888,7 @@ fn handle_inbound_ask_capture_safe_for_secondary_node_freed_connmgr() {
     let worker_handle = thread::spawn(move || {
         handle_inbound_ask(
             actor_id,
-            1,
+            "tests.Counter.handle",
             &[],
             1,
             363,
@@ -899,7 +899,7 @@ fn handle_inbound_ask_capture_safe_for_secondary_node_freed_connmgr() {
     });
 
     assert!(
-        INBOUND_ASK_FEATURE_FLAGS_CAPTURE_HOOK.wait_until_entered(),
+        INBOUND_ASK_REPLY_ADMISSION_HOOK.wait_until_entered(),
         "straggler worker never reached the feature-flags capture hook"
     );
 
@@ -915,7 +915,7 @@ fn handle_inbound_ask_capture_safe_for_secondary_node_freed_connmgr() {
     // it observes node2's `shutdown_started == true` and returns `None`
     // WITHOUT dereferencing the freed manager. (ASan would fire here on the
     // old `*guard == 0`-only capture.)
-    INBOUND_ASK_FEATURE_FLAGS_CAPTURE_HOOK.release();
+    INBOUND_ASK_REPLY_ADMISSION_HOOK.release();
     worker_handle
         .join()
         .expect("straggler worker panicked after secondary-node teardown");

@@ -20,14 +20,11 @@
 //!
 //! ## What this module is
 //!
-//! This module is the runtime *registry* that maps a delivered frame to its
-//! codec. The receive path holds only the target actor's dispatch function
-//! pointer and the inbound `msg_type`; it looks up the registered
-//! deserialize thunk (and, for asks, the reply serialize/deserialize thunk)
-//! under the key `(dispatch, msg_type)` so a frame can only ever select the
-//! codec of the actor type it was addressed to. Registration is format-agnostic
-//! — it stores the codegen-emitted adapter pointers — so the byte format
-//! authority stays entirely in `hew-codec`.
+//! The registry maps each actor type's local dispatch index to its portable
+//! declaration identity and value codecs. An inbound frame resolves its dotted
+//! identity within the target actor type, then uses that receiver's local index.
+//! Registration stores codegen-emitted adapter pointers; `hew-codec` remains
+//! the authority for payload bytes.
 //!
 //! ## Ownership across the boundary
 //!
@@ -54,18 +51,6 @@ pub unsafe extern "C" fn hew_ser_free_bytes(ptr: *mut u8) {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Decode-thunk registry — receive-side lookup by msg_type.
-// ---------------------------------------------------------------------------
-//
-// The receive path (`node_inbound_router` / `handle_inbound_ask`) holds only the
-// inbound `msg_type` and the wire bytes. It must find the right
-// decode adapter to rebuild the value into the receiving
-// node's address space before handing it to the local mailbox / ask path.
-// Codegen registers each decode (and the matching reply-encode) thunk at program
-// start keyed by the same SipHash-derived `msg_type` discriminant the send path
-// uses.
-
 /// C-ABI signature of a codegen-emitted deserialize thunk: it borrows the wire
 /// bytes, returns a sized-block-allocator reconstructed value the caller owns, and
 /// writes the value's in-memory struct byte size to `*out_struct_size` (which
@@ -88,36 +73,14 @@ pub type DropThunk = unsafe extern "C" fn(value: *mut c_void);
 /// the runtime holds but never delivers, and the value's in-memory size.
 #[derive(Clone, Copy)]
 pub(crate) struct ThunkPair {
+    pub(crate) identity: &'static str,
     pub(crate) serialize: SerializeThunk,
     pub(crate) deserialize: DeserializeThunk,
     pub(crate) drop: Option<DropThunk>,
     pub(crate) size: usize,
 }
 
-/// Codec-registry key: `(dispatch, msg_type)`.
-///
-/// `msg_type` alone is a 32-bit SipHash-1-3 truncation of `"Actor::handler"` and
-/// therefore collision-prone — two DISTINCT actor types whose handler names
-/// collide on the low 32 bits share one `msg_type`. Keying the codec table by
-/// `msg_type` alone let the second registration displace the first, so one
-/// actor's inbound frames were silently decoded by the OTHER actor's codec:
-/// remote type-confusion (an OOB read, a wrong owned-field drop, corruption)
-/// reachable by any peer that routes a frame to the colliding actor.
-///
-/// `dispatch` is the per-actor-TYPE dispatch function pointer
-/// (`__hew_actor_dispatch_<Actor>`), already on `HewActor.dispatch` and already
-/// the established cross-node disambiguator (the profiler handler-name registry
-/// keys by the same `(dispatch_fn_ptr, msg_type)` pair). Two distinct actor
-/// types have distinct dispatch pointers, so distinct `(dispatch, msg_type)`
-/// keys even when `msg_type` collides — the codec for actor B is unreachable
-/// from actor A's identity and vice versa. The dispatch pointer NEVER crosses
-/// the wire: the frame still carries only `(target_actor_id, msg_type)`; each
-/// node derives the key LOCALLY from its own dispatch globals (the inbound
-/// decode resolves `target_actor_id -> HewActor.dispatch`; the originating
-/// send/ask resolves the target/caller actor type's local dispatch global at
-/// the call site). A dispatch pointer is a code-segment address, stable within
-/// one process run but not across processes — which is exactly right, since it
-/// is only ever compared within one process.
+/// Local codec key. Neither the dispatch address nor index crosses the wire.
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct CodecKey {
     dispatch: usize,
@@ -135,26 +98,17 @@ impl CodecKey {
 
 static THUNK_REGISTRY: Mutex<Vec<(CodecKey, ThunkPair)>> = Mutex::new(Vec::new());
 
-/// Register the request/tell serialize/deserialize thunk pair for a cross-node
-/// message type, keyed by `(dispatch, msg_type)` — the owning actor TYPE's
-/// dispatch function pointer plus the message discriminant. Called once per
-/// `(actor type, handler)` at program start from codegen-emitted registration
-/// glue. Idempotent: a re-registration for the same `(dispatch, msg_type)` is
-/// only valid when the thunks are identical (the same handler re-registered,
-/// e.g. a duplicated `global_ctors` call). Distinct thunks under the same full
-/// key is structurally impossible now (it would require two distinct handlers of
-/// the same actor type to share one `msg_type`, which the intra-actor checker
-/// already rejects); if it is ever observed it is a hard invariant violation and
-/// we FAIL CLOSED in every build (`boundary-fail-closed`), not just debug —
-/// silently overwriting would re-open the type-confusion in release.
+/// Register the request codec and canonical declaration for one local handler.
+/// Re-registration must agree on identity, layout and adapters.
 ///
 /// # Safety
-/// `serialize` / `deserialize` must be valid codegen-emitted thunks matching the
-/// declared signatures. `dispatch` is an opaque key (never dereferenced).
+/// The thunks must match the declared ABI. `identity` must be valid, static,
+/// NUL-terminated UTF-8. `dispatch` is an opaque key, never dereferenced.
 #[no_mangle]
 pub unsafe extern "C" fn hew_xnode_register_codec(
     dispatch: *const c_void,
     msg_type: i32,
+    identity: *const std::ffi::c_char,
     serialize: SerializeThunk,
     deserialize: DeserializeThunk,
     drop: Option<DropThunk>,
@@ -166,6 +120,10 @@ pub unsafe extern "C" fn hew_xnode_register_codec(
         dispatch,
         msg_type,
         ThunkPair {
+            // SAFETY: codegen supplies a static NUL-terminated UTF-8 declaration identity.
+            identity: unsafe { std::ffi::CStr::from_ptr(identity) }
+                .to_str()
+                .expect("wire identity is UTF-8"),
             serialize,
             deserialize,
             drop,
@@ -174,15 +132,7 @@ pub unsafe extern "C" fn hew_xnode_register_codec(
     );
 }
 
-/// Reply-codec registry, keyed by `(dispatch, msg_type)` — the responding
-/// actor TYPE's dispatch pointer plus the REQUEST's `msg_type`. A handler's
-/// reply type maps 1:1 to its request `msg_type` WITHIN one actor type; keying
-/// by `(dispatch, msg_type)` keeps two colliding-`msg_type` actors' reply
-/// codecs distinct. The inbound-ask worker (which has the target actor's
-/// dispatch via `target_actor_id`) finds the reply SERIALIZE thunk to encode
-/// the reply before shipping it back; the originating node decodes the reply
-/// with the codec for ITS caller's statically-known target actor type (its
-/// local dispatch global for that type), resolved at the ask call site.
+/// Replies use the same local request key; their identity agrees with the request.
 static REPLY_REGISTRY: Mutex<Vec<(CodecKey, ThunkPair)>> = Mutex::new(Vec::new());
 
 /// Register the reply serialize/deserialize thunk pair for an ask, keyed by
@@ -191,11 +141,13 @@ static REPLY_REGISTRY: Mutex<Vec<(CodecKey, ThunkPair)>> = Mutex::new(Vec::new()
 ///
 /// # Safety
 /// `serialize` / `deserialize` must be valid codegen-emitted reply-type thunks.
-/// `dispatch` is an opaque key (never dereferenced).
+/// `dispatch` is an opaque key (never dereferenced). `identity` must be valid,
+/// static, NUL-terminated UTF-8.
 #[no_mangle]
 pub unsafe extern "C" fn hew_xnode_register_reply_codec(
     dispatch: *const c_void,
     msg_type: i32,
+    identity: *const std::ffi::c_char,
     serialize: SerializeThunk,
     deserialize: DeserializeThunk,
     drop: Option<DropThunk>,
@@ -207,6 +159,10 @@ pub unsafe extern "C" fn hew_xnode_register_reply_codec(
         dispatch,
         msg_type,
         ThunkPair {
+            // SAFETY: codegen supplies a static NUL-terminated UTF-8 declaration identity.
+            identity: unsafe { std::ffi::CStr::from_ptr(identity) }
+                .to_str()
+                .expect("wire identity is UTF-8"),
             serialize,
             deserialize,
             drop,
@@ -233,7 +189,8 @@ fn register_codec_into(
         return;
     };
     if let Some(slot) = reg.iter_mut().find(|(k, _)| *k == key) {
-        let same = slot.1.serialize as usize == codec.serialize as usize
+        let same = slot.1.identity == codec.identity
+            && slot.1.serialize as usize == codec.serialize as usize
             && slot.1.deserialize as usize == codec.deserialize as usize
             && slot.1.drop.map(|drop| drop as usize) == codec.drop.map(|drop| drop as usize)
             && slot.1.size == codec.size;
@@ -250,6 +207,12 @@ fn register_codec_into(
             key.dispatch
         );
     } else {
+        assert!(
+            !reg.iter()
+                .any(|(existing, registered)| existing.dispatch == key.dispatch
+                    && registered.identity == codec.identity),
+            "two local handlers claim one wire declaration"
+        );
         reg.push((key, codec));
     }
 }
@@ -271,6 +234,17 @@ pub(crate) fn lookup_request(dispatch: *const c_void, msg_type: i32) -> Option<T
     let key = CodecKey::new(dispatch, msg_type);
     let reg = THUNK_REGISTRY.lock().ok()?;
     reg.iter().find(|(k, _)| *k == key).map(|(_, codec)| *codec)
+}
+
+/// Resolve a portable handler declaration to this actor type's local dispatch index.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn local_message(dispatch: *const c_void, identity: &str) -> Option<i32> {
+    THUNK_REGISTRY
+        .lock()
+        .ok()?
+        .iter()
+        .find(|(key, codec)| key.dispatch == dispatch as usize && codec.identity == identity)
+        .map(|(key, _)| key.msg_type)
 }
 
 /// The complete reply codec for `(dispatch, request msg_type)`, if registered.
@@ -545,8 +519,24 @@ mod tests {
         // SAFETY: register two distinct codecs under the SAME msg_type but
         // DIFFERENT dispatch keys (modeling two distinct actor types).
         unsafe {
-            hew_xnode_register_codec(dispatch_a(), COLLIDING_MSG_TYPE, ser_a, de_a, None, 8);
-            hew_xnode_register_codec(dispatch_b(), COLLIDING_MSG_TYPE, ser_b, de_b, None, 8);
+            hew_xnode_register_codec(
+                dispatch_a(),
+                COLLIDING_MSG_TYPE,
+                c"tests.Alpha.handle".as_ptr(),
+                ser_a,
+                de_a,
+                None,
+                8,
+            );
+            hew_xnode_register_codec(
+                dispatch_b(),
+                COLLIDING_MSG_TYPE,
+                c"tests.Beta.handle".as_ptr(),
+                ser_b,
+                de_b,
+                None,
+                8,
+            );
         }
 
         // Actor A's frame (an i64) must decode under A's codec to the i64 value.

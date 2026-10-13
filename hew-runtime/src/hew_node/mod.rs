@@ -917,7 +917,7 @@ fn decode_rejection_reason(reason_payload: &[u8]) -> Result<AskError, AskRejecti
 /// Fail a pending remote ask identified by `request_id` with the remote rejection reason.
 ///
 /// Called by the reader thread when a **rejection** reply envelope arrives
-/// (one with [`HEW_REPLY_REJECT_MSG_TYPE`] in the `msg_type` field).
+/// (one with explicit [`crate::envelope::EnvelopeMessage::Rejected`] status).
 /// Empty payloads from older peers still default to `WorkerAtCapacity`.
 /// The rejection resolves the ask only when it arrives on the same
 /// `(conn_mgr, conn_id)` the ask was issued on (issue #2652, D12).
@@ -2359,6 +2359,14 @@ unsafe fn send_location(
         Some((bytes, len)) => (bytes, len),
         None => (std::ptr::null_mut(), 0),
     };
+    let Some(codec) = crate::xnode_serial::lookup_request(dispatch, msg_type) else {
+        if let Some((bytes, _)) = serialized {
+            // SAFETY: bytes came from the request encoder.
+            unsafe { crate::xnode_serial::hew_ser_free_bytes(bytes) };
+        }
+        return -1;
+    };
+    let identity = std::ffi::CString::new(codec.identity).expect("wire declaration excludes NUL");
     let abi_target = HewLocation::from(target);
     // SAFETY: conn_mgr and conn_id were validated above; send_ptr/send_len are the
     // serialized bytes (or null/0 for an empty payload).
@@ -2367,7 +2375,7 @@ unsafe fn send_location(
             node.conn_mgr,
             conn_id,
             &raw const abi_target,
-            msg_type,
+            identity.as_ptr(),
             send_ptr,
             send_len,
         )

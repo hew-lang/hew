@@ -331,6 +331,23 @@ mailbox(counter, on_full: .Reject).increment(10)?;
 let n = counter.get()?;
 ```
 
+**Read after a write:** handle the write's successful completion before issuing
+its dependent read:
+
+```hew,ignore
+counter.increment(10)?;
+let n = counter.get()?;
+```
+
+The write has completed before this read starts. Other callers may still
+change the actor between the two calls; return the needed value from the
+write handler when the update and observation must be one turn. A successful
+read does not confirm an earlier one-way submission that was discarded,
+refused, cancelled or lost when the actor stopped. Neither completion nor a
+read promises durable storage. A transport failure may leave the caller
+uncertain whether a remote write completed, so retry policy belongs to the
+application's operation.
+
 **Sending messages:**
 
 Lambda actors receive messages via call-syntax. Named actors expose typed receive methods:
@@ -8151,7 +8168,7 @@ current compiler stages and their responsibilities are described in §8.1.
 - **Deferred to next edition.** Generators (`Lazy<T>` / `#[prefetch(N)]`),
   closures with captured
   environment, user-facing `Arc<T>`, `dyn Trait`, `DoubleEndedIterator`,
-  cancellation tokens, actor await + read-after-send barrier, and the self-hosting
+  cancellation tokens and the self-hosting
   roadmap. See HEW-FUTURE.md for the surface and version targets.
   Pipes (`std.stream`, §6.4) and the rest of the `Iterator`/`IntoIterator`
   trait hierarchy shipped in this edition (§2.4, §2.5). Cross-node actor

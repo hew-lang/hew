@@ -3979,10 +3979,10 @@
       ],
       "classification": "stable",
       "extent": "length-or-count",
-      "nul": "not-applicable",
+      "nul": "nul-terminated",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_connmgr_broadcast( *mut HewConnMgr, *const HewLocation, i32, *mut u8, usize, ) -> c_int"
+        "native": "fn hew_connmgr_broadcast( *mut HewConnMgr, *const HewLocation, *const c_char, *mut u8, usize, ) -> c_int"
       },
       "symbol": "hew_connmgr_broadcast"
     },
@@ -4083,10 +4083,10 @@
       ],
       "classification": "stable",
       "extent": "length-or-count",
-      "nul": "not-applicable",
+      "nul": "nul-terminated",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_connmgr_send( *mut HewConnMgr, c_int, *const HewLocation, i32, *mut u8, usize, ) -> c_int"
+        "native": "fn hew_connmgr_send( *mut HewConnMgr, c_int, *const HewLocation, *const c_char, *mut u8, usize, ) -> c_int"
       },
       "symbol": "hew_connmgr_send"
     },
@@ -22384,11 +22384,11 @@
       ],
       "classification": "non-declarable",
       "extent": "length-or-count",
-      "nul": "not-applicable",
+      "nul": "nul-terminated",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_xnode_register_codec( *const c_void, i32, SerializeThunk, DeserializeThunk, Option<DropThunk>, usize, )",
-        "wasm32-wasip1": "fn hew_xnode_register_codec( *const c_void, i32, SerializeThunk, DeserializeThunk, Option<DropThunk>, usize, )"
+        "native": "fn hew_xnode_register_codec( *const c_void, i32, *const c_char, SerializeThunk, DeserializeThunk, Option<DropThunk>, usize, )",
+        "wasm32-wasip1": "fn hew_xnode_register_codec( *const c_void, i32, *const c_char, SerializeThunk, DeserializeThunk, Option<DropThunk>, usize, )"
       },
       "symbol": "hew_xnode_register_codec"
     },
@@ -22399,11 +22399,11 @@
       ],
       "classification": "non-declarable",
       "extent": "length-or-count",
-      "nul": "not-applicable",
+      "nul": "nul-terminated",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_xnode_register_reply_codec( *const c_void, i32, SerializeThunk, DeserializeThunk, Option<DropThunk>, usize, )",
-        "wasm32-wasip1": "fn hew_xnode_register_reply_codec( *const c_void, i32, SerializeThunk, DeserializeThunk, Option<DropThunk>, usize, )"
+        "native": "fn hew_xnode_register_reply_codec( *const c_void, i32, *const c_char, SerializeThunk, DeserializeThunk, Option<DropThunk>, usize, )",
+        "wasm32-wasip1": "fn hew_xnode_register_reply_codec( *const c_void, i32, *const c_char, SerializeThunk, DeserializeThunk, Option<DropThunk>, usize, )"
       },
       "symbol": "hew_xnode_register_reply_codec"
     },

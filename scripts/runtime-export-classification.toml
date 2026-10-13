@@ -1082,7 +1082,6 @@ stable-stdlib = [
   "hew_smtp_send_html",
   "hew_smtp_send_html_once",
   "hew_smtp_send_once",
-  "hew_sort_floats",
   "hew_tls_close",
   "hew_tls_connect",
   "hew_tls_connect_errno",
@@ -6763,15 +6762,6 @@ result = "none"
 params = ["borrow", "borrow", "borrow"]
 release-symbol = ""
 discharge-depth = "none"
-
-# sorting — hew-std/src/sort.rs. hew_sort_floats clones the borrowed input
-# vec (hew_vec_clone) and sorts the copy: fresh f64 vec, hew_vec_free.
-[[ownership.contracts]]
-symbol = "hew_sort_floats"
-result = "fresh"
-params = ["borrow"]
-release-symbol = "hew_vec_free"
-discharge-depth = "shallow"
 
 # hew-runtime/src/supervisor.rs: maps a stable pool index to a static child
 # slot. The aggregate result carries only scalar words and owns no resource.

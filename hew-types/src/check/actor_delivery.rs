@@ -36,11 +36,14 @@ impl Checker {
     /// answer. Both views derive alike, and both admit these two.
     fn declared_admission(&self, target: &Ty) -> SendPolicy {
         let declared = target.as_local_actor_ref().and_then(|actor| match actor {
-            Ty::Named { head, .. } => self.actor_overflow_policies.get(head.registry_key()),
+            Ty::Named { head, .. } => self
+                .actor_protocol_descriptors
+                .get(head.registry_key())
+                .map(|protocol| protocol.mailbox.overflow()),
             _ => None,
         });
         match declared {
-            Some(hew_parser::ast::OverflowPolicy::Fail) => SendPolicy::Reject,
+            Some(crate::actor_protocol::OverflowContract::Fail) => SendPolicy::Reject,
             _ => SendPolicy::Wait,
         }
     }
@@ -71,7 +74,7 @@ impl Checker {
             }
             _ => {
                 self.report_error(TypeErrorKind::InvalidOperation, span,
-                    format!("a delivery view requires `{view}(actor)`, or `{view}(actor, on_full: .Reject|.Wait|.DropNewest|.ReplaceLatest)` to override the destination's declared admission"));
+                    format!("a delivery view requires `{view}(actor)`, or `{view}(actor, on_full: .Reject|.Wait|.DropNewest)` to override the destination's declared admission"));
                 None
             }
         }
@@ -128,7 +131,6 @@ impl Checker {
                     "Reject" => Some(SendPolicy::Reject),
                     "Wait" => Some(SendPolicy::Wait),
                     "DropNewest" => Some(SendPolicy::DropNewest),
-                    "ReplaceLatest" => Some(SendPolicy::ReplaceLatest),
                     _ => None,
                 }
             }
@@ -144,7 +146,7 @@ impl Checker {
         };
         // A completion call waits for its own handler, so it cannot discard or
         // displace its own request and still have an outcome to report.
-        if completes && matches!(policy, SendPolicy::DropNewest | SendPolicy::ReplaceLatest) {
+        if completes && policy == SendPolicy::DropNewest {
             self.report_error(
                 TypeErrorKind::InvalidOperation,
                 &value.1,
@@ -154,18 +156,6 @@ impl Checker {
                     .to_string(),
             );
             return Ty::Error;
-        }
-        if policy == SendPolicy::ReplaceLatest {
-            let permits_replacement = matches!(target_ty.as_local_actor_ref(), Some(Ty::Named { head, .. })
-                if matches!(self.actor_overflow_policies.get(head.registry_key()), Some(hew_parser::ast::OverflowPolicy::Coalesce { .. })));
-            if !permits_replacement {
-                self.report_error(
-                    TypeErrorKind::InvalidOperation,
-                    span,
-                    "ReplaceLatest requires the actor protocol to opt into coalescing".to_string(),
-                );
-                return Ty::Error;
-            }
         }
         self.actor_delivery_calls.insert(
             SpanKey::in_module(span, self.current_module_idx),

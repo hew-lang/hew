@@ -76,6 +76,19 @@ try {
 
   process.stdout.write(trace.final_state.stdout.join(""));
   process.stderr.write(trace.final_state.stderr.join(""));
+  if (
+    trace.final_state.exit_code === null &&
+    trace.final_state.stderr.length === 0
+  ) {
+    process.stderr.write(
+      `parity-runner: ${JSON.stringify({
+        status: trace.result,
+        diagnostics: trace.final_state.diagnostics,
+        rejections: trace.final_state.sandbox_rejections,
+        failures: trace.final_state.runtime_failures,
+      })}\n`,
+    );
+  }
   process.exitCode = trace.final_state.exit_code ?? 1;
 } catch (error) {
   const message = error instanceof Error ? error.message : String(error);

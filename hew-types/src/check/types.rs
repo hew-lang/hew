@@ -404,6 +404,9 @@ pub enum RaceOperandKind {
 /// Result of type-checking a program.
 #[derive(Debug, Clone, Default)]
 pub struct TypeCheckOutput {
+    pub input_references: HashMap<SpanKey, crate::compile_time::InputReference>,
+    pub inputs: Vec<crate::compile_time::CompilationInput>,
+    pub compile_time_values: HashMap<SpanKey, crate::compile_time::ConstantValue>,
     /// Ordinary checked program produced by machine normalization, when present.
     pub normalized_program: Option<std::sync::Arc<super::machine_normalize::NormalizedProgram>>,
     pub select_sources: HashMap<SpanKey, Vec<CheckedSelectSource>>,
@@ -585,9 +588,6 @@ pub struct TypeCheckOutput {
     /// rewrite bridge and never reclassifies the receiver type downstream.
     pub actor_method_dispatch: HashMap<SpanKey, ActorMethodKind>,
     pub actor_delivery_calls: HashMap<SpanKey, crate::actor_delivery::ActorDeliveryCall>,
-    /// Coalescing members and their key parameter slots, selected by exact
-    /// checker declaration identity.
-    pub actor_coalesce_keys: HashMap<crate::DefId, Vec<(crate::DefId, u32)>>,
     /// Checker-owned machine method dispatch decisions keyed by the method call span.
     ///
     /// Populated for every accepted `.step()` / `.state_name()` call on a
@@ -3182,6 +3182,9 @@ pub(super) enum BareActorResolution {
     reason = "checker state flags are independent booleans"
 )]
 pub struct Checker {
+    pub(super) input_references: HashMap<SpanKey, crate::compile_time::InputReference>,
+    pub(super) input_provider: Option<std::sync::Arc<dyn crate::compile_time::InputProvider>>,
+    pub(super) compile_time_values: HashMap<SpanKey, crate::compile_time::ConstantValue>,
     /// Exact declarations whose values require an explicit disposition.
     pub(super) must_use_types: HashSet<crate::DefId>,
     pub(super) env: TypeEnv,
@@ -3372,11 +3375,6 @@ pub struct Checker {
     pub(super) try_width_cast_lowerings: HashMap<SpanKey, TryWidthCastLowering>,
     pub(super) actor_method_dispatch: HashMap<SpanKey, ActorMethodKind>,
     pub(super) actor_delivery_calls: HashMap<SpanKey, crate::actor_delivery::ActorDeliveryCall>,
-    pub(super) actor_coalesce_keys: HashMap<crate::DefId, Vec<(crate::DefId, u32)>>,
-    /// Mailbox overflow policy keyed by the actor's canonical declaration
-    /// identity. Absence means an unbounded mailbox. A bounded declaration
-    /// with no explicit policy is recorded as `Block`.
-    pub(super) actor_overflow_policies: HashMap<String, hew_parser::ast::OverflowPolicy>,
     /// Machine method dispatch side-table. Mirrors [`TypeCheckOutput::machine_method_dispatch`].
     pub(super) machine_method_dispatch: HashMap<SpanKey, MachineMethodKind>,
     /// Function-tail Ok-coercion sites. Mirrors
@@ -4391,6 +4389,9 @@ impl Checker {
     )]
     pub fn new(module_registry: ModuleRegistry) -> Self {
         Self {
+            input_provider: None,
+            input_references: HashMap::new(),
+            compile_time_values: HashMap::new(),
             env: TypeEnv::new(),
             subst: Substitution::new(),
             registry: TraitRegistry::new(),
@@ -4459,8 +4460,6 @@ impl Checker {
             try_width_cast_lowerings: HashMap::new(),
             actor_method_dispatch: HashMap::new(),
             actor_delivery_calls: HashMap::new(),
-            actor_coalesce_keys: HashMap::new(),
-            actor_overflow_policies: HashMap::new(),
             machine_method_dispatch: HashMap::new(),
             tail_ok_coercions: HashSet::new(),
             yield_ok_coercions: HashSet::new(),

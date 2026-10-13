@@ -722,7 +722,7 @@ pub struct HewChildSpec {
     pub restart_policy: c_int,
     pub mailbox_capacity: c_int,
     pub overflow: c_int,
-    pub coalesce_key_fn: Option<mailbox::HewCoalesceKeyFn>,
+    pub coalesce_match_fn: Option<mailbox::HewCoalesceMatchFn>,
     pub coalesce_fallback: c_int,
     /// Per-dispatch arena cap in bytes. 0 = unbounded. Mirrors
     /// `hew_actor_spawn_opts::arena_cap_bytes`; supervisor restart path
@@ -1534,7 +1534,7 @@ struct InternalChildSpec {
     stop_ns: i64,
     mailbox_capacity: c_int,
     overflow: c_int,
-    coalesce_key_fn: Option<mailbox::HewCoalesceKeyFn>,
+    coalesce_match_fn: Option<mailbox::HewCoalesceMatchFn>,
     coalesce_fallback: c_int,
     message_drop_fn: Option<mailbox::HewMessageDropFn>,
     /// Exponential backoff restart delay in milliseconds.
@@ -1708,7 +1708,7 @@ impl Default for InternalChildSpec {
             stop_ns: 5_000_000_000,
             mailbox_capacity: -1,
             overflow: OVERFLOW_DROP_NEW,
-            coalesce_key_fn: None,
+            coalesce_match_fn: None,
             coalesce_fallback: OVERFLOW_DROP_NEW,
             message_drop_fn: None,
             native_spawn: None,

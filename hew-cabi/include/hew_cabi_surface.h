@@ -16,10 +16,10 @@ struct hew_cabi_manifest_row {
   enum hew_cabi_manifest_ownership ownership;
 };
 
-#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1621u
+#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1619u
 #define HEW_CABI_MANIFEST_STATIC_COUNT 24u
 
-static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1621] = {
+static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1619] = {
     {"hew_actor_ask",
      "{\"native\": \"fn hew_actor_ask( *mut HewActor, i32, *mut c_void, usize, "
      ") -> *mut c_void\"}",
@@ -375,10 +375,10 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1621] = {
     {"hew_actor_send_wait_new",
      "{\"native\": \"fn hew_actor_send_wait_new( HewLocalPidId, i32, *mut "
      "c_void, usize, HewMsgEnvelopeDropFn, *const HewWaker, "
-     "Option<hew_cabi::value::HewValueReleaseStart>, ) -> *mut "
+     "Option<hew_cabi::value::HewValueReleaseStart>, i32, ) -> *mut "
      "HewNativeSend\", \"wasm32-wasip1\": \"fn hew_actor_send_wait_new( "
      "HewLocalPidId, i32, *mut c_void, usize, HewMsgEnvelopeDropFn, *const "
-     "HewWaker, Option<hew_cabi::value::HewValueReleaseStart>, ) -> *mut "
+     "HewWaker, Option<hew_cabi::value::HewValueReleaseStart>, i32, ) -> *mut "
      "HewNativeSend\"}",
      "native,wasm32-wasip1", "non-declarable", "not-applicable",
      "length-or-count", HEW_CABI_OWNERSHIP_UNMEASURED},
@@ -462,7 +462,7 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1621] = {
      "Option<hew_cabi::value::HewValueReleaseStart>, i32, i32, usize, *const "
      "HewNativePeriodicHandler, usize, Option<HewSysDispatchFn>, "
      "Option<HewNativeCrashFn>, *mut *mut HewFault, "
-     "Option<mailbox::HewCoalesceKeyFn>, i32, "
+     "Option<mailbox::HewCoalesceMatchFn>, i32, "
      "Option<hew_cabi::value::HewValueReleaseStart>, *mut *mut "
      "HewReleaseCursor, ) -> HewLocalPidId\", \"wasm32-wasip1\": \"fn "
      "hew_actor_spawn_native( *mut c_void, usize, HewDispatchFn, unsafe extern "
@@ -470,7 +470,7 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1621] = {
      "Option<hew_cabi::value::HewValueReleaseStart>, i32, i32, usize, *const "
      "HewNativePeriodicHandler, usize, Option<HewSysDispatchFn>, "
      "Option<HewNativeCrashFn>, *mut *mut HewFault, "
-     "Option<mailbox::HewCoalesceKeyFn>, i32, "
+     "Option<mailbox::HewCoalesceMatchFn>, i32, "
      "Option<hew_cabi::value::HewValueReleaseStart>, *mut *mut "
      "HewReleaseCursor, ) -> HewLocalPidId\"}",
      "native,wasm32-wasip1", "non-declarable", "not-applicable",
@@ -4035,12 +4035,6 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1621] = {
      "HewMailbox\"}",
      "native,wasm32-wasip1", "non-declarable", "not-applicable",
      "length-or-count", HEW_CABI_OWNERSHIP_UNMEASURED},
-    {"hew_mailbox_new_coalesce",
-     "{\"native\": \"fn hew_mailbox_new_coalesce( u32) -> *mut HewMailbox\", "
-     "\"wasm32-wasip1\": \"fn hew_mailbox_new_coalesce( u32) -> *mut "
-     "HewMailbox\"}",
-     "native,wasm32-wasip1", "non-declarable", "not-applicable",
-     "length-or-count", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_mailbox_new_with_policy",
      "{\"native\": \"fn hew_mailbox_new_with_policy( usize, OverflowPolicy, ) "
      "-> *mut HewMailbox\", \"wasm32-wasip1\": \"fn "
@@ -4069,9 +4063,9 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1621] = {
      HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_mailbox_set_coalesce_config",
      "{\"native\": \"fn hew_mailbox_set_coalesce_config( *mut HewMailbox, "
-     "Option<HewCoalesceKeyFn>, OverflowPolicy, )\", \"wasm32-wasip1\": \"fn "
+     "Option<HewCoalesceMatchFn>, OverflowPolicy, )\", \"wasm32-wasip1\": \"fn "
      "hew_mailbox_set_coalesce_config( *mut HewMailbox, "
-     "Option<HewCoalesceKeyFn>, OverflowPolicy, )\"}",
+     "Option<HewCoalesceMatchFn>, OverflowPolicy, )\"}",
      "native,wasm32-wasip1", "stable", "not-applicable",
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_mailbox_set_message_drop_fn",
@@ -4086,12 +4080,6 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1621] = {
      "\"wasm32-wasip1\": \"fn hew_mailbox_sys_len( *const HewMailbox) -> "
      "usize\"}",
      "native,wasm32-wasip1", "non-declarable", "not-applicable",
-     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
-    {"hew_mailbox_try_push",
-     "{\"native\": \"fn hew_mailbox_try_push( *mut HewMailbox, i32, *const "
-     "c_void, usize, ) -> i32\", \"wasm32-wasip1\": \"fn hew_mailbox_try_push( "
-     "*mut HewMailbox, i32, *const c_void, usize, ) -> i32\"}",
-     "native,wasm32-wasip1", "stable", "not-applicable",
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_mailbox_try_recv",
      "{\"native\": \"fn hew_mailbox_try_recv( *mut HewMailbox) -> *mut "

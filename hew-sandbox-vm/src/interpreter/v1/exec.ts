@@ -110,6 +110,7 @@ interface ActorMessage {
   handler: ActorShape["handlers"][number];
   payload: VmValue[];
   reply: boolean;
+  obligated: boolean;
   complete(
     value: VmValue | null,
     error: string | null,
@@ -122,6 +123,7 @@ interface ActorInstance {
   layout: ActorShape;
   state: VmValue;
   mailbox: ActorMessage[];
+  disposals: VmValue[];
   admission: Array<() => void>;
   busy: boolean;
   alive: boolean;
@@ -2590,6 +2592,7 @@ class ExecutorV1 {
             ),
           },
           mailbox: [],
+          disposals: [],
           admission: [],
           busy: true,
           alive: true,
@@ -2684,6 +2687,7 @@ class ExecutorV1 {
               handler,
               payload: fields,
               reply: false,
+              obligated: true,
               complete: (_value, error, drained) => {
                 if (error) this.closeValue(payload!, error);
                 drained?.(null);
@@ -2782,13 +2786,13 @@ class ExecutorV1 {
           const full =
             actor.layout.mailbox_capacity !== undefined &&
             actor.mailbox.length >= actor.layout.mailbox_capacity;
-          // The destination's declaration answers a full queue before the
-          // sender's policy: a coalescing mailbox supersedes the queued
-          // message with the same key, then its fallback or a declared
-          // `drop_new` / `drop_old` resolves the rest. Either loss reports a
-          // discard; only a declaration that refuses reaches the sender.
-          // A discard completes in this turn unless an authored close
-          // suspends: the sender keeps its turn, as it does natively.
+          // Declared loss transfers cleanup to the receiver. Sender-selected
+          // loss still closes the sender's unadmitted request in its own frame.
+          const discardAtReceiver = (value: VmValue, report: VmValue) => {
+            actor.disposals.push(value);
+            this.dispatchActor(actor);
+            finish(report);
+          };
           const discard = (value: VmValue, report: VmValue) => {
             let settled = false;
             let waiting = false;
@@ -2818,7 +2822,7 @@ class ExecutorV1 {
             const queued = key
               ? actor.mailbox.findIndex(
                   (message) =>
-                    !message.reply &&
+                    !message.obligated &&
                     message.handler.message_id === handler.message_id &&
                     equals(
                       message.payload[key.param]!,
@@ -2832,23 +2836,23 @@ class ExecutorV1 {
                 ...superseded,
                 payload: payload.fields,
               };
-              discard(
+              discardAtReceiver(
                 { kind: "record", typeId: "", fields: superseded.payload },
-                accepted(true),
+                accepted(false),
               );
               return;
             }
             declared = coalesce.fallback;
           }
           if (declared === "drop_new") {
-            discard(payload, accepted(true));
+            discardAtReceiver(payload, accepted(true));
             return;
           }
           // A queued completion call owes its caller a reply, so `drop_old`
           // evicts only a one-way message and refuses when there is none.
           const oldest =
             declared === "drop_old"
-              ? actor.mailbox.findIndex((message) => !message.reply)
+              ? actor.mailbox.findIndex((message) => !message.obligated)
               : -1;
           if (oldest >= 0) {
             const [evicted] = actor.mailbox.splice(oldest, 1);
@@ -2856,10 +2860,11 @@ class ExecutorV1 {
               handler,
               payload: payload.fields,
               reply: false,
+              obligated: false,
               complete: (_value, _error, drained) => drained?.(null),
             });
             this.dispatchActor(actor);
-            discard(
+            discardAtReceiver(
               { kind: "record", typeId: "", fields: evicted!.payload },
               accepted(false),
             );
@@ -2887,6 +2892,7 @@ class ExecutorV1 {
             handler,
             payload: payload.fields,
             reply: false,
+            obligated: false,
             complete: (_value, _error, drained) => drained?.(null),
           });
           this.trace.snapshot("actor.send", {
@@ -3197,7 +3203,13 @@ class ExecutorV1 {
       }
       admitted = true;
       receiver = actor;
-      actor.mailbox.push({ handler, payload, complete: finish, reply: true });
+      actor.mailbox.push({
+        handler,
+        payload,
+        complete: finish,
+        reply: true,
+        obligated: true,
+      });
       this.trace.snapshot("actor.ask", {
         actor_id: actor.id,
         handler: handler.name,
@@ -3215,6 +3227,21 @@ class ExecutorV1 {
 
   private dispatchActor(actor: ActorInstance): void {
     if (actor.busy || !actor.alive || actor.drainingMailbox) return;
+    if (actor.disposals.length > 0) {
+      actor.busy = true;
+      const values = actor.disposals.splice(0);
+      this.closeValueAsync(
+        { kind: "vector", elementType: "message", items: values },
+        this.faultText(actor.crashing),
+        (fault) => {
+          actor.busy = false;
+          if (fault) this.crashActor(actor, fault);
+          else this.dispatchActor(actor);
+        },
+        actor,
+      );
+      return;
+    }
     if (actor.terminating && actor.mailbox.length > 0) {
       this.drainMailbox(actor, this.faultText(actor.closingFault), (fault) => {
         actor.closingFault = combineFaults(actor.closingFault, fault);
@@ -3637,11 +3664,14 @@ class ExecutorV1 {
       {
         kind: "vector",
         elementType: "message",
-        items: messages.map((message) => ({
-          kind: "record",
-          typeId: "",
-          fields: message.payload,
-        })),
+        items: [
+          ...actor.disposals.splice(0),
+          ...messages.map<VmValue>((message) => ({
+            kind: "record",
+            typeId: "",
+            fields: message.payload,
+          })),
+        ],
       },
       fault,
       (closeFault) => {

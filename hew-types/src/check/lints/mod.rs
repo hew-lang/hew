@@ -705,6 +705,7 @@ pub fn walk_expr<V: NodeVisitor>(expr: &Expr, span: &Span, visitor: &mut V) {
         | Expr::ChainValue
         | Expr::RegexLiteral(_)
         | Expr::ByteStringLiteral(_)
+        | Expr::MacroInvocation { .. }
         | Expr::ByteArrayLiteral(_) => {}
         Expr::ContextVariant(context) => {
             if let Some(record) = &context.record {

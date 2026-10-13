@@ -376,6 +376,29 @@ impl LowerCtx {
             };
         }
         let (kind, ty) = match &expr.0 {
+            Expr::MacroInvocation { .. } => {
+                match self.compile_time_values.get(&self.mk_key(&span)) {
+                    Some(hew_types::compile_time::ConstantValue::String(text)) => (
+                        HirExprKind::Literal(HirLiteral::String(text.clone())),
+                        ResolvedTy::String,
+                    ),
+                    Some(hew_types::compile_time::ConstantValue::Bytes(bytes)) => (
+                        HirExprKind::Literal(HirLiteral::Bytes(bytes.clone())),
+                        ResolvedTy::Bytes,
+                    ),
+                    None => {
+                        self.unsupported(
+                            span.clone(),
+                            "macro invocation has no checked constant",
+                            "checker-boundary",
+                        );
+                        (
+                            HirExprKind::Unsupported("unchecked macro invocation".into()),
+                            ResolvedTy::Unit,
+                        )
+                    }
+                }
+            }
             Expr::Literal(lit) => {
                 let (kind, default_ty) = Self::lower_literal(lit);
                 // Apply checker authority for integer literals: the checker may have

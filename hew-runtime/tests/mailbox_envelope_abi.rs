@@ -74,28 +74,18 @@ fn payload_class_serialized_cross_node_roundtrip() {
 // 5–6: HewMsgNode field-offset pins
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Pin `payload_class` and `source_pid` offsets.
-///
-/// Layout (64-bit, repr(C)):
-///   next(8) + msg_type(4) + pad(4) + data(8) + data_size(8)
-///   + reply_channel(8) + envelope(8) = 48
-///   + trace_context(40 = 4×u64 + u8 + pad7) = 88
-///   + payload_class(u8) = 88
-///   + pad(7) + source_pid(u64) = 96
+/// Pin the 64-bit offsets of payload metadata and the sender identity.
 #[test]
 fn msg_node_layout_payload_class_and_source_pid_offsets() {
-    assert_eq!(offset_of!(HewMsgNode, payload_class), 88);
-    assert_eq!(offset_of!(HewMsgNode, source_pid), 96);
+    assert_eq!(offset_of!(HewMsgNode, payload_class), 96);
+    assert_eq!(offset_of!(HewMsgNode, source_pid), 104);
 }
 
-/// Pin `cancel_token_handle` offset and total struct size.
-///
-/// cancel_token_handle follows source_pid at offset 96 + 8 = 104.
-/// Total struct size: 104 + 8 = 112.
+/// Pin the 64-bit cancellation handle offset and total node size.
 #[test]
 fn msg_node_layout_cancel_token_handle_offset() {
-    assert_eq!(offset_of!(HewMsgNode, cancel_token_handle), 104);
-    assert_eq!(std::mem::size_of::<HewMsgNode>(), 112);
+    assert_eq!(offset_of!(HewMsgNode, cancel_token_handle), 112);
+    assert_eq!(std::mem::size_of::<HewMsgNode>(), 120);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

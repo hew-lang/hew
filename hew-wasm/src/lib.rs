@@ -33,6 +33,7 @@ use std::fmt;
 
 use serde::{de::DeserializeOwned, Serialize};
 mod codec;
+mod inputs;
 pub use codec::execute_codec;
 
 use wasm_bindgen::prelude::*;
@@ -46,9 +47,19 @@ use wasm_bindgen::prelude::*;
 /// # Errors
 ///
 /// Returns a JavaScript error if the analysis result cannot be serialized.
-#[wasm_bindgen]
 pub fn analyze(source: &str) -> Result<String, JsValue> {
     export_json("analyze", || Ok(run_analysis(source)))
+}
+
+/// Analyze source using the supplied browser input files.
+///
+/// # Errors
+///
+/// Returns a JavaScript error if an input is invalid or the result cannot be serialized.
+#[wasm_bindgen(js_name = analyze)]
+pub fn analyze_with_inputs(source: &str, files: Option<js_sys::Map>) -> Result<String, JsValue> {
+    let inputs = inputs::from_js(files).map_err(|error| JsValue::from_str(&error))?;
+    export_json("analyze", || Ok(run_analysis_with_inputs(source, inputs)))
 }
 
 /// Parse Hew source code and return JSON `{ ast, diagnostics }`.
@@ -80,9 +91,21 @@ pub fn parse_source(source: &str) -> Result<String, JsValue> {
 /// # Errors
 ///
 /// Returns a JavaScript error if the type-check result cannot be serialized.
-#[wasm_bindgen]
 pub fn type_check(source: &str) -> Result<String, JsValue> {
     export_json("type_check", || Ok(run_type_check(source)))
+}
+
+/// Type-check source using the supplied browser input files.
+///
+/// # Errors
+///
+/// Returns a JavaScript error if an input is invalid or the result cannot be serialized.
+#[wasm_bindgen(js_name = type_check)]
+pub fn type_check_with_inputs(source: &str, files: Option<js_sys::Map>) -> Result<String, JsValue> {
+    let inputs = inputs::from_js(files).map_err(|error| JsValue::from_str(&error))?;
+    export_json("type_check", || {
+        Ok(run_type_check_with_inputs(source, inputs))
+    })
 }
 
 /// Format Hew source code and return JSON `{ formatted, diagnostics }`.
@@ -570,67 +593,102 @@ fn collect_semantic_diagnostics(
 }
 
 fn parse_and_type_check(source: &str) -> AnalyzedSource {
-    let mut parse_result = hew_parser::parse(source);
-    hew_compile::attach_prelude_std_modules(&mut parse_result.program);
-    let (type_output, hir_diagnostics, semantic_diagnostics) = if parse_result.errors.is_empty() {
-        let mut checker = hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(
-            hew_types::module_registry::stdlib_search_paths(),
-        ));
-        // Install the editor buffer as the root lint source so in-source
-        // `// hew:allow(...)` directives suppress lints in the playground just
-        // as they do on the CLI. The wasm path is single-source, so there are
-        // no non-root modules to register.
-        let mut lint_sources = hew_types::LintSources::new();
-        lint_sources.set_root(source.to_string());
-        checker.set_lint_sources(lint_sources);
-        let tco = checker.check_program(&parse_result.program);
-        // Run HIR lowering after type-checking so that checker-boundary
-        // violations (e.g. closure captures without materialized metadata)
-        // are caught and reported rather than silently accepted.
-        //
-        // WHY X86_64: the browser checker is analysis-only and must NOT apply
-        // wasm32 target restrictions (actors and machines run fine in the
-        // sandbox VM, which has its own coroutine scheduler). Using X86_64
-        // lets actors/machines pass HIR lowering while still catching
-        // CheckerBoundaryViolation diagnostics that arise regardless of target.
-        let mut semantic_diagnostics = Vec::new();
-        let hir_diagnostics = if tco.errors.is_empty() {
-            let lower_output = hew_hir::lower_program(
-                &parse_result.program,
-                &tco,
-                &hew_hir::ResolutionCtx,
-                hew_hir::TargetArch::X86_64,
-            );
-            // Run the HIR verifier to catch Unsupported placeholders and other
-            // structural invariant violations that lower_program may not diagnose
-            // directly. Dedup by (kind, span) so each problem is reported once.
-            // Mirrors the native `hew check` path in hew-cli/src/main.rs.
-            let mut diags = lower_output.diagnostics;
-            let verifier_diags = hew_hir::verify_hir(&lower_output.module);
-            for diag in verifier_diags {
-                let already_present = diags
-                    .iter()
-                    .any(|d| d.kind == diag.kind && d.span == diag.span);
-                if !already_present {
-                    diags.push(diag);
-                }
-            }
-            // MIR-stage lints run only when HIR lowering is clean: a module the
-            // HIR stage already rejected is not worth lowering further, and
-            // skipping it also keeps the added browser cost off every buffer
-            // that is mid-edit and already erroring.
-            if diags.is_empty() {
-                semantic_diagnostics =
-                    collect_semantic_diagnostics(&parse_result.program, &lower_output.module, &tco);
-            }
-            diags
-        } else {
-            Vec::new()
-        };
-        (Some(tco), hir_diagnostics, semantic_diagnostics)
-    } else {
-        (None, Vec::new(), Vec::new())
+    parse_and_type_check_with_inputs(source, hew_compile::SourceSet::in_memory())
+}
+
+fn parse_and_type_check_with_inputs(
+    source: &str,
+    inputs: hew_compile::SourceSet,
+) -> AnalyzedSource {
+    let mut options = hew_compile::FrontendOptions {
+        documents: inputs,
+        project_dir: Some(".".into()),
+        ..Default::default()
     };
+    sandbox::add_embedded_standard_library(&mut options);
+    let mut state = hew_compile::run_source_frontend(source, "playground.hew", &options);
+    let mut parse_result = state
+        .parse_result
+        .take()
+        .unwrap_or_else(|| hew_parser::parse(source));
+    parse_result.program = state.program;
+    let driver_diagnostics: Vec<_> = state
+        .diagnostics
+        .into_iter()
+        .filter_map(|diagnostic| {
+            let hew_compile::FrontendDiagnosticKind::Message(message) = diagnostic.kind else {
+                return None;
+            };
+            let span = message.span.unwrap_or(0..0);
+            Some(WasmDiagnostic {
+                severity: "error".into(),
+                phase: "frontend",
+                message: message.message,
+                span: WasmSpan {
+                    start: span.start,
+                    end: span.end,
+                },
+                start_offset: span.start,
+                end_offset: span.end,
+                kind: message.code,
+                notes: Vec::new(),
+                suggestions: message.help,
+                source_module: diagnostic.filename,
+            })
+        })
+        .collect();
+    let (type_output, hir_diagnostics, semantic_diagnostics) =
+        if let Some(tco) = state.typecheck_result.and_then(|result| result.tco) {
+            // Run HIR lowering after type-checking so that checker-boundary
+            // violations (e.g. closure captures without materialized metadata)
+            // are caught and reported rather than silently accepted.
+            //
+            // WHY X86_64: the browser checker is analysis-only and must NOT apply
+            // wasm32 target restrictions (actors and machines run fine in the
+            // sandbox VM, which has its own coroutine scheduler). Using X86_64
+            // lets actors/machines pass HIR lowering while still catching
+            // CheckerBoundaryViolation diagnostics that arise regardless of target.
+            let mut semantic_diagnostics = driver_diagnostics;
+            let hir_diagnostics = if tco.errors.is_empty() {
+                let lower_output = hew_hir::lower_program(
+                    &parse_result.program,
+                    &tco,
+                    &hew_hir::ResolutionCtx,
+                    hew_hir::TargetArch::X86_64,
+                );
+                // Run the HIR verifier to catch Unsupported placeholders and other
+                // structural invariant violations that lower_program may not diagnose
+                // directly. Dedup by (kind, span) so each problem is reported once.
+                // Mirrors the native `hew check` path in hew-cli/src/main.rs.
+                let mut diags = lower_output.diagnostics;
+                let verifier_diags = hew_hir::verify_hir(&lower_output.module);
+                for diag in verifier_diags {
+                    let already_present = diags
+                        .iter()
+                        .any(|d| d.kind == diag.kind && d.span == diag.span);
+                    if !already_present {
+                        diags.push(diag);
+                    }
+                }
+                // MIR-stage lints run only when HIR lowering is clean: a module the
+                // HIR stage already rejected is not worth lowering further, and
+                // skipping it also keeps the added browser cost off every buffer
+                // that is mid-edit and already erroring.
+                if diags.is_empty() {
+                    semantic_diagnostics.extend(collect_semantic_diagnostics(
+                        &parse_result.program,
+                        &lower_output.module,
+                        &tco,
+                    ));
+                }
+                diags
+            } else {
+                Vec::new()
+            };
+            (Some(tco), hir_diagnostics, semantic_diagnostics)
+        } else {
+            (None, Vec::new(), driver_diagnostics)
+        };
 
     AnalyzedSource {
         parse_result,
@@ -846,7 +904,11 @@ fn build_type_info(type_output: &hew_types::TypeCheckOutput) -> Vec<WasmTypeInfo
 }
 
 fn run_type_check(source: &str) -> TypeCheckResult {
-    let analysis = parse_and_type_check(source);
+    run_type_check_with_inputs(source, hew_compile::SourceSet::in_memory())
+}
+
+fn run_type_check_with_inputs(source: &str, inputs: hew_compile::SourceSet) -> TypeCheckResult {
+    let analysis = parse_and_type_check_with_inputs(source, inputs);
     let type_info = analysis
         .type_output
         .as_ref()
@@ -907,8 +969,12 @@ fn run_format(source: &str) -> FormatResult {
 }
 
 fn run_analysis(source: &str) -> AnalysisResult {
+    run_analysis_with_inputs(source, hew_compile::SourceSet::in_memory())
+}
+
+fn run_analysis_with_inputs(source: &str, inputs: hew_compile::SourceSet) -> AnalysisResult {
     let tokens = build_tokens(source);
-    let analysis = parse_and_type_check(source);
+    let analysis = parse_and_type_check_with_inputs(source, inputs);
     let type_info = analysis
         .type_output
         .as_ref()

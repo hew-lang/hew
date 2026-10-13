@@ -3412,6 +3412,7 @@ impl<'a> Formatter<'a> {
             | Expr::ChainValue
             | Expr::RegexLiteral(_)
             | Expr::ByteStringLiteral(_)
+            | Expr::MacroInvocation { .. }
             | Expr::ByteArrayLiteral(_)
             | Expr::Yield(None)
             | Expr::Return(None) => true,
@@ -4591,6 +4592,13 @@ impl<'a> Formatter<'a> {
                 self.own_call_parens(&expr.1);
                 let bounds = self.trailing_list(&expr.1, ")");
                 self.format_call_args(args, bounds);
+            }
+            Expr::MacroInvocation { name, args } => {
+                self.write(name.name.as_str());
+                self.write("!");
+                self.own_call_parens(&expr.1);
+                let bounds = self.trailing_list(&expr.1, ")");
+                self.delimited_list("(", ")", args, bounds, false, true, Self::format_expr);
             }
             Expr::MethodCall {
                 receiver,

@@ -629,26 +629,22 @@ fn a_bare_handle_completion_waits_for_admission() {
 /// A completion view admits only the two policies a waiting call can honour:
 /// it cannot discard or displace the request it is waiting for.
 #[test]
-fn a_policy_view_refuses_the_discarding_policies() {
-    for option in [".DropNewest", ".ReplaceLatest"] {
-        let output = check_source(&format!(
-            "actor Worker {{ mailbox 1; receive fn total() -> i64 {{ 1 }} }} \
-             fn main() {{ let w = policy(spawn Worker, on_full: {option}); \
-               match w.total() {{ .Ok(_) => {{}} .Err(_) => {{}} }} }}"
-        ));
-        assert!(
-            output
-                .errors
-                .iter()
-                .any(|error| error.message.contains("completion view admits")),
-            "{option}: {:?}",
-            output.errors
-        );
-    }
+fn a_policy_view_refuses_discarding_requests() {
+    let output = check_source(
+        "actor Worker { mailbox 1; receive fn total() -> i64 { 1 } } \
+         fn main() { let w = policy(spawn Worker, on_full: .DropNewest); \
+           match w.total() { .Ok(_) => {} .Err(_) => {} } }",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|error| error.message.contains("completion view admits")),
+        "{:?}",
+        output.errors
+    );
 }
 
-/// A coalescing mailbox names the parameter its key is projected from, so the
-/// key must exist and must have a type a mailbox key can be derived from.
 #[test]
 fn a_coalesce_key_names_a_receive_parameter_with_a_key_type() {
     let output = check_source(

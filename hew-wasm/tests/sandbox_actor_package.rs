@@ -958,7 +958,12 @@ fn a_close_observer_recovers_complete_actor_cleanup_faults() {
 }
 
 #[test]
-fn a_declared_coalescing_loss_reports_a_discard() {
+fn coalescing_preserves_obligations_and_closes_displaced_resources() {
+    assert_native_manifest("mailbox-coalesce-obligations");
+}
+
+#[test]
+fn coalescing_accepts_replacement_and_reports_fallback_discard() {
     assert_native_manifest("mailbox_declared_loss_visible");
 }
 

@@ -400,6 +400,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         release: PointerValue<'ctx>,
         source: StorageId,
         unwind: Option<&PhysicalEdge>,
+        obligated: bool,
     ) -> CodegenResult<IntValue<'ctx>> {
         let frame = self.frame.as_ref().ok_or_else(|| {
             CodegenError::FailClosed("waiting submission needs a resumable invocation".into())
@@ -425,6 +426,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                     ptr.into(),
                     ptr.into(),
                     ptr.into(),
+                    self.ctx.i32_type().into(),
                 ],
                 false,
             ),
@@ -435,6 +437,12 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         let mut args = request.to_vec();
         args.push(waker.into());
         args.push(release.into());
+        args.push(
+            self.ctx
+                .i32_type()
+                .const_int(u64::from(obligated), false)
+                .into(),
+        );
         let wait = call_value(&self.builder, new, &args, "send.wait")?.into_pointer_value();
         frame.carry(self.ctx, &self.builder, wait, "send.wait.slot")?;
         let poll = self.ctx.append_basic_block(self.value, "send.poll");

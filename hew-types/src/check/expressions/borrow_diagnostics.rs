@@ -1023,6 +1023,7 @@ impl Checker {
             | Expr::Await(_)
             | Expr::RegexLiteral(_)
             | Expr::ByteStringLiteral(_)
+            | Expr::MacroInvocation { .. }
             | Expr::ByteArrayLiteral(_)
             | Expr::MachineEmit { .. }
             | Expr::Is { .. }

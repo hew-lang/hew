@@ -1807,6 +1807,40 @@ fn cmd_publish(
         )
     };
 
+    let entry = m.package.main.as_ref().map_or_else(
+        || {
+            let library = cwd.join(crate::manifest::package_root_source(&m.package.name));
+            if library.is_file() {
+                library
+            } else {
+                cwd.join(m.package.main_source())
+            }
+        },
+        |main| cwd.join(main),
+    );
+    let checked = match hew_compile::check_file(
+        &entry.to_string_lossy(),
+        &hew_compile::FrontendOptions::default(),
+    ) {
+        Ok(checked) => checked,
+        Err(failure) => {
+            eprintln!("hew publish: {}", failure.message);
+            for diagnostic in failure.diagnostics {
+                let message = match diagnostic.kind {
+                    hew_compile::FrontendDiagnosticKind::Message(error) => error.message,
+                    hew_compile::FrontendDiagnosticKind::Parse(error) => error.message,
+                    hew_compile::FrontendDiagnosticKind::Type(error) => error.message,
+                    hew_compile::FrontendDiagnosticKind::Hir(error) => error.note,
+                };
+                eprintln!(
+                    "{}: {message}",
+                    diagnostic.filename.as_deref().unwrap_or("package")
+                );
+            }
+            std::process::exit(1);
+        }
+    };
+
     // Pack tarball.
     let exclude = m.package.exclude.as_deref().unwrap_or_default();
     let include = m.package.include.as_deref().unwrap_or_default();
@@ -1817,6 +1851,15 @@ fn cmd_publish(
             std::process::exit(1);
         }
     };
+    let root = cwd.canonicalize().unwrap_or_else(|_| cwd.clone());
+    for input in checked.inputs.iter().filter(|input| input.sha256.is_some()) {
+        if let Ok(relative) = input.path.strip_prefix(&root) {
+            if !pack_result.files.iter().any(|file| file == relative) {
+                eprintln!("hew publish: E_PUBLISH_MISSING_INPUT: compilation input `{}` is excluded from the package", relative.display());
+                std::process::exit(1);
+            }
+        }
+    }
 
     // Sign the checksum.
     let signature = keypair.sign(pack_result.checksum.as_bytes());

@@ -425,6 +425,7 @@ pub struct HewLanguageServer {
     documents: Arc<DashMap<Url, DocumentState>>,
     open_documents: RwLock<HashMap<Url, OpenDocument>>,
     rename_document_changes: RwLock<bool>,
+    watched_files_supported: RwLock<bool>,
     workspace_roots: RwLock<Vec<PathBuf>>,
     /// One CPU-heavy rename job per server, including cancelled requests whose
     /// blocking computation is still running.
@@ -454,6 +455,7 @@ impl HewLanguageServer {
             documents: Arc::new(DashMap::new()),
             open_documents: RwLock::new(HashMap::new()),
             rename_document_changes: RwLock::new(false),
+            watched_files_supported: RwLock::new(false),
             workspace_roots: RwLock::new(Vec::new()),
             rename_jobs: Arc::new(tokio::sync::Semaphore::new(1)),
             analysis_versions: Arc::new(DashMap::new()),
@@ -756,6 +758,27 @@ impl LanguageServer for HewLanguageServer {
 
     async fn did_change(&self, params: DidChangeTextDocumentParams) {
         handlers::text_sync::did_change(self, params).await;
+    }
+
+    async fn did_change_watched_files(
+        &self,
+        params: tower_lsp_server::ls_types::DidChangeWatchedFilesParams,
+    ) {
+        let changed: HashSet<_> = params.changes.into_iter().map(|event| event.uri).collect();
+        let dependents: Vec<_> = self
+            .documents
+            .iter()
+            .filter_map(|document| {
+                document
+                    .dependency_uris
+                    .as_ref()
+                    .is_some_and(|inputs| inputs.iter().any(|uri| changed.contains(uri)))
+                    .then(|| (document.key().clone(), document.source.clone()))
+            })
+            .collect();
+        for (uri, source) in dependents {
+            self.reanalyze(&uri, &source);
+        }
     }
 
     async fn did_close(&self, params: DidCloseTextDocumentParams) {

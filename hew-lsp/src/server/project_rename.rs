@@ -214,7 +214,7 @@ fn checked_imports(
 }
 
 /// Stop at the shared frontend's checker, without HIR/SIR diagnostic lowering.
-fn check(source: &Source, overlay: &hew_compile::DocumentSet, pkg_paths: &[PathBuf]) -> Checked {
+fn check(source: &Source, overlay: &hew_compile::SourceSet, pkg_paths: &[PathBuf]) -> Checked {
     let state = hew_compile::run_source_frontend(
         &source.text,
         &source.path.display().to_string(),
@@ -224,7 +224,7 @@ fn check(source: &Source, overlay: &hew_compile::DocumentSet, pkg_paths: &[PathB
 }
 
 fn frontend_options(
-    overlay: &hew_compile::DocumentSet,
+    overlay: &hew_compile::SourceSet,
     pkg_paths: &[PathBuf],
 ) -> hew_compile::FrontendOptions {
     hew_compile::FrontendOptions {
@@ -371,9 +371,9 @@ fn editable(path: &Path, roots: &[PathBuf]) -> bool {
 
 fn source_snapshot(
     documents: &HashMap<Uri, OpenDocument>,
-) -> Result<(BTreeMap<PathBuf, Source>, hew_compile::DocumentSet), RenameError> {
+) -> Result<(BTreeMap<PathBuf, Source>, hew_compile::SourceSet), RenameError> {
     let mut sources = BTreeMap::new();
-    let mut overlay = hew_compile::DocumentSet::new();
+    let mut overlay = hew_compile::SourceSet::new();
     let mut entries: Vec<_> = documents.iter().collect();
     entries.sort_by_key(|(uri, _)| uri.as_str());
     for (uri, document) in entries {
@@ -409,7 +409,7 @@ fn source_snapshot(
 fn project_sources(
     root_paths: &[PathBuf],
     open: &BTreeMap<PathBuf, Source>,
-    overlay: &mut hew_compile::DocumentSet,
+    overlay: &mut hew_compile::SourceSet,
 ) -> Result<BTreeMap<PathBuf, Source>, RenameError> {
     let roots: Vec<_> = root_paths.iter().map(|root| physical_path(root)).collect();
     let mut sources: BTreeMap<_, _> = open
@@ -974,7 +974,7 @@ struct ProjectRenameInputs {
     query: Source,
     target: Function,
     open: BTreeMap<PathBuf, Source>,
-    overlay: hew_compile::DocumentSet,
+    overlay: hew_compile::SourceSet,
 }
 
 fn prepare_rename(
@@ -1111,7 +1111,7 @@ fn plan(
     target: &Function,
     new_name: &str,
     open: &BTreeMap<PathBuf, Source>,
-    mut overlay: hew_compile::DocumentSet,
+    mut overlay: hew_compile::SourceSet,
     workspace_roots: &[PathBuf],
     pkg_paths: &[PathBuf],
 ) -> Result<ProjectPlan, RenameError> {
@@ -1308,7 +1308,7 @@ fn verify_source_snapshot(
             ));
         }
     }
-    let current = project_sources(root_paths, open, &mut hew_compile::DocumentSet::new())?;
+    let current = project_sources(root_paths, open, &mut hew_compile::SourceSet::new())?;
     if current.len() != sources.len()
         || current.iter().any(|(path, source)| {
             sources
@@ -1496,8 +1496,7 @@ mod tests {
         ]);
         let roots = std::slice::from_ref(&project.0);
         let open = BTreeMap::new();
-        let capture =
-            || project_sources(roots, &open, &mut hew_compile::DocumentSet::new()).unwrap();
+        let capture = || project_sources(roots, &open, &mut hew_compile::SourceSet::new()).unwrap();
         let query = project.0.join("greeting.hew");
         let mut sources = capture();
         assert!(verify_source_snapshot(&query, &sources, roots, &open).is_ok());
@@ -1786,7 +1785,7 @@ mod tests {
                 text: std::fs::read_to_string(&path).unwrap(),
                 path: path.clone(),
             };
-            let mut overlay = hew_compile::DocumentSet::new();
+            let mut overlay = hew_compile::SourceSet::new();
             overlay.insert(path.clone(), source.text.clone());
             let checked = check(&source, &overlay, &[]);
             let offset = source.text.find("fn greet").unwrap() + 3;

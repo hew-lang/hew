@@ -207,7 +207,6 @@ pub struct Coalesce {
 pub struct CoalesceKey {
     pub message: u32,
     pub param: u32,
-    pub kind: String,
 }
 
 /// One demanded supervisor: its restart policy and the children it starts.
@@ -899,7 +898,6 @@ impl<'m> Walker<'m> {
                             .map(|key| CoalesceKey {
                                 message: key.message,
                                 param: key.param,
-                                kind: coalesce_key_name(key.kind).to_string(),
                             })
                             .collect(),
                     }),
@@ -2129,7 +2127,6 @@ const fn send_policy_name(policy: hew_types::actor_delivery::SendPolicy) -> &'st
         hew_types::actor_delivery::SendPolicy::Reject => "reject",
         hew_types::actor_delivery::SendPolicy::Wait => "wait",
         hew_types::actor_delivery::SendPolicy::DropNewest => "drop_newest",
-        hew_types::actor_delivery::SendPolicy::ReplaceLatest => "replace_latest",
     }
 }
 
@@ -2157,14 +2154,6 @@ const fn coalesce_fallback_name(fallback: hew_sir::SemCoalesceFallback) -> &'sta
         hew_sir::SemCoalesceFallback::DropNew => "drop_new",
         hew_sir::SemCoalesceFallback::DropOld => "drop_old",
         hew_sir::SemCoalesceFallback::Fail => "fail",
-    }
-}
-
-const fn coalesce_key_name(kind: hew_sir::SemCoalesceKeyKind) -> &'static str {
-    match kind {
-        hew_sir::SemCoalesceKeyKind::Integer => "integer",
-        hew_sir::SemCoalesceKeyKind::Boolean => "boolean",
-        hew_sir::SemCoalesceKeyKind::String => "string",
     }
 }
 

@@ -3,7 +3,7 @@ use std::{
     sync::Arc,
 };
 
-use hew_parser::ast::{BinaryOp, OverflowPolicy, Span, UnaryOp};
+use hew_parser::ast::{BinaryOp, Span, UnaryOp};
 use hew_types::RcIntrinsicOp;
 use hew_types::{
     ChildSlot, DefId, ExecutionContextReader, ImplId, MethodTargetFamily, PoolAccessor, ResolvedTy,
@@ -235,6 +235,7 @@ pub enum HirConstValue {
     Integer(i128),
     /// Folded string literal value (UTF-8, as written in source).
     String(String),
+    Bytes(Vec<u8>),
     /// Folded float literal value. The declared width lives in [`HirConst::ty`]
     /// (`F32`/`F64`); this carries the parser value as `f64`, and downstream
     /// codegen rounds to `f32` when the declared type is `f32`.
@@ -463,9 +464,6 @@ pub struct HirActorDecl {
     /// periodic scheduling (validated by the checker; recorded here as a
     /// structural flag plus the duration in nanoseconds).
     pub receive_handlers: Vec<HirActorReceiveFn>,
-    /// Exact receive declarations and payload slots selected as mailbox
-    /// coalescing keys by the checker.
-    pub coalesce_keys: Vec<(DefId, u32)>,
     /// Plain methods on the actor (not lifecycle hooks). MIR emits one
     /// `{Actor}__fn__{name}` callable per entry, entered from the actor's own
     /// handlers, hooks, `init`, and sibling methods; the body reads and writes
@@ -487,13 +485,6 @@ pub struct HirActorDecl {
     /// (no shared-heap captures admitted at spawn sites). Pass-through from
     /// the parser AST; codegen consumes it.
     pub is_isolated: bool,
-    /// `mailbox <N>` — fixed mailbox capacity. `None` means the runtime
-    /// default applies.
-    pub mailbox_capacity: Option<u32>,
-    /// `overflow <policy>` — mailbox overflow policy. `None` means the
-    /// runtime default (`Block`) applies. The `Coalesce` variant carries
-    /// the keying field name and its fallback policy.
-    pub overflow_policy: Option<OverflowPolicy>,
     /// Whether this actor participates in a reference cycle, lifted from
     /// the checker's `cycle_capable_actors` side-table. Codegen consumes
     /// this to select a refcount-cycle-breaking strategy at spawn sites.
@@ -502,13 +493,8 @@ pub struct HirActorDecl {
     /// mapping for every `receive fn` plus signature/symbol metadata.
     ///
     /// Lifted from `TypeCheckOutput.actor_protocol_descriptors` during HIR
-    /// lowering. `None` means the descriptor was absent — either the actor
-    /// declared no receive handlers (vacuous case), or the checker rejected
-    /// the actor with an `ActorProtocolCollision` diagnostic. MIR consumers
-    /// must treat a `None` on an actor with non-empty `receive_handlers`
-    /// as fail-closed; the produced `msg_id` is no longer derivable from
-    /// source order.
-    pub protocol_descriptor: Option<hew_types::ActorProtocolDescriptor>,
+    /// lowering. Every accepted actor has one, including actors without handlers.
+    pub protocol_descriptor: hew_types::ActorProtocolDescriptor,
     /// `Some(actor(M) -> R)` when this declaration was synthesized from an
     /// `actor |msg| { .. }` expression rather than written in source.
     ///

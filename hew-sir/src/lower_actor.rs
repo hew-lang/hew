@@ -1,5 +1,7 @@
 //! Checked actor declarations and exclusive state bindings.
 
+use hew_types::actor_protocol::{CoalesceFallback, OverflowContract};
+
 use super::{
     function_source_origin, lower_initial_value_transfer, Binding, BindingTarget, BlockArg,
     BodySource, Builder, CallResult, CallUnwind, CallableId, CallableInstance, CallableState,
@@ -60,86 +62,38 @@ fn actor_substitution(
     })
 }
 
-fn actor_overflow(source: &hew_hir::HirActorDecl) -> crate::SemActorOverflow {
-    match &source.overflow_policy {
-        None | Some(hew_parser::ast::OverflowPolicy::Block) => crate::SemActorOverflow::Block,
-        Some(hew_parser::ast::OverflowPolicy::DropNew) => crate::SemActorOverflow::DropNew,
-        Some(hew_parser::ast::OverflowPolicy::DropOld) => crate::SemActorOverflow::DropOld,
-        Some(hew_parser::ast::OverflowPolicy::Fail) => crate::SemActorOverflow::Fail,
-        Some(hew_parser::ast::OverflowPolicy::Coalesce { .. }) => crate::SemActorOverflow::Coalesce,
-    }
-}
-
-/// The `u64` key one declared parameter type projects to. The checker admits
-/// only these, so an unadmitted type here is a contract break.
-fn coalesce_key_kind(ty: &ResolvedTy) -> Option<crate::SemCoalesceKeyKind> {
-    match ty {
-        ResolvedTy::I8
-        | ResolvedTy::I16
-        | ResolvedTy::I32
-        | ResolvedTy::I64
-        | ResolvedTy::U8
-        | ResolvedTy::U16
-        | ResolvedTy::U32
-        | ResolvedTy::U64
-        | ResolvedTy::Isize
-        | ResolvedTy::Usize => Some(crate::SemCoalesceKeyKind::Integer),
-        ResolvedTy::Bool => Some(crate::SemCoalesceKeyKind::Boolean),
-        ResolvedTy::String => Some(crate::SemCoalesceKeyKind::String),
-        _ => None,
-    }
-}
-
-/// The checked coalescing contract, projected onto the handlers this actor
-/// registered. A handler that does not declare the key parameter is left out:
-/// the runtime then keys it by its own queued payload, so it never merges.
 fn actor_coalesce(
-    source: &hew_hir::HirActorDecl,
+    source: &hew_types::ActorProtocolDescriptor,
     handlers: &[crate::SemActorHandler],
 ) -> Result<Option<crate::SemActorCoalesce>, String> {
-    let Some(hew_parser::ast::OverflowPolicy::Coalesce {
-        key_field,
-        fallback,
-    }) = &source.overflow_policy
-    else {
+    let OverflowContract::Coalesce { fallback } = source.mailbox.overflow() else {
         return Ok(None);
     };
     let fallback = match fallback {
-        None | Some(hew_parser::ast::OverflowFallback::DropNew) => {
-            crate::SemCoalesceFallback::DropNew
-        }
-        Some(hew_parser::ast::OverflowFallback::DropOld) => crate::SemCoalesceFallback::DropOld,
-        Some(hew_parser::ast::OverflowFallback::Fail) => crate::SemCoalesceFallback::Fail,
-        Some(hew_parser::ast::OverflowFallback::Block) => {
-            return Err("coalesce fallback `block` has no admission contract".into());
-        }
+        CoalesceFallback::DropNew => crate::SemCoalesceFallback::DropNew,
+        CoalesceFallback::DropOld => crate::SemCoalesceFallback::DropOld,
+        CoalesceFallback::Fail => crate::SemCoalesceFallback::Fail,
     };
-    let mut keys = Vec::new();
-    for &(declaration, param) in &source.coalesce_keys {
-        let handler = handlers
-            .iter()
-            .find(|handler| handler.declaration == declaration)
-            .ok_or("checked coalesce member has no registered handler")?;
-        let ty = handler
-            .params
-            .get(param as usize)
-            .ok_or("coalesce key parameter is absent from the message payload")?;
-        let kind = coalesce_key_kind(ty).ok_or_else(|| {
-            format!(
-                "coalesce key `{key_field}` on `{}` has no key projection",
-                handler.name
-            )
-        })?;
-        keys.push(crate::SemCoalesceKey {
-            message: handler.message_id,
-            param,
-            kind,
-        });
-    }
+    let keys = source
+        .handlers
+        .iter()
+        .filter_map(|member| member.coalesce_key.map(|param| (member, param)))
+        .map(|(member, param)| {
+            let handler = handlers
+                .iter()
+                .find(|handler| handler.declaration == member.declaration)
+                .ok_or("checked coalesce member has no registered handler")?;
+            if handler.params.get(param as usize).is_none() {
+                return Err("coalesce key parameter is absent from the message payload");
+            }
+            Ok(crate::SemCoalesceKey {
+                message: handler.message_id,
+                param,
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
     if keys.is_empty() {
-        return Err(format!(
-            "coalesce key `{key_field}` names no receive parameter"
-        ));
+        return Err("checked coalescing mailbox has no keyed handler".into());
     }
     Ok(Some(crate::SemActorCoalesce { fallback, keys }))
 }
@@ -205,7 +159,14 @@ impl InstanceService<'_> {
         for argument in &substitution.args {
             self.require_type_facts(argument)?;
         }
-        let overflow = actor_overflow(&source);
+        let protocol = &source.protocol_descriptor;
+        let overflow = match protocol.mailbox.overflow() {
+            OverflowContract::Block => crate::SemActorOverflow::Block,
+            OverflowContract::DropNew => crate::SemActorOverflow::DropNew,
+            OverflowContract::DropOld => crate::SemActorOverflow::DropOld,
+            OverflowContract::Fail => crate::SemActorOverflow::Fail,
+            OverflowContract::Coalesce { .. } => crate::SemActorOverflow::Coalesce,
+        };
         let fields: Vec<_> = source
             .state_fields
             .iter()
@@ -235,7 +196,7 @@ impl InstanceService<'_> {
             down: None,
             methods: Vec::new(),
             handlers: Vec::new(),
-            mailbox_capacity: source.mailbox_capacity,
+            mailbox_capacity: protocol.mailbox.capacity(),
             overflow,
             coalesce: None,
             max_heap_bytes: source.max_heap_bytes,
@@ -243,7 +204,7 @@ impl InstanceService<'_> {
         self.register_actor_bodies(id, &source, &substitution)?;
         // The key projection names message ids, so it is resolved once the
         // handlers exist.
-        let coalesce = actor_coalesce(&source, &self.actors[id.0 as usize].handlers)?;
+        let coalesce = actor_coalesce(protocol, &self.actors[id.0 as usize].handlers)?;
         self.actors[id.0 as usize].coalesce = coalesce;
         Ok(id)
     }
@@ -388,13 +349,9 @@ impl InstanceService<'_> {
         for handler in &source.receive_handlers {
             let row = source
                 .protocol_descriptor
-                .as_ref()
-                .and_then(|protocol| {
-                    protocol
-                        .handlers
-                        .iter()
-                        .find(|row| row.name == handler.name)
-                })
+                .handlers
+                .iter()
+                .find(|row| row.declaration == handler.declaration)
                 .ok_or("receive body lacks its checker-selected protocol member")?;
             let mut params: Vec<_> = handler
                 .params

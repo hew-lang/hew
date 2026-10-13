@@ -1004,8 +1004,7 @@ fn actor_dispatch_receives_correct_data() {
 mod mailbox_policies {
     use super::*;
     use hew_runtime::mailbox::{
-        hew_mailbox_capacity, hew_mailbox_len, hew_mailbox_new_with_policy, hew_mailbox_try_push,
-        OverflowPolicy,
+        hew_mailbox_capacity, hew_mailbox_len, hew_mailbox_new_with_policy, OverflowPolicy,
     };
 
     #[test]
@@ -1028,71 +1027,6 @@ mod mailbox_policies {
     }
 
     #[test]
-    fn try_push_ok() {
-        unsafe {
-            let mb = hew_mailbox_new_with_policy(10, OverflowPolicy::DropNew);
-            let val: i32 = 42;
-            let rc = hew_mailbox_try_push(mb, 1, (&raw const val).cast(), size_of::<i32>());
-            assert_eq!(rc, 0);
-            assert_eq!(hew_mailbox_len(mb), 1);
-            hew_mailbox_free(mb);
-        }
-    }
-
-    #[test]
-    fn try_push_drop_new_returns_1() {
-        unsafe {
-            let mb = hew_mailbox_new_with_policy(1, OverflowPolicy::DropNew);
-            let val: i32 = 1;
-            let p: *const c_void = (&raw const val).cast();
-            assert_eq!(hew_mailbox_try_push(mb, 0, p, size_of::<i32>()), 0);
-            assert_eq!(hew_mailbox_try_push(mb, 0, p, size_of::<i32>()), 1);
-            assert_eq!(hew_mailbox_len(mb), 1);
-            hew_mailbox_free(mb);
-        }
-    }
-
-    #[test]
-    fn try_push_drop_old_returns_2() {
-        unsafe {
-            let mb = hew_mailbox_new_with_policy(1, OverflowPolicy::DropOld);
-            let v1: i32 = 10;
-            let v2: i32 = 20;
-            assert_eq!(
-                hew_mailbox_try_push(mb, 1, (&raw const v1).cast(), size_of::<i32>()),
-                0
-            );
-            assert_eq!(
-                hew_mailbox_try_push(mb, 2, (&raw const v2).cast(), size_of::<i32>()),
-                2
-            );
-            assert_eq!(hew_mailbox_len(mb), 1);
-
-            // The remaining message should be the new one.
-            let node = hew_mailbox_try_recv(mb);
-            assert!(!node.is_null());
-            assert_eq!((*node).msg_type, 2);
-            assert_eq!(*((*node).data.cast::<i32>()), 20);
-            hew_msg_node_free(node);
-
-            hew_mailbox_free(mb);
-        }
-    }
-
-    #[test]
-    fn try_push_fail_returns_neg1() {
-        unsafe {
-            let mb = hew_mailbox_new_with_policy(1, OverflowPolicy::Fail);
-            let val: i32 = 1;
-            let p: *const c_void = (&raw const val).cast();
-            assert_eq!(hew_mailbox_try_push(mb, 0, p, size_of::<i32>()), 0);
-            assert_eq!(hew_mailbox_try_push(mb, 0, p, size_of::<i32>()), -1);
-            assert_eq!(hew_mailbox_len(mb), 1);
-            hew_mailbox_free(mb);
-        }
-    }
-
-    #[test]
     fn len_tracks_send_and_recv() {
         unsafe {
             let mb = hew_mailbox_new();
@@ -1109,210 +1043,6 @@ mod mailbox_policies {
             let node = hew_mailbox_try_recv(mb);
             hew_msg_node_free(node);
             assert_eq!(hew_mailbox_len(mb), 1);
-
-            hew_mailbox_free(mb);
-        }
-    }
-}
-
-// ═══════════════════════════════════════════════════════════════════════
-// Coalesce mailbox overflow policy
-// ═══════════════════════════════════════════════════════════════════════
-
-mod coalesce_tests {
-    use std::ffi::c_void;
-
-    use hew_runtime::mailbox::{
-        hew_mailbox_free, hew_mailbox_len, hew_mailbox_new_coalesce, hew_mailbox_send,
-        hew_mailbox_send_with_reply, hew_mailbox_try_push, hew_mailbox_try_recv, hew_msg_node_free,
-    };
-    use hew_runtime::reply_channel::{
-        hew_reply_channel_free, hew_reply_channel_new, hew_reply_channel_retain,
-        hew_reply_wait_timeout, hew_select_first, HewReplyChannel,
-    };
-
-    #[test]
-    fn coalesce_replaces_matching_msg_type() {
-        unsafe {
-            let mb = hew_mailbox_new_coalesce(3);
-
-            // Fill with 3 different msg_types.
-            let v1: i32 = 10;
-            let v2: i32 = 20;
-            let v3: i32 = 30;
-            assert_eq!(
-                hew_mailbox_try_push(mb, 1, (&raw const v1).cast(), size_of::<i32>()),
-                0
-            );
-            assert_eq!(
-                hew_mailbox_try_push(mb, 2, (&raw const v2).cast(), size_of::<i32>()),
-                0
-            );
-            assert_eq!(
-                hew_mailbox_try_push(mb, 3, (&raw const v3).cast(), size_of::<i32>()),
-                0
-            );
-            assert_eq!(hew_mailbox_len(mb), 3);
-
-            // Send a 4th message with the same msg_type as message 1 — should coalesce.
-            let v4: i32 = 999;
-            let rc = hew_mailbox_try_push(mb, 1, (&raw const v4).cast(), size_of::<i32>());
-            assert_eq!(rc, 3); // coalesced
-            assert_eq!(hew_mailbox_len(mb), 3); // length unchanged
-
-            // Receive messages in order and verify the coalesced one has new data.
-            let node = hew_mailbox_try_recv(mb);
-            assert!(!node.is_null());
-            assert_eq!((*node).msg_type, 1);
-            assert_eq!(*((*node).data.cast::<i32>()), 999); // new data
-            hew_msg_node_free(node);
-
-            let node = hew_mailbox_try_recv(mb);
-            assert!(!node.is_null());
-            assert_eq!((*node).msg_type, 2);
-            assert_eq!(*((*node).data.cast::<i32>()), 20);
-            hew_msg_node_free(node);
-
-            let node = hew_mailbox_try_recv(mb);
-            assert!(!node.is_null());
-            assert_eq!((*node).msg_type, 3);
-            assert_eq!(*((*node).data.cast::<i32>()), 30);
-            hew_msg_node_free(node);
-
-            hew_mailbox_free(mb);
-        }
-    }
-
-    #[test]
-    fn coalesce_falls_back_to_drop_old() {
-        unsafe {
-            let mb = hew_mailbox_new_coalesce(2);
-
-            let v1: i32 = 10;
-            let v2: i32 = 20;
-            assert_eq!(
-                hew_mailbox_try_push(mb, 1, (&raw const v1).cast(), size_of::<i32>()),
-                0
-            );
-            assert_eq!(
-                hew_mailbox_try_push(mb, 2, (&raw const v2).cast(), size_of::<i32>()),
-                0
-            );
-
-            // msg_type 3 doesn't match any existing — should drop oldest.
-            let v3: i32 = 30;
-            let rc = hew_mailbox_try_push(mb, 3, (&raw const v3).cast(), size_of::<i32>());
-            assert_eq!(rc, 2); // dropped oldest
-            assert_eq!(hew_mailbox_len(mb), 2);
-
-            // The remaining messages should be msg_type 2 and 3.
-            let node = hew_mailbox_try_recv(mb);
-            assert_eq!((*node).msg_type, 2);
-            hew_msg_node_free(node);
-
-            let node = hew_mailbox_try_recv(mb);
-            assert_eq!((*node).msg_type, 3);
-            hew_msg_node_free(node);
-
-            hew_mailbox_free(mb);
-        }
-    }
-
-    #[test]
-    fn coalesce_send_replaces_matching() {
-        unsafe {
-            let mb = hew_mailbox_new_coalesce(2);
-
-            let v1: i32 = 10;
-            let v2: i32 = 20;
-            let p1: *mut c_void = (&raw const v1).cast_mut().cast();
-            let p2: *mut c_void = (&raw const v2).cast_mut().cast();
-            assert_eq!(hew_mailbox_send(mb, 1, p1, size_of::<i32>()), 0);
-            assert_eq!(hew_mailbox_send(mb, 2, p2, size_of::<i32>()), 0);
-
-            // Coalesce via hew_mailbox_send.
-            let v3: i32 = 77;
-            let p3: *mut c_void = (&raw const v3).cast_mut().cast();
-            assert_eq!(hew_mailbox_send(mb, 1, p3, size_of::<i32>()), 0);
-            assert_eq!(hew_mailbox_len(mb), 2);
-
-            let node = hew_mailbox_try_recv(mb);
-            assert_eq!((*node).msg_type, 1);
-            assert_eq!(*((*node).data.cast::<i32>()), 77);
-            hew_msg_node_free(node);
-
-            hew_mailbox_free(mb);
-        }
-    }
-
-    /// D510 across the C ABI: a queued completion call keeps its payload and
-    /// its waiter, and the arriving one is refused rather than superseding it.
-    #[test]
-    fn a_queued_ask_keeps_its_reply_channel_against_a_coalescing_send() {
-        unsafe {
-            let mb = hew_mailbox_new_coalesce(1);
-            let ch1 = hew_reply_channel_new();
-            let ch2 = hew_reply_channel_new();
-            assert!(!ch1.is_null());
-            assert!(!ch2.is_null());
-
-            // Mirror ask-style ownership: the caller keeps one reference while
-            // the queued message holds a sender-side reference until it is
-            // replied or retired.
-            hew_reply_channel_retain(ch1);
-            hew_reply_channel_retain(ch2);
-
-            let v1: i32 = 10;
-            let v2: i32 = 99;
-            assert_eq!(
-                hew_mailbox_send_with_reply(
-                    mb,
-                    1,
-                    (&raw const v1).cast_mut().cast(),
-                    size_of::<i32>(),
-                    ch1.cast(),
-                ),
-                0
-            );
-            assert_eq!(
-                hew_mailbox_send_with_reply(
-                    mb,
-                    1,
-                    (&raw const v2).cast_mut().cast(),
-                    size_of::<i32>(),
-                    ch2.cast(),
-                ),
-                -1,
-                "the arriving ask is refused, never superseding the queued one"
-            );
-            assert_eq!(hew_mailbox_len(mb), 1);
-
-            let node = hew_mailbox_try_recv(mb);
-            assert!(!node.is_null());
-            assert_eq!((*node).msg_type, 1);
-            assert_eq!(
-                *((*node).data.cast::<i32>()),
-                10,
-                "the queued ask keeps its own payload"
-            );
-            assert_eq!(
-                (*node).reply_channel.cast::<HewReplyChannel>(),
-                ch1,
-                "the queued ask keeps its own reply channel"
-            );
-            hew_msg_node_free(node);
-
-            let mut ready = [ch1];
-            assert_eq!(
-                hew_select_first(ready.as_mut_ptr(), 1, 0),
-                0,
-                "retiring the queued node resolves its own waiter"
-            );
-            assert!(hew_reply_wait_timeout(ch1, 0).is_null());
-
-            hew_reply_channel_free(ch1);
-            hew_reply_channel_free(ch2);
-            hew_reply_channel_free(ch2);
 
             hew_mailbox_free(mb);
         }
@@ -3454,7 +3184,7 @@ mod rest_for_one_tests {
                     restart_policy: RESTART_PERMANENT,
                     mailbox_capacity: -1,
                     overflow: OVERFLOW_DROP_NEW,
-                    coalesce_key_fn: None,
+                    coalesce_match_fn: None,
                     coalesce_fallback: OVERFLOW_DROP_NEW,
                     message_drop_fn: None,
                     sys_dispatch: None,
@@ -3628,7 +3358,7 @@ mod supervisor_escalation_tests {
             restart_policy: RESTART_PERMANENT,
             mailbox_capacity: -1,
             overflow: OVERFLOW_DROP_NEW,
-            coalesce_key_fn: None,
+            coalesce_match_fn: None,
             coalesce_fallback: OVERFLOW_DROP_NEW,
             message_drop_fn: None,
             sys_dispatch: None,
@@ -3686,7 +3416,7 @@ mod supervisor_escalation_tests {
                 restart_policy: RESTART_PERMANENT,
                 mailbox_capacity: -1,
                 overflow: OVERFLOW_DROP_NEW,
-                coalesce_key_fn: None,
+                coalesce_match_fn: None,
                 coalesce_fallback: OVERFLOW_DROP_NEW,
                 message_drop_fn: None,
                 sys_dispatch: None,
@@ -3771,7 +3501,7 @@ mod supervisor_escalation_tests {
                 restart_policy: RESTART_PERMANENT,
                 mailbox_capacity: -1,
                 overflow: OVERFLOW_DROP_NEW,
-                coalesce_key_fn: None,
+                coalesce_match_fn: None,
                 coalesce_fallback: OVERFLOW_DROP_NEW,
                 message_drop_fn: None,
                 sys_dispatch: None,
@@ -3888,7 +3618,7 @@ mod supervisor_escalation_tests {
                 restart_policy: RESTART_PERMANENT,
                 mailbox_capacity: -1,
                 overflow: OVERFLOW_DROP_NEW,
-                coalesce_key_fn: None,
+                coalesce_match_fn: None,
                 coalesce_fallback: OVERFLOW_DROP_NEW,
                 message_drop_fn: None,
                 sys_dispatch: None,
@@ -4067,7 +3797,7 @@ mod circuit_breaker_tests {
                 restart_policy: RESTART_PERMANENT,
                 mailbox_capacity: -1,
                 overflow: OVERFLOW_DROP_NEW,
-                coalesce_key_fn: None,
+                coalesce_match_fn: None,
                 coalesce_fallback: OVERFLOW_DROP_NEW,
                 message_drop_fn: None,
                 sys_dispatch: None,
@@ -4159,7 +3889,7 @@ mod dynamic_supervision_tests {
                 restart_policy: RESTART_PERMANENT,
                 mailbox_capacity: 16,
                 overflow: OVERFLOW_DROP_NEW,
-                coalesce_key_fn: None,
+                coalesce_match_fn: None,
                 coalesce_fallback: OVERFLOW_DROP_NEW,
                 message_drop_fn: None,
                 sys_dispatch: None,
@@ -4199,7 +3929,7 @@ mod dynamic_supervision_tests {
                 restart_policy: RESTART_PERMANENT,
                 mailbox_capacity: 16,
                 overflow: OVERFLOW_DROP_NEW,
-                coalesce_key_fn: None,
+                coalesce_match_fn: None,
                 coalesce_fallback: OVERFLOW_DROP_NEW,
                 message_drop_fn: None,
                 sys_dispatch: None,
@@ -4254,7 +3984,7 @@ mod dynamic_supervision_tests {
                 restart_policy: RESTART_PERMANENT,
                 mailbox_capacity: 16,
                 overflow: OVERFLOW_DROP_NEW,
-                coalesce_key_fn: None,
+                coalesce_match_fn: None,
                 coalesce_fallback: OVERFLOW_DROP_NEW,
                 message_drop_fn: None,
                 sys_dispatch: None,
@@ -4293,7 +4023,7 @@ mod dynamic_supervision_tests {
                 restart_policy: RESTART_PERMANENT,
                 mailbox_capacity: 16,
                 overflow: OVERFLOW_DROP_NEW,
-                coalesce_key_fn: None,
+                coalesce_match_fn: None,
                 coalesce_fallback: OVERFLOW_DROP_NEW,
                 message_drop_fn: None,
                 sys_dispatch: None,

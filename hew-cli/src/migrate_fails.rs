@@ -29,7 +29,7 @@
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 
-use hew_compile::{DocumentSet, FrontendDiagnosticKind};
+use hew_compile::{FrontendDiagnosticKind, SourceSet};
 use hew_parser::ast::{
     Block, CallArg, Expr, Item, Program, Span, Spanned, Stmt, TraitItem, TypeBodyItem, TypeExpr,
 };
@@ -55,7 +55,7 @@ pub(crate) struct EdgeReport {
 pub(crate) fn convert_failure_edges(
     files: &mut [(PathBuf, String)],
 ) -> (Vec<EdgeReport>, Vec<EdgeReport>) {
-    let mut documents = DocumentSet::new();
+    let mut documents = SourceSet::new();
     let mut units = CheckUnits::new(files, "failure-edges");
     let candidates: Vec<_> = files
         .iter()
@@ -105,7 +105,7 @@ struct UnitOutcome {
 fn convert_unit(
     root: &Path,
     members: &[(usize, &Path, &str)],
-    documents: &DocumentSet,
+    documents: &SourceSet,
     mut before: UnitCheck,
     units: &mut CheckUnits,
 ) -> UnitOutcome {
@@ -233,7 +233,7 @@ impl FileDiagnostic {
     }
 }
 
-fn check_unit(root: &Path, documents: &DocumentSet, units: &mut CheckUnits) -> UnitCheck {
+fn check_unit(root: &Path, documents: &SourceSet, units: &mut CheckUnits) -> UnitCheck {
     let state = units.check(root, documents);
     let indices = state
         .program

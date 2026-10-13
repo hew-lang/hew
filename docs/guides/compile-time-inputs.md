@@ -1,0 +1,65 @@
+# Compile-time inputs
+
+`include_str!` and `include_bytes!` copy a file into a compiled program as a
+constant string or byte value. They use paths relative to the source file
+containing the invocation.
+
+The following package example requires `sql/schema.sql` and `assets/logo.png`
+relative to the source file:
+
+```hew,ignore
+const SCHEMA: string = include_str!("sql/schema.sql");
+const LOGO: bytes = include_bytes!("assets/logo.png");
+
+fn main() {
+    println(SCHEMA);
+    println(LOGO.len());
+}
+```
+
+An include takes one string literal. It can appear in an expression or a
+`const` initializer. The file must stay inside the package root, even through
+`..` or a symbolic link. The package root is the nearest directory containing
+`hew.toml`, or the source file's directory for a standalone program. Absolute
+paths are refused. A dependency can include its own files.
+
+`include_str!` requires UTF-8 and reports the first invalid byte during
+compilation. `include_bytes!` accepts arbitrary bytes. Changing or removing
+the original file after compilation does not change the executable.
+
+`stringify!` renders an expression as canonical Hew source without resolving
+or evaluating it:
+
+```hew
+fn main() {
+    println(stringify!(price  +  tax)); // price + tax
+}
+```
+
+The compiler records each input's identity and SHA-256 fingerprint. Missing
+inputs are retained as dependencies so editors can recheck when they appear.
+The LSP watches input changes; hovering over an included path shows its name
+and size, and go-to-definition opens the file. Publishing checks the package
+through the same frontend and rejects an archive that excludes a consumed
+input.
+
+Set `[package] hew` in `hew.toml` to the compiler version requirement your
+package needs, for example `hew = ">=0.6.1"`. The shared frontend checks this
+requirement before parsing source, including manifests supplied to browser
+analysis and compilation.
+
+Browser analysis and sandbox compilation accept an optional
+`Map<string, string | Uint8Array>` of package-relative files. They use the
+same frontend and include rules as native compilation. Browser inputs never
+fall back to the host filesystem or a network request.
+
+```javascript
+const files = new Map([["assets/greeting.txt", "Hello from Hew\n"]]);
+const result = JSON.parse(
+  compileToSandboxBytecode(
+    'fn main() { print(include_str!("assets/greeting.txt")); }',
+    "sandbox-vm-export",
+    files,
+  ),
+);
+```

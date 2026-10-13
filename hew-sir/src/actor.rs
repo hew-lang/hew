@@ -137,23 +137,12 @@ pub enum SemCoalesceFallback {
     Fail,
 }
 
-/// How one message type's key parameter becomes the mailbox's `u64` key.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SemCoalesceKeyKind {
-    /// Zero-extended from the parameter's integer width.
-    Integer,
-    Boolean,
-    /// FNV-1a over the string's bytes.
-    String,
-}
-
 /// The key projection for one receive handler that declares the key parameter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SemCoalesceKey {
     pub message: u32,
     /// Index into [`SemActorHandler::params`].
     pub param: u32,
-    pub kind: SemCoalesceKeyKind,
 }
 
 /// The checked coalescing contract for one actor.

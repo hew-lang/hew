@@ -37,17 +37,61 @@ use siphasher::sip::SipHasher13;
 
 use crate::ResolvedTy;
 
-/// Per-actor protocol descriptor: the canonical name → `msg_id` mapping
-/// plus handler-level signature and symbol metadata.
+/// The checked capacity and overflow contract of an actor's mailbox.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MailboxContract {
+    #[default]
+    Unbounded,
+    Bounded {
+        capacity: u32,
+        overflow: OverflowContract,
+    },
+}
+
+impl MailboxContract {
+    #[must_use]
+    pub const fn capacity(self) -> Option<u32> {
+        match self {
+            Self::Unbounded => None,
+            Self::Bounded { capacity, .. } => Some(capacity),
+        }
+    }
+
+    #[must_use]
+    pub const fn overflow(self) -> OverflowContract {
+        match self {
+            Self::Unbounded => OverflowContract::Block,
+            Self::Bounded { overflow, .. } => overflow,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OverflowContract {
+    Block,
+    DropNew,
+    DropOld,
+    Fail,
+    Coalesce { fallback: CoalesceFallback },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CoalesceFallback {
+    DropNew,
+    DropOld,
+    Fail,
+}
+
+/// Checked mailbox contract and canonical handler identities, signatures and keys.
 ///
 /// Constructed by the type checker once all handler signatures are known
-/// (`Checker::build_actor_protocol_descriptors`). Threaded through
-/// `TypeCheckOutput` to HIR (and from HIR's `HirActorDecl::handler_msg_ids`
-/// into MIR's [`hew_mir`-equivalent] actor layout). Downstream stages must
-/// not recompute `msg_id`s — the descriptor is the only source of truth.
+/// (`Checker::build_actor_protocol_descriptors`), then checked for keyed
+/// parameters during item checking. Threaded through `TypeCheckOutput` and
+/// HIR into the semantic actor layout. Downstream stages consume these facts.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ActorProtocolDescriptor {
-    /// Actor type name (currently un-namespaced; matches `HirActorDecl::name`).
+    pub mailbox: MailboxContract,
+    /// Canonical owner-qualified actor name.
     pub actor_name: String,
     /// One entry per `receive fn`. Order matches source order, but order is
     /// no longer load-bearing for the protocol — `msg_id`s are name-derived.
@@ -58,6 +102,8 @@ pub struct ActorProtocolDescriptor {
 /// shape consumers need to issue a call.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ActorHandlerDescriptor {
+    /// Index of the checked coalescing key in `param_tys`, when declared.
+    pub coalesce_key: Option<u32>,
     /// The handler's `receive fn` declaration.
     pub declaration: crate::DefId,
     /// Surface name (`"increment"`).
@@ -187,6 +233,7 @@ impl ActorProtocolDescriptor {
             }
             seen.push((msg_id, built.len()));
             built.push(ActorHandlerDescriptor {
+                coalesce_key: None,
                 declaration: spec.declaration,
                 name: spec.name.clone(),
                 msg_id,
@@ -198,6 +245,7 @@ impl ActorProtocolDescriptor {
             });
         }
         Ok(Self {
+            mailbox: MailboxContract::Unbounded,
             actor_name,
             handlers: built,
         })
@@ -233,6 +281,7 @@ impl ActorProtocolDescriptor {
             }
             seen.push((*msg_id, built.len()));
             built.push(ActorHandlerDescriptor {
+                coalesce_key: None,
                 declaration: spec.declaration,
                 name: spec.name.clone(),
                 msg_id: *msg_id,
@@ -244,6 +293,7 @@ impl ActorProtocolDescriptor {
             });
         }
         Ok(Self {
+            mailbox: MailboxContract::Unbounded,
             actor_name,
             handlers: built,
         })

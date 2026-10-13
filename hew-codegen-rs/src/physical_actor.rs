@@ -4,7 +4,7 @@ use super::suspend::call_value;
 use super::*;
 use hew_mir::physical::{
     ActorId, ActorIngressAdapter, ActorOperation, SemActor, SemActorField, SemActorHandler,
-    SemCoalesceFallback, SemCoalesceKeyKind, SemFailureDisplay,
+    SemCoalesceFallback, SemFailureDisplay,
 };
 use hew_runtime::actor_native::HewSubmitStatus;
 use inkwell::types::StructType;
@@ -670,7 +670,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
             }
             self.emit_actor_dispatch(actor)?;
             if actor.coalesce.is_some() {
-                self.emit_actor_coalesce_key(actor)?;
+                self.emit_actor_coalesce_match(actor)?;
             }
             if actor.crash.is_some() {
                 self.emit_actor_crash(actor)?;
@@ -1085,24 +1085,18 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         Ok(())
     }
 
-    /// The mailbox's key extractor: `(msg_type, payload, payload_size) -> u64`.
-    ///
-    /// The runtime only compares keys within one message type, so a handler
-    /// that does not declare the key parameter returns its own payload address
-    /// and therefore never matches a queued message.
-    fn emit_actor_coalesce_key(&self, actor: &SemActor) -> CodegenResult<()> {
+    /// Exact equality of the checked key on two requests of the same handler.
+    /// An unkeyed handler never supersedes a queued request.
+    fn emit_actor_coalesce_match(&self, actor: &SemActor) -> CodegenResult<()> {
         let coalesce = actor
             .coalesce
             .as_ref()
             .ok_or_else(|| CodegenError::FailClosed("actor lacks its coalesce contract".into()))?;
         let ptr = self.ctx.ptr_type(AddressSpace::default());
-        let target = TargetData::create(&self.module.target.data_layout);
-        let size_ty = self.ctx.ptr_sized_int_type(&target, None);
         let i32_ty = self.ctx.i32_type();
-        let i64_ty = self.ctx.i64_type();
         let key_fn = self.llvm.add_function(
-            &symbol(actor.id, "coalesce_key"),
-            i64_ty.fn_type(&[i32_ty.into(), ptr.into(), size_ty.into()], false),
+            &symbol(actor.id, "coalesce_same_key"),
+            i32_ty.fn_type(&[i32_ty.into(), ptr.into(), ptr.into()], false),
             Some(Linkage::Internal),
         );
         let builder = self.ctx.create_builder();
@@ -1110,7 +1104,8 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         let unkeyed = self.ctx.append_basic_block(key_fn, "unkeyed");
         builder.position_at_end(entry);
         let message = key_fn.get_nth_param(0).unwrap().into_int_value();
-        let payload = key_fn.get_nth_param(1).unwrap().into_pointer_value();
+        let queued = key_fn.get_nth_param(1).unwrap().into_pointer_value();
+        let incoming = key_fn.get_nth_param(2).unwrap().into_pointer_value();
 
         let mut cases = Vec::with_capacity(coalesce.keys.len());
         for key in &coalesce.keys {
@@ -1147,58 +1142,75 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                     })?
                     .repr,
             )?;
-            // The payload leads with the transfer flag `message_type` stamps.
-            let slot = builder
-                .build_struct_gep(
-                    message_type(self.module, self.ctx, handler)?,
-                    payload,
-                    key.param + 1,
-                    "coalesce.key.slot",
-                )
-                .llvm_ctx("address the coalesce key field")?;
-            let value = builder
-                .build_load(field_ty, slot, "coalesce.key.field")
-                .llvm_ctx("read the coalesce key field")?;
-            let key = match key.kind {
-                SemCoalesceKeyKind::Integer | SemCoalesceKeyKind::Boolean => {
-                    let value = value.into_int_value();
-                    if value.get_type().get_bit_width() >= 64 {
-                        value
-                    } else {
-                        builder
-                            .build_int_z_extend(value, i64_ty, "coalesce.key")
-                            .llvm_ctx("widen the coalesce key")?
-                    }
-                }
-                SemCoalesceKeyKind::String => {
-                    let hash = get_or_declare_external(
-                        &self.llvm,
-                        "hew_string_hash_fnv1a",
-                        i64_ty.fn_type(&[ptr.into()], false),
-                    )?;
+            let mut values = Vec::with_capacity(2);
+            for payload in [queued, incoming] {
+                let slot = builder
+                    .build_struct_gep(
+                        message_type(self.module, self.ctx, handler)?,
+                        payload,
+                        key.param + 1,
+                        "coalesce.key.slot",
+                    )
+                    .llvm_ctx("address the coalesce key field")?;
+                values.push(
                     builder
-                        .build_call(hash, &[value.into_pointer_value().into()], "coalesce.key")
-                        .llvm_ctx("hash the coalesce key string")?
-                        .try_as_basic_value()
-                        .basic()
-                        .ok_or_else(|| {
-                            CodegenError::FailClosed("string key hash produced no value".into())
-                        })?
-                        .into_int_value()
+                        .build_load(field_ty, slot, "coalesce.key.field")
+                        .llvm_ctx("read the coalesce key field")?,
+                );
+            }
+            let same = match ty {
+                ResolvedTy::String => {
+                    let equals = get_or_declare_external(
+                        &self.llvm,
+                        "hew_string_equals",
+                        i32_ty.fn_type(&[ptr.into(), ptr.into()], false),
+                    )?;
+                    call_value(
+                        &builder,
+                        equals,
+                        &[values[0].into(), values[1].into()],
+                        "coalesce.same",
+                    )?
+                    .into_int_value()
+                }
+                ResolvedTy::I8
+                | ResolvedTy::I16
+                | ResolvedTy::I32
+                | ResolvedTy::I64
+                | ResolvedTy::U8
+                | ResolvedTy::U16
+                | ResolvedTy::U32
+                | ResolvedTy::U64
+                | ResolvedTy::Isize
+                | ResolvedTy::Usize
+                | ResolvedTy::Bool => {
+                    let equal = builder
+                        .build_int_compare(
+                            IntPredicate::EQ,
+                            values[0].into_int_value(),
+                            values[1].into_int_value(),
+                            "coalesce.equal",
+                        )
+                        .llvm_ctx("compare the coalesce keys")?;
+                    builder
+                        .build_int_z_extend(equal, i32_ty, "coalesce.same")
+                        .llvm_ctx("return the coalesce equality flag")?
+                }
+                _ => {
+                    return Err(CodegenError::FailClosed(
+                        "unchecked coalesce key type".into(),
+                    ))
                 }
             };
             builder
-                .build_return(Some(&key))
-                .llvm_ctx("return the coalesce key")?;
+                .build_return(Some(&same))
+                .llvm_ctx("return coalesce equality")?;
         }
 
         builder.position_at_end(unkeyed);
-        let identity = builder
-            .build_ptr_to_int(payload, i64_ty, "coalesce.key.identity")
-            .llvm_ctx("key an unkeyed message by its own payload")?;
         builder
-            .build_return(Some(&identity))
-            .llvm_ctx("return the unkeyed coalesce key")?;
+            .build_return(Some(&i32_ty.const_zero()))
+            .llvm_ctx("leave an unkeyed request distinct")?;
         Ok(())
     }
 
@@ -2347,7 +2359,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         let (coalesce_key, coalesce_fallback) = match &actor.coalesce {
             None => (ptr.const_null(), Policy::DropNew),
             Some(coalesce) => (
-                callback("coalesce_key")?,
+                callback("coalesce_same_key")?,
                 match coalesce.fallback {
                     SemCoalesceFallback::DropNew => Policy::DropNew,
                     SemCoalesceFallback::DropOld => Policy::DropOld,
@@ -2563,6 +2575,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             message_release(self.llvm, self.ctx, actor.id, message),
             *payload,
             unwind,
+            true,
         )?;
         let taken = self
             .ctx
@@ -2579,30 +2592,14 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 "stream.start.admitted",
             )
             .llvm_ctx("check request admission")?;
-        // A destination whose declared mailbox policy discarded the request
-        // consumed it: the stream never starts, but this frame owns nothing to
-        // release.
-        let discarded = self
-            .builder
-            .build_int_compare(
-                IntPredicate::EQ,
-                status,
-                self.ctx.i32_type().const_int(4, false),
-                "stream.start.discarded",
-            )
-            .llvm_ctx("check a declared-policy discard")?;
-        let transferred = self
-            .builder
-            .build_or(admitted, discarded, "stream.start.transferred")
-            .llvm_ctx("combine the statuses that take the request")?;
         self.builder
-            .build_conditional_branch(transferred, taken, refused)
+            .build_conditional_branch(admitted, taken, refused)
             .llvm_ctx("select request admission")?;
         self.builder.position_at_end(taken);
         self.clear_owned(*payload)?;
         self.builder
-            .build_conditional_branch(admitted, done, failed)
-            .llvm_ctx("separate a started stream from a discarded request")?;
+            .build_unconditional_branch(done)
+            .llvm_ctx("finish admitted stream start")?;
         self.builder.position_at_end(refused);
         self.discard_pending_message(*payload)?;
         self.builder
@@ -2640,11 +2637,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         unwind: Option<&PhysicalEdge>,
     ) -> CodegenResult<()> {
         use hew_types::actor_delivery::SendPolicy;
-        if policy == SendPolicy::ReplaceLatest {
-            return Err(CodegenError::FailClosed(
-                "submission requires its checked readiness or coalescing contract".into(),
-            ));
-        }
+
         let ResolvedTy::Named { args, .. } = message_ty else {
             return Err(CodegenError::FailClosed(
                 "message has no typed payload".into(),
@@ -2832,6 +2825,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 message_release(self.llvm, self.ctx, actor.id, handler.message_id),
                 source,
                 unwind,
+                false,
             )?
         } else {
             let mut args = request.to_vec();

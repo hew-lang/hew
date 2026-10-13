@@ -21,6 +21,7 @@ use crate::BuiltinType;
 use std::collections::VecDeque;
 
 mod borrow_diagnostics;
+mod compile_time;
 mod generics_eq;
 mod places_moves;
 mod stack_hints;

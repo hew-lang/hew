@@ -257,6 +257,7 @@ impl Builder<'_, '_> {
                 let literal = match &constant.value {
                     hew_hir::HirConstValue::Integer(value) => HirLiteral::Integer(*value),
                     hew_hir::HirConstValue::String(value) => HirLiteral::String(value.clone()),
+                    hew_hir::HirConstValue::Bytes(value) => HirLiteral::Bytes(value.clone()),
                     hew_hir::HirConstValue::Float(value) => HirLiteral::Float(*value),
                 };
                 self.lower_literal(expr, &literal)

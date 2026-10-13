@@ -8,6 +8,7 @@ use std::sync::Arc;
 /// operation owns only the shallow unpublished wrapper and its readiness target.
 #[derive(Debug)]
 pub struct HewNativeSend {
+    obligated: bool,
     token: crate::lifetime::local_handles::HewLocalPidId,
     message: i32,
     envelope: *mut super::HewMsgEnvelope,
@@ -33,6 +34,10 @@ impl Drop for HewNativeSend {
 /// # Safety
 /// The payload is a unique malloc wrapper with shallow fields still owned by
 /// the caller's message. The descriptor and destructor are valid for that type.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the ABI carries payload ownership, readiness and request obligation"
+)]
 #[no_mangle]
 pub unsafe extern "C" fn hew_actor_send_wait_new(
     token: crate::lifetime::local_handles::HewLocalPidId,
@@ -42,6 +47,7 @@ pub unsafe extern "C" fn hew_actor_send_wait_new(
     drop_payload: super::HewMsgEnvelopeDropFn,
     waker: *const HewWaker,
     payload_release: Option<hew_cabi::value::HewValueReleaseStart>,
+    obligated: i32,
 ) -> *mut HewNativeSend {
     // SAFETY: the caller supplies a unique unpublished wrapper and live waker.
     let (envelope, waker) = unsafe {
@@ -59,6 +65,7 @@ pub unsafe extern "C" fn hew_actor_send_wait_new(
     unsafe { (*envelope).release_start = payload_release };
     crate::actor::register_native_capacity(token, &waker);
     Box::into_raw(Box::new(HewNativeSend {
+        obligated: obligated != 0,
         token,
         message,
         envelope,
@@ -140,6 +147,7 @@ pub unsafe extern "C" fn hew_actor_ask_wait_poll(wait: *mut HewNativeAsk) -> i32
             wait.message,
             wait.envelope,
             wait.channel,
+            true,
         )
     };
     match outcome {
@@ -239,7 +247,13 @@ pub unsafe extern "C" fn hew_actor_send_wait_poll(wait: *mut HewNativeSend) -> i
     };
     // SAFETY: this operation owns its unpublished envelope until admission.
     let outcome = unsafe {
-        crate::actor::try_submit_native_envelope(wait.token, wait.message, wait.envelope)
+        crate::actor::try_submit_native_request(
+            wait.token,
+            wait.message,
+            wait.envelope,
+            std::ptr::null_mut(),
+            wait.obligated,
+        )
     };
     let status = match crate::actor_native::submission_status(outcome) {
         HewSubmitStatus::Full => HewSubmitStatus::Pending,
@@ -412,6 +426,7 @@ mod tests {
                     drop_owned,
                     waker.descriptor(),
                     None,
+                    0,
                 );
                 drop(waker);
                 if poll {

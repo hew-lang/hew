@@ -166,7 +166,7 @@ fn lower_program_to_semantics(
                     source,
                     label,
                     diagnostics,
-                    &hew_compile::DocumentSet::new(),
+                    &hew_compile::SourceSet::new(),
                 );
                 compile::render_frontend_diagnostics(&diagnostics).unwrap_or(DiagChannel::User)
             }
@@ -176,7 +176,7 @@ fn lower_program_to_semantics(
                     source,
                     label,
                     diagnostics,
-                    &hew_compile::DocumentSet::new(),
+                    &hew_compile::SourceSet::new(),
                 );
                 compile::render_frontend_diagnostics(&diagnostics).unwrap_or(DiagChannel::User)
             }

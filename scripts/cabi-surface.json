@@ -921,8 +921,8 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_actor_send_wait_new( HewLocalPidId, i32, *mut c_void, usize, HewMsgEnvelopeDropFn, *const HewWaker, Option<hew_cabi::value::HewValueReleaseStart>, ) -> *mut HewNativeSend",
-        "wasm32-wasip1": "fn hew_actor_send_wait_new( HewLocalPidId, i32, *mut c_void, usize, HewMsgEnvelopeDropFn, *const HewWaker, Option<hew_cabi::value::HewValueReleaseStart>, ) -> *mut HewNativeSend"
+        "native": "fn hew_actor_send_wait_new( HewLocalPidId, i32, *mut c_void, usize, HewMsgEnvelopeDropFn, *const HewWaker, Option<hew_cabi::value::HewValueReleaseStart>, i32, ) -> *mut HewNativeSend",
+        "wasm32-wasip1": "fn hew_actor_send_wait_new( HewLocalPidId, i32, *mut c_void, usize, HewMsgEnvelopeDropFn, *const HewWaker, Option<hew_cabi::value::HewValueReleaseStart>, i32, ) -> *mut HewNativeSend"
       },
       "symbol": "hew_actor_send_wait_new"
     },
@@ -1123,8 +1123,8 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_actor_spawn_native( *mut c_void, usize, HewDispatchFn, unsafe extern \"C\" fn(*mut c_void), HewStateCloneFn, Option<hew_cabi::value::HewValueReleaseStart>, i32, i32, usize, *const HewNativePeriodicHandler, usize, Option<HewSysDispatchFn>, Option<HewNativeCrashFn>, *mut *mut HewFault, Option<mailbox::HewCoalesceKeyFn>, i32, Option<hew_cabi::value::HewValueReleaseStart>, *mut *mut HewReleaseCursor, ) -> HewLocalPidId",
-        "wasm32-wasip1": "fn hew_actor_spawn_native( *mut c_void, usize, HewDispatchFn, unsafe extern \"C\" fn(*mut c_void), HewStateCloneFn, Option<hew_cabi::value::HewValueReleaseStart>, i32, i32, usize, *const HewNativePeriodicHandler, usize, Option<HewSysDispatchFn>, Option<HewNativeCrashFn>, *mut *mut HewFault, Option<mailbox::HewCoalesceKeyFn>, i32, Option<hew_cabi::value::HewValueReleaseStart>, *mut *mut HewReleaseCursor, ) -> HewLocalPidId"
+        "native": "fn hew_actor_spawn_native( *mut c_void, usize, HewDispatchFn, unsafe extern \"C\" fn(*mut c_void), HewStateCloneFn, Option<hew_cabi::value::HewValueReleaseStart>, i32, i32, usize, *const HewNativePeriodicHandler, usize, Option<HewSysDispatchFn>, Option<HewNativeCrashFn>, *mut *mut HewFault, Option<mailbox::HewCoalesceMatchFn>, i32, Option<hew_cabi::value::HewValueReleaseStart>, *mut *mut HewReleaseCursor, ) -> HewLocalPidId",
+        "wasm32-wasip1": "fn hew_actor_spawn_native( *mut c_void, usize, HewDispatchFn, unsafe extern \"C\" fn(*mut c_void), HewStateCloneFn, Option<hew_cabi::value::HewValueReleaseStart>, i32, i32, usize, *const HewNativePeriodicHandler, usize, Option<HewSysDispatchFn>, Option<HewNativeCrashFn>, *mut *mut HewFault, Option<mailbox::HewCoalesceMatchFn>, i32, Option<hew_cabi::value::HewValueReleaseStart>, *mut *mut HewReleaseCursor, ) -> HewLocalPidId"
       },
       "symbol": "hew_actor_spawn_native"
     },
@@ -10535,21 +10535,6 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_mailbox_new_coalesce( u32) -> *mut HewMailbox",
-        "wasm32-wasip1": "fn hew_mailbox_new_coalesce( u32) -> *mut HewMailbox"
-      },
-      "symbol": "hew_mailbox_new_coalesce"
-    },
-    {
-      "availability": [
-        "native",
-        "wasm32-wasip1"
-      ],
-      "classification": "non-declarable",
-      "extent": "length-or-count",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
         "native": "fn hew_mailbox_new_with_policy( usize, OverflowPolicy, ) -> *mut HewMailbox",
         "wasm32-wasip1": "fn hew_mailbox_new_with_policy( usize, OverflowPolicy, ) -> *mut HewMailbox"
       },
@@ -10610,8 +10595,8 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_mailbox_set_coalesce_config( *mut HewMailbox, Option<HewCoalesceKeyFn>, OverflowPolicy, )",
-        "wasm32-wasip1": "fn hew_mailbox_set_coalesce_config( *mut HewMailbox, Option<HewCoalesceKeyFn>, OverflowPolicy, )"
+        "native": "fn hew_mailbox_set_coalesce_config( *mut HewMailbox, Option<HewCoalesceMatchFn>, OverflowPolicy, )",
+        "wasm32-wasip1": "fn hew_mailbox_set_coalesce_config( *mut HewMailbox, Option<HewCoalesceMatchFn>, OverflowPolicy, )"
       },
       "symbol": "hew_mailbox_set_coalesce_config"
     },
@@ -10644,21 +10629,6 @@
         "wasm32-wasip1": "fn hew_mailbox_sys_len( *const HewMailbox) -> usize"
       },
       "symbol": "hew_mailbox_sys_len"
-    },
-    {
-      "availability": [
-        "native",
-        "wasm32-wasip1"
-      ],
-      "classification": "stable",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_mailbox_try_push( *mut HewMailbox, i32, *const c_void, usize, ) -> i32",
-        "wasm32-wasip1": "fn hew_mailbox_try_push( *mut HewMailbox, i32, *const c_void, usize, ) -> i32"
-      },
-      "symbol": "hew_mailbox_try_push"
     },
     {
       "availability": [

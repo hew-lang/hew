@@ -235,17 +235,14 @@ pub enum HewSubmitStatus {
 /// The sender policy code that discards the newest message on a full mailbox.
 pub const SUBMIT_DROP_NEWEST: i32 = 2;
 
-/// The one reading of a mailbox admission for every submission path. A
-/// coalescing mailbox resolves a full queue under its declared policy -
-/// replacing the message this one supersedes, or discarding it - and owns the
-/// envelope either way, so the loss reports as a discard rather than as
-/// acceptance. A refused admission is `Full`; each caller decides whether that
-/// waits, discards by the sender's policy or returns the message.
+/// Interpret admission for the incoming submission. Replacement accepts it;
+/// only discarding that incoming payload reports `Discarded`. A refusal keeps
+/// the message with the sender, whose own policy chooses the next action.
 pub(crate) fn submission_status(outcome: crate::mailbox::SendOutcome) -> HewSubmitStatus {
     use crate::mailbox::SendOutcome;
     match outcome {
-        SendOutcome::Enqueued => HewSubmitStatus::Accepted,
-        SendOutcome::Coalesced | SendOutcome::Dropped => HewSubmitStatus::Discarded,
+        SendOutcome::Enqueued | SendOutcome::Coalesced => HewSubmitStatus::Accepted,
+        SendOutcome::Dropped => HewSubmitStatus::Discarded,
         SendOutcome::Failed => HewSubmitStatus::Full,
         SendOutcome::Closed => HewSubmitStatus::Closed,
         SendOutcome::Oom => HewSubmitStatus::Oom,

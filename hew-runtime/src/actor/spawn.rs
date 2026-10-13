@@ -20,7 +20,7 @@ pub struct HewActorOpts {
     /// Overflow policy (see [`HewOverflowPolicy`]).
     pub overflow: i32,
     /// Optional coalesce key function.
-    pub coalesce_key_fn: Option<unsafe extern "C" fn(i32, *mut c_void, usize) -> u64>,
+    pub coalesce_match_fn: Option<mailbox::HewCoalesceMatchFn>,
     /// Fallback policy used when coalescing finds no key match.
     pub coalesce_fallback: i32,
     /// Messages per activation (`0` = default).
@@ -119,7 +119,7 @@ struct ActorSpawnConfig {
     sys_dispatch: Option<HewSysDispatchFn>,
     mailbox: *mut c_void,
     budget: i32,
-    coalesce_key_fn: Option<unsafe extern "C" fn(i32, *mut c_void, usize) -> u64>,
+    coalesce_match_fn: Option<mailbox::HewCoalesceMatchFn>,
     /// Checker-derived cycle capability for future Machine Lane B handling.
     #[allow(
         dead_code,
@@ -238,7 +238,7 @@ fn build_spawned_actor(
         budget: AtomicI32::new(config.budget),
         init_state,
         init_state_size: config.state_size,
-        coalesce_key_fn: config.coalesce_key_fn,
+        coalesce_match_fn: config.coalesce_match_fn,
         terminate_fn: config.terminate_fn,
         state_drop_fn: config.state_drop_fn,
         state_clone_fn: config.state_clone_fn,
@@ -537,7 +537,7 @@ pub unsafe extern "C" fn hew_actor_spawn(
             sys_dispatch: None,
             mailbox: mailbox.cast(),
             budget: HEW_MSG_BUDGET,
-            coalesce_key_fn: None,
+            coalesce_match_fn: None,
             cycle_capable: false,
             cap_bytes: 0,
             adopt: false,
@@ -580,7 +580,11 @@ pub unsafe extern "C" fn hew_actor_spawn_opts(opts: *const HewActorOpts) -> *mut
     let coalesce_fallback = parse_overflow_policy(opts.coalesce_fallback);
     // SAFETY: mailbox pointer is valid.
     unsafe {
-        mailbox::hew_mailbox_set_coalesce_config(mailbox, opts.coalesce_key_fn, coalesce_fallback);
+        mailbox::hew_mailbox_set_coalesce_config(
+            mailbox,
+            opts.coalesce_match_fn,
+            coalesce_fallback,
+        );
         mailbox::hew_mailbox_set_message_drop_fn(mailbox, opts.message_drop_fn);
     }
 
@@ -607,7 +611,7 @@ pub unsafe extern "C" fn hew_actor_spawn_opts(opts: *const HewActorOpts) -> *mut
             sys_dispatch: None,
             mailbox: mailbox.cast(),
             budget,
-            coalesce_key_fn: opts.coalesce_key_fn,
+            coalesce_match_fn: opts.coalesce_match_fn,
             cycle_capable: opts.cycle_capable != 0,
             cap_bytes: opts.arena_cap_bytes,
             adopt: false,
@@ -686,7 +690,11 @@ pub unsafe extern "C" fn hew_actor_spawn_opts_adopt(
     let coalesce_fallback = parse_overflow_policy(opts.coalesce_fallback);
     // SAFETY: mailbox pointer is valid.
     unsafe {
-        mailbox::hew_mailbox_set_coalesce_config(mailbox, opts.coalesce_key_fn, coalesce_fallback);
+        mailbox::hew_mailbox_set_coalesce_config(
+            mailbox,
+            opts.coalesce_match_fn,
+            coalesce_fallback,
+        );
         mailbox::hew_mailbox_set_message_drop_fn(mailbox, opts.message_drop_fn);
     }
 
@@ -713,7 +721,7 @@ pub unsafe extern "C" fn hew_actor_spawn_opts_adopt(
             sys_dispatch: None,
             mailbox: mailbox.cast(),
             budget,
-            coalesce_key_fn: opts.coalesce_key_fn,
+            coalesce_match_fn: opts.coalesce_match_fn,
             cycle_capable: opts.cycle_capable != 0,
             cap_bytes: opts.arena_cap_bytes,
             adopt: true,
@@ -760,7 +768,7 @@ pub unsafe extern "C" fn hew_actor_spawn_native(
     sys_dispatch: Option<HewSysDispatchFn>,
     native_crash: Option<HewNativeCrashFn>,
     fault: *mut *mut crate::fault::HewFault,
-    coalesce_key: Option<mailbox::HewCoalesceKeyFn>,
+    coalesce_match: Option<mailbox::HewCoalesceMatchFn>,
     coalesce_fallback: i32,
     state_release: Option<hew_cabi::value::HewValueReleaseStart>,
     rejected_state_release: *mut *mut crate::release_walker::HewReleaseCursor,
@@ -799,13 +807,13 @@ pub unsafe extern "C" fn hew_actor_spawn_native(
         }
     };
     // Configure coalescing before the actor is published: no sender can reach
-    // this mailbox yet, so the key extractor is in place for the first send.
-    if coalesce_key.is_some() {
+    // this mailbox yet, so the key matcher is in place for the first send.
+    if coalesce_match.is_some() {
         // SAFETY: the constructor above returned a live mailbox.
         unsafe {
             mailbox::hew_mailbox_set_coalesce_config(
                 mailbox,
-                coalesce_key,
+                coalesce_match,
                 parse_overflow_policy(coalesce_fallback),
             );
         }
@@ -827,7 +835,7 @@ pub unsafe extern "C" fn hew_actor_spawn_native(
             sys_dispatch,
             mailbox: mailbox.cast(),
             budget: HEW_MSG_BUDGET,
-            coalesce_key_fn: coalesce_key,
+            coalesce_match_fn: coalesce_match,
             cycle_capable: false,
             cap_bytes,
             adopt: true,
@@ -892,7 +900,7 @@ pub(crate) unsafe fn try_submit_native_envelope(
     envelope: *mut crate::mailbox::HewMsgEnvelope,
 ) -> crate::mailbox::SendOutcome {
     // SAFETY: sends have no reply reference; the envelope transfers on admission.
-    unsafe { try_submit_native_request(token, message, envelope, std::ptr::null_mut()) }
+    unsafe { try_submit_native_request(token, message, envelope, std::ptr::null_mut(), false) }
 }
 
 /// Register native capacity readiness while the exact destination is pinned.
@@ -918,9 +926,10 @@ pub(crate) unsafe fn try_submit_native_request(
     message: i32,
     envelope: *mut crate::mailbox::HewMsgEnvelope,
     reply: *mut c_void,
+    obligated: bool,
 ) -> crate::mailbox::SendOutcome {
     // SAFETY: forwards the uniquely owned request and its optional reply.
-    unsafe { submit_native_request(token, message, envelope, reply, false) }
+    unsafe { submit_native_request(token, message, envelope, reply, obligated, false) }
 }
 
 pub(crate) unsafe fn submit_native_terminal(
@@ -929,7 +938,7 @@ pub(crate) unsafe fn submit_native_terminal(
     envelope: *mut crate::mailbox::HewMsgEnvelope,
 ) -> crate::mailbox::SendOutcome {
     // SAFETY: the caller uniquely owns this terminal event envelope.
-    unsafe { submit_native_request(token, message, envelope, std::ptr::null_mut(), true) }
+    unsafe { submit_native_request(token, message, envelope, std::ptr::null_mut(), true, true) }
 }
 
 unsafe fn submit_native_request(
@@ -937,6 +946,7 @@ unsafe fn submit_native_request(
     message: i32,
     envelope: *mut crate::mailbox::HewMsgEnvelope,
     reply: *mut c_void,
+    obligated: bool,
     terminal: bool,
 ) -> crate::mailbox::SendOutcome {
     // Attachment termination is completion of work already admitted by its
@@ -981,7 +991,13 @@ unsafe fn submit_native_request(
             if terminal {
                 mailbox::admit_native_terminal(&*a.mailbox.cast(), message, envelope)
             } else {
-                mailbox::try_admit_native_request(&*a.mailbox.cast(), message, envelope, reply)
+                mailbox::try_admit_native_request(
+                    &*a.mailbox.cast(),
+                    message,
+                    envelope,
+                    reply,
+                    obligated,
+                )
             }
         };
         if matches!(
@@ -1043,7 +1059,7 @@ pub unsafe extern "C" fn hew_actor_spawn_bounded(
             sys_dispatch: None,
             mailbox: mailbox.cast(),
             budget: HEW_MSG_BUDGET,
-            coalesce_key_fn: None,
+            coalesce_match_fn: None,
             cycle_capable: false,
             cap_bytes: 0,
             adopt: false,

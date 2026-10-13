@@ -46,6 +46,13 @@ pub fn focus_file(output: &mut TypeCheckOutput, file: u32) {
             (key, ty)
         })
         .collect();
+    output.input_references = std::mem::take(&mut output.input_references)
+        .into_iter()
+        .map(|(mut key, input)| {
+            swap(&mut key);
+            (key, input)
+        })
+        .collect();
     output.resolutions = std::mem::take(&mut output.resolutions)
         .into_iter()
         .map(|(mut key, resolution)| {

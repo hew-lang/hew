@@ -1,0 +1,13 @@
+[[case]]
+id = "actor-handlerless-state"
+intent = "Handlerless actors preserve empty, scalar and owned state type facts and release owned state before stop completes."
+source = "cases/actor-handlerless-state.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "1"
+
+[case.expected]
+stdout = "empty stopped\nscalar stopped\n7\nowner stopped\n"
+exit = 0

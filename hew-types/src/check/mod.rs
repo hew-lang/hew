@@ -2615,6 +2615,9 @@ impl Checker {
     )]
     fn fork_dependency_state(&self) -> Self {
         Self {
+            input_provider: self.input_provider.clone(),
+            input_references: self.input_references.clone(),
+            compile_time_values: self.compile_time_values.clone(),
             must_use_types: self.must_use_types.clone(),
             env: self.env.clone(),
             subst: self.subst.clone(),
@@ -2690,8 +2693,6 @@ impl Checker {
             try_width_cast_lowerings: self.try_width_cast_lowerings.clone(),
             actor_method_dispatch: self.actor_method_dispatch.clone(),
             actor_delivery_calls: self.actor_delivery_calls.clone(),
-            actor_coalesce_keys: self.actor_coalesce_keys.clone(),
-            actor_overflow_policies: self.actor_overflow_policies.clone(),
             machine_method_dispatch: self.machine_method_dispatch.clone(),
             tail_ok_coercions: self.tail_ok_coercions.clone(),
             result_return_coercions: self.result_return_coercions.clone(),
@@ -3757,6 +3758,13 @@ impl Checker {
         let shorthand_field_labels = self.scopes.take_shorthand_labels();
         let contexts = self.scopes.contexts().clone();
         let mut output = TypeCheckOutput {
+            input_references: std::mem::take(&mut self.input_references),
+            inputs: self
+                .input_provider
+                .as_ref()
+                .map(|provider| provider.inputs())
+                .unwrap_or_default(),
+            compile_time_values: std::mem::take(&mut self.compile_time_values),
             declaration_type_parameters: self.scopes.declaration_parameter_facts(),
             associated_type_schemas: self.associated_schema_parameters.clone(),
             resolved_annotation_types,
@@ -3814,7 +3822,6 @@ impl Checker {
             try_width_cast_lowerings: std::mem::take(&mut self.try_width_cast_lowerings),
             actor_method_dispatch: std::mem::take(&mut self.actor_method_dispatch),
             actor_delivery_calls: std::mem::take(&mut self.actor_delivery_calls),
-            actor_coalesce_keys: std::mem::take(&mut self.actor_coalesce_keys),
             machine_method_dispatch: std::mem::take(&mut self.machine_method_dispatch),
             tail_ok_coercions: std::mem::take(&mut self.tail_ok_coercions),
             yield_ok_coercions: std::mem::take(&mut self.yield_ok_coercions),
@@ -4849,6 +4856,7 @@ impl Checker {
             | Expr::ChainValue
             | Expr::RegexLiteral(_)
             | Expr::ByteStringLiteral(_)
+            | Expr::MacroInvocation { .. }
             | Expr::ByteArrayLiteral(_) => {}
         }
     }
@@ -5288,6 +5296,7 @@ fn collect_lambda_spans_in_expr(
         | Expr::ChainValue
         | Expr::RegexLiteral(_)
         | Expr::ByteStringLiteral(_)
+        | Expr::MacroInvocation { .. }
         | Expr::ByteArrayLiteral(_) => {}
     }
 }
@@ -5472,9 +5481,6 @@ fn build_actor_protocol_descriptors(
     // for relays / mixed-binary peers (the `boundary-fail-closed` invariant).
     let mut cross_actor_seen: Vec<(u32, String, String, std::ops::Range<usize>)> = Vec::new();
     for (actor_identity, ad) in collect_program_actors(program) {
-        if ad.receive_fns.is_empty() {
-            continue;
-        }
         // A handler signature that failed to resolve already reported its
         // type error; a partial descriptor is never published.
         let Some(specs) = actor_handler_specs(defs, fn_sigs, &actor_identity, ad) else {
@@ -5488,7 +5494,35 @@ fn build_actor_protocol_descriptors(
             actor_identity.clone(),
             &specs,
         ) {
-            Ok(descriptor) => {
+            Ok(mut descriptor) => {
+                use crate::actor_protocol::{CoalesceFallback, MailboxContract, OverflowContract};
+                use hew_parser::ast::{OverflowFallback, OverflowPolicy};
+                descriptor.mailbox =
+                    ad.mailbox_capacity
+                        .map_or(MailboxContract::Unbounded, |capacity| {
+                            let overflow = match ad.overflow_policy.as_ref() {
+                                None | Some(OverflowPolicy::Block) => OverflowContract::Block,
+                                Some(OverflowPolicy::DropNew) => OverflowContract::DropNew,
+                                Some(OverflowPolicy::DropOld) => OverflowContract::DropOld,
+                                Some(OverflowPolicy::Fail) => OverflowContract::Fail,
+                                Some(OverflowPolicy::Coalesce { fallback, .. }) => {
+                                    OverflowContract::Coalesce {
+                                        fallback: match fallback {
+                                            Some(OverflowFallback::DropOld) => {
+                                                CoalesceFallback::DropOld
+                                            }
+                                            Some(OverflowFallback::Fail) => CoalesceFallback::Fail,
+                                            // The checker rejects a blocking fallback before publishing HIR.
+                                            None
+                                            | Some(
+                                                OverflowFallback::DropNew | OverflowFallback::Block,
+                                            ) => CoalesceFallback::DropNew,
+                                        },
+                                    }
+                                }
+                            };
+                            MailboxContract::Bounded { capacity, overflow }
+                        });
                 // Record each handler's msg_id for the cross-actor pass.
                 for h in &descriptor.handlers {
                     let span = ad

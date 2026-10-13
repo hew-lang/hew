@@ -129,7 +129,7 @@ pub unsafe extern "C-unwind" fn hew_actor_ask_submit_native(
         }
         hew_reply_channel_retain(channel);
         let outcome =
-            crate::actor::try_submit_native_request(token, message, envelope, channel.cast());
+            crate::actor::try_submit_native_request(token, message, envelope, channel.cast(), true);
         let error = match outcome {
             crate::mailbox::SendOutcome::Enqueued => return AskError::None as i32,
             crate::mailbox::SendOutcome::Failed => AskError::MailboxFull,
@@ -413,7 +413,7 @@ mod tests {
                 );
                 assert!(!envelope.is_null());
                 assert!(matches!(
-                    mailbox::try_admit_native_request(&*mailbox, 1, envelope, channel.cast()),
+                    mailbox::try_admit_native_request(&*mailbox, 1, envelope, channel.cast(), true),
                     SendOutcome::Failed
                 ));
                 mailbox::hew_mailbox_free(mailbox);

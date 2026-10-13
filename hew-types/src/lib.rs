@@ -10,6 +10,7 @@ pub mod builtin_enums;
 pub mod builtin_names;
 pub mod builtin_type;
 pub mod check;
+pub mod compile_time;
 pub mod cycle;
 pub mod data_shape;
 pub mod def_table;

@@ -766,16 +766,13 @@
               "items": {
                 "type": "object",
                 "additionalProperties": false,
-                "required": ["message", "param", "kind"],
+                "required": ["message", "param"],
                 "properties": {
                   "message": {
                     "$ref": "#/$defs/id"
                   },
                   "param": {
                     "$ref": "#/$defs/id"
-                  },
-                  "kind": {
-                    "type": "string"
                   }
                 }
               }

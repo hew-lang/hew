@@ -141,7 +141,7 @@ pub fn dump_hir(module: &HirModule) -> String {
                     actor.name,
                     actor.is_isolated,
                     actor.max_heap_bytes,
-                    actor.mailbox_capacity,
+                    actor.protocol_descriptor.mailbox.capacity(),
                     actor.cycle_capable
                 )
                 .expect("write to string");
@@ -279,6 +279,7 @@ pub fn dump_hir(module: &HirModule) -> String {
                 let value = match &c.value {
                     crate::node::HirConstValue::Integer(v) => v.to_string(),
                     crate::node::HirConstValue::String(s) => format!("{s:?}"),
+                    crate::node::HirConstValue::Bytes(bytes) => format!("bytes {bytes:?}"),
                     crate::node::HirConstValue::Float(v) => v.to_string(),
                 };
                 writeln!(

@@ -268,7 +268,7 @@ impl LowerCtx {
                 hew_types::actor_protocol::LAMBDA_ACTOR_MESSAGE_ID,
             )],
         )
-        .ok();
+        .expect("one lambda handler cannot have a protocol collision");
 
         let body_block = HirBlock {
             node: self.ids.node(),
@@ -279,7 +279,6 @@ impl LowerCtx {
             span: span.clone(),
         };
         self.pending_lambda_actors.push(HirActorDecl {
-            coalesce_keys: Vec::new(),
             id: self.ids.item(),
             node: self.ids.node(),
             declaration: identity.actor,
@@ -304,8 +303,6 @@ impl LowerCtx {
             lifecycle_hooks: Vec::new(),
             max_heap_bytes: None,
             is_isolated: false,
-            mailbox_capacity: None,
-            overflow_policy: None,
             cycle_capable: false,
             protocol_descriptor,
             lambda_handle_ty: Some(Box::new(handle_ty.clone())),

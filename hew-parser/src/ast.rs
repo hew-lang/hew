@@ -421,6 +421,10 @@ pub enum Expr {
     Clone(Box<Spanned<Expr>>),
     Literal(Literal),
     Ident(Ident),
+    MacroInvocation {
+        name: Ident,
+        args: Vec<Spanned<Expr>>,
+    },
     /// Expected-type contextual variant spelling, `.Variant`.
     ///
     /// This is deliberately not represented as a bare identifier: the

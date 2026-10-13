@@ -359,6 +359,7 @@ fn find_in_expr(ctx: &LintCtx, levels: &LintLevels, expr: &Expr, out: &mut Vec<T
         | Expr::ChainValue
         | Expr::RegexLiteral(_)
         | Expr::ByteStringLiteral(_)
+        | Expr::MacroInvocation { .. }
         | Expr::ByteArrayLiteral(_) => {}
     }
 }
@@ -427,6 +428,7 @@ fn candidate_from_condition(condition: &Expr) -> Option<Candidate> {
             | Expr::Await(_)
             | Expr::RegexLiteral(_)
             | Expr::ByteStringLiteral(_)
+            | Expr::MacroInvocation { .. }
             | Expr::ByteArrayLiteral(_)
             | Expr::Is { .. }
             | Expr::MachineEmit { .. }
@@ -477,6 +479,7 @@ fn candidate_from_condition(condition: &Expr) -> Option<Candidate> {
         | Expr::Await(_)
         | Expr::RegexLiteral(_)
         | Expr::ByteStringLiteral(_)
+        | Expr::MacroInvocation { .. }
         | Expr::ByteArrayLiteral(_)
         | Expr::Is { .. }
         | Expr::MachineEmit { .. }
@@ -618,6 +621,7 @@ fn bounded_expr_has_sleep(expr: &Expr) -> bool {
         | Expr::ChainValue
         | Expr::RegexLiteral(_)
         | Expr::ByteStringLiteral(_)
+        | Expr::MacroInvocation { .. }
         | Expr::ByteArrayLiteral(_) => false,
         Expr::ContextVariant(context) => context.record.as_ref().is_some_and(|record| {
             record
@@ -1025,6 +1029,7 @@ fn expr_assigns_identifier(expr: &Expr, name: &str) -> bool {
         | Expr::ChainValue
         | Expr::RegexLiteral(_)
         | Expr::ByteStringLiteral(_)
+        | Expr::MacroInvocation { .. }
         | Expr::ByteArrayLiteral(_) => false,
     }
 }

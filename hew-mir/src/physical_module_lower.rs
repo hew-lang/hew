@@ -718,6 +718,10 @@ pub fn encoding_format(ty: &ResolvedTy) -> Option<EncodingFormat> {
 #[must_use]
 pub fn physical_type_inventory(module: &SemModule) -> PhysicalTypeInventory {
     let mut types = BTreeSet::new();
+    for actor in &module.actors {
+        types.insert(actor.handle_ty.clone());
+        types.insert(actor.state_ty.clone());
+    }
     for callable in &module.callables {
         types.extend(
             callable

@@ -554,7 +554,7 @@ pub unsafe extern "C" fn hew_supervisor_add_child_dynamic(
         stop_ns: 5_000_000_000,
         mailbox_capacity: sp.mailbox_capacity,
         overflow: sp.overflow,
-        coalesce_key_fn: sp.coalesce_key_fn,
+        coalesce_match_fn: sp.coalesce_match_fn,
         coalesce_fallback: sp.coalesce_fallback,
         message_drop_fn: sp.message_drop_fn,
         sys_dispatch: sp.sys_dispatch,

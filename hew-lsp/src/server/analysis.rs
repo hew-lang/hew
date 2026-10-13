@@ -151,8 +151,8 @@ fn document_set(
     root_path: &std::path::Path,
     root_source: &str,
     documents: &DashMap<Url, DocumentState>,
-) -> hew_compile::DocumentSet {
-    let mut set = hew_compile::DocumentSet::new();
+) -> hew_compile::SourceSet {
+    let mut set = hew_compile::SourceSet::new();
     for entry in documents {
         if let Some(path) = entry.key().to_checked_file_path() {
             set.insert(path.into_owned(), entry.value().source.clone());
@@ -177,7 +177,10 @@ fn frontend_options(
 
 /// The files the resolved program depends on, for the open-importer index.
 /// `None` when resolution did not complete, so the set is unknown.
-fn dependency_uris(program: &hew_parser::ast::Program) -> Option<Vec<Url>> {
+fn dependency_uris(
+    program: &hew_parser::ast::Program,
+    type_output: Option<&hew_types::TypeCheckOutput>,
+) -> Option<Vec<Url>> {
     let module_graph = program.module_graph.as_ref()?;
     let mut uris: Vec<Url> = module_graph
         .modules
@@ -185,6 +188,14 @@ fn dependency_uris(program: &hew_parser::ast::Program) -> Option<Vec<Url>> {
         .flat_map(|module| module.source_paths.iter())
         .filter_map(Url::from_checked_file_path)
         .collect();
+    if let Some(output) = type_output {
+        uris.extend(
+            output
+                .inputs
+                .iter()
+                .filter_map(|input| Url::from_checked_file_path(&input.path)),
+        );
+    }
     uris.sort_by(|left, right| left.as_str().cmp(right.as_str()));
     uris.dedup();
     Some(uris)
@@ -291,12 +302,13 @@ pub(super) fn analyze_document(
         hew_analysis::identity::focus_file(tco, file);
     }
 
+    let dependency_uris = dependency_uris(&state.program, type_output.as_ref());
     DocumentState {
         source: source.to_string(),
         line_offsets,
         parse_result,
         type_output,
-        dependency_uris: dependency_uris(&state.program),
+        dependency_uris,
         diagnostics_by_uri: editor_diagnostics,
     }
 }

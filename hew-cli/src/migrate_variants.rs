@@ -10,7 +10,7 @@
 
 use std::path::{Path, PathBuf};
 
-use hew_compile::{DocumentSet, FrontendDiagnosticKind};
+use hew_compile::{FrontendDiagnosticKind, SourceSet};
 use hew_types::error::TypeErrorKind;
 
 use crate::migrate_checks::CheckUnits;
@@ -32,7 +32,7 @@ pub(crate) struct VariantRefusal {
 /// in place. Returns the refusals.
 ///
 pub(crate) fn respell_bare_variants(files: &mut [(PathBuf, String)]) -> Vec<VariantRefusal> {
-    let mut documents = DocumentSet::new();
+    let mut documents = SourceSet::new();
     let mut units = CheckUnits::new(files, "variants");
     for (path, text) in files.iter() {
         documents.insert(path.clone(), text.clone());
@@ -74,7 +74,7 @@ pub(crate) fn respell_bare_variants(files: &mut [(PathBuf, String)]) -> Vec<Vari
 fn respell_unit(
     root: &Path,
     members: &[(usize, &Path, &str)],
-    documents: &DocumentSet,
+    documents: &SourceSet,
     before: &[(Option<PathBuf>, FileDiagnostic)],
     units: &mut CheckUnits,
 ) -> Vec<MemberOutcome> {
@@ -150,11 +150,7 @@ struct UnitDiagnostics {
     checked: bool,
 }
 
-fn unit_diagnostics(
-    root: &Path,
-    documents: &DocumentSet,
-    units: &mut CheckUnits,
-) -> UnitDiagnostics {
+fn unit_diagnostics(root: &Path, documents: &SourceSet, units: &mut CheckUnits) -> UnitDiagnostics {
     let state = units.check(root, documents);
     let indices = state
         .program

@@ -22,6 +22,14 @@ impl Checker {
             Item::Function(fd) => self.check_function(fd),
             Item::Actor(ad) => {
                 if !crate::ty::is_reserved_type_name(ad.name.name.as_str()) {
+                    if ad.overflow_policy.is_some() && ad.mailbox_capacity.is_none() {
+                        self.report_error(
+                            TypeErrorKind::InvalidOperation,
+                            span,
+                            "an overflow policy requires a bounded `mailbox N` declaration"
+                                .to_string(),
+                        );
+                    }
                     if matches!(
                         ad.overflow_policy.as_ref(),
                         Some(hew_parser::ast::OverflowPolicy::Coalesce {
@@ -192,13 +200,18 @@ impl Checker {
                 .return_type
                 .as_ref()
                 .is_some_and(|ret| !matches!(self.resolve_type_expr(ret), Ty::Unit | Ty::Error));
-            if returns_value {
+            if returns_value || rf.is_generator {
+                let obligation = if rf.is_generator {
+                    "streams values"
+                } else {
+                    "returns a value"
+                };
                 self.report_error(
                     TypeErrorKind::InvalidOperation,
                     span,
                     format!(
                         "coalesce key `{key_field}` is declared on `receive fn {}`, which \
-                         returns a value; a call that waits for a reply is never superseded \
+                         {obligation}; a call that waits for a reply is never superseded \
                          or discarded, so the key can never take effect. Remove the parameter \
                          from this handler or coalesce on a one-way handler",
                         rf.name
@@ -207,21 +220,8 @@ impl Checker {
                 continue;
             }
             let ty = self.resolve_type_expr(&param.ty);
-            if !matches!(
-                ty,
-                Ty::I8
-                    | Ty::I16
-                    | Ty::I32
-                    | Ty::I64
-                    | Ty::U8
-                    | Ty::U16
-                    | Ty::U32
-                    | Ty::U64
-                    | Ty::Isize
-                    | Ty::Usize
-                    | Ty::Bool
-                    | Ty::String
-            ) {
+            if !(ty.is_integer() && !ty.is_integer_literal() || matches!(ty, Ty::Bool | Ty::String))
+            {
                 self.report_error(
                     TypeErrorKind::InvalidOperation,
                     span,
@@ -262,7 +262,20 @@ impl Checker {
             );
         }
         if let Some(actor) = actor {
-            self.actor_coalesce_keys.insert(actor, selected);
+            if let Some(protocol) = self
+                .actor_protocol_descriptors
+                .get_mut(self.defs.path(actor))
+            {
+                for (declaration, param) in selected {
+                    if let Some(handler) = protocol
+                        .handlers
+                        .iter_mut()
+                        .find(|handler| handler.declaration == declaration)
+                    {
+                        handler.coalesce_key = Some(param);
+                    }
+                }
+            }
         }
     }
 

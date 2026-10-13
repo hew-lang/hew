@@ -1,0 +1,130 @@
+import std.stream;
+
+import std.failure;
+
+actor Audit {
+    var total: i64 = 0;
+    receive fn closed(id: i64) {
+        total = total + id;
+    }
+    receive fn sum() -> i64 {
+        total
+    }
+}
+
+#[resource]
+type Ticket {
+    audit: Audit;
+    id: i64;
+}
+
+impl Ticket {
+    fn close(consume self) {
+        self.audit.closed(self.id).expect("audit");
+        if self.id < 0 {
+            panic("displaced close failed");
+        }
+    }
+}
+
+actor Latest {
+    var total: i64 = 0;
+    mailbox 4 overflow coalesce(key) fallback drop_old;
+    receive fn hold(ready: Sink<i64>, gate: Stream<i64>) {
+        ready.send(1).expect("ready");
+        gate.recv();
+    }
+    receive fn answer() -> i64 {
+        5
+    }
+    receive gen fn values() -> i64 {
+        yield 7;
+    }
+    receive fn update(key: string, ticket: Ticket) {
+        total = total * 100 + ticket.id;
+    }
+    receive fn other(key: string, ticket: Ticket) {
+        total = total * 100 + ticket.id;
+    }
+    receive fn sum() -> i64 {
+        total
+    }
+    #[on(crash)]
+    fn crashed(info: failure.CrashInfo) -> failure.CrashAction {
+        assert(info.code != 0);
+        println("receiver fault");
+        failure.CrashAction.Restart
+    }
+}
+
+supervisor Group {
+    intensity: 1 within 60s;
+    child worker: Latest;
+}
+
+fn ask(worker: Latest, ready: Sink<i64>) {
+    ready.send(1).expect("ask ready");
+    assert(worker.answer().expect("answer") == 5);
+}
+
+fn stream_values(worker: Latest, ready: Sink<i64>) {
+    ready.send(1).expect("stream ready");
+    var sum = 0;
+    for value in worker.values() {
+        sum = sum + value;
+    }
+    assert(sum == 7);
+}
+
+fn check_receiver_fault(audit: Audit) {
+    let group = spawn Group;
+    let worker = group.worker;
+    let intake = mailbox(worker);
+    let (started_tx, started): (Sink<i64>, Stream<i64>) = stream.pipe(1).expect("started");
+    let (release, gate): (Sink<i64>, Stream<i64>) = stream.pipe(1).expect("gate");
+    intake.hold(started_tx, gate).expect("hold");
+    started.recv();
+    intake.update("bad", Ticket { audit: audit, id: -1 }).expect("bad queued");
+    for id in 1..4 {
+        intake.update(f"key:{id}", Ticket { audit: audit, id: id }).expect("queued");
+    }
+    assert(intake.update("bad", Ticket { audit: audit, id: 5 }).expect("replace") == Delivery.Accepted);
+    let _ = release.send(1);
+    let _ = worker.sum();
+    restarted(worker);
+    assert(worker.sum().expect("fresh receiver") == 0);
+    stop(group);
+    stopped(group);
+}
+
+fn main() {
+    let audit = spawn Audit;
+    let worker = spawn Latest;
+    let intake = mailbox(worker);
+    let (started_tx, started): (Sink<i64>, Stream<i64>) = stream.pipe(1).expect("started");
+    let (release, gate): (Sink<i64>, Stream<i64>) = stream.pipe(1).expect("gate");
+    intake.hold(started_tx, gate).expect("hold");
+    started.recv();
+    let (ask_tx, ask_ready): (Sink<i64>, Stream<i64>) = stream.pipe(1).expect("ask");
+    let (stream_tx, stream_ready): (Sink<i64>, Stream<i64>) = stream.pipe(1).expect("stream");
+    scope {
+        let _answering = fork ask(worker, ask_tx);
+        ask_ready.recv();
+        let _streaming = fork stream_values(worker, stream_tx);
+        stream_ready.recv();
+        sleep(1ms);
+        intake.update("sensor:a", Ticket { audit: audit, id: 10 }).expect("first");
+        intake.update("sensor:b", Ticket { audit: audit, id: 20 }).expect("second");
+        let key = "sensor:" + "a";
+        assert(intake.update(key, Ticket { audit: audit, id: 30 }).expect("replace") == Delivery.Accepted);
+        assert(intake.other("sensor:a", Ticket { audit: audit, id: 40 }).expect("fallback") == Delivery.Accepted);
+        release.send(1).expect("release");
+    };
+    println(worker.sum().expect("sum"));
+    stop(worker);
+    stopped(worker);
+    println(audit.sum().expect("closed sum"));
+    check_receiver_fault(audit);
+    stop(audit);
+    stopped(audit);
+}

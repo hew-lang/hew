@@ -183,6 +183,42 @@ fn lsp_initialize_didopen_diagnostics_roundtrip() {
 
 struct TestProject(PathBuf);
 
+#[test]
+fn lsp_compile_time_input_navigation_and_watched_creation() {
+    let project = TestProject::new("compile-time-inputs");
+    let source = "fn main() { println(include_str!(\"assets/message.txt\")); }\n";
+    let main = project.write("main.hew", source);
+    let mut session = RenameSession::new(Some(&project), &[]);
+    let initial = session.open(&main, source, 1);
+    assert!(initial["params"]["diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|diagnostic| diagnostic["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("E_INCLUDE_NOT_FOUND"))));
+
+    let asset = project.write("assets/message.txt", "Hew café\n");
+    send(
+        &mut session.stdin,
+        &json!({"jsonrpc":"2.0","method":"workspace/didChangeWatchedFiles",
+            "params":{"changes":[{"uri":file_uri(&asset),"type":1}]}}),
+    );
+    let updated = recv_until(&session.rx, Instant::now() + SESSION_BUDGET, |message| {
+        message["method"] == "textDocument/publishDiagnostics"
+            && message["params"]["uri"] == file_uri(&main)
+    });
+    assert_eq!(updated["params"]["diagnostics"], json!([]));
+
+    let position = json!({"textDocument":{"uri":file_uri(&main)},
+        "position":position_of(source, "assets/message.txt")});
+    let hover = session.request("textDocument/hover", position.clone());
+    assert!(hover["result"].to_string().contains("message.txt"));
+    assert!(hover["result"].to_string().contains("10 bytes"));
+    let definition = session.request("textDocument/definition", position);
+    assert_eq!(definition["result"]["uri"], file_uri(&asset));
+}
+
 impl TestProject {
     fn new(label: &str) -> Self {
         let unique = std::time::SystemTime::now()

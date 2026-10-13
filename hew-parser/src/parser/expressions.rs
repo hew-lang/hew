@@ -905,6 +905,23 @@ impl Parser<'_> {
                 let name_span = self.peek_span();
                 self.advance();
 
+                if self.peek() == Some(&Token::Bang) {
+                    self.advance();
+                    self.expect(&Token::LeftParen)?;
+                    let mut args = Vec::new();
+                    while self.peek() != Some(&Token::RightParen) {
+                        args.push(self.parse_expr()?);
+                        if !self.eat(&Token::Comma) {
+                            break;
+                        }
+                    }
+                    self.expect(&Token::RightParen)?;
+                    return Some((
+                        Expr::MacroInvocation { name, args },
+                        start..self.peek_span().start,
+                    ));
+                }
+
                 // Check for struct initialization — including the explicit-type-arg form
                 // `Name<T, ...> { field: expr, ... }`.  We need a speculative parse
                 // because `<` is also a comparison operator: only commit when we see

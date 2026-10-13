@@ -54,7 +54,15 @@ impl LowerCtx {
         };
         let (id, ty) = (entry.id, entry.ty.clone());
 
-        let value = self.fold_const_expr(&decl.value.0, &ty, span.clone());
+        let value = match self.compile_time_values.get(&self.mk_key(&decl.value.1)) {
+            Some(hew_types::compile_time::ConstantValue::String(text)) => {
+                crate::node::HirConstValue::String(text.clone())
+            }
+            Some(hew_types::compile_time::ConstantValue::Bytes(bytes)) => {
+                crate::node::HirConstValue::Bytes(bytes.clone())
+            }
+            None => self.fold_const_expr(&decl.value.0, &ty, span.clone()),
+        };
         if let crate::node::HirConstValue::Integer(value) = &value {
             self.folded_integer_consts
                 .insert(decl.name.to_string(), *value);
@@ -93,6 +101,9 @@ impl LowerCtx {
         declared_ty: &ResolvedTy,
         span: std::ops::Range<usize>,
     ) -> crate::node::HirConstValue {
+        if let Expr::ByteStringLiteral(bytes) | Expr::ByteArrayLiteral(bytes) = expr {
+            return crate::node::HirConstValue::Bytes(bytes.clone());
+        }
         // Dispatch on the initializer shape rather than the declared type:
         // the string primitive spells out as either `ResolvedTy::String` or
         // `ResolvedTy::Named { name: "String" }` depending on annotation form,

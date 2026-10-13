@@ -8,6 +8,7 @@ use hew_parser::ast::{ImportDecl, Item, Program, Spanned};
 use hew_parser::module::ModulePath;
 use serde::{de::DeserializeOwned, Deserialize};
 
+mod compile_time;
 mod coverage;
 mod deterministic_admission;
 pub use coverage::{SourceCoverageCounter, SourceCoverageMap};
@@ -94,7 +95,7 @@ pub struct FrontendOptions {
     ///
     /// Every source read the frontend performs consults this set first, so an
     /// unsaved buffer checks against its saved siblings. Empty for the CLI.
-    pub documents: DocumentSet,
+    pub documents: SourceSet,
 }
 
 /// Source text that overrides the filesystem for one frontend run.
@@ -102,12 +103,124 @@ pub struct FrontendOptions {
 /// The LSP, the browser analysis surface and the REPL all check buffers that
 /// either have no file behind them or differ from the file on disk. They hand
 /// the driver this set instead of running a frontend of their own.
-#[derive(Debug, Clone, Default)]
-pub struct DocumentSet {
-    sources: BTreeMap<PathBuf, std::sync::Arc<str>>,
+#[derive(Debug, Clone)]
+pub struct SourceSet {
+    sources: BTreeMap<PathBuf, SourceContent>,
+    filesystem: bool,
+    reads: Arc<std::sync::Mutex<BTreeMap<PathBuf, Option<String>>>>,
 }
 
-impl DocumentSet {
+impl Default for SourceSet {
+    fn default() -> Self {
+        Self {
+            sources: BTreeMap::new(),
+            filesystem: true,
+            reads: Arc::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+enum SourceContent {
+    Text(Arc<str>),
+    Bytes(Arc<[u8]>),
+}
+
+impl SourceSet {
+    #[must_use]
+    pub fn is_file(&self, path: &Path) -> bool {
+        self.contains(path) || (self.filesystem && path.is_file())
+    }
+    #[must_use]
+    pub fn in_memory() -> Self {
+        Self {
+            filesystem: false,
+            ..Self::default()
+        }
+    }
+
+    /// Read an input and record its content fingerprint.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error if the input cannot be read or was not supplied.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the shared input table's mutex is poisoned.
+    pub fn read_bytes(&self, path: &Path) -> std::io::Result<Vec<u8>> {
+        use sha2::{Digest, Sha256};
+        use std::fmt::Write as _;
+        let identity = if self.filesystem {
+            buffer_identity(path).unwrap_or_else(|| path.to_path_buf())
+        } else {
+            compile_time::normalize(path)
+        };
+        self.reads
+            .lock()
+            .expect("source input table poisoned")
+            .insert(identity.clone(), None);
+        let bytes = if let Some(bytes) = self.get_bytes(path) {
+            bytes.to_vec()
+        } else if self.filesystem {
+            std::fs::read(path)?
+        } else {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "compilation input was not supplied",
+            ));
+        };
+        let fingerprint = Sha256::digest(&bytes).iter().fold(
+            String::with_capacity(64),
+            |mut fingerprint, byte| {
+                write!(fingerprint, "{byte:02x}").expect("writing to a String cannot fail");
+                fingerprint
+            },
+        );
+        self.reads
+            .lock()
+            .expect("source input table poisoned")
+            .insert(identity, Some(fingerprint));
+        Ok(bytes)
+    }
+
+    /// Return the inputs observed by this frontend run.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the shared input table's mutex is poisoned.
+    #[must_use]
+    pub fn inputs(&self) -> Vec<hew_types::compile_time::CompilationInput> {
+        self.reads
+            .lock()
+            .expect("source input table poisoned")
+            .iter()
+            .map(|(path, sha256)| hew_types::compile_time::CompilationInput {
+                path: path.clone(),
+                display_path: path.to_string_lossy().replace('\\', "/"),
+                sha256: sha256.clone(),
+            })
+            .collect()
+    }
+    pub fn insert_bytes(&mut self, path: impl Into<PathBuf>, bytes: impl Into<Vec<u8>>) {
+        let mut path = path.into();
+        if !self.filesystem {
+            path = compile_time::normalize(&path);
+        }
+        let bytes = SourceContent::Bytes(bytes.into().into());
+        if let Some(canonical) = self.filesystem.then(|| buffer_identity(&path)).flatten() {
+            self.sources.insert(canonical, bytes.clone());
+        }
+        self.sources.insert(path, bytes);
+    }
+
+    #[must_use]
+    pub fn get_bytes(&self, path: &Path) -> Option<&[u8]> {
+        match self.content(path)? {
+            SourceContent::Text(text) => Some(text.as_bytes()),
+            SourceContent::Bytes(bytes) => Some(bytes),
+        }
+    }
     #[must_use]
     pub fn new() -> Self {
         Self::default()
@@ -118,9 +231,12 @@ impl DocumentSet {
     /// The canonical spelling is recorded alongside the given one because the
     /// import resolver canonicalizes every candidate before loading it.
     pub fn insert(&mut self, path: impl Into<PathBuf>, source: impl Into<String>) {
-        let path = path.into();
-        let source: std::sync::Arc<str> = source.into().into();
-        if let Some(canonical) = buffer_identity(&path) {
+        let mut path = path.into();
+        if !self.filesystem {
+            path = compile_time::normalize(&path);
+        }
+        let source = SourceContent::Text(source.into().into());
+        if let Some(canonical) = self.filesystem.then(|| buffer_identity(&path)).flatten() {
             if canonical != path {
                 self.sources.insert(canonical, source.clone());
             }
@@ -134,30 +250,61 @@ impl DocumentSet {
     }
 
     fn contains(&self, path: &Path) -> bool {
-        self.get(path).is_some()
+        self.content(path).is_some()
     }
 
     /// The documents directly inside `dir`, so a host without a filesystem
     /// lists a directory module's peers from the sources it was given.
     fn files_in(&self, dir: &Path) -> Vec<PathBuf> {
+        let cwd = std::env::current_dir().unwrap_or_default();
+        let relative_dir = compile_time::normalize(dir.strip_prefix(&cwd).unwrap_or(dir));
         self.sources
             .keys()
-            .filter(|path| path.parent() == Some(dir))
-            .cloned()
+            .filter(|path| {
+                path.parent() == Some(dir) || path.parent() == Some(relative_dir.as_path())
+            })
+            .map(|path| dir.join(path.file_name().expect("a source file has a name")))
             .collect()
     }
 
     /// The recorded content of `path`, under its given or canonical spelling.
     #[must_use]
     pub fn get(&self, path: &Path) -> Option<&str> {
+        match self.content(path)? {
+            SourceContent::Text(text) => Some(text),
+            SourceContent::Bytes(bytes) => std::str::from_utf8(bytes).ok(),
+        }
+    }
+
+    fn content(&self, path: &Path) -> Option<&SourceContent> {
         if self.sources.is_empty() {
             return None;
         }
         if let Some(source) = self.sources.get(path) {
             return Some(source);
         }
-        let canonical = buffer_identity(path)?;
-        self.sources.get(&canonical).map(AsRef::as_ref)
+        if !self.filesystem {
+            if let Some(source) = self.sources.get(&compile_time::normalize(path)) {
+                return Some(source);
+            }
+        }
+        if self.filesystem {
+            if let Some(source) = buffer_identity(path).and_then(|path| self.sources.get(&path)) {
+                return Some(source);
+            }
+        }
+        std::env::current_dir()
+            .ok()
+            .and_then(|cwd| {
+                path.strip_prefix(cwd)
+                    .ok()
+                    .and_then(|path| self.sources.get(path))
+            })
+            .or_else(|| {
+                path.strip_prefix("/")
+                    .ok()
+                    .and_then(|path| self.sources.get(path))
+            })
     }
 }
 
@@ -171,14 +318,18 @@ fn buffer_identity(path: &Path) -> Option<PathBuf> {
 }
 
 /// The overlay used when a caller supplies no [`FrontendOptions`].
-static EMPTY_DOCUMENTS: DocumentSet = DocumentSet {
-    sources: BTreeMap::new(),
-};
+static EMPTY_DOCUMENTS: std::sync::LazyLock<SourceSet> =
+    std::sync::LazyLock::new(SourceSet::default);
 
 /// The canonical path of an import candidate, or `None` when nothing supplies
 /// it. An open buffer stands in for a file the filesystem does not have, so an
 /// editor can check a document set that is not on disk.
-fn resolve_candidate(documents: &DocumentSet, candidate: &Path) -> Option<PathBuf> {
+fn resolve_candidate(documents: &SourceSet, candidate: &Path) -> Option<PathBuf> {
+    if !documents.filesystem {
+        return documents
+            .contains(candidate)
+            .then(|| candidate.to_path_buf());
+    }
     match candidate.canonicalize() {
         Ok(canonical) => Some(canonical),
         Err(_) => documents
@@ -188,11 +339,9 @@ fn resolve_candidate(documents: &DocumentSet, candidate: &Path) -> Option<PathBu
 }
 
 /// Read a source file, preferring an open buffer over the file on disk.
-fn read_source(documents: &DocumentSet, path: &Path) -> std::io::Result<String> {
-    match documents.get(path) {
-        Some(source) => Ok(source.to_string()),
-        None => std::fs::read_to_string(path),
-    }
+fn read_source(documents: &SourceSet, path: &Path) -> std::io::Result<String> {
+    String::from_utf8(documents.read_bytes(path)?)
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))
 }
 
 /// Target facts that must stay coupled while a source is lowered.
@@ -1127,6 +1276,7 @@ fn fail_on_warning_diagnostics(
 
 #[derive(Debug, Clone, Default)]
 pub struct CheckOutput {
+    pub inputs: Vec<hew_types::compile_time::CompilationInput>,
     pub diagnostics: Vec<FrontendDiagnostic>,
     /// Diagnostic-only stack-allocation hints emitted by the checker's
     /// escape-analysis pass. Surfaced behind `hew check --show-stack-hints`.
@@ -1158,7 +1308,7 @@ pub struct ImportResolutionContext<'a> {
     pub project_dir: &'a Path,
     pub module_search_paths: Option<&'a [PathBuf]>,
     /// Open buffers that override on-disk content while resolving imports.
-    pub documents: &'a DocumentSet,
+    pub documents: &'a SourceSet,
 }
 
 #[derive(Debug)]
@@ -1354,11 +1504,11 @@ fn load_project_context(
     // package forms through the manifest before calling in here; anything else
     // reaching this point gets a real diagnostic rather than the raw
     // `Is a directory` OS error a bare read would surface.
-    let documents = options.map_or(&EMPTY_DOCUMENTS, |options| &options.documents);
+    let documents = options.map_or(&*EMPTY_DOCUMENTS, |options| &options.documents);
     let source = if let Some(source) = source_override {
         source.to_string()
     } else {
-        if Path::new(input).is_dir() {
+        if documents.filesystem && Path::new(input).is_dir() {
             return Err(FrontendFailure::message_only(format!(
                 "Error: {input} is a directory, not a .hew source file\n  \
                  hint: a package directory is built with `hew build {input}`"
@@ -1374,17 +1524,17 @@ fn load_project_context(
         .or_else(|| {
             input_dir
                 .ancestors()
-                .find(|dir| dir.join("hew.toml").is_file())
+                .find(|dir| documents.is_file(&dir.join("hew.toml")))
                 .map(Path::to_path_buf)
         })
         .unwrap_or_else(|| input_dir.to_path_buf());
-    let (manifest_deps, package_name) = load_manifest_metadata(&project_dir)?;
+    let (manifest_deps, package_name) = load_manifest_metadata_from(&project_dir, documents)?;
     Ok(ProjectContext {
         source,
         project_dir: project_dir.clone(),
         manifest_deps,
         package_name,
-        locked_versions: load_lockfile(&project_dir)?,
+        locked_versions: load_lockfile_from(&project_dir, documents)?,
     })
 }
 
@@ -1412,13 +1562,14 @@ fn project_context_for_program(
 ) -> Result<ProjectContext, FrontendFailure> {
     match &options.project_dir {
         Some(dir) => {
-            let (manifest_deps, package_name) = load_manifest_metadata(dir)?;
+            let (manifest_deps, package_name) =
+                load_manifest_metadata_from(dir, &options.documents)?;
             Ok(ProjectContext {
                 source: source.to_string(),
                 project_dir: dir.clone(),
                 manifest_deps,
                 package_name,
-                locked_versions: load_lockfile(dir)?,
+                locked_versions: load_lockfile_from(dir, &options.documents)?,
             })
         }
         None => Ok(ProjectContext {
@@ -1525,7 +1676,7 @@ fn display_path(path: &Path) -> String {
         .unwrap_or(text)
 }
 
-fn build_module_source_map(program: &Program, documents: &DocumentSet) -> ModuleSourceMap {
+fn build_module_source_map(program: &Program, documents: &SourceSet) -> ModuleSourceMap {
     let Some(ref module_graph) = program.module_graph else {
         return ModuleSourceMap::new();
     };
@@ -1620,7 +1771,7 @@ pub fn hir_diagnostics_to_frontend(
     root_source: &str,
     root_filename: &str,
     diagnostics: Vec<hew_hir::HirDiagnostic>,
-    documents: &DocumentSet,
+    documents: &SourceSet,
 ) -> Vec<FrontendDiagnostic> {
     let module_source_map = build_module_source_map(program, documents);
     diagnostics
@@ -1638,7 +1789,7 @@ pub fn ownership_diagnostics_to_frontend(
     root_source: &str,
     root_filename: &str,
     diagnostics: Vec<hew_sir::SirDiagnostic>,
-    documents: &DocumentSet,
+    documents: &SourceSet,
 ) -> Vec<FrontendDiagnostic> {
     let sources = build_module_source_map(program, documents);
     diagnostics
@@ -1722,6 +1873,10 @@ fn typecheck_program_with_dependency_cache(
     }
 
     let mut checker = hew_types::Checker::new(module_registry);
+    checker.set_input_provider(Arc::new(compile_time::Inputs::new(
+        input,
+        options.documents.clone(),
+    )));
     if options.enable_wasm_target {
         checker.enable_wasm_target();
     }
@@ -1795,6 +1950,10 @@ pub fn typecheck_program(
     input: &str,
     options: &FrontendOptions,
 ) -> Result<TypeCheckResult, FrontendFailure> {
+    let mut options = options.clone();
+    options.documents.insert(input, source);
+    let _ = options.documents.read_bytes(Path::new(input));
+    let options = &options;
     require_deterministic_typecheck(options)?;
     let (result, mut diagnostics) =
         typecheck_program_with_diagnostics(program, source, input, options, None);
@@ -1842,6 +2001,10 @@ pub fn check_program(
     source_label: &str,
     options: &FrontendOptions,
 ) -> Result<CheckOutput, FrontendFailure> {
+    let mut options = options.clone();
+    options.documents.insert(source_label, source);
+    let _ = options.documents.read_bytes(Path::new(source_label));
+    let options = &options;
     require_deterministic_typecheck(options)?;
     let project = project_context_for_program(source, options)?;
     let mut diagnostics = Vec::new();
@@ -1881,6 +2044,11 @@ pub fn check_program(
         .map(|tco| tco.stack_hints.clone())
         .unwrap_or_default();
     Ok(CheckOutput {
+        inputs: tcr
+            .tco
+            .as_ref()
+            .map(|output| output.inputs.clone())
+            .unwrap_or_default(),
         diagnostics,
         stack_hints,
         source: source.to_string(),
@@ -2020,6 +2188,7 @@ fn package_module_path(name: &str) -> ModulePath {
 fn anchor_for(
     file: &Path,
     std_roots: &[PathBuf],
+    documents: &SourceSet,
 ) -> Result<hew_types::module_registry::ModuleAnchor, FrontendFailure> {
     use hew_types::module_registry::ModuleAnchor;
     if let Some(anchor) = hew_types::module_registry::std_anchor_for(file, std_roots) {
@@ -2028,11 +2197,14 @@ fn anchor_for(
     let Some(dir) = file
         .parent()
         .filter(|_| file.is_absolute())
-        .and_then(|dir| dir.ancestors().find(|dir| dir.join("hew.toml").is_file()))
+        .and_then(|dir| {
+            dir.ancestors()
+                .find(|dir| documents.is_file(&dir.join("hew.toml")))
+        })
     else {
         return Ok(ModuleAnchor::Loose);
     };
-    let name = load_manifest(dir)?
+    let name = load_manifest_from(dir, documents)?
         .and_then(|manifest| manifest.package)
         .map(|package| package_module_path(&package.name));
     Ok(ModuleAnchor::Package {
@@ -2050,7 +2222,7 @@ fn importer_anchor(
     std_roots: &[PathBuf],
 ) -> Result<hew_types::module_registry::ModuleAnchor, FrontendFailure> {
     use hew_types::module_registry::ModuleAnchor;
-    match anchor_for(file, std_roots)? {
+    match anchor_for(file, std_roots, ctx.documents)? {
         ModuleAnchor::Loose => Ok(match ctx.package_name {
             Some(name) => ModuleAnchor::Package {
                 dir: ctx.project_dir.to_path_buf(),
@@ -2067,11 +2239,15 @@ fn importer_anchor(
 fn membership_of(
     file: &Path,
     std_roots: &[PathBuf],
-    documents: &DocumentSet,
+    documents: &SourceSet,
 ) -> Result<hew_types::module_registry::ModuleMembership, FrontendFailure> {
-    let anchor = anchor_for(file, std_roots)?;
+    let anchor = anchor_for(file, std_roots, documents)?;
     let list_dir = |dir: &Path| {
-        let mut files = hew_types::module_registry::filesystem_dir_listing(dir);
+        let mut files = if documents.filesystem {
+            hew_types::module_registry::filesystem_dir_listing(dir)
+        } else {
+            Vec::new()
+        };
         for path in documents.files_in(dir) {
             if !files.contains(&path) {
                 files.push(path);
@@ -2117,12 +2293,13 @@ pub fn resolve_module_import(
     let project_dir = options.project_dir.clone().unwrap_or_else(|| {
         let dir = importer.parent().unwrap_or(Path::new("."));
         dir.ancestors()
-            .find(|dir| dir.join("hew.toml").is_file())
+            .find(|dir| options.documents.is_file(&dir.join("hew.toml")))
             .unwrap_or(dir)
             .to_path_buf()
     });
-    let (manifest_deps, package_name) = load_manifest_metadata(&project_dir).ok()?;
-    let locked_versions = load_lockfile(&project_dir).ok()?;
+    let (manifest_deps, package_name) =
+        load_manifest_metadata_from(&project_dir, &options.documents).ok()?;
+    let locked_versions = load_lockfile_from(&project_dir, &options.documents).ok()?;
     let ctx = ImportResolutionContext {
         in_progress_imports: HashSet::new(),
         resolved_imports: HashMap::new(),
@@ -2135,7 +2312,7 @@ pub fn resolve_module_import(
         documents: &options.documents,
     };
     let std_roots = stdlib_roots(ctx.module_search_paths);
-    let anchor = anchor_for(&importer, &std_roots).ok()?;
+    let anchor = anchor_for(&importer, &std_roots, &options.documents).ok()?;
     let mut resolved = module_candidates(path, &importer, &anchor, &ctx, &std_roots)
         .candidates
         .iter()
@@ -2201,6 +2378,7 @@ fn run_directory_module_frontend(
     let source = match source_override {
         Some(source) => {
             options.documents.insert(input, source);
+            let _ = options.documents.read_bytes(Path::new(input));
             source.to_string()
         }
         None => match read_source(&options.documents, Path::new(input)) {
@@ -2280,7 +2458,7 @@ fn cycle_error_to_frontend_failure(
     graph: &hew_parser::module::ModuleGraph,
     cycle_err: &hew_parser::module::CycleError,
     std_roots: &[PathBuf],
-    documents: &DocumentSet,
+    documents: &SourceSet,
 ) -> FrontendFailure {
     let chain = cycle_err.to_string();
     let edge_count = cycle_err.import_spans.len();
@@ -2323,7 +2501,7 @@ fn cycle_error_to_frontend_failure(
         && locations
             .windows(2)
             .all(|pair| pair[0].0.parent() == pair[1].0.parent());
-    let anchor = anchor_for(&locations[0].0, std_roots)
+    let anchor = anchor_for(&locations[0].0, std_roots, documents)
         .unwrap_or(hew_types::module_registry::ModuleAnchor::Loose);
     let below_anchor = anchor.dir().is_some_and(|dir| {
         shared_dir.is_some_and(|shared| shared != dir && shared.starts_with(dir))
@@ -2376,7 +2554,7 @@ fn rewrite_direct_stdlib_module_root(
     items: &mut Vec<Spanned<Item>>,
     source_file: &Path,
     std_roots: &[PathBuf],
-    documents: &DocumentSet,
+    documents: &SourceSet,
 ) -> Result<(), FrontendFailure> {
     use hew_parser::module::Module;
 
@@ -2777,7 +2955,7 @@ fn extract_module_info(
     source_dir: &Path,
     root_source: &Path,
     root_id: &hew_parser::module::ModulePath,
-    documents: &DocumentSet,
+    documents: &SourceSet,
     graph: &mut hew_parser::module::ModuleGraph,
     seen_ids: &mut HashSet<hew_parser::module::ModulePath>,
 ) -> Vec<hew_parser::module::ModuleImport> {
@@ -3301,7 +3479,7 @@ fn resolve_file_imports_internal(
                             .iter()
                             .find(|(locked_candidate, _)| locked_candidate == candidate)
                         {
-                            verify_locked_project_package(check)?;
+                            verify_locked_project_package(check, ctx.documents)?;
                         }
                         // One file reached by both shapes is a directory module
                         // named by its directory: the directory candidate wins.
@@ -3826,6 +4004,15 @@ fn run_document_frontend_with_dependency_cache(
     roots: RootSelection,
     cache: Option<&mut hew_types::check::DependencyAnalysisCache>,
 ) -> DocumentFrontendState {
+    let mut supplied_options;
+    let options = if let Some(source) = source_override {
+        supplied_options = options.clone();
+        supplied_options.documents.insert(input, source);
+        let _ = supplied_options.documents.read_bytes(Path::new(input));
+        &supplied_options
+    } else {
+        options
+    };
     if roots == RootSelection::Module {
         if let Some(membership) = module_membership(Path::new(input), options)
             .filter(|m| m.checks_as_directory_module() || m.is_package_root_module())
@@ -4087,6 +4274,12 @@ pub fn check_file_with_state(
         .map(|tco| tco.stack_hints.clone())
         .unwrap_or_default();
     let output = CheckOutput {
+        inputs: state
+            .typecheck_result
+            .tco
+            .as_ref()
+            .map(|output| output.inputs.clone())
+            .unwrap_or_default(),
         diagnostics,
         stack_hints,
         source: state.source.clone(),
@@ -4112,6 +4305,8 @@ struct PackageSection {
     version: Option<String>,
     #[serde(default = "default_edition")]
     edition: String,
+    #[serde(default)]
+    hew: Option<String>,
 }
 
 /// Table form of a `hew.toml` dependency: `{ version = "^1.0", path = "...",
@@ -4177,8 +4372,11 @@ struct LockedEntry {
     version: String,
 }
 
-fn load_optional_toml<T: DeserializeOwned>(path: &Path) -> Result<Option<T>, FrontendFailure> {
-    let text = match std::fs::read_to_string(path) {
+fn load_optional_toml_from<T: DeserializeOwned>(
+    path: &Path,
+    sources: &SourceSet,
+) -> Result<Option<T>, FrontendFailure> {
+    let text = match read_source(sources, path) {
         Ok(text) => text,
         // An optional project file is absent both when the directory does not
         // hold one and when the host has no filesystem to hold it: the browser
@@ -4204,11 +4402,41 @@ fn load_optional_toml<T: DeserializeOwned>(path: &Path) -> Result<Option<T>, Fro
     })
 }
 
+#[cfg(test)]
 fn load_manifest(dir: &Path) -> Result<Option<TomlManifest>, FrontendFailure> {
+    load_manifest_from(dir, &EMPTY_DOCUMENTS)
+}
+
+fn load_manifest_from(
+    dir: &Path,
+    sources: &SourceSet,
+) -> Result<Option<TomlManifest>, FrontendFailure> {
     let path = dir.join("hew.toml");
-    let manifest: Option<TomlManifest> = load_optional_toml(&path)?;
+    let manifest: Option<TomlManifest> = load_optional_toml_from(&path, sources)?;
     if let Some(m) = &manifest {
         if let Some(package) = &m.package {
+            if let Some(requirement) = &package.hew {
+                let requirement = semver::VersionReq::parse(requirement).map_err(|error| {
+                    FrontendFailure::coded_message(
+                        "E_COMPILER_VERSION",
+                        format!(
+                            "{} has an invalid package.hew requirement: {error}",
+                            path.display()
+                        ),
+                    )
+                })?;
+                let current = semver::Version::parse(env!("CARGO_PKG_VERSION"))
+                    .expect("Cargo package version is valid");
+                if !requirement.matches(&current) {
+                    return Err(FrontendFailure::coded_message(
+                        "E_COMPILER_VERSION",
+                        format!(
+                            "{} requires Hew {requirement}; this compiler implements Hew {current}",
+                            path.display()
+                        ),
+                    ));
+                }
+            }
             if !SUPPORTED_EDITIONS.contains(&package.edition.as_str()) {
                 return Err(FrontendFailure::message_only(format!(
                     "Error: E_UNSUPPORTED_EDITION: {} declares edition = \"{}\", which this compiler does not support (supported: {:?})",
@@ -4222,8 +4450,11 @@ fn load_manifest(dir: &Path) -> Result<Option<TomlManifest>, FrontendFailure> {
     Ok(manifest)
 }
 
-fn verify_locked_project_package(check: &LockedPackageCheck) -> Result<(), FrontendFailure> {
-    let Some(manifest) = load_manifest(&check.package_dir)? else {
+fn verify_locked_project_package(
+    check: &LockedPackageCheck,
+    sources: &SourceSet,
+) -> Result<(), FrontendFailure> {
+    let Some(manifest) = load_manifest_from(&check.package_dir, sources)? else {
         return Err(FrontendFailure::message_only(format!(
             "Error: locked package `{}` resolved through `{}` is missing hew.toml\n  hint: run `hew install` to refresh .hew/packages",
             check.name,
@@ -4253,10 +4484,18 @@ fn verify_locked_project_package(check: &LockedPackageCheck) -> Result<(), Front
     Ok(())
 }
 
+#[cfg(test)]
 fn load_manifest_metadata(
     dir: &Path,
 ) -> Result<(Option<Vec<String>>, Option<String>), FrontendFailure> {
-    match load_manifest(dir)? {
+    load_manifest_metadata_from(dir, &EMPTY_DOCUMENTS)
+}
+
+fn load_manifest_metadata_from(
+    dir: &Path,
+    sources: &SourceSet,
+) -> Result<(Option<Vec<String>>, Option<String>), FrontendFailure> {
+    match load_manifest_from(dir, sources)? {
         Some(TomlManifest {
             package,
             dependencies,
@@ -4268,9 +4507,17 @@ fn load_manifest_metadata(
     }
 }
 
+#[cfg(test)]
 fn load_lockfile(dir: &Path) -> Result<Option<Vec<(String, String)>>, FrontendFailure> {
+    load_lockfile_from(dir, &EMPTY_DOCUMENTS)
+}
+
+fn load_lockfile_from(
+    dir: &Path,
+    sources: &SourceSet,
+) -> Result<Option<Vec<(String, String)>>, FrontendFailure> {
     let path = dir.join("hew.lock");
-    let Some(lock) = load_optional_toml::<HewTomlLock>(&path)? else {
+    let Some(lock) = load_optional_toml_from::<HewTomlLock>(&path, sources)? else {
         return Ok(None);
     };
     Ok(Some(
@@ -4297,9 +4544,9 @@ mod tests {
         build_module_graph, check_file, check_file_with_state, check_program, checker_search_paths,
         display_path, hir_diagnostics_to_frontend, load_dependencies, load_lockfile,
         load_package_name, parse_source, retain_user_facing_diagnostics, run_document_frontend,
-        run_file_frontend_to_typecheck, run_source_frontend, DiagnosticPolicy, DocumentSet,
-        FrontendDiagnostic, FrontendDiagnosticKind, FrontendOptions, ImportResolutionContext,
-        Session, SessionTarget,
+        run_file_frontend_to_typecheck, run_source_frontend, DiagnosticPolicy, FrontendDiagnostic,
+        FrontendDiagnosticKind, FrontendOptions, ImportResolutionContext, Session, SessionTarget,
+        SourceSet,
     };
     use hew_parser::ast::Item;
     use std::collections::{HashMap, HashSet};
@@ -4358,7 +4605,7 @@ mod tests {
             saved.diagnostics
         );
 
-        let mut documents = DocumentSet::new();
+        let mut documents = SourceSet::new();
         documents.insert(
             dir.path().join("lib.hew"),
             "pub fn answer() -> i64 { 1 }\npub fn bonus() -> i64 { 2 }\n",
@@ -4980,7 +5227,7 @@ mod tests {
 
     /// The std directory module a peer import loads, as source paths below
     /// `root`, from a run that resolves the std at `root` through `documents`.
-    fn std_http_sources(root: &Path, documents: &DocumentSet) -> Vec<std::path::PathBuf> {
+    fn std_http_sources(root: &Path, documents: &SourceSet) -> Vec<std::path::PathBuf> {
         let dir = tempfile::tempdir().expect("create importer fixture");
         let input = write_source(
             dir.path(),
@@ -5041,14 +5288,14 @@ mod tests {
             .parent()
             .expect("hew-compile lives below the repository root")
             .to_path_buf();
-        let native = std_http_sources(&repo_root, &DocumentSet::new());
+        let native = std_http_sources(&repo_root, &SourceSet::new());
 
         let virtual_root = std::env::temp_dir().join("hew-std-without-a-filesystem");
         assert!(
             !virtual_root.exists(),
             "the virtual std root must not exist on disk"
         );
-        let mut documents = DocumentSet::new();
+        let mut documents = SourceSet::new();
         let mut pending = vec![repo_root.join("std")];
         while let Some(dir) = pending.pop() {
             for entry in fs::read_dir(&dir).expect("read the std tree").flatten() {
@@ -5088,7 +5335,7 @@ mod tests {
         let program = parse_source(main, &input).expect("parse package fixture");
         let (manifest_deps, package_name) =
             super::load_manifest_metadata(dir.path()).expect("valid manifest");
-        let documents = DocumentSet::new();
+        let documents = SourceSet::new();
         let ctx = ImportResolutionContext {
             in_progress_imports: HashSet::new(),
             resolved_imports: HashMap::new(),
@@ -5177,7 +5424,7 @@ mod tests {
             );
             let source = fs::read_to_string(&input).expect("read module-owner fixture");
             let mut program = parse_source(&source, &input).expect("parse module-owner fixture");
-            let documents = DocumentSet::new();
+            let documents = SourceSet::new();
             let mut ctx = ImportResolutionContext {
                 in_progress_imports: HashSet::new(),
                 resolved_imports: HashMap::new(),
@@ -5316,7 +5563,7 @@ mod tests {
         );
         let source = fs::read_to_string(&input).expect("read module-owner fixture");
         let mut program = parse_source(&source, &input).expect("parse module-owner fixture");
-        let documents = DocumentSet::new();
+        let documents = SourceSet::new();
         let mut ctx = ImportResolutionContext {
             in_progress_imports: HashSet::new(),
             resolved_imports: HashMap::new(),
@@ -7897,7 +8144,7 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
                 "probe",
             )
             .with_source_module(Some("dep".to_string()))],
-            &DocumentSet::new(),
+            &SourceSet::new(),
         );
 
         assert_eq!(diagnostics.len(), 1);
@@ -7930,7 +8177,7 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
                 "probe",
             )
             .with_source_module(Some("missing".to_string()))],
-            &DocumentSet::new(),
+            &SourceSet::new(),
         );
 
         assert_eq!(diagnostics.len(), 1);

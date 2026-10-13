@@ -1,0 +1,14 @@
+[[case]]
+id = "compile-time-inputs-missing"
+intent = "A missing compile-time input is diagnosed by the shared frontend."
+source = "cases/compile-time-inputs-missing.hew"
+kind = "check"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "InvalidOperation"
+line = 2
+column = 13
+message = "E_INCLUDE_NOT_FOUND"

@@ -485,6 +485,15 @@ else needs `impl Display for {rendered}`)"
         None
     }
 
+    pub(in crate::check) fn type_decl_has_bare_variants(&self, id: crate::NominalId) -> bool {
+        matches!(
+            self.defs.kind(id.declaration()),
+            crate::DeclarationKind::Type
+                | crate::DeclarationKind::Machine
+                | crate::DeclarationKind::MachineEventType
+        )
+    }
+
     /// Look up an identifier as a unit enum variant or qualified variant name.
     #[allow(
         clippy::too_many_lines,

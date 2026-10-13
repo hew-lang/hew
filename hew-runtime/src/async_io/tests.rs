@@ -536,6 +536,41 @@ fn tcp_cancel_detaches_before_rearming_the_same_handle() {
 }
 
 #[test]
+fn tcp_accept_registration_refuses_shutdown_after_the_syscall_attempt() {
+    let _runtime = crate::runtime_test_guard();
+    let _reactor = StopReactor::start();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    assert_eq!(
+        listener.accept().unwrap_err().kind(),
+        io::ErrorKind::WouldBlock
+    );
+    let handle = crate::reactor::register(crate::reactor::IoObject::TcpListener(listener));
+    let slot = crate::reactor::lookup(handle).unwrap();
+    // SAFETY: this pending operation has no task to wake.
+    let operation = unsafe { HewAsyncIo::new(ptr::null()) };
+
+    crate::reactor::close_listener_admission();
+    assert_eq!(
+        crate::reactor::reactor_cancel_parked_waits_for_shutdown(),
+        0
+    );
+    let registration = slot.wait(crate::reactor::Direction::Read, &operation);
+    let waiting = slot.has_waiter(crate::reactor::Direction::Read);
+    assert_eq!(crate::transport::hew_tcp_listener_close(handle), 0);
+
+    assert!(
+        registration.is_err(),
+        "late accept registered after shutdown"
+    );
+    assert_eq!(
+        registration.err().unwrap().errno,
+        crate::stream_error::CANCELLED_ERRNO
+    );
+    assert!(!waiting, "shutdown left an accept waiter behind its sweep");
+}
+
+#[test]
 fn tcp_accept_untaken_result_closes_the_peer_and_taken_result_stays_owned() {
     let _runtime = crate::runtime_test_guard();
     crate::reactor::close_listener_admission();

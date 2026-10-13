@@ -395,6 +395,20 @@ unsafe fn start_local_call(
             reply_size,
         }))
     };
+    // A name lookup alone does not prove the caller's concrete payload layout.
+    let target_dispatch = crate::lifetime::live_actors::dispatch_ptr_by_id(actor_id);
+    if !target_dispatch
+        .is_some_and(|target| super::local_request_matches(dispatch, target, msg_type))
+    {
+        // SAFETY: the fields have not moved into the target actor.
+        unsafe { release_request(dispatch, msg_type, request) };
+        let error = if target_dispatch.is_some() {
+            AskError::DecodeFailure
+        } else {
+            AskError::ActorStopped
+        };
+        return operation(RemoteCallRoute::Failed(error));
+    }
     let reply_drop = crate::xnode_serial::lookup_reply(dispatch, msg_type).map(|codec| codec.drop);
     // SAFETY: the request is the member's wrapper (caller contract).
     let adopted = crate::xnode_serial::lookup_request(dispatch, msg_type)

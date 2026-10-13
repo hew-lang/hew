@@ -2210,6 +2210,17 @@ impl Drop for InboundRequest {
     }
 }
 
+/// A local request can move without encoding only when both dispatch variants
+/// share the concrete actor's codec. Handler names alone omit generic arguments.
+fn local_request_matches(caller: *const c_void, target: *const c_void, msg_type: i32) -> bool {
+    if caller == target {
+        return true;
+    }
+    crate::xnode_serial::lookup_request(caller, msg_type)
+        .zip(crate::xnode_serial::lookup_request(target, msg_type))
+        .is_some_and(|(caller, target)| caller.same_codec(target))
+}
+
 /// Route one send; `moved` reports that a local target took the fields.
 #[allow(
     clippy::too_many_lines,
@@ -2244,9 +2255,16 @@ unsafe fn send_location(
         routing::hew_routing_lookup_location(node.routing_table, target)
     } {
         routing::LocationRoute::Local { actor_id } => {
-            if crate::lifetime::live_actors::get_actor_ptr_by_id(actor_id).is_none() {
+            let Some(target_dispatch) = crate::lifetime::live_actors::dispatch_ptr_by_id(actor_id)
+            else {
                 set_last_error("remote send refused: target actor slot is stale");
                 return HEW_ERR_STALE_REF;
+            };
+            // Handler indices and payload layouts belong to this concrete
+            // dispatch type, not the name used to look up the target.
+            if !local_request_matches(dispatch, target_dispatch, msg_type) {
+                set_last_error("remote send refused: target actor type does not match the caller");
+                return -1;
             }
             // This node owns the target: its fields move into the actor's
             // mailbox with the delivery a peer gives an inbound frame.

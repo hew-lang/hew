@@ -42,6 +42,17 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         let ptr = self.ctx.ptr_type(AddressSpace::default());
         let mut registrations = Vec::new();
         for actor in &self.module.actors {
+            // Interceptors specialize execution, not the concrete actor's wire
+            // or in-memory payload types. Share their codecs and ownership glue.
+            let codec_actor = self
+                .module
+                .actors
+                .iter()
+                .find(|candidate| {
+                    candidate.declaration == actor.declaration
+                        && candidate.handle_ty == actor.handle_ty
+                })
+                .expect("the current actor has its own codec identity");
             for handler in &actor.handlers {
                 let Some(codec) = &handler.codec else {
                     continue;
@@ -62,7 +73,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                     };
                     let label = format!(
                         "__hew_actor_{}_codec_{}_{}",
-                        actor.id.0,
+                        codec_actor.id.0,
                         handler.message_id,
                         if reply { "reply" } else { "request" }
                     );
@@ -74,7 +85,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                     // by the same destructor a local mailbox or reply uses.
                     let (drop, size) = if reply {
                         (
-                            actor::reply_symbol(actor.id, handler.message_id),
+                            actor::reply_symbol(codec_actor.id, handler.message_id),
                             self.module
                                 .target
                                 .layout(&handler.return_ty)
@@ -87,7 +98,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                         )
                     } else {
                         (
-                            actor::message_symbol(actor.id, handler.message_id),
+                            actor::message_symbol(codec_actor.id, handler.message_id),
                             TargetData::create(&self.module.target.data_layout)
                                 .get_store_size(&payload),
                         )
@@ -198,6 +209,10 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         reply: bool,
         decode: bool,
     ) -> CodegenResult<FunctionValue<'ctx>> {
+        let name = format!("{name}_{}", if decode { "decode" } else { "encode" });
+        if let Some(function) = self.llvm.get_function(&name) {
+            return Ok(function);
+        }
         let ptr = self.ctx.ptr_type(AddressSpace::default());
         let target = TargetData::create(&self.module.target.data_layout);
         let size_ty = self.ctx.ptr_sized_int_type(&target, None);
@@ -206,11 +221,11 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         } else {
             ptr.fn_type(&[ptr.into(), ptr.into()], false)
         };
-        let function = self.llvm.add_function(
-            &format!("{name}_{}", if decode { "decode" } else { "encode" }),
-            signature,
-            Some(Linkage::Internal),
-        );
+        // Adapter addresses identify local payload types and must remain
+        // address-significant (not unnamed_addr) through optimization.
+        let function = self
+            .llvm
+            .add_function(&name, signature, Some(Linkage::Internal));
         let builder = self.ctx.create_builder();
         builder.position_at_end(self.ctx.append_basic_block(function, "entry"));
         let runtime = |name, result, args: &[BasicValueEnum<'ctx>]| {

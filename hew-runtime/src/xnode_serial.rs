@@ -80,6 +80,18 @@ pub(crate) struct ThunkPair {
     pub(crate) size: usize,
 }
 
+impl ThunkPair {
+    /// Codegen shares these adapters only within one concrete actor type;
+    /// interceptor variants share them, distinct generic substitutions do not.
+    pub(crate) fn same_codec(self, other: Self) -> bool {
+        self.identity == other.identity
+            && self.serialize as usize == other.serialize as usize
+            && self.deserialize as usize == other.deserialize as usize
+            && self.drop.map(|drop| drop as usize) == other.drop.map(|drop| drop as usize)
+            && self.size == other.size
+    }
+}
+
 /// Local codec key. Neither the dispatch address nor index crosses the wire.
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct CodecKey {
@@ -195,11 +207,7 @@ fn register_codec_into(
         return;
     };
     if let Some(slot) = reg.iter_mut().find(|(k, _)| *k == key) {
-        let same = slot.1.identity == codec.identity
-            && slot.1.serialize as usize == codec.serialize as usize
-            && slot.1.deserialize as usize == codec.deserialize as usize
-            && slot.1.drop.map(|drop| drop as usize) == codec.drop.map(|drop| drop as usize)
-            && slot.1.size == codec.size;
+        let same = slot.1.same_codec(codec);
         // Fail closed in release AND debug: a TRUE collision on the full
         // `(dispatch, msg_type)` key means two distinct codecs claim the same
         // actor-type + discriminant — an unrecoverable wire-routing ambiguity.

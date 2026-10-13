@@ -1,0 +1,11 @@
+[[case]]
+id = "remote-pid-local-type-identity"
+intent = "Wrongly typed same-node RemotePid asks and sends refuse incompatible owned layouts while correct plain and intercepted actors remain callable."
+source = "cases/remote-pid-local-type-identity.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+env = { HEW_ACTOR_LEAK_CHECK = "1" }
+
+[case.expected]
+stdout = "intercepted\nintercepted\nintercepted\nintercepted\nlocal remote pid type identity\n"
+exit = 0

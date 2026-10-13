@@ -158,7 +158,7 @@
             },
             {
               "dst": 4,
-              "op": "load.copy",
+              "op": "load.take",
               "own": "owned",
               "place": 0,
               "span": {

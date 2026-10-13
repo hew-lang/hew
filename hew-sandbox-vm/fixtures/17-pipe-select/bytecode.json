@@ -2276,7 +2276,7 @@
           "ops": [
             {
               "dst": 27,
-              "op": "load.copy",
+              "op": "load.take",
               "own": "owned",
               "place": 1,
               "span": null

@@ -543,7 +543,7 @@
             },
             {
               "dst": 7,
-              "op": "load.copy",
+              "op": "load.take",
               "own": "owned",
               "place": 0,
               "span": null
@@ -746,7 +746,7 @@
             },
             {
               "dst": 17,
-              "op": "load.copy",
+              "op": "load.take",
               "own": "owned",
               "place": 2,
               "span": null
@@ -1187,7 +1187,7 @@
           "ops": [
             {
               "dst": 18,
-              "op": "load.copy",
+              "op": "load.take",
               "own": "owned",
               "place": 0,
               "span": null

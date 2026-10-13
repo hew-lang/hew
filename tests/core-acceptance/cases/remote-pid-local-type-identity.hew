@@ -1,0 +1,66 @@
+import std.os;
+
+#[wire]
+type Pair {
+    first: string @1;
+    second: string @2;
+}
+
+actor Store {
+    var calls: i64 = 0;
+    receive fn handle(value: Pair) -> string {
+        calls = calls + 1;
+        value.first + value.second
+    }
+    receive fn count() -> i64 {
+        calls
+    }
+}
+
+impl ActorMsg for Store {
+    type Msg = Pair;
+    type Reply = string;
+}
+
+actor Other {
+    receive fn handle(value: string) -> string {
+        value
+    }
+}
+
+impl ActorMsg for Other {
+    type Msg = string;
+    type Reply = string;
+}
+
+fn pair() -> Pair {
+    Pair { first: "first".to_upper(), second: "second".to_upper() }
+}
+
+fn main() {
+    Node.start(NodeConfig { bind: "127.0.0.1:0", transport: NodeTransport.Tcp, key: f"{os.temp_dir()}/hew-local-type-identity-{os.pid()}.key", peers: Vec.new(), seeds: Vec.new() }).expect("start node");
+    let store = spawn Store;
+    assert(Node.register("store", store) == 0);
+    let wrong: RemotePid<Other> = Node.lookup("store").expect("lookup name");
+    // Refuse an incompatible owned payload before the target sees the value.
+    for index in 0..16 {
+        match wrong.ask(f"wrong ask {index}", 1000) {
+            .Err(_) => {}
+            .Ok(_) => panic("wrong actor ask reached a handler"),
+        }
+        match wrong.send(f"wrong send {index}") {
+            .Err(_) => {}
+            .Ok(_) => panic("wrong actor send was accepted"),
+        }
+    }
+    assert(store.count().expect("count") == 0);
+    let right: RemotePid<Store> = Node.lookup("store").expect("lookup store");
+    assert(right.ask(pair(), 1000).expect("correct ask") == "FIRSTSECOND");
+    right.send(pair()).expect("correct send");
+    assert(right.ask(pair(), 1000).expect("completion") == "FIRSTSECOND");
+    assert(store.count().expect("count") == 3);
+    stop(store);
+    stopped(store);
+    Node.shutdown();
+    println("local remote pid type identity");
+}

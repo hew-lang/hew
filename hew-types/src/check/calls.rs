@@ -129,6 +129,12 @@ impl Checker {
                 self.type_defs
                     .iter()
                     .filter(|(id, td)| {
+                        if crate::actor_protocol::is_interceptor_member(
+                            &self.defs,
+                            id.declaration(),
+                        ) {
+                            return false;
+                        }
                         let type_name = self.defs.path(id.declaration());
                         let is_local = self.local_type_defs.contains(td.name.as_str())
                             || self.source_type_defs.contains(td.name.as_str())
@@ -584,6 +590,7 @@ impl Checker {
             }
         }
 
+        self.reject_interceptor_return(&freshened_ret, span);
         self.enforce_signature_bounds(sig, &resolved_type_args, span);
         if let Some(GenericCallee::Method {
             type_name, method, ..
@@ -2879,6 +2886,7 @@ impl Checker {
                         self.check_against(expr, sp, param);
                     }
                 }
+                self.reject_interceptor_return(&ret, span);
                 self.check_callable_receiver(func_ty, func);
                 *ret
             }

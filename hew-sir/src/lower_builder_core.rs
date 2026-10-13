@@ -291,8 +291,12 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             self.function.type_params.is_empty(),
         ) {
             (CallableInstance::Monomorphic | CallableInstance::SupervisorChild { .. }, true) => {}
-            (CallableInstance::ActorMember, true) if matches!(source, BodySource::Actor { .. }) => {
-            }
+            (
+                CallableInstance::ActorMember
+                | CallableInstance::ActorInterceptEntry { .. }
+                | CallableInstance::ActorSupervisorIntercept { .. },
+                true,
+            ) if matches!(source, BodySource::Actor { .. }) => {}
             (CallableInstance::Closure(_), _) if matches!(source, BodySource::Closure(_)) => {}
             (CallableInstance::EntryAdapter, _)
                 if matches!(source, BodySource::EntryAdapter(_)) => {}

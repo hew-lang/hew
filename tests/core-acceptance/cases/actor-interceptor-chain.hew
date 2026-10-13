@@ -1,0 +1,47 @@
+actor Worker {
+    #[intercept]
+    fn guard(call: Call<Self>) -> Outcome<Self> {
+        println("actor before");
+        let outcome = call.proceed();
+        println("actor after");
+        outcome
+    }
+
+    receive fn value() -> i64 {
+        println("handler");
+        42
+    }
+}
+
+supervisor Branch {
+    #[intercept]
+    fn observe<A>(call: Call<A>) -> Outcome<A> {
+        println("branch before");
+        let outcome = call.proceed();
+        println("branch after");
+        outcome
+    }
+    child worker: Worker;
+}
+
+supervisor Root {
+    #[intercept]
+    fn observe<A>(call: Call<A>) -> Outcome<A> {
+        println("root before");
+        let outcome = call.proceed();
+        println("root after");
+        outcome
+    }
+    child branch: Branch;
+}
+
+fn main() {
+    let root = spawn Root;
+    assert(root.branch.worker.value().expect("supervised reply") == 42);
+    let plain = spawn Worker;
+    assert(plain.value().expect("plain reply") == 42);
+    stop(plain);
+    stopped(plain);
+    stop(root);
+    stopped(root);
+}

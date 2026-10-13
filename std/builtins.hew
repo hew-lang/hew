@@ -40,7 +40,7 @@ pub type ActorId {
 }
 
 impl Display for ActorId {
-    fn fmt(self) -> string { self.value.to_string() }
+    fn fmt(self) -> string { to_string(self.value) }
 }
 
 /// The authenticated origin of a received handler call.

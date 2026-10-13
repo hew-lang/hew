@@ -1403,13 +1403,14 @@ class ExecutorV1 {
             this.boundary(act, argument),
           );
           this.trace.snapshot("actor.delivery_refused", {
-            actor_id: act.context.actor?.id,
+            actor_id: act.context.actor?.id ?? null,
             handler: toJsonValue(handler!),
             message: toJsonValue(message!),
+            reason: toJsonValue(reason!),
           });
           if (!act.context.reply)
             this.trace.writeStderr(
-              `WARN actor.delivery_refused actor=${act.context.actor?.identity ?? 0n} handler=${asString(handler!)}: ${asString(reason!)}\n`,
+              `WARN actor.delivery_refused actor=${act.context.actor?.identity ?? 0n} handler=${asString(handler!)} reason=${JSON.stringify(asString(reason!))}\n`,
               null,
             );
           this.completeShim(act, term, UNIT);
@@ -3388,6 +3389,7 @@ class ExecutorV1 {
               fault.trap === "actor_refused" &&
               !fault.secondary?.length
             ) {
+              actor.crashing = null;
               message.complete(null, "Refused");
               this.dispatchActor(actor);
             } else if (fault.kind === "panic" && fault.cancelled) {
@@ -3918,12 +3920,12 @@ function combineFaults(
   // Reports own an immutable ordered view of original diagnostics. Faults can
   // be shared by a parked unwind, actor completion and multiple observers;
   // combining those views must neither duplicate nor mutate their graph.
-  const retained =
-    primary.kind === "panic" && primary.cancelled
-      ? diagnostics.filter(
-          (fault) => !(fault.kind === "panic" && fault.cancelled),
-        )
-      : diagnostics;
+  const control = (fault: Fault) =>
+    (fault.kind === "panic" && fault.cancelled) ||
+    (fault.kind === "trap" && fault.trap === "actor_refused");
+  const retained = control(primary)
+    ? diagnostics.filter((fault) => !control(fault))
+    : diagnostics;
   const [first, ...rest] = retained.length ? retained : diagnostics;
   return { ...first!, primary: first!, secondary: rest };
 }

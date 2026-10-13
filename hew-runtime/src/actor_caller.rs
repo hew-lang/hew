@@ -80,17 +80,17 @@ pub unsafe extern "C" fn hew_call_refusal_log(
     let Some(context) = (unsafe { context.as_ref() }) else {
         return;
     };
-    crate::tracing::record_delivery_refused(context.actor_id, message.cast_signed());
+    // SAFETY: both managed strings are borrowed for this runtime call.
+    let (handler, reason) = unsafe {
+        (
+            hew_cabi::string::string_as_str(handler),
+            hew_cabi::string::string_as_str(reason),
+        )
+    };
+    crate::tracing::record_delivery_refused(context, message.cast_signed(), reason);
     if context.reply_channel.is_null() {
-        // SAFETY: both managed strings are borrowed for this runtime call.
-        let (handler, reason) = unsafe {
-            (
-                hew_cabi::string::string_as_str(handler),
-                hew_cabi::string::string_as_str(reason),
-            )
-        };
         crate::log_core::runtime_warning(&format!(
-            "actor.delivery_refused actor={} handler={handler}: {reason}",
+            "actor.delivery_refused actor={} handler={handler} reason={reason:?}",
             context.actor_id
         ));
     }

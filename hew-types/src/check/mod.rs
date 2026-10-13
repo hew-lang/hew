@@ -1570,6 +1570,8 @@ impl Checker {
         }
         for descriptor in self.actor_protocol_descriptors.values_mut() {
             for handler in &mut descriptor.handlers {
+                handler.declared_failure =
+                    self.receive_fails_methods.contains(&handler.declaration);
                 handler.failure_display = targets.get(&handler.declaration).cloned();
             }
         }
@@ -2246,6 +2248,11 @@ impl Checker {
                 for (kind, suffix, offset) in [
                     (Kind::ActorRequestType, "Request", 0),
                     (Kind::ActorResponseType, "Response", decl.receive_fns.len()),
+                    (
+                        Kind::ActorStreamType,
+                        "<Stream>",
+                        2 * decl.receive_fns.len(),
+                    ),
                 ] {
                     let enum_path = format!("{path}.{suffix}");
                     let enum_owner = declare(

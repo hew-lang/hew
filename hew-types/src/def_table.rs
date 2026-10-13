@@ -42,6 +42,7 @@ pub enum DeclarationKind {
     ActorMethod,
     ActorRequestType,
     ActorResponseType,
+    ActorStreamType,
     Supervisor,
     SupervisorBootstrap,
     SupervisorMethod,

@@ -50,6 +50,14 @@ const traceBatch = (event = traceEvent) => `{
 const traces = decodeTracesEnvelope(`{"schema_version":"v1","data":${traceBatch()}}`);
 assert.equal(traces.data.next_cursor, 18446744073709551615n);
 assert.equal(traces.data.events[0].source_actor?.actor_id, 18446744073709551615n);
+assert.equal(traces.data.events[0].reason, null);
+const refusalEvent = JSON.parse(traceEvent);
+refusalEvent.event_type = "actor.delivery_refused";
+refusalEvent.reason = "quota is exhausted";
+const refusal = decodeTracesEnvelope(`{"schema_version":"v1","data":${traceBatch(JSON.stringify(refusalEvent))}}`);
+assert.equal(refusal.data.events[0].reason, "quota is exhausted");
+refusalEvent.reason = 42;
+assert.throws(() => decodeTracesEnvelope(`{"schema_version":"v1","data":${traceBatch(JSON.stringify(refusalEvent))}}`));
 
 const mismatch = decodeTraceStreamMismatchEnvelope(`{
   "schema_version":"v1",

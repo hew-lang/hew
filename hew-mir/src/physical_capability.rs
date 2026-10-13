@@ -229,6 +229,8 @@ fn verify_user(
         .ok_or_else(|| PhysicalError::new("physical capability has no callable"))?;
     let exact_instance = match &callable.instance {
         hew_sir::CallableInstance::ActorMember
+        | hew_sir::CallableInstance::ActorInterceptEntry { .. }
+        | hew_sir::CallableInstance::ActorSupervisorIntercept { .. }
         | hew_sir::CallableInstance::Closure(_)
         | hew_sir::CallableInstance::EntryAdapter
         | hew_sir::CallableInstance::SupervisorChild { .. } => false,

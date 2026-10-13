@@ -1796,7 +1796,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 .void_type()
                 .fn_type(&[self.ctx.ptr_type(AddressSpace::default()).into()], false),
         )?;
-        let _ = self.runtime_call_value(query, &[stamp.into()], "caller.query")?;
+        self.runtime_call_void(query, &[stamp.into()], "caller.query")?;
         let stamp = self
             .builder
             .build_load(stamp_ty, stamp, "caller.stamp.value")

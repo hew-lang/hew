@@ -551,7 +551,7 @@ pub(crate) fn verify_initialization(
     function: &PhysicalFunction,
     cleanup_needs_fault: Option<&BTreeSet<BlockId>>,
 ) -> Result<super::PhysicalDebugAvailability, PhysicalError> {
-    let defer_plan = defer::verify_regions(function)?;
+    let defer_plan = defer::verify_regions(module, function)?;
     defer::verify_calls(module, function, &defer_plan)?;
     let blocks = function
         .blocks

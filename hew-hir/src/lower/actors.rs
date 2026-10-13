@@ -189,6 +189,7 @@ impl LowerCtx {
             for (kind, suffix) in [
                 (hew_types::DeclarationKind::ActorRequestType, "Request"),
                 (hew_types::DeclarationKind::ActorResponseType, "Response"),
+                (hew_types::DeclarationKind::ActorStreamType, "<Stream>"),
             ] {
                 let Some(declaration) =
                     self.defs

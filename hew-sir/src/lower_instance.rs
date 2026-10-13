@@ -28,8 +28,6 @@ impl<'a> InstanceService<'a> {
             closures: Vec::new(),
             actors: Vec::new(),
             actor_sources: HashMap::new(),
-            actor_interceptor_chains: HashMap::new(),
-            supervisor_interceptor_chains: HashMap::new(),
             supervisors: Vec::new(),
             synthetic_sources: HashMap::new(),
             closures_by_instance: HashMap::new(),
@@ -1124,6 +1122,8 @@ impl<'a> InstanceService<'a> {
         }
         let substitution = match &callable_meta.instance {
             CallableInstance::ActorMember
+            | CallableInstance::ActorInterceptEntry { .. }
+            | CallableInstance::ActorSupervisorIntercept { .. }
             | CallableInstance::Closure(_)
             | CallableInstance::EntryAdapter
             | CallableInstance::SupervisorChild { .. } => {

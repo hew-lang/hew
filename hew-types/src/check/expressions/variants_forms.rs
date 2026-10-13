@@ -507,6 +507,9 @@ else needs `impl Display for {rendered}`)"
         let mut found = None;
         // Pass 1: user-declared types.
         for (id, td) in &self.type_defs {
+            if crate::actor_protocol::is_interceptor_member(&self.defs, id.declaration()) {
+                continue;
+            }
             let type_name = self.defs.path(id.declaration());
             if !self.local_type_defs.contains(td.name.as_str())
                 && !self.source_type_defs.contains(td.name.as_str())
@@ -525,6 +528,9 @@ else needs `impl Display for {rendered}`)"
         // Pass 2: builtin/imported types (only when no user type matched).
         if found.is_none() {
             for (id, td) in &self.type_defs {
+                if crate::actor_protocol::is_interceptor_member(&self.defs, id.declaration()) {
+                    continue;
+                }
                 let type_name = self.defs.path(id.declaration());
                 if self.local_type_defs.contains(td.name.as_str())
                     || self.source_type_defs.contains(td.name.as_str())

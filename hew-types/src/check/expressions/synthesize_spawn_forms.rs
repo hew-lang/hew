@@ -287,7 +287,10 @@ impl Checker {
             }
         }
         let resolved = self.normalize_for_use(&obj_ty);
-        if field == "request" {
+        if matches!(&resolved, Ty::Named { head, .. }
+            if (field == "request" && *head == crate::KnownDecl::Call.head())
+                || (field == "response" && *head == crate::KnownDecl::Outcome.head()))
+        {
             if let Ok(ty) = crate::ResolvedTy::from_ty(&resolved) {
                 if let Some(fields) = crate::actor_protocol::interceptor_fields(&self.defs, &ty) {
                     return fields[0].1.to_ty();

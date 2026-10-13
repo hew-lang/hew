@@ -117,6 +117,8 @@ pub struct ActorHandlerDescriptor {
     /// Return type. Unit-returning handlers are still recorded explicitly so
     /// `Fire` vs `Ask` decisions stay in one place.
     pub return_ty: ResolvedTy,
+    /// This handler declares `fails`, rather than returning an ordinary Result value.
+    pub declared_failure: bool,
     /// Mangled callee symbol used by codegen (e.g. `Counter__increment` —
     /// the actual mangling is owned by the MIR layer; this field stores
     /// whatever string the producer chose so a single descriptor row tells a
@@ -241,6 +243,7 @@ impl ActorProtocolDescriptor {
                 msg_id,
                 param_tys: spec.param_tys.clone(),
                 return_ty: spec.return_ty.clone(),
+                declared_failure: false,
                 symbol: spec.symbol.clone(),
                 failure_display: None,
                 remote_codec: false,
@@ -290,6 +293,7 @@ impl ActorProtocolDescriptor {
                 msg_id: *msg_id,
                 param_tys: spec.param_tys.clone(),
                 return_ty: spec.return_ty.clone(),
+                declared_failure: false,
                 symbol: spec.symbol.clone(),
                 failure_display: None,
                 remote_codec: false,
@@ -485,6 +489,18 @@ pub fn interceptor_fields(
         ),
         args.clone(),
     );
+    let stream = defs.member_of_kind(
+        owner,
+        hew_parser::ast::Symbol::intern("<Stream>"),
+        crate::DeclarationKind::ActorStreamType,
+    )?;
+    let stream_ty = ResolvedTy::named_user(
+        crate::NominalHead::new(
+            crate::NominalId::from_minted_declaration(stream),
+            defs.path(stream),
+        ),
+        args.clone(),
+    );
     if !call {
         return Some(vec![
             (
@@ -493,6 +509,7 @@ pub fn interceptor_fields(
             ),
             ("failed".to_string(), ResolvedTy::Bool),
             ("refused".to_string(), ResolvedTy::Bool),
+            ("<stream>".to_string(), stream_ty),
         ]);
     }
     Some(vec![
@@ -516,6 +533,7 @@ pub fn interceptor_fields(
         ),
         ("handler".to_string(), ResolvedTy::String),
         ("message".to_string(), ResolvedTy::U32),
+        ("<stream>".to_string(), stream_ty),
     ])
 }
 
@@ -525,4 +543,15 @@ pub fn is_interceptor_view(ty: &ResolvedTy, field: &str) -> bool {
     matches!(ty, ResolvedTy::Named { head, .. }
         if (*head == crate::KnownDecl::Call.head() && field == "request")
             || (*head == crate::KnownDecl::Outcome.head() && field == "response"))
+}
+
+/// Generated actor members are selected through their actor or expected type,
+/// never through the global bare-variant fallback.
+pub fn is_interceptor_member(defs: &crate::DefTable, declaration: crate::DefId) -> bool {
+    matches!(
+        defs.kind(declaration),
+        crate::DeclarationKind::ActorRequestType
+            | crate::DeclarationKind::ActorResponseType
+            | crate::DeclarationKind::ActorStreamType
+    )
 }

@@ -1652,7 +1652,11 @@ fn verify_callable_table<'a>(
     let mut actor_declarations = HashSet::new();
     for actor in &module.actors {
         let checked = actor.validate(module).and_then(|()| {
-            if actor_declarations.insert((&actor.declaration, &actor.handle_ty)) {
+            if actor_declarations.insert((
+                &actor.declaration,
+                &actor.handle_ty,
+                &actor.interceptor_chain,
+            )) {
                 Ok(())
             } else {
                 Err("actor instance is repeated".into())
@@ -1665,7 +1669,11 @@ fn verify_callable_table<'a>(
     let mut supervisor_declarations = HashSet::new();
     for supervisor in &module.supervisors {
         let checked = supervisor.validate(module).and_then(|()| {
-            if supervisor_declarations.insert((&supervisor.declaration, &supervisor.handle_ty)) {
+            if supervisor_declarations.insert((
+                &supervisor.declaration,
+                &supervisor.handle_ty,
+                &supervisor.interceptor_chain,
+            )) {
                 Ok(())
             } else {
                 Err("supervisor instance is repeated".into())
@@ -1698,6 +1706,7 @@ fn verify_callable_table<'a>(
     let mut generic_declarations = HashSet::new();
     let mut generic_instances = HashSet::new();
     let mut actor_members = HashSet::new();
+    let mut actor_interceptor_layers = HashSet::new();
     let mut symbols = HashSet::new();
     for (index, callable) in module.callables.iter().enumerate() {
         if callable.signature.failure_domain != hew_types::CallableFailureDomain::HewFault {
@@ -1774,6 +1783,50 @@ fn verify_callable_table<'a>(
                     diagnostics.push(module_diag(SirDiagnosticKind::InvalidCallable {
                         callable: callable.id,
                         reason: "actor member lacks a unique declaration in its concrete actor"
+                            .into(),
+                    }));
+                }
+            }
+            CallableInstance::ActorInterceptEntry { handler } => {
+                let valid = if let SemCallableKind::HewActor(actor) = callable.kind {
+                    module
+                        .actor(actor)
+                        .and_then(|actor| actor.handlers.get(*handler as usize))
+                        .is_some_and(|handler| handler.callable == callable.id)
+                } else {
+                    false
+                };
+                if !valid {
+                    diagnostics.push(module_diag(SirDiagnosticKind::InvalidCallable {
+                        callable: callable.id,
+                        reason: "interceptor entry is not its actor's declared handler wrapper"
+                            .into(),
+                    }));
+                }
+            }
+            CallableInstance::ActorSupervisorIntercept { layer } => {
+                let valid = if let SemCallableKind::HewActor(actor) = callable.kind {
+                    actor_interceptor_layers.insert((actor, *layer))
+                        && module.actor(actor).is_some_and(|actor| {
+                            actor.methods.contains(&callable.id)
+                                && actor
+                                    .interceptor_chain
+                                    .get(*layer as usize)
+                                    .and_then(crate::actor::local_actor_instance)
+                                    .is_some_and(|supervisor| {
+                                        module.defs.owner(callable.declaration)
+                                            == Some(supervisor.nominal.declaration())
+                                    })
+                        })
+                        && module.defs.kind(callable.declaration)
+                            == hew_types::DeclarationKind::SupervisorMethod
+                } else {
+                    false
+                };
+                if !valid {
+                    diagnostics.push(module_diag(SirDiagnosticKind::InvalidCallable {
+                        callable: callable.id,
+                        reason: "supervisor interceptor lacks a unique layer in its child actor"
                             .into(),
                     }));
                 }
@@ -4747,6 +4800,67 @@ pub(crate) fn defer_drain_suffix(
     valid
 }
 
+fn interceptor_refusal_origin(
+    function: &SemFunction,
+    target: BlockId,
+    context: Option<&CallableContext<'_>>,
+    variants: &VariantVerifyContext<'_>,
+) -> bool {
+    let Some(context) = context else {
+        return false;
+    };
+    let Some(callable) = context.by_id.get(&function.callable) else {
+        return false;
+    };
+    if !matches!(
+        callable.instance,
+        CallableInstance::ActorInterceptEntry { .. }
+    ) {
+        return false;
+    }
+    let SemCallableKind::HewActor(actor) = callable.kind else {
+        return false;
+    };
+    let Some(actor) = context.actors.get(actor.0 as usize) else {
+        return false;
+    };
+    let outcome = ResolvedTy::Named {
+        head: hew_types::KnownDecl::Outcome.head(),
+        args: vec![actor.handle_ty.clone()],
+        is_opaque: false,
+    };
+    let Some(fields) = hew_types::actor_protocol::interceptor_fields(context.defs, &outcome) else {
+        return false;
+    };
+    let mut found = false;
+    let valid = function.blocks.iter().all(|block| {
+        let mut reaches = false;
+        block
+            .terminator
+            .visit_successors_with_slots(|_, edge| reaches |= edge.target == target);
+        if !reaches {
+            return true;
+        }
+        found = true;
+        let SemTerminator::SwitchVariant { shape, arms, .. } = &block.terminator else {
+            return false;
+        };
+        let Some(shape) = variants.shapes.get(shape.0 as usize) else {
+            return false;
+        };
+        shape.enum_ty == fields[0].1
+            && arms
+                .iter()
+                .filter(|arm| arm.target.target == target)
+                .all(|arm| {
+                    shape
+                        .runtime_tags
+                        .contains(&(crate::RuntimeVariantRole::OptionNone, arm.variant))
+                })
+    });
+    found && valid
+}
+
 fn checked_raise_origin(
     target: BlockId,
     kind: crate::TrapKind,
@@ -5226,7 +5340,11 @@ fn verify_terminator_shape(
             }
         }
         SemTerminator::CheckedRaiseFault { kind, cleanup } => {
-            if !checked_raise_origin(block.id, *kind, function, &mut BTreeSet::new()) {
+            let refused_entry = *kind == crate::TrapKind::ActorRefused
+                && interceptor_refusal_origin(function, block.id, callable_context, variants);
+            if !refused_entry
+                && !checked_raise_origin(block.id, *kind, function, &mut BTreeSet::new())
+            {
                 diagnostics.push(diag(
                     function,
                     SirDiagnosticKind::InvalidTerminator {

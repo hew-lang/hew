@@ -9,6 +9,7 @@ export type JsonValue =
 export type SandboxBytecodePackage = import("./v1/package.js").PackageV1;
 
 export type TrapKind =
+  | "actor_refused"
   | "integer_overflow"
   | "shift_out_of_range"
   | "divide_by_zero"

@@ -1279,7 +1279,12 @@ impl<'a> Formatter<'a> {
         match item {
             Item::Macro(_) | Item::MacroCall(_) => {
                 self.write_indent();
-                self.write(self.source.get(span_start..span_end).unwrap_or_default());
+                self.write(
+                    self.source
+                        .get(span_start..span_end)
+                        .unwrap_or_default()
+                        .trim_end(),
+                );
                 self.newline();
                 self.prev_source_pos = span_end;
                 while self.next_comment < self.comments.len()

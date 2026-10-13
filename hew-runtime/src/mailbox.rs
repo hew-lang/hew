@@ -5347,6 +5347,10 @@ mod tests {
     /// for a reply no handler would then send. With nothing else to discard the
     /// submission reports a full queue and its sender parks instead.
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "keeps both drop-old obligation boundaries and their owned cleanup in one scenario"
+    )]
     fn drop_old_evicts_a_queued_submission_and_never_a_queued_ask() {
         let _guard = ENVELOPE_DROP_LOCK.lock().unwrap();
         ENVELOPE_DROP_COUNT.store(0, Ordering::SeqCst);

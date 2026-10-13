@@ -24,9 +24,11 @@ impl LowerCtx {
 
     /// Lower a `supervisor` declaration to `HirSupervisorDecl`.
     ///
-    /// Bodies (MIR producer wiring, codegen) are deferred to slices S-C/S-D.
-    /// This function mirrors `lower_record_decl` in structure: structural lift
-    /// only, no HIR expression lowering.
+    /// Lift configuration, child slots and interceptor declarations into HIR.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "keeps supervisor scope, child slots and interceptor facts in one lowering transaction"
+    )]
     pub(super) fn lower_supervisor(
         &mut self,
         decl: &SupervisorDecl,

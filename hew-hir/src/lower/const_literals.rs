@@ -98,28 +98,26 @@ impl LowerCtx {
         elements: &[ArrayElement],
         ty: &ResolvedTy,
     ) -> Option<ConstantValue> {
-        let (element_ty, fixed) = match ty {
-            ResolvedTy::Array(element, _) => ((**element).clone(), true),
-            _ => {
-                let (BuiltinType::Vec, args) =
-                    hew_types::runtime_call::collection_type_arguments(ty)?
-                else {
-                    return None;
-                };
-                (args[0].clone(), false)
-            }
+        let (element_ty, fixed) = if let ResolvedTy::Array(element, _) = ty {
+            ((**element).clone(), true)
+        } else {
+            let (BuiltinType::Vec, args) = hew_types::runtime_call::collection_type_arguments(ty)?
+            else {
+                return None;
+            };
+            (args[0].clone(), false)
         };
         let mut values = Vec::new();
         for element in elements {
             match element {
                 ArrayElement::Value(value) => {
-                    values.push(self.fold_typed_const(value, &element_ty))
+                    values.push(self.fold_typed_const(value, &element_ty));
                 }
                 ArrayElement::Spread(value) => {
                     let spread_ty = self.checker_expr_ty(&value.1, "constant spread")?;
                     match self.fold_typed_const(value, &spread_ty).value {
                         ConstantValue::Array(elements) | ConstantValue::Vector(elements) => {
-                            values.extend(elements)
+                            values.extend(elements);
                         }
                         _ => return None,
                     }

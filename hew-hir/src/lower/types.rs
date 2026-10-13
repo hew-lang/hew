@@ -79,8 +79,7 @@ impl LowerCtx {
             ResourceMarker::Linear if !interceptor_token => {
                 self.check_linear_consume_discipline(decl, &span, declaration);
             }
-            ResourceMarker::Linear => {}
-            ResourceMarker::None | ResourceMarker::BitCopy => {}
+            ResourceMarker::Linear | ResourceMarker::None | ResourceMarker::BitCopy => {}
         }
 
         let fields = decl

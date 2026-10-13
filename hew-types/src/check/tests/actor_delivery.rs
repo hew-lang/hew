@@ -681,7 +681,7 @@ fn a_coalesce_key_names_a_receive_parameter_with_a_key_type() {
 #[test]
 fn actor_and_supervisor_interceptors_consume_their_call() {
     let output = check_source(
-        r#"
+        r"
 actor Worker {
     #[intercept]
     fn guard(call: Call<Self>) -> Outcome<Self> {
@@ -700,7 +700,7 @@ supervisor Group {
     child worker: Worker;
 }
 fn main() {}
-"#,
+",
     );
     assert!(output.errors.is_empty(), "{:?}", output.errors);
 }
@@ -713,7 +713,7 @@ fn interceptor_tokens_cannot_escape_through_generic_calls_or_captures() {
         ("collection", "let pending = [call]; panic(\"unreachable\")"),
     ] {
         let source = format!(
-            r#"
+            r"
 fn forward<T>(consume value: T) -> T {{ value }}
 actor Worker {{
     #[intercept]
@@ -721,7 +721,7 @@ actor Worker {{
     receive fn value() -> i64 {{ 42 }}
 }}
 fn main() {{}}
-"#
+"
         );
         let checked = check_source(&source);
         assert!(

@@ -232,7 +232,7 @@ fn cddl_envelope_shape(frame: &EnvelopeFrame) {
     assert_optional_location_value(find_field(entries, 4), frame.source);
     match &frame.message {
         EnvelopeMessage::Handler(identity) => {
-            assert_eq!(find_field(entries, 5), &Value::Text(identity.clone()))
+            assert_eq!(find_field(entries, 5), &Value::Text(identity.clone()));
         }
         EnvelopeMessage::Reply => assert_integer_value(find_field(entries, 5), 0),
         EnvelopeMessage::Rejected => assert_integer_value(find_field(entries, 5), 1),

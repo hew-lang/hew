@@ -58,9 +58,6 @@ impl InstanceService<'_> {
         declaration: &str,
         arguments: &[ResolvedTy],
     ) -> Result<String, String> {
-        if arguments.is_empty() {
-            return Ok(declaration.to_string());
-        }
         // Only rendering changes: nominal identities stay intact, while root
         // source paths and import aliases never become portable type names.
         fn portable(defs: &hew_types::DefTable, ty: &hew_types::Ty) -> hew_types::Ty {
@@ -76,6 +73,9 @@ impl InstanceService<'_> {
                 );
             }
             ty
+        }
+        if arguments.is_empty() {
+            return Ok(declaration.to_string());
         }
         let arguments = arguments
             .iter()

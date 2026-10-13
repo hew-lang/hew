@@ -330,7 +330,7 @@ pub struct DeadLocalTransferReport {
 /// the release that follows, so the read transfers the contents instead and
 /// the place is left uninitialized.
 ///
-/// Whole local roots with structural copies or immutable CoW retains can
+/// Whole local roots with structural copies or immutable value retains can
 /// transfer. Affine retains keep their observable count and close contracts.
 ///
 /// # Errors

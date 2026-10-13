@@ -119,7 +119,7 @@ fn check_strings() -> i64 {
 
 fn check_floats() -> i64 {
     let empty: Vec<f64> = Vec.new();
-    if sort.sort_floats(empty).len() != 0 { return 40; }
+    if !sort.sort_floats(empty).is_empty() { return 40; }
 
     // IEEE total order: negative quiet/signalling NaNs, negative infinity,
     // finite values and signed zeros, positive infinity, signalling/quiet NaNs.

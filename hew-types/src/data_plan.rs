@@ -3,6 +3,7 @@
 
 use std::collections::BTreeMap;
 
+use crate::def_table::DeclarationOccurrence;
 use crate::ResolvedTy;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -45,8 +46,9 @@ impl crate::TypeFactService {
                 })
                 .collect());
         }
+        let defs = self.defs();
         let instance = ty
-            .nominal_instance(self.defs())
+            .nominal_instance(defs)
             .ok_or_else(|| format!("`{ty}` is not a data enum"))?;
         let context = self.context();
         let definition = context
@@ -59,21 +61,20 @@ impl crate::TypeFactService {
         {
             return Err("data enum has no exact instantiated enum declaration".into());
         }
-        let mut variants = self
-            .defs()
+        let mut variants = defs
             .members_of_kind(
                 instance.nominal.declaration(),
                 crate::DeclarationKind::Variant,
             )
             .collect::<Vec<_>>();
-        variants.sort_by_key(|variant| self.defs().site(*variant).map(|site| site.ordinal()));
+        variants.sort_by_key(|variant| defs.site(*variant).map(DeclarationOccurrence::ordinal));
         if variants.len() != definition.variants.len() {
             return Err("data enum members and declaration disagree".into());
         }
         variants
             .into_iter()
             .map(|variant| {
-                let name = self.defs().name(variant).to_string();
+                let name = defs.name(variant).to_string();
                 let (named, fields) = match definition
                     .variants
                     .get(&name)

@@ -132,8 +132,8 @@ impl Checker {
                 &ty,
                 &plans.plans,
                 self.pointer_width(),
-                |_| None,
-                |_| None,
+                |()| None,
+                |()| None,
             )
             .map_err(|reason| ("E_EMBED_TYPE", reason))?;
             let file = self.compile_time_input("embed", args)?;

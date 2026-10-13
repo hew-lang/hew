@@ -164,6 +164,19 @@ pub(crate) fn verify_physical_module(
     }
     verify_collection_glue_tables(module)?;
     for (index, callable) in module.callables.iter().enumerate() {
+        if callable.return_recipe.is_some() != callable.return_layout.is_some() {
+            return Err(PhysicalError::new(
+                "callable result lacks its ownership recipe",
+            ));
+        }
+        if let Some(recipe) = &callable.return_recipe {
+            if recipe.ty != callable.return_ty {
+                return Err(PhysicalError::new(
+                    "callable result recipe has a different type",
+                ));
+            }
+            verify_value_recipe(module, recipe)?;
+        }
         if callable.failure_domain != hew_types::CallableFailureDomain::HewFault {
             return Err(PhysicalError::new(
                 "Hew bodies require the explicit recoverable fault ABI",

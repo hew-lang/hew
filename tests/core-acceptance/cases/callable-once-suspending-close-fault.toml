@@ -1,0 +1,11 @@
+[[case]]
+id = "callable-once-suspending-close-fault"
+intent = "A weakened once callable resumes through both capture and abandoned-result close faults, releasing each owner once."
+source = "cases/callable-once-suspending-close-fault.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "close 10\nclose 20\n"
+stderr = "hew: failure: UserPanic (212): close 10 failed\nhew: secondary failure: UserPanic (212): close 20 failed\n"
+exit = 1

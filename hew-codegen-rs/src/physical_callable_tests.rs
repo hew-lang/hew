@@ -212,6 +212,8 @@ fn generated_environment_clone_separates_vectors_and_honours_partial_masks_at_o0
                 environment: layout,
                 invoke_borrow: Some(unused_invoke),
                 invoke_once: unused_invoke,
+                invoke_borrow_sync: None,
+                invoke_once_sync: None,
             };
             for mask in [1, 3] {
                 let mut source = HewCallableValue {
@@ -431,6 +433,8 @@ fn failed_nested_callable_clone_rolls_back_completed_fields_and_preserves_output
         environment: &raw const nested_layout,
         invoke_borrow: Some(unused_invoke),
         invoke_once: unused_invoke,
+        invoke_borrow_sync: None,
+        invoke_once_sync: None,
     };
     for optimized in [false, true] {
         VECTOR_DROPS.set(0);
@@ -456,6 +460,8 @@ fn failed_nested_callable_clone_rolls_back_completed_fields_and_preserves_output
                 environment: layout,
                 invoke_borrow: Some(unused_invoke),
                 invoke_once: unused_invoke,
+                invoke_borrow_sync: None,
+                invoke_once_sync: None,
             };
             let mut source = HewCallableValue {
                 environment: hew_callable_env_alloc(&raw const descriptor),

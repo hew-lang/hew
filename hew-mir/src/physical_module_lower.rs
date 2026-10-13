@@ -92,6 +92,10 @@ pub fn lower_physical_module(
                 symbol: callable.symbol.clone(),
                 params,
                 return_ty: callable.signature.return_ty.clone(),
+                return_recipe: return_layout
+                    .as_ref()
+                    .map(|_| physical_value_recipe(module, &ids, &callable.signature.return_ty))
+                    .transpose()?,
                 return_layout,
                 is_resumable: resumable.contains(&callable.id),
                 receiver_handback: callable.signature.hands_back_receiver(),

@@ -1,0 +1,20 @@
+#[resource]
+type Ticket {
+    id: i64;
+}
+
+impl Ticket {
+    fn close(consume self) {
+        println(f"close {self.id}");
+        panic(f"close {self.id} failed");
+    }
+}
+
+fn main() {
+    let owner = Rc.new(Ticket { id: 10 });
+    let callback: fn[once]() -> Ticket = move || {
+        assert(owner.strong_count() == 1);
+        panic("body failed");
+    };
+    let _result = callback();
+}

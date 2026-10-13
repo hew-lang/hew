@@ -2143,6 +2143,7 @@ fn verifier_rejects_overwriting_a_maybe_live_owner() {
         params: vec![],
         return_ty: ResolvedTy::Unit,
         return_layout: None,
+        return_recipe: None,
     };
     let function = PhysicalFunction {
         callable: CallableId(0),

@@ -303,6 +303,8 @@ pub struct PhysicalCallable {
     pub params: Vec<PhysicalParam>,
     pub return_ty: ResolvedTy,
     pub return_layout: Option<PhysicalLayout>,
+    /// Ownership recipe for a result retained by an invocation adapter.
+    pub return_recipe: Option<PhysicalValueRecipe>,
     /// The private body uses the resumable status/result/fault convention.
     /// Derived from verified suspension and call edges, then checked again
     /// against the physical CFG before emission.

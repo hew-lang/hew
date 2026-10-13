@@ -1047,23 +1047,7 @@ impl Checker {
             if let Some(tail) = &fd.body.trailing_expr {
                 self.record_task_return(tail);
             }
-            let formals = fd
-                .params
-                .iter()
-                .map(|param| {
-                    let key = SpanKey::in_module(&param.name_span, self.current_module_idx);
-                    match self.scopes.resolutions().get(&key) {
-                        Some(super::scope::Resolution::Local(id)) => Some(*id),
-                        _ => None,
-                    }
-                })
-                .collect::<Option<Vec<_>>>();
-            if let Some(formals) = formals {
-                self.callable_formals.insert(
-                    super::effects::EffectBody::Declaration(declaration),
-                    formals,
-                );
-            }
+            self.record_declared_callable_formals(declaration, &fd.params);
         }
         self.effect_graph.current_body = previous;
     }
@@ -2691,9 +2675,8 @@ impl Checker {
         let qualified_name = format!("{}::{}", actor_name, rf.name);
         let prev_function = self.current_function.take();
         self.current_function = Some(qualified_name.clone());
-        let effect_body = self
-            .lookup_declaration(&qualified_name)
-            .map(super::effects::EffectBody::Declaration);
+        let declaration = self.lookup_declaration(&qualified_name);
+        let effect_body = declaration.map(super::effects::EffectBody::Declaration);
         let previous_effect_body =
             std::mem::replace(&mut self.effect_graph.current_body, effect_body.clone());
         if let Some(body) = effect_body {
@@ -2725,6 +2708,7 @@ impl Checker {
             self.env
                 .define_param_with_span(p.name, ty, p.is_mutable, p.name_span.clone());
             self.record_local_resolution(p.name, &p.name_span);
+            self.record_callable_formal_candidate(p.name);
             // The receiving handler owns the delivered message. Its fields
             // may move out of an aggregate parameter just as they may from a
             // local owner; ordinary function parameters retain borrow semantics.
@@ -2818,6 +2802,10 @@ impl Checker {
                     .last()
                     .map_or(rf.span.clone(), |(_, s)| s.clone())),
             );
+        }
+
+        if let Some(declaration) = declaration {
+            self.record_declared_callable_formals(declaration, &rf.params);
         }
 
         self.current_failure_edge = prev_failure_edge;

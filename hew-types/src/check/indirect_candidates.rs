@@ -7,7 +7,7 @@ use super::types::{
 };
 use super::{CallTarget, MethodCallRewrite};
 use crate::DeclarationKind;
-use hew_parser::ast::{CallArg, Expr, Ident, Span, Spanned};
+use hew_parser::ast::{CallArg, Expr, Ident, Param, Span, Spanned};
 
 impl Checker {
     /// Provenance tracks callables and task handles. Scalar values and their
@@ -415,6 +415,29 @@ impl Checker {
         );
     }
 
+    pub(super) fn record_declared_callable_formals(
+        &mut self,
+        declaration: crate::DefId,
+        params: &[Param],
+    ) {
+        let formals = params
+            .iter()
+            .map(|param| {
+                let key = SpanKey::in_module(&param.name_span, self.current_module_idx);
+                match self.scopes.resolutions().get(&key) {
+                    Some(Resolution::Local(id)) => Some(*id),
+                    _ => None,
+                }
+            })
+            .collect::<Option<Vec<_>>>();
+        if let Some(formals) = formals {
+            self.callable_formals.insert(
+                super::effects::EffectBody::Declaration(declaration),
+                formals,
+            );
+        }
+    }
+
     fn callable_target_declaration(target: &CallTarget) -> Option<crate::DefId> {
         match target {
             CallTarget::User(id) | CallTarget::ImplMethod(id) => Some(*id),
@@ -444,6 +467,16 @@ impl Checker {
     fn selected_callable_declaration(&self, span: &Span) -> Option<crate::DefId> {
         self.selected_callable_target(span)
             .and_then(Self::callable_target_declaration)
+            .or_else(|| {
+                let key = SpanKey::in_module(span, self.current_module_idx);
+                self.actor_method_dispatch
+                    .get(&key)
+                    .map(|dispatch| match dispatch {
+                        super::ActorMethodKind::Ask { method, .. }
+                        | super::ActorMethodKind::Message { method, .. }
+                        | super::ActorMethodKind::StreamProducer(method, _) => *method,
+                    })
+            })
     }
 
     /// Capture authored actuals after checking selected this call's exact

@@ -1629,13 +1629,20 @@ mod tests {
 
     #[test]
     fn invoked_closure_cannot_hide_stdin_read() {
-        let source =
-            "import std.io;\nfn main() { let reader = || io.read_line() ?? \"\"; println(reader()); }";
-        let failure = check_source(source, HostAdmission::ProcessEntry).unwrap_err();
-        assert!(
-            failure.contains("E_DETERMINISTIC_HOST_OPERATION"),
-            "{failure}"
-        );
+        for source in [
+            "import std.io;\nfn main() { let reader = || io.read_line() ?? \"\"; println(reader()); }",
+            "import std.io;\nactor Worker { receive fn read(reader: fn[suspends]() -> string) -> string { reader() } } fn main() { let worker = spawn Worker; let _ = worker.read(|| io.read_line() ?? \"\"); stop(worker); }",
+        ] {
+            let failure = check_source(source, HostAdmission::ProcessEntry).unwrap_err();
+            assert!(
+                failure.contains("E_DETERMINISTIC_HOST_OPERATION"),
+                "{failure}"
+            );
+            assert!(
+                !failure.contains("E_DETERMINISTIC_INDIRECT_CALL"),
+                "{failure}"
+            );
+        }
     }
 
     #[test]

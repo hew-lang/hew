@@ -624,7 +624,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
             && body.params.iter().all(|parameter| {
                 parameter.passing != hew_mir::physical::SemParamPassing::BorrowMut
             });
-        let frame = if transfers_receiver {
+        let frame = if transfers_receiver || !body.is_resumable {
             None
         } else {
             Some(coro::begin(
@@ -748,7 +748,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         } else {
             builder
                 .build_return(Some(&pointer.const_null()))
-                .llvm_ctx("finish synchronous owning callable")?;
+                .llvm_ctx("finish synchronous callable")?;
         }
         Ok(function)
     }

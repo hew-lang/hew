@@ -186,6 +186,10 @@ impl Checker {
     /// Re-registration is identified by the block declaration.
     /// Bootstrap rows keep their prelude provenance on import revisits: an
     /// explicit source impl may override them, but not another source impl.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "validates and publishes one implementation admission transaction"
+    )]
     pub(in crate::check) fn admit_source_impl(
         &mut self,
         id: &ImplDecl,

@@ -372,6 +372,10 @@ unsafe fn deliver_inbound_send(
 /// Handle an inbound remote ask by performing a local blocking ask and
 /// sending the reply envelope back to the requesting node.
 #[expect(
+    clippy::too_many_arguments,
+    reason = "keeps authenticated request and caller metadata together at admission"
+)]
+#[expect(
     clippy::needless_pass_by_value,
     reason = "spawned ask-handler thread must own the shutdown flag clone"
 )]

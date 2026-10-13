@@ -101,6 +101,9 @@ static THUNK_REGISTRY: Mutex<Vec<(CodecKey, ThunkPair)>> = Mutex::new(Vec::new()
 /// Register the request codec and canonical declaration for one local handler.
 /// Re-registration must agree on identity, layout and adapters.
 ///
+/// # Panics
+/// Panics on invalid UTF-8 or conflicting codec registration.
+///
 /// # Safety
 /// The thunks must match the declared ABI. `identity` must be valid, static,
 /// NUL-terminated UTF-8. `dispatch` is an opaque key, never dereferenced.
@@ -138,6 +141,9 @@ static REPLY_REGISTRY: Mutex<Vec<(CodecKey, ThunkPair)>> = Mutex::new(Vec::new()
 /// Register the reply serialize/deserialize thunk pair for an ask, keyed by
 /// `(dispatch, request msg_type)`. Same fail-closed collision guard as
 /// `hew_xnode_register_codec`.
+///
+/// # Panics
+/// Panics on invalid UTF-8 or conflicting codec registration.
 ///
 /// # Safety
 /// `serialize` / `deserialize` must be valid codegen-emitted reply-type thunks.

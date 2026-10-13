@@ -470,10 +470,10 @@ impl Checker {
             // `Self`-returning methods).
             if let Ty::TraitObject { traits } = &expected_resolved {
                 let defaulted_concrete = actual_resolved.materialize_literal_defaults();
-                if concrete_type_name_for_dyn(&defaulted_concrete).is_some() {
-                    if self.try_record_dyn_trait_coercion(traits, &defaulted_concrete, span) {
-                        return;
-                    }
+                if concrete_type_name_for_dyn(&defaulted_concrete).is_some()
+                    && self.try_record_dyn_trait_coercion(traits, &defaulted_concrete, span)
+                {
+                    return;
                 }
             }
             // Actor-handle narrowing `C` → `T` when `C: T`.

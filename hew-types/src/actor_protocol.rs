@@ -129,6 +129,9 @@ pub struct ActorHandlerSpec {
 
 impl ActorProtocolDescriptor {
     /// Assign local dispatch indices. Only `wire_identity` crosses a node boundary.
+    ///
+    /// # Panics
+    /// Panics if a handler index exceeds `u32::MAX`.
     #[must_use]
     pub fn from_handlers(actor_name: impl Into<String>, handlers: &[ActorHandlerSpec]) -> Self {
         Self {
@@ -194,6 +197,7 @@ pub struct LambdaActorIdentity {
 
 /// Concrete backing fields of a delivery's linear call token. The actor-owned
 /// request declaration is selected by identity, with the actor's arguments.
+#[must_use]
 pub fn interceptor_fields(
     defs: &crate::DefTable,
     ty: &ResolvedTy,
@@ -286,6 +290,7 @@ pub fn is_interceptor_view(ty: &ResolvedTy, field: &str) -> bool {
 
 /// Generated actor members are selected through their actor or expected type,
 /// never through the global bare-variant fallback.
+#[must_use]
 pub fn is_interceptor_member(defs: &crate::DefTable, declaration: crate::DefId) -> bool {
     matches!(
         defs.kind(declaration),

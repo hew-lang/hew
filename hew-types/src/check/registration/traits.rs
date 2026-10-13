@@ -1746,7 +1746,10 @@ impl Checker {
     /// Look up a method on the primitive/builtin-generic impl table.
     ///
     /// Select one applicable trait, retaining explicit prelude overrides.
-    #[must_use]
+    #[expect(
+        clippy::type_complexity,
+        reason = "returns the selected declaration and signature or ambiguous implementation owners"
+    )]
     pub(in crate::check) fn lookup_primitive_trait_method(
         &mut self,
         receiver_ty: &Ty,

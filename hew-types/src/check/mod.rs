@@ -5462,6 +5462,9 @@ fn build_actor_protocol_descriptors(
     defs: &crate::DefTable,
     fn_sigs: crate::check::types::FnSigView<'_>,
 ) -> HashMap<String, crate::actor_protocol::ActorProtocolDescriptor> {
+    use crate::actor_protocol::{CoalesceFallback, MailboxContract, OverflowContract};
+    use hew_parser::ast::{OverflowFallback, OverflowPolicy};
+
     let mut descriptors: HashMap<String, crate::actor_protocol::ActorProtocolDescriptor> =
         HashMap::new();
     for (actor_identity, ad) in collect_program_actors(program) {
@@ -5478,8 +5481,6 @@ fn build_actor_protocol_descriptors(
             actor_identity.clone(),
             &specs,
         );
-        use crate::actor_protocol::{CoalesceFallback, MailboxContract, OverflowContract};
-        use hew_parser::ast::{OverflowFallback, OverflowPolicy};
         descriptor.mailbox = ad
             .mailbox_capacity
             .map_or(MailboxContract::Unbounded, |capacity| {

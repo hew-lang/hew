@@ -1061,6 +1061,10 @@ impl Checker {
         self.effect_graph.current_body = previous;
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "keeps function environment setup, body checking and restoration together"
+    )]
     fn check_function_body_as(&mut self, fd: &FnDecl, fn_name: &str) {
         if !fd
             .attributes

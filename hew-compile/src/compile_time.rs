@@ -12,12 +12,12 @@ pub(crate) struct Inputs {
 impl Inputs {
     pub(crate) fn new(root: &str, documents: super::SourceSet, std_roots: Vec<PathBuf>) -> Self {
         let std_roots = std_roots
-            .iter()
+            .into_iter()
             .map(|root| {
                 if !documents.filesystem && !root.is_absolute() {
                     normalize(&Path::new("/").join(root))
                 } else {
-                    normalize(root)
+                    normalize(&root)
                 }
             })
             .collect();

@@ -7987,7 +7987,9 @@ Absolute paths are rejected. Dependencies can include their own package
 files. Missing files and invalid UTF-8 in `include_str!` are compile errors;
 `include_bytes!` accepts arbitrary bytes.
 
-```hew
+With `sql/schema.sql` and `assets/icon.png` relative to the source file:
+
+```hew,ignore
 const SCHEMA: string = include_str!("sql/schema.sql");
 const ICON: bytes = include_bytes!("assets/icon.png");
 

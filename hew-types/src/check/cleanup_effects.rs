@@ -138,7 +138,7 @@ impl Checker {
 
     pub(super) fn record_assignment_cleanup_effect(&mut self, target: &Spanned<Expr>, ty: &Ty) {
         if let Some((root, path)) = self.expr_place(&target.0) {
-            if self.env.lookup_ref(&root).is_none_or(|binding| {
+            if self.env.lookup_ref(root).is_none_or(|binding| {
                 binding.is_moved
                     || binding.init_state == InitState::Unassigned
                     || binding.released_at.is_some()
@@ -149,7 +149,7 @@ impl Checker {
                             .parameter_replacements
                             .iter()
                             .any(|owned| path.starts_with(owned)))
-            }) || self.env.place_move_conflict(&root, &path).is_some()
+            }) || self.env.place_move_conflict(root, &path).is_some()
             {
                 return;
             }
@@ -157,7 +157,7 @@ impl Checker {
         let static_callable = matches!(ty, Ty::Function { .. })
             && self.expr_place(&target.0).is_some_and(|(root, path)| {
                 path.is_empty()
-                    && self.env.lookup_ref(&root).is_some_and(|binding| {
+                    && self.env.lookup_ref(root).is_some_and(|binding| {
                         Self::static_callable_candidates(&binding.value_candidates)
                     })
             });

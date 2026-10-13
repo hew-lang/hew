@@ -36,7 +36,10 @@ mod tests;
 
 pub use self::api::*;
 pub use self::dist_probes::*;
-use self::inbound::*;
+use self::inbound::{
+    accept_loop, actor_id_to_registry_ptr, drain_inbound_requests, node_inbound_router,
+    stop_node_accept_thread,
+};
 pub(crate) use self::inbound_call::InboundAsks;
 pub use self::monitor_link::*;
 pub use self::remote_call::*;

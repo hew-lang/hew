@@ -275,7 +275,7 @@ pub struct HewConnMgr {
     /// ask-reply teardown guards.
     reconnect_shutdown: Arc<AtomicBool>,
     /// Close admission before draining inbound asks and reverse-link setup.
-    /// SeqCst pairs this gate with the active counter's increment/re-check so
+    /// `SeqCst` pairs this gate with the active counter's increment/re-check so
     /// every admitted owner is visible to node shutdown. Reply publication
     /// remains open until the drain completes and `reconnect_shutdown` is set.
     inbound_spawn_closed: Arc<AtomicBool>,

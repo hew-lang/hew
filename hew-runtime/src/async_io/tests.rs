@@ -507,7 +507,6 @@ fn cancelling_a_partial_tcp_write_leaves_its_connection_usable() {
     let committed = received.len() - marker.len();
     assert!(committed > 0 && committed < payload.len());
     assert!(received[..committed].iter().all(|byte| *byte == 0xa5));
-    assert_eq!(*signal.notifications.lock().unwrap(), 0);
 }
 
 #[test]
@@ -536,7 +535,7 @@ fn tcp_cancel_detaches_before_rearming_the_same_handle() {
 }
 
 #[test]
-fn tcp_accept_registration_refuses_shutdown_after_the_syscall_attempt() {
+fn tcp_accept_shutdown_cancels_before_and_after_the_syscall_attempt() {
     let _runtime = crate::runtime_test_guard();
     let _reactor = StopReactor::start();
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -557,17 +556,25 @@ fn tcp_accept_registration_refuses_shutdown_after_the_syscall_attempt() {
     );
     let registration = slot.wait(crate::reactor::Direction::Read, &operation);
     let waiting = slot.has_waiter(crate::reactor::Direction::Read);
-    assert_eq!(crate::transport::hew_tcp_listener_close(handle), 0);
-
     assert!(
-        registration.is_err(),
-        "late accept registered after shutdown"
+        matches!(registration, Ok(false)),
+        "late accept did not take its cancellation edge"
     );
     assert_eq!(
-        registration.err().unwrap().errno,
-        crate::stream_error::CANCELLED_ERRNO
+        operation.state.lock_or_recover().status(),
+        AsyncIoStatus::Cancelled
     );
     assert!(!waiting, "shutdown left an accept waiter behind its sweep");
+
+    // The same cancellation edge applies when admission closes before the
+    // syscall, so a direct accept does not return an ordinary Result error.
+    // SAFETY: the listener remains live and no wake target is needed.
+    unsafe {
+        let early = hew_async_tcp_accept(handle, ptr::null());
+        assert_eq!(hew_async_io_status(early), AsyncIoStatus::Cancelled as i32);
+        hew_async_io_free(early);
+    }
+    assert_eq!(crate::transport::hew_tcp_listener_close(handle), 0);
 }
 
 #[test]

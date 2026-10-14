@@ -72,6 +72,7 @@ impl WriteData {
 
 enum Attempt {
     Done(Result<IoValue, IoFailure>),
+    Cancelled,
     /// The syscall would block; `progressed` reports a partial write.
     Blocked {
         progressed: bool,
@@ -149,9 +150,7 @@ fn attempt(slot: &Slot, action: &mut Action) -> Attempt {
         }
         Action::Accept => {
             if crate::reactor::listener_admission_closed() {
-                return Attempt::Done(Err(crate::reactor::cancelled_failure(
-                    "accept TCP connection",
-                )));
+                return Attempt::Cancelled;
             }
             let Some(listener) = slot.listener() else {
                 return closed("accept TCP connection");
@@ -277,6 +276,9 @@ pub(super) fn advance(operation: &Arc<HewAsyncIo>) {
     let attempt = attempt(&net.slot, &mut net.action.lock_or_recover());
     match attempt {
         Attempt::Done(result) => operation.complete(result),
+        Attempt::Cancelled => {
+            operation.cancel_and_wake();
+        }
         Attempt::Blocked { progressed } => {
             match net.slot.wait(net.direction, operation) {
                 Ok(true) => {}

@@ -506,8 +506,8 @@ pub(crate) unsafe fn normalize_dispatch_completion(
     None
 }
 
-/// Remove a clean stop's cancellation after its checked source cleanup, while
-/// preserving a destructor failure carried as a secondary diagnostic.
+/// Remove an expected stop's cancellation after its checked source cleanup,
+/// preserving any destructor failure carried as a secondary diagnostic.
 ///
 /// # Safety
 /// The caller owns the actor activation and this unique returned fault.
@@ -516,8 +516,9 @@ pub(crate) unsafe fn normalize_stopped_turn(
     fault: Box<HewFault>,
 ) -> Option<Box<HewFault>> {
     if fault.code() != crate::fault::HEW_FAULT_CANCELLED
-        // SAFETY: this activation owns the live actor and its mailbox.
-        || !unsafe { crate::mailbox::mailbox_stop_requested((*actor).mailbox.cast()) }
+        || !(crate::fault::cancelled_by_shutdown(fault.code())
+            // SAFETY: this activation owns the live actor and its mailbox.
+            || unsafe { crate::mailbox::mailbox_stop_requested((*actor).mailbox.cast()) })
     {
         return Some(fault);
     }

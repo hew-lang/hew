@@ -90,11 +90,14 @@ fn setup_remote_ask(
             return RemoteAskSetupResult::Error(AskError::Unauthorized);
         };
 
+        let Some(codec) = crate::xnode_serial::lookup_request(dispatch, msg_type) else {
+            return RemoteAskSetupResult::Error(AskError::EncodeFailed);
+        };
         // Serialize the request value before it leaves this address space —
         // `data`/`size` is the raw in-memory struct (which may hold heap
         // pointers). The codec for `msg_type` encodes its CONTENTS; the receiver
-        // reconstructs the value. Fail closed if no codec is registered for a
-        // non-empty payload.
+        // reconstructs the value. Every request needs a registered descriptor
+        // for its declaration identity, including an empty payload.
         let serialized_req: Option<(*mut u8, usize)> = if size > 0 {
             let mut out_len: usize = 0;
             // SAFETY: data is a valid value of the message type; out_len valid.
@@ -145,7 +148,7 @@ fn setup_remote_ask(
             encode_envelope_frame_from_raw_parts(
                 Some(target),
                 source,
-                msg_type,
+                crate::envelope::EnvelopeMessage::Handler(codec.identity.to_owned()),
                 req_ptr,
                 req_len,
                 request_id,
@@ -392,9 +395,11 @@ unsafe fn start_local_call(
             reply_size,
         }))
     };
-    // A name lookup does not prove the concrete actor payload layout.
+    // A name lookup alone does not prove the caller's concrete payload layout.
     let target_dispatch = crate::lifetime::live_actors::dispatch_ptr_by_id(actor_id);
-    if target_dispatch != Some(dispatch) {
+    if !target_dispatch
+        .is_some_and(|target| super::local_request_matches(dispatch, target, msg_type))
+    {
         // SAFETY: the fields have not moved into the target actor.
         unsafe { release_request(dispatch, msg_type, request) };
         let error = if target_dispatch.is_some() {

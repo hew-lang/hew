@@ -129,6 +129,12 @@ impl Checker {
                 self.type_defs
                     .iter()
                     .filter(|(id, td)| {
+                        if crate::actor_protocol::is_interceptor_member(
+                            &self.defs,
+                            id.declaration(),
+                        ) {
+                            return false;
+                        }
                         let type_name = self.defs.path(id.declaration());
                         let is_local = self.local_type_defs.contains(td.name.as_str())
                             || self.source_type_defs.contains(td.name.as_str())
@@ -584,6 +590,7 @@ impl Checker {
             }
         }
 
+        self.reject_interceptor_return(&freshened_ret, span);
         self.enforce_signature_bounds(sig, &resolved_type_args, span);
         if let Some(GenericCallee::Method {
             type_name, method, ..
@@ -623,6 +630,7 @@ impl Checker {
         expected: &Ty,
         span: &Span,
     ) -> Option<Ty> {
+        self.record_value_path_resolution(&func.0, &func.1);
         if let Expr::ContextVariant(context) = &func.0 {
             if let Some(result) = self.dispatch_context_builtin_variant(
                 expected,
@@ -681,7 +689,8 @@ impl Checker {
 
         let resolved_expected = self.subst.resolve(expected);
 
-        if let Some(context_name) = contextual_name.map(|ident| ident.name.as_str()) {
+        if let Some(context_ident) = contextual_name {
+            let context_name = context_ident.name.as_str();
             let owner = func_name
                 .rsplit_once("::")
                 .map_or(func_name.as_str(), |(owner, _)| owner);
@@ -717,6 +726,7 @@ impl Checker {
                     return Some(Ty::Error);
                 }
             }
+            self.record_context_variant_resolution(&resolved_expected, context_ident.name, &func.1);
         }
 
         if let Some(targs) = type_args {
@@ -1274,7 +1284,7 @@ impl Checker {
                     .get(&key)
                     .map_or_else(|| span.clone(), |(s, _)| s.clone());
                 let acc_module_owned = self.current_module.clone();
-                if !visibility::access_allowed(
+                if !self.visibility_access_allowed(
                     decl_module_owned.as_deref(),
                     acc_module_owned.as_deref(),
                     vis,
@@ -1823,7 +1833,7 @@ impl Checker {
         // polymorphic closures and actor-handle capture checks.
         let lexical_shadow_of_item = matches!(&func.0, Expr::Ident(name)
             if self.env.lookup_ref_with_depth(*name).is_some_and(|(depth, _)| depth > 0)
-                && self.visible_fn_signature_key(name.name.as_str()).is_some());
+                && self.visible_fn_signature_key(*name).is_some());
         let func_name = match &func.0 {
             Expr::Ident(name) => name.to_string(),
             Expr::FieldAccess { object, field } => {
@@ -1840,7 +1850,7 @@ impl Checker {
                     // identifiers on the existing name-building path
                     // (`(Vec.new)(args)` → `"Vec::new"`) because type/module
                     // names are not registered as value bindings.
-                    if self.env.lookup_ref(obj_name.name.as_str()).is_some() {
+                    if self.env.lookup_ref(obj_name).is_some() {
                         let field_ty = self.synthesize(&func.0, &func.1);
                         let resolved = self.subst.resolve(&field_ty);
                         return self.check_call_with_type(&resolved, func, args, span);
@@ -2211,66 +2221,6 @@ impl Checker {
                 self.record_method_call_rewrite(span, MethodCallRewrite::VecFrom);
                 return self.make_vec_type(elem, span);
             }
-            // `link`/`unlink` of a `RemotePid<T>` → a targeted "use link_remote"
-            // diagnostic. The local `link(<actor handle>)` form stays on the generic
-            // `fn_sigs` path below; a `link`/`unlink` of a remote pid would
-            // otherwise surface as an opaque actor-handle-vs-RemotePid type mismatch.
-            // The cross-node link surface is `link_remote(pid, policy)` — it
-            // carries a `PartitionPolicy` the bare `link` cannot express — so name
-            // it explicitly here rather than letting the mismatch stand.
-            "link" | "unlink" if args.len() == 1 => {
-                let (expr, sp) = args[0].expr();
-                let arg_ty = self.synthesize(expr, sp);
-                let resolved = self.subst.resolve(&arg_ty);
-                if resolved.as_remote_pid().is_some() {
-                    self.report_error(
-                        TypeErrorKind::InvalidOperation,
-                        span,
-                        format!(
-                            "`{func_name}` links a LOCAL actor; for a cross-node link use \
-                             `link_remote(pid, policy)`, which carries a `PartitionPolicy` \
-                             governing what happens to the local actor when its remote peer dies"
-                        ),
-                    );
-                    return Ty::Error;
-                }
-                if !self.require_actor_handle_argument(&resolved, &func_name, sp) {
-                    return Ty::Error;
-                }
-                // A local actor handle — fall through to the generic `fn_sigs`
-                // path, which applies the builtin's own result type.
-            }
-            // Cross-node monitor: `monitor(RemotePid<T>)`. The local
-            // `monitor(<actor handle>)` form stays on the generic `fn_sigs` path
-            // below (registered with an actor-handle receiver). When the argument
-            // resolves to a `RemotePid<T>`, accept it here and return
-            // `Result<MonitorRef, LinkError>` — remote setup can fail before
-            // a registration exists, so it must not manufacture a zero-valued
-            // handle. The remote form is its own runtime family, the node
-            // monitor ABI (`hew_node_monitor_location`).
-            // The cross-node LINK form is `link_remote(RemotePid<T>,
-            // PartitionPolicy)` — its own builtin, routed via the generic
-            // `fn_sigs` path; a bare `link(RemotePid)` is rejected above with a
-            // "use link_remote" diagnostic.
-            "monitor" if args.len() == 1 => {
-                let (expr, sp) = args[0].expr();
-                let arg_ty = self.synthesize(expr, sp);
-                let resolved = self.subst.resolve(&arg_ty);
-                if resolved.as_remote_pid().is_some() {
-                    let result_ty = Ty::result(Ty::monitor_ref(), Ty::link_error());
-                    self.record_type(span, &result_ty);
-                    self.record_direct_call_target(
-                        span,
-                        CallTarget::Runtime(crate::runtime_call::RuntimeCallFamily::NodeMonitor),
-                    );
-                    return result_ty;
-                }
-                if !self.require_actor_handle_argument(&resolved, &func_name, sp) {
-                    return Ty::Error;
-                }
-                // A local actor handle — fall through to the generic `fn_sigs`
-                // path, which applies the local typed-result builtin signature.
-            }
             "supervisor_child" if args.len() == 2 => {
                 // supervisor_child(sup, index) → the child's actor type
                 let (sup_expr, sup_sp) = args[0].expr();
@@ -2348,8 +2298,11 @@ impl Checker {
         let visible_fn_key = if lexical_shadow_of_item {
             None
         } else {
-            self.visible_fn_signature_key(&func_name)
-                .or_else(|| self.enclosing_actor_method_key(&func_name))
+            self.visible_fn_signature_key(match &func.0 {
+                Expr::Ident(ident) => *ident,
+                _ => Ident::new(&func_name),
+            })
+            .or_else(|| self.enclosing_actor_method_key(&func_name))
         };
         let has_visible_fn_signature = visible_fn_key.is_some();
         let resolved_fn_name = visible_fn_key.unwrap_or_else(|| func_name.clone());
@@ -2401,7 +2354,7 @@ impl Checker {
                         .get(&resolved_fn_name)
                         .and_then(|(_, m)| m.as_deref());
                     let acc_module = self.current_module.as_deref();
-                    if !visibility::access_allowed(decl_module, acc_module, vis) {
+                    if !self.visibility_access_allowed(decl_module, acc_module, vis) {
                         // Extract just the function name (last segment after '.').
                         let symbol = crate::short_name(&resolved_fn_name);
                         let decl_span = self
@@ -2435,26 +2388,6 @@ impl Checker {
                 .cloned()
             {
                 self.note_path_use(&module);
-            }
-            // `Node.register` hands the actor's own handle to the node
-            // registry; codegen calls `hew_actor_pid` on it. An actor is the
-            // type of its handle and no wrapper type names "any actor", so the
-            // registered signature carries a free variable for the operand and
-            // the operand is proved here against the checked fact instead.
-            // Checked before signature application and without returning, so a
-            // refused operand still leaves the call its published rewrite and
-            // runtime target.
-            if crate::runtime_call::RuntimeCallFamily::from_c_symbol(&resolved_fn_name)
-                == Some(crate::runtime_call::RuntimeCallFamily::NodeRegister)
-                && args.len() == 2
-            {
-                let (handle_expr, handle_span) = args[1].expr();
-                let handle_ty = self.synthesize(handle_expr, handle_span);
-                let resolved = self
-                    .subst
-                    .resolve(&handle_ty)
-                    .materialize_literal_defaults();
-                self.require_actor_handle_argument(&resolved, "Node.register", handle_span);
             }
             // `assert` takes one optional parameter, the failure message.
             let assertion = self.call_target_for_signature(&resolved_fn_name)
@@ -2508,6 +2441,7 @@ impl Checker {
                 .scoped_fn_declaration(&func_name, lexical_shadow_of_item)
                 .and_then(|declaration| self.declared_call_target(declaration))
                 .unwrap_or_else(|| self.call_target_for_signature(&resolved_fn_name));
+            let target = self.check_actor_call_operand(target, args);
             if matches!(
                 &target,
                 CallTarget::Runtime(crate::runtime_call::RuntimeCallFamily::RcNew)
@@ -2581,7 +2515,10 @@ impl Checker {
         // Then check if it's a variable with a function type (e.g., lambda parameters)
         if let Some((binding_depth, binding)) = self
             .env
-            .lookup_with_depth(&func_name)
+            .lookup_with_depth(match &func.0 {
+                Expr::Ident(name) => *name,
+                _ => Ident::new(&func_name),
+            })
             .map(|(depth, binding)| (depth, binding.clone()))
         {
             let recursive_actor_receiver = self.in_lambda_actor_body
@@ -2790,6 +2727,55 @@ impl Checker {
         Ty::Error
     }
 
+    /// Validate the actor operand after signature application has checked its
+    /// expression once. Re-synthesizing a constructor repeats affine transfers.
+    fn check_actor_call_operand(&mut self, target: CallTarget, args: &[CallArg]) -> CallTarget {
+        use crate::runtime_call::RuntimeCallFamily as F;
+        let family = match &target {
+            CallTarget::Runtime(family) => Some(*family),
+            CallTarget::Builtin { endpoint } => F::from_c_symbol(endpoint),
+            _ => None,
+        };
+        let (slot, callee) = match family {
+            Some(F::ActorLink) => (0, "link"),
+            Some(F::ActorUnlink) => (0, "unlink"),
+            Some(F::ActorMonitor) => (0, "monitor"),
+            Some(F::NodeRegister) => (1, "Node.register"),
+            _ => return target,
+        };
+        let Some(arg) = args.get(slot) else {
+            return target;
+        };
+        let (_, span) = arg.expr();
+        let key = SpanKey::in_module(span, self.current_module_idx);
+        let Some(ty) = self.expr_types.get(&key) else {
+            return target;
+        };
+        let resolved = self.subst.resolve(ty).materialize_literal_defaults();
+        if resolved.as_remote_pid().is_some() {
+            match family {
+                Some(F::ActorMonitor) => {
+                    return CallTarget::Runtime(F::NodeMonitor);
+                }
+                Some(F::ActorLink | F::ActorUnlink) => {
+                    self.report_error(
+                        TypeErrorKind::InvalidOperation,
+                        span,
+                        format!(
+                            "`{callee}` links a LOCAL actor; for a cross-node link use \
+                             `link_remote(pid, policy)`, which carries a `PartitionPolicy` \
+                             governing what happens to the local actor when its remote peer dies"
+                        ),
+                    );
+                    return target;
+                }
+                _ => {}
+            }
+        }
+        self.require_actor_handle_argument(&resolved, callee, span);
+        target
+    }
+
     /// Require a local actor handle as a builtin's operand.
     ///
     /// An actor is the type of its handle, so these builtins carry a free
@@ -2888,6 +2874,7 @@ impl Checker {
                         self.check_against(expr, sp, param);
                     }
                 }
+                self.reject_interceptor_return(&ret, span);
                 self.check_callable_receiver(func_ty, func);
                 *ret
             }

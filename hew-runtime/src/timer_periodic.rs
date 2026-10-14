@@ -15,7 +15,7 @@ use std::sync::{Arc, Mutex, RwLock};
 
 use crate::lifetime::PoisonSafe;
 
-use crate::actor::{hew_actor_send, HewActor};
+use crate::actor::HewActor;
 use crate::timer_wheel::{
     hew_timer_wheel_free, hew_timer_wheel_remove, timer_wheel_cursor_ms,
     timer_wheel_schedule_at_handle, HewTimerHandle, HewTimerWheel,
@@ -188,7 +188,7 @@ fn reclaim_pending_wheel_ref(ctx: &Arc<PeriodicCtx>) {
 /// before deallocation to prevent timer callbacks from sending to freed memory.
 ///
 /// Phase 1 marks every ctx cancelled. Phase 2 spin-waits on the in-flight
-/// guards so any executing callback finishes its `hew_actor_send` before the
+/// guards so any executing callback finishes sending before the
 /// actor is freed. Phase 3 reclaims each pending wheel reference so the ctx is
 /// freed promptly instead of leaking until the (now suppressed) callback would
 /// have fired. The `Arc` refcount guarantees exactly one free across the
@@ -310,7 +310,7 @@ struct PeriodicCtx {
     /// will not re-arm and the ctx is released.
     cancelled: AtomicBool,
     /// Set true while the callback is between the cancelled-check and the
-    /// completion of `hew_actor_send`. `cancel_all_timers_for_actor` spin-waits
+    /// completion of admission. `cancel_all_timers_for_actor` spin-waits
     /// on this (Dekker protocol) so the actor outlives any in-flight send.
     in_flight: AtomicBool,
     /// Handle of the single pending one-shot in the wheel, or `None` while the
@@ -373,7 +373,14 @@ unsafe extern "C" fn periodic_timer_cb(data: *mut c_void) {
     // SAFETY: actor is valid — cancel_all_timers_for_actor is spinning
     // on our in_flight guard and won't free the actor until we clear it.
     unsafe {
-        hew_actor_send(ctx.actor, ctx.msg_type, ptr::null_mut(), 0);
+        crate::actor::actor_send_result_internal_reply(
+            ctx.actor,
+            ctx.msg_type,
+            ptr::null_mut(),
+            0,
+            ptr::null_mut(),
+            crate::actor_caller::HewCallerStamp::timer(),
+        );
     }
 
     // Send complete — actor pointer is no longer needed.

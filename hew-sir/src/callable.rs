@@ -23,6 +23,23 @@ pub struct ClosureInstanceKey {
     pub literal: HirNodeId,
 }
 
+/// Checked callable origins projected into concrete semantic instances.
+/// Consuming invocation also releases the descriptor-owned environment.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CallableTargets {
+    pub known: Vec<CallableId>,
+    pub may_be_unknown: bool,
+}
+
+impl Default for CallableTargets {
+    fn default() -> Self {
+        Self {
+            known: Vec::new(),
+            may_be_unknown: true,
+        }
+    }
+}
+
 /// One checker-selected environment field in declaration order.
 /// Acquisition is expressed by the construction operand's copy or move.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -641,6 +658,7 @@ mod tests {
                     ],
                     terminator: SemTerminator::IndirectCall {
                         id: crate::OpId(2),
+                        targets: crate::CallableTargets::default(),
                         callee: BoundaryOperand {
                             operand: Operand { value: ValueId(1) },
                             decision: BoundaryDecision::BorrowMut,

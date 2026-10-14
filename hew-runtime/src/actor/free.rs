@@ -2122,7 +2122,16 @@ pub(crate) unsafe fn actor_send_result_internal(
     size: usize,
 ) -> i32 {
     // SAFETY: Caller guarantees `actor` is valid.
-    unsafe { actor_send_result_internal_reply(actor, msg_type, data, size, ptr::null_mut()) }
+    unsafe {
+        actor_send_result_internal_reply(
+            actor,
+            msg_type,
+            data,
+            size,
+            ptr::null_mut(),
+            crate::actor_caller::local_sender(),
+        )
+    }
 }
 
 /// Submit a tell while the caller holds an identity-verified actor send pin.
@@ -2150,6 +2159,7 @@ pub(crate) unsafe fn actor_send_result_internal_reply(
     data: *mut c_void,
     size: usize,
     reply_channel: *mut c_void,
+    caller: crate::actor_caller::HewCallerStamp,
 ) -> i32 {
     cabi_guard!(actor.is_null(), HewError::ErrActorStopped as i32);
     // SAFETY: Caller guarantees `actor` is valid.
@@ -2190,8 +2200,9 @@ pub(crate) unsafe fn actor_send_result_internal_reply(
         // DropNew outcome queued nothing and therefore must not wake the
         // actor; DropOld and Coalesce did leave runnable work behind.
         // SAFETY: Mailbox is valid for the actor's lifetime; data/size from caller.
-        return match unsafe { mailbox::hew_mailbox_send_fire_and_forget(mb, msg_type, data, size) }
-        {
+        return match unsafe {
+            mailbox::hew_mailbox_send_fire_and_forget(mb, msg_type, data, size, caller)
+        } {
             mailbox::SendOutcome::Enqueued => {
                 // SAFETY: `actor`/`a` valid; a node actually reached the
                 // queue, so the actor may be scheduled to run.
@@ -2225,7 +2236,14 @@ pub(crate) unsafe fn actor_send_result_internal_reply(
     // bounded `Block` capacity. A pending ask stays suspended on its reply
     // channel; mailbox admission transfers its queued node to the actor FIFO.
     let result = unsafe {
-        mailbox::mailbox_send_with_reply_cooperative(mb, msg_type, data, size, reply_channel)
+        mailbox::mailbox_send_with_reply_cooperative(
+            mb,
+            msg_type,
+            data,
+            size,
+            reply_channel,
+            caller,
+        )
     };
     if result != 0 {
         return result;
@@ -2531,7 +2549,16 @@ pub(crate) unsafe fn ask_with_channel_pinned(
         submit_ask_with_reply_channel(
             ch.cast(),
             AskReplyChannelFailureCleanup::KeepCreatorRef,
-            |ch| actor_send_result_internal_reply(actor, msg_type, data, size, ch.cast()),
+            |ch| {
+                actor_send_result_internal_reply(
+                    actor,
+                    msg_type,
+                    data,
+                    size,
+                    ch.cast(),
+                    crate::actor_caller::local_sender(),
+                )
+            },
         )
     }
 }
@@ -2570,7 +2597,14 @@ pub unsafe extern "C" fn hew_actor_ask(
         submit_ask_with_reply_channel(ch, AskReplyChannelFailureCleanup::FreeCreatorRef, |ch| {
             // Send the message with the reply channel in the HewMsgNode
             // field (not packed in the data buffer).
-            actor_send_result_internal_reply(actor, msg_type, data, size, ch.cast())
+            actor_send_result_internal_reply(
+                actor,
+                msg_type,
+                data,
+                size,
+                ch.cast(),
+                crate::actor_caller::local_sender(),
+            )
         })
     };
 
@@ -2626,7 +2660,14 @@ pub unsafe extern "C" fn hew_actor_ask_timeout(
     // closure uses the same actor/data preconditions as this function.
     let send_result = unsafe {
         submit_ask_with_reply_channel(ch, AskReplyChannelFailureCleanup::FreeCreatorRef, |ch| {
-            actor_send_result_internal_reply(actor, msg_type, data, size, ch.cast())
+            actor_send_result_internal_reply(
+                actor,
+                msg_type,
+                data,
+                size,
+                ch.cast(),
+                crate::actor_caller::local_sender(),
+            )
         })
     };
 
@@ -2697,7 +2738,14 @@ pub unsafe extern "C" fn hew_actor_ask_with_channel(
     // the closure forwards the same actor/data preconditions.
     unsafe {
         submit_ask_with_reply_channel(ch, AskReplyChannelFailureCleanup::KeepCreatorRef, |ch| {
-            actor_send_result_internal_reply(actor, msg_type, data, size, ch.cast())
+            actor_send_result_internal_reply(
+                actor,
+                msg_type,
+                data,
+                size,
+                ch.cast(),
+                crate::actor_caller::local_sender(),
+            )
         })
     }
 }
@@ -2783,7 +2831,14 @@ unsafe fn actor_ask_by_id_inner(
                 // SAFETY: `actor` is pinned live by the by-ID pin; allocation
                 // valid for the closure.  `ch` is a live reply channel retained
                 // above.  Same data/size preconditions as hew_actor_ask.
-                actor_send_result_internal_reply(actor, msg_type, data, size, ch.cast())
+                actor_send_result_internal_reply(
+                    actor,
+                    msg_type,
+                    data,
+                    size,
+                    ch.cast(),
+                    crate::actor_caller::local_sender(),
+                )
             };
             match expected_serial {
                 Some(serial) => live_actors::with_actor_send_by_identity(actor_id, serial, |pin| {
@@ -2865,7 +2920,16 @@ pub unsafe extern "C" fn hew_local_pid_ask_with_channel(
             submit_ask_with_reply_channel(
                 ch.cast(),
                 AskReplyChannelFailureCleanup::KeepCreatorRef,
-                |ch| actor_send_result_internal_reply(actor, msg_type, data, size, ch.cast()),
+                |ch| {
+                    actor_send_result_internal_reply(
+                        actor,
+                        msg_type,
+                        data,
+                        size,
+                        ch.cast(),
+                        crate::actor_caller::local_sender(),
+                    )
+                },
             )
         };
     })

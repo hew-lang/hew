@@ -118,12 +118,14 @@ struct TaskWake {
 #[derive(Debug)]
 pub struct HewCheckedTaskWait {
     task: *mut HewTask,
-    wake: Arc<TaskWake>,
+    wake: Option<Arc<TaskWake>>,
 }
 
 impl Drop for HewCheckedTaskWait {
     fn drop(&mut self) {
-        self.wake.armed.store(false, Ordering::Release);
+        if let Some(wake) = &self.wake {
+            wake.armed.store(false, Ordering::Release);
+        }
         // SAFETY: this operation owns one task reference independently of scope.
         unsafe { hew_task_free(self.task) };
     }
@@ -378,27 +380,35 @@ pub unsafe extern "C" fn hew_checked_task_wait_new(
     task: *mut HewTask,
     waker: *const HewWaker,
 ) -> *mut HewCheckedTaskWait {
-    // SAFETY: caller retains descriptor until registration returns.
-    let wake = Arc::new(TaskWake {
-        // SAFETY: caller retains the descriptor throughout registration.
-        waker: unsafe { OwnedWaker::retain(&*waker) },
-        armed: AtomicBool::new(true),
-    });
-    let complete = {
-        // SAFETY: this operation has taken ownership of the task reference.
-        let mut state = unsafe { checked(task) }.lock_or_recover();
-        if state.completed {
-            true
-        } else {
-            state.waiters.retain(|waiter| waiter.strong_count() != 0);
-            state.waiters.push(Arc::downgrade(&wake));
-            false
+    // SAFETY: the caller transfers its task reference and retains the descriptor.
+    Box::into_raw(Box::new(unsafe { HewCheckedTaskWait::new(task, waker) }))
+}
+
+impl HewCheckedTaskWait {
+    /// Take one task reference and register readiness only while it is pending.
+    unsafe fn new(task: *mut HewTask, waker: *const HewWaker) -> Self {
+        let wake = {
+            // SAFETY: this operation has taken ownership of the task reference.
+            let mut state = unsafe { checked(task) }.lock_or_recover();
+            if state.completed {
+                None
+            } else {
+                let wake = Arc::new(TaskWake {
+                    // SAFETY: the caller retains the descriptor during registration.
+                    waker: unsafe { OwnedWaker::retain(&*waker) },
+                    armed: AtomicBool::new(true),
+                });
+                state.waiters.retain(|waiter| waiter.strong_count() != 0);
+                state.waiters.push(Arc::downgrade(&wake));
+                Some(wake)
+            }
+        };
+        if wake.is_none() {
+            // SAFETY: the caller keeps this descriptor valid until return.
+            unsafe { ((*waker).wake)((*waker).context) };
         }
-    };
-    if complete {
-        wake.waker.wake();
+        Self { task, wake }
     }
-    Box::into_raw(Box::new(HewCheckedTaskWait { task, wake }))
 }
 
 /// # Safety
@@ -505,7 +515,7 @@ pub unsafe extern "C" fn hew_checked_scope_wait_new(
         let mut task = (*scope).tasks;
         while !task.is_null() {
             retain(task);
-            tasks.push(*Box::from_raw(hew_checked_task_wait_new(task, waker)));
+            tasks.push(HewCheckedTaskWait::new(task, waker));
             task = (*task).next;
         }
     }

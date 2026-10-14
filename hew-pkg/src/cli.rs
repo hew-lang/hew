@@ -222,7 +222,7 @@ pub enum NamespaceAction {
 }
 
 /// Execute a package-manager subcommand dispatched from the `hew` CLI.
-pub fn dispatch(cmd: &PkgCommand) {
+pub fn dispatch(cmd: &PkgCommand, check_generation: impl Fn(&Path) -> Result<(), String>) {
     let cfg = load_config_or_exit();
     let registry = registry::Registry::with_root(config::registry_path(&cfg));
 
@@ -243,7 +243,13 @@ pub fn dispatch(cmd: &PkgCommand) {
             registry: reg,
             local,
             dry_run,
-        } => cmd_publish(&registry, reg.as_deref(), *local, *dry_run),
+        } => cmd_publish(
+            &registry,
+            reg.as_deref(),
+            *local,
+            *dry_run,
+            &check_generation,
+        ),
         PkgCommand::List => cmd_list(&registry),
         PkgCommand::Search {
             query,
@@ -947,7 +953,7 @@ fn cmd_install(
         });
 
         // Build the local symlink path: replace :: with / separators.
-        let link = match local_link_path(&local_packages, name) {
+        let link = match crate::paths::package_link(&local_packages, name) {
             Ok(link) => link,
             Err(e) => {
                 eprintln!("hew install: {e}");
@@ -1714,6 +1720,7 @@ fn cmd_publish(
     registry_name: Option<&str>,
     local: bool,
     dry_run: bool,
+    check_generation: &impl Fn(&Path) -> Result<(), String>,
 ) {
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let manifest_path = cwd.join("hew.toml");
@@ -1728,6 +1735,11 @@ fn cmd_publish(
             std::process::exit(1);
         }
     };
+
+    if let Err(error) = check_generation(&cwd) {
+        eprintln!("hew publish: {error}");
+        std::process::exit(1);
+    }
 
     // Validate required fields for publishing.
     let missing = manifest::validate_for_publish(&m);
@@ -1852,6 +1864,20 @@ fn cmd_publish(
         }
     };
     let root = cwd.canonicalize().unwrap_or_else(|_| cwd.clone());
+    for step in &m.generate {
+        let generated =
+            crate::generate::output_files(&root.join(&step.outputs)).unwrap_or_else(|error| {
+                eprintln!("hew publish: {error}");
+                std::process::exit(1);
+            });
+        for path in generated.keys() {
+            let relative = Path::new(&step.outputs).join(path);
+            if !pack_result.files.iter().any(|file| file == &relative) {
+                eprintln!("hew publish: E_PUBLISH_MISSING_GENERATED: generated source `{}` is excluded from the package", relative.display());
+                std::process::exit(1);
+            }
+        }
+    }
     for input in checked.inputs.iter().filter(|input| input.sha256.is_some()) {
         if let Ok(relative) = input.path.strip_prefix(&root) {
             if !pack_result.files.iter().any(|file| file == relative) {
@@ -2317,7 +2343,7 @@ fn cmd_remove(package: &str) {
     match manifest::remove_dependency(&manifest_path, package) {
         Ok(true) => {
             // Remove local project package materialization if it exists.
-            let link = match local_link_path(&project_packages_path(&cwd), package) {
+            let link = match crate::paths::package_link(&project_packages_path(&cwd), package) {
                 Ok(link) => link,
                 Err(e) => {
                     eprintln!("warning: could not remove local materialization for {package}: {e}");
@@ -2927,16 +2953,6 @@ fn cmd_index_list(package: &str) {
 
 fn project_packages_path(cwd: &Path) -> PathBuf {
     cwd.join(".hew").join("packages")
-}
-
-fn local_link_path(base: &Path, package_name: &str) -> Result<PathBuf, String> {
-    if !is_valid_package_name(package_name) {
-        return Err(invalid_package_name_message(package_name));
-    }
-
-    Ok(package_name
-        .split('.')
-        .fold(base.to_path_buf(), |path, segment| path.join(segment)))
 }
 
 #[derive(Debug, Clone, Copy)]

@@ -388,6 +388,9 @@ pub unsafe extern "C" fn hew_args_count() -> i32 {
 
 /// Get the command-line argument at `index`.
 ///
+/// Build-time generators see `hew generate` at index zero, independent of
+/// their temporary executable path. All supplied arguments retain their indices.
+///
 /// Returns an owned managed string, or null if the
 /// index is out of bounds. The caller must free the result with `hew_string_drop`.
 ///
@@ -404,6 +407,9 @@ pub unsafe extern "C" fn hew_args_get(index: i32) -> *mut HewString {
     let idx = index as usize;
     if idx >= args.len() {
         return std::ptr::null_mut();
+    }
+    if idx == 0 && crate::generator::enabled() {
+        return string_from_str("hew generate");
     }
     string_from_str(&args[idx])
 }

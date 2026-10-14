@@ -1,6 +1,10 @@
-//! Inbound ask worker bound and node-stop drain tests.
+//! Inbound ask admission and node-stop drain tests.
 
 use super::*;
+use crate::hew_node::inbound::{
+    handle_inbound_ask, send_reply_envelope, INBOUND_ASK_ERROR_REPLY_HOOK,
+    INBOUND_ASK_REPLY_ADMISSION_HOOK, INBOUND_ROUTER_AFTER_INCREMENT_HOOK,
+};
 
 #[test]
 fn secondary_node_stop_does_not_fail_current_node_pending_asks() {
@@ -73,370 +77,6 @@ fn send_reply_envelope_bails_before_touching_stopping_connmgr() {
     crate::registry::hew_registry_clear();
 }
 
-// ── Inbound ask worker bound tests ─────────────────────────────────────
-//
-// These tests verify the backpressure mechanism added to node_inbound_router.
-// The mechanism prevents a remote peer from exhausting OS thread count or
-// virtual memory by flooding inbound asks.
-//
-// All of these tests acquire the shared runtime test lock so they serialize with any
-// other test that runs a node or manipulates INBOUND_ASK_ACTIVE.
-
-/// `InboundAskGuard` decrements `INBOUND_ASK_ACTIVE` and the per-manager
-/// counter exactly once on drop, including when the enclosing scope exits
-/// via panic.
-#[test]
-fn inbound_ask_guard_decrements_on_drop() {
-    let _lock = crate::runtime_test_guard();
-    // Reset to a known value; restore on exit.
-    let saved = INBOUND_ASK_ACTIVE.swap(1, Ordering::AcqRel);
-    let per_mgr = Arc::new(AtomicUsize::new(1));
-    {
-        let _guard = InboundAskGuard(Arc::clone(&per_mgr));
-        assert_eq!(
-            INBOUND_ASK_ACTIVE.load(Ordering::Acquire),
-            1,
-            "global counter must be 1 while guard is live"
-        );
-        assert_eq!(
-            per_mgr.load(Ordering::Acquire),
-            1,
-            "per-mgr counter must be 1 while guard is live"
-        );
-    }
-    // Guard dropped — both counters must be 0.
-    let after_global = INBOUND_ASK_ACTIVE.load(Ordering::Acquire);
-    let after_per_mgr = per_mgr.load(Ordering::Acquire);
-    INBOUND_ASK_ACTIVE.store(saved, Ordering::Release);
-    assert_eq!(
-        after_global, 0,
-        "InboundAskGuard must decrement INBOUND_ASK_ACTIVE on drop"
-    );
-    assert_eq!(
-        after_per_mgr, 0,
-        "InboundAskGuard must decrement per-manager counter on drop"
-    );
-}
-
-/// Two guards decrement independently (one per spawned thread).
-#[test]
-fn inbound_ask_guard_pair_decrements_twice() {
-    let _lock = crate::runtime_test_guard();
-    let saved = INBOUND_ASK_ACTIVE.swap(2, Ordering::AcqRel);
-    let per_mgr1 = Arc::new(AtomicUsize::new(1));
-    let per_mgr2 = Arc::new(AtomicUsize::new(1));
-    let g1 = InboundAskGuard(Arc::clone(&per_mgr1));
-    let g2 = InboundAskGuard(Arc::clone(&per_mgr2));
-    drop(g1);
-    assert_eq!(
-        INBOUND_ASK_ACTIVE.load(Ordering::Acquire),
-        1,
-        "first guard must decrement global by 1"
-    );
-    assert_eq!(
-        per_mgr1.load(Ordering::Acquire),
-        0,
-        "first guard must decrement its per-mgr counter to 0"
-    );
-    drop(g2);
-    assert_eq!(
-        INBOUND_ASK_ACTIVE.load(Ordering::Acquire),
-        0,
-        "second guard must decrement global back to zero"
-    );
-    assert_eq!(
-        per_mgr2.load(Ordering::Acquire),
-        0,
-        "second guard must decrement its per-mgr counter to 0"
-    );
-    INBOUND_ASK_ACTIVE.store(saved, Ordering::Release);
-}
-
-/// When `INBOUND_ASK_ACTIVE` is saturated to `INBOUND_ASK_WORKER_LIMIT` the
-/// optimistic-increment + revert logic correctly prevents over-commitment.
-///
-/// This test directly exercises the counter-check branch used in
-/// `node_inbound_router` without needing a live transport.
-#[test]
-fn inbound_ask_worker_limit_rejects_at_capacity() {
-    let _lock = crate::runtime_test_guard();
-    let saved = INBOUND_ASK_ACTIVE.swap(INBOUND_ASK_WORKER_LIMIT, Ordering::AcqRel);
-
-    // Simulate what node_inbound_router does for an inbound ask.
-    let prev = INBOUND_ASK_ACTIVE.fetch_add(1, Ordering::AcqRel);
-    let at_limit = prev >= INBOUND_ASK_WORKER_LIMIT;
-    if at_limit {
-        INBOUND_ASK_ACTIVE.fetch_sub(1, Ordering::AcqRel);
-    }
-
-    // Must have detected the limit and reverted.
-    assert!(
-        at_limit,
-        "should detect limit when counter == INBOUND_ASK_WORKER_LIMIT"
-    );
-    assert_eq!(
-        INBOUND_ASK_ACTIVE.load(Ordering::Acquire),
-        INBOUND_ASK_WORKER_LIMIT,
-        "counter must be reverted to the limit after rejection"
-    );
-
-    INBOUND_ASK_ACTIVE.store(saved, Ordering::Release);
-}
-
-/// When `INBOUND_ASK_ACTIVE` is one below the limit, a new ask is accepted.
-#[test]
-fn inbound_ask_worker_limit_accepts_below_capacity() {
-    let _lock = crate::runtime_test_guard();
-    let saved = INBOUND_ASK_ACTIVE.swap(INBOUND_ASK_WORKER_LIMIT - 1, Ordering::AcqRel);
-
-    let prev = INBOUND_ASK_ACTIVE.fetch_add(1, Ordering::AcqRel);
-    let at_limit = prev >= INBOUND_ASK_WORKER_LIMIT;
-    if at_limit {
-        INBOUND_ASK_ACTIVE.fetch_sub(1, Ordering::AcqRel);
-    }
-
-    assert!(!at_limit, "ask just below limit must be accepted");
-    assert_eq!(
-        INBOUND_ASK_ACTIVE.load(Ordering::Acquire),
-        INBOUND_ASK_WORKER_LIMIT,
-        "accepted ask increments counter to limit"
-    );
-
-    // Release the slot we acquired (simulating the InboundAskGuard).
-    INBOUND_ASK_ACTIVE.fetch_sub(1, Ordering::AcqRel);
-    INBOUND_ASK_ACTIVE.store(saved, Ordering::Release);
-}
-
-/// End-to-end: inbound ask counter is bounded during a real two-node ask
-/// round-trip. After the ask completes the worker slot is released and the
-/// counter returns to its pre-ask value.
-#[cfg(feature = "quic")]
-#[test]
-fn inbound_ask_active_counter_returns_to_baseline_after_round_trip() {
-    let _guard = crate::runtime_test_guard();
-    let _real_sched;
-    crate::registry::hew_registry_clear();
-    register_test_u32_codec(test_dispatch(), 1);
-
-    // Cross-bound SPKI→NodeId credentials → Strict authorized connection.
-    let (node1, _node1_port, node2, node2_port) = start_authorized_quic_mesh_pair(320, 321);
-
-    _real_sched = init_real_scheduler();
-
-    // Spawn a u32-echo actor on node2.
-    crate::pid::hew_pid_set_local_node(321);
-    let echo_actor = spawn_remote_test_actor(ask_probe_dispatch);
-    crate::pid::hew_pid_set_local_node(320);
-    assert!(!echo_actor.is_null(), "actor spawn failed");
-    // SAFETY: the actor was just spawned successfully and remains valid here.
-    let actor_id = unsafe { (*echo_actor).id };
-    assert_eq!(crate::pid::hew_pid_node(actor_id), 321);
-
-    let connect_addr = CString::new(format!("321@127.0.0.1:{node2_port}")).unwrap();
-    // SAFETY: node1 and the connect address are valid for this connection attempt.
-    unsafe { connect_with_retry(node1.as_ptr(), &connect_addr) };
-    // SAFETY: both node pointers remain valid until the end of the test.
-    unsafe { wait_for_handshake(node1.as_ptr(), node2.as_ptr()) };
-
-    // Record the counter before the ask so we can verify it returns to baseline.
-    let baseline = INBOUND_ASK_ACTIVE.load(Ordering::Acquire);
-
-    let payload: u32 = 0xDEAD_BEEF;
-    let target = remote_pid_for_node(&node2, actor_id);
-    // SAFETY: payload is a valid u32 on the stack; its address is valid for this call.
-    let (_, status) = unsafe {
-        ask_for_test(
-            &raw const target,
-            test_dispatch(),
-            1,
-            std::ptr::from_ref(&payload).cast_mut().cast::<c_void>(),
-            std::mem::size_of::<u32>(),
-            NO_ASK_DEADLINE_MS,
-            std::mem::size_of::<u32>(),
-        )
-    };
-    assert!(status == AskError::None as i32, "remote ask must succeed");
-
-    // After the ask completes the handler thread exits, dropping
-    // InboundAskGuard; wait for the count to return to baseline.
-    poll_until(|_| {
-        let v = INBOUND_ASK_ACTIVE.load(Ordering::Acquire);
-        if v == baseline {
-            true
-        } else {
-            thread::sleep(Duration::from_millis(10));
-            false
-        }
-    });
-    assert!(
-        INBOUND_ASK_ACTIVE.load(Ordering::Acquire) <= INBOUND_ASK_WORKER_LIMIT,
-        "active worker count must never exceed INBOUND_ASK_WORKER_LIMIT"
-    );
-
-    // SAFETY: actor and nodes were allocated in this test and are still valid here.
-    unsafe {
-        let _ = crate::actor::hew_actor_free(echo_actor);
-        assert_eq!(hew_node_stop(node1.as_ptr()), 0);
-        assert_eq!(hew_node_stop(node2.as_ptr()), 0);
-    }
-    crate::registry::hew_registry_clear();
-}
-
-// ── Over-limit rejection tests ────────────────────────────────────────
-//
-// These tests verify the fail-closed semantics of the worker-limit
-// rejection path for both void and non-void remote asks.
-//
-// When INBOUND_ASK_ACTIVE is artificially saturated to
-// INBOUND_ASK_WORKER_LIMIT the inbound router sends a rejection reply
-// (HEW_REPLY_REJECT_MSG_TYPE).  The receiving node's connection reader
-// calls `fail_remote_reply`, which sets ReplyStatus::Failed with reason
-// WorkerAtCapacity so that `hew_node_api_ask` returns the precise
-// discriminant — not a false-success void sentinel, and not the generic
-// ConnectionDropped that indicates a wire-level failure.
-
-/// Over-limit rejection of a **void** remote ask returns null +
-/// `WorkerAtCapacity` (not the void-success sentinel, not `ConnectionDropped`).
-#[cfg(feature = "quic")]
-#[test]
-fn over_limit_void_ask_fails_closed_with_worker_at_capacity() {
-    let _guard = crate::runtime_test_guard();
-    let _real_sched;
-    crate::registry::hew_registry_clear();
-
-    // Cross-bound SPKI→NodeId credentials → Strict authorized connection.
-    let (node1, _node1_port, node2, node2_port) = start_authorized_quic_mesh_pair(322, 323);
-    _real_sched = init_real_scheduler();
-
-    // Spawn a void-reply actor on node2.
-    crate::pid::hew_pid_set_local_node(323);
-    let actor = spawn_remote_test_actor(void_ask_probe_dispatch);
-    crate::pid::hew_pid_set_local_node(322);
-    assert!(!actor.is_null(), "actor spawn failed");
-    // SAFETY: actor was just spawned and is valid here.
-    let actor_id = unsafe { (*actor).id };
-    assert_eq!(crate::pid::hew_pid_node(actor_id), 323);
-
-    let connect_addr = CString::new(format!("323@127.0.0.1:{node2_port}")).unwrap();
-    // SAFETY: node1 and connect_addr are valid for this call.
-    unsafe { connect_with_retry(node1.as_ptr(), &connect_addr) };
-    // SAFETY: both node pointers remain valid until the end of the test.
-    unsafe { wait_for_handshake(node1.as_ptr(), node2.as_ptr()) };
-
-    // Saturate the worker counter on node2 (the answering node) so the
-    // next inbound ask is rejected.
-    let saved = INBOUND_ASK_ACTIVE.swap(INBOUND_ASK_WORKER_LIMIT, Ordering::AcqRel);
-
-    // Void ask: reply_size == 0. Before the fix this would have returned
-    // the void-success sentinel because the rejection sent an empty payload
-    // which remote_reply_data_to_ptr mistook for a void success.
-    let target = remote_pid_for_node(&node2, actor_id);
-    // SAFETY: null payload / size-0 are valid; this is a void ask.
-    let (_, status) = unsafe {
-        ask_for_test(
-            &raw const target,
-            test_dispatch(),
-            1,
-            ptr::null_mut(),
-            0,
-            NO_ASK_DEADLINE_MS,
-            0,
-        )
-    };
-    let err = status;
-
-    // Restore before any assertions so the teardown path is clean.
-    INBOUND_ASK_ACTIVE.store(saved, Ordering::Release);
-
-    assert!(
-        status != AskError::None as i32,
-        "over-limit void ask must return null (got non-null = false success)"
-    );
-    assert_eq!(
-        err,
-        AskError::WorkerAtCapacity as i32,
-        "over-limit void ask must report WorkerAtCapacity, not ConnectionDropped"
-    );
-
-    // SAFETY: actor and nodes remain valid until teardown here.
-    unsafe {
-        let _ = crate::actor::hew_actor_free(actor);
-        assert_eq!(hew_node_stop(node1.as_ptr()), 0);
-        assert_eq!(hew_node_stop(node2.as_ptr()), 0);
-    }
-    crate::registry::hew_registry_clear();
-}
-
-/// Over-limit rejection of a **non-void** remote ask returns null +
-/// `WorkerAtCapacity` (not `PayloadSizeMismatch` from the old empty-
-/// payload path, not `ConnectionDropped`, and not a spurious success).
-#[cfg(feature = "quic")]
-#[test]
-fn over_limit_nonvoid_ask_fails_closed_with_worker_at_capacity() {
-    let _guard = crate::runtime_test_guard();
-    let _real_sched;
-    crate::registry::hew_registry_clear();
-    register_test_u32_codec(test_dispatch(), 1);
-
-    // Cross-bound SPKI→NodeId credentials → Strict authorized connection.
-    let (node1, _node1_port, node2, node2_port) = start_authorized_quic_mesh_pair(324, 325);
-    _real_sched = init_real_scheduler();
-
-    // Spawn a u32-echo actor on node2.
-    crate::pid::hew_pid_set_local_node(325);
-    let actor = spawn_remote_test_actor(ask_probe_dispatch);
-    crate::pid::hew_pid_set_local_node(324);
-    assert!(!actor.is_null(), "actor spawn failed");
-    // SAFETY: actor was just spawned and is valid here.
-    let actor_id = unsafe { (*actor).id };
-    assert_eq!(crate::pid::hew_pid_node(actor_id), 325);
-
-    let connect_addr = CString::new(format!("325@127.0.0.1:{node2_port}")).unwrap();
-    // SAFETY: node1 and connect_addr are valid for this call.
-    unsafe { connect_with_retry(node1.as_ptr(), &connect_addr) };
-    // SAFETY: both node pointers remain valid until the end of the test.
-    unsafe { wait_for_handshake(node1.as_ptr(), node2.as_ptr()) };
-
-    // Saturate the worker counter on node2.
-    let saved = INBOUND_ASK_ACTIVE.swap(INBOUND_ASK_WORKER_LIMIT, Ordering::AcqRel);
-
-    let payload: u32 = 42;
-    let target = remote_pid_for_node(&node2, actor_id);
-    // SAFETY: payload is a valid u32; its address is valid for this call.
-    let (_, status) = unsafe {
-        ask_for_test(
-            &raw const target,
-            test_dispatch(),
-            1,
-            std::ptr::from_ref(&payload).cast_mut().cast::<c_void>(),
-            std::mem::size_of::<u32>(),
-            NO_ASK_DEADLINE_MS,
-            std::mem::size_of::<u32>(),
-        )
-    };
-    let err = status;
-
-    INBOUND_ASK_ACTIVE.store(saved, Ordering::Release);
-
-    assert!(
-        status != AskError::None as i32,
-        "over-limit non-void ask must return null"
-    );
-    assert_eq!(
-        err,
-        AskError::WorkerAtCapacity as i32,
-        "over-limit non-void ask must report WorkerAtCapacity (not PayloadSizeMismatch)"
-    );
-
-    // SAFETY: actor and nodes remain valid until teardown here.
-    unsafe {
-        let _ = crate::actor::hew_actor_free(actor);
-        assert_eq!(hew_node_stop(node1.as_ptr()), 0);
-        assert_eq!(hew_node_stop(node2.as_ptr()), 0);
-    }
-    crate::registry::hew_registry_clear();
-}
-
 // ── Regression: race-window fixes ────────────────────────────────────
 
 /// After `hew_connmgr_mark_stopping` is called, `node_inbound_router`
@@ -444,8 +84,7 @@ fn over_limit_nonvoid_ask_fails_closed_with_worker_at_capacity() {
 ///
 /// This test marks the connection manager as stopping, then calls the
 /// inbound router directly with an ask-shaped message and asserts that
-/// neither `INBOUND_ASK_ACTIVE` nor the per-manager counter increases —
-/// no worker was spawned.
+/// the per-manager counter stays at zero: no request was admitted.
 #[test]
 fn inbound_router_no_spawn_after_shutdown_started() {
     let _guard = crate::runtime_test_guard();
@@ -464,10 +103,6 @@ fn inbound_router_no_spawn_after_shutdown_started() {
     // SAFETY: node was just started and conn_mgr is valid here.
     unsafe { connection::hew_connmgr_mark_stopping((*node.as_ptr()).conn_mgr) };
 
-    // The per-manager counter is fresh for this node and must be zero.
-    // The global counter may be non-zero due to other tests sharing the
-    // process — record it and verify it is UNCHANGED after the router call.
-    let global_before = INBOUND_ASK_ACTIVE.load(Ordering::Acquire);
     assert_eq!(
         per_mgr_active.load(Ordering::Acquire),
         0,
@@ -480,22 +115,16 @@ fn inbound_router_no_spawn_after_shutdown_started() {
     unsafe {
         node_inbound_router(
             0,
-            1,
+            c"tests.Counter.handle".as_ptr(),
             ptr::null_mut(),
             0,
-            /*request_id=*/ 1,
-            /*source_node_id=*/ 1,
+            1,
+            1,
             (*node.as_ptr()).conn_mgr,
+            crate::node_identity::HewNodeId::default(),
         );
     }
 
-    // The router increments both counters before it spawns a worker, so a
-    // spawn it should have refused shows in them the moment it returns.
-    assert_eq!(
-        INBOUND_ASK_ACTIVE.load(Ordering::Acquire),
-        global_before,
-        "global counter must not change after shutdown has started"
-    );
     assert_eq!(
         per_mgr_active.load(Ordering::Acquire),
         0,
@@ -510,9 +139,8 @@ fn inbound_router_no_spawn_after_shutdown_started() {
 /// `hew_node_stop` must return only after the per-manager inbound-ask
 /// active counter reaches zero (the drain postcondition).
 ///
-/// This test artificially inflates both `INBOUND_ASK_ACTIVE` and the
-/// per-conn_mgr counter by one to simulate an in-flight worker, lets a
-/// background thread decrement them once stop is under way, and then asserts
+/// This test reserves one per-manager drain reference, lets a background
+/// thread release it once stop is under way, and then asserts
 /// that stop waited for the decrement (counter is zero on return).
 #[test]
 fn node_stop_drains_inbound_ask_active() {
@@ -527,16 +155,11 @@ fn node_stop_drains_inbound_ask_active() {
         unsafe { connection::hew_connmgr_inbound_ask_active((*node.as_ptr()).conn_mgr) }
             .expect("conn_mgr must have inbound_ask_active");
 
-    // Simulate one active inbound-ask worker: increment both counters as
-    // the real spawn path does. The worker finishes only once stop has
-    // started, so stop can return only by waiting for it.
-    let global_saved = INBOUND_ASK_ACTIVE.fetch_add(1, Ordering::AcqRel);
     per_mgr_active.fetch_add(1, Ordering::AcqRel);
     let per_mgr_clone = Arc::clone(&per_mgr_active);
     let (stopping_tx, stopping_rx) = std::sync::mpsc::channel::<()>();
     let decrement_handle = thread::spawn(move || {
         stopping_rx.recv().expect("stop start signal");
-        INBOUND_ASK_ACTIVE.fetch_sub(1, Ordering::AcqRel);
         per_mgr_clone.fetch_sub(1, Ordering::AcqRel);
     });
 
@@ -554,11 +177,6 @@ fn node_stop_drains_inbound_ask_active() {
         0,
         "per-manager counter must be zero after node_stop"
     );
-    assert_eq!(
-        INBOUND_ASK_ACTIVE.load(Ordering::Acquire),
-        global_saved,
-        "global INBOUND_ASK_ACTIVE must be back to its pre-test value"
-    );
 
     crate::registry::hew_registry_clear();
 }
@@ -569,8 +187,8 @@ fn node_stop_waits_to_free_connmgr_until_inbound_ask_error_worker_drains() {
 
     impl Drop for HookResetGuard {
         fn drop(&mut self) {
-            INBOUND_ASK_ERROR_FEATURE_FLAGS_HOOK.release();
-            INBOUND_ASK_ERROR_FEATURE_FLAGS_HOOK.reset();
+            INBOUND_ASK_ERROR_REPLY_HOOK.release();
+            INBOUND_ASK_ERROR_REPLY_HOOK.reset();
             NODE_STOP_BEFORE_CONNMGR_FREE_HOOK.release();
             NODE_STOP_BEFORE_CONNMGR_FREE_HOOK.reset();
         }
@@ -581,7 +199,7 @@ fn node_stop_waits_to_free_connmgr_until_inbound_ask_error_worker_drains() {
     let _hook_reset = HookResetGuard;
     crate::registry::hew_registry_clear();
 
-    INBOUND_ASK_ERROR_FEATURE_FLAGS_HOOK.arm(true);
+    INBOUND_ASK_ERROR_REPLY_HOOK.arm(true);
     NODE_STOP_BEFORE_CONNMGR_FREE_HOOK.arm(false);
 
     let (node1, _node1_port, node2, node2_port) = start_authorized_tcp_pair(353, 354);
@@ -610,21 +228,27 @@ fn node_stop_waits_to_free_connmgr_until_inbound_ask_error_worker_drains() {
     // SAFETY: actor was spawned above and remains valid while stopped here.
     unsafe { crate::actor::hew_actor_stop(actor) };
 
-    // SAFETY: conn_mgr is live and source_node_id identifies the connected peer.
-    unsafe {
-        node_inbound_router(
-            actor_id,
-            1,
-            ptr::null_mut(),
-            0,
-            /*request_id=*/ 1,
-            /*source_node_id=*/ 353,
-            (*node2.as_ptr()).conn_mgr,
-        );
-    }
+    // Run the router on its reader thread while the rejection publication is held.
+    // SAFETY: node2 retains the manager until both test threads have joined.
+    let manager = unsafe { (*node2.as_ptr()).conn_mgr } as usize;
+    let router = thread::spawn(move || {
+        // SAFETY: the manager and peer are live; the empty payload is intentional.
+        unsafe {
+            node_inbound_router(
+                actor_id,
+                c"tests.Counter.handle".as_ptr(),
+                ptr::null_mut(),
+                0,
+                1,
+                353,
+                manager as *mut connection::HewConnMgr,
+                crate::node_identity::HewNodeId::default(),
+            );
+        }
+    });
 
     assert!(
-        INBOUND_ASK_ERROR_FEATURE_FLAGS_HOOK.wait_until_entered(),
+        INBOUND_ASK_ERROR_REPLY_HOOK.wait_until_entered(),
         "inbound ask error path never reached the feature-flags lookup hook"
     );
     assert_eq!(
@@ -647,7 +271,8 @@ fn node_stop_waits_to_free_connmgr_until_inbound_ask_error_worker_drains() {
         "hew_node_stop must not reach conn_mgr free while an inbound-ask error worker still holds the manager"
     );
 
-    INBOUND_ASK_ERROR_FEATURE_FLAGS_HOOK.release();
+    INBOUND_ASK_ERROR_REPLY_HOOK.release();
+    router.join().expect("router completed");
 
     assert!(
         NODE_STOP_BEFORE_CONNMGR_FREE_HOOK.wait_until_entered(),
@@ -727,12 +352,13 @@ fn node_stop_drain_waits_for_router_wedged_after_counter_increment() {
         unsafe {
             node_inbound_router(
                 0,
-                1,
+                c"tests.Counter.handle".as_ptr(),
                 ptr::null_mut(),
                 0,
-                /*request_id=*/ 1,
-                /*source_node_id=*/ 1,
+                1,
+                1,
                 conn_mgr_addr as *mut connection::HewConnMgr,
+                crate::node_identity::HewNodeId::default(),
             );
         }
     });
@@ -827,8 +453,8 @@ fn handle_inbound_ask_capture_safe_for_secondary_node_freed_connmgr() {
     struct HookResetGuard;
     impl Drop for HookResetGuard {
         fn drop(&mut self) {
-            INBOUND_ASK_FEATURE_FLAGS_CAPTURE_HOOK.release();
-            INBOUND_ASK_FEATURE_FLAGS_CAPTURE_HOOK.reset();
+            INBOUND_ASK_REPLY_ADMISSION_HOOK.release();
+            INBOUND_ASK_REPLY_ADMISSION_HOOK.reset();
         }
     }
 
@@ -838,7 +464,7 @@ fn handle_inbound_ask_capture_safe_for_secondary_node_freed_connmgr() {
     crate::registry::hew_registry_clear();
 
     // Wedge any worker that reaches the top-of-handler capture hook.
-    INBOUND_ASK_FEATURE_FLAGS_CAPTURE_HOOK.arm(true);
+    INBOUND_ASK_REPLY_ADMISSION_HOOK.arm(true);
 
     // node1 starts FIRST and keeps CURRENT_NODE; node2 remains the secondary.
     let (node1, _node1_port, node2, node2_port) = start_authorized_tcp_pair(363, 364);
@@ -885,19 +511,18 @@ fn handle_inbound_ask_capture_safe_for_secondary_node_freed_connmgr() {
     let worker_handle = thread::spawn(move || {
         handle_inbound_ask(
             actor_id,
-            /*msg_type=*/ 1,
-            /*payload=*/ &[],
-            /*request_id=*/ 1,
-            /*source_node_id=*/ 363,
-            // SAFETY: pointer ferried as usize; valid until freed by the
-            // stop below, after which the fix guarantees it is never read.
+            "tests.Counter.handle",
+            &[],
+            1,
+            363,
             SendConnMgr(conn_mgr_addr as *mut connection::HewConnMgr),
             shutdown_started,
+            crate::actor_caller::HewCallerStamp::default(),
         );
     });
 
     assert!(
-        INBOUND_ASK_FEATURE_FLAGS_CAPTURE_HOOK.wait_until_entered(),
+        INBOUND_ASK_REPLY_ADMISSION_HOOK.wait_until_entered(),
         "straggler worker never reached the feature-flags capture hook"
     );
 
@@ -913,7 +538,7 @@ fn handle_inbound_ask_capture_safe_for_secondary_node_freed_connmgr() {
     // it observes node2's `shutdown_started == true` and returns `None`
     // WITHOUT dereferencing the freed manager. (ASan would fire here on the
     // old `*guard == 0`-only capture.)
-    INBOUND_ASK_FEATURE_FLAGS_CAPTURE_HOOK.release();
+    INBOUND_ASK_REPLY_ADMISSION_HOOK.release();
     worker_handle
         .join()
         .expect("straggler worker panicked after secondary-node teardown");

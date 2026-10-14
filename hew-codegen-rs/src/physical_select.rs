@@ -46,7 +46,6 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         let operation =
             suspend::call_value(&self.builder, start, &[waker.into()], "select.operation")?
                 .into_pointer_value();
-        frame.carry(self.ctx, &self.builder, operation, "select.operation.slot")?;
         let context = get_or_declare_external(
             self.llvm,
             "hew_checked_task_select_set_context",
@@ -165,9 +164,6 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         self.builder.position_at_end(pending);
         frame.suspend(self.ctx, &self.builder, poll, destroyed)?;
         self.builder.position_at_end(destroyed);
-        self.builder
-            .build_store(frame.destroying, self.ctx.bool_type().const_int(1, false))
-            .llvm_ctx("mark destroyed selection frame")?;
         self.builder
             .build_unconditional_branch(cancelled)
             .llvm_ctx("run selection cancellation cleanup")?;

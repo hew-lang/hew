@@ -3,10 +3,7 @@
 //! optional timer last. Observing readiness never consumes a source: the
 //! winning branch performs the ordinary await or receive.
 
-use super::{
-    checked, hew_checked_task_wait_new, retain, HewCheckedTaskWait, HewTask, COMPLETION_ORDER,
-    PENDING, TAKEN,
-};
+use super::{checked, retain, HewCheckedTaskWait, HewTask, COMPLETION_ORDER, PENDING, TAKEN};
 use crate::actor_call_native::{hew_actor_call_poll, HewActorCall};
 use crate::actor_native::wait_graph::{
     hew_actor_wait_edge_fault, hew_actor_wait_edge_free, hew_actor_wait_edge_pending,
@@ -150,7 +147,7 @@ pub unsafe extern "C" fn hew_checked_task_select_add_task(
     unsafe {
         let selection = &mut *selection;
         retain(task);
-        let wait = *Box::from_raw(hew_checked_task_wait_new(task, selection.waker));
+        let wait = HewCheckedTaskWait::new(task, selection.waker);
         selection.sources.push(SelectSource::Task(wait));
     }
 }

@@ -3,6 +3,10 @@
 use super::*;
 
 impl LowerCtx {
+    pub(super) fn signatures(&self) -> hew_types::check::FnSigView<'_> {
+        hew_types::check::FnSigView::new(&self.fn_sigs, &self.fn_sig_keys, &self.builtin_fn_sigs)
+    }
+
     #[allow(
         clippy::too_many_lines,
         reason = "initializes the complete checker-to-HIR typed context atomically"
@@ -19,6 +23,7 @@ impl LowerCtx {
         seed_builtin_type_classes(&mut type_classes);
         Self {
             ids: IdGen::default(),
+            checked_sites: HashMap::new(),
             binding_scopes: Vec::new(),
             checked_scopes: Vec::new(),
             synthetic_binding_uses: HashMap::new(),
@@ -38,10 +43,10 @@ impl LowerCtx {
             // Resolution spellings remain a checker lookup index. Declaration
             // identity comes only from `tc_output.defs`; HIR must never
             // manufacture a second canonical-string namespace here.
-            fn_sigs_by_path: tc_output.fn_sigs_by_path(),
+            fn_sigs: tc_output.fn_sigs.clone(),
+            fn_sig_keys: tc_output.fn_sig_keys.clone(),
+            builtin_fn_sigs: tc_output.builtin_fn_sigs.clone(),
             direct_call_targets: tc_output.direct_call_targets.clone(),
-            trait_method_ids: tc_output.trait_method_ids.clone(),
-            trait_method_ids_by_binding: tc_output.trait_method_ids_by_binding.clone(),
             impl_method_declaration_ids: tc_output.impl_method_declaration_ids.clone(),
             imported_impl_body_facts: tc_output.imported_impl_body_facts.clone(),
             impl_method_symbol_collisions: impl_method_symbol_collisions(&tc_output.defs),
@@ -160,7 +165,8 @@ impl LowerCtx {
             machine_ctor_registry: HashMap::new(),
             const_registry: HashMap::new(),
             source_const_entries: HashMap::new(),
-            folded_integer_consts: HashMap::new(),
+            folded_constants: HashMap::new(),
+            folding_constants: HashSet::new(),
             enum_variants_by_name: HashMap::new(),
             indirect_enum_names: HashSet::new(),
             type_member_tys: HashMap::new(),
@@ -170,7 +176,6 @@ impl LowerCtx {
             target_arch,
             current_impl_self_ty: None,
             current_fn_type_params: HashSet::new(),
-            trait_bindings: tc_output.trait_bindings.clone(),
             trait_defaults: tc_output.trait_defaults.clone(),
             root_visible_source_type_short_names: HashSet::new(),
             file_import_root_type_aliases: HashMap::new(),
@@ -544,6 +549,12 @@ impl LowerCtx {
     #[inline]
     pub(super) fn mk_key(&self, span: &Span) -> SpanKey {
         SpanKey::in_module(span, self.current_module_idx)
+    }
+
+    pub(super) fn source_site(&mut self, span: &Span) -> SiteId {
+        let site = self.ids.site();
+        self.checked_sites.insert(site, self.mk_key(span));
+        site
     }
 
     /// Fail-closed guard for the refutable enum-struct consumers (`if let` /

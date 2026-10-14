@@ -12,6 +12,10 @@ pub type Box<T> {
     value: T;
 }
 
+pub type Concrete {
+    value: string;
+}
+
 // Deliberately shares both its leaf name and generic shape with
 // `left::render::Parcel`.  Its payload has a distinct owned shape.
 pub enum Parcel<T> {
@@ -31,8 +35,8 @@ pub fn default_value<T: Render>(value: T) -> string {
     value.provided()
 }
 
-pub fn specialized_box() -> Box<string> {
-    Box { value: "x" }
+pub fn concrete_box() -> Concrete {
+    Concrete { value: "x" }
 }
 
 pub fn generic_box() -> Box<bool> {
@@ -57,8 +61,8 @@ impl<T> Render for Box<T> {
     }
 }
 
-impl Render for Box<string> {
+impl Render for Concrete {
     fn render(self) -> string {
-        "right-specialized"
+        "right-concrete"
     }
 }

@@ -284,13 +284,16 @@ impl LowerCtx {
         func: &FnDecl,
         item_span: &Span,
     ) -> ItemId {
-        let id = self.register_fn_entry(symbol, func);
-        if let Some(declaration) =
-            self.source_declaration(item_span, hew_types::DeclarationKind::Function, 0)
-        {
-            if let Some(entry) = self.fn_registry.get(symbol).cloned() {
-                self.source_fn_entries
-                    .insert(declaration, (symbol.to_string(), entry));
+        let declaration =
+            self.source_declaration(item_span, hew_types::DeclarationKind::Function, 0);
+        let symbol = declaration.map_or_else(
+            || symbol.to_string(),
+            |declaration| self.defs.linkage_name(declaration, symbol),
+        );
+        let id = self.register_fn_entry(&symbol, func);
+        if let Some(declaration) = declaration {
+            if let Some(entry) = self.fn_registry.get(&symbol).cloned() {
+                self.source_fn_entries.insert(declaration, (symbol, entry));
             }
         }
         id
@@ -302,8 +305,23 @@ impl LowerCtx {
         method: &FnDecl,
         impl_type_params: &[hew_types::ParamHead],
     ) {
-        let symbol =
-            crate::node::HirImplBlock::method_symbol(self_type_name, method.name.name.as_str());
+        let symbol = self
+            .source_declaration(&method.fn_span, hew_types::DeclarationKind::ImplMethod, 0)
+            .map_or_else(
+                || {
+                    crate::node::HirImplBlock::method_symbol(
+                        self_type_name,
+                        method.name.name.as_str(),
+                    )
+                },
+                |declaration| {
+                    self.emitted_impl_method_symbol(
+                        declaration,
+                        self_type_name,
+                        method.name.name.as_str(),
+                    )
+                },
+            );
         self.register_impl_method_fn_entry_at(method, impl_type_params, &symbol);
     }
 

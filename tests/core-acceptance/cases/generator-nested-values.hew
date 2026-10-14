@@ -38,7 +38,7 @@ fn main() {
     };
     {
         let values = started("closure");
-        let _callback: fn[once]() -> () = move || {
+        let _callback: fn[once, suspends]() -> () = move || {
             let _held = values;
         };
     };

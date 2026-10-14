@@ -172,7 +172,7 @@ impl Checker {
                 Ty::option(Ty::Var(TypeVar::fresh()))
             }
             Expr::Ident(name) => {
-                let ty = self.synthesize_identifier(name.name.as_str(), span);
+                let ty = self.synthesize_identifier(*name, span);
                 self.record_value_path_resolution(expr, span);
                 ty
             }
@@ -198,11 +198,8 @@ impl Checker {
             }
             Expr::GenericApplySuffix { target, type_args } => match &target.0 {
                 Expr::Ident(name) => {
-                    let ty = self.synthesize_identifier_with_type_args(
-                        name.name.as_str(),
-                        Some(type_args),
-                        span,
-                    );
+                    let ty =
+                        self.synthesize_identifier_with_type_args(*name, Some(type_args), span);
                     if !matches!(ty, Ty::Error) {
                         self.record_value_path_resolution(&target.0, &target.1);
                     }
@@ -297,7 +294,11 @@ impl Checker {
 
             // Field access
             Expr::FieldAccess { object, field } => {
-                let ty = self.check_field_access(object, field.0.name.as_str(), span);
+                let ty = self
+                    .qualified_constant_type(object, field, span)
+                    .unwrap_or_else(|| {
+                        self.check_field_access(object, field.0.name.as_str(), span)
+                    });
                 if !matches!(&ty, Ty::Error) {
                     self.record_value_path_resolution(expr, span);
                     self.record_field_resolution(object, field);
@@ -383,8 +384,53 @@ impl Checker {
                 type_args,
                 base,
             } => {
+                let resolution = if path.segments.len() > 1 {
+                    self.scope_site().and_then(|site| {
+                        self.scopes
+                            .resolve(
+                                &self.env,
+                                site,
+                                super::super::scope::Namespace::Value,
+                                &path.segments,
+                            )
+                            .ok()
+                    })
+                } else {
+                    self.resolve_type_path(path)
+                };
+                if path.segments.len() > 1 {
+                    let declaration = match resolution {
+                        Some(super::super::scope::Resolution::Nominal(id)) => {
+                            Some(id.declaration())
+                        }
+                        Some(super::super::scope::Resolution::Variant(owner, _)) => owner
+                            .declaration(&self.defs)
+                            .map(crate::NominalId::declaration),
+                        _ => None,
+                    };
+                    if declaration.is_some_and(|id| !self.check_declaration_visible(id, span)) {
+                        return Ty::Error;
+                    }
+                }
+                let name = match resolution {
+                    Some(super::super::scope::Resolution::Nominal(id)) => {
+                        self.defs.path(id.declaration()).to_string()
+                    }
+                    Some(super::super::scope::Resolution::Variant(owner, _)) => {
+                        let owner = owner
+                            .declaration(&self.defs)
+                            .expect("variant owner declaration");
+                        format!(
+                            "{}::{}",
+                            self.defs.path(owner.declaration()),
+                            path.segments.last().expect("variant path").0
+                        )
+                    }
+                    _ => path.to_string(),
+                };
                 let ty = self.check_struct_init(
-                    &path.to_string(), // TRANSITION(P1): deleted by A1 commit 2
+                    &name,
+                    resolution,
                     fields,
                     type_args.as_deref(),
                     base.as_deref(),
@@ -476,6 +522,7 @@ impl Checker {
             // PostfixTry: expr? → unwrap Result/Option
             Expr::PostfixTry(inner) => {
                 let ty = self.synthesize(&inner.0, &inner.1);
+                self.record_receiver_output(!self.env.return_edge_defers().is_empty());
                 let ty = self.subst.resolve(&ty);
                 // `?` on an `Option` propagates absence to an `Option` return;
                 // `?` on a `Result` leaves through the failure edge.
@@ -650,6 +697,7 @@ impl Checker {
                     );
                 }
                 self.recheck_return_edge_defers();
+                self.record_receiver_output(false);
                 Ty::Never
             }
 
@@ -851,35 +899,6 @@ impl Checker {
         target
     }
 
-    /// Build a [`ConstEnv`](crate::check::const_eval::ConstEnv) snapshot of the
-    /// integer `const` bindings currently in scope, for constexpr count/length
-    /// evaluation (e.g. the fixed-array repeat-length check). Float consts are
-    /// deliberately excluded — the const-eval sub-engine is integer-only.
-    ///
-    /// Only bindings with declared-const provenance (`declared_const_bindings`)
-    /// are admitted. The current lexical binding must match the declared
-    /// constant's binding ID, so a local or parameter cannot inherit a
-    /// same-named module constant's value. `const_values` also holds
-    /// literal-coercion entries for every unannotated immutable integer literal
-    /// (`let n = 4`), whose *value* is not a compile-time constant for length
-    /// purposes; admitting those would let a runtime-shaped local silently
-    /// satisfy a fixed-array length.
-    pub(super) fn const_eval_env(&self) -> crate::check::const_eval::ConstEnv {
-        let mut env = crate::check::const_eval::ConstEnv::new();
-        for (name, value) in &self.const_values {
-            let Some(declared_binding_id) = self.declared_const_bindings.get(name) else {
-                continue;
-            };
-            if self.env.lookup_ref(name).map(|binding| binding.id) != Some(*declared_binding_id) {
-                continue;
-            }
-            if let ConstValue::Integer(v) = value {
-                env.insert(name.clone(), *v);
-            }
-        }
-        env
-    }
-
     pub(in crate::check) fn synthesize_array_repeat(
         &mut self,
         value: &Spanned<Expr>,
@@ -1057,9 +1076,9 @@ impl Checker {
         let entry = self.env.ownership_snapshot();
         self.env.push_scope();
         if let Some((Some(name), binding_span)) = error {
-            self.check_shadowing(name.name.as_str(), binding_span);
+            self.check_shadowing(*name, binding_span);
             self.env
-                .define_with_span(name.to_string(), error_ty, false, binding_span.clone());
+                .define_with_span(name, error_ty, false, binding_span.clone());
             self.record_local_resolution(*name, binding_span);
         }
         let body_ty = if payload == Ty::Never {
@@ -1071,7 +1090,7 @@ impl Checker {
             ownership: self.env.ownership_snapshot(),
             diverges: Self::arm_skips_join(&body_ty),
         };
-        self.env.pop_scope();
+        self.pop_scope_with_cleanup();
         self.join_fall_through(&entry, taken, span);
         let payload = self.subst.resolve(&payload);
         if payload == Ty::Never {
@@ -1190,7 +1209,7 @@ impl Checker {
                 ownership: self.env.ownership_snapshot(),
                 diverges: Self::arm_skips_join(&then_ty),
             };
-            self.env.pop_scope();
+            self.pop_scope_with_cleanup();
             self.join_fall_through(&entry, then_exit, span);
             Ty::Unit
         }
@@ -1237,7 +1256,11 @@ impl Checker {
         Ty::Unit
     }
 
-    pub(in crate::check) fn synthesize_identifier(&mut self, name: &str, span: &Span) -> Ty {
+    pub(in crate::check) fn synthesize_identifier(
+        &mut self,
+        name: impl crate::env::LexicalName,
+        span: &Span,
+    ) -> Ty {
         self.synthesize_identifier_with_type_args(name, None, span)
     }
 
@@ -1247,11 +1270,13 @@ impl Checker {
     )]
     pub(super) fn synthesize_identifier_with_type_args(
         &mut self,
-        name: &str,
+        name: impl crate::env::LexicalName,
         type_args: Option<&[Spanned<TypeExpr>]>,
         span: &Span,
     ) -> Ty {
-        if type_args.is_some() && self.env.lookup_ref(name).is_some() {
+        let ident = name.lexical_key();
+        let name = ident.name.as_str();
+        if type_args.is_some() && self.env.lookup_ref(ident).is_some() {
             self.report_error(
                 TypeErrorKind::InvalidOperation,
                 span,
@@ -1301,6 +1326,9 @@ impl Checker {
         if self.report_bare_const_scope_error(name, span) {
             return Ty::Error;
         }
+        if let Some(ty) = self.constant_type(ident) {
+            return ty;
+        }
         // Module-qualified value constructor reference encoded as a flat
         // `Identifier("module.Type::Variant")` by `parse_dot_postfix` when no
         // call-args or brace-body follow.  Dispatch to the fail-closed
@@ -1334,7 +1362,7 @@ impl Checker {
                 }
             }
         }
-        if let Some((depth, binding)) = self.env.lookup_with_depth(name) {
+        if let Some((depth, binding)) = self.env.lookup_with_depth(ident) {
             let binding_id = binding.id;
             let is_moved = binding.is_moved;
             let deferred_init = binding.deferred_init();
@@ -1403,18 +1431,25 @@ impl Checker {
             // authority on that rule) and so are assignment targets, which
             // write rather than read.
             if !is_moved && !is_write_target {
-                self.report_place_use_after_move(name, &[], span);
+                self.report_place_use_after_move(ident, &[], span);
             }
             // A read inside a generator body captures into the generator frame.
             // `in_generator` covers `gen fn`, `receive gen fn` and `gen { }`,
             // and is cleared inside a nested lambda body, whose own capture
             // rule (`finish_closure_captures`) owns that boundary instead.
             if self.in_generator && !is_write_target {
-                self.reject_borrowed_generator_capture(name, span);
+                self.reject_borrowed_generator_capture(ident, span);
             }
             // Track captures: variable from scope below the lambda boundary
             if let Some(capture_depth) = self.lambda_capture_depth {
                 if depth < capture_depth {
+                    if ty.contains_interceptor_token() {
+                        self.report_error(
+                            TypeErrorKind::InterceptEscape,
+                            span,
+                            "Call and Outcome cannot be captured by a closure".to_string(),
+                        );
+                    }
                     self.lambda_captures.push(ty.clone());
                     self.lambda_capture_facts.push(ClosureCaptureFact {
                         binding_id,
@@ -1432,7 +1467,7 @@ impl Checker {
                 }
             }
             ty
-        } else if let Some(fn_sig_key) = self.visible_fn_signature_key(name) {
+        } else if let Some(fn_sig_key) = self.visible_fn_signature_key(ident) {
             // Function name used as a value (e.g., variant constructor)
             if let Some(source_identity) = self
                 .import_fn_name_aliases
@@ -1996,6 +2031,16 @@ impl Checker {
 
     /// Check if an expression is typically used for side effects (not for its return value).
     pub(in crate::check) fn record_type(&mut self, span: &Span, ty: &Ty) {
+        if ty.contains_interceptor_token()
+            && !matches!(ty, Ty::Named { head, .. }
+            if *head == crate::KnownDecl::Call.head() || *head == crate::KnownDecl::Outcome.head())
+        {
+            self.report_error(
+                TypeErrorKind::InterceptEscape,
+                span,
+                "Call and Outcome cannot be stored in another value".to_string(),
+            );
+        }
         let key = SpanKey::in_module(span, self.current_module_idx);
         self.expr_type_source_modules
             .insert(key.clone(), self.current_module.clone());

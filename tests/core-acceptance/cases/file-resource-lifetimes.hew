@@ -41,10 +41,10 @@ fn main() -> i64 {
     };
     {
         let input = open("resource-capture-drop.bin");
-        let _uncalled: fn[once]() -> string = move || input.collect();
+        let _uncalled: fn[once, suspends]() -> string = move || input.collect();
     };
     let input = open("resource-capture-call.bin");
-    let once: fn[once]() -> string = move || input.collect();
+    let once: fn[once, suspends]() -> string = move || input.collect();
     println(once());
     println("released");
     0

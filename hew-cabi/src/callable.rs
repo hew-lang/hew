@@ -35,6 +35,20 @@ pub type HewCallableInvoke = unsafe extern "C" fn(
     invocation_state: *mut c_void,
 ) -> *mut c_void;
 
+/// Synchronous invocation with the same ownership and output contract as
+/// `HewCallableInvoke`. Returns completion status directly, without an invocation
+/// state or continuation. The compiler proves the body and consuming cleanup
+/// complete synchronously before publishing this entry.
+///
+/// # Safety
+/// Environment, argument and output slots obey `HewCallableInvoke` requirements.
+pub type HewCallableInvokeSync = unsafe extern "C" fn(
+    environment: *mut c_void,
+    argument_slots: *const *mut c_void,
+    result_out: *mut c_void,
+    fault_out: *mut *mut c_void,
+) -> i32;
+
 /// Immutable compiler-authored environment and invocation contract.
 #[repr(C)]
 #[derive(Debug)]
@@ -49,6 +63,10 @@ pub struct HewCallableDescriptor {
     pub invoke_borrow: Option<HewCallableInvoke>,
     /// Consuming adapter, always present, including for empty functions.
     pub invoke_once: HewCallableInvoke,
+    /// Borrowed entry when physical body completion is synchronous.
+    pub invoke_borrow_sync: Option<HewCallableInvokeSync>,
+    /// Consuming entry when body and receiver cleanup are synchronous.
+    pub invoke_once_sync: Option<HewCallableInvokeSync>,
 }
 
 /// One owning callable value, passed by address to the runtime helpers.
@@ -80,7 +98,9 @@ const _: () = {
     assert!(core::mem::offset_of!(HewCallableDescriptor, environment) == 0);
     assert!(core::mem::offset_of!(HewCallableDescriptor, invoke_borrow) == 8);
     assert!(core::mem::offset_of!(HewCallableDescriptor, invoke_once) == 16);
-    assert!(size_of::<HewCallableDescriptor>() == 24);
+    assert!(core::mem::offset_of!(HewCallableDescriptor, invoke_borrow_sync) == 24);
+    assert!(core::mem::offset_of!(HewCallableDescriptor, invoke_once_sync) == 32);
+    assert!(size_of::<HewCallableDescriptor>() == 40);
     assert!(align_of::<HewCallableDescriptor>() == 8);
 };
 
@@ -93,7 +113,9 @@ const _: () = {
     assert!(core::mem::offset_of!(HewCallableDescriptor, environment) == 0);
     assert!(core::mem::offset_of!(HewCallableDescriptor, invoke_borrow) == 4);
     assert!(core::mem::offset_of!(HewCallableDescriptor, invoke_once) == 8);
-    assert!(size_of::<HewCallableDescriptor>() == 12);
+    assert!(core::mem::offset_of!(HewCallableDescriptor, invoke_borrow_sync) == 12);
+    assert!(core::mem::offset_of!(HewCallableDescriptor, invoke_once_sync) == 16);
+    assert!(size_of::<HewCallableDescriptor>() == 20);
     assert!(align_of::<HewCallableDescriptor>() == 4);
 };
 

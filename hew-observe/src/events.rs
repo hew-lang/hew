@@ -68,6 +68,14 @@ pub const CURRENT_TRACE_EVENT_METADATA: &[TraceEventMeta] = &[
         actionable: true,
     },
     TraceEventMeta {
+        name: "actor.delivery_refused",
+        label: "delivery refused",
+        glyph: '\u{2298}',
+        tone: TraceEventTone::Warning,
+        group: TraceEventGroup::Message,
+        actionable: true,
+    },
+    TraceEventMeta {
         name: "spawn",
         label: "spawn",
         glyph: '\u{25C6}',

@@ -459,7 +459,9 @@ impl Checker {
     /// resolves to the innermost binding, the loop variable. Every other binder
     /// kind already rejects that collision here; the induction variable is not
     /// special enough to be allowed to make a field ambiguous.
-    pub(super) fn check_shadowing(&mut self, name: &str, span: &Span) {
+    pub(super) fn check_shadowing(&mut self, name: impl crate::env::LexicalName, span: &Span) {
+        let ident = name.lexical_key();
+        let name = ident.name.as_str();
         if name.starts_with('_') {
             return;
         }
@@ -471,7 +473,7 @@ impl Checker {
         // (those with a source span). Synthetic bindings (def_span = None) are
         // pre-populated by the actor-forward-bind mechanism and are expected to
         // be overwritten by the real `define_with_span` call without an error.
-        if let Some(Some(prev_span)) = self.env.find_in_current_scope(name) {
+        if let Some(Some(prev_span)) = self.env.find_in_current_scope(ident) {
             self.errors.push(TypeError {
                 severity: crate::error::Severity::Error,
                 kind: TypeErrorKind::Shadowing,
@@ -491,7 +493,11 @@ impl Checker {
         }
 
         // Outer-scope shadowing — severity depends on what is being shadowed.
-        if let Some(prev_span) = self.env.find_in_outer_scope(name) {
+        if let Some(prev_span) = self.env.find_in_outer_scope(ident).or_else(|| {
+            self.constant_declaration(ident)
+                .filter(|id| self.defs.ident(*id) == ident)
+                .map(|_| None)
+        }) {
             match prev_span {
                 None => {
                     // Synthetic binding (actor field): hard error — bare field access would
@@ -542,6 +548,7 @@ impl Checker {
         // reassigned) within a single accumulated fragment is expected, not a
         // defect. Suppress the per-binding lints for eval fragments.
         self.check_receiver_whole_at_scope_end();
+        self.record_scope_cleanup_effects();
         let scope_warnings = self.env.pop_scope_with_warnings();
         if self.repl_fragment || self.is_stdlib_source {
             return;

@@ -18,7 +18,13 @@ impl Checker {
     }
 
     pub(super) fn check_item(&mut self, item: &Item, span: &Span) {
+        self.check_interceptor_storage(item, span);
         match item {
+            Item::Macro(_) | Item::MacroCall(_) => self.report_error(
+                TypeErrorKind::InvalidOperation,
+                span,
+                "macro syntax must be expanded before type checking".to_string(),
+            ),
             Item::Function(fd) => self.check_function(fd),
             Item::Actor(ad) => {
                 if !crate::ty::is_reserved_type_name(ad.name.name.as_str()) {
@@ -331,6 +337,7 @@ impl Checker {
         // Child construction uses the ordinary spawn contract with retained
         // config parameters in scope. Each restart repeats this construction.
         self.check_supervisor_init_args(sd, span);
+        self.check_supervisor_interceptor(sd);
         self.current_type_param_bounds.pop();
         self.exit_primary_sig_scope(scope);
     }
@@ -347,7 +354,7 @@ impl Checker {
         } else {
             child.span.clone()
         };
-        let identity = self.resolve_supervisor_child_type(&child.actor_type.to_string()); // TRANSITION(P1): deleted by A1 commit 2
+        let identity = self.resolve_supervisor_child_type(&child.actor_type);
         let definition = identity.as_ref().and_then(|name| self.type_def_at(name));
         if definition.is_some_and(|definition| {
             matches!(
@@ -414,7 +421,7 @@ impl Checker {
             let Some(identity) = self.resolve_checked_supervisor_child(sd, child, span) else {
                 continue;
             };
-            let target = (Expr::Ident(Ident::new(&identity)), child.span.clone()); // TRANSITION(P1): deleted by A1 commit 2
+            let target = (Expr::Ident(Ident::new(&identity)), child.span.clone());
             let handle = self.check_spawn(
                 &target,
                 &child.type_args,
@@ -427,7 +434,7 @@ impl Checker {
                 // Keyed by the declaration identity, as registration writes it:
                 // a module supervisor answers to `{module}.{name}`, and this is
                 // where each child's refined handle carrier is published.
-                let identity = self.declaration_identity(sd.name.name.as_str());
+                let identity = self.declaration_identity(sd.name);
                 if let Some(children) = self.supervisor_children.get_mut(&identity) {
                     let entries = if child.is_pool {
                         &mut children.pools
@@ -711,7 +718,7 @@ impl Checker {
             .map(|c| {
                 (
                     c.name.name.as_str(),
-                    self.canonical_supervisor_child_type(&c.actor_type.to_string()), // TRANSITION(P1): deleted by A1 commit 2
+                    self.canonical_supervisor_child_type(&c.actor_type),
                 )
             })
             .collect();
@@ -751,8 +758,7 @@ impl Checker {
                 // ── Type compatibility ──────────────────────────────────────
                 // The dependent child's actor init must have a param named `param_key`
                 // typed as `sibling_type`'s own actor-handle type.
-                let dependent_identity =
-                    self.canonical_supervisor_child_type(&child.actor_type.to_string()); // TRANSITION(P1): deleted by A1 commit 2
+                let dependent_identity = self.canonical_supervisor_child_type(&child.actor_type);
                 self.check_supervisor_wired_to_type_compat(
                     sd.name.name.as_str(),
                     child.name.name.as_str(),
@@ -928,7 +934,10 @@ impl Checker {
         // rc1-F1 stage A: body checking resolves the same canonical key
         // `register_fn_sig_with_name` minted — root items included — so
         // `current_function` (a `fn_sigs`-family key) is always canonical.
-        let fn_name = self.canonical_fn_identity(self.canonical_fn_owner(), fd.name.name.as_str());
+        let fn_name = self.named_item_declaration(fd.name).map_or_else(
+            || self.canonical_fn_identity(self.canonical_fn_owner(), fd.name.name.as_str()),
+            |id| self.defs.path(id).to_string(),
+        );
         self.check_function_as(fd, &fn_name);
     }
 
@@ -977,7 +986,7 @@ impl Checker {
                 && !is_receiver
                 && self.parameter_has_independent_clone(&ty);
             if in_actor {
-                self.check_shadowing(p.name.name.as_str(), &p.name_span);
+                self.check_shadowing(p.name, &p.name_span);
             }
             if is_receiver {
                 self.env.define_receiver_param_with_span(
@@ -994,7 +1003,12 @@ impl Checker {
             self.record_callable_formal_candidate(p.name);
             self.env.set_parameter_consume(
                 p.name.name.as_str(),
-                p.is_consume || (is_receiver && fd.consumes_self),
+                p.is_consume
+                    || (is_receiver && fd.consumes_self)
+                    || fd
+                        .attributes
+                        .iter()
+                        .any(|attribute| attribute.name.as_str() == "intercept"),
             );
             if private_copy {
                 self.env.reinit_place(p.name.name.as_str(), &[]);
@@ -1033,28 +1047,36 @@ impl Checker {
             if let Some(tail) = &fd.body.trailing_expr {
                 self.record_task_return(tail);
             }
-            let formals = fd
-                .params
-                .iter()
-                .map(|param| {
-                    let key = SpanKey::in_module(&param.name_span, self.current_module_idx);
-                    match self.scopes.resolutions().get(&key) {
-                        Some(super::scope::Resolution::Local(id)) => Some(*id),
-                        _ => None,
-                    }
-                })
-                .collect::<Option<Vec<_>>>();
-            if let Some(formals) = formals {
-                self.callable_formals.insert(
-                    super::effects::EffectBody::Declaration(declaration),
-                    formals,
-                );
-            }
+            self.record_declared_callable_formals(declaration, &fd.params);
         }
         self.effect_graph.current_body = previous;
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "keeps function environment setup, body checking and restoration together"
+    )]
     fn check_function_body_as(&mut self, fd: &FnDecl, fn_name: &str) {
+        if !fd
+            .attributes
+            .iter()
+            .any(|attribute| attribute.name.as_str() == "intercept")
+            && self.fn_sig(fn_name).is_some_and(|signature| {
+                signature.return_type.contains_interceptor_token()
+                    || signature.params.iter().zip(&signature.param_ownership).any(
+                        |(ty, ownership)| {
+                            *ownership == crate::env::ParameterOwnership::Consume
+                                && ty.contains_interceptor_token()
+                        },
+                    )
+            })
+        {
+            self.report_error(
+                TypeErrorKind::InterceptEscape,
+                &fd.fn_span,
+                "Call and Outcome may cross only an interceptor boundary".to_string(),
+            );
+        }
         // Functions marked `#[intrinsic("key")]` are typed declaration stubs
         // whose bodies are empty placeholders; the real semantics live in the
         // catalog. Skip body type-checking entirely — the signature was already
@@ -1148,6 +1170,9 @@ impl Checker {
             Some(&expected_ret)
         };
         let actual = self.check_function_block(fd, block_expected);
+        if !Self::arm_skips_join(&actual) {
+            self.record_receiver_output(false);
+        }
         // A completely empty body on a method whose `Self` is a compiler
         // builtin (`ActorHandle`, `RemotePid`, `Vec`, …) is a fail-closed
         // declaration stub: no source constructor exists for an opaque pid
@@ -1273,7 +1298,7 @@ impl Checker {
                         consumes_self: false,
                     };
                     let trait_declaration = self
-                        .lookup_declaration(&self.declaration_identity(td.name.name.as_str()))
+                        .lookup_declaration(&self.declaration_identity(td.name))
                         .expect("registered trait owns its default methods");
                     let qualified =
                         format!("{}::{}", self.defs.path(trait_declaration), method.name);
@@ -1322,7 +1347,7 @@ impl Checker {
         // max-heap table key must use the same identity the registration
         // pass authored, or a same-named actor from another module would be
         // consulted instead.
-        let identity = Self::actor_identity(self.current_module.as_deref(), ad.name.name.as_str());
+        let identity = self.declaration_identity(ad.name);
         let parameters = self.declaration_parameter_heads(&identity);
         let actor_ty = self.named_ty_for_key(
             &identity,
@@ -1341,6 +1366,9 @@ impl Checker {
                 .unwrap_or_default();
             self.current_type_param_bounds.push(bounds);
         }
+        let previous_self = self
+            .current_self_type
+            .replace((identity.clone(), actor_ty.clone()));
         let prev_actor_type = self.current_actor_type.replace(actor_ty);
         let deferred_fields = self
             .actor_deferred_fields
@@ -1409,6 +1437,7 @@ impl Checker {
             self.current_type_param_bounds.pop();
             self.generic_ctx.pop();
         }
+        self.current_self_type = previous_self;
         self.current_actor_type = prev_actor_type;
         self.current_actor_fields = prev_actor_fields;
         self.actor_consumed_state = prev_consumed_state;
@@ -1429,6 +1458,7 @@ impl Checker {
     /// its `#[on(<event>)]` annotation. Tracks `#[on(start)]` uniqueness
     /// across the loop.
     fn check_actor_methods(&mut self, ad: &ActorDecl, identity: &str) {
+        self.check_actor_interceptor(ad, identity);
         let mut on_start_seen: Option<Span> = None;
         let mut on_down_seen: Option<Span> = None;
         // The crash hook is checked after every other body so that it sees
@@ -1597,8 +1627,7 @@ impl Checker {
     pub(super) fn bind_actor_fields(&mut self, fields: &[FieldDecl]) {
         for (index, field) in fields.iter().enumerate() {
             let field_ty = self.resolve_type_expr(&field.ty);
-            self.env
-                .define(field.name.to_string(), field_ty, field.is_mutable);
+            self.env.define(field.name, field_ty, field.is_mutable);
             self.record_actor_field_binding(field, index);
         }
     }
@@ -1662,7 +1691,7 @@ impl Checker {
             self.record_consumed_actor_state(fields, consumer);
         }
         for field in fields {
-            let Some(binding) = self.env.lookup_ref(field.name.name.as_str()) else {
+            let Some(binding) = self.env.lookup_ref(field.name) else {
                 continue;
             };
             let (place, moved_at) = if binding.is_moved {
@@ -1741,7 +1770,7 @@ impl Checker {
                 self.env
                     .define_deferred_field(field.name.name.as_str(), field_ty);
             } else {
-                self.env.define(field.name.to_string(), field_ty, true);
+                self.env.define(field.name, field_ty, true);
             }
             self.record_actor_field_binding(field, index);
         }
@@ -1905,6 +1934,7 @@ impl Checker {
     /// the checked body's type: a `!` body never reaches its back edge.
     pub(super) fn exit_loop_checked(&mut self, body_ty: &Ty) {
         let exit = self.env.exit_loop(!Self::arm_skips_join(body_ty));
+        self.loop_value_candidates.extend(exit.value_candidates);
         self.report_deferred_init_conflicts(&exit.deferred_init_conflicts);
         self.report_loop_carried_moves(&exit.carried_moves);
     }
@@ -1937,7 +1967,7 @@ impl Checker {
 
         // Bind init parameters
         for p in &init.params {
-            self.check_shadowing(p.name.name.as_str(), &p.ty.1);
+            self.check_shadowing(p.name, &p.ty.1);
             let ty = self.resolve_annotation_with_holes(
                 &p.ty,
                 format!("init parameter `{}` of actor `{actor_name}`", p.name),
@@ -2236,7 +2266,7 @@ impl Checker {
                     .contains_key(field.name.name.as_str())
             })
             .filter_map(|field| {
-                let binding = self.env.lookup_ref(field.name.name.as_str())?;
+                let binding = self.env.lookup_ref(field.name)?;
                 Some((binding.id, field.name.to_string()))
             })
             .collect();
@@ -2255,6 +2285,7 @@ impl Checker {
         // now return `Restart`/`Escalate`/`Kill` (or `panic(...)`) freely. The
         // standard return-type checking against `current_return_type` covers it.
         let _body_ty = self.check_block(&hook.body, None);
+        self.record_scope_cleanup_effects();
         self.effect_graph.current_body = previous_effect_body;
         self.crash_hook_consumed_fields.clear();
         self.current_return_type = None;
@@ -2644,9 +2675,8 @@ impl Checker {
         let qualified_name = format!("{}::{}", actor_name, rf.name);
         let prev_function = self.current_function.take();
         self.current_function = Some(qualified_name.clone());
-        let effect_body = self
-            .lookup_declaration(&qualified_name)
-            .map(super::effects::EffectBody::Declaration);
+        let declaration = self.lookup_declaration(&qualified_name);
+        let effect_body = declaration.map(super::effects::EffectBody::Declaration);
         let previous_effect_body =
             std::mem::replace(&mut self.effect_graph.current_body, effect_body.clone());
         if let Some(body) = effect_body {
@@ -2671,13 +2701,14 @@ impl Checker {
         self.env.push_scope();
 
         for p in &rf.params {
-            self.check_shadowing(p.name.name.as_str(), &p.name_span);
+            self.check_shadowing(p.name, &p.name_span);
             let ty = self.resolve_type_expr(&p.ty);
             self.reject_opaque_message_payload(&ty, &p.ty.1, &qualified_name);
             self.reject_dyn_message_type(&ty, &p.ty.1);
             self.env
                 .define_param_with_span(p.name, ty, p.is_mutable, p.name_span.clone());
             self.record_local_resolution(p.name, &p.name_span);
+            self.record_callable_formal_candidate(p.name);
             // The receiving handler owns the delivered message. Its fields
             // may move out of an aggregate parameter just as they may from a
             // local owner; ordinary function parameters retain borrow semantics.
@@ -2773,12 +2804,17 @@ impl Checker {
             );
         }
 
+        if let Some(declaration) = declaration {
+            self.record_declared_callable_formals(declaration, &rf.params);
+        }
+
         self.current_failure_edge = prev_failure_edge;
         self.in_generator = prev_in_generator;
         self.in_receive_fn = prev_in_receive_fn;
         self.in_actor_handler_context = prev_actor_handler_context;
         self.current_return_type = None;
         self.current_function = prev_function;
+        self.record_scope_cleanup_effects();
         self.effect_graph.current_body = previous_effect_body;
         if rf.type_params.as_ref().is_some_and(|tp| !tp.is_empty()) {
             self.generic_ctx.pop();
@@ -2866,16 +2902,14 @@ impl Checker {
         } else {
             None
         };
-        self.env.define(cd.name.to_string(), actual, false);
-        if let Some(value) = const_value {
-            let binding_id = self
-                .env
-                .lookup_ref(cd.name.name.as_str())
-                .expect("constant binding was just defined")
-                .id;
-            self.const_values.insert(cd.name.to_string(), value);
-            self.declared_const_bindings
-                .insert(cd.name.to_string(), binding_id);
+        if let Some(declaration) = self.constant_declaration(cd.name) {
+            self.source_constants.insert(
+                declaration,
+                super::types::SourceConstant {
+                    ty: actual,
+                    value: const_value,
+                },
+            );
         }
         self.record_root_value_binding(cd.name.name.as_str());
     }
@@ -2987,48 +3021,17 @@ impl Checker {
             type_args: _,
         } = &id.target_type.0
         {
-            let type_name = &named_path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
-                                                     // Resolve the whole target once, with the impl's parameters and
-                                                     // their bounds in scope: the bounds satisfy the target's declared
-                                                     // bounds (`impl<T: Clone> St<T>` for `St<T: Clone>`), and the
-                                                     // resolved type keeps the receiver's identity (a source `Option<T>`
-                                                     // is never rebuilt as the builtin).
+            let type_name = &self
+                .canonical_impl_target_identity(named_path)
+                .unwrap_or_else(|| named_path.to_string());
+            // Resolve the whole target once, with the impl's parameters and
+            // their bounds in scope: the bounds satisfy the target's declared
+            // bounds (`impl<T: Clone> St<T>` for `St<T: Clone>`), and the
+            // resolved type keeps the receiver's identity (a source `Option<T>`
+            // is never rebuilt as the builtin).
             let self_ty = self.resolve_impl_target(id);
             if let Some(tb) = &id.trait_bound {
-                let type_is_local = self.local_type_defs.contains(type_name)
-                    || self.intrinsic_type_is_local_to_builtin_surface(type_name);
                 let trait_id = self.resolve_trait_path(&tb.path);
-                let trait_is_local = trait_id.is_some_and(|id| self.trait_is_local(id));
-                // hew-compile loads the prelude's Display impls as the
-                // std.builtins module, from the standard-library root every
-                // `std` module resolves from (the toolchain's std or
-                // `HEW_STD`), or source-less from the compiled-in text for an
-                // analysis with no search path. A lookalike module has neither.
-                let is_embedded_builtins_impl = self
-                    .checking_canonical_stdlib_source("std.builtins")
-                    && self.current_item_source.as_ref().is_none_or(|source| {
-                        crate::module_registry::is_canonical_stdlib_module_source(
-                            source,
-                            "std.builtins",
-                        )
-                    });
-                if !type_is_local && !trait_is_local && !is_embedded_builtins_impl {
-                    self.warnings.push(TypeError {
-                        severity: crate::error::Severity::Warning,
-                        kind: TypeErrorKind::OrphanImpl,
-                        span: span.clone(),
-                        message: format!(
-                            "impl `{}` for `{type_name}`: neither the trait nor the type is defined in this module",
-                            tb.path // TRANSITION(P1): deleted by A1 commit 2
-                        ),
-                        notes: vec![],
-                        suggestions: vec![
-                            "define the trait or the type in this module".to_string(),
-                            "this may be disallowed in a future version (orphan rule)".to_string(),
-                        ],
-                        source_module: self.current_module.clone(),
-                    });
-                }
                 if let Some(trait_id) = trait_id {
                     self.require_supertrait_impls(type_name, &self_ty, trait_id, span);
                 }
@@ -3075,19 +3078,6 @@ impl Checker {
                 self.generic_ctx.pop();
             }
         }
-    }
-
-    /// Compiler-intrinsic types have no source declaration to seed
-    /// `local_type_defs`. Their canonical declarative surface owns their impls
-    /// for coherence purposes, but only when the active item's canonical path
-    /// is below the stdlib root owned by the running compiler installation.
-    fn intrinsic_type_is_local_to_builtin_surface(&self, type_name: &str) -> bool {
-        self.current_item_source.as_ref().is_some_and(|source| {
-            crate::module_registry::is_canonical_stdlib_module_source(source, "std.builtins")
-        }) && (Ty::from_name(type_name).is_some()
-            || self
-                .resolved_builtin_type(type_name)
-                .is_some_and(|builtin| !builtin.requires_source_import()))
     }
 }
 

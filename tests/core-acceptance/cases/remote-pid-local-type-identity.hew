@@ -15,6 +15,9 @@ actor Store {
     receive fn count() -> i64 {
         calls
     }
+    receive fn identity() -> Store {
+        self
+    }
 }
 
 impl ActorMsg for Store {
@@ -33,6 +36,60 @@ impl ActorMsg for Other {
     type Reply = string;
 }
 
+supervisor Service {
+    #[intercept]
+    fn observe<A>(call: Call<A>) -> Outcome<A> {
+        println("intercepted");
+        call.proceed()
+    }
+    child store: Store;
+}
+
+type LocalOnly {
+    value: string;
+}
+
+actor Echo<T> {
+    receive fn handle(value: T) -> T {
+        value
+    }
+}
+
+impl<T: Send> ActorMsg for Echo<T> {
+    type Msg = T;
+    type Reply = T;
+}
+
+actor Tagged<T> {
+    var marker: T;
+    var calls: i64 = 0;
+    receive fn handle(value: string) -> i64 {
+        calls = calls + 1;
+        calls
+    }
+}
+
+impl<T: Send> ActorMsg for Tagged<T> {
+    type Msg = string;
+    type Reply = i64;
+}
+
+actor Specialized<T> {
+    receive fn handle(value: T) -> T {
+        value
+    }
+}
+
+impl ActorMsg for Specialized<string> {
+    type Msg = string;
+    type Reply = string;
+}
+
+impl<T: Send> ActorMsg for Specialized<Vec<T>> {
+    type Msg = Vec<T>;
+    type Reply = Vec<T>;
+}
+
 fn pair() -> Pair {
     Pair { first: "first".to_upper(), second: "second".to_upper() }
 }
@@ -42,7 +99,8 @@ fn main() {
     let store = spawn Store;
     assert(Node.register("store", store) == 0);
     let wrong: RemotePid<Other> = Node.lookup("store").expect("lookup name");
-    // Refuse an incompatible owned payload before the target sees the value.
+    // Both actors' first handler has the same local index, but an incompatible
+    // owned payload. Refusal must happen before either handler sees the value.
     for index in 0..16 {
         match wrong.ask(f"wrong ask {index}", 1000) {
             .Err(_) => {}
@@ -59,6 +117,75 @@ fn main() {
     right.send(pair()).expect("correct send");
     assert(right.ask(pair(), 1000).expect("completion") == "FIRSTSECOND");
     assert(store.count().expect("count") == 3);
+
+    // Stateful supervisor interception forwards the same concrete actor state.
+    let service = spawn Service;
+    let supervised_handle = service.store.identity().expect("supervised handle");
+    assert(Node.register("supervised", supervised_handle) == 0);
+    let supervised: RemotePid<Store> = Node.lookup("supervised").expect("lookup supervised");
+    assert(supervised.ask(pair(), 1000).expect("intercepted reply") == "FIRSTSECOND");
+    supervised.send(pair()).expect("intercepted send");
+    assert(supervised.ask(pair(), 1000).expect("intercepted completion") == "FIRSTSECOND");
+    assert(supervised_handle.count().expect("supervised count") == 3);
+    // A local-only specialization needs no wire schema or codec.
+    let local = spawn Echo<LocalOnly>;
+    let local_reply = local.handle(LocalOnly { value: "local".to_upper() }).expect("local generic reply");
+    assert(local_reply.value == "LOCAL");
+    stop(local);
+    stopped(local);
+    let echo = spawn Echo<string>;
+    assert(Node.register("echo", echo) == 0);
+    let wrong_echo: RemotePid<Echo<Pair>> = Node.lookup("echo").expect("lookup echo");
+    match wrong_echo.ask(pair(), 1000) {
+        .Err(_) => {}
+        .Ok(_) => panic("wrong generic payload reached a handler"),
+    }
+    match wrong_echo.send(pair()) {
+        .Err(_) => {}
+        .Ok(_) => panic("wrong generic payload was accepted"),
+    }
+    let right_echo: RemotePid<Echo<string>> = Node.lookup("echo").expect("lookup echo");
+    assert(right_echo.ask("echo".to_upper(), 1000).expect("generic reply") == "ECHO");
+
+    // Distinct actor substitutions remain distinct even with identical messages.
+    let tagged = spawn Tagged<string> { marker: "marker".to_upper() };
+    assert(Node.register("tagged", tagged) == 0);
+    let wrong_tagged: RemotePid<Tagged<Pair>> = Node.lookup("tagged").expect("lookup tagged");
+    match wrong_tagged.ask("wrong".to_upper(), 1000) {
+        .Err(_) => {}
+        .Ok(_) => panic("wrong generic actor reached a handler"),
+    }
+    match wrong_tagged.send("wrong".to_upper()) {
+        .Err(_) => {}
+        .Ok(_) => panic("wrong generic actor was accepted"),
+    }
+    let right_tagged: RemotePid<Tagged<string>> = Node.lookup("tagged").expect("lookup tagged");
+    assert(right_tagged.ask("first".to_upper(), 1000).expect("generic state reply") == 1);
+    right_tagged.send("second".to_upper()).expect("generic state send");
+    assert(right_tagged.ask("third".to_upper(), 1000).expect("generic state completion") == 3);
+    let specialized = spawn Specialized<string>;
+    Node.register("specialized", specialized);
+    let remote_specialized: RemotePid<Specialized<string>> = Node.lookup("specialized").expect("specialized lookup");
+    assert(remote_specialized.ask("specialized".to_upper(), 1000).expect("specialized reply") == "SPECIALIZED");
+    let nested = spawn Specialized<Vec<string>>;
+    Node.register("nested", nested);
+    let remote_nested: RemotePid<Specialized<Vec<string>>> = Node.lookup("nested").expect("nested lookup");
+    let values = remote_nested.ask(["nested".to_upper()], 1000).expect("nested reply");
+    assert(values.get(0).expect("nested value") == "NESTED");
+    let unmatched = spawn Specialized<i64>;
+    assert(unmatched.handle(42).expect("unmatched local reply") == 42);
+    stop(unmatched);
+    stopped(unmatched);
+    stop(nested);
+    stopped(nested);
+    stop(specialized);
+    stopped(specialized);
+    stop(tagged);
+    stopped(tagged);
+    stop(echo);
+    stopped(echo);
+    stop(service);
+    stopped(service);
     stop(store);
     stopped(store);
     Node.shutdown();

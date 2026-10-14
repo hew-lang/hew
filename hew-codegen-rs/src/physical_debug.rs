@@ -1041,20 +1041,11 @@ pub(super) fn declare_locals<'ctx>(
         };
         let location = emitter.location_in(ctx, scope, line);
         if let Some(frame) = frame {
-            let builder = ctx.create_builder();
-            builder.position_before(
-                &frame
-                    .allocations
-                    .get_terminator()
-                    .expect("frame dispatch exists"),
-            );
-            let anchor = builder
-                .build_alloca(
-                    super::llvm_type(ctx, &storage.layout.repr)?,
-                    "debug.local.value",
-                )
-                .llvm_ctx("allocate source local value")?;
-            frame.stack(ctx, anchor)?;
+            let anchor = frame.storage(
+                ctx,
+                super::llvm_type(ctx, &storage.layout.repr)?,
+                "debug.local.value",
+            )?;
             function_debug.locals.insert(
                 *id,
                 LocalValue {
@@ -1067,7 +1058,7 @@ pub(super) fn declare_locals<'ctx>(
                 ctx.i8_type().get_undef().into(),
                 variable,
                 location,
-                frame.allocations,
+                prologue,
                 false,
             );
         } else {

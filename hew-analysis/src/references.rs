@@ -848,7 +848,12 @@ fn count_idents_in_item(item: &Item, counts: &mut HashMap<String, usize>) {
             }
         }
         // Record fields contain only type annotations; no expression idents to count.
-        Item::Record(_) | Item::Import(_) | Item::ExternBlock(_) | Item::TypeAlias(_) => {}
+        Item::Record(_)
+        | Item::Macro(_)
+        | Item::MacroCall(_)
+        | Item::Import(_)
+        | Item::ExternBlock(_)
+        | Item::TypeAlias(_) => {}
     }
 }
 

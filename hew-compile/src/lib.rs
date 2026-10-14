@@ -8,27 +8,35 @@ use hew_parser::ast::{ImportDecl, Item, Program, Spanned};
 use hew_parser::module::ModulePath;
 use serde::{de::DeserializeOwned, Deserialize};
 
+/// Build identity shared by the compiler driver and its frontend consumers.
+pub const VERSION: &str = env!("HEW_VERSION");
+
 mod compile_time;
 mod coverage;
-mod deterministic_admission;
+mod host_admission;
 pub use coverage::{SourceCoverageCounter, SourceCoverageMap};
 mod host;
 
-/// Source entries checked for operations the deterministic driver cannot
-/// schedule. A dispatcher supplies each deterministic test separately so a
-/// real-time sibling does not affect its admission verdict.
+/// Source entries checked against their host-operation admission profile.
+/// Each deterministic test is checked separately from its real-time siblings.
 #[derive(Debug, Clone, Default)]
-pub enum DeterministicAdmission {
+pub enum HostAdmission {
     #[default]
     Off,
     ProcessEntry,
     Tests(Vec<hew_types::DeclarationOccurrence>),
+    /// Build-time generation, starting at `main`, with restricted host access.
+    Generate,
 }
 
-fn require_deterministic_typecheck(options: &FrontendOptions) -> Result<(), FrontendFailure> {
-    if options.no_typecheck
-        && !matches!(options.deterministic_admission, DeterministicAdmission::Off)
-    {
+fn require_host_typecheck(options: &FrontendOptions) -> Result<(), FrontendFailure> {
+    if options.no_typecheck && !matches!(options.host_admission, HostAdmission::Off) {
+        if matches!(options.host_admission, HostAdmission::Generate) {
+            return Err(FrontendFailure::coded_message(
+                "E_GENERATE_TYPECHECK_REQUIRED",
+                "generator host-operation admission requires type checking",
+            ));
+        }
         return Err(FrontendFailure::coded_message(
             "E_DETERMINISTIC_TYPECHECK_REQUIRED",
             "deterministic host-operation admission requires type checking",
@@ -86,8 +94,8 @@ pub struct FrontendOptions {
     pub entry_selection: Option<hew_types::DeclarationOccurrence>,
     /// Exact test roots for one compiled dispatcher, in selection order.
     pub test_entry_selections: Vec<hew_types::DeclarationOccurrence>,
-    /// Compile-time host-operation admission for selected deterministic roots.
-    pub deterministic_admission: DeterministicAdmission,
+    /// Compile-time host-operation admission for the selected execution profile.
+    pub host_admission: HostAdmission,
     /// The sole deterministic production peer for a selected `_test.hew`
     /// root. Arbitrary sibling discovery is intentionally not supported.
     pub companion: Option<PathBuf>,
@@ -331,7 +339,7 @@ fn resolve_candidate(documents: &SourceSet, candidate: &Path) -> Option<PathBuf>
     if !documents.filesystem {
         return documents
             .contains(candidate)
-            .then(|| candidate.to_path_buf());
+            .then(|| compile_time::normalize(candidate));
     }
     match candidate.canonicalize() {
         Ok(canonical) => Some(canonical),
@@ -1639,9 +1647,8 @@ fn resolve_imports_internal(
         module_search_paths: options.module_search_paths.as_deref(),
         documents: &options.documents,
     };
-    let input_canonical = input_path
-        .canonicalize()
-        .unwrap_or_else(|_| input_path.to_path_buf());
+    let input_canonical = resolve_candidate(&options.documents, input_path)
+        .unwrap_or_else(|| input_path.to_path_buf());
     let undeclared = undeclared_imports(&input_canonical, &program.items, &import_ctx)?;
     if !undeclared.is_empty() {
         return Err(FrontendFailure::new(
@@ -1660,6 +1667,28 @@ fn resolve_imports_internal(
         diagnostics,
     )?;
     program.module_graph = Some(module_graph);
+    let mut sources = BTreeMap::new();
+    for module in program
+        .module_graph
+        .as_ref()
+        .expect("graph was built")
+        .modules
+        .values()
+    {
+        for path in &module.source_paths {
+            if let Ok(text) = read_source(&options.documents, path) {
+                sources.insert(path.clone(), text);
+            }
+        }
+    }
+    sources.insert(input_canonical, source.to_string());
+    if let Err((path, error)) = hew_expand::expand_program(program, sources.clone()) {
+        let text = sources.get(&path).map_or(source, String::as_str);
+        return Err(FrontendFailure::new(
+            "macro expansion failed",
+            vec![FrontendDiagnostic::parse(text, &display_path(&path), error)],
+        ));
+    }
     Ok(())
 }
 
@@ -1730,12 +1759,55 @@ fn build_module_source_map(program: &Program, documents: &SourceSet) -> ModuleSo
     map
 }
 
+fn macro_type_origin(
+    program: &Program,
+    mut diagnostic: hew_types::TypeError,
+) -> hew_types::TypeError {
+    if let Some((path, span)) = program.expansions.source_origin(&diagnostic.span) {
+        if let Some((invocation_path, invocation_span)) =
+            program.expansions.invocation_origin(&diagnostic.span)
+        {
+            diagnostic.notes.push((
+                invocation_span,
+                "in this macro invocation".into(),
+                Some(invocation_path.display().to_string()),
+            ));
+        }
+        diagnostic.span = span;
+        diagnostic.source_module = Some(path.display().to_string());
+    }
+    for (span, _, source) in &mut diagnostic.notes {
+        if let Some((path, original)) = program.expansions.source_origin(span) {
+            *span = original;
+            *source = Some(path.display().to_string());
+        }
+    }
+    diagnostic
+}
+
 fn type_diagnostic_to_frontend(
     root_source: &str,
     root_filename: &str,
     diagnostic: hew_types::TypeError,
     module_source_map: &ModuleSourceMap,
+    documents: &SourceSet,
 ) -> FrontendDiagnostic {
+    if let Some(input) = diagnostic.source_module.as_ref().and_then(|origin| {
+        documents
+            .inputs()
+            .into_iter()
+            .find(|input| input.path.to_string_lossy() == origin.as_str())
+    }) {
+        if let Ok(bytes) = documents.read_bytes(&input.path) {
+            let source = String::from_utf8_lossy(&bytes);
+            return FrontendDiagnostic::type_(
+                &source,
+                &display_path(&input.path),
+                diagnostic,
+                module_source_map,
+            );
+        }
+    }
     let (source, filename) = if let Some(ref mod_name) = diagnostic.source_module {
         module_source_map
             .get(mod_name.as_str())
@@ -1879,6 +1951,7 @@ fn typecheck_program_with_dependency_cache(
     checker.set_input_provider(Arc::new(compile_time::Inputs::new(
         input,
         options.documents.clone(),
+        hew_types::module_registry::stdlib_search_paths(),
     )));
     if options.enable_wasm_target {
         checker.enable_wasm_target();
@@ -1920,11 +1993,23 @@ fn typecheck_program_with_dependency_cache(
         .iter()
         .cloned()
         .map(|diagnostic| {
-            type_diagnostic_to_frontend(source, input, diagnostic, &module_source_map)
+            type_diagnostic_to_frontend(
+                source,
+                input,
+                macro_type_origin(program, diagnostic),
+                &module_source_map,
+                &options.documents,
+            )
         })
         .collect::<Vec<_>>();
     diagnostics.extend(tco.warnings.iter().cloned().map(|diagnostic| {
-        type_diagnostic_to_frontend(source, input, diagnostic, &module_source_map)
+        type_diagnostic_to_frontend(
+            source,
+            input,
+            macro_type_origin(program, diagnostic),
+            &module_source_map,
+            &options.documents,
+        )
     }));
 
     let module_registry = checker.into_module_registry();
@@ -1957,18 +2042,18 @@ pub fn typecheck_program(
     options.documents.insert(input, source);
     let _ = options.documents.read_bytes(Path::new(input));
     let options = &options;
-    require_deterministic_typecheck(options)?;
+    require_host_typecheck(options)?;
     let (result, mut diagnostics) =
         typecheck_program_with_diagnostics(program, source, input, options, None);
     if type_check_failed(&result) {
         return Err(FrontendFailure::new("type errors found", diagnostics));
     }
     if let Some(output) = result.tco.as_ref() {
-        let refused = deterministic_admission::check(program, output, source, input, options);
+        let refused = host_admission::check(program, output, source, input, options);
         if !refused.is_empty() {
             diagnostics.extend(refused);
             return Err(FrontendFailure::new(
-                "deterministic host operations found",
+                "host operations refused by the execution profile",
                 diagnostics,
             ));
         }
@@ -2008,7 +2093,7 @@ pub fn check_program(
     options.documents.insert(source_label, source);
     let _ = options.documents.read_bytes(Path::new(source_label));
     let options = &options;
-    require_deterministic_typecheck(options)?;
+    require_host_typecheck(options)?;
     let project = project_context_for_program(source, options)?;
     let mut diagnostics = Vec::new();
 
@@ -2030,12 +2115,11 @@ pub fn check_program(
         return Err(FrontendFailure::new("type errors found", diagnostics));
     }
     if let Some(output) = tcr.tco.as_ref() {
-        let refused =
-            deterministic_admission::check(&program, output, source, source_label, options);
+        let refused = host_admission::check(&program, output, source, source_label, options);
         if !refused.is_empty() {
             diagnostics.extend(refused);
             return Err(FrontendFailure::new(
-                "deterministic host operations found",
+                "host operations refused by the execution profile",
                 diagnostics,
             ));
         }
@@ -2600,7 +2684,7 @@ fn build_module_graph_with_diagnostics(
     use hew_parser::module::{Module, ModuleGraph};
 
     let input_canonical =
-        std::fs::canonicalize(source_file).unwrap_or_else(|_| source_file.to_path_buf());
+        resolve_candidate(ctx.documents, source_file).unwrap_or_else(|| source_file.to_path_buf());
     let source_dir = input_canonical.parent().unwrap_or(Path::new("."));
 
     ctx.in_progress_imports.insert(input_canonical.clone());
@@ -3863,6 +3947,22 @@ pub fn run_file_frontend_to_typecheck(
     run_document_frontend_from(input, None, options, RootSelection::AsWritten).into_result()
 }
 
+/// Load and expand a source file without requiring the expanded program to type-check.
+///
+/// # Errors
+///
+/// Returns the shared frontend's loading, parsing or expansion failure.
+pub fn run_file_frontend_to_expansion(
+    input: &str,
+    options: &FrontendOptions,
+) -> Result<FileFrontendState, FrontendFailure> {
+    let options = FrontendOptions {
+        no_typecheck: true,
+        ..options.clone()
+    };
+    run_file_frontend_to_typecheck(input, &options)
+}
+
 /// What the shared frontend produced for one document.
 ///
 /// The editor surfaces need the diagnostics and whatever the pipeline managed
@@ -4115,7 +4215,7 @@ fn run_frontend_after_parse_with_dependency_cache(
     entry_selection: Option<hew_types::DeclarationOccurrence>,
     cache: Option<&mut hew_types::check::DependencyAnalysisCache>,
 ) -> DocumentFrontendState {
-    if let Err(failure) = require_deterministic_typecheck(options) {
+    if let Err(failure) = require_host_typecheck(options) {
         return state.stop(failure);
     }
     if let Err(failure) = resolve_imports_internal(
@@ -4157,11 +4257,11 @@ fn run_frontend_after_parse_with_dependency_cache(
         .and_then(|result| result.tco.as_ref())
     {
         let refused =
-            deterministic_admission::check(&state.program, output, &project.source, input, options);
+            host_admission::check(&state.program, output, &project.source, input, options);
         if !refused.is_empty() {
             state.diagnostics.extend(refused);
             return state.stop(FrontendFailure::message_only(
-                "deterministic host operations found",
+                "host operations refused by the execution profile",
             ));
         }
     }
@@ -4812,7 +4912,7 @@ mod tests {
             &input,
             &FrontendOptions {
                 test_entry_selections: vec![selection],
-                deterministic_admission: crate::DeterministicAdmission::Tests(vec![selection]),
+                host_admission: crate::HostAdmission::Tests(vec![selection]),
                 ..FrontendOptions::default()
             },
         )
@@ -6494,86 +6594,6 @@ fn main() {
                 failure.diagnostics
             );
         }
-    }
-
-    /// A flat-imported concrete specialisation must not claim the shared
-    /// dispatch key its generic sibling owns.
-    ///
-    /// Which impl is a specialisation is decided from the enclosing impl's self
-    /// type. Flat-file import registration was the one registration path that
-    /// never published one, so `impl Render for Box<i64>` was classified as
-    /// generic and took `Box::render` — the key a call on `impl<T> Render for
-    /// Box<T>` resolves through — instead of taking only its own mangled key.
-    ///
-    /// Both source orders are asserted because the two keys fail in opposite
-    /// orders: the shared key is first-write-wins and the module-canonical key
-    /// is last-write-wins, so either order alone leaves half the collision
-    /// looking correct.
-    #[test]
-    fn flat_imported_specialisation_does_not_claim_the_generic_dispatch_key() {
-        const GENERIC_IMPL: &str = "impl<T> Render for Box<T> {\n    \
-             pub fn render(self) -> string { \"generic\" }\n}\n";
-        const SPECIALISED_IMPL: &str = "impl Render for Box<i64> {\n    \
-             pub fn render(self) -> string { \"specialised\" }\n}\n";
-        const DECLARATIONS: &str = "pub trait Render {\n    fn render(self) -> string;\n}\n\npub type Box<T> {\n    value: T;\n}\n";
-
-        let mut mismatches: Vec<String> = Vec::new();
-        for (order, first, second) in [
-            ("generic first", GENERIC_IMPL, SPECIALISED_IMPL),
-            ("specialisation first", SPECIALISED_IMPL, GENERIC_IMPL),
-        ] {
-            let dir = tempfile::tempdir().expect("create temp dir");
-            write_source(
-                dir.path(),
-                "lib.hew",
-                &format!("{DECLARATIONS}{first}\n{second}"),
-            );
-            let input = write_source(
-                dir.path(),
-                "main.hew",
-                "import \"lib.hew\";\n\nfn main() {}\n",
-            );
-            let state = run_file_frontend_to_typecheck(&input, &FrontendOptions::default())
-                .unwrap_or_else(|e| panic!("{order}: fixture must type-check: {e:?}"));
-            let tco = state
-                .typecheck_result
-                .tco
-                .as_ref()
-                .expect("type checking was enabled");
-            let declaration_for = |key: &str| -> Option<String> {
-                tco.impl_method_declaration_ids
-                    .get(key)
-                    .map(|declaration| tco.defs.path(*declaration).to_string())
-            };
-            // The shared key and the module-canonical key both name the
-            // generic declaration; the specialisation owns only its mangled
-            // keys. The rendered receiver's type argument — `Box<T>` against
-            // `Box<i64>` — is what tells the two declarations apart; the owner
-            // prefix on that receiver is deliberately not asserted here (the
-            // flat-import path still renders it two ways, tracked separately).
-            for (key, expected_receiver) in [
-                ("Box::render", "Box<T>"),
-                ("lib.Box::render", "Box<T>"),
-                ("Box$$i64::render", "Box<i64>"),
-                ("lib.Box$$i64::render", "Box<i64>"),
-            ] {
-                match declaration_for(key) {
-                    Some(declaration)
-                        if declaration.ends_with(&format!("{expected_receiver}>::render")) => {}
-                    Some(declaration) => mismatches.push(format!(
-                        "{order}: `{key}` must name the `{expected_receiver}` implementation, got `{declaration}`"
-                    )),
-                    None => mismatches.push(format!(
-                        "{order}: nothing published under `{key}`"
-                    )),
-                }
-            }
-        }
-        assert!(
-            mismatches.is_empty(),
-            "flat-import dispatch keys are not exclusive:\n{}",
-            mismatches.join("\n")
-        );
     }
 
     #[test]
@@ -8726,8 +8746,12 @@ mod source_analysis_batch_tests {
                     Resolution::Field(id, index) => {
                         format!("field:{}:{index}", identity(output, id.declaration()))
                     }
-                    Resolution::Variant(id, index) => {
-                        format!("variant:{}:{index}", identity(output, id.declaration()))
+                    Resolution::Variant(head, index) => {
+                        let owner = head.declaration(&output.defs).map_or_else(
+                            || format!("builtin:{:?}", head.builtin()),
+                            |id| identity(output, id.declaration()),
+                        );
+                        format!("variant:{owner}:{index}")
                     }
                     Resolution::Local(id) => format!("local:{}", local_sites[id]),
                     Resolution::Module(id) => format!(
@@ -9078,7 +9102,7 @@ mod source_analysis_batch_tests {
         let mut batch = SourceAnalysisBatch::new(options.clone());
         for (name, source) in [
             ("first.hew", "import greeting; fn first() -> i32 { greeting.greet() }"),
-            ("second.hew", "import greeting.{ greet as invoke_greeting }; fn second() -> i32 { let local: fn() -> i32 = || invoke_greeting(); local() }"),
+            ("second.hew", "import greeting.{ greet as invoke_greeting }; fn second() -> i32 { let local: fn[suspends]() -> i32 = || invoke_greeting(); local() }"),
         ] {
             let label = dir.path().join(name);
             let state = assert_equivalent(source, label.to_str().unwrap(), &options, &mut batch);

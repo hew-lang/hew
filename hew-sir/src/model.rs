@@ -80,6 +80,14 @@ pub enum CallableInstance {
     /// Source declaration plus that actor owner distinguishes its body, including
     /// when multiple actor instances share the same generic source declaration.
     ActorMember,
+    /// The delivery wrapper for one receive protocol member.
+    ActorInterceptEntry {
+        handler: u32,
+    },
+    /// A supervisor layer specialized into its child's actor turn.
+    ActorSupervisorIntercept {
+        layer: u32,
+    },
     Generic(SirInstanceKey),
     /// A concrete closure body, resolved by its environment descriptor.
     Closure(ClosureId),
@@ -629,6 +637,11 @@ pub enum RuntimeVariantRole {
     ActorErrorRejected,
     ActorErrorFailed,
     ActorErrorTrapped,
+    ActorErrorRefused,
+    CallerActor,
+    CallerTask,
+    CallerTimer,
+    CallerNode,
     ActorErrorDead,
     ActorErrorTimedOut,
     ActorErrorNodeNotRunning,
@@ -2016,6 +2029,7 @@ pub enum SemTerminator {
     /// The normal edge is absent exactly for a Never result.
     IndirectCall {
         id: OpId,
+        targets: crate::CallableTargets,
         callee: BoundaryOperand,
         signature: SemSignature,
         args: Vec<BoundaryOperand>,

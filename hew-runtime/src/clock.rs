@@ -71,6 +71,9 @@ fn monotonic_ms() -> u64 {
 /// No preconditions.
 #[no_mangle]
 pub unsafe extern "C" fn hew_now_ms() -> u64 {
+    if crate::generator::enabled() {
+        return 0;
+    }
     crate::driver::initialize_clock();
     // Check simulated time first (testing fast-path).
     if let Some(ms) = crate::deterministic::simtime_now() {
@@ -87,6 +90,9 @@ pub unsafe extern "C" fn hew_now_ms() -> u64 {
 /// No preconditions.
 #[no_mangle]
 pub unsafe extern "C" fn hew_instant_now() -> i64 {
+    if crate::generator::enabled() {
+        return 0;
+    }
     crate::driver::initialize_clock();
     let ms = crate::deterministic::simtime_now().unwrap_or_else(monotonic_ms);
     i64::try_from(ms)

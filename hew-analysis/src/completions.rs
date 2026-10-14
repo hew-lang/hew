@@ -696,7 +696,12 @@ fn collect_locals_at(parse_result: &hew_parser::ParseResult, offset: usize) -> V
             }
             Item::Machine(m) => collect_machine_locals(m, offset, &mut locals),
             // Record fields carry no expressions; no locals to collect.
-            Item::Record(_) | Item::Import(_) | Item::ExternBlock(_) | Item::TypeAlias(_) => {}
+            Item::Record(_)
+            | Item::Macro(_)
+            | Item::MacroCall(_)
+            | Item::Import(_)
+            | Item::ExternBlock(_)
+            | Item::TypeAlias(_) => {}
         }
     }
 
@@ -1357,6 +1362,7 @@ mod tests {
         );
         items.extend(root.program.items);
         let program = Program {
+            expansions: hew_parser::macro_syntax::ExpansionMap::default(),
             items,
             module_doc: None,
             module_graph: None,

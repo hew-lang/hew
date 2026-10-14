@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Return the user's home directory, preferring `$HOME` (Unix) then
 /// `%USERPROFILE%` (Windows). Falls back to `std::env::temp_dir()` so callers
@@ -19,6 +19,16 @@ pub fn home_dir() -> PathBuf {
 #[must_use]
 pub fn hew_home() -> PathBuf {
     std::env::var("HEW_HOME").map_or_else(|_| home_dir().join(".hew"), PathBuf::from)
+}
+
+pub(crate) fn package_link(base: &Path, package_name: &str) -> Result<PathBuf, String> {
+    if !crate::package_name::is_valid(package_name) {
+        return Err(crate::package_name::invalid_message(package_name));
+    }
+
+    Ok(package_name
+        .split('.')
+        .fold(base.to_path_buf(), |path, segment| path.join(segment)))
 }
 
 #[cfg(test)]

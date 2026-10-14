@@ -13,6 +13,10 @@ impl Builder<'_, '_> {
     /// Call the selected entry, then map its `Result` to the process status:
     /// `Ok(())` exits 0; `Err(error)` renders the error through the selected
     /// `Display::fmt`, writes `error: <text>` to stderr and exits 1.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "entry adaptation keeps success and error ownership together"
+    )]
     pub(super) fn lower_entry_adapter(&mut self, adapter: &EntryAdapter) -> Result<(), String> {
         let entry = self
             .service
@@ -47,7 +51,10 @@ impl Builder<'_, '_> {
         }
         let live_before: std::collections::HashSet<_> = self.owned_live.keys().copied().collect();
         let result = self.finish_user_call(
-            PreparedCallee::Direct(entry.id),
+            PreparedCallee::Direct {
+                target: entry.id,
+                site: None,
+            },
             entry.signature.clone(),
             arguments,
             &[],
@@ -70,12 +77,11 @@ impl Builder<'_, '_> {
             .get(usize::try_from(shape.0).map_err(|_| "variant shape id exceeds usize")?)
             .cloned()
             .ok_or_else(|| format!("variant shape {} disappeared during lowering", shape.0))?;
-        let names: Vec<&str> = descriptor
+        let names = descriptor
             .variants
             .iter()
-            .map(|v| v.name.as_str())
-            .collect();
-        if names != ["Ok", "Err"] {
+            .map(|variant| variant.name.as_str());
+        if names.ne(["Ok", "Err"]) {
             return Err(format!(
                 "entry result `{}` is not the `Ok`/`Err` Result shape",
                 result_ty.user_facing()
@@ -198,7 +204,10 @@ impl Builder<'_, '_> {
                     SemParamPassing::ReadOnly => BoundaryDecision::Copy,
                 };
                 (
-                    PreparedCallee::Direct(target.id),
+                    PreparedCallee::Direct {
+                        target: target.id,
+                        site: None,
+                    },
                     target.signature.clone(),
                     decision,
                 )

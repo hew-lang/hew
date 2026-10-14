@@ -28,7 +28,7 @@ function traitPackage(options = {}) {
 
   return {
     schema_version: "hew.sandbox.bytecode.v1",
-    hew_version: "0.6.0",
+    hew_version: "0.6.1",
     compiler_version: "trait-object-test",
     profile: "sandbox-vm-export",
     entry: { function: 0, exit: "unit" },

@@ -75,10 +75,10 @@ pub enum CheckerDisposition {
     Todo,
 }
 
-/// Whether the single-thread driver can schedule an operation in this row.
+/// Whether an execution profile admits an operation in this row.
 #[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
-pub enum DeterministicDisposition {
+pub enum HostDisposition {
     #[default]
     Admit,
     Refuse,
@@ -116,13 +116,20 @@ pub struct Feature {
     pub runtime: RuntimeDisposition,
     pub runtime_status: String,
     #[serde(default)]
-    pub deterministic: DeterministicDisposition,
+    pub deterministic: HostDisposition,
     /// Checker declaration paths for operations the driver cannot schedule.
     #[serde(default)]
     pub deterministic_functions: Vec<String>,
     /// Trusted runtime or compiler endpoint symbols for the same operations.
     #[serde(default)]
     pub deterministic_endpoints: Vec<String>,
+    /// Independent admission policy for build-time generators.
+    #[serde(default)]
+    pub generate: HostDisposition,
+    #[serde(default)]
+    pub generate_functions: Vec<String>,
+    #[serde(default)]
+    pub generate_endpoints: Vec<String>,
     #[serde(default)]
     pub categories: Vec<String>,
     pub checker_detail: Option<String>,
@@ -248,47 +255,75 @@ impl Manifest {
         let mut functions = BTreeSet::new();
         let mut deterministic_functions = BTreeSet::new();
         let mut deterministic_endpoints = BTreeSet::new();
+        let mut generate_functions = BTreeSet::new();
+        let mut generate_endpoints = BTreeSet::new();
         for feature in &self.features {
             validate_kebab_id(&feature.id, "feature id")?;
-            if feature.deterministic == DeterministicDisposition::Admit
-                && (!feature.deterministic_functions.is_empty()
-                    || !feature.deterministic_endpoints.is_empty())
-            {
-                return Err(format!(
-                    "admitted feature `{}` must not declare deterministic refusals",
-                    feature.id
-                ));
-            }
-            if feature.deterministic == DeterministicDisposition::Refuse
-                && feature.deterministic_functions.is_empty()
-                && feature.deterministic_endpoints.is_empty()
-            {
-                return Err(format!(
-                    "refused feature `{}` needs a function or endpoint identity",
-                    feature.id
-                ));
-            }
-            for function in &feature.deterministic_functions {
-                if function.split('.').count() < 2 || !function.split('.').all(valid_source_segment)
+            for (
+                profile,
+                disposition,
+                profile_functions,
+                profile_endpoints,
+                seen_functions,
+                seen_endpoints,
+            ) in [
+                (
+                    "deterministic",
+                    feature.deterministic,
+                    &feature.deterministic_functions,
+                    &feature.deterministic_endpoints,
+                    &mut deterministic_functions,
+                    &mut deterministic_endpoints,
+                ),
+                (
+                    "generate",
+                    feature.generate,
+                    &feature.generate_functions,
+                    &feature.generate_endpoints,
+                    &mut generate_functions,
+                    &mut generate_endpoints,
+                ),
+            ] {
+                if disposition == HostDisposition::Admit
+                    && (!profile_functions.is_empty() || !profile_endpoints.is_empty())
                 {
                     return Err(format!(
-                        "feature `{}` has invalid deterministic function `{function}`",
+                        "admitted feature `{}` must not declare {profile} refusals",
                         feature.id
                     ));
                 }
-                if !deterministic_functions.insert(function) {
-                    return Err(format!("duplicate deterministic function `{function}`"));
-                }
-            }
-            for endpoint in &feature.deterministic_endpoints {
-                if !valid_source_segment(endpoint) {
+                if disposition == HostDisposition::Refuse
+                    && profile_functions.is_empty()
+                    && profile_endpoints.is_empty()
+                {
                     return Err(format!(
-                        "feature `{}` has invalid deterministic endpoint `{endpoint}`",
+                        "refused feature `{}` needs a function or endpoint identity",
                         feature.id
                     ));
                 }
-                if !deterministic_endpoints.insert(endpoint) {
-                    return Err(format!("duplicate deterministic endpoint `{endpoint}`"));
+                for function in profile_functions {
+                    if function.split('.').count() < 2
+                        || !function.split('.').all(valid_source_segment)
+                    {
+                        return Err(format!(
+                            "feature `{}` has invalid {profile} function `{function}`",
+                            feature.id
+                        ));
+                    }
+                    if !seen_functions.insert(function) {
+                        return Err(format!("duplicate {profile} function `{function}`"));
+                    }
+                }
+                for endpoint in profile_endpoints {
+                    if !valid_source_segment(endpoint) {
+                        return Err(format!(
+                            "feature `{}` has invalid {profile} endpoint `{endpoint}`",
+                            feature.id
+                        ));
+                    }
+                    if !seen_endpoints.insert(endpoint) {
+                        return Err(format!("duplicate {profile} endpoint `{endpoint}`"));
+                    }
                 }
             }
             match feature.checker {
@@ -757,52 +792,32 @@ pub const NATIVE_ONLY_WASM_MODULES: &[&str] = &[
         out.push_str(
             "];
 
-/// A manifest-owned deterministic host-operation refusal.
+/// A manifest-owned host-operation refusal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct DeterministicOperation {
+pub struct HostOperation {
     pub identity: &'static str,
     pub capability: WasmCapabilityId,
 }
-
-/// Source declaration paths refused by the deterministic driver.
-pub const DETERMINISTIC_FUNCTION_REJECTIONS: &[DeterministicOperation] = &[
 ",
         );
-        for feature in &self.features {
-            for function in &feature.deterministic_functions {
-                writeln!(
-                    out,
-                    "    DeterministicOperation {{ identity: {function:?}, capability: WasmCapabilityId({:?}) }},",
-                    feature.id
-                )
-                .expect("String write");
+        for profile in ["DETERMINISTIC", "GENERATE"] {
+            for kind in ["FUNCTION", "ENDPOINT"] {
+                writeln!(out, "\n/// Manifest-owned {profile} {kind} refusals.\npub const {profile}_{kind}_REJECTIONS: &[HostOperation] = &[").expect("String write");
+                for feature in &self.features {
+                    let identities = match (profile, kind) {
+                        ("DETERMINISTIC", "FUNCTION") => &feature.deterministic_functions,
+                        ("DETERMINISTIC", _) => &feature.deterministic_endpoints,
+                        (_, "FUNCTION") => &feature.generate_functions,
+                        _ => &feature.generate_endpoints,
+                    };
+                    for identity in identities {
+                        writeln!(out, "    HostOperation {{ identity: {identity:?}, capability: WasmCapabilityId({:?}) }},", feature.id).expect("String write");
+                    }
+                }
+                out.push_str("];\n");
             }
         }
-        out.push_str(
-            "];
-
-/// Trusted compiler and runtime endpoints refused by the deterministic driver.
-pub const DETERMINISTIC_ENDPOINT_REJECTIONS: &[DeterministicOperation] = &[
-",
-        );
-        for feature in &self.features {
-            for endpoint in &feature.deterministic_endpoints {
-                writeln!(
-                    out,
-                    "    DeterministicOperation {{ identity: {endpoint:?}, capability: WasmCapabilityId({:?}) }},",
-                    feature.id
-                )
-                .expect("String write");
-            }
-        }
-        out.push_str(
-            "];
-
-}
-
-pub use generated::*;
-",
-        );
+        out.push_str("\n}\n\npub use generated::*;\n");
         out
     }
 

@@ -1,0 +1,28 @@
+actor Worker {
+    #[intercept]
+    fn observe(call: Call<Self>) -> Outcome<Self> {
+        let declared = call.handler_name() == "reject";
+        let outcome = call.proceed();
+        assert(outcome.failed() == declared);
+        assert(!outcome.refused());
+        outcome
+    }
+
+    receive fn data() -> Result<i64, string> { .Err("ordinary reply") }
+    receive fn reject() -> i64 fails string { return error "declared failure"; }
+}
+
+fn main() {
+    let worker = spawn Worker;
+    match worker.data().expect("ordinary Result reply") {
+        .Err(error) => assert(error == "ordinary reply"),
+        _ => panic("expected error-valued reply"),
+    }
+    match worker.reject() {
+        .Err(.Failed(error)) => assert(error == "declared failure"),
+        _ => panic("expected declared failure"),
+    }
+    stop(worker);
+    stopped(worker);
+    println("declared failures remain distinct");
+}

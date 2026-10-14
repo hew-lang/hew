@@ -1,8 +1,8 @@
 left-free
 right-free
-left-specialized
+left-concrete
 left-generic
-right-specialized
+right-concrete
 right-generic
 left-default
 right-default

@@ -1,0 +1,17 @@
+import "../protocol/traits.hew";
+
+import "../data/model.hew";
+
+impl Render for Widget {
+    fn render(self) -> string {
+        "foreign"
+    }
+}
+
+impl Render for Vec<Widget> {
+    fn render(self) -> string {
+        "foreign wrapper"
+    }
+}
+
+fn main() {}

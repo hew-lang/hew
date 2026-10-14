@@ -8,6 +8,7 @@ use std::sync::Arc;
 /// operation owns only the shallow unpublished wrapper and its readiness target.
 #[derive(Debug)]
 pub struct HewNativeSend {
+    caller: crate::actor_caller::HewCallerStamp,
     obligated: bool,
     token: crate::lifetime::local_handles::HewLocalPidId,
     message: i32,
@@ -65,6 +66,7 @@ pub unsafe extern "C" fn hew_actor_send_wait_new(
     unsafe { (*envelope).release_start = payload_release };
     crate::actor::register_native_capacity(token, &waker);
     Box::into_raw(Box::new(HewNativeSend {
+        caller: crate::actor_caller::local_sender(),
         obligated: obligated != 0,
         token,
         message,
@@ -79,6 +81,7 @@ pub unsafe extern "C" fn hew_actor_send_wait_new(
 /// abandoned admission releases them.
 #[derive(Debug)]
 pub struct HewNativeAsk {
+    caller: crate::actor_caller::HewCallerStamp,
     token: crate::lifetime::local_handles::HewLocalPidId,
     message: i32,
     envelope: *mut super::HewMsgEnvelope,
@@ -148,6 +151,7 @@ pub unsafe extern "C" fn hew_actor_ask_wait_poll(wait: *mut HewNativeAsk) -> i32
             wait.envelope,
             wait.channel,
             true,
+            wait.caller,
         )
     };
     match outcome {
@@ -215,6 +219,27 @@ pub unsafe extern "C" fn hew_actor_ask_wait_resume(
     channel: *mut std::ffi::c_void,
     waker: *const HewWaker,
 ) -> *mut HewNativeAsk {
+    // SAFETY: forwards the unpublished request and live readiness descriptor.
+    unsafe {
+        ask_wait_resume(
+            token,
+            message,
+            envelope,
+            channel,
+            waker,
+            crate::actor_caller::local_sender(),
+        )
+    }
+}
+
+pub(crate) unsafe fn ask_wait_resume(
+    token: crate::lifetime::local_handles::HewLocalPidId,
+    message: i32,
+    envelope: *mut super::HewMsgEnvelope,
+    channel: *mut std::ffi::c_void,
+    waker: *const HewWaker,
+    caller: crate::actor_caller::HewCallerStamp,
+) -> *mut HewNativeAsk {
     if envelope.is_null() {
         return std::ptr::null_mut();
     }
@@ -225,6 +250,7 @@ pub unsafe extern "C" fn hew_actor_ask_wait_resume(
     };
     crate::actor::register_native_capacity(token, &waker);
     Box::into_raw(Box::new(HewNativeAsk {
+        caller,
         token,
         message,
         envelope,
@@ -253,6 +279,7 @@ pub unsafe extern "C" fn hew_actor_send_wait_poll(wait: *mut HewNativeSend) -> i
             wait.envelope,
             std::ptr::null_mut(),
             wait.obligated,
+            wait.caller,
         )
     };
     let status = match crate::actor_native::submission_status(outcome) {

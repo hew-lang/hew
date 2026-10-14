@@ -567,6 +567,7 @@ fn utf8_module_with_another_floors_source_path_is_rejected() {
         .unwrap();
     graph.topo_order = vec![utf8, root];
     let program = Program {
+        expansions: hew_parser::macro_syntax::ExpansionMap::default(),
         module_graph: Some(graph),
         items: vec![],
         module_doc: None,

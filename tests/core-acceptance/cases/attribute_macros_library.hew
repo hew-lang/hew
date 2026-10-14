@@ -1,0 +1,10 @@
+pub macro layer {
+    #[($label:literal)] $f:fn => items {
+        $f.vis fn $f.name $f.generics ($f.params) $f.ret $f.where {
+            println($label);
+            let value = 99;
+            println(value);
+            $f.body
+        }
+    }
+}

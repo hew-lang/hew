@@ -3056,6 +3056,16 @@ unsafe fn set_owned_release(
         if index >= (*v).len {
             abort_oob("Vec.set()", index, (*v).len);
         }
+        let slot = (*v).data.add(index * layout.size);
+        if layout.ownership_kind == HewTypeOwnershipKind::Plain
+            && layout.clone_fn.is_none()
+            && layout.drop_fn.is_none()
+            && layout.release_start.is_none()
+        {
+            // The borrowed replacement may be this element or another slot.
+            ptr::copy(data.cast::<u8>(), slot, layout.size);
+            return ptr::null_mut();
+        }
         let scratch_size = layout.size.max(1);
         let scratch = crate::mem::hew_alloc(scratch_size as u64, layout.align as u64);
         ptr::copy_nonoverlapping(data.cast::<u8>(), scratch, layout.size);
@@ -3066,7 +3076,6 @@ unsafe fn set_owned_release(
                 libc::abort();
             }
         }
-        let slot = (*v).data.add(index * layout.size);
         let displaced = HewReleaseCursor::detached(slot.cast(), layout);
         ptr::copy_nonoverlapping(scratch, slot, layout.size);
         crate::mem::hew_dealloc(scratch, scratch_size as u64, layout.align as u64);
@@ -5552,6 +5561,34 @@ mod vec_owned_tests {
 
             hew_vec_free_owned(v);
             assert_eq!(live_allocations(), 0);
+        }
+    }
+
+    #[test]
+    fn plain_set_accepts_an_element_alias() {
+        let layout = HewValueLayout {
+            size: size_of::<i64>(),
+            align: align_of::<i64>(),
+            ownership_kind: HewTypeOwnershipKind::Plain,
+            clone_fn: None,
+            drop_fn: None,
+            release_start: None,
+        };
+        // SAFETY: each source names an initialized i64 and replacement does not
+        // grow the vector, so its borrowed element addresses remain valid.
+        unsafe {
+            let vector = hew_vec_new_with_elem_layout(&raw const layout);
+            for value in [11_i64, 22] {
+                hew_vec_push_owned(vector, (&raw const value).cast());
+            }
+            let second = hew_vec_get_owned(vector, 1);
+            hew_vec_set_owned(vector, 0, second);
+            let first = hew_vec_get_owned(vector, 0);
+            assert_eq!(*first.cast::<i64>(), 22);
+            hew_vec_set_owned(vector, 0, first);
+            assert_eq!(*hew_vec_get_owned(vector, 0).cast::<i64>(), 22);
+            assert_eq!(*hew_vec_get_owned(vector, 1).cast::<i64>(), 22);
+            hew_vec_free_owned(vector);
         }
     }
 

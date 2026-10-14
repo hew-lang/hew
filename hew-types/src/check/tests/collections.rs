@@ -3327,6 +3327,7 @@ fn helper() {
     mg.add_module(module).expect("the value is present");
     mg.topo_order = vec![mod_id, root_id];
     let program = Program {
+        expansions: hew_parser::macro_syntax::ExpansionMap::default(),
         module_graph: Some(mg),
         items: vec![],
         module_doc: None,
@@ -3384,6 +3385,7 @@ fn helper() {}
     mg.add_module(module).expect("the value is present");
     mg.topo_order = vec![mod_id, root_id];
     let program = Program {
+        expansions: hew_parser::macro_syntax::ExpansionMap::default(),
         module_graph: Some(mg),
         items: vec![],
         module_doc: None,
@@ -3463,6 +3465,7 @@ fn same_bare_name_imported_replies_derive_send_per_module() {
     .expect("the value is present");
     mg.topo_order = vec![bad_id, good_id, root_id];
     let program = Program {
+        expansions: hew_parser::macro_syntax::ExpansionMap::default(),
         module_graph: Some(mg),
         items: vec![],
         module_doc: None,

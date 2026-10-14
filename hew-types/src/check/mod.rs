@@ -24,17 +24,21 @@ use std::sync::OnceLock;
 
 mod actor_codec;
 mod actor_delivery;
+mod actor_intercept;
 pub(crate) mod admissibility;
 pub(crate) mod assertion;
 mod bounds;
 mod branch_join;
 mod callables;
 mod calls;
+mod cleanup_effects;
 mod closure_inference;
 mod coerce;
 pub mod const_eval;
+mod constants;
 mod dependency_analysis;
 mod diagnostics;
+mod macro_templates;
 pub use dependency_analysis::DependencyAnalysisCache;
 pub mod dispatch;
 pub mod dispatch_table;
@@ -803,10 +807,72 @@ impl Checker {
         }
     }
 
+    pub(super) fn named_item_declaration(
+        &self,
+        name: hew_parser::ast::Ident,
+    ) -> Option<crate::DefId> {
+        let site = self.scope_site()?;
+        match self.scopes.value_head(&self.env, site, name)? {
+            scope::Resolution::Def(id) | scope::Resolution::Member(id) => Some(id),
+            scope::Resolution::Nominal(id) => Some(id.declaration()),
+            _ => None,
+        }
+    }
+
+    pub(super) fn type_declaration_identity(
+        &self,
+        declaration: &hew_parser::ast::TypeDecl,
+    ) -> Option<crate::DefId> {
+        if let hew_parser::ast::DeclarationOrigin::MachineEventType {
+            machine_start,
+            machine_end,
+            machine_ordinal,
+        } = declaration.origin
+        {
+            let owner =
+                self.defs
+                    .declaration(crate::DeclarationOccurrence::new_with_synthetic_ordinal(
+                        self.current_declaration_module(),
+                        &(machine_start..machine_end),
+                        machine_ordinal,
+                        crate::DeclarationKind::Machine,
+                        0,
+                    ))?;
+            return self.defs.member_of_kind(
+                owner,
+                hew_parser::ast::sym::EVENT,
+                crate::DeclarationKind::MachineEventType,
+            );
+        }
+        self.named_item_declaration(declaration.name)
+    }
+
     /// Select a free-function signature in the current source file. Explicit
     /// imports publish only lexical bindings; their canonical declarations own
     /// the signatures, leaving ambient builtin signatures intact.
-    pub(super) fn visible_fn_signature_key(&self, name: &str) -> Option<String> {
+    pub(super) fn visible_fn_signature_key(
+        &self,
+        name: impl crate::env::LexicalName,
+    ) -> Option<String> {
+        let ident = name.lexical_key();
+        let name = ident.name.as_str();
+        if ident.ctx != hew_parser::ast::SyntaxContext::ROOT {
+            let site = self.scope_site()?;
+            let declaration = match self.scopes.value_head(&self.env, site, ident) {
+                Some(scope::Resolution::Def(declaration)) => declaration,
+                None => {
+                    return self
+                        .builtin_fn_sigs
+                        .contains_key(&ident.name)
+                        .then(|| name.to_string())
+                }
+                _ => return None,
+            };
+            return self
+                .fn_sig_keys
+                .iter()
+                .find_map(|(key, id)| (*id == declaration).then(|| key.clone()));
+        }
         let canonical = Self::declared_fn_identity(self.canonical_fn_owner(), name);
         // The current source scope owns an authored function or extern before
         // any imported binding with the same spelling. Extern declarations do
@@ -1091,8 +1157,7 @@ impl Checker {
             let name = self.defs.name(id);
             match self.defs.owner(id) {
                 Some(owner) => {
-                    let resolution = scope::Binding::of_item(&self.defs, id)
-                        .map_or(scope::Resolution::Member(id), scope::Binding::resolution);
+                    let resolution = scope::Resolution::of_member(&self.defs, id);
                     self.scopes.declare_member(owner, name, resolution);
                 }
                 None => {
@@ -1188,7 +1253,22 @@ impl Checker {
         let namespace = self.scopes.namespace_of(target);
         if decl.path.segments.is_empty() {
             for (name, binding) in self.scopes.items(namespace) {
-                self.scopes.bind_import(file, name, binding, site);
+                if self.binding_is_importable(file, binding) {
+                    self.scopes.bind_import(file, name, binding, site);
+                }
+            }
+            if let Some(name) = decl
+                .file_path
+                .as_deref()
+                .and_then(|path| std::path::Path::new(path).file_stem())
+                .and_then(std::ffi::OsStr::to_str)
+            {
+                self.scopes.bind_import(
+                    file,
+                    hew_parser::ast::Symbol::intern(name),
+                    scope::Binding::Module(target),
+                    site,
+                );
             }
             return;
         }
@@ -1216,11 +1296,23 @@ impl Checker {
                 }
                 for selected in names {
                     if let Some(binding) = self.scopes.item(namespace, selected.name.name) {
-                        let bound = selected.alias.unwrap_or(selected.name);
-                        self.scopes.bind_import(file, bound.name, binding, site);
+                        if self.binding_is_importable(file, binding) {
+                            let bound = selected.alias.unwrap_or(selected.name);
+                            self.scopes.bind_import(file, bound.name, binding, site);
+                        }
                     }
                 }
             }
+        }
+    }
+
+    fn binding_is_importable(&self, file: crate::ModuleId, binding: scope::Binding) -> bool {
+        match binding.resolution() {
+            scope::Resolution::Nominal(id) => {
+                self.declaration_is_visible_from(id.declaration(), file)
+            }
+            scope::Resolution::Def(id) => self.declaration_is_visible_from(id, file),
+            _ => true,
         }
     }
 
@@ -1570,6 +1662,8 @@ impl Checker {
         }
         for descriptor in self.actor_protocol_descriptors.values_mut() {
             for handler in &mut descriptor.handlers {
+                handler.declared_failure =
+                    self.receive_fails_methods.contains(&handler.declaration);
                 handler.failure_display = targets.get(&handler.declaration).cloned();
             }
         }
@@ -1920,13 +2014,15 @@ impl Checker {
             Item::Supervisor(decl) => decl.visibility,
             Item::Machine(decl) => decl.visibility,
             Item::Record(decl) => decl.visibility,
-            Item::Import(_) | Item::Impl(_) | Item::ExternBlock(_) => {
-                hew_parser::ast::Visibility::Pub
-            }
+            Item::Macro(_)
+            | Item::MacroCall(_)
+            | Item::Import(_)
+            | Item::Impl(_)
+            | Item::ExternBlock(_) => hew_parser::ast::Visibility::Pub,
         };
         let mut declare = |kind: Kind,
                            ordinal: usize,
-                           name: Symbol,
+                           name: hew_parser::ast::Ident,
                            owner: Option<crate::DefId>,
                            path: String,
                            alias: bool|
@@ -1934,6 +2030,9 @@ impl Checker {
             let occurrence =
                 Occurrence::new_with_synthetic_ordinal(module, span, item_ordinal, kind, ordinal);
             let mut minted = None;
+            if alias && name.ctx != hew_parser::ast::SyntaxContext::ROOT {
+                return None;
+            }
             let collision = if alias {
                 let claimant = self
                     .defs
@@ -1956,11 +2055,8 @@ impl Checker {
                             minted_types.push(id);
                         }
                         if let Some(owner) = owner {
-                            let resolution = scope::Binding::of_item(&self.defs, id)
-                                .map_or(scope::Resolution::Member(id), |binding| {
-                                    binding.resolution()
-                                });
-                            self.scopes.declare_member(owner, name, resolution);
+                            let resolution = scope::Resolution::of_member(&self.defs, id);
+                            self.scopes.declare_member(owner, name.name, resolution);
                         } else {
                             self.defs.set_visibility(id, item_visibility);
                             if let (Some(namespace_module), Some(binding)) =
@@ -2055,12 +2151,12 @@ impl Checker {
             minted
         };
         match item {
-            Item::Import(_) => {}
+            Item::Macro(_) | Item::MacroCall(_) | Item::Import(_) => {}
             Item::Impl(_) => {
                 declare(
                     Kind::ImplBlock,
                     0,
-                    Symbol::intern("impl"),
+                    hew_parser::ast::Ident::new("impl"),
                     None,
                     format!(
                         "{}.<impl@{}:{}>",
@@ -2072,25 +2168,39 @@ impl Checker {
                 );
             }
             Item::Const(decl) => {
-                let name = decl.name.name;
-                declare(Kind::Const, 0, name, None, owner_path(name.as_str()), false);
-                if let Some(alias) = nominal_alias(name.as_str()) {
+                let name = decl.name;
+                declare(
+                    Kind::Const,
+                    0,
+                    name,
+                    None,
+                    owner_path(name.name.as_str()),
+                    false,
+                );
+                if let Some(alias) = nominal_alias(name.name.as_str()) {
                     declare(Kind::Const, 0, name, None, alias, true);
                 }
             }
             Item::Function(decl) => {
-                let name = decl.name.name;
-                declare(Kind::Function, 0, name, None, fn_path(name.as_str()), false);
+                let name = decl.name;
+                declare(
+                    Kind::Function,
+                    0,
+                    name,
+                    None,
+                    fn_path(name.name.as_str()),
+                    false,
+                );
             }
             Item::ExternBlock(block) => {
                 for (index, decl) in block.functions.iter().enumerate() {
-                    let name = decl.name.name;
+                    let name = decl.name;
                     declare(
                         Kind::ExternFunction,
                         index,
                         name,
                         None,
-                        fn_path(name.as_str()),
+                        fn_path(name.name.as_str()),
                         false,
                     );
                 }
@@ -2103,19 +2213,19 @@ impl Checker {
                 let (name, path, kind, parent) = if let Some((parent, path)) = &machine_event_owner
                 {
                     (
-                        Symbol::intern("Event"),
+                        hew_parser::ast::Ident::new("Event"),
                         path.clone(),
                         Kind::MachineEventType,
                         Some(*parent),
                     )
                 } else {
-                    let name = decl.name.name;
+                    let name = decl.name;
                     let kind = if decl.origin == hew_parser::ast::DeclarationOrigin::MachineState {
                         Kind::Machine
                     } else {
                         Kind::Type
                     };
-                    (name, owner_path(name.as_str()), kind, None)
+                    (name, owner_path(name.name.as_str()), kind, None)
                 };
                 if generated_event && parent.is_none() {
                     return;
@@ -2144,7 +2254,7 @@ impl Checker {
                     declare(
                         member_kind,
                         index,
-                        variant.name.name,
+                        variant.name,
                         owner,
                         format!("{path}::{member_path} {}", variant.name),
                         false,
@@ -2163,7 +2273,7 @@ impl Checker {
                     declare(
                         Kind::TypeMethod,
                         index,
-                        method.name.name,
+                        method.name,
                         owner,
                         format!("{path}::{}", method.name),
                         false,
@@ -2171,40 +2281,40 @@ impl Checker {
                 }
             }
             Item::TypeAlias(decl) => {
-                let name = decl.name.name;
+                let name = decl.name;
                 declare(
                     Kind::TypeAlias,
                     0,
                     name,
                     None,
-                    owner_path(name.as_str()),
+                    owner_path(name.name.as_str()),
                     false,
                 );
                 if matches!(namespace, NominalNamespace::RootBare) {
-                    if let Some(alias) = nominal_alias(name.as_str()) {
+                    if let Some(alias) = nominal_alias(name.name.as_str()) {
                         declare(Kind::TypeAlias, 0, name, None, alias, true);
                     }
                 }
             }
             Item::Record(decl) => {
-                let name = decl.name.name;
+                let name = decl.name;
                 declare(
                     Kind::Record,
                     0,
                     name,
                     None,
-                    owner_path(name.as_str()),
+                    owner_path(name.name.as_str()),
                     false,
                 );
-                if let Some(alias) = nominal_alias(name.as_str()) {
+                if let Some(alias) = nominal_alias(name.name.as_str()) {
                     declare(Kind::Record, 0, name, None, alias, true);
                 }
             }
             Item::Trait(decl) => {
-                let name = decl.name.name;
-                let path = owner_path(name.as_str());
+                let name = decl.name;
+                let path = owner_path(name.name.as_str());
                 let owner = declare(Kind::Trait, 0, name, None, path.clone(), false);
-                if let Some(alias) = nominal_alias(name.as_str()) {
+                if let Some(alias) = nominal_alias(name.name.as_str()) {
                     declare(Kind::Trait, 0, name, None, alias, true);
                 }
                 for (index, method) in decl
@@ -2219,7 +2329,7 @@ impl Checker {
                     declare(
                         Kind::TraitMethod,
                         index,
-                        method.name.name,
+                        method.name,
                         owner,
                         format!("{path}::{}", method.name),
                         false,
@@ -2227,27 +2337,56 @@ impl Checker {
                 }
             }
             Item::Actor(decl) => {
-                let name = decl.name.name;
-                let path = owner_path(name.as_str());
+                let name = decl.name;
+                let path = owner_path(name.name.as_str());
                 let owner = declare(Kind::Actor, 0, name, None, path.clone(), false);
-                if let Some(alias) = nominal_alias(name.as_str()) {
+                if let Some(alias) = nominal_alias(name.name.as_str()) {
                     declare(Kind::Actor, 0, name, None, alias, true);
                 }
                 if decl.init.is_some() {
                     declare(
                         Kind::ActorInit,
                         0,
-                        Symbol::intern("init"),
+                        hew_parser::ast::Ident::new("init"),
                         owner,
                         format!("{path}::<init>"),
                         false,
                     );
                 }
+                for (kind, suffix, offset) in [
+                    (Kind::ActorRequestType, "Request", 0),
+                    (Kind::ActorResponseType, "Response", decl.receive_fns.len()),
+                    (
+                        Kind::ActorStreamType,
+                        "<Stream>",
+                        2 * decl.receive_fns.len(),
+                    ),
+                ] {
+                    let enum_path = format!("{path}.{suffix}");
+                    let enum_owner = declare(
+                        kind,
+                        0,
+                        hew_parser::ast::Ident::new(suffix),
+                        owner,
+                        enum_path.clone(),
+                        false,
+                    );
+                    for (index, receive) in decl.receive_fns.iter().enumerate() {
+                        declare(
+                            Kind::Variant,
+                            offset + index,
+                            receive.name,
+                            enum_owner,
+                            format!("{enum_path}::{}", receive.name),
+                            false,
+                        );
+                    }
+                }
                 for (index, receive) in decl.receive_fns.iter().enumerate() {
                     declare(
                         Kind::ActorReceive,
                         index,
-                        receive.name.name,
+                        receive.name,
                         owner,
                         format!("{path}::{}", receive.name),
                         false,
@@ -2257,7 +2396,7 @@ impl Checker {
                     declare(
                         Kind::ActorMethod,
                         index,
-                        method.name.name,
+                        method.name,
                         owner,
                         format!("{path}::{}", method.name),
                         false,
@@ -2265,26 +2404,36 @@ impl Checker {
                 }
             }
             Item::Supervisor(decl) => {
-                let name = decl.name.name;
-                let path = owner_path(name.as_str());
+                let name = decl.name;
+                let path = owner_path(name.name.as_str());
                 let owner = declare(Kind::Supervisor, 0, name, None, path.clone(), false);
-                if let Some(alias) = nominal_alias(name.as_str()) {
+                if let Some(alias) = nominal_alias(name.name.as_str()) {
                     declare(Kind::Supervisor, 0, name, None, alias, true);
                 }
                 declare(
                     Kind::SupervisorBootstrap,
                     0,
-                    Symbol::intern("bootstrap"),
+                    hew_parser::ast::Ident::new("bootstrap"),
                     owner,
                     format!("{path}::<bootstrap>"),
                     false,
                 );
+                for (index, method) in decl.methods.iter().enumerate() {
+                    declare(
+                        Kind::SupervisorMethod,
+                        index,
+                        method.name,
+                        owner,
+                        format!("{path}::{}", method.name),
+                        false,
+                    );
+                }
             }
             Item::Machine(decl) => {
-                let name = decl.name.name;
-                let path = owner_path(name.as_str());
+                let name = decl.name;
+                let path = owner_path(name.name.as_str());
                 let owner = declare(Kind::Machine, 0, name, None, path.clone(), false);
-                if let Some(alias) = nominal_alias(name.as_str()) {
+                if let Some(alias) = nominal_alias(name.name.as_str()) {
                     declare(Kind::Machine, 0, name, None, alias, true);
                 }
                 // Raw machines also reach checking when normalization reports
@@ -2293,7 +2442,7 @@ impl Checker {
                 declare(
                     Kind::MachineEventType,
                     0,
-                    Symbol::intern("Event"),
+                    hew_parser::ast::Ident::new("Event"),
                     owner,
                     format!("{path}.Event"),
                     false,
@@ -2303,7 +2452,7 @@ impl Checker {
                     let state_owner = declare(
                         Kind::MachineState,
                         index,
-                        state.name.name,
+                        state.name,
                         owner,
                         state_path.clone(),
                         false,
@@ -2312,7 +2461,7 @@ impl Checker {
                         declare(
                             Kind::MachineStateEntry,
                             index,
-                            Symbol::intern("entry"),
+                            hew_parser::ast::Ident::new("entry"),
                             state_owner,
                             format!("{state_path}::<entry>"),
                             false,
@@ -2322,7 +2471,7 @@ impl Checker {
                         declare(
                             Kind::MachineStateExit,
                             index,
-                            Symbol::intern("exit"),
+                            hew_parser::ast::Ident::new("exit"),
                             state_owner,
                             format!("{state_path}::<exit>"),
                             false,
@@ -2333,7 +2482,7 @@ impl Checker {
                     declare(
                         Kind::MachineEvent,
                         index,
-                        event.name.name,
+                        event.name,
                         owner,
                         format!("{path}::event {}", event.name),
                         false,
@@ -2343,7 +2492,7 @@ impl Checker {
                     declare(
                         Kind::MachineTransition,
                         index,
-                        Symbol::intern("transition"),
+                        hew_parser::ast::Ident::new("transition"),
                         owner,
                         format!("{path}::<transition#{index}>"),
                         false,
@@ -2352,7 +2501,7 @@ impl Checker {
             }
         }
         self.declare_item_type_parameter_scopes(module, item_ordinal, item, span);
-        if matches!(item, Item::Trait(_)) {
+        if let Item::Trait(decl) = item {
             if let Some(module) = module {
                 let occurrence = crate::DeclarationOccurrence::new_with_synthetic_ordinal(
                     Some(module),
@@ -2364,6 +2513,18 @@ impl Checker {
                 if let Some(owner) = self.defs.declaration(occurrence) {
                     self.scopes
                         .declare_receiver_parameter(module, owner, span.clone());
+                    for method in decl.items.iter().filter_map(|item| match item {
+                        hew_parser::ast::TraitItem::Method(method) => Some(method),
+                        hew_parser::ast::TraitItem::AssociatedType { .. } => None,
+                    }) {
+                        if method.span.start < span.start || method.span.end > span.end {
+                            self.scopes.declare_receiver_parameter(
+                                module,
+                                owner,
+                                method.span.clone(),
+                            );
+                        }
+                    }
                 }
             }
         }
@@ -2490,6 +2651,14 @@ impl Checker {
                         &method.span,
                         method.type_params.as_deref().unwrap_or_default(),
                     );
+                    if method.span.start < span.start || method.span.end > span.end {
+                        declare(
+                            Kind::Trait,
+                            0,
+                            &method.span,
+                            decl.type_params.as_deref().unwrap_or_default(),
+                        );
+                    }
                 }
             }
             Item::Actor(decl) => {
@@ -2509,9 +2678,22 @@ impl Checker {
                         &method.fn_span,
                         method.type_params.as_deref().unwrap_or_default(),
                     );
+                    if method.fn_span.start < span.start || method.fn_span.end > span.end {
+                        declare(Kind::Actor, 0, &method.fn_span, &decl.type_params);
+                    }
                 }
             }
-            Item::Supervisor(decl) => declare(Kind::Supervisor, 0, span, &decl.type_params),
+            Item::Supervisor(decl) => {
+                declare(Kind::Supervisor, 0, span, &decl.type_params);
+                for (index, method) in decl.methods.iter().enumerate() {
+                    declare(
+                        Kind::SupervisorMethod,
+                        index,
+                        &method.fn_span,
+                        method.type_params.as_deref().unwrap_or_default(),
+                    );
+                }
+            }
             Item::Machine(decl) => declare(Kind::Machine, 0, span, &decl.type_params),
             _ => {}
         }
@@ -2597,6 +2779,7 @@ impl Checker {
         let program = normalized_program
             .as_ref()
             .map_or(program, |normalized| &normalized.program);
+        self.validate_macro_templates(program);
         self.check_dependency_bodies(program);
         self.check_root_bodies(program);
         self.finish_program(program, normalized_program.as_ref())
@@ -2616,6 +2799,7 @@ impl Checker {
     )]
     fn fork_dependency_state(&self) -> Self {
         Self {
+            expansions: self.expansions.clone(),
             input_provider: self.input_provider.clone(),
             input_references: self.input_references.clone(),
             compile_time_values: self.compile_time_values.clone(),
@@ -2726,10 +2910,10 @@ impl Checker {
             generic_trait_call_arguments: self.generic_trait_call_arguments.clone(),
             pending_callable_arguments: self.pending_callable_arguments.clone(),
             aggregate_field_candidates: self.aggregate_field_candidates.clone(),
+            loop_value_candidates: self.loop_value_candidates.clone(),
             callable_return_candidates: self.callable_return_candidates.clone(),
+            callable_receiver_outputs: self.callable_receiver_outputs.clone(),
             trait_method_ids: self.trait_method_ids.clone(),
-            trait_bindings: self.trait_bindings.clone(),
-            trait_method_ids_by_binding: self.trait_method_ids_by_binding.clone(),
             impl_method_declaration_ids: self.impl_method_declaration_ids.clone(),
             consuming_inherent_methods: self.consuming_inherent_methods.clone(),
             root_value_bindings: self.root_value_bindings.clone(),
@@ -2784,12 +2968,10 @@ impl Checker {
             source_impl_declarations: self.source_impl_declarations.clone(),
             rejected_impl_declarations: self.rejected_impl_declarations.clone(),
             reported_unknown_bounds: self.reported_unknown_bounds.clone(),
-            conflicting_trait_impl_reported: self.conflicting_trait_impl_reported.clone(),
             trait_impl_method_names: self.trait_impl_method_names.clone(),
             trait_impl_method_declaration_ids: self.trait_impl_method_declaration_ids.clone(),
             trait_impl_method_binders: self.trait_impl_method_binders.clone(),
             primitive_trait_impls: self.primitive_trait_impls.clone(),
-            primitive_trait_impl_self_args: self.primitive_trait_impl_self_args.clone(),
             supervisor_children: self.supervisor_children.clone(),
             supervisor_child_slots: self.supervisor_child_slots.clone(),
             pool_accessor_sites: self.pool_accessor_sites.clone(),
@@ -2856,7 +3038,6 @@ impl Checker {
             current_module_idx: self.current_module_idx.clone(),
             local_type_defs: self.local_type_defs.clone(),
             source_type_defs: self.source_type_defs.clone(),
-            local_trait_defs: self.local_trait_defs.clone(),
             current_self_type: self.current_self_type.clone(),
             current_impl_surface_target: self.current_impl_surface_target.clone(),
             current_actor_type: self.current_actor_type.clone(),
@@ -2882,7 +3063,7 @@ impl Checker {
             wasm_warning_spans: self.wasm_warning_spans.clone(),
             wasm_reject_spans: self.wasm_reject_spans.clone(),
             const_values: self.const_values.clone(),
-            declared_const_bindings: self.declared_const_bindings.clone(),
+            source_constants: self.source_constants.clone(),
             call_type_args: self.call_type_args.clone(),
             record_init_type_args: self.record_init_type_args.clone(),
             builtin_result_output_type_args: self.builtin_result_output_type_args.clone(),
@@ -2911,6 +3092,19 @@ impl Checker {
         // registration pass below resolves declaration identity through this
         // table, so it must be complete before any key is minted.
         self.mint_module_identities(program);
+        self.expansions = std::sync::Arc::new(program.expansions.clone());
+        if !program.expansions.contexts.rows.is_empty() {
+            let mut contexts = scope::SyntaxContexts::new();
+            for row in &program.expansions.contexts.rows {
+                let module = self
+                    .defs
+                    .module_for_source(&row.definition_source)
+                    .expect("macro definition source has a minted module");
+                contexts.mint(row.parent, module);
+            }
+            *self.scopes.contexts_mut() = contexts;
+        }
+        self.assign_module_packages();
         // Fresh extern authority per compile (rc1-F1 stage B): contracts are
         // minted by the registration passes below; a stale table would leak
         // symbol ownership across `check_program` runs.
@@ -3034,41 +3228,13 @@ impl Checker {
 
         // Build the actor protocol descriptor side-table BEFORE body checking.
         //
-        // The descriptor maps each `receive fn` to its stable, hash-derived
-        // `msg_id` (`SipHash-1-3("Actor::handler")`). Body checking needs this
-        // map available because the active-mode `conn.attach(this)` coercion
-        // (`Actor`'s own actor-handle type → `TlsHandler`'s) consults
-        // `actor_satisfies_handler_trait`, which reads
-        // `self.actor_protocol_descriptors` to confirm an actor's `receive fn`s
-        // structurally satisfy the handler trait. Building it after body
-        // checking (the pre-Q90 placement) left the map empty during the
-        // coercion, so the predicate always failed and the attach surface had
-        // no working caller.
-        //
-        // `build_actor_protocol_descriptors` needs only `program` plus the
-        // registered fn signatures, both of which `collect_functions` has
-        // finalized by this point. Receive-fn parameter types are concrete
-        // declared annotations (no inference vars to resolve), so the
-        // descriptor built here is identical to one built from the post-
-        // substitution `resolved_fn_sigs` snapshot later in the pipeline; the
-        // published descriptor in `TypeCheckOutput` reads this same field
-        // rather than rebuilding.
-        //
-        // `fn_sigs` is borrowed immutably while `errors` is borrowed mutably;
-        // both are `self` fields, so swap `fn_sigs` out across the build to
-        // keep the borrow checker happy without cloning the whole signature map.
-        let fn_sigs_for_descriptors = std::mem::take(&mut self.fn_sigs);
+        // Calls and coercions consume the checked handler protocol during body checking.
         self.actor_protocol_descriptors = build_actor_protocol_descriptors(
             program,
             &self.defs,
-            FnSigView::new(
-                &fn_sigs_for_descriptors,
-                &self.fn_sig_keys,
-                &self.builtin_fn_sigs,
-            ),
-            &mut self.errors,
+            FnSigView::new(&self.fn_sigs, &self.fn_sig_keys, &self.builtin_fn_sigs),
         );
-        self.fn_sigs = fn_sigs_for_descriptors;
+        self.register_actor_intercept_types(program);
     }
 
     fn check_dependency_bodies(&mut self, program: &Program) {
@@ -3094,12 +3260,9 @@ impl Checker {
                     // index lets two peers with same-offset expressions
                     // overwrite each other in `expr_types`.
                     self.current_module_idx = span_indices.module_base(mod_id).unwrap_or_default();
-                    // Temporarily scope local_type_defs / local_trait_defs to
-                    // this module so orphan-rule checks see module-local
-                    // definitions and locally_non_generic works correctly.
+                    // Keep type resolution local to this module's declarations.
                     let saved_local_type_defs = std::mem::take(&mut self.local_type_defs);
                     let saved_source_type_defs = std::mem::take(&mut self.source_type_defs);
-                    let saved_local_trait_defs = std::mem::take(&mut self.local_trait_defs);
                     for (item, _) in &module.items {
                         match item {
                             Item::TypeDecl(td) => {
@@ -3107,13 +3270,6 @@ impl Checker {
                                 self.source_type_defs.insert(td.name.to_string());
                             }
                             Item::Machine(md) => {
-                                // Parallel to the TypeDecl arm: seed the machine's
-                                // name so orphan-rule and locally_non_generic checks
-                                // inside the body pass see it as locally-defined.
-                                // Also seed the synthesised `<Name>Event` companion
-                                // type so event-typed parameters and bare event
-                                // ctors in imported machine modules resolve as
-                                // locally-non-generic.
                                 self.local_type_defs.insert(md.name.to_string());
                                 self.source_type_defs.insert(md.name.to_string());
                                 let event_type_name = format!("{}.Event", md.name);
@@ -3121,15 +3277,8 @@ impl Checker {
                                 self.source_type_defs.insert(event_type_name);
                             }
                             Item::Actor(ad) => {
-                                // An actor declares a nominal type; an
-                                // `impl ImportedTrait for ThisActor` is therefore
-                                // local-typed, not an orphan. Seed both sets so the
-                                // orphan rule treats it like any other local type.
                                 self.local_type_defs.insert(ad.name.to_string());
                                 self.source_type_defs.insert(ad.name.to_string());
-                            }
-                            Item::Trait(tr) => {
-                                self.local_trait_defs.insert(tr.name.to_string());
                             }
                             _ => {}
                         }
@@ -3210,7 +3359,6 @@ impl Checker {
 
                     self.local_type_defs = saved_local_type_defs;
                     self.source_type_defs = saved_source_type_defs;
-                    self.local_trait_defs = saved_local_trait_defs;
                 }
             }
             self.current_module = None;
@@ -3273,6 +3421,13 @@ impl Checker {
             .iter()
             .map(|(k, v)| (k.clone(), self.normalize_for_use(v)))
             .collect();
+
+        for (source, span) in &self.expansions.used_imports {
+            if let Some(module) = self.defs.module_for_source(source) {
+                self.scopes
+                    .mark_import_used(scope::ImportSite::new(module, span));
+            }
+        }
 
         // Emit unused import warnings. A REPL fragment imports modules it will
         // reference on later inputs, so suppress this lint for eval fragments.
@@ -3370,7 +3525,9 @@ impl Checker {
         // before those facts are moved into the checked-program handoff.
         self.report_completion_call_cycles();
         let checked_impl_body_callees = self.checked_impl_body_callees();
+        self.call_type_args = resolved_call_type_args;
         let suspension_effects = self.finish_suspension_effects();
+        let mut resolved_call_type_args = std::mem::take(&mut self.call_type_args);
         let callable_argument_flows = self.finish_callable_argument_flows();
         self.finish_task_lifetimes(&callable_argument_flows);
         self.pending_callable_arguments.clear();
@@ -3855,11 +4012,11 @@ impl Checker {
             generic_trait_call_arguments: std::mem::take(&mut self.generic_trait_call_arguments),
             callable_formals: std::mem::take(&mut self.callable_formals),
             aggregate_field_candidates: std::mem::take(&mut self.aggregate_field_candidates),
+            loop_value_candidates: std::mem::take(&mut self.loop_value_candidates),
             callable_return_candidates: std::mem::take(&mut self.callable_return_candidates),
+            callable_receiver_outputs: std::mem::take(&mut self.callable_receiver_outputs),
             trait_method_ids: std::mem::take(&mut self.trait_method_ids),
-            trait_bindings: std::mem::take(&mut self.trait_bindings),
             trait_defaults,
-            trait_method_ids_by_binding: std::mem::take(&mut self.trait_method_ids_by_binding),
             impl_method_declaration_ids: std::mem::take(&mut self.impl_method_declaration_ids),
             consuming_inherent_methods: std::mem::take(&mut self.consuming_inherent_methods),
             root_value_bindings: std::mem::take(&mut self.root_value_bindings),
@@ -4857,6 +5014,7 @@ impl Checker {
             | Expr::ChainValue
             | Expr::RegexLiteral(_)
             | Expr::ByteStringLiteral(_)
+            | Expr::MacroCall(_)
             | Expr::MacroInvocation { .. }
             | Expr::ByteArrayLiteral(_) => {}
         }
@@ -5297,6 +5455,7 @@ fn collect_lambda_spans_in_expr(
         | Expr::ChainValue
         | Expr::RegexLiteral(_)
         | Expr::ByteStringLiteral(_)
+        | Expr::MacroCall(_)
         | Expr::MacroInvocation { .. }
         | Expr::ByteArrayLiteral(_) => {}
     }
@@ -5370,40 +5529,41 @@ enum AnonContext {
     Other,
 }
 
-/// Collect every `actor` declaration in the program (root items + each
-/// module-graph module).
-///
-/// Returns `(owner_identity, actor_decl)` per actor. `owner_identity` is the
-/// full-path dotted declaration identity: module path `["a","b"]` yields
-/// `"a.b.Alpha"`, while root actors remain bare (`"Alpha"`). It is the sole
-/// semantic key used for signature lookup, descriptor publication, symbols,
-/// and collision attribution. Import aliases and leaf-qualified spellings are
-/// surface bindings and must not enter this declaration-identity walk.
-///
-/// The walk is read-only so it can run after the checker has frozen its
-/// mutable state.
-fn collect_program_actors(program: &Program) -> Vec<(String, &ActorDecl)> {
-    let mut actors: Vec<(String, &ActorDecl)> = Vec::new();
-    for (item, _) in &program.items {
-        if let Item::Actor(ad) = item {
-            actors.push((ad.name.to_string(), ad));
-        }
-    }
-    if let Some(mg) = &program.module_graph {
-        for (mod_id, module) in &mg.modules {
-            if *mod_id == mg.root {
-                continue;
+/// Collect actor source occurrences through the checker's declaration table.
+fn collect_program_actors<'a>(
+    program: &'a Program,
+    defs: &crate::DefTable,
+) -> Vec<(crate::DefId, &'a ActorDecl)> {
+    let mut actors = Vec::new();
+    let mut collect = |items: &'a [(Item, Span)],
+                       module: Option<&hew_parser::module::ModulePath>| {
+        for (index, (item, span)) in items.iter().enumerate() {
+            let Item::Actor(actor) = item else { continue };
+            let file = module
+                .and_then(|module| program.module_graph.as_ref()?.item_source(module, index))
+                .and_then(|source| defs.module_for_source(source))
+                .or_else(|| module.and_then(|module| defs.module_for_path(&module.dotted())))
+                .or_else(|| defs.root_module());
+            let occurrence = crate::DeclarationOccurrence::new_with_synthetic_ordinal(
+                file,
+                span,
+                index,
+                crate::DeclarationKind::Actor,
+                0,
+            );
+            if let Some(id) = defs.declaration(occurrence) {
+                actors.push((id, actor));
             }
-            let module_owner = mod_id.dotted();
-            for (item, _) in &module.items {
-                if let Item::Actor(ad) = item {
-                    let owner_identity = if module_owner.is_empty() {
-                        ad.name.to_string()
-                    } else {
-                        format!("{module_owner}.{}", ad.name)
-                    };
-                    actors.push((owner_identity.clone(), ad));
-                }
+        }
+    };
+    collect(
+        &program.items,
+        program.module_graph.as_ref().map(|graph| &graph.root),
+    );
+    if let Some(graph) = &program.module_graph {
+        for (id, module) in &graph.modules {
+            if *id != graph.root {
+                collect(&module.items, Some(id));
             }
         }
     }
@@ -5415,18 +5575,15 @@ fn collect_program_actors(program: &Program) -> Vec<(String, &ActorDecl)> {
 fn actor_handler_specs(
     defs: &crate::DefTable,
     fn_sigs: crate::check::types::FnSigView<'_>,
-    actor_identity: &str,
+    actor: crate::DefId,
     ad: &ActorDecl,
 ) -> Option<Vec<crate::actor_protocol::ActorHandlerSpec>> {
     let mut specs: Vec<crate::actor_protocol::ActorHandlerSpec> =
         Vec::with_capacity(ad.receive_fns.len());
-    // TRANSITION(A1c3): WHY actors are still collected by registration
-    // key. WHEN collection walks declarations, the actor is its id. WHAT:
-    // descriptors built per actor declaration.
-    let actor = defs.lookup_path(actor_identity);
+    let actor_identity = defs.path(actor);
     for rf in &ad.receive_fns {
         let declaration =
-            defs.member_of_kind(actor?, rf.name.name, crate::DeclarationKind::ActorReceive)?;
+            defs.member_of_kind(actor, rf.name.name, crate::DeclarationKind::ActorReceive)?;
         let sig = fn_sigs.of(declaration)?;
         let param_tys = sig
             .params
@@ -5443,6 +5600,7 @@ fn actor_handler_specs(
         let symbol = format!("{actor_identity}__{}", rf.name);
         specs.push(crate::actor_protocol::ActorHandlerSpec {
             declaration,
+            wire_identity: defs.dotted_declaration_path(declaration),
             name: rf.name.to_string(),
             param_tys,
             return_ty,
@@ -5456,177 +5614,57 @@ fn actor_handler_specs(
 /// each `receive fn`'s resolved type signature (param types + return type)
 /// drawn from `fn_sigs` by handler declaration.
 ///
-/// On collision: emits a `TypeErrorKind::ActorProtocolCollision` diagnostic
-/// against the second-colliding handler's span and **omits** the actor from
-/// the returned map. Downstream consumers must treat a missing entry
-/// fail-closed.
-///
-/// On unresolved signatures (e.g. an upstream type error left a handler
-/// param without a concrete `ResolvedTy`): silently skips the actor. The
-/// surfacing diagnostic is already emitted elsewhere; piling on with a
-/// derivative error here would be noise.
+/// Unresolved signatures have already reported their error and publish no partial protocol.
 fn build_actor_protocol_descriptors(
     program: &Program,
     defs: &crate::DefTable,
     fn_sigs: crate::check::types::FnSigView<'_>,
-    errors: &mut Vec<TypeError>,
 ) -> HashMap<String, crate::actor_protocol::ActorProtocolDescriptor> {
+    use crate::actor_protocol::{CoalesceFallback, MailboxContract, OverflowContract};
+    use hew_parser::ast::{OverflowFallback, OverflowPolicy};
+
     let mut descriptors: HashMap<String, crate::actor_protocol::ActorProtocolDescriptor> =
         HashMap::new();
-    // Cross-actor collision tracking (defense-in-depth): every published
-    // handler's `(msg_id, actor, handler, span)`. `msg_id` is the 32-bit
-    // transport discriminant on every cross-node frame; two DISTINCT actors
-    // sharing it leave the wire protocol ambiguous. The runtime keys its codec
-    // registry by `(actor-type, msg_id)` so routing is correct in-process, but
-    // refusing the collision at the source of truth keeps the wire unambiguous
-    // for relays / mixed-binary peers (the `boundary-fail-closed` invariant).
-    let mut cross_actor_seen: Vec<(u32, String, String, std::ops::Range<usize>)> = Vec::new();
-    for (actor_identity, ad) in collect_program_actors(program) {
+    for (actor, ad) in collect_program_actors(program, defs) {
+        let actor_identity = defs.path(actor).to_string();
         // A handler signature that failed to resolve already reported its
         // type error; a partial descriptor is never published.
-        let Some(specs) = actor_handler_specs(defs, fn_sigs, &actor_identity, ad) else {
+        let Some(specs) = actor_handler_specs(defs, fn_sigs, actor, ad) else {
             continue;
         };
 
         // The descriptor is a source declaration fact, so its identity is the
         // actor's full owner path. Surface aliases remain resolver bindings and
         // never become protocol identities.
-        match crate::actor_protocol::ActorProtocolDescriptor::from_handlers(
+        let mut descriptor = crate::actor_protocol::ActorProtocolDescriptor::from_handlers(
             actor_identity.clone(),
             &specs,
-        ) {
-            Ok(mut descriptor) => {
-                use crate::actor_protocol::{CoalesceFallback, MailboxContract, OverflowContract};
-                use hew_parser::ast::{OverflowFallback, OverflowPolicy};
-                descriptor.mailbox =
-                    ad.mailbox_capacity
-                        .map_or(MailboxContract::Unbounded, |capacity| {
-                            let overflow = match ad.overflow_policy.as_ref() {
-                                None | Some(OverflowPolicy::Block) => OverflowContract::Block,
-                                Some(OverflowPolicy::DropNew) => OverflowContract::DropNew,
-                                Some(OverflowPolicy::DropOld) => OverflowContract::DropOld,
-                                Some(OverflowPolicy::Fail) => OverflowContract::Fail,
-                                Some(OverflowPolicy::Coalesce { fallback, .. }) => {
-                                    OverflowContract::Coalesce {
-                                        fallback: match fallback {
-                                            Some(OverflowFallback::DropOld) => {
-                                                CoalesceFallback::DropOld
-                                            }
-                                            Some(OverflowFallback::Fail) => CoalesceFallback::Fail,
-                                            // The checker rejects a blocking fallback before publishing HIR.
-                                            None
-                                            | Some(
-                                                OverflowFallback::DropNew | OverflowFallback::Block,
-                                            ) => CoalesceFallback::DropNew,
-                                        },
-                                    }
+        );
+        descriptor.mailbox = ad
+            .mailbox_capacity
+            .map_or(MailboxContract::Unbounded, |capacity| {
+                let overflow = match ad.overflow_policy.as_ref() {
+                    None | Some(OverflowPolicy::Block) => OverflowContract::Block,
+                    Some(OverflowPolicy::DropNew) => OverflowContract::DropNew,
+                    Some(OverflowPolicy::DropOld) => OverflowContract::DropOld,
+                    Some(OverflowPolicy::Fail) => OverflowContract::Fail,
+                    Some(OverflowPolicy::Coalesce { fallback, .. }) => {
+                        OverflowContract::Coalesce {
+                            fallback: match fallback {
+                                Some(OverflowFallback::DropOld) => CoalesceFallback::DropOld,
+                                Some(OverflowFallback::Fail) => CoalesceFallback::Fail,
+                                // The checker rejects a blocking fallback before publishing HIR.
+                                None
+                                | Some(OverflowFallback::DropNew | OverflowFallback::Block) => {
+                                    CoalesceFallback::DropNew
                                 }
-                            };
-                            MailboxContract::Bounded { capacity, overflow }
-                        });
-                // Record each handler's msg_id for the cross-actor pass.
-                for h in &descriptor.handlers {
-                    let span = ad
-                        .receive_fns
-                        .iter()
-                        .find(|rf| rf.name == Ident::new(&h.name))
-                        .map_or(0..0, |rf| rf.span.clone());
-                    cross_actor_seen.push((h.msg_id, actor_identity.clone(), h.name.clone(), span));
-                }
-                descriptors.insert(actor_identity.clone(), descriptor);
-            }
-            Err(collision) => {
-                // Pin the diagnostic to the second-colliding handler's span
-                // so the user can jump straight to one of the two offenders.
-                // The diagnostic message names both, and the hint mentions
-                // the (not-yet-parseable) `#[msg_id(N)]` opt-in attribute
-                // so the wording stays accurate when the later Q87 slice
-                // lands the attribute.
-                let span = ad
-                    .receive_fns
-                    .iter()
-                    .find(|rf| rf.name == Ident::new(&collision.handler_b))
-                    .map_or(0..0, |rf| rf.span.clone());
-                let message = format!(
-                    "actor `{}` has two `receive fn`s with the same msg_id 0x{:08x}: `{}` and `{}`",
-                    collision.actor_name,
-                    collision.msg_id,
-                    collision.handler_a,
-                    collision.handler_b,
-                );
-                let mut err = TypeError::new(
-                    TypeErrorKind::ActorProtocolCollision {
-                        actor_name: collision.actor_name.clone(),
-                        handler_a: collision.handler_a.clone(),
-                        handler_b: collision.handler_b.clone(),
-                        msg_id: collision.msg_id,
-                    },
-                    span,
-                    message,
-                );
-                err = err.with_suggestion(format!(
-                    "rename `{}` or `{}` so their fully-qualified names hash to distinct \
-                     msg_ids; explicit `#[msg_id(N)]` pinning is reserved for a future \
-                     release (not yet supported)",
-                    collision.handler_a, collision.handler_b
-                ));
-                errors.push(err);
-                // Fail-closed: descriptor is absent from the map.
-            }
-        }
+                            },
+                        }
+                    }
+                };
+                MailboxContract::Bounded { capacity, overflow }
+            });
+        descriptors.insert(actor_identity, descriptor);
     }
-
-    report_cross_actor_msg_id_collisions(&cross_actor_seen, errors);
-
     descriptors
-}
-
-/// Defense-in-depth cross-actor pass: a `msg_id` shared by two DISTINCT actors
-/// is a 32-bit cross-node wire-discriminant collision. Emits one
-/// `CrossActorProtocolCollision` per colliding `msg_id` — the first
-/// distinct-actor pair found — pinned to the later actor's handler span. `seen`
-/// is every published handler's `(msg_id, actor, handler, span)` over the WHOLE
-/// program's actor set (so cross-module collisions are caught); intra-actor dups
-/// were already refused before this runs, so each entry is from a collision-free
-/// (within-its-actor) descriptor.
-fn report_cross_actor_msg_id_collisions(
-    seen: &[(u32, String, String, std::ops::Range<usize>)],
-    errors: &mut Vec<TypeError>,
-) {
-    let mut reported_msg_ids: Vec<u32> = Vec::new();
-    for i in 0..seen.len() {
-        let (msg_id_i, actor_i, handler_i, span_i) = &seen[i];
-        if reported_msg_ids.contains(msg_id_i) {
-            continue;
-        }
-        let Some((_, actor_j, handler_j, _)) = seen[..i]
-            .iter()
-            .find(|(mid, actor_j, _, _)| mid == msg_id_i && actor_j != actor_i)
-        else {
-            continue;
-        };
-        reported_msg_ids.push(*msg_id_i);
-        let message = format!(
-            "actors `{actor_j}` and `{actor_i}` have `receive fn`s with the same \
-             cross-node msg_id 0x{msg_id_i:08x}: `{actor_j}.{handler_j}` and \
-             `{actor_i}.{handler_i}` — the 32-bit wire discriminant is ambiguous"
-        );
-        let mut err = TypeError::new(
-            TypeErrorKind::CrossActorProtocolCollision {
-                actor_a: actor_j.clone(),
-                handler_a: handler_j.clone(),
-                actor_b: actor_i.clone(),
-                handler_b: handler_i.clone(),
-                msg_id: *msg_id_i,
-            },
-            span_i.clone(),
-            message,
-        );
-        err = err.with_suggestion(format!(
-            "rename `{actor_j}.{handler_j}` or `{actor_i}.{handler_i}` so their \
-             fully-qualified names hash to distinct msg_ids; explicit `#[msg_id(N)]` \
-             pinning is reserved for a future release (not yet supported)"
-        ));
-        errors.push(err);
-    }
 }

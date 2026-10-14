@@ -7,7 +7,7 @@ use std::ffi::c_void;
 use std::sync::Arc;
 
 use super::{HewAsyncIo, IoFailure, IoProducer, IoValue};
-use crate::blocking_pool::{hew_blocking_pool_submit, shared_blocking_pool_opt, HewBlockingPool};
+use crate::blocking_pool::{shared_blocking_pool_opt, submit_owned, HewBlockingPool};
 use crate::wake::HewWaker;
 
 enum FileRequest {
@@ -122,16 +122,14 @@ unsafe fn submit(
             "asynchronous file I/O requires an installed runtime",
         ))),
         (Some(pool), Ok(request)) => {
-            let job = Box::into_raw(Box::new(FileJob {
+            let job = Box::new(FileJob {
                 operation: IoProducer::new(Arc::clone(&operation)),
                 request,
-            }));
+            });
             // SAFETY: pool is installed for this call; the job is owned until
             // its sole callback runs. Runtime shutdown joins submitted work.
-            let status = unsafe { hew_blocking_pool_submit(pool, run_file_job, job.cast()) };
-            if status != 0 {
-                // SAFETY: failed admission did not transfer the job to a worker.
-                drop(unsafe { Box::from_raw(job) });
+            if let Err(job) = unsafe { submit_owned(pool, run_file_job, job) } {
+                drop(job);
                 operation.complete(Err(IoFailure::invalid("file I/O pool is stopped")));
             }
         }

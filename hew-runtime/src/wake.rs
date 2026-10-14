@@ -6,6 +6,10 @@
 
 use std::ffi::c_void;
 
+#[cfg(not(target_arch = "wasm32"))]
+#[path = "wake_scheduled.rs"]
+pub(crate) mod scheduled;
+
 /// Compiler-private readiness callback descriptor.
 ///
 /// All callbacks must be thread-safe and must not unwind. `retain` creates one

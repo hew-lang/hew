@@ -34,6 +34,7 @@ mod diagnostic_json;
 mod doc;
 mod eval;
 mod explain_cow;
+mod generate;
 mod help;
 mod host;
 mod link;
@@ -433,7 +434,7 @@ fn emit_module_with_triple(
             address_sanitizer: link::address_sanitizer_requested(),
             debug_source: debug.then_some(source_path).flatten(),
             link_freestanding_wasm,
-            build_info: Some(env!("HEW_VERSION")),
+            build_info: Some(hew_compile::VERSION),
         },
     )
     .map_err(|error| {
@@ -1881,6 +1882,47 @@ fn cmd_check(a: &args::CheckArgs) {
 
 /// Body of `hew check`. Returns the process exit code; MUST NOT call
 /// `std::process::exit` (bypasses the [`JsonDiagnosticFlush`] guard).
+fn cmd_expand(args: &args::ExpandArgs) {
+    match hew_compile::run_file_frontend_to_expansion(
+        &args.input,
+        &hew_compile::FrontendOptions::default(),
+    ) {
+        Ok(state) => {
+            compile::render_frontend_diagnostics(&state.diagnostics);
+            let offset = args.at.as_deref().map(|position| {
+                let offset = position.split_once(':').and_then(|(line, column)| {
+                    let line = line.parse::<usize>().ok()?.checked_sub(1)?;
+                    let column = column.parse::<usize>().ok()?.checked_sub(1)?;
+                    let lines = hew_analysis::util::compute_line_offsets(&state.source);
+                    let start = *lines.get(line)?;
+                    let text = state.source[start..].lines().next()?;
+                    let byte = text.char_indices().nth(column).map(|(byte, _)| byte)
+                        .or_else(|| (text.chars().count() == column).then_some(text.len()))?;
+                    Some(start + byte)
+                });
+                offset.unwrap_or_else(|| {
+                    eprintln!("invalid expansion position `{position}`; expected LINE:COL within the file");
+                    std::process::exit(2);
+                })
+            });
+            let path =
+                std::fs::canonicalize(&args.input).unwrap_or_else(|_| args.input.clone().into());
+            let Some(text) = hew_analysis::expansion::render(&state.program, &path, offset) else {
+                eprintln!("no macro expansion at this position");
+                std::process::exit(1);
+            };
+            println!("{text}");
+        }
+        Err(failure) => {
+            let channel = compile::render_frontend_diagnostics(&failure.diagnostics);
+            if failure.diagnostics.is_empty() {
+                eprintln!("{}", failure.message);
+            }
+            std::process::exit(channel.unwrap_or(DiagChannel::User).exit_code());
+        }
+    }
+}
+
 fn cmd_check_run(a: &args::CheckArgs) -> i32 {
     let json = a.format == args::DiagnosticFormat::Json;
 
@@ -2103,9 +2145,13 @@ fn cmd_fmt(a: &args::FmtArgs) {
             std::process::exit(1);
         }
 
-        let formatted = format_for_display("<stdin>", &source).unwrap_or_else(|| {
-            std::process::exit(1);
-        });
+        let formatted = if hew_pkg::generate::is_generated(&source) {
+            source.clone()
+        } else {
+            format_for_display("<stdin>", &source).unwrap_or_else(|| {
+                std::process::exit(1);
+            })
+        };
 
         if a.check {
             if formatted != source {
@@ -2163,6 +2209,9 @@ fn cmd_fmt(a: &args::FmtArgs) {
             }
         };
 
+        if hew_pkg::generate::is_generated(&source) {
+            continue;
+        }
         let Some(formatted) = format_for_display(&file, &source) else {
             had_errors = true;
             continue;
@@ -2373,6 +2422,10 @@ fn migration_files(root: &Path) -> Result<Vec<PathBuf>, String> {
 /// previews the same report without writing. Each file is replaced
 /// atomically; an I/O failure stops the run and names what was and was not
 /// written. A second run changes nothing.
+#[expect(
+    clippy::too_many_lines,
+    reason = "keeps per-file migration checks, diagnostics and write decisions together"
+)]
 fn migrate_files(files: &[PathBuf], exclude: &[PathBuf], check: bool) -> Result<bool, ()> {
     let excluded_roots = exclude
         .iter()
@@ -2408,6 +2461,9 @@ fn migrate_files(files: &[PathBuf], exclude: &[PathBuf], check: bool) -> Result<
             );
             continue;
         };
+        if hew_pkg::generate::is_generated(source) {
+            continue;
+        }
         match hew_parser::fmt::migrate_syntax(source) {
             Ok(migrated) => planned.push((file, original, migrated)),
             Err(error) => {
@@ -2813,7 +2869,7 @@ fn cmd_completions(a: &args::CompletionsArgs) {
 }
 
 fn cmd_version() {
-    println!("hew {}", env!("HEW_VERSION"));
+    println!("hew {}", hew_compile::VERSION);
 }
 
 /// `hew env`: print the resolved package-manager environment, one

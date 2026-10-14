@@ -1,0 +1,13 @@
+[[case]]
+id = "source-implicit-close-effect-reject"
+intent = "A function with an implicit suspending resource close cannot enter a plain function slot."
+source = "cases/source-implicit-close-effect-reject.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "InvalidOperation"
+line = 16
+column = 32
+message = "suspends via `implicit release of Ticket`; `fn() -> ()` never suspends"

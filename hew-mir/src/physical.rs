@@ -6,11 +6,11 @@
 //! exactly once to a physical action and never infers another lifetime.
 
 pub use hew_sir::{
-    ActorId, ActorIngressAdapter, ActorOperation, LifecycleTarget, LocalObservationKind,
-    RemoteObservationKind, SemActor, SemActorCoalesce, SemActorField, SemActorHandler,
-    SemActorOverflow, SemCoalesceFallback, SemCoalesceKey, SemFailureDisplay, SemRestartPolicy,
-    SemRestartStrategy, SemStopDeadline, SemSupervisedRole, SemSupervisor, SemVariantKind,
-    SupervisorId, TaskScopeJoinMode, TaskSelectionOrder,
+    ActorId, ActorIngressAdapter, ActorOperation, CallableTargets, LifecycleTarget,
+    LocalObservationKind, RemoteObservationKind, SemActor, SemActorCoalesce, SemActorField,
+    SemActorHandler, SemActorOverflow, SemCoalesceFallback, SemCoalesceKey, SemFailureDisplay,
+    SemRestartPolicy, SemRestartStrategy, SemStopDeadline, SemSupervisedRole, SemSupervisor,
+    SemVariantKind, SupervisorId, TaskScopeJoinMode, TaskSelectionOrder,
 };
 use hew_types::runtime_call::{sequence_element_type, ArrayValueOp};
 
@@ -41,8 +41,6 @@ mod callable;
 mod defer;
 #[path = "physical_extern.rs"]
 mod extern_abi;
-#[path = "physical_frame.rs"]
-mod frame;
 #[path = "physical_storage_uses.rs"]
 mod storage_uses;
 pub use extern_abi::PhysicalExternResultAbi;

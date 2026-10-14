@@ -14,7 +14,7 @@ fn badge_tag(b: Badge) -> string {
     b.tag
 }
 
-trait Describe {
+pub trait Describe {
     fn ident(self) -> string;
 
     fn describe(self) -> string {

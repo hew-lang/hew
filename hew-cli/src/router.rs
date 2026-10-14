@@ -7,6 +7,8 @@ use crate::args::{self, Cli, Command, ToolSubcommand};
 
 pub(crate) trait CommandDispatcher {
     fn compile(&mut self, args: &args::CompileArgs);
+    fn expand(&mut self, args: &args::ExpandArgs);
+    fn generate(&mut self, args: &args::GenerateArgs);
     fn run(&mut self, args: &args::RunArgs);
     fn debug(&mut self, args: &args::DebugArgs);
     fn check(&mut self, args: &args::CheckArgs);
@@ -34,6 +36,14 @@ pub(crate) trait CommandDispatcher {
 pub(crate) struct MainCommandDispatcher;
 
 impl CommandDispatcher for MainCommandDispatcher {
+    fn generate(&mut self, args: &args::GenerateArgs) {
+        crate::generate::cmd_generate(args);
+    }
+
+    fn expand(&mut self, args: &args::ExpandArgs) {
+        crate::cmd_expand(args);
+    }
+
     fn compile(&mut self, args: &args::CompileArgs) {
         crate::cmd_compile(args);
     }
@@ -127,7 +137,7 @@ impl CommandDispatcher for MainCommandDispatcher {
     }
 
     fn pkg(&mut self, cmd: &hew_pkg::cli::PkgCommand) {
-        hew_pkg::cli::dispatch(cmd);
+        hew_pkg::cli::dispatch(cmd, crate::generate::check_package);
     }
 }
 
@@ -142,6 +152,7 @@ pub(crate) fn dispatch_command(command: Option<&Command>, dispatcher: &mut impl 
         Some(Command::Debug(args)) => dispatcher.debug(args),
         Some(Command::Check(args)) => dispatcher.check(args),
         Some(Command::Build(args)) => dispatcher.build(args),
+        Some(Command::Generate(args)) => dispatcher.generate(args),
         Some(Command::Doc(args)) => dispatcher.doc(args),
         Some(Command::Eval(args)) => dispatcher.eval(args),
         Some(Command::Test(args)) => dispatcher.test(args),
@@ -157,6 +168,7 @@ pub(crate) fn dispatch_command(command: Option<&Command>, dispatcher: &mut impl 
         },
         Some(Command::Tool(tool)) => match &tool.command {
             ToolSubcommand::Compile(args) => dispatcher.compile(args),
+            ToolSubcommand::Expand(args) => dispatcher.expand(args),
             ToolSubcommand::PlaygroundVerify(args) => dispatcher.playground_verify(args),
         },
         Some(Command::Completions(args)) => dispatcher.completions(args),
@@ -328,9 +340,7 @@ mod tests {
             Some(crate::args::Command::Compile(compile)) => compile,
             Some(crate::args::Command::Tool(tool)) => match tool.command {
                 crate::args::ToolSubcommand::Compile(compile) => compile,
-                crate::args::ToolSubcommand::PlaygroundVerify(_) => {
-                    panic!("expected a compile command, got playground-verify")
-                }
+                other => panic!("expected a compile command, got {other:?}"),
             },
             other => panic!("expected a compile command, got {other:?}"),
         }
@@ -521,6 +531,10 @@ mod tests {
     }
 
     impl CommandDispatcher for RecordingDispatcher {
+        fn generate(&mut self, _args: &crate::args::GenerateArgs) {
+            self.calls.push("generate".to_string());
+        }
+
         fn compile(&mut self, args: &CompileArgs) {
             self.calls.push(format!("compile:{}", args.input.display()));
         }
@@ -583,6 +597,10 @@ mod tests {
 
         fn new_project(&mut self, _args: &crate::args::NewArgs) {
             self.calls.push("new".to_string());
+        }
+
+        fn expand(&mut self, _args: &crate::args::ExpandArgs) {
+            self.calls.push("expand".to_string());
         }
 
         fn playground_verify(&mut self, _args: &crate::args::PlaygroundVerifyArgs) {

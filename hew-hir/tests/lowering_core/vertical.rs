@@ -1010,10 +1010,16 @@ fn top_level_const_lowers_and_resolves_references() {
         })
         .expect("module lowers one const item");
     assert_eq!(const_item.name, "X");
-    assert_eq!(const_item.value, hew_hir::HirConstValue::Integer(42));
+    assert_eq!(
+        const_item.value.kind,
+        hew_hir::HirExprKind::Literal(hew_hir::HirLiteral::Integer(42))
+    );
 
     let dump = dump_hir(&output.module);
-    assert!(dump.contains("const i0 X: i64 = 42"), "dump was:\n{dump}");
+    assert!(
+        dump.contains("const i0 X: i64") && dump.contains("Integer(42)"),
+        "dump was:\n{dump}"
+    );
 }
 
 #[test]
@@ -1025,11 +1031,14 @@ fn top_level_const_folds_integer_arithmetic() {
         .items
         .iter()
         .find_map(|item| match item {
-            hew_hir::HirItem::Const(c) => Some(c.value.clone()),
+            hew_hir::HirItem::Const(c) => Some(c.value.kind.clone()),
             _ => None,
         })
         .expect("module lowers one const item");
-    assert_eq!(value, hew_hir::HirConstValue::Integer(7));
+    assert_eq!(
+        value,
+        hew_hir::HirExprKind::Literal(hew_hir::HirLiteral::Integer(7))
+    );
 }
 
 #[test]
@@ -1049,15 +1058,30 @@ fn top_level_const_folds_signed_negative_initializers() {
         .items
         .iter()
         .filter_map(|item| match item {
-            hew_hir::HirItem::Const(c) => Some((c.name.as_str(), c.value.clone())),
+            hew_hir::HirItem::Const(c) => Some((c.name.as_str(), c.value.kind.clone())),
             _ => None,
         })
         .collect();
-    assert_eq!(values["A"], hew_hir::HirConstValue::Integer(-5));
-    assert_eq!(values["B"], hew_hir::HirConstValue::Integer(-3));
-    assert_eq!(values["C"], hew_hir::HirConstValue::Integer(-13));
-    assert_eq!(values["D"], hew_hir::HirConstValue::Integer(-42));
-    assert_eq!(values["E"], hew_hir::HirConstValue::Integer(-7));
+    assert_eq!(
+        values["A"],
+        hew_hir::HirExprKind::Literal(hew_hir::HirLiteral::Integer(-5))
+    );
+    assert_eq!(
+        values["B"],
+        hew_hir::HirExprKind::Literal(hew_hir::HirLiteral::Integer(-3))
+    );
+    assert_eq!(
+        values["C"],
+        hew_hir::HirExprKind::Literal(hew_hir::HirLiteral::Integer(-13))
+    );
+    assert_eq!(
+        values["D"],
+        hew_hir::HirExprKind::Literal(hew_hir::HirLiteral::Integer(-42))
+    );
+    assert_eq!(
+        values["E"],
+        hew_hir::HirExprKind::Literal(hew_hir::HirLiteral::Integer(-7))
+    );
 }
 
 #[test]
@@ -1069,11 +1093,14 @@ fn top_level_const_folds_signed_binary_subtraction() {
         .items
         .iter()
         .find_map(|item| match item {
-            hew_hir::HirItem::Const(item) if item.name == "NIL" => Some(item.value.clone()),
+            hew_hir::HirItem::Const(item) if item.name == "NIL" => Some(item.value.kind.clone()),
             _ => None,
         })
         .expect("module lowers NIL");
-    assert_eq!(value, hew_hir::HirConstValue::Integer(-1));
+    assert_eq!(
+        value,
+        hew_hir::HirExprKind::Literal(hew_hir::HirLiteral::Integer(-1))
+    );
 }
 
 #[test]
@@ -1117,11 +1144,14 @@ fn top_level_string_const_folds_literal() {
         .items
         .iter()
         .find_map(|item| match item {
-            hew_hir::HirItem::Const(c) => Some(c.value.clone()),
+            hew_hir::HirItem::Const(c) => Some(c.value.kind.clone()),
             _ => None,
         })
         .expect("module lowers one const item");
-    assert_eq!(value, hew_hir::HirConstValue::String("hew".to_string()));
+    assert_eq!(
+        value,
+        hew_hir::HirExprKind::Literal(hew_hir::HirLiteral::String("hew".to_string()))
+    );
 }
 
 #[test]
@@ -1145,19 +1175,24 @@ fn top_level_float_consts_fold_literals_and_resolve_references() {
         .items
         .iter()
         .filter_map(|item| match item {
-            hew_hir::HirItem::Const(c) => Some((c.name.as_str(), c.value.clone())),
+            hew_hir::HirItem::Const(c) => Some((c.name.as_str(), c.value.kind.clone())),
             _ => None,
         })
         .collect();
     assert_eq!(
         values["PI"],
-        hew_hir::HirConstValue::Float("3.14".parse::<f64>().expect("valid fixture float"))
+        hew_hir::HirExprKind::Literal(hew_hir::HirLiteral::Float(
+            "3.14".parse::<f64>().expect("valid fixture float")
+        ))
     );
-    assert_eq!(values["HALF"], hew_hir::HirConstValue::Float(0.5));
+    assert_eq!(
+        values["HALF"],
+        hew_hir::HirExprKind::Literal(hew_hir::HirLiteral::Float(0.5))
+    );
 
     let dump = dump_hir(&output.module);
     assert!(
-        dump.contains("const i0 PI: f64 = 3.14"),
+        dump.contains("const i0 PI: f64") && dump.contains("Float(3.14)"),
         "dump was:\n{dump}"
     );
 }
@@ -1171,13 +1206,15 @@ fn top_level_negative_float_const_folds_literal() {
         .items
         .iter()
         .find_map(|item| match item {
-            hew_hir::HirItem::Const(c) => Some(c.value.clone()),
+            hew_hir::HirItem::Const(c) => Some(c.value.kind.clone()),
             _ => None,
         })
         .expect("module lowers one const item");
     assert_eq!(
         value,
-        hew_hir::HirConstValue::Float("-3.14".parse::<f64>().expect("valid fixture float"))
+        hew_hir::HirExprKind::Literal(hew_hir::HirLiteral::Float(
+            "-3.14".parse::<f64>().expect("valid fixture float")
+        ))
     );
 }
 

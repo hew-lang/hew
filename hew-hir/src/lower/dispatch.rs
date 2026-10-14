@@ -215,16 +215,9 @@ impl LowerCtx {
     ///
     /// Concretely:
     ///
-    /// * `string` values prefer a user `impl Display for string` if one
-    ///   exists (resolved through the per-type method symbol); otherwise
-    ///   they pass through identity. The stdlib provides the identity
-    ///   impl so a non-user-overridden `string` interpolation does call
-    ///   it.
-    /// * Primitives route through the per-type `to_string_*` catalog
-    ///   entries that back the built-in `impl Display for <primitive>`
-    ///   blocks in `std::builtins`.
-    /// * Named user types route through the registry-derived method
-    ///   symbol on the user type (`<Type>::<method_name>`).
+    /// * Explicit implementations use their checker-selected declarations.
+    /// * Stdlib strings pass through; primitive implementations use the
+    ///   corresponding catalog conversion.
     /// * Any path that would reach a fabricated fallback emits a
     ///   `CheckerBoundaryViolation` and returns an `Unsupported`
     ///   sentinel — the checker's `require_display_impl` gate is the
@@ -340,36 +333,11 @@ impl LowerCtx {
         };
         let display_target = hew_types::CallTarget::static_trait(display_trait, display_method);
         let ty = dispatch_ty;
+        if self.display_facts.has_explicit_display_impl(&ty) {
+            return self.dispatch_display_to_named_impl(&ty, value, span);
+        }
         match &ty {
-            // String: route through a user `impl Display for string` if one
-            // is registered in the user's OWN source (a root-level impl,
-            // bare `string::fmt` symbol — see `fstring_string_routes_
-            // through_user_display_impl`); otherwise the stdlib's own
-            // `impl Display for string` in `std/builtins.hew`, discovered
-            // like any imported module's impl (see
-            // `insert_builtins_display_module`), so its symbol carries that
-            // module prefix, exactly like `duration` below. The stdlib
-            // identity impl ordinarily makes this a real (no-op) call so a
-            // user impl can transparently replace it; falling through to
-            // raw identity below only happens with neither impl registered
-            // (zero-stdlib unit tests).
-            ResolvedTy::String => {
-                let user_symbol = crate::node::HirImplBlock::method_symbol("string", &method_name);
-                let stdlib_symbol =
-                    crate::node::HirImplBlock::method_symbol("std.builtins.string", &method_name);
-                if let Some(call) =
-                    self.build_user_fn_call(&user_symbol, vec![value.clone()], span.clone())
-                {
-                    call
-                } else if let Some(call) =
-                    self.build_user_fn_call(&stdlib_symbol, vec![value.clone()], span.clone())
-                {
-                    call
-                } else {
-                    // No registered impl at all — fall through to identity.
-                    value
-                }
-            }
+            ResolvedTy::String => value,
             ResolvedTy::I8
             | ResolvedTy::I16
             | ResolvedTy::I32
@@ -626,7 +594,7 @@ impl LowerCtx {
         args: Vec<HirExpr>,
         span: &Span,
     ) -> Result<(HirExprKind, ResolvedTy), Vec<HirExpr>> {
-        let is_display_surface = matches!(name, "println" | "print" | "to_string");
+        let is_display_surface = stdlib_catalog::is_display_builtin(name);
         // Route a single `Display` argument through the Display dispatch spine
         // whenever no concrete-ABI overload matched. Reaching this fallback
         // means `stdlib_catalog::resolve_overload` found no monomorphic entry

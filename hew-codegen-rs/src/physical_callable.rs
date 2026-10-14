@@ -471,11 +471,11 @@ impl<'ctx> ValueEmitter<'_, 'ctx> {
     }
 }
 
-use hew_mir::physical::{ClosureId, PhysicalCallSignature, PhysicalClosure, StorageOrigin};
+use hew_mir::physical::{ClosureId, PhysicalClosure, StorageOrigin};
 
 fn callable_descriptor_type(ctx: &Context) -> inkwell::types::StructType<'_> {
     let pointer = ctx.ptr_type(AddressSpace::default());
-    ctx.struct_type(&[pointer.into(), pointer.into(), pointer.into()], false)
+    ctx.struct_type(&[pointer.into(); 5], false)
 }
 
 fn callable_carrier<'ctx>(
@@ -502,6 +502,35 @@ fn function_descriptor_symbol(id: CallableId) -> String {
 }
 fn closure_descriptor_symbol(id: ClosureId) -> String {
     format!("__hew_callable_closure_{}", id.0)
+}
+
+fn invocation_suspends(
+    module: &PhysicalModule,
+    body: &PhysicalCallable,
+    receiver: Option<&PhysicalEnvironmentGlue>,
+    consuming: bool,
+) -> bool {
+    if body.is_resumable {
+        return true;
+    }
+    let Some(receiver) = receiver.filter(|_| {
+        consuming && body.params[0].passing != hew_mir::physical::SemParamPassing::Consume
+    }) else {
+        return false;
+    };
+    receiver.fields.iter().any(|field| {
+        field
+            .destroy
+            .is_some_and(|action| module.releases.suspends(action))
+    }) || (receiver.fields.iter().any(|field| {
+        field
+            .destroy
+            .is_some_and(|action| module.releases.raises_fault(action))
+    }) && body
+        .return_recipe
+        .as_ref()
+        .and_then(|recipe| recipe.destroy)
+        .is_some_and(|action| module.releases.suspends(action)))
 }
 
 impl<'ctx> ModuleEmitter<'ctx, '_> {
@@ -573,7 +602,8 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                 &format!("{name}_borrow"),
                 descriptor.as_pointer_value(),
                 body,
-                closure.is_some(),
+                closure.map(|_| &self.module.environment_glue[index]),
+                false,
                 false,
             )?
             .as_global_value()
@@ -583,13 +613,49 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
             &format!("{name}_once"),
             descriptor.as_pointer_value(),
             body,
-            closure.is_some(),
+            closure.map(|_| &self.module.environment_glue[index]),
             true,
+            false,
         )?;
+        let synchronous_borrow = if !owned_body && !body.is_resumable {
+            self.emit_invoke_adapter(
+                &format!("{name}_borrow_sync"),
+                descriptor.as_pointer_value(),
+                body,
+                closure.map(|_| &self.module.environment_glue[index]),
+                false,
+                true,
+            )?
+            .as_global_value()
+            .as_pointer_value()
+        } else {
+            pointer.const_null()
+        };
+        let synchronous_once = if !invocation_suspends(
+            self.module,
+            body,
+            closure.map(|_| &self.module.environment_glue[index]),
+            true,
+        ) {
+            self.emit_invoke_adapter(
+                &format!("{name}_once_sync"),
+                descriptor.as_pointer_value(),
+                body,
+                closure.map(|_| &self.module.environment_glue[index]),
+                true,
+                true,
+            )?
+            .as_global_value()
+            .as_pointer_value()
+        } else {
+            pointer.const_null()
+        };
         descriptor.set_initializer(&descriptor_ty.const_named_struct(&[
             environment.as_pointer_value().into(),
             borrow.into(),
             once.as_global_value().as_pointer_value().into(),
+            synchronous_borrow.into(),
+            synchronous_once.into(),
         ]));
         Ok(())
     }
@@ -599,13 +665,18 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         name: &str,
         descriptor: PointerValue<'ctx>,
         body: &PhysicalCallable,
-        has_receiver: bool,
+        receiver_recipe: Option<&PhysicalEnvironmentGlue>,
         consuming: bool,
+        synchronous: bool,
     ) -> CodegenResult<FunctionValue<'ctx>> {
         let pointer = self.ctx.ptr_type(AddressSpace::default());
         let function = self.llvm.add_function(
             name,
-            pointer.fn_type(&[pointer.into(); 5], false),
+            if synchronous {
+                self.ctx.i32_type().fn_type(&[pointer.into(); 4], false)
+            } else {
+                pointer.fn_type(&[pointer.into(); 5], false)
+            },
             Some(Linkage::Internal),
         );
         let builder = self.ctx.create_builder();
@@ -614,7 +685,13 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         let slots = function.get_nth_param(1).unwrap().into_pointer_value();
         let result_out = function.get_nth_param(2).unwrap().into_pointer_value();
         let fault_out = function.get_nth_param(3).unwrap().into_pointer_value();
-        let state = function.get_nth_param(4).unwrap().into_pointer_value();
+        let state = function
+            .get_nth_param(4)
+            .map_or_else(|| pointer.const_null(), BasicValueEnum::into_pointer_value);
+        let has_receiver = receiver_recipe.is_some();
+        let weakened_once = consuming
+            && has_receiver
+            && body.params[0].passing != hew_mir::physical::SemParamPassing::Consume;
         // Consuming bodies copy their receiver and ordinary arguments into
         // entry storage before suspension, then own all cleanup. Their adapters
         // can transfer that frame directly instead of allocating a second one.
@@ -624,7 +701,9 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
             && body.params.iter().all(|parameter| {
                 parameter.passing != hew_mir::physical::SemParamPassing::BorrowMut
             });
-        let frame = if transfers_receiver {
+        let frame = if transfers_receiver
+            || !invocation_suspends(self.module, body, receiver_recipe, consuming)
+        {
             None
         } else {
             Some(coro::begin(
@@ -677,8 +756,20 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                     .into(),
             });
         }
+        let staged_result = if weakened_once {
+            body.return_layout
+                .as_ref()
+                .map(|layout| {
+                    builder
+                        .build_alloca(llvm_type(self.ctx, &layout.repr)?, "invoke.result.pending")
+                        .llvm_ctx("stage result until receiver cleanup completes")
+                })
+                .transpose()?
+        } else {
+            None
+        };
         if body.return_layout.is_some() {
-            arguments.push(result_out.into());
+            arguments.push(staged_result.unwrap_or(result_out).into());
         }
         arguments.push(fault_out.into());
         if transfers_receiver && body.is_resumable {
@@ -720,16 +811,149 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
             )?
             .into_int_value()
         };
-        // Concrete consuming bodies destroy their Owned receiver on both exits.
-        // A weakened borrowed body leaves that disposal to this once adapter.
-        if consuming
-            && has_receiver
-            && body.params[0].passing != hew_mir::physical::SemParamPassing::Consume
-        {
-            let drop = external_drop(self.ctx, &self.llvm, "hew_callable_drop")?;
+        // A weakened borrowed body leaves receiver disposal to this adapter.
+        // Keep a successful result private until that release also succeeds.
+        let status = if weakened_once {
+            let status_slot = builder
+                .build_alloca(self.ctx.i32_type(), "invoke.status.slot")
+                .llvm_ctx("allocate combined invocation status")?;
             builder
-                .build_call(drop, &[receiver.unwrap().into()], "")
-                .llvm_ctx("dispose weakened once receiver on either outcome")?;
+                .build_store(status_slot, status)
+                .llvm_ctx("retain body outcome")?;
+            let values = ValueEmitter {
+                module: self.module,
+                ctx: self.ctx,
+                llvm: &self.llvm,
+                builder: &builder,
+                value: function,
+                fault_sink: Some((fault_out, status_slot)),
+            };
+            let result_initialized = if staged_result.is_some() {
+                let initialized = builder
+                    .build_alloca(self.ctx.bool_type(), "invoke.result.live")
+                    .llvm_ctx("allocate staged result state")?;
+                let succeeded = builder
+                    .build_int_compare(
+                        IntPredicate::EQ,
+                        status,
+                        self.ctx.i32_type().const_zero(),
+                        "invoke.body.succeeded",
+                    )
+                    .llvm_ctx("test whether the body initialized a result")?;
+                builder
+                    .build_store(initialized, succeeded)
+                    .llvm_ctx("retain result ownership across receiver release")?;
+                Some(initialized)
+            } else {
+                None
+            };
+            let receiver = receiver.unwrap();
+            if let Some(frame) = &frame {
+                release::slot(
+                    &values,
+                    frame,
+                    receiver,
+                    &body.params[0].layout,
+                    DestroyAction::Callable,
+                )?;
+            } else {
+                let drop = external_drop(self.ctx, &self.llvm, "hew_callable_drop")?;
+                values.emit_release_in_sink(|| {
+                    builder
+                        .build_call(drop, &[receiver.into()], "")
+                        .llvm_ctx("dispose weakened once receiver on either outcome")?;
+                    Ok(())
+                })?;
+            }
+            if let Some(result_slot) = staged_result {
+                let body_succeeded = builder
+                    .build_load(
+                        self.ctx.bool_type(),
+                        result_initialized.unwrap(),
+                        "invoke.result.initialized",
+                    )
+                    .llvm_ctx("load staged result ownership")?
+                    .into_int_value();
+                let initialized = self
+                    .ctx
+                    .append_basic_block(function, "invoke.result.initialized");
+                let done = self.ctx.append_basic_block(function, "invoke.result.done");
+                builder
+                    .build_conditional_branch(body_succeeded, initialized, done)
+                    .llvm_ctx("select initialized invocation result")?;
+                builder.position_at_end(initialized);
+                let combined = builder
+                    .build_load(self.ctx.i32_type(), status_slot, "invoke.combined.status")
+                    .llvm_ctx("load invocation cleanup outcome")?
+                    .into_int_value();
+                let succeeded = builder
+                    .build_int_compare(
+                        IntPredicate::EQ,
+                        combined,
+                        self.ctx.i32_type().const_zero(),
+                        "invoke.succeeded",
+                    )
+                    .llvm_ctx("test invocation completion")?;
+                let publish = self
+                    .ctx
+                    .append_basic_block(function, "invoke.result.publish");
+                let discard = self
+                    .ctx
+                    .append_basic_block(function, "invoke.result.discard");
+                builder
+                    .build_conditional_branch(succeeded, publish, discard)
+                    .llvm_ctx("publish result only after successful cleanup")?;
+                builder.position_at_end(publish);
+                let layout = body.return_layout.as_ref().unwrap();
+                let result = builder
+                    .build_load(
+                        llvm_type(self.ctx, &layout.repr)?,
+                        result_slot,
+                        "invoke.result",
+                    )
+                    .llvm_ctx("load completed invocation result")?;
+                builder
+                    .build_store(result_out, result)
+                    .llvm_ctx("publish completed invocation result")?;
+                builder
+                    .build_unconditional_branch(done)
+                    .llvm_ctx("finish result publication")?;
+                builder.position_at_end(discard);
+                if let Some(action) = body
+                    .return_recipe
+                    .as_ref()
+                    .and_then(|recipe| recipe.destroy)
+                {
+                    if let Some(frame) = &frame {
+                        release::slot(&values, frame, result_slot, layout, action)?;
+                    } else {
+                        let result = builder
+                            .build_load(
+                                llvm_type(self.ctx, &layout.repr)?,
+                                result_slot,
+                                "invoke.result.abandoned",
+                            )
+                            .llvm_ctx("load abandoned invocation result")?;
+                        values.destroy_loaded_value(result, layout, action)?;
+                    }
+                }
+                builder
+                    .build_unconditional_branch(done)
+                    .llvm_ctx("finish abandoned result cleanup")?;
+                builder.position_at_end(done);
+            }
+            builder
+                .build_load(self.ctx.i32_type(), status_slot, "invoke.final.status")
+                .llvm_ctx("load combined invocation outcome")?
+                .into_int_value()
+        } else {
+            status
+        };
+        if synchronous {
+            builder
+                .build_return(Some(&status))
+                .llvm_ctx("return synchronous invocation status")?;
+            return Ok(function);
         }
         let finish = get_or_declare_external(
             &self.llvm,
@@ -748,7 +972,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         } else {
             builder
                 .build_return(Some(&pointer.const_null()))
-                .llvm_ctx("finish synchronous owning callable")?;
+                .llvm_ctx("finish synchronous callable")?;
         }
         Ok(function)
     }
@@ -896,15 +1120,25 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         )
     }
 
-    pub(super) fn emit_indirect_call(
-        &self,
-        callee: ArgumentTransfer,
-        signature: &PhysicalCallSignature,
-        args: &[ArgumentTransfer],
-        result: Option<StorageId>,
-        normal: Option<&PhysicalEdge>,
-        unwind: Option<&PhysicalEdge>,
-    ) -> CodegenResult<()> {
+    pub(super) fn emit_indirect_call(&self, call: &PhysicalTerminator) -> CodegenResult<()> {
+        let PhysicalTerminator::IndirectCall {
+            targets,
+            callee,
+            signature,
+            args,
+            result,
+            normal,
+            unwind,
+        } = call
+        else {
+            return Err(CodegenError::FailClosed(
+                "indirect emitter received another terminator".into(),
+            ));
+        };
+        let callee = *callee;
+        let result = *result;
+        let normal = normal.as_ref();
+        let unwind = unwind.as_ref();
         let source = argument_source(&callee);
         let carrier = self.load(source, "callable.receiver")?.into_struct_value();
         let environment = self
@@ -912,12 +1146,32 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .build_extract_value(carrier, 0, "callable.environment")
             .llvm_ctx("load callable environment")?
             .into_pointer_value();
-        let descriptor = self
+        let loaded_descriptor = self
             .builder
             .build_extract_value(carrier, 1, "callable.descriptor")
             .llvm_ctx("load callable descriptor")?
             .into_pointer_value();
         let consuming = matches!(callee, ArgumentTransfer::Move(_));
+        let descriptor = if !targets.may_be_unknown && targets.known.len() == 1 {
+            let target = targets.known[0];
+            let name = self
+                .module
+                .closures
+                .iter()
+                .find(|closure| closure.body == target)
+                .map_or_else(
+                    || function_descriptor_symbol(target),
+                    |closure| closure_descriptor_symbol(closure.id),
+                );
+            self.llvm
+                .get_global(&name)
+                .ok_or_else(|| {
+                    CodegenError::FailClosed("checked callable target has no descriptor".into())
+                })?
+                .as_pointer_value()
+        } else {
+            loaded_descriptor
+        };
         let entry_slot = self
             .builder
             .build_struct_gep(
@@ -984,9 +1238,93 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .llvm_ctx("clear invocation fault")?;
         let result_address =
             result.map_or_else(|| pointer.const_null(), |id| self.slots[id.0 as usize]);
+        for source in &moved {
+            self.clear_owned(*source)?;
+        }
+        let sync_slot = self
+            .builder
+            .build_struct_gep(
+                callable_descriptor_type(self.ctx),
+                descriptor,
+                if consuming { 4 } else { 3 },
+                "callable.sync.slot",
+            )
+            .llvm_ctx("select synchronous invocation entry")?;
+        let sync_invoke = self
+            .builder
+            .build_load(pointer, sync_slot, "callable.sync.entry")
+            .llvm_ctx("load synchronous invocation entry")?
+            .into_pointer_value();
+        let mut may_suspend = targets.may_be_unknown || consuming;
+        for id in &targets.known {
+            may_suspend |= callable(self.module, *id)?.is_resumable;
+        }
+        if !may_suspend {
+            let status = self
+                .builder
+                .build_indirect_call(
+                    self.ctx.i32_type().fn_type(&[pointer.into(); 4], false),
+                    sync_invoke,
+                    &[
+                        environment.into(),
+                        argument_slots.into(),
+                        result_address.into(),
+                        self.active_fault.into(),
+                    ],
+                    "invoke.sync.status",
+                )
+                .llvm_ctx("invoke checked synchronous callable")?
+                .try_as_basic_value()
+                .basic()
+                .ok_or_else(|| {
+                    CodegenError::FailClosed("synchronous invocation returned no status".into())
+                })?
+                .into_int_value();
+            self.builder
+                .build_store(self.active_status, status)
+                .llvm_ctx("retain invocation status")?;
+            return self.emit_call_outcome(status, result, normal, unwind);
+        }
         let frame = self.frame.as_ref().ok_or_else(|| {
             CodegenError::FailClosed("indirect invocation requires a resumable caller".into())
         })?;
+        let synchronous = self
+            .ctx
+            .append_basic_block(self.value, "invoke.synchronous");
+        let resumable = self.ctx.append_basic_block(self.value, "invoke.resumable");
+        let complete = self.ctx.append_basic_block(self.value, "invoke.complete");
+        let is_sync = self
+            .builder
+            .build_is_not_null(sync_invoke, "invoke.is_sync")
+            .llvm_ctx("test proven synchronous invocation")?;
+        self.builder
+            .build_conditional_branch(is_sync, synchronous, resumable)
+            .llvm_ctx("select invocation completion ABI")?;
+        self.builder.position_at_end(synchronous);
+        let sync_status = self
+            .builder
+            .build_indirect_call(
+                self.ctx.i32_type().fn_type(&[pointer.into(); 4], false),
+                sync_invoke,
+                &[
+                    environment.into(),
+                    argument_slots.into(),
+                    result_address.into(),
+                    self.active_fault.into(),
+                ],
+                "invoke.sync.status",
+            )
+            .llvm_ctx("invoke synchronous callable")?
+            .try_as_basic_value()
+            .basic()
+            .ok_or_else(|| {
+                CodegenError::FailClosed("synchronous invocation returned no status".into())
+            })?
+            .into_int_value();
+        self.builder
+            .build_unconditional_branch(complete)
+            .llvm_ctx("finish synchronous invocation")?;
+        self.builder.position_at_end(resumable);
         let new_child = get_or_declare_external(
             self.llvm,
             "hew_coro_state_child",
@@ -1018,9 +1356,6 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .basic()
             .ok_or_else(|| CodegenError::FailClosed("invocation returned no frame".into()))?
             .into_pointer_value();
-        for source in &moved {
-            self.clear_owned(*source)?;
-        }
         let status = suspend::await_child(
             self.ctx,
             self.llvm,
@@ -1030,6 +1365,17 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             child,
             child_frame,
         )?;
+        let resumed = self.builder.get_insert_block().unwrap();
+        self.builder
+            .build_unconditional_branch(complete)
+            .llvm_ctx("finish resumed invocation")?;
+        self.builder.position_at_end(complete);
+        let outcome = self
+            .builder
+            .build_phi(self.ctx.i32_type(), "invoke.status")
+            .llvm_ctx("merge invocation outcome")?;
+        outcome.add_incoming(&[(&sync_status, synchronous), (&status, resumed)]);
+        let status = outcome.as_basic_value().into_int_value();
         self.builder
             .build_store(self.active_status, status)
             .llvm_ctx("retain invocation status")?;

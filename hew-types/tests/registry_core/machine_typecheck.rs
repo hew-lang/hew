@@ -10,6 +10,7 @@ use hew_types::{Ty, TypeCheckOutput};
 
 fn check_items(items: Vec<Spanned<Item>>) -> TypeCheckOutput {
     let program = Program {
+        expansions: hew_parser::macro_syntax::ExpansionMap::default(),
         module_graph: None,
         items,
         module_doc: None,
@@ -26,6 +27,7 @@ fn make_machine(
     transitions: Vec<MachineTransition>,
 ) -> MachineDecl {
     MachineDecl {
+        body_context: hew_parser::ast::SyntaxContext::ROOT,
         visibility: Visibility::Pub,
         name: Ident::new(name),
         type_params: vec![],
@@ -678,6 +680,7 @@ fn transition_count_equals_states_times_events() {
 
 fn make_generic_machine(name: &str, type_params: &[&str]) -> MachineDecl {
     MachineDecl {
+        body_context: hew_parser::ast::SyntaxContext::ROOT,
         visibility: Visibility::Pub,
         name: Ident::new(name),
         type_params: type_params
@@ -1097,6 +1100,7 @@ fn imported_machine_unit_state_constructor_resolves() {
     graph.compute_topo_order().expect("no cycles");
 
     let program = Program {
+        expansions: hew_parser::macro_syntax::ExpansionMap::default(),
         items: vec![],
         module_doc: None,
         module_graph: Some(graph),
@@ -1189,6 +1193,7 @@ fn imported_machine_payload_state_struct_literal_resolves() {
     graph.compute_topo_order().expect("no cycles");
 
     let program = Program {
+        expansions: hew_parser::macro_syntax::ExpansionMap::default(),
         items: vec![],
         module_doc: None,
         module_graph: Some(graph),
@@ -1245,6 +1250,7 @@ fn imported_machine_exhaustiveness_runs() {
     graph.compute_topo_order().expect("no cycles");
 
     let program = Program {
+        expansions: hew_parser::macro_syntax::ExpansionMap::default(),
         items: vec![],
         module_doc: None,
         module_graph: Some(graph),
@@ -1270,6 +1276,7 @@ fn imported_machine_exhaustiveness_runs() {
 #[test]
 fn imported_generic_machine_type_params_survive_registration() {
     let md = MachineDecl {
+        body_context: hew_parser::ast::SyntaxContext::ROOT,
         visibility: Visibility::Pub,
         name: Ident::new("Worker"),
         type_params: vec![TypeParam {
@@ -1304,6 +1311,7 @@ fn imported_generic_machine_type_params_survive_registration() {
     graph.compute_topo_order().expect("no cycles");
 
     let program = Program {
+        expansions: hew_parser::macro_syntax::ExpansionMap::default(),
         items: vec![],
         module_doc: None,
         module_graph: Some(graph),
@@ -1387,6 +1395,7 @@ fn two_modules_with_different_machines_no_collision() {
     graph.compute_topo_order().expect("no cycles");
 
     let program = Program {
+        expansions: hew_parser::macro_syntax::ExpansionMap::default(),
         items: vec![],
         module_doc: None,
         module_graph: Some(graph),

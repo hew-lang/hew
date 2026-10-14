@@ -1,0 +1,9 @@
+pub trait Blanket {
+    fn tag(self) -> i64;
+}
+
+impl<T> Blanket for T {
+    pub fn tag(self) -> i64 {
+        1
+    }
+}

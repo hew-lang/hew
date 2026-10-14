@@ -21,7 +21,7 @@ use hew_parser::ast::{
 };
 use hew_parser::module::ModulePath;
 
-use super::machine_normalize::FreshSpans;
+use super::machine_normalize::{next_free_span, FreshSpans};
 use super::scope::{Namespace, Resolution, ScopeSite};
 use super::types::TraitImplArgs;
 use super::Checker;
@@ -464,23 +464,6 @@ impl Checker {
             .resolve(&self.env, site, Namespace::Type, path)
             .ok()
     }
-}
-
-/// The first span past every item of every module.
-fn next_free_span(program: &Program) -> usize {
-    let graph_items = program
-        .module_graph
-        .iter()
-        .flat_map(|graph| graph.modules.values())
-        .flat_map(|module| module.items.iter());
-    program
-        .items
-        .iter()
-        .chain(graph_items)
-        .map(|(_, span)| span.end)
-        .max()
-        .unwrap_or(0)
-        + 1
 }
 
 /// Append the synthesized items of one module, each recording the source

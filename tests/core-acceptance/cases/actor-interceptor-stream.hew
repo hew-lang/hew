@@ -1,0 +1,35 @@
+actor Producer {
+    var completed: i64 = 0;
+
+    #[intercept]
+    fn guard(call: Call<Self>) -> Outcome<Self> {
+        let outcome = call.proceed();
+        match outcome.response {
+            .Some(.items) => { completed = completed + 1; }
+            .Some(.count(_)) => {}
+            _ => panic("wrong stream response"),
+        }
+        outcome
+    }
+
+    receive gen fn items(text: string) -> string {
+        for i in 0..2 {
+            yield text;
+        }
+    }
+    receive fn count() -> i64 { completed }
+}
+
+fn main() {
+    let producer = spawn Producer;
+    var count = 0;
+    for text in producer.items("owned item") {
+        assert(text == "owned item");
+        count = count + 1;
+    }
+    assert(count == 2);
+    assert(producer.count().expect("producer survives completion") == 1);
+    stop(producer);
+    stopped(producer);
+    println("stream interception preserves typed completion");
+}

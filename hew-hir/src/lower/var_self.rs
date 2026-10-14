@@ -29,6 +29,11 @@ impl LowerCtx {
         abi_return_ty: &ResolvedTy,
         span: Span,
     ) -> HirExpr {
+        // A divergent result already transfers control through its own return;
+        // there is no normal result or receiver left to package here.
+        if result_expr.ty == ResolvedTy::Never {
+            return result_expr;
+        }
         let self_ref = HirExpr {
             node: self.ids.node(),
             site: self.ids.site(),

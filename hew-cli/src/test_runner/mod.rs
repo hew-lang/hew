@@ -217,6 +217,12 @@ fn cmd_entries(args: &crate::args::TestArgs, benchmark: Option<&crate::args::Ben
         });
     }
     let (paths, selected_names) = requested_test_paths(args);
+    for path in &paths {
+        if let Err(error) = crate::generate::prepare(Some(Path::new(path))) {
+            eprintln!("Error: {error}");
+            std::process::exit(1);
+        }
+    }
 
     let doc_sources = args.doc.then(|| {
         doc_examples::prepare(&paths).unwrap_or_else(|error| {

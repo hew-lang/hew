@@ -149,6 +149,43 @@ impl RuntimeCallFamily {
                 physical: RuntimePhysicalForm::NotAnAction,
                 c_return: RuntimeCReturn::Storage,
             },
+            Self::ActorCaller => RuntimeOpRow {
+                symbol: "hew_call_caller",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[],
+                    result: R::BitCopy(K::Named(crate::KnownDecl::Caller.path())),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::VariantResult,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::ActorRefusalLog => RuntimeOpRow {
+                symbol: "hew_call_refusal_log",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        RuntimeArgumentContract {
+                            ty: K::U32,
+                            effect: E::Copy,
+                        },
+                        RuntimeArgumentContract {
+                            ty: K::String,
+                            effect: E::Borrow,
+                        },
+                        RuntimeArgumentContract {
+                            ty: K::String,
+                            effect: E::Borrow,
+                        },
+                    ],
+                    result: R::Unit,
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
             Self::ActorSelf => RuntimeOpRow {
                 symbol: "hew_actor_self",
                 contract: None,

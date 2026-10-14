@@ -356,6 +356,7 @@ mod tests {
             dev_dependencies: BTreeMap::new(),
             features: BTreeMap::new(),
             native: None,
+            generate: Vec::new(),
         }
     }
 

@@ -452,10 +452,15 @@ pub struct LoopExit {
     pub deferred_init_conflicts: Vec<TypeBindingId>,
     /// Values an iteration consumes and the next iteration uses again.
     pub carried_moves: Vec<LoopCarriedMove>,
+    pub(crate) value_candidates: Vec<(
+        (crate::check::SpanKey, TypeBindingId),
+        crate::check::IndirectCallCandidates,
+    )>,
 }
 
 #[derive(Debug, Clone)]
 struct LoopScope {
+    candidate_site: crate::check::SpanKey,
     label: Option<String>,
     floor: usize,
     entry: OwnershipSnapshot,
@@ -658,7 +663,7 @@ impl TypeEnv {
     }
 
     /// Record the lexical scope depth immediately before a loop body opens.
-    pub fn enter_loop(&mut self, label: Option<&str>) {
+    pub fn enter_loop(&mut self, label: Option<&str>, site: &crate::check::SpanKey) {
         let observing_reads = self
             .scopes
             .iter()
@@ -666,6 +671,7 @@ impl TypeEnv {
             .map(|binding| (binding.id, binding.observing_reads))
             .collect();
         self.loop_scope_floors.push(LoopScope {
+            candidate_site: site.clone(),
             label: label.map(str::to_string),
             floor: self.deferred_scopes.len(),
             entry: self.ownership_snapshot(),
@@ -674,6 +680,19 @@ impl TypeEnv {
             exposed_uses: Vec::new(),
             observing_reads,
         });
+        // Calls checked before a write must also see replacements from later
+        // iterations. Exit joins the entry with the actual checked back edges.
+        for binding in self.scopes.iter_mut().flat_map(HashMap::values_mut) {
+            if binding.is_mutable {
+                binding.value_candidates = crate::check::IndirectCallCandidates {
+                    known: vec![crate::check::CallableCandidate::LoopInput {
+                        site: site.clone(),
+                        binding: binding.id,
+                    }],
+                    may_be_unknown: false,
+                };
+            }
+        }
     }
 
     /// Note a use of `name` at `path` for every enclosing loop whose head the
@@ -754,6 +773,18 @@ impl TypeEnv {
         if body_completes {
             scope.back_edges.push(completion.clone());
         }
+        let site = &scope.candidate_site;
+        let value_candidates = scope.entry.states.iter().map(|(id, entry)| {
+                let mut candidates = entry.value_candidates.clone();
+                for edge in &scope.back_edges {
+                    if let Some(state) = edge.states.get(id) {
+                        candidates.join(state.value_candidates.clone());
+                    }
+                }
+                candidates.known.retain(|candidate| !matches!(candidate,
+                    crate::check::CallableCandidate::LoopInput { site: other, binding } if other == site && binding == id));
+                ((site.clone(), *id), candidates)
+            }).collect();
         let carried_moves = loop_carried_moves(&scope);
         // Conservatively include zero iterations, normal body completion and
         // early edges. They all use the same ownership join as branch arms.
@@ -785,6 +816,7 @@ impl TypeEnv {
         LoopExit {
             deferred_init_conflicts,
             carried_moves,
+            value_candidates,
         }
     }
 
@@ -1084,6 +1116,10 @@ impl TypeEnv {
         for binding in environment.scopes.iter_mut().flat_map(HashMap::values_mut) {
             if !actor_body {
                 binding.is_mutable = private.contains(&binding.id);
+            }
+            // A later invocation may observe this private field's replacement.
+            if binding.is_mutable {
+                binding.value_candidates.may_be_unknown = true;
             }
             binding.capture_consumption = crate::ClosureCaptureConsumption::Retained;
             binding.loop_fresh.clear();
@@ -1468,7 +1504,8 @@ impl TypeEnv {
     ///
     /// The write starts a fresh observation window: whatever was read before
     /// it saw the old value, so `mutation_observed` resets here and only a
-    /// later read can set it again.
+    /// later read can set it again. Value origins are updated separately at
+    /// the checked assignment or mutable-call place.
     pub fn mark_written(&mut self, name: impl LexicalName) {
         let name = name.lexical_key();
         for scope in self.scopes.iter_mut().rev() {
@@ -1787,6 +1824,13 @@ impl TypeEnv {
 
     pub(crate) fn visible_bindings(&self) -> impl Iterator<Item = &Binding> {
         self.scopes.iter().flat_map(HashMap::values)
+    }
+
+    pub(crate) fn visible_bindings_from_depth(
+        &self,
+        depth: usize,
+    ) -> impl Iterator<Item = &Binding> {
+        self.scopes.iter().skip(depth).flat_map(HashMap::values)
     }
 
     /// Yield `(name, binding id)` for every binding in the innermost (current)

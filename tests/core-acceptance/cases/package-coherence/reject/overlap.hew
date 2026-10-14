@@ -1,0 +1,21 @@
+trait Describe {
+    fn describe(self) -> string;
+}
+
+type Wrapped<T> {
+    value: T;
+}
+
+impl<T> Describe for Wrapped<T> {
+    fn describe(self) -> string {
+        "generic"
+    }
+}
+
+impl Describe for Wrapped<i64> {
+    fn describe(self) -> string {
+        "concrete"
+    }
+}
+
+fn main() {}

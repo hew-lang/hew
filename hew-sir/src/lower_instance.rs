@@ -15,11 +15,12 @@ use super::{
 };
 
 impl<'a> InstanceService<'a> {
-    pub(super) fn new(module: &'a HirModule, facts: &TypeCheckOutput) -> Self {
+    pub(super) fn new(module: &'a HirModule, facts: &'a TypeCheckOutput) -> Self {
         let checked_facts =
             TypeFactService::new(facts.type_fact_context.clone(), facts.type_facts.clone());
         Self {
             module,
+            callable_facts: super::callable_facts::CallableFacts::new(facts),
             checked_facts,
             table: CallableTable::from_hir(module),
             states: Vec::new(),
@@ -783,6 +784,7 @@ impl<'a> InstanceService<'a> {
         callables.sort_unstable();
         callables.dedup();
         for callable in callables {
+            self.callable_facts.opaque_entries.insert(callable);
             self.request_body(callable);
         }
         Ok(())
@@ -796,6 +798,7 @@ impl<'a> InstanceService<'a> {
     pub(super) fn request_every_callable(&mut self) {
         for declaration in self.table.admissible_order.clone() {
             if let Ok(id) = self.admit_monomorphic(declaration) {
+                self.callable_facts.opaque_entries.insert(id);
                 self.request_body(id);
             }
         }
@@ -905,6 +908,7 @@ impl<'a> InstanceService<'a> {
         }
         for declaration in closes {
             if let Ok(id) = self.admit_monomorphic(declaration) {
+                self.callable_facts.opaque_entries.insert(id);
                 self.request_body(id);
             }
         }
@@ -951,6 +955,7 @@ impl<'a> InstanceService<'a> {
         }
         for declaration in closes {
             if let Ok(id) = self.admit_monomorphic(declaration) {
+                self.callable_facts.opaque_entries.insert(id);
                 self.request_body(id);
             }
         }
@@ -1073,17 +1078,19 @@ impl<'a> InstanceService<'a> {
             });
         }
         if let SemCallableKind::HewActor(actor) = callable_meta.kind {
-            let (function, state_bindings, substitution) = self
+            let source = self
                 .actor_sources
                 .get(&callable)
                 .ok_or_else(|| "actor body has no checked HIR source".to_string())?;
             return Ok(LoweringInput {
-                function: Cow::Owned(function.clone()),
+                function: Cow::Owned(source.function.clone()),
                 callable: callable_meta,
-                substitution: substitution.clone(),
+                substitution: source.substitution.clone(),
                 source: BodySource::Actor {
                     actor,
-                    state_bindings: state_bindings.clone(),
+                    state_bindings: source.state_bindings.clone(),
+                    stream: source.stream.clone(),
+                    weave: source.weave.clone(),
                 },
             });
         }
@@ -1120,6 +1127,8 @@ impl<'a> InstanceService<'a> {
         }
         let substitution = match &callable_meta.instance {
             CallableInstance::ActorMember
+            | CallableInstance::ActorInterceptEntry { .. }
+            | CallableInstance::ActorSupervisorIntercept { .. }
             | CallableInstance::Closure(_)
             | CallableInstance::EntryAdapter
             | CallableInstance::SupervisorChild { .. } => {
@@ -1616,7 +1625,8 @@ impl<'a> InstanceService<'a> {
         clippy::too_many_lines,
         reason = "construct the semantic module from one completed instance table"
     )]
-    pub(super) fn into_module(self) -> SemModule {
+    pub(super) fn into_module(mut self) -> SemModule {
+        self.project_callable_targets();
         let Self {
             module,
             table,

@@ -314,9 +314,10 @@ impl From<i64> for dyn Error {
     }
 }
 
-impl<T> From<T> for Top {
-    fn from(value: T) -> Top {
-        Top.Wrapped(Mid.Code(0))
+type Blanket {}
+impl<T> From<T> for Blanket {
+    fn from(value: T) -> Blanket {
+        Blanket {}
     }
 }
 ",

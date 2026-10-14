@@ -2636,8 +2636,8 @@ fn file_imported_actor_spawn_keys_are_checked() {
     let stderr = String::from_utf8_lossy(&check.stderr);
     assert_eq!(check.status.code(), Some(1), "stderr: {stderr}");
     assert!(
-        stderr.contains("actor `Counter` has no field `stpe`")
-            && stderr.contains("missing field `step` in spawn of actor `Counter`"),
+        stderr.contains("actor `counter.Counter` has no field `stpe`")
+            && stderr.contains("missing field `step` in spawn of actor `counter.Counter`"),
         "stderr: {stderr}"
     );
 }

@@ -17,7 +17,7 @@ impl Checker {
         let view = ["mailbox", "policy"]
             .into_iter()
             .find(|view| *view == name.name.as_str())?;
-        (self.env.lookup_ref(name.name.as_str()).is_none()
+        (self.env.lookup_ref(name).is_none()
             && !self.fn_def_spans.contains_key(name.name.as_str())
             && !scoped_module_item_name(self.canonical_fn_owner(), name.name.as_str())
                 .is_some_and(|owner| self.fn_def_spans.contains_key(&owner))
@@ -177,6 +177,9 @@ impl Checker {
         args: &[CallArg],
         span: &Span,
     ) -> Option<Ty> {
+        if let Some(result) = self.check_interceptor_method(receiver, ty, method, args, span) {
+            return Some(result);
+        }
         if let Some((target, _)) =
             delivery::sender_parts(ty).or_else(|| delivery::policy_view_parts(ty))
         {
@@ -714,6 +717,18 @@ impl Checker {
     }
 
     pub(super) fn reject_sealed_delivery_access(&mut self, ty: &Ty, span: &Span) -> bool {
+        if matches!(ty, Ty::Named { head, .. } if *head == crate::KnownDecl::Call.head()
+            || *head == crate::KnownDecl::Outcome.head()
+            || (*head == crate::KnownDecl::ActorId.head() && !self.checking_embedded_builtins
+                && self.current_module.as_deref() != Some("std.builtins")))
+        {
+            self.report_error(
+                TypeErrorKind::InterceptEscape,
+                span,
+                "interceptor token fields and actor identity construction are sealed".to_string(),
+            );
+            return true;
+        }
         let sealed = [
             crate::KnownDecl::Message,
             crate::KnownDecl::ActorMailbox,

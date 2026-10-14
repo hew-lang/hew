@@ -84,7 +84,7 @@ impl Checker {
         span: &Span,
     ) -> Ty {
         if type_args.is_some()
-            && matches!(&object.0, Expr::Ident(name) if self.env.lookup_ref(name.name.as_str()).is_some())
+            && matches!(&object.0, Expr::Ident(name) if self.env.lookup_ref(*name).is_some())
         {
             self.report_error(
                 TypeErrorKind::InvalidOperation,
@@ -143,8 +143,8 @@ impl Checker {
         } = &object.0
         {
             if let Expr::Ident(module_short) = &module.0 {
-                if self.module_binding_in_current_file(module_short.name.as_str())
-                    && self.env.lookup_ref(module_short.name.as_str()).is_none()
+                if self.module_binding_in_current_file(module_short)
+                    && self.env.lookup_ref(module_short).is_none()
                 {
                     let constructor = format!("{module_short}.{}::{}", type_name.0, field);
                     return self.synthesize_identifier(&constructor, span);
@@ -169,7 +169,7 @@ impl Checker {
         // (`a.b.Type::Variant`) are out of scope for v0.5.
         if let Expr::Ident(name) = &object.0 {
             if let Some(pos) = field.find("::") {
-                let receiver_is_binding = self.env.lookup_ref(name.name.as_str()).is_some();
+                let receiver_is_binding = self.env.lookup_ref(*name).is_some();
                 let receiver_is_known_type = self.type_def_at(name.name.as_str());
                 if !receiver_is_binding && receiver_is_known_type.is_none() {
                     let type_name = &field[..pos];
@@ -184,19 +184,10 @@ impl Checker {
             }
         }
 
-        // Pre-dispatch: module-qualified constant reference, e.g. `module.CONST_NAME`.
-        // Must run BEFORE `synthesize(object)` for the same reason as the variant
-        // arm above — the module short-name is not in env as a value binding.
-        //
-        // Gated on:
-        //   - object is a bare `Expr::Ident`
-        //   - field does NOT contain `::` (plain const name, not a variant)
-        //   - receiver is not a value binding or known type
-        //   - the lexical module binding resolves to an exact owner-qualified
-        //     constant key registered in env
+        // Module-qualified function references are selected before treating a module as a value.
         if let Expr::Ident(name) = &object.0 {
             if !field.contains("::") {
-                let receiver_is_binding = self.env.lookup_ref(name.name.as_str()).is_some();
+                let receiver_is_binding = self.env.lookup_ref(*name).is_some();
                 let receiver_is_known_type = self.type_def_at(name.name.as_str());
                 if !receiver_is_binding && receiver_is_known_type.is_none() {
                     let lexical_key = format!("{name}.{field}");
@@ -208,17 +199,10 @@ impl Checker {
                             name.to_string(),
                         ))
                         .map_or_else(|| lexical_key.clone(), |owner| format!("{owner}.{field}"));
-                    if let Some(binding) = self.env.lookup_ref(&qualified_key) {
-                        let ty = binding.ty.clone();
-                        if self.module_binding_in_current_file(name.name.as_str()) {
-                            self.note_import_use(name.name.as_str());
-                        }
-                        return ty;
-                    }
                     // If the receiver looks like a module (known to self.modules) but
                     // the const is not exported, emit a targeted diagnostic rather than
                     // falling through to the generic "undefined variable `module`" error.
-                    if self.module_binding_in_current_file(name.name.as_str()) {
+                    if self.module_binding_in_current_file(name) {
                         if self.has_fn_sig(&qualified_key) {
                             self.note_import_use(name.name.as_str());
                             self.reject_wasm_native_only_module_function(
@@ -283,14 +267,24 @@ impl Checker {
         if self.place_write_depth == 0 || self.place_base_depth > 0 {
             if let Some((root, mut path)) = self.expr_place(&object.0) {
                 path.push(field.to_string());
-                self.report_place_use_after_move(&root, &path, span);
+                self.report_place_use_after_move(root, &path, span);
             }
         }
         let resolved = self.normalize_for_use(&obj_ty);
+        if matches!(&resolved, Ty::Named { head, .. }
+            if (field == "request" && *head == crate::KnownDecl::Call.head())
+                || (field == "response" && *head == crate::KnownDecl::Outcome.head()))
+        {
+            if let Ok(ty) = crate::ResolvedTy::from_ty(&resolved) {
+                if let Some(fields) = crate::actor_protocol::interceptor_fields(&self.defs, &ty) {
+                    return fields[0].1.to_ty();
+                }
+            }
+        }
+
         if self.reject_sealed_delivery_access(&resolved, span) {
             return Ty::Error;
         }
-
         match &resolved {
             // `Range<T>` exposes its bounds as `start`/`end`. It carries no
             // `TypeDef` (it is a compiler builtin, not a user declaration), so
@@ -591,7 +585,7 @@ impl Checker {
                 &mut arm_exits,
                 span,
             );
-            self.env.pop_scope();
+            self.pop_scope_with_cleanup();
         }
         for (arm, scope, start, guard_diverges) in waiting {
             self.env.resume_scope(scope);
@@ -604,7 +598,7 @@ impl Checker {
                 &mut arm_exits,
                 span,
             );
-            self.env.pop_scope();
+            self.pop_scope_with_cleanup();
         }
         self.join_branch_ownership(&ownership_entry, &arm_exits, span);
         // Exhaustiveness check for enums/Option/Result
@@ -697,7 +691,7 @@ impl Checker {
             let (ty, source) = self.synthesize_select_source(&arm.source.0, &arm.source.1);
             if matches!(source, Some(super::CheckedSelectSource::TaskAwait { .. })) {
                 if let Some((root, path)) = self.expr_place(&arm.source.0) {
-                    if let Some(binding) = self.env.lookup_ref(&root) {
+                    if let Some(binding) = self.env.lookup_ref(root) {
                         self.prepared_select_tasks
                             .push(super::types::PreparedSelectTask {
                                 binding: binding.id,
@@ -708,13 +702,13 @@ impl Checker {
                     // A timer win leaves a whole-task arm's task running; the
                     // scope-exit lint reports it if nothing else joins it.
                     if timeout.is_some() && path.is_empty() {
-                        self.env.note_timed_select_task(&root, &arm.source.1);
+                        self.env.note_timed_select_task(root, &arm.source.1);
                     }
                 }
             }
             source_tys.push(ty);
             sources.push(source);
-            self.env.pop_scope();
+            self.pop_scope_with_cleanup();
         }
         if let Some(checked) = sources.iter().cloned().collect::<Option<Vec<_>>>() {
             self.select_sources
@@ -749,7 +743,7 @@ impl Checker {
                 continue;
             }
             self.check_select_body(&arm.body, &mut result_ty, &mut arm_exits);
-            self.env.pop_scope();
+            self.pop_scope_with_cleanup();
         }
         if let Some(tc) = timeout {
             self.env.restore_ownership(&entry);
@@ -759,7 +753,7 @@ impl Checker {
             self.env.resume_scope(scope);
             self.env.restore_ownership(&start);
             self.check_select_body(&arm.body, &mut result_ty, &mut arm_exits);
-            self.env.pop_scope();
+            self.pop_scope_with_cleanup();
         }
         self.join_branch_ownership(&entry, &arm_exits, span);
         // No typed body: `!` only when every body diverges; otherwise each
@@ -987,7 +981,7 @@ impl Checker {
             } else {
                 Ty::Var(TypeVar::fresh())
             };
-            self.check_shadowing(p.name.name.as_str(), &p.name_span);
+            self.check_shadowing(p.name, &p.name_span);
             self.env
                 .define_param_with_span(p.name, ty.clone(), false, p.name_span.clone());
             self.record_local_resolution(p.name, &p.name_span);
@@ -1064,7 +1058,7 @@ impl Checker {
         self.task_scope_depth = prev_task_scope_depth;
         self.in_lambda_actor_body = prev_in_lambda_actor_body;
         self.in_generator = prev_in_generator;
-        self.env.pop_scope();
+        self.pop_scope_with_cleanup();
 
         if let Some(tps) = type_params {
             if !tps.is_empty() {
@@ -1120,6 +1114,10 @@ impl Checker {
             is_fork_body,
         );
         let capabilities = self.closure_capabilities(&capture_facts);
+        self.record_once_capture_cleanup(
+            SpanKey::in_module(span, self.current_module_idx),
+            &capture_facts,
+        );
         self.closure_capture_facts.insert(
             SpanKey::in_module(span, self.current_module_idx),
             capture_facts.clone(),
@@ -1133,12 +1131,13 @@ impl Checker {
         self.lambda_capture_facts = prev_capture_facts;
         if let Some(depth) = prev_capture_depth {
             for fact in &capture_facts {
-                if self
+                let name = self
                     .env
-                    .lookup_with_depth(&fact.name)
-                    .is_some_and(|(binding_depth, binding)| {
-                        binding_depth < depth && binding.id == fact.binding_id
-                    })
+                    .binding_name_by_id(fact.binding_id)
+                    .map(|(name, _)| *name);
+                if name
+                    .and_then(|name| self.env.lookup_with_depth(name))
+                    .is_some_and(|(binding_depth, _)| binding_depth < depth)
                 {
                     self.lambda_capture_facts.push(fact.clone());
                 }
@@ -1166,11 +1165,19 @@ impl Checker {
     pub(in crate::check) fn check_struct_init(
         &mut self,
         name: &str,
+        resolution: Option<super::super::scope::Resolution>,
         fields: &[(Ident, Spanned<Expr>)],
         type_args: Option<&[Spanned<TypeExpr>]>,
         base: Option<&Spanned<Expr>>,
         span: &Span,
     ) -> Ty {
+        let resolved = matches!(
+            resolution,
+            Some(
+                super::super::scope::Resolution::Nominal(_)
+                    | super::super::scope::Resolution::Variant(_, _)
+            )
+        );
         // Every field is initialized exactly once: a base supplies the fields
         // the literal does not name, and naming one twice leaves no reading
         // that says which value wins.
@@ -1191,7 +1198,7 @@ impl Checker {
         // binding for `Type.Variant`, or the exact export table for
         // `module.Type.Variant`. The resulting registry key retains the full
         // declaration owner and never scans by final segment.
-        let dotted_struct_variant = if name.contains("::") {
+        let dotted_struct_variant = if resolved || name.contains("::") {
             None
         } else {
             let segments = name.split('.').collect::<Vec<_>>();
@@ -1289,7 +1296,10 @@ impl Checker {
         // export table as annotation-position qualified types. The lexical
         // alias is never a nominal identity: carry the declaration's full
         // source owner into the shared record-initialiser path.
-        let module_record_name = if dotted_struct_variant.is_none() && !name.contains("::") {
+        let module_record_name = if !resolved
+            && dotted_struct_variant.is_none()
+            && !name.contains("::")
+        {
             let segments = name.split('.').collect::<Vec<_>>();
             match segments.as_slice() {
                 [module_short, type_name]
@@ -1347,7 +1357,10 @@ impl Checker {
         // actionable signal.  Success cases (both type and variant exist) fall
         // through to the existing struct/enum-variant init logic.
         let mut resolved_module_variant_name = None;
-        if let Some(dot) = name.find('.').filter(|_| dotted_struct_variant.is_none()) {
+        if let Some(dot) = name
+            .find('.')
+            .filter(|_| !resolved && !name.contains("::") && dotted_struct_variant.is_none())
+        {
             let module_short = &name[..dot];
             if self.module_binding_in_current_file(module_short) {
                 let after_dot = &name[dot + 1..];
@@ -1765,7 +1778,7 @@ impl Checker {
             self.report_error_with_suggestions(
                 TypeErrorKind::UndefinedType,
                 span,
-                format!("undefined type `{name}`"),
+                format!("undefined type `{}`", name.replace("::", ".")),
                 similar,
             );
             Ty::Error
@@ -1969,7 +1982,7 @@ impl Checker {
             // local actor is a typed error naming the candidates — never
             // silent first-wins.
             Expr::Ident(name) => {
-                match self.resolve_bare_spawn_target_identity(name.name.as_str()) {
+                match self.resolve_bare_spawn_target_identity(name) {
                     super::types::BareActorResolution::Resolved(identity) => Some(identity),
                     super::types::BareActorResolution::Ambiguous(candidate_modules) => {
                         self.report_ambiguous_actor_reference(
@@ -2014,7 +2027,7 @@ impl Checker {
             // Handle module-qualified actor: spawn module.ActorName { args }
             Expr::FieldAccess { object, field } => {
                 if let Expr::Ident(module) = &object.0 {
-                    if self.module_binding_in_current_file(module.name.as_str()) {
+                    if self.module_binding_in_current_file(module) {
                         // Verify the qualifier resolves to something spawnable
                         // that is a public export of `module` before stripping
                         // it to the bare name. `module_type_exports` membership

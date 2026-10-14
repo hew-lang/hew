@@ -1,6 +1,6 @@
 [[case]]
 id = "structural-rendering-aliases"
-intent = "Preserve alias Display in generic records, chained aliases, tuple and enum fields and nested map values while canonical collections with the same storage type retain structural rendering."
+intent = "Preserve Display through aliases of a local type in generic records, tuple and enum fields and nested map values while the wrapped collections retain structural rendering."
 source = "cases/structural-rendering-aliases.hew"
 suites = ["acceptance", "safety"]
 timeout_seconds = 30

@@ -63,6 +63,7 @@ async fn main() {
         HewLanguageServer::new_with_options(client, extra_pkg_paths.clone())
     })
     .custom_method("hew/tests", HewLanguageServer::tests)
+    .custom_method("hew/expandMacro", HewLanguageServer::expand_macro)
     .finish();
 
     Server::new(tokio::io::stdin(), tokio::io::stdout(), socket)

@@ -425,6 +425,9 @@ pub fn run_layout_mono_pass(
     // generic record/enum constructed directly here is concrete and dedups
     // against the origin-site registration.
     for item in items {
+        if let HirItem::Const(constant) = item {
+            walk_expr(&constant.value, &empty_subst, &empty_domain, &mut disc);
+        }
         if let HirItem::Function(f) = item {
             if f.type_params.is_empty() {
                 walk_fn(f, &empty_subst, &empty_domain, &mut disc);

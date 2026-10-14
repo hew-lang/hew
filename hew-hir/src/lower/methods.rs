@@ -1004,6 +1004,7 @@ impl LowerCtx {
                     let receiver_ty = lowered_receiver.ty.clone();
                     self.record_var_self_direct_monomorphisation(
                         &c_symbol,
+                        &target,
                         &receiver_ty,
                         &span,
                         site,
@@ -1063,6 +1064,7 @@ impl LowerCtx {
                 // same per-instantiation symbol.
                 self.record_var_self_direct_monomorphisation(
                     &c_symbol,
+                    &target,
                     &lowered_receiver.ty,
                     &span,
                     site,
@@ -1371,8 +1373,11 @@ impl LowerCtx {
                             self.try_register_enum_instantiation(&span);
                             self.record_var_self_direct_monomorphisation(
                                 &c_symbol,
+                                &concrete_target,
                                 // receiver type will be the concrete self type
-                                &self_ty, &span, site,
+                                &self_ty,
+                                &span,
+                                site,
                             );
                             let preserves_receiver = returns_receiver_identity
                                 && self.method_call_preserves_receiver_identity.contains(&key);

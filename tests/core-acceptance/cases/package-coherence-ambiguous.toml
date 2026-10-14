@@ -1,0 +1,13 @@
+[[case]]
+id = "package-coherence-ambiguous"
+source = "cases/package-coherence/reject/ambiguous.hew"
+intent = "A primitive receiver cannot choose between distinct applicable traits by declaration order."
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "AmbiguousTraitMethod"
+line = 22
+column = 13
+message = "ambiguous method `label` on `bool`: traits `First` and `Second` both provide it"

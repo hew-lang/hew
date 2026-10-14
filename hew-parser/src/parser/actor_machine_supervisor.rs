@@ -148,7 +148,11 @@ impl Parser<'_> {
                 self.validate_attributes_for(&attrs, AttrPosition::ActorMemberFn);
                 let hook_attrs: Vec<_> = attrs
                     .into_iter()
-                    .filter(|attr| is_lifecycle_hook_attr(&attr.name))
+                    .filter(|attr| {
+                        is_lifecycle_hook_attr(&attr.name)
+                            || attr.name == "intercept"
+                            || !super::attributes::is_builtin_attribute(&attr.name)
+                    })
                     .collect();
                 let fn_start = self.peek_span().start;
                 self.advance();
@@ -156,7 +160,7 @@ impl Parser<'_> {
                     self.parse_function(fn_start, false, Visibility::Private, hook_attrs)
                 {
                     method.doc_comment = doc_comment;
-                    methods.push(method);
+                    methods.extend(self.expand_member_attributes(method));
                     self.refuse_mark_after_body();
                 } else {
                     // parse_function emitted its own diagnostic.  Skip to the
@@ -375,7 +379,8 @@ impl Parser<'_> {
         // the parser threads the clause verbatim onto `MachineDecl`.
         let where_clause = self.parse_opt_where_clause()?;
 
-        self.expect(&Token::LeftBrace)?;
+        let body_span = self.expect(&Token::LeftBrace)?;
+        let body_context = self.contexts.at(&body_span);
 
         let mut states = Vec::new();
         let mut events = Vec::new();
@@ -454,7 +459,7 @@ impl Parser<'_> {
                 if self.peek() == Some(&Token::LeftBrace) {
                     let block = self.parse_block()?;
                     if !block.stmts.is_empty()
-                        || !matches!(block.trailing_expr.as_deref(), Some((Expr::Ident(name), _)) if name.name.as_str() == "state")
+                        || !matches!(block.trailing_expr.as_deref(), Some((Expr::Ident(name), _)) if name.name.as_str() == "state" && name.ctx == body_context)
                     {
                         self.error("machine default must be `default { state }`; use an explicit rule for computation".to_string());
                     }
@@ -483,6 +488,7 @@ impl Parser<'_> {
         Some(MachineDecl {
             visibility,
             name,
+            body_context,
             type_params,
             const_params,
             where_clause,
@@ -663,7 +669,12 @@ impl Parser<'_> {
         let body = if head_bindings.is_empty() {
             body
         } else {
-            Self::apply_event_head_bindings(&head_bindings, body, body_start..body_end)
+            Self::apply_event_head_bindings(
+                &head_bindings,
+                body,
+                body_start..body_end,
+                self.contexts.at(&(rule_start..rule_start + 1)),
+            )
         };
 
         Some(MachineTransition {
@@ -861,11 +872,18 @@ impl Parser<'_> {
         bindings: &[Ident],
         body: Expr,
         body_span: Span,
+        context: crate::ast::SyntaxContext,
     ) -> Expr {
         let mut stmts: Vec<Spanned<Stmt>> = Vec::with_capacity(bindings.len());
         for name in bindings {
             let value = Expr::FieldAccess {
-                object: Box::new((Expr::Ident(Ident::new("event")), 0..0)),
+                object: Box::new((
+                    Expr::Ident(Ident {
+                        name: crate::ast::Symbol::intern("event"),
+                        ctx: context,
+                    }),
+                    0..0,
+                )),
                 field: (*name, 0..0),
             };
             stmts.push((
@@ -1026,8 +1044,26 @@ impl Parser<'_> {
         let mut strategy = None;
         let mut intensity = None;
         let mut children = Vec::new();
+        let mut methods = Vec::new();
 
         while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
+            let mut doc_comment = self.collect_doc_comments();
+            let attributes = self.parse_attributes();
+            if doc_comment.is_none() {
+                doc_comment = self.collect_doc_comments();
+            }
+            if self.peek() == Some(&Token::Fn) {
+                self.validate_attributes_for(&attributes, AttrPosition::SupervisorMemberFn);
+                let start = self.peek_span().start;
+                self.advance();
+                let mut method =
+                    self.parse_function(start, false, Visibility::Private, attributes)?;
+                method.doc_comment = doc_comment;
+                methods.push(method);
+                self.refuse_mark_after_body();
+                continue;
+            }
+            self.validate_attributes_for(&attributes, AttrPosition::Unsupported);
             match self.peek() {
                 Some(Token::Strategy) => {
                     self.advance();
@@ -1404,6 +1440,7 @@ impl Parser<'_> {
             strategy,
             intensity,
             children,
+            methods,
         })
     }
 }

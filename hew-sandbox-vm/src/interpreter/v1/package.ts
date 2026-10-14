@@ -18,7 +18,8 @@ export type TrapName =
   | "integer_overflow"
   | "divide_by_zero"
   | "shift_out_of_range"
-  | "vector_bounds";
+  | "vector_bounds"
+  | "actor_refused";
 
 /// A caret into the compiled source: SIR's debug facts carry a per-site byte
 /// offset, so `start` equals `end`. v1 carries no source table, so the trace
@@ -77,6 +78,11 @@ export type RuntimeVariantRole =
   | "ActorErrorRejected"
   | "ActorErrorFailed"
   | "ActorErrorTrapped"
+  | "ActorErrorRefused"
+  | "CallerActor"
+  | "CallerTask"
+  | "CallerTimer"
+  | "CallerNode"
   | "ActorErrorDead"
   | "ActorErrorTimedOut"
   | "ActorErrorNodeNotRunning"

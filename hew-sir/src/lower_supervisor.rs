@@ -109,11 +109,19 @@ fn pool_count(child: &hew_hir::HirSupervisorChild) -> Result<Option<u32>, String
 }
 
 impl InstanceService<'_> {
+    pub(super) fn require_supervisor(&mut self, ty: &ResolvedTy) -> Result<SupervisorId, String> {
+        self.require_supervisor_intercepted(ty, &[])
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "one supervisor instance owns its config, restart budget and child spawn contracts"
     )]
-    pub(super) fn require_supervisor(&mut self, ty: &ResolvedTy) -> Result<SupervisorId, String> {
+    pub(super) fn require_supervisor_intercepted(
+        &mut self,
+        ty: &ResolvedTy,
+        chain: &[ResolvedTy],
+    ) -> Result<SupervisorId, String> {
         if let ResolvedTy::Named {
             head: hew_types::TypeHead::Builtin(hew_types::BuiltinType::ChildRef),
             args,
@@ -123,12 +131,12 @@ impl InstanceService<'_> {
             let [handle] = args.as_slice() else {
                 return Err("a supervised role names one supervisor type".into());
             };
-            return self.require_supervisor(&handle.clone());
+            return self.require_supervisor_intercepted(&handle.clone(), chain);
         }
         if let Some(supervisor) = self
             .supervisors
             .iter()
-            .find(|supervisor| supervisor.handle_ty == *ty)
+            .find(|supervisor| supervisor.handle_ty == *ty && supervisor.interceptor_chain == chain)
         {
             return Ok(supervisor.id);
         }
@@ -182,22 +190,33 @@ impl InstanceService<'_> {
             id,
             declaration: source.declaration,
             handle_ty: ty.clone(),
+            interceptor_chain: chain.to_vec(),
             config: config.clone(),
             strategy,
             max_restarts,
             window_secs,
             children: Vec::new(),
         });
+        let mut child_chain = chain.to_vec();
+        if source.interceptor.is_some() {
+            child_chain.push(ty.clone());
+        }
         let mut children = Vec::new();
         for (index, child) in source.children.iter().enumerate() {
             let handle = substitution.apply(&child.ty);
             let role = if super::actor::declaration(self.module, &handle).is_some() {
-                SemSupervisedRole::Actor(self.require_actor(&handle)?)
+                SemSupervisedRole::Actor(self.require_actor_intercepted(
+                    &handle,
+                    None,
+                    &child_chain,
+                )?)
             } else if declaration(self.module, &handle).is_some() {
                 if handle == *ty {
                     return Err("a supervisor cannot supervise itself".into());
                 }
-                SemSupervisedRole::Supervisor(self.require_supervisor(&handle)?)
+                SemSupervisedRole::Supervisor(
+                    self.require_supervisor_intercepted(&handle, &child_chain)?,
+                )
             } else {
                 return Err(format!(
                     "supervisor child `{}` names no actor or supervisor declaration",

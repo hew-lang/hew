@@ -137,6 +137,8 @@ pub enum ManifestError {
     },
     /// The `[native]` section is malformed.
     InvalidNative(String),
+    /// A generation step has invalid or conflicting paths.
+    InvalidGenerate(String),
 }
 
 impl fmt::Display for ManifestError {
@@ -153,6 +155,7 @@ impl fmt::Display for ManifestError {
                 "E_UNSUPPORTED_EDITION: hew.toml declares edition = \"{edition}\", which this build does not support (supported: {supported:?})"
             ),
             Self::InvalidNative(msg) => write!(f, "E_INVALID_NATIVE: {msg}"),
+            Self::InvalidGenerate(msg) => write!(f, "E_INVALID_GENERATE: {msg}"),
         }
     }
 }
@@ -163,7 +166,9 @@ impl std::error::Error for ManifestError {
             Self::Io(e) => Some(e),
             Self::Parse(e) => Some(e),
             Self::Serialize(e) => Some(e),
-            Self::UnsupportedEdition { .. } | Self::InvalidNative(_) => None,
+            Self::UnsupportedEdition { .. } | Self::InvalidNative(_) | Self::InvalidGenerate(_) => {
+                None
+            }
         }
     }
 }
@@ -321,6 +326,9 @@ pub struct HewManifest {
     /// `[native]` — optional native code backing this package's externs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub native: Option<NativeLib>,
+    /// Ordered build-time source generation steps.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub generate: Vec<crate::generate::GenerateStep>,
 }
 
 impl HewManifest {
@@ -406,6 +414,7 @@ fn parse_manifest_text(text: &str) -> Result<HewManifest, ManifestError> {
     if let Some(native) = &manifest.native {
         native.validate().map_err(ManifestError::InvalidNative)?;
     }
+    crate::generate::step_order(&manifest.generate).map_err(ManifestError::InvalidGenerate)?;
     Ok(manifest)
 }
 
@@ -840,6 +849,7 @@ mod tests {
             dev_dependencies: BTreeMap::new(),
             features: BTreeMap::new(),
             native: None,
+            generate: Vec::new(),
         };
         save_manifest(&path, &manifest).unwrap();
         let m = parse_manifest(&path).unwrap();
@@ -911,6 +921,7 @@ mod tests {
             dev_dependencies: BTreeMap::new(),
             features: BTreeMap::new(),
             native: None,
+            generate: Vec::new(),
         };
         let s = m.summary();
         assert!(s.contains("by Alice, Bob"), "summary = {s}");
@@ -1176,6 +1187,7 @@ mod tests {
             dev_dependencies: BTreeMap::new(),
             features: BTreeMap::new(),
             native: None,
+            generate: Vec::new(),
         };
         assert!(validate_for_publish(&m).is_empty());
     }
@@ -1205,6 +1217,7 @@ mod tests {
             dev_dependencies: BTreeMap::new(),
             features: BTreeMap::new(),
             native: None,
+            generate: Vec::new(),
         };
         let missing = validate_for_publish(&m);
         assert!(missing.contains(&"description"));
@@ -1249,6 +1262,7 @@ mod tests {
             dev_dependencies: BTreeMap::new(),
             features: BTreeMap::new(),
             native: None,
+            generate: Vec::new(),
         };
         let missing = validate_for_publish(&m);
         assert!(!missing.is_empty());

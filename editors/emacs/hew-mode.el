@@ -67,7 +67,7 @@
 (defconst hew-keywords
   '("if" "else" "is" "match" "loop" "for" "in" "while"
     "break" "continue" "return"
-    "let" "var" "const" "mut" "fn" "gen" "type" "indirect" "enum"
+    "let" "var" "const" "mut" "fn" "macro" "gen" "type" "indirect" "enum"
     "trait" "impl" "import" "pub" "where"
     "actor" "fork" "receive" "init" "spawn" "move" "await" "await_restart" "this"
     "supervisor" "child" "restart" "strategy"
@@ -126,6 +126,11 @@
 
       ;; Constants
       (,const-re . font-lock-constant-face)
+
+      ;; Macro names and captures
+      ("\\<macro\\s-+\\([a-zA-Z_][a-zA-Z0-9_]*\\)" 1 font-lock-function-name-face)
+      ("\\<[a-zA-Z_][a-zA-Z0-9_]*!" . font-lock-function-name-face)
+      ("\\$[a-zA-Z_][a-zA-Z0-9_]*" . font-lock-variable-name-face)
 
       ;; Function definitions: fn name(
       ("\\<fn\\s-+\\([a-zA-Z_][a-zA-Z0-9_]*\\)" 1 font-lock-function-name-face)

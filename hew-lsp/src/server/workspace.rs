@@ -5,11 +5,11 @@ use dashmap::DashMap;
 use hew_analysis::references::count_all_references;
 use hew_analysis::symbols::build_document_symbols;
 use hew_analysis::{util::compute_line_offsets, SymbolInfo};
-use hew_parser::ast::Item;
+use hew_parser::ast::{Item, Program};
 use hew_parser::ParseResult;
 use tower_lsp_server::ls_types::{CodeLens, Command, Location, SymbolInformation, Uri as Url};
 
-use super::analysis::{open_document_uri, source_for_path};
+use super::analysis::{frontend_options, open_document_uri, source_for_path};
 use super::convert::analysis_symbol_kind_to_lsp;
 use super::uri::FileUriExt;
 use super::{offset_range_to_lsp, span_to_range, DocumentState};
@@ -23,13 +23,14 @@ pub(super) fn build_code_lenses(
     parse_result: &ParseResult,
     file: &str,
 ) -> Vec<CodeLens> {
-    build_code_lenses_with_seeds(source, lo, parse_result, file, None)
+    build_code_lenses_with_seeds(source, lo, parse_result, None, file, None)
 }
 
 pub(super) fn build_code_lenses_with_seeds(
     source: &str,
     lo: &[usize],
     parse_result: &ParseResult,
+    expanded_program: Option<&Program>,
     file: &str,
     seeds: Option<&DashMap<String, String>>,
 ) -> Vec<CodeLens> {
@@ -49,7 +50,8 @@ pub(super) fn build_code_lenses_with_seeds(
         }
     };
 
-    let tests = hew_analysis::test_discovery::discover_tests(&parse_result.program);
+    let program = expanded_program.unwrap_or(&parse_result.program);
+    let tests = hew_analysis::test_discovery::discover_tests(program);
     if !tests.is_empty() {
         lenses.push(CodeLens {
             range: offset_range_to_lsp(source, lo, 0, 0),
@@ -63,7 +65,11 @@ pub(super) fn build_code_lenses_with_seeds(
     }
     for declaration in tests {
         let selector = format!("{file}::{}", declaration.name);
-        let range = span_to_range(source, lo, &declaration.span);
+        let span = program
+            .expansions
+            .invocation_origin(&declaration.span)
+            .map_or(declaration.span, |(_, span)| span);
+        let range = span_to_range(source, lo, &span);
         lenses.push(CodeLens {
             range,
             command: Some(Command {
@@ -219,10 +225,16 @@ pub(super) fn test_inventory(
                 &uri,
                 &doc.source,
                 &doc.line_offsets,
-                &doc.parse_result,
+                doc.expanded_program
+                    .as_deref()
+                    .unwrap_or(&doc.parse_result.program),
             );
         } else if let Some(source) = source_for_path(&path, documents) {
-            let parsed = hew_parser::parse(&source);
+            let options = hew_compile::FrontendOptions {
+                no_typecheck: true,
+                ..frontend_options(&path, &source, documents, &[])
+            };
+            let state = hew_compile::run_document_frontend(&path.to_string_lossy(), &options);
             let lines = compute_line_offsets(&source);
             append_test_items(
                 &mut inventory,
@@ -231,7 +243,7 @@ pub(super) fn test_inventory(
                 &uri,
                 &source,
                 &lines,
-                &parsed,
+                &state.program,
             );
         }
     }
@@ -249,19 +261,23 @@ fn append_test_items(
     uri: &Url,
     source: &str,
     lines: &[usize],
-    parsed: &ParseResult,
+    program: &Program,
 ) {
     let relative = roots
         .first()
         .and_then(|root| path.strip_prefix(root).ok())
         .unwrap_or(path);
     let file = relative.to_string_lossy().replace('\\', "/");
-    for test in hew_analysis::test_discovery::discover_tests(&parsed.program) {
+    for test in hew_analysis::test_discovery::discover_tests(program) {
+        let span = program
+            .expansions
+            .invocation_origin(&test.span)
+            .map_or(test.span, |(_, span)| span);
         inventory.push(serde_json::json!({
             "identity": format!("{file}::{}", test.name),
             "selector": format!("{}::{}", path.display(), test.name),
             "uri": uri,
-            "range": span_to_range(source, lines, &test.span),
+            "range": span_to_range(source, lines, &span),
             "ignored": test.ignored,
             "real_time": test.real_time,
         }));

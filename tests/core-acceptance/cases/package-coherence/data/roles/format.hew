@@ -1,0 +1,9 @@
+import "../../protocol/traits.hew";
+
+import "../model.hew";
+
+impl Render for Widget {
+    pub fn render(self) -> string {
+        render_label(self.label)
+    }
+}

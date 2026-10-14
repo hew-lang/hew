@@ -1,5 +1,5 @@
 {
-  "version": "0.6.0",
+  "version": "0.6.1",
   "description": "Canonical syntax data exported from the Hew compiler. Used by tree-sitter-hew, vscode-hew, hew.sh, and hew.run to generate syntax highlighting grammars.",
   "keywords": {
     "control_flow": [
@@ -22,6 +22,7 @@
       "const",
       "mut",
       "fn",
+      "macro",
       "gen",
       "pub",
       "import",
@@ -91,6 +92,7 @@
     "const",
     "mut",
     "fn",
+    "macro",
     "if",
     "else",
     "match",
@@ -249,7 +251,8 @@
       "@",
       ".",
       "::",
-      "#["
+      "#[",
+      "$"
     ],
     "path_separators": {
       "primary": ".",

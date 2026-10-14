@@ -27,8 +27,6 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         };
         let wait_edge =
             self.new_actor_wait_edge(self.load_actor_target(target, "ask.wait.target")?.into(), 0)?;
-        frame.carry(self.ctx, &self.builder, operation, "ask.operation.slot")?;
-        frame.carry(self.ctx, &self.builder, wait_edge, "ask.wait.edge.slot")?;
         let poll = self.ctx.append_basic_block(self.value, "ask.poll");
         let inspect = self.ctx.append_basic_block(self.value, "ask.inspect");
         let pending = self.ctx.append_basic_block(self.value, "ask.pending");
@@ -71,9 +69,6 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         self.check_actor_wait_cycle(wait_edge, cycle)?;
         frame.suspend(self.ctx, &self.builder, poll, destroyed)?;
         self.builder.position_at_end(destroyed);
-        self.builder
-            .build_store(frame.destroying, self.ctx.bool_type().const_int(1, false))
-            .llvm_ctx("mark destroyed completion frame")?;
         self.builder
             .build_unconditional_branch(cancelled)
             .llvm_ctx("abandon destroyed completion")?;
@@ -173,7 +168,6 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 "ask.request",
             )?
             .into_pointer_value();
-            frame.carry(self.ctx, &self.builder, wrapper, "ask.request.slot")?;
             let failed = self
                 .ctx
                 .append_basic_block(self.value, "ask.allocation.failed");
@@ -979,6 +973,7 @@ pub(super) const fn actor_error_variant_role(
     use hew_runtime::internal::types::ActorErrorRole as Role;
     match role {
         Role::Trapped => Variant::ActorErrorTrapped,
+        Role::Refused => Variant::ActorErrorRefused,
         Role::Dead => Variant::ActorErrorDead,
         Role::TimedOut => Variant::ActorErrorTimedOut,
         Role::NodeNotRunning => Variant::ActorErrorNodeNotRunning,

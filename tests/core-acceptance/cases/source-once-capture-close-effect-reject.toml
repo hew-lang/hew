@@ -1,0 +1,13 @@
+[[case]]
+id = "source-once-capture-close-effect-reject"
+intent = "A once closure that returns its captured resource still owes suspending capture disposal on failure."
+source = "cases/source-once-capture-close-effect-reject.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "InvalidOperation"
+line = 13
+column = 42
+message = "closure suspends via `implicit release of captured values`; `fn[once]() -> Ticket` never suspends, write `fn[suspends]`"

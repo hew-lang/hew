@@ -5,8 +5,9 @@ use hew_sir::{BoundaryDecision, SemTerminator, SemValueMethodPlan};
 use hew_types::{TypeFactService, ValueMethodPlan};
 
 fn selected_calls(source: &str, triple: &str) -> PhysicalModule {
-    let parsed = hew_parser::parse(source);
+    let mut parsed = hew_parser::parse(source);
     assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+    hew_compile::attach_prelude_std_modules(&mut parsed.program);
     let checked = Checker::new(ModuleRegistry::new(vec![])).check_program(&parsed.program);
     assert!(checked.errors.is_empty(), "{:?}", checked.errors);
     let hir = lower_program_host_target(&parsed.program, &checked, &ResolutionCtx);

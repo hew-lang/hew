@@ -7,7 +7,7 @@ use super::types::{
 };
 use super::{CallTarget, MethodCallRewrite};
 use crate::DeclarationKind;
-use hew_parser::ast::{CallArg, Expr, Ident, Span, Spanned};
+use hew_parser::ast::{CallArg, Expr, Ident, Param, Span, Spanned};
 
 impl Checker {
     /// Provenance tracks callables and task handles. Scalar values and their
@@ -41,7 +41,7 @@ impl Checker {
 
     /// Read the selected declaration or lexical binding at the authored
     /// expression. An absent row is opaque; a spelling is never a candidate.
-    fn resolved_callable_candidate(&self, span: &Span) -> IndirectCallCandidates {
+    pub(super) fn resolved_callable_candidate(&self, span: &Span) -> IndirectCallCandidates {
         let key = SpanKey::in_module(span, self.current_module_idx);
         match self.scopes.resolutions().get(&key) {
             Some(Resolution::Local(id)) => self
@@ -200,7 +200,7 @@ impl Checker {
         }
     }
 
-    fn callable_field_candidates(
+    pub(super) fn callable_field_candidates(
         &self,
         object: &Spanned<Expr>,
         field: &Spanned<Ident>,
@@ -253,7 +253,7 @@ impl Checker {
         name: Ident,
         value: Option<&Spanned<Expr>>,
     ) {
-        let Some(binding) = self.env.lookup_ref(name.name.as_str()) else {
+        let Some(binding) = self.env.lookup_ref(name) else {
             return;
         };
         let Some(value) = value else {
@@ -303,7 +303,7 @@ impl Checker {
         self.callable_candidates_for_expr(&place.0, &place.1)
     }
 
-    fn replace_place_value_candidates(
+    pub(super) fn replace_place_value_candidates(
         &mut self,
         target: &Spanned<Expr>,
         candidates: IndirectCallCandidates,
@@ -374,18 +374,31 @@ impl Checker {
         );
     }
 
-    pub(super) fn record_unknown_indirect_call_candidates(&mut self, span: &Span) {
-        self.indirect_call_candidates.insert(
-            SpanKey::in_module(span, self.current_module_idx),
-            IndirectCallCandidates::unknown(),
-        );
+    /// Implicit failure edges without replayed defers retain an opaque output.
+    pub(super) fn record_receiver_output(&mut self, opaque_defers: bool) {
+        let Some(body) = self.effect_graph.current_body.clone() else {
+            return;
+        };
+        let Some(receiver) = self
+            .var_self_receiver
+            .as_ref()
+            .and_then(|name| self.env.lookup_ref(name.as_str()))
+        else {
+            return;
+        };
+        let mut candidates = receiver.value_candidates.clone();
+        candidates.may_be_unknown |= opaque_defers;
+        self.callable_receiver_outputs
+            .entry(body)
+            .and_modify(|output| output.join(candidates.clone()))
+            .or_insert(candidates);
     }
 
     /// Parameters retain their own symbolic origin until a selected call
     /// supplies an actual value. This remains precise through helper-to-helper
     /// forwarding without globally merging unrelated callers.
     pub(super) fn record_callable_formal_candidate(&mut self, name: Ident) {
-        let Some(binding) = self.env.lookup_ref(name.name.as_str()) else {
+        let Some(binding) = self.env.lookup_ref(name) else {
             return;
         };
         let id = binding.id;
@@ -393,6 +406,29 @@ impl Checker {
             id,
             IndirectCallCandidates::single(CallableCandidate::Formal(id)),
         );
+    }
+
+    pub(super) fn record_declared_callable_formals(
+        &mut self,
+        declaration: crate::DefId,
+        params: &[Param],
+    ) {
+        let formals = params
+            .iter()
+            .map(|param| {
+                let key = SpanKey::in_module(&param.name_span, self.current_module_idx);
+                match self.scopes.resolutions().get(&key) {
+                    Some(Resolution::Local(id)) => Some(*id),
+                    _ => None,
+                }
+            })
+            .collect::<Option<Vec<_>>>();
+        if let Some(formals) = formals {
+            self.callable_formals.insert(
+                super::effects::EffectBody::Declaration(declaration),
+                formals,
+            );
+        }
     }
 
     fn callable_target_declaration(target: &CallTarget) -> Option<crate::DefId> {
@@ -424,6 +460,16 @@ impl Checker {
     fn selected_callable_declaration(&self, span: &Span) -> Option<crate::DefId> {
         self.selected_callable_target(span)
             .and_then(Self::callable_target_declaration)
+            .or_else(|| {
+                let key = SpanKey::in_module(span, self.current_module_idx);
+                self.actor_method_dispatch
+                    .get(&key)
+                    .map(|dispatch| match dispatch {
+                        super::ActorMethodKind::Ask { method, .. }
+                        | super::ActorMethodKind::Message { method, .. }
+                        | super::ActorMethodKind::StreamProducer(method, _) => *method,
+                    })
+            })
     }
 
     /// Capture authored actuals after checking selected this call's exact

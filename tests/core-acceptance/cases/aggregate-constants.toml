@@ -1,0 +1,10 @@
+[[case]]
+id = "aggregate-constants"
+source = "cases/aggregate-constants.hew"
+intent = "Ordinary aggregate constants share literal lowering, checked scalar folding and independent materialization with embedded data."
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "primary\nmirror\n8080\nblue\ntrue\n8000\n2\nsource + data\nlocalhost:8080\nlocal\ndirect:81\n2\n1\n2\n3\né\ntrue\ntrue\n7\ntrue\n9\n8\n4\n"
+exit = 0

@@ -88,6 +88,9 @@ impl Parser<'_> {
         &mut self,
         context: TypeParseContext,
     ) -> Option<Spanned<TypeExpr>> {
+        if let Some(fragment) = self.take_type_fragment().ok()? {
+            return Some(fragment);
+        }
         let _guard = self.enter_recursion()?;
         let start = self.peek_span().start;
 

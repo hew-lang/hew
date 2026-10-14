@@ -29,6 +29,8 @@ import std.os;
 
 import std.fs;
 
+import std.stream;
+
 import std.link_monitor.{DownNotification, DownReason, DownTarget, MonitorRef, PartitionPolicy,};
 
 // hew_node_api_unregister: the repoint_preserves_ref scenario re-points a
@@ -95,6 +97,82 @@ enum WireCmd {
 type WireResult {
     tag: i64 @1;
     sum: i64 @2;
+}
+
+actor GenericEcho<T> {
+    receive fn handle(value: T) -> T {
+        value
+    }
+}
+
+impl<T: Send> ActorMsg for GenericEcho<T> {
+    type Msg = T;
+    type Reply = T;
+}
+
+actor SpecializedEcho<T> {
+    receive fn handle(value: T) -> T {
+        value
+    }
+}
+
+impl ActorMsg for SpecializedEcho<string> {
+    type Msg = string;
+    type Reply = string;
+}
+
+actor HeldEcho {
+    var gate: stream.Stream<i64>;
+    receive fn handle(value: string) -> string {
+        gate.recv();
+        value
+    }
+}
+
+impl ActorMsg for HeldEcho {
+    type Msg = string;
+    type Reply = string;
+}
+
+actor EchoRelease {
+    var gate: stream.Sink<i64>;
+    receive fn handle(count: i64) -> i64 {
+        for i in 0..count {
+            gate.send(i).expect("release held reply");
+        }
+        count
+    }
+}
+
+impl ActorMsg for EchoRelease {
+    type Msg = i64;
+    type Reply = i64;
+}
+
+actor InboundResults {
+    var successes: i64 = 0;
+    var refused: i64 = 0;
+    var closed: i64 = 0;
+    var wrong: i64 = 0;
+    receive fn record(status: i64) {
+        match status {
+            0 => {
+                successes += 1;
+            }
+            1 => {
+                refused += 1;
+            }
+            2 => {
+                closed += 1;
+            }
+            _ => {
+                wrong += 1;
+            }
+        }
+    }
+    receive fn counts() -> (i64, i64, i64, i64) {
+        (successes, refused, closed, wrong)
+    }
 }
 
 actor KeyValue {
@@ -1017,6 +1095,15 @@ fn run_server(scenario: string) {
         let stopper = spawn SetupRaceStopper { monitor_target: monitor_target, link_target: link_target };
         let _ = fork stopper.run();
     }
+    if scenario == "remote_ask" {
+        Node.register("generic-number", spawn GenericEcho<u64>);
+        Node.register("generic-point", spawn GenericEcho<WirePoint>);
+        Node.register("specialized", spawn SpecializedEcho<string>);
+    }
+    if scenario == "inbound_isolation" {
+        scenario_server_inbound_isolation(kx);
+        return;
+    }
     let port = signal_server_listening(kx);
     if (os.env("HEW_DIST_RESTARTED") ?? "") == "1" {
         publish_atomic(kx, "server.restarted", "1");
@@ -1050,25 +1137,127 @@ fn run_server(scenario: string) {
     Node.shutdown();
 }
 
+fn lookup_generic_with_retry<T>(name: string) -> Result<RemotePid<T>, LookupError> {
+    var attempts: i64 = 0;
+    loop {
+        let found: Result<RemotePid<T>, LookupError> = Node.lookup(name);
+        match found {
+            .Ok(pid) => return .Ok(pid),
+            .Err(error) => {
+                attempts = attempts + 1;
+                if attempts >= 50 {
+                    return .Err(error);
+                }
+                sleep(100ms);
+            }
+        }
+    }
+}
+
+fn scenario_server_inbound_isolation(kx: string) {
+    let (release, gate) = stream.pipe(128).expect("reply gate");
+    let slow = spawn HeldEcho { gate: gate };
+    let releaser = spawn EchoRelease { gate: release };
+    Node.register("held", slow);
+    Node.register("release", releaser);
+    Node.register("trapped", spawn KeyValue { store: HashMap.new() });
+    println(f"READY {signal_server_listening(kx)}");
+    let _ = wait_for_file(f"{kx}/client.stop-inbound");
+    Node.shutdown();
+    assert(releaser.handle(64).expect("release stopped peer replies") == 64);
+    stop(slow);
+    stopped(slow);
+    stop(releaser);
+    stopped(releaser);
+}
+
+fn held_request(target: RemotePid<HeldEcho>, results: InboundResults, index: i64, closing: bool) {
+    let value = f"owned request {index}";
+    let status = match target.ask(value, 15000) {
+        .Ok(reply) => if !closing && reply == value {
+            0
+        } else {
+            3
+        }
+        .Err(ActorError.RoutingFailed) => 1,
+        .Err(ActorError.ConnectionDropped) => if closing {
+            2
+        } else {
+            3
+        }
+        .Err(_) => 3,
+    };
+    results.record(status).expect("record completion");
+}
+
+fn await_inbound_refusal(results: InboundResults, count: i64) {
+    for i in 0..5000 {
+        let counts = results.counts().expect("pending counts");
+        assert(counts.3 == 0);
+        if counts.1 == count {
+            return;
+        }
+        sleep(1ms);
+    }
+    panic("inbound capacity was not reached");
+}
+
+fn scenario_inbound_isolation(kv: RemotePid<KeyValue>, kx: string) -> i64 {
+    let slow: RemotePid<HeldEcho> = lookup_generic_with_retry("held").expect("held lookup");
+    let release: RemotePid<EchoRelease> = lookup_generic_with_retry("release").expect("release lookup");
+    let trapped = lookup_with_retry("trapped").expect("trapped lookup");
+    let results = spawn InboundResults;
+    var requests = [fork held_request(slow, results, 0, false)];
+    for i in 1..65 {
+        requests.push(fork held_request(slow, results, i, false));
+    }
+    await_inbound_refusal(results, 1);
+    match kv.ask(KvReq.GetKey("absent"), 1000).expect("healthy service") {
+        KvResp.Value(value) => assert(value == ""),
+        KvResp.Ack => panic("healthy service returned the wrong reply"),
+    }
+    println("PASS inbound_isolation healthy-with-64-pending");
+    assert(release.ask(64, 1000).expect("release replies") == 64);
+    let _ = await requests;
+    let counts = results.counts().expect("completed counts");
+    assert(counts.0 == 64 && counts.1 == 1 && counts.2 == 0 && counts.3 == 0);
+    println("PASS inbound_isolation 64-completed-1-refused");
+    match trapped.ask(KvReq.CrashSelf, 1000) {
+        .Err(ActorError.Trapped) => {}
+        _ => panic("remote handler fault lost its status"),
+    }
+    println("PASS inbound_isolation trapped");
+    var closing = [fork held_request(slow, results, 0, true)];
+    for i in 1..65 {
+        closing.push(fork held_request(slow, results, i, true));
+    }
+    await_inbound_refusal(results, 2);
+    publish_atomic(kx, "client.stop-inbound", "ready");
+    let _ = await closing;
+    let shutdown_counts = results.counts().expect("shutdown counts");
+    assert(shutdown_counts.0 == 64 && shutdown_counts.1 == 2 && shutdown_counts.2 == 64 && shutdown_counts.3 == 0);
+    println("PASS inbound_isolation shutdown-retired-64");
+    stop(results);
+    stopped(results);
+    0
+}
+
 fn scenario_remote_ask(kv: RemotePid<KeyValue>) -> i64 {
-    let send1 = kv.send(KvReq.Put(KvPut { key: "hello", val: "world" }));
-    match send1 {
-        Result.Err(_) => {
-            println("FAIL remote_ask put-hello-send-error");
+    // A successful write reply establishes completion before the read starts.
+    match kv.ask(KvReq.Put(KvPut { key: "hello", val: "world" }), 5000) {
+        .Ok(KvResp.Ack) => {}
+        _ => {
+            println("FAIL remote_ask put-hello-completion");
             return 2;
         }
-        Result.Ok(_) => {}
     }
-    let send2 = kv.send(KvReq.Put(KvPut { key: "count", val: "42" }));
-    match send2 {
-        Result.Err(_) => {
-            println("FAIL remote_ask put-count-send-error");
+    match kv.ask(KvReq.Put(KvPut { key: "count", val: "42" }), 5000) {
+        .Ok(KvResp.Ack) => {}
+        _ => {
+            println("FAIL remote_ask put-count-completion");
             return 3;
         }
-        Result.Ok(_) => {}
     }
-    // The ask follows both sends on the same route, so the actor sees them
-    // first.
     let ask1 = kv.ask(KvReq.GetKey("hello"), 5000);
     match ask1 {
         Result.Err(_) => {
@@ -1115,6 +1304,26 @@ fn scenario_remote_ask(kv: RemotePid<KeyValue>) -> i64 {
             }
         }
     }
+    let number: RemotePid<GenericEcho<u64>> = lookup_generic_with_retry("generic-number").expect("generic number lookup");
+    let wrong: RemotePid<GenericEcho<i64>> = Node.lookup("generic-number").expect("wrong generic lookup");
+    // Positive integers have the same CBOR representation for these types.
+    // The concrete actor identity must reject the wrong substitution first.
+    match wrong.ask(7, 5000) {
+        .Err(_) => {}
+        .Ok(_) => {
+            println("FAIL remote_ask wrong-generic-accepted");
+            return 8;
+        }
+    }
+    assert(number.ask(42, 5000).expect("generic number reply") == 42);
+    println("PASS remote_ask generic-identity");
+    let points: RemotePid<GenericEcho<WirePoint>> = lookup_generic_with_retry("generic-point").expect("generic point lookup");
+    let point = points.ask(WirePoint { x: 3, y: 4 }, 5000).expect("generic point reply");
+    assert(point.x == 3 && point.y == 4);
+    println("PASS remote_ask generic-point=3,4");
+    let specialized: RemotePid<SpecializedEcho<string>> = lookup_generic_with_retry("specialized").expect("specialized lookup");
+    assert(specialized.ask("specialized".to_upper(), 5000).expect("specialized reply") == "SPECIALIZED");
+    println("PASS remote_ask specialized-echo");
     0
 }
 
@@ -2275,6 +2484,8 @@ fn run_client(scenario: string) -> i64 {
                     scenario_stale_incarnation_restart(kv, kx, port)
                 } else if scenario == "remote_ask" {
                     scenario_remote_ask(kv)
+                } else if scenario == "inbound_isolation" {
+                    scenario_inbound_isolation(kv, kx)
                 } else if scenario == "linker_local_crash" {
                     scenario_linker_local_crash()
                 } else if scenario == "local_route" {

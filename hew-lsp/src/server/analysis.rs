@@ -162,7 +162,7 @@ fn document_set(
     set
 }
 
-fn frontend_options(
+pub(super) fn frontend_options(
     root_path: &std::path::Path,
     root_source: &str,
     documents: &DashMap<Url, DocumentState>,
@@ -232,6 +232,10 @@ pub(super) fn analyze_document(
         &state.diagnostics,
         state.stopped.as_ref(),
     );
+    diagnostics_by_uri
+        .entry(uri.clone())
+        .or_default()
+        .extend(super::generation::diagnostics(&root_path));
 
     let mut type_output = state.typecheck_result.take().and_then(|result| result.tco);
     // HIR and semantic diagnostics below read the checker's own indices; only
@@ -304,6 +308,7 @@ pub(super) fn analyze_document(
 
     let dependency_uris = dependency_uris(&state.program, type_output.as_ref());
     DocumentState {
+        expanded_program: (!state.program.expansions.is_empty()).then(|| Box::new(state.program)),
         source: source.to_string(),
         line_offsets,
         parse_result,

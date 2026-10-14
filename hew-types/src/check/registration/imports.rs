@@ -634,6 +634,7 @@ impl Checker {
             for source in decl.resolved_source_paths.iter().skip(1) {
                 self.defs.mint_source_file_module(&owner, source);
             }
+            self.assign_module_packages();
             // A file import (`import "helper.hew";`, empty path) flattens its
             // items into the root's namespace, so its nominals answer bare as
             // well as under their own file. A module import
@@ -713,7 +714,10 @@ impl Checker {
                     let registry_module = self
                         .defs
                         .mint_module(&canonical_owner, resolved_source_path.as_slice());
-                    target = Some(registry_module);
+                    // A peer's registry source does not replace the resolved
+                    // directory module's namespace at the import site.
+                    target.get_or_insert(registry_module);
+                    self.assign_module_packages();
                     if self.defs.module_has_source_declarations(registry_module) {
                         self.declare_minted_items_in_scope(&[registry_module], registry_module);
                     } else {
@@ -780,7 +784,7 @@ impl Checker {
                         let type_params = if wfn.type_params.is_empty() {
                             Vec::new()
                         } else {
-                            self.declaration_parameter_heads(&format!(
+                            self.declaration_parameter_heads(format!(
                                 "{canonical_owner}.{}",
                                 wfn.name
                             ))
@@ -1129,10 +1133,6 @@ impl Checker {
     /// Republish selected public names from an already-registered Hew source
     /// into one importing scope. This deliberately performs no declaration
     /// registration and therefore cannot create duplicate defs.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one import publication dispatcher handles every namespace without re-registering declarations"
-    )]
     pub(super) fn publish_imported_hew_bindings(
         &mut self,
         module_short: &str,
@@ -1152,52 +1152,15 @@ impl Checker {
                     }
                 }
                 Item::Trait(decl) if decl.visibility.is_pub() => {
-                    let canonical = format!("{module_full_path}.{}", decl.name);
-                    let Some(trait_id) = self.lookup_declaration(&canonical) else {
-                        continue;
-                    };
-                    let mut bindings = vec![format!("{module_short}.{}", decl.name)];
                     if let Some(binding) = publication.bare_binding(decl.name.name.as_str()) {
                         self.unqualified_to_module.insert(
                             (
                                 self.current_module.clone(),
                                 self.current_module_idx,
-                                binding.clone(),
+                                binding,
                             ),
                             module_full_path.to_string(),
                         );
-                        bindings.push(binding);
-                    }
-                    for binding in bindings {
-                        self.trait_bindings.insert(
-                            (
-                                self.current_module.clone(),
-                                self.current_module_idx,
-                                binding.clone(),
-                            ),
-                            trait_id,
-                        );
-                        for method in &decl.items {
-                            let TraitItem::Method(method) = method else {
-                                continue;
-                            };
-                            let Some(method_id) = self.lookup_declaration(&format!(
-                                "{}::{}",
-                                self.defs.path(trait_id),
-                                method.name
-                            )) else {
-                                continue;
-                            };
-                            self.trait_method_ids_by_binding.insert(
-                                (
-                                    self.current_module.clone(),
-                                    self.current_module_idx,
-                                    binding.clone(),
-                                    method.name.to_string(),
-                                ),
-                                (trait_id, method_id),
-                            );
-                        }
                     }
                 }
                 Item::TypeAlias(decl) if decl.visibility.is_pub() => {
@@ -1330,13 +1293,7 @@ impl Checker {
                         continue;
                     }
                     let ty = self.resolve_registered_annotation_ty_no_holes(&cd.ty);
-                    self.env
-                        .define(format!("{owner}.{}", cd.name), ty.clone(), false);
-                    self.env.define(cd.name.to_string(), ty, false);
-                    // The value environment is one flat scope, so the bare
-                    // binding is visible program-wide once defined. The export
-                    // record is what makes it in scope only where the import
-                    // was written; the use-time gate reads both.
+                    self.register_source_constant(Some(owner), cd, ty);
                     let source_identity = format!("{owner}.{}", cd.name);
                     self.record_published_bare_const(cd.name.name.as_str(), &source_identity);
                     self.file_import_const_exports
@@ -1533,7 +1490,6 @@ impl Checker {
                         // placeholder the dispatch-time binding zips against
                         // the receiver's concrete args.
                         let self_ty = self.resolve_impl_target(id);
-                        let self_type_args = Self::impl_target_args(&self_ty);
                         let primitive_key = id.trait_bound.as_ref().and_then(|_| {
                             self.canonical_primitive_or_builtin_key_for_impl_name(type_name)
                         });
@@ -1568,12 +1524,6 @@ impl Checker {
                             if let (Some(canonical), Some(trait_ref)) =
                                 (primitive_key.clone(), impl_trait.as_ref())
                             {
-                                self.record_primitive_trait_impl_self_args(
-                                    canonical.clone(),
-                                    trait_ref.trait_id,
-                                    self_type_args.clone(),
-                                    &id.target_type.1,
-                                );
                                 self.record_primitive_trait_impl_method(
                                     canonical,
                                     trait_ref.trait_id,
@@ -1797,7 +1747,7 @@ impl Checker {
             if key == name
                 && self
                     .type_namespace_owners
-                    .contains_key(&(None, name.to_string()))
+                    .contains_key(&(None, Ident::new(name)))
             {
                 continue;
             }

@@ -9,7 +9,6 @@ use crate::node_identity::Location;
 use crate::peer_binding::{ClaimState, Posture};
 use crate::util::{CondvarExt, MutexExt};
 
-use super::handshake::is_ask_rejection_reply;
 use super::identity_claim::CLAIM_RESERVE_WAIT_MS;
 use super::{HewConnMgr, CONN_STATE_ACTIVE};
 
@@ -204,16 +203,13 @@ pub(super) fn inbound_ask_denied_unverified(
 pub(super) fn deposit_reply_envelope(
     mgr: *mut HewConnMgr,
     conn_id: c_int,
-    peer_feature_flags: u32,
+    _peer_feature_flags: u32,
     envelope: &EnvelopeFrame,
 ) {
-    if is_ask_rejection_reply(envelope.msg_type, peer_feature_flags) {
+    if envelope.message == crate::envelope::EnvelopeMessage::Rejected {
         // Rejection reply: the remote node hit its inbound ask path and sent an
         // encoded AskError reason. Mark the pending ask as failed so the
-        // originating caller gets the precise remote rejection reason. The
-        // `supports_ask_rejection` guard ensures old nodes (which never send
-        // this sentinel) cannot trigger this path even if they happen to send a
-        // message with msg_type = 65535.
+        // originating caller gets the precise remote rejection reason.
         crate::hew_node::fail_remote_reply(
             mgr.cast_const(),
             conn_id,

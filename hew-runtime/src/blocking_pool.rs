@@ -284,6 +284,59 @@ pub(crate) unsafe fn submit_abandonable(
     )
 }
 
+/// Transfer one boxed job to a joined pool callback, or return it on refusal.
+///
+/// # Safety
+/// `pool` has the same contract as [`hew_blocking_pool_submit`]. `func` must
+/// consume exactly this `Box<T>` when called, using the supplied pointer.
+pub(crate) unsafe fn submit_owned<T: Send + 'static>(
+    pool: *mut HewBlockingPool,
+    func: HewBlockingFn,
+    job: Box<T>,
+) -> Result<(), Box<T>> {
+    // SAFETY: the caller supplies the pool and consuming callback contracts.
+    unsafe { submit_box(pool, func, job, false) }
+}
+
+/// Transfer one boxed job with the lifetime contract of [`submit_abandonable`].
+///
+/// # Safety
+/// As [`submit_owned`], and the job must remain sound to finish after the
+/// owning runtime is dropped, as required by [`submit_abandonable`].
+pub(crate) unsafe fn submit_abandonable_owned<T: Send + 'static>(
+    pool: *mut HewBlockingPool,
+    func: HewBlockingFn,
+    job: Box<T>,
+) -> Result<(), Box<T>> {
+    // SAFETY: the caller supplies the pool, callback and abandonment contracts.
+    unsafe { submit_box(pool, func, job, true) }
+}
+
+unsafe fn submit_box<T: Send + 'static>(
+    pool: *mut HewBlockingPool,
+    func: HewBlockingFn,
+    job: Box<T>,
+    abandonable: bool,
+) -> Result<(), Box<T>> {
+    // Release the Box before admission: a worker may consume it before submit
+    // returns. Only refusal leaves the allocation owned by this call.
+    let job = Box::into_raw(job);
+    // SAFETY: the callback consumes this job once on successful admission.
+    let status = if abandonable {
+        // SAFETY: the caller supplies the additional abandonment contract.
+        unsafe { submit_abandonable(pool, func, job.cast()) }
+    } else {
+        // SAFETY: the caller supplies the joined callback contract.
+        unsafe { hew_blocking_pool_submit(pool, func, job.cast()) }
+    };
+    if status == 0 {
+        Ok(())
+    } else {
+        // SAFETY: refused admission neither queued nor invoked the callback.
+        Err(unsafe { Box::from_raw(job) })
+    }
+}
+
 unsafe fn submit(pool: *mut HewBlockingPool, task: Task) -> i32 {
     if pool.is_null() {
         return -1;
@@ -611,6 +664,85 @@ mod tests {
     }
 
     unsafe extern "C" fn noop(_: *mut c_void) {}
+
+    #[derive(Debug)]
+    struct DropProbe {
+        drops: Arc<AtomicU32>,
+        done: std::sync::mpsc::Sender<()>,
+    }
+
+    impl Drop for DropProbe {
+        fn drop(&mut self) {
+            self.drops.fetch_add(1, Ordering::SeqCst);
+            let _ = self.done.send(());
+        }
+    }
+
+    unsafe extern "C" fn drop_owned_probe(arg: *mut c_void) {
+        // SAFETY: each accepted submission transfers exactly one DropProbe.
+        drop(unsafe { Box::from_raw(arg.cast::<DropProbe>()) });
+    }
+
+    fn submit_probe(
+        pool: *mut HewBlockingPool,
+        abandonable: bool,
+        probe: Box<DropProbe>,
+    ) -> Result<(), Box<DropProbe>> {
+        // SAFETY: tests keep a live pool or pass null; the callback owns the
+        // probe and its Arc/channel remain valid after a pool is stopped.
+        unsafe {
+            if abandonable {
+                submit_abandonable_owned(pool, drop_owned_probe, probe)
+            } else {
+                submit_owned(pool, drop_owned_probe, probe)
+            }
+        }
+    }
+
+    #[test]
+    fn refused_owned_submission_returns_the_undropped_job() {
+        for abandonable in [false, true] {
+            let pool = new_pool(1, Duration::from_secs(10));
+            // SAFETY: the test uniquely owns this idle pool until stop below.
+            unsafe { &*pool }.inner.queue.lock_or_recover().running = false;
+            for target in [std::ptr::null_mut(), pool] {
+                let drops = Arc::new(AtomicU32::new(0));
+                let (done, finished) = std::sync::mpsc::channel();
+                let probe = Box::new(DropProbe {
+                    drops: Arc::clone(&drops),
+                    done,
+                });
+                let original = std::ptr::from_ref(probe.as_ref());
+                let returned = submit_probe(target, abandonable, probe).unwrap_err();
+                assert_eq!(std::ptr::from_ref(returned.as_ref()), original);
+                assert_eq!(drops.load(Ordering::SeqCst), 0);
+                drop(returned);
+                finished.recv_timeout(Duration::from_secs(5)).unwrap();
+                assert_eq!(drops.load(Ordering::SeqCst), 1);
+            }
+            // SAFETY: the test owns the stopped pool allocation.
+            unsafe { hew_blocking_pool_stop(pool) };
+        }
+    }
+
+    #[test]
+    fn accepted_owned_submission_transfers_one_drop_to_the_callback() {
+        for abandonable in [false, true] {
+            let pool = new_pool(1, Duration::from_secs(10));
+            let drops = Arc::new(AtomicU32::new(0));
+            let (done, finished) = std::sync::mpsc::channel();
+            let probe = Box::new(DropProbe {
+                drops: Arc::clone(&drops),
+                done,
+            });
+            assert!(submit_probe(pool, abandonable, probe).is_ok());
+            finished.recv_timeout(Duration::from_secs(5)).unwrap();
+            assert_eq!(drops.load(Ordering::SeqCst), 1);
+            // SAFETY: this test owns the pool and the callback owns no runtime state.
+            unsafe { hew_blocking_pool_stop(pool) };
+            assert_eq!(drops.load(Ordering::SeqCst), 1);
+        }
+    }
 
     type Job<T> = (Box<dyn FnOnce() -> T + Send>, std::sync::mpsc::Sender<T>);
 

@@ -255,20 +255,17 @@ impl LowerCtx {
 
         let param_tys: Vec<ResolvedTy> = params.iter().map(|param| param.ty.clone()).collect();
         let handler_name = LAMBDA_ACTOR_HANDLER.to_string();
-        let protocol_descriptor = hew_types::ActorProtocolDescriptor::from_handlers_with_ids(
+        let protocol_descriptor = hew_types::ActorProtocolDescriptor::from_handlers(
             identity.path.clone(),
-            &[(
-                hew_types::actor_protocol::ActorHandlerSpec {
-                    declaration: identity.handler,
-                    name: handler_name.clone(),
-                    param_tys,
-                    return_ty: reply_ty.clone(),
-                    symbol: format!("{}__{handler_name}", identity.path),
-                },
-                hew_types::actor_protocol::LAMBDA_ACTOR_MESSAGE_ID,
-            )],
-        )
-        .expect("one lambda handler cannot have a protocol collision");
+            &[hew_types::actor_protocol::ActorHandlerSpec {
+                declaration: identity.handler,
+                wire_identity: String::new(),
+                name: handler_name.clone(),
+                param_tys,
+                return_ty: reply_ty.clone(),
+                symbol: format!("{}__{handler_name}", identity.path),
+            }],
+        );
 
         let body_block = HirBlock {
             node: self.ids.node(),

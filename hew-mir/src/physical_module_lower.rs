@@ -92,6 +92,10 @@ pub fn lower_physical_module(
                 symbol: callable.symbol.clone(),
                 params,
                 return_ty: callable.signature.return_ty.clone(),
+                return_recipe: return_layout
+                    .as_ref()
+                    .map(|_| physical_value_recipe(module, &ids, &callable.signature.return_ty))
+                    .transpose()?,
                 return_layout,
                 is_resumable: resumable.contains(&callable.id),
                 receiver_handback: callable.signature.hands_back_receiver(),
@@ -297,14 +301,6 @@ pub fn lower_physical_module(
             .is_resumable = is_resumable;
     }
     physical.releases = ReleaseEffects::compute(&physical);
-    let retained = physical
-        .functions
-        .iter()
-        .map(|function| super::frame::retained_storage(&physical, function))
-        .collect::<Result<Vec<_>, _>>()?;
-    for (function, retained) in physical.functions.iter_mut().zip(retained) {
-        function.frame_storage = retained;
-    }
     for (callable, available) in verify_physical_module(&physical)? {
         if let Some(debug) = physical.debug.functions.get_mut(&callable) {
             debug.available = available;
@@ -1281,7 +1277,6 @@ pub(crate) fn lower_function(
             parameters,
             place_storage,
             storage: lowerer.storage,
-            frame_storage: BTreeSet::new(),
             blocks,
         },
         attribution,

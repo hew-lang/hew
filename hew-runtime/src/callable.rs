@@ -359,6 +359,8 @@ mod tests {
             environment: &ENVIRONMENT_LAYOUT,
             invoke_borrow: Some(borrow_invoke),
             invoke_once: once_invoke,
+            invoke_borrow_sync: None,
+            invoke_once_sync: None,
         }
     }
 
@@ -567,6 +569,8 @@ mod tests {
             environment: &raw const layout,
             invoke_borrow: Some(invoke),
             invoke_once: invoke,
+            invoke_borrow_sync: None,
+            invoke_once_sync: None,
         };
         // SAFETY: Empty-function descriptors own no environment storage.
         unsafe {

@@ -12,6 +12,7 @@ categories = ["compilers"]
 
 [dependencies]
 hew-lexer = { path = "../hew-lexer" }
+hew-expand = { path = "../hew-expand" }
 hew-hir = { path = "../hew-hir" }
 hew-mir = { path = "../hew-mir" }
 hew-sir = { path = "../hew-sir" }

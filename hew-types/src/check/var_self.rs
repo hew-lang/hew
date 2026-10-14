@@ -132,8 +132,8 @@ impl Checker {
             None => {
                 self.release_may_run_close(&target_ty)
                     && self.expr_place(target).is_none_or(|(root, path)| {
-                        self.env.lookup_ref(&root).is_some_and(|b| !b.is_moved)
-                            && self.env.place_move_conflict(&root, &path).is_none()
+                        self.env.lookup_ref(root).is_some_and(|b| !b.is_moved)
+                            && self.env.place_move_conflict(root, &path).is_none()
                     })
             }
         };

@@ -234,9 +234,9 @@ pub unsafe extern "C" fn hew_sched_init() -> i32 {
 enum Participant {
     /// An actor with work; the entry owns one scheduler queue reference.
     Actor(*mut crate::actor::HewActor),
-    /// A task continuation to resume.
+    /// A task continuation or inbound call ready to resume.
     #[cfg(not(target_arch = "wasm32"))]
-    Task(Arc<crate::task_scope::checked::TaskExecution>),
+    Task(Arc<dyn crate::wake::scheduled::ReadyWork>),
     /// A parked root or hosting boundary whose readiness latch is set.
     Root(Arc<Readiness>),
     /// An admitted supervisor teardown. Teardown may step the driver while
@@ -306,9 +306,9 @@ pub(crate) fn publish_queue_entry(mut entry: SchedulerQueueEntry) {
     entry.disarm();
 }
 
-/// Accept a ready task continuation.
+/// Accept retained work whose readiness has been published.
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn publish_task(task: Arc<crate::task_scope::checked::TaskExecution>) {
+pub(crate) fn publish_work(task: Arc<dyn crate::wake::scheduled::ReadyWork>) {
     publish(Participant::Task(task));
 }
 

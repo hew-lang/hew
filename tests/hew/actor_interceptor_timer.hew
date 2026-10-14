@@ -1,0 +1,28 @@
+actor Pulse {
+    var ticks: i64 = 0;
+
+    #[intercept]
+    fn guard(call: Call<Self>) -> Outcome<Self> {
+        if call.handler_name() == "tick" {
+            match call.caller() {
+                .Timer => {}
+                _ => panic("periodic delivery must retain timer identity"),
+            }
+        }
+        call.proceed()
+    }
+
+    #[every(10ms)]
+    receive fn tick() { ticks = ticks + 1; }
+    receive fn count() -> i64 { ticks }
+}
+
+#[test]
+fn interceptor_observes_periodic_timer_provenance() {
+    let pulse = spawn Pulse;
+    while pulse.count().expect("pulse alive") < 2 {
+        sleep(5ms);
+    }
+    stop(pulse);
+    stopped(pulse);
+}

@@ -1,0 +1,11 @@
+[[case]]
+id = "callable-once-close-body-fault"
+intent = "A weakened once callable combines capture-close faults and releases each owned value exactly once."
+source = "cases/callable-once-close-body-fault.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "close 10\n"
+stderr = "hew: failure: UserPanic (212): body failed\nhew: secondary failure: UserPanic (212): close 10 failed\n"
+exit = 1

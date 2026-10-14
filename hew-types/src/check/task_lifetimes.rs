@@ -485,8 +485,21 @@ impl Checker {
                     })
                     .collect()
             }
-            CallableCandidate::CallResult(site) => {
-                self.task_call_origins(site, actuals, flows, projections, seen, environments)
+            CallableCandidate::LoopInput { site, binding } => self
+                .loop_value_candidates
+                .get(&(site.clone(), *binding))
+                .map_or_else(Vec::new, |candidates| {
+                    self.task_value_origins(
+                        candidates,
+                        actuals,
+                        flows,
+                        projections,
+                        seen,
+                        environments,
+                    )
+                }),
+            CallableCandidate::CallResult(_) | CallableCandidate::CallWriteback(_) => {
+                self.task_call_origins(candidate, actuals, flows, projections, seen, environments)
             }
             CallableCandidate::Field {
                 receiver,
@@ -594,13 +607,18 @@ impl Checker {
 
     fn task_call_origins(
         &self,
-        site: &SpanKey,
+        candidate: &CallableCandidate,
         actuals: usize,
         flows: &HashMap<SpanKey, Vec<CallableArgumentFlow>>,
         projections: &[Projection],
         seen: &mut HashSet<Visit>,
         environments: &mut OriginEnvironments,
     ) -> Vec<ValueOrigin> {
+        let (site, receiver_output) = match candidate {
+            CallableCandidate::CallResult(site) => (site, false),
+            CallableCandidate::CallWriteback(site) => (site, true),
+            _ => return Vec::new(),
+        };
         let Some(pending) = self.pending_callable_arguments.get(site) else {
             return Vec::new();
         };
@@ -618,7 +636,12 @@ impl Checker {
                     CallableCandidate::Closure(site) => EffectBody::Closure(site),
                     _ => return Vec::new(),
                 };
-                let Some(returns) = self.callable_return_candidates.get(&owner) else {
+                let outputs = if receiver_output {
+                    &self.callable_receiver_outputs
+                } else {
+                    &self.callable_return_candidates
+                };
+                let Some(returns) = outputs.get(&owner) else {
                     return Vec::new();
                 };
                 let mut call_actuals = (*environments.values[callee.actuals]).clone();

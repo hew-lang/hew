@@ -122,5 +122,5 @@ fn handshake_rejects_zero_node_id() {
 
 #[test]
 fn local_schema_hash_covers_acknowledged_setup_controls() {
-    assert_eq!(local_schema_hash(), 0x774b_20fa);
+    assert_eq!(local_schema_hash(), 0x0dcc_98a1);
 }

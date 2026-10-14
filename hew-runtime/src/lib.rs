@@ -606,8 +606,11 @@ mod trap_code;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub mod file_io;
+
 #[cfg(not(target_arch = "wasm32"))]
 pub mod file_secure;
+/// Filesystem authority and deterministic mode for build-time generators.
+pub mod generator;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod io_time;
 #[cfg(not(target_arch = "wasm32"))]
@@ -669,6 +672,7 @@ pub(crate) mod activation;
 pub mod actor;
 pub mod actor_balance;
 pub mod actor_call_native;
+pub mod actor_caller;
 pub mod actor_group;
 pub mod actor_native;
 pub mod arena;

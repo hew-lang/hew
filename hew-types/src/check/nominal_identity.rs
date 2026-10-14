@@ -342,32 +342,10 @@ impl Checker {
         expr: &hew_parser::ast::Expr,
         span: &hew_parser::ast::Span,
     ) {
-        fn segments(
-            expr: &hew_parser::ast::Expr,
-            span: &hew_parser::ast::Span,
-            out: &mut Vec<hew_parser::ast::Spanned<hew_parser::ast::Ident>>,
-        ) -> bool {
-            match expr {
-                hew_parser::ast::Expr::Ident(name) => {
-                    out.push((*name, span.clone()));
-                    true
-                }
-                hew_parser::ast::Expr::FieldAccess { object, field } => {
-                    if !segments(&object.0, &object.1, out) {
-                        return false;
-                    }
-                    out.push(field.clone());
-                    true
-                }
-                _ => false,
-            }
-        }
-
         let Some(site) = self.scope_site() else {
             return;
         };
-        let mut path = Vec::new();
-        if segments(expr, span, &mut path) {
+        if let Some(path) = value_path(expr, span) {
             let _ =
                 self.scopes
                     .resolve_prefix(&self.env, site, super::scope::Namespace::Value, &path);
@@ -424,11 +402,15 @@ impl Checker {
         let Some(definition) = self.type_defs.get(&nominal) else {
             return;
         };
-        let Some(index) = definition
-            .field_order
-            .iter()
-            .position(|name| name == field.0.name.as_str())
-        else {
+        let index = if head == crate::KnownDecl::Call.head() && field.0.name.as_str() == "request" {
+            Some(0)
+        } else {
+            definition
+                .field_order
+                .iter()
+                .position(|name| name == field.0.name.as_str())
+        };
+        let Some(index) = index else {
             return;
         };
         let Some(site) = self.scope_site() else {
@@ -611,6 +593,10 @@ impl Checker {
             Ok(super::scope::Resolution::Def(id))
                 if self.defs.kind(id) == crate::DeclarationKind::Trait =>
             {
+                if let Some((_, span)) = path.segments.last() {
+                    self.scopes
+                        .record_resolution(site, span, super::scope::Resolution::Def(id));
+                }
                 Some(id)
             }
             _ => None,
@@ -711,23 +697,35 @@ impl Checker {
 
     /// Whether the current file may name `declaration`; reports the first
     /// refusal per declaration.
+    pub(super) fn declaration_is_visible_from(
+        &self,
+        declaration: crate::DefId,
+        file: crate::ModuleId,
+    ) -> bool {
+        use hew_parser::ast::Visibility;
+        let Some(owner) = self.defs.module(declaration) else {
+            return true;
+        };
+        let owner = self.scopes.namespace_of(owner);
+        let here = self.scopes.namespace_of(file);
+        match self.defs.visibility(declaration) {
+            Visibility::Pub => true,
+            Visibility::Private => owner == here,
+            Visibility::Package => owner == here || self.defs.same_package(owner, here),
+        }
+    }
+
     pub(super) fn check_declaration_visible(
         &mut self,
         declaration: crate::DefId,
         span: &hew_parser::ast::Span,
     ) -> bool {
-        use hew_parser::ast::Visibility;
         let (Some(site), Some(owner)) = (self.scope_site(), self.defs.module(declaration)) else {
             return true;
         };
         let owner = self.scopes.namespace_of(owner);
-        let here = self.scopes.namespace_of(site.file);
         let visibility = self.defs.visibility(declaration);
-        let visible = match visibility {
-            Visibility::Pub => true,
-            Visibility::Private => owner == here,
-            Visibility::Package => owner == here || self.defs.same_package(owner, here),
-        };
+        let visible = self.declaration_is_visible_from(declaration, site.file);
         if !visible && self.reported_type_visibility_violations.insert(declaration) {
             let declaration_span = self.defs.site(declaration).map_or_else(
                 || span.clone(),
@@ -1008,4 +1006,42 @@ impl Checker {
             _ => None,
         }
     }
+}
+
+pub(super) fn value_path(
+    expr: &hew_parser::ast::Expr,
+    span: &hew_parser::ast::Span,
+) -> Option<Vec<hew_parser::ast::Spanned<hew_parser::ast::Ident>>> {
+    fn segments(
+        expr: &hew_parser::ast::Expr,
+        span: &hew_parser::ast::Span,
+        out: &mut Vec<hew_parser::ast::Spanned<hew_parser::ast::Ident>>,
+    ) -> bool {
+        match expr {
+            hew_parser::ast::Expr::Ident(name) => {
+                out.push((*name, span.clone()));
+                true
+            }
+            hew_parser::ast::Expr::FieldAccess { object, field } => {
+                if !segments(&object.0, &object.1, out) {
+                    return false;
+                }
+                out.push(field.clone());
+                true
+            }
+            hew_parser::ast::Expr::MethodCall {
+                receiver, method, ..
+            } => {
+                if !segments(&receiver.0, &receiver.1, out) {
+                    return false;
+                }
+                out.push(method.clone());
+                true
+            }
+            _ => false,
+        }
+    }
+
+    let mut path = Vec::new();
+    segments(expr, span, &mut path).then_some(path)
 }

@@ -1,4 +1,4 @@
-import "imported_hash_impl_honoured_lib.hew";
+import imported_hash_impl_honoured_lib.{ImportedHashKey};
 
 fn main() {
     var values: HashMap<ImportedHashKey, i64> = HashMap.new();

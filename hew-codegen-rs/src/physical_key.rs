@@ -950,12 +950,6 @@ impl<'a, 'ctx, 'm> SelectedValueEmitter<'a, 'ctx, 'm> {
         }
         let structure = llvm_type(self.parent.ctx, repr)?.into_struct_type();
         let mut state = self.parent.ctx.i64_type().const_int(FNV_OFFSET, false);
-        if let Some(frame) = &self.frame {
-            frame.carry(self.parent.ctx, &self.builder, lhs, "key.fields.left.slot")?;
-            if let Some(rhs) = rhs {
-                frame.carry(self.parent.ctx, &self.builder, rhs, "key.fields.right.slot")?;
-            }
-        }
         let hash = if self.frame.is_some() && self.capability == ValueCapability::Hash {
             let slot = self.scratch(state.get_type().into(), "key.fields.hash")?;
             self.builder
@@ -1011,10 +1005,6 @@ impl<'a, 'ctx, 'm> SelectedValueEmitter<'a, 'ctx, 'm> {
     ) -> CodegenResult<()> {
         let ctx = self.parent.ctx;
         let structure = llvm_type(ctx, repr)?.into_struct_type();
-        if let Some(frame) = &self.frame {
-            frame.carry(ctx, &self.builder, lhs, "order.fields.left.slot")?;
-            frame.carry(ctx, &self.builder, rhs, "order.fields.right.slot")?;
-        }
         for (index, field) in fields.iter().enumerate() {
             let index = u32::try_from(index).map_err(|_| {
                 CodegenError::FailClosed("ordered field index exceeds LLVM range".into())
@@ -1189,13 +1179,6 @@ impl<'a, 'ctx, 'm> SelectedValueEmitter<'a, 'ctx, 'm> {
         let left = self.handle(lhs)?;
         let right = rhs.map(|rhs| self.handle(rhs)).transpose()?;
         let len = self.length("hew_vec_len", left)?;
-        if let Some(frame) = &self.frame {
-            frame.carry(ctx, &self.builder, left, "key.vector.left.slot")?;
-            if let Some(right) = right {
-                frame.carry(ctx, &self.builder, right, "key.vector.right.slot")?;
-            }
-            frame.carry(ctx, &self.builder, len, "key.vector.length.slot")?;
-        }
         if let Some(right) = right {
             self.continue_equal(self.equal(len, self.length("hew_vec_len", right)?)?)?;
         }

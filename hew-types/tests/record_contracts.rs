@@ -188,7 +188,7 @@ fn main() -> i64 {
 }
 
 #[test]
-fn value_capabilities_infer_impl_binders_and_concrete_specialization() {
+fn value_capabilities_infer_binders_for_disjoint_generic_and_concrete_impls() {
     use hew_types::{ValueCapability::Hash, ValueMethodPlan::User};
     let mut service = facts(
         r"type Key<A, B> {
@@ -196,7 +196,7 @@ fn value_capabilities_infer_impl_binders_and_concrete_specialization() {
     second: B;
 }
 
-impl<X, Y> Hash for Key<Y, X> {
+impl<X, Y> Hash for Key<Vec<Y>, X> {
     fn hash(self) -> i64 {
         1
     }
@@ -216,7 +216,10 @@ fn main() -> i64 {
     let generic = ResolvedTy::named_path(
         service.defs(),
         "Key",
-        vec![ResolvedTy::Bool, ResolvedTy::I64],
+        vec![
+            ResolvedTy::named_builtin(BuiltinType::Vec, vec![ResolvedTy::Bool]),
+            ResolvedTy::I64,
+        ],
     );
     let exact = ResolvedTy::named_path(
         service.defs(),
@@ -250,7 +253,7 @@ fn main() -> i64 {
             selection.plan().clone()
         })
     else {
-        panic!("specialized impl");
+        panic!("concrete impl");
     };
     assert!(type_args.is_empty());
     assert_ne!(generic_method, exact_method);
@@ -304,62 +307,6 @@ fn value_capabilities_refuse_unsupported_and_abstract_receivers() {
             )
             .is_err());
     }
-}
-
-#[test]
-fn value_capabilities_keep_generic_selection_when_specialization_is_registered_first() {
-    use hew_types::{ValueCapability::Hash, ValueMethodPlan::User};
-    let mut service = facts(
-        r"type Key<A> {
-    value: A;
-}
-
-impl Hash for Key<i64> {
-    fn hash(self) -> i64 {
-        2
-    }
-}
-
-impl<T> Hash for Key<T> {
-    fn hash(self) -> i64 {
-        1
-    }
-}
-
-fn main() -> i64 {
-    0
-}
-",
-    );
-    let Some(User {
-        method: generic,
-        type_args,
-    }) = service
-        .capability_plan(
-            &ResolvedTy::named_path(service.defs(), "Key", vec![ResolvedTy::Bool]),
-            Hash,
-        )
-        .unwrap()
-        .map(|selection| selection.plan().clone())
-    else {
-        panic!("generic impl")
-    };
-    assert_eq!(type_args, vec![ResolvedTy::Bool]);
-    let Some(User {
-        method: exact,
-        type_args,
-    }) = service
-        .capability_plan(
-            &ResolvedTy::named_path(service.defs(), "Key", vec![ResolvedTy::I64]),
-            Hash,
-        )
-        .unwrap()
-        .map(|selection| selection.plan().clone())
-    else {
-        panic!("exact impl")
-    };
-    assert!(type_args.is_empty());
-    assert_ne!(generic, exact);
 }
 
 #[test]
@@ -754,7 +701,7 @@ fn main() -> i64 {
 }
 
 #[test]
-fn a_user_hash_method_does_not_expand_the_admitted_collection_shapes() {
+fn a_user_hash_method_does_not_admit_enum_keys() {
     use hew_types::ValueCapability::Hash;
     let mut service = facts(
         r"enum Choice {
@@ -767,38 +714,22 @@ impl Hash for Choice {
     }
 }
 
-impl<T> Hash for Vec<T> {
-    fn hash(self) -> i64 {
-        2
-    }
-}
-
 fn main() -> i64 {
     0
 }
 ",
     );
-    for ty in [
-        ResolvedTy::named_path(service.defs(), "Choice", vec![]),
-        ResolvedTy::named_builtin(BuiltinType::Vec, vec![ResolvedTy::I64]),
-    ] {
-        assert_eq!(service.capability_plan(&ty, Hash).unwrap(), None);
-        assert!(!service.require(&ty).unwrap().hash);
-    }
+    let ty = ResolvedTy::named_path(service.defs(), "Choice", vec![]);
+    assert_eq!(service.capability_plan(&ty, Hash).unwrap(), None);
+    assert!(!service.require(&ty).unwrap().hash);
 }
 
 #[test]
-fn concrete_comparisons_and_capability_queries_select_the_same_eq_specialization() {
+fn concrete_comparisons_and_capability_queries_select_the_same_eq_impl() {
     use hew_types::{UserComparisonDispatch, ValueCapability::Eq, ValueMethodPlan::User};
     let parsed = hew_parser::parse(
         r"type Key<T> {
     value: T;
-}
-
-impl<T> Eq for Key<T> {
-    fn eq(self, other: Key<T>) -> bool {
-        true
-    }
 }
 
 impl Eq for Key<i64> {

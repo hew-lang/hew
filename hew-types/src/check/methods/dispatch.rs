@@ -75,9 +75,9 @@ impl Checker {
         self.reject_indexed_writable_borrow(receiver);
         let place = self.expr_place(&receiver.0).or_else(|| {
             self.assignment_root_binding_name(&receiver.0)
-                .map(|root| (root.to_string(), Vec::new()))
+                .map(|root| (root, Vec::new()))
         });
-        let root = place.as_ref().map(|(root, _)| root.as_str());
+        let root = place.as_ref().map(|(root, _)| *root);
         if !root
             .and_then(|root| self.env.lookup_ref(root))
             .is_some_and(|binding| binding.is_mutable)
@@ -109,9 +109,15 @@ impl Checker {
                 ));
             }
         } else if let Some((root, path)) = place {
-            self.env.discount_mutation_receiver_read(&root);
-            self.env.mark_written(&root);
-            self.reject_borrowed_parameter_mutation(&root, &path, span);
+            self.env.discount_mutation_receiver_read(root);
+            self.env.mark_written(root);
+            self.replace_place_value_candidates(
+                receiver,
+                IndirectCallCandidates::single(CallableCandidate::CallWriteback(
+                    SpanKey::in_module(span, self.current_module_idx),
+                )),
+            );
+            self.reject_borrowed_parameter_mutation(root, &path, span);
         }
     }
 
@@ -187,7 +193,7 @@ impl Checker {
                 // derivation. In particular, a lambda-actor handle is an
                 // opaque wrapper, but release still consumes its sole runtime
                 // handle and any later receiver use is invalid.
-                self.env.mark_moved(name.name.as_str(), receiver.1.clone());
+                self.env.mark_moved(name, receiver.1.clone());
             }
         }
 
@@ -264,7 +270,7 @@ impl Checker {
         }
         // Module-qualified calls: e.g. http.listen(addr) → lookup "http.listen" in fn_sigs
         if let Expr::Ident(name) = &receiver.0 {
-            let receiver_is_binding = self.env.lookup_ref(name.name.as_str()).is_some();
+            let receiver_is_binding = self.env.lookup_ref(name).is_some();
             // The shared type-head resolver already selected every
             // declaration-proven nominal above. Preserve that classification
             // while deciding whether an unresolved head is a module call.
@@ -288,11 +294,11 @@ impl Checker {
             // exact source owner, so resolve the binding before every authority
             // lookup. Never recover the owner from the final path segment: two
             // nested stdlib modules may share both a leaf and a function name.
-            let canonical_owner = self.canonical_module_import_owner(name.name.as_str());
+            let canonical_owner = self.canonical_module_import_owner(name);
             let key = self.canonical_fn_identity(Some(&canonical_owner), method);
             let looks_like_module_call = !receiver_is_binding
                 && !receiver_is_known_type
-                && (self.module_binding_in_current_file(name.name.as_str())
+                && (self.module_binding_in_current_file(name)
                     || self.module_fn_exports.contains(&key)
                     || self.has_fn_sig(&key));
             if looks_like_module_call {
@@ -302,7 +308,7 @@ impl Checker {
                         module_name: canonical_owner.clone(),
                     },
                 );
-                if self.module_binding_in_current_file(name.name.as_str()) {
+                if self.module_binding_in_current_file(name) {
                     self.note_import_use(name.name.as_str());
                 }
                 // Cross-module enum variant construction: e.g. `fs.IoError::TimedOut(0)`.
@@ -366,7 +372,7 @@ impl Checker {
                             .map_or_else(|| span.clone(), |(s, _)| s.clone());
                         let acc_module_owned = self.current_module.clone();
                         let decl_module = decl_module_owned.as_deref();
-                        if !visibility::access_allowed(
+                        if !self.visibility_access_allowed(
                             decl_module,
                             acc_module_owned.as_deref(),
                             vis,
@@ -429,12 +435,12 @@ impl Checker {
                 if let Some(sig) = self.fn_sig(&key).cloned() {
                     self.record_call_edge(&key);
                     self.record_module_qualified_stdlib_call_rewrite_if_any(
-                        name.name.as_str(),
+                        &canonical_owner,
                         method,
                         span,
                     );
                     self.record_module_qualified_user_call_rewrite_if_any(
-                        name.name.as_str(),
+                        &canonical_owner,
                         method,
                         span,
                     );
@@ -1970,6 +1976,10 @@ impl Checker {
                                     // never-reassigned mutable binding.
                                     self.env.discount_mutation_receiver_read(n.name.as_str());
                                     self.env.mark_written(n.name.as_str());
+                                    self.replace_place_value_candidates(
+                                        receiver,
+                                        IndirectCallCandidates::unknown(),
+                                    );
                                     self.reject_borrowed_parameter_mutation(
                                         n.name.as_str(),
                                         &[],
@@ -2872,7 +2882,7 @@ impl Checker {
     ) {
         let mut error = TypeError::new(TypeErrorKind::UndefinedMethod, span.clone(), message);
         if let Expr::Ident(binding) = &receiver.0 {
-            if self.env.lookup_ref(binding.name.as_str()).is_some()
+            if self.env.lookup_ref(binding).is_some()
                 && self.module_import_bindings.contains_key(&(
                     self.current_module.clone(),
                     self.current_module_idx,

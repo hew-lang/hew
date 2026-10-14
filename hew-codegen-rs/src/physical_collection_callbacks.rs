@@ -90,20 +90,6 @@ impl<'ctx> CollectionCallbacks<'_, 'ctx> {
             ],
             "collection.probe",
         )?;
-        if let Some(frame) = self.frame {
-            frame.carry(
-                self.values.ctx,
-                self.values.builder,
-                operation.receiver,
-                "collection.receiver.slot",
-            )?;
-            frame.carry(
-                self.values.ctx,
-                self.values.builder,
-                probe,
-                "collection.probe.slot",
-            )?;
-        }
         let step = self
             .values
             .ctx
@@ -361,11 +347,6 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         let len = self
             .runtime_call_value(len_fn, &[vector.into()], "contains.len")?
             .into_int_value();
-        if let Some(frame) = &self.frame {
-            frame.carry(self.ctx, &self.builder, vector, "contains.vector.slot")?;
-            frame.carry(self.ctx, &self.builder, len, "contains.length.slot")?;
-            frame.carry(self.ctx, &self.builder, needle, "contains.needle.slot")?;
-        }
         let index_slot = self
             .value_emitter()
             .entry_scratch(i64_ty.into(), "contains.index")?;

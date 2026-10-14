@@ -1,20 +1,12 @@
-//! Stackless continuation substrate — the `HewCont` heap-frame + C ABI.
+//! LLVM switched-resume continuation handles and dispatch crash cleanup.
 //!
-//! Generated resumable functions share one heap frame and one body with an
-//! explicit resume-state dispatch. The frame begins with [`CoroFramePrefix`];
-//! its pointer is the continuation handle. Normal completion clears the resume
-//! entry and leaves the frame for its owning driver to destroy.
+//! LLVM owns coroutine layout and may elide a frame into its caller. Handle
+//! operations read only the shared resume/destroy prefix. Heap allocation and
+//! deallocation alone access the private size header.
 //!
-//! The allocators retain the block size, tracked marker and cleanup registry in
-//! a private header. Generated frames use `hew_cont_frame_alloc`; tracked
-//! runtime frames additionally participate in native crash reclamation. Both
-//! route through [`crate::mem::hew_alloc`] and [`crate::mem::hew_dealloc`].
-//!
-//! Drivers serialise resume and destruction. Checked invocations cooperatively
-//! cancel and drain their typed cleanup before destroying a completed frame;
-//! destruction itself cannot suspend. Crash recovery separately owns frames
-//! abandoned during execution and prevents ordinary destruction from re-entering
-//! them. Native workers and the cooperative wasm32 driver use the same prefix.
+//! Drivers serialize resume and destruction. Checked invocations cooperatively
+//! cancel and drain typed cleanup before destroying their completed frames.
+//! Actor dispatch crash-state escrow has its own scheduler-owned lifetime.
 #![allow(
     unsafe_op_in_unsafe_fn,
     reason = "FFI entry-point module; SAFETY documented at fn signature."
@@ -27,9 +19,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::mem::{hew_alloc, hew_dealloc};
 
-/// Alignment shared with generated continuation layouts. Codegen rejects
-/// fields requiring more than 16 bytes; the allocation header preserves this
-/// alignment for the returned frame pointer.
+/// Alignment supplied to LLVM's coroutine identity and preserved by the heap
+/// allocation header.
 const FRAME_ALIGN: usize = 16;
 
 /// Maximum alignment requested for actor-state crash snapshots. Hew's current
@@ -38,27 +29,12 @@ const FRAME_ALIGN: usize = 16;
 /// address (for example, a page boundary) into a multi-kilobyte layout request.
 const MAX_STATE_ESCROW_ALIGN: usize = 64;
 
-/// Bytes reserved ahead of the frame for the stored block size, tracked-frame
-/// marker, and crash-cleanup-registry pointer. Two full [`FRAME_ALIGN`]
-/// strides keep the pointer handed to LLVM 16-byte aligned on every target.
-const FRAME_HEADER: usize = FRAME_ALIGN * 2;
-
-/// Byte offset of the crash-cleanup registry pointer in the private frame
-/// header. The first two words remain the allocation size and tracked marker.
-const FRAME_CLEANUP_REGISTRY_OFFSET: usize = size_of::<u64>() * 2;
-
-/// Marker stored in the second word of a coroutine frame header.
-///
-/// Only allocations made by [`hew_cont_frame_alloc_tracked`] carry this marker.
-/// Generator companions and environments continue to use
-/// [`hew_cont_frame_alloc`] and remain deliberately outside crash-frame
-/// reclamation: they require typed teardown that a raw crash unwind cannot
-/// provide.
-const TRACKED_COROUTINE_FRAME_MAGIC: u64 = 0x4845_5743_4f52_4f31;
+/// One aligned header stores the block size for the matching heap deallocation.
+const FRAME_HEADER: usize = FRAME_ALIGN;
 
 /// `hew_cont_crash_cleanup_arm` result indicating malformed relocation input
 /// or a snapshot allocation that could not be represented. Zero is reserved
-/// for the ordinary "no active tracked coroutine" no-op.
+/// for the ordinary "no active dispatch scope" no-op.
 pub const CRASH_CLEANUP_ARM_FAILED: u64 = u64::MAX;
 
 /// Rust-authored cleanup callbacks may explicitly use `C-unwind`, allowing the
@@ -82,19 +58,12 @@ enum CrashCleanupRunState {
 pub enum CrashCleanupRelocation {
     /// The `ElabDrop` ritual is valid on an ABI-aligned bytewise snapshot.
     Bitwise = 0,
-    /// The snapshot contains an interior pointer into its owner coroutine
-    /// frame (currently `dyn Trait` with `FrameOwned` storage). The runtime
-    /// additionally proves that pointee lies in that frame before accepting it.
-    FrameInterior = 1,
 }
 
 /// Where crash cleanup reads the current value.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u32)]
 pub enum CrashCleanupStorage {
-    /// The slot itself lies in the tracked coroutine allocation and remains
-    /// readable after the unwind until raw frame reclamation.
-    DirectFrame = 0,
     /// The slot lies on a nested synchronous helper stack. Runtime keeps an
     /// ABI-aligned emergency byte snapshot because that helper stack is gone
     /// when the scheduler catches the unwind.
@@ -104,7 +73,6 @@ pub enum CrashCleanupStorage {
 struct CrashCleanupEntry {
     token: u64,
     owner_registry: *mut CrashCleanupRegistry,
-    owner_frame: *mut c_void,
     slot: *mut c_void,
     snapshot: *mut u8,
     size: u64,
@@ -125,10 +93,9 @@ struct CrashCleanupRegistry {
     /// token name a later logical entry.
     entries: Vec<*mut CrashCleanupEntry>,
     next_order: u64,
-    /// Dispatch scopes additionally escrow the actor's complete state. The
+    /// Dispatch scopes escrow the actor's complete state. The
     /// snapshot is kept structurally drop-safe across field updates by the
-    /// generated begin/prepare transaction hooks below; coroutine-frame
-    /// registries leave these fields null/zero.
+    /// generated begin/prepare transaction hooks below.
     state_source: *mut u8,
     state_snapshot: *mut u8,
     state_size: u64,
@@ -149,7 +116,7 @@ struct CrashCleanupRegistry {
 
 /// Process-wide non-reusing crash-cleanup identity source.
 ///
-/// Zero is the benign "no active tracked frame" token and `u64::MAX` is the
+/// Zero is the benign "no active dispatch scope" token and `u64::MAX` is the
 /// hard-failure sentinel, so neither is ever issued. Exhaustion fails closed
 /// rather than wrapping and reviving an ancient token.
 static NEXT_CRASH_CLEANUP_TOKEN: AtomicU64 = AtomicU64::new(1);
@@ -163,20 +130,9 @@ fn next_crash_cleanup_token() -> Option<u64> {
 }
 
 thread_local! {
-    /// Coroutine frames synchronously executing on this worker thread.
-    ///
-    /// A tracked ramp allocation pushes immediately. A normal ramp return hands
-    /// the frame to its caller and pops it. `hew_cont_resume` brackets the
-    /// continuation body with the same enter/leave pair. A language
-    /// unwind skips the normal pop and leaves the positively tracked frames
-    /// here for scheduler recovery to reclaim in LIFO order.
-    static ACTIVE_COROUTINE_FRAMES: RefCell<Vec<ActiveCoroutineFrame>> =
-        const { RefCell::new(Vec::new()) };
-
     /// Scheduler-bracketed cooperative crash domains. Ordinary handler and
-    /// free-function stack owners attach here when no tracked coroutine frame
-    /// is active. Native and unwind-capable host recovery detach and drain the
-    /// top scope; normal dispatch completion discards its state
+    /// free-function stack owners attach here. Native and unwind-capable host
+    /// recovery detach and drain the top scope; normal completion discards its state
     /// escrow only after generated lexical owners have retired their tokens.
     /// The production wasm32-wasip1 panic=abort artifact has no unwind edge.
     static DISPATCH_CRASH_CLEANUP_SCOPES: RefCell<Vec<*mut CrashCleanupRegistry>> =
@@ -187,97 +143,6 @@ thread_local! {
     /// cannot attach to, or accidentally pop, an older dispatch scope.
     static CRASH_CLEANUP_DRAIN_DEPTH: Cell<u32> = const { Cell::new(0) };
 
-    /// Coro frames a crash drain has claimed for raw reclamation but is HOLDING
-    /// — quarantined, NOT yet returned to the allocator — until the drain
-    /// unwinds (`drain_active_coroutine_frames_excluding`).
-    ///
-    /// A `receive gen fn` producer generator that faults WHILE RUNNING leaves
-    /// its coro frame positively tracked on `ACTIVE_COROUTINE_FRAMES`, so the
-    /// crash drain raw-reclaims it (a mid-execution frame's cleanup outline is
-    /// not legal to re-enter). That SAME generator is ALSO owned by the pump
-    /// frame's crash-cleanup escrow, whose `hew_gen_coro_destroy` thunk reads the
-    /// companion's coro handle and `hew_cont_destroy`s it. Both authorities would
-    /// otherwise free the one frame twice.
-    ///
-    /// The reconciliation must not itself alias by raw pointer: between recording
-    /// a frame and an escrow consuming the record, the escrow's OTHER thunks run
-    /// arbitrary generated code that can allocate a fresh continuation, and the
-    /// allocator may hand back the just-freed address (ABA). So a claimed frame
-    /// is HELD here — its storage is NOT freed while the record is live — which
-    /// makes its address non-reusable for the whole drain: no later allocation
-    /// can obtain it and no `hew_cont_destroy` can alias the record. The drain is
-    /// the SOLE free authority for quarantined frames; it releases every frame it
-    /// claimed once, at unwind, after all escrow thunks have run. A parent pump
-    /// escrow that reaches a quarantined child handle skips its own destroy
-    /// (`hew_cont_destroy` consults this set); the drain still frees the child
-    /// exactly once at exit. A generator SUSPENDED at teardown is not on the
-    /// active stack, is never quarantined, and is destroyed by the escrow
-    /// normally. Nested drains snapshot the set depth on entry and release only
-    /// their own frames on exit, so an outer drain's held frames stay held (and
-    /// their addresses reserved) across an inner drain.
-    ///
-    /// This set covers only the drain's own window. A generated cleanup landing
-    /// pad on the unwind edge reaches the same handle BEFORE the scheduler
-    /// catches the unwind and opens that window, so `hew_cont_destroy`'s skip is
-    /// keyed on [`frame_is_crash_owned`]: the abandoned activation record is the
-    /// frame's owner from the unwind onward, and this set takes over from it.
-    static CRASH_QUARANTINED_FRAMES: RefCell<Vec<*mut c_void>> =
-        const { RefCell::new(Vec::new()) };
-}
-
-/// Claim a coro frame for DEFERRED raw reclamation: the crash drain will free it
-/// at unwind, and until then its storage is held so its address cannot be reused
-/// mid-drain. A crash-cleanup escrow thunk that also owns this frame observes it
-/// as quarantined and skips its own (would-be double) free.
-// KEEP(wasm32): called from `drain_active_coroutine_frames_excluding`, whose
-// only caller `reclaim_active_coroutine_frames_excluding` is
-// `#[cfg(not(target_arch = "wasm32"))]` — the native crash-drain path taken
-// after the scheduler catches a language unwind. This module is ungated, so wasm32 is
-// the only build where the drain has no entry point. Deleting it reopens the
-// same-drain ABA / tcache double-free closed by the ownership guard
-// `crash-recovery-frame-owner-is-single-authority`).
-fn quarantine_reclaimed_frame(frame: *mut c_void) {
-    if frame.is_null() {
-        return;
-    }
-    CRASH_QUARANTINED_FRAMES.with(|frames| frames.borrow_mut().push(frame));
-}
-
-/// Whether `handle` is currently held by an active crash drain's deferred
-/// reclamation. `hew_cont_destroy` skips such a handle: the drain owns its single
-/// free, and a mid-execution abandoned frame's cleanup outline is not legal to
-/// re-enter. Membership only — the drain, not this check, releases the frame.
-fn frame_is_quarantined(handle: *mut c_void) -> bool {
-    if handle.is_null() {
-        return false;
-    }
-    CRASH_QUARANTINED_FRAMES.with(|frames| frames.borrow().contains(&handle))
-}
-
-/// Whether the crash-reclamation authority — not the ordinary destroy owner —
-/// owns `handle`'s frame.
-///
-/// A frame is crash-owned from the moment a language unwind abandons it
-/// mid-execution until the drain that reclaims it releases its storage:
-///
-///   * it still carries a live activation record on this worker's active-frame
-///     stack. `hew_cont_resume` (and the tracked ramp) push that record and pop
-///     it only on the normal return edge; an unwind out of the coroutine body
-///     deliberately leaves it standing so scheduler recovery can find the
-///     abandoned frame. Until the drain runs, that record IS the frame's owner.
-///   * or the drain has already claimed it and is holding its storage until it
-///     unwinds ([`CRASH_QUARANTINED_FRAMES`]).
-///
-/// Both states mean the same thing for [`hew_cont_destroy`]: the frame was
-/// abandoned between suspend points, so re-entering its suspend cleanup outline
-/// would re-release registrations its resume edge already released, and freeing
-/// it would race the drain's single free. The check is thread-local because a
-/// frame is only ever active on the worker that resumed it.
-fn frame_is_crash_owned(handle: *mut c_void) -> bool {
-    if handle.is_null() {
-        return false;
-    }
-    active_coroutine_contains(handle) || frame_is_quarantined(handle)
 }
 
 struct CrashCleanupDrainGuard;
@@ -347,22 +212,6 @@ pub(crate) fn abort_if_crash_cleanup_finalizer_trap(kind: &str) {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ActiveCoroutinePhase {
-    /// A newly allocated coroutine ramp is executing before returning a handle.
-    Ramp,
-    /// `hew_cont_resume` is driving the continuation body.
-    Resume,
-    /// `hew_cont_destroy` is driving a suspended frame's cleanup outline.
-    Destroy,
-}
-
-#[derive(Clone, Copy, Debug)]
-struct ActiveCoroutineFrame {
-    frame: *mut c_void,
-    phase: ActiveCoroutinePhase,
-}
-
 /// The outcome of polling a continuation, as a C-ABI tagged value.
 ///
 /// `repr(C)` + `repr(i32)` pin a stable two-state discriminant the codegen /
@@ -395,32 +244,6 @@ pub enum ResumePoll {
 /// via [`hew_cont_frame_free`].
 #[no_mangle]
 pub unsafe extern "C" fn hew_cont_frame_alloc(size: u64) -> *mut c_void {
-    // SAFETY: this is the untracked allocation entry point; the shared helper
-    // accepts any size and returns a frame requiring one matching free.
-    unsafe { allocate_frame(size, false) }
-}
-
-/// Allocate and activate a tracked continuation frame for a ramp.
-///
-/// Unlike [`hew_cont_frame_alloc`], this entry point marks the allocation as a
-/// real coroutine frame and pushes it onto the current thread's active-frame
-/// stack. Generated coroutine prologues use only this sibling. A normal ramp
-/// return calls [`hew_cont_frame_handoff`] immediately before returning the
-/// handle; a language unwind skips that handoff, leaving the frame positively
-/// identified for crash recovery.
-///
-/// # Safety
-///
-/// Same allocation contract as [`hew_cont_frame_alloc`]. The returned block,
-/// if non-null, must be handed off or reclaimed exactly once.
-#[no_mangle]
-pub unsafe extern "C" fn hew_cont_frame_alloc_tracked(size: u64) -> *mut c_void {
-    // SAFETY: the shared helper accepts any size and records successful tracked
-    // allocations on the current active stack.
-    unsafe { allocate_frame(size, true) }
-}
-
-unsafe fn allocate_frame(size: u64, tracked: bool) -> *mut c_void {
     if size == 0 {
         return ptr::null_mut();
     }
@@ -441,41 +264,12 @@ unsafe fn allocate_frame(size: u64, tracked: bool) -> *mut c_void {
     if base.is_null() {
         return ptr::null_mut();
     }
-    // Store the full block size and the optional tracked-coroutine marker in
-    // the header. `write_unaligned` is unconditionally sound (base is in fact
-    // FRAME_ALIGN-aligned, but this does not rely on the static alignment of a
-    // `*mut u8`).
-    // SAFETY: base points to at least FRAME_HEADER writable bytes that
-    // hew_alloc just handed out.
-    unsafe {
-        ptr::write_unaligned(base.cast::<u64>(), total as u64);
-        ptr::write_unaligned(
-            base.add(size_of::<u64>()).cast::<u64>(),
-            if tracked {
-                TRACKED_COROUTINE_FRAME_MAGIC
-            } else {
-                0
-            },
-        );
-        ptr::write_unaligned(
-            base.add(FRAME_CLEANUP_REGISTRY_OFFSET)
-                .cast::<*mut CrashCleanupRegistry>(),
-            ptr::null_mut(),
-        );
-    }
+    // SAFETY: the aligned allocation contains the size header and payload.
+    unsafe { ptr::write_unaligned(base.cast::<u64>(), total as u64) };
     crate::observe::record_coroutine_frame_alloc(size as u64);
     // SAFETY: the allocation is total = FRAME_HEADER + size bytes, so advancing
     // by FRAME_HEADER lands within the block with `size` usable bytes ahead.
-    let frame = unsafe { base.add(FRAME_HEADER).cast::<c_void>() };
-    if tracked {
-        ACTIVE_COROUTINE_FRAMES.with(|active| {
-            active.borrow_mut().push(ActiveCoroutineFrame {
-                frame,
-                phase: ActiveCoroutinePhase::Ramp,
-            });
-        });
-    }
-    frame
+    unsafe { base.add(FRAME_HEADER).cast::<c_void>() }
 }
 
 /// Release a frame previously returned by [`hew_cont_frame_alloc`].
@@ -494,101 +288,21 @@ pub unsafe extern "C" fn hew_cont_frame_free(frame: *mut c_void) {
     if frame.is_null() {
         return;
     }
-    remove_matching_active_frame(frame);
-    // SAFETY: caller guarantees `frame` is a live allocation from one of the
-    // frame allocator siblings.
-    unsafe { free_frame_allocation(frame) };
-}
-
-unsafe fn free_frame_allocation(frame: *mut c_void) {
     // SAFETY: frame came from hew_cont_frame_alloc as base + FRAME_HEADER, so
     // subtracting FRAME_HEADER recovers the original block base.
     let base = unsafe { frame.cast::<u8>().sub(FRAME_HEADER) };
     // SAFETY: the header at base holds the u64 block size written at alloc.
     // `read_unaligned` matches the `write_unaligned` at alloc time.
     let total = unsafe { ptr::read_unaligned(base.cast::<u64>()) };
-    // A normal `coro.destroy`/completion path must have disarmed every typed
-    // escrow before the frame reaches its raw allocation free.
-    // SAFETY: this validates that no live typed owner is being silently
-    // discarded, then releases only inactive escrow storage.
-    unsafe { discard_frame_crash_cleanup_registry(frame) };
     crate::observe::record_coroutine_frame_free(total.saturating_sub(FRAME_HEADER as u64));
     // SAFETY: base/total/FRAME_ALIGN are exactly the (ptr, size, align) triple
     // hew_alloc returned, so this is the symmetric free hew_dealloc requires.
     unsafe { hew_dealloc(base, total, FRAME_ALIGN as u64) };
 }
 
-unsafe fn frame_is_tracked(frame: *mut c_void) -> bool {
-    if frame.is_null() {
-        return false;
-    }
-    // SAFETY: callers supply a live frame allocation. Its header begins one
-    // FRAME_HEADER stride before the public frame pointer.
-    let base = unsafe { frame.cast::<u8>().sub(FRAME_HEADER) };
-    // SAFETY: the marker occupies the second u64 word in the 16-byte header.
-    unsafe {
-        ptr::read_unaligned(base.add(size_of::<u64>()).cast::<u64>())
-            == TRACKED_COROUTINE_FRAME_MAGIC
-    }
-}
-
-#[cfg(test)]
-pub(crate) fn frame_has_tracked_header_for_test(frame: *mut c_void) -> bool {
-    // SAFETY: test callers pass a live handle allocated by the continuation
-    // frame allocator; this counterfactual proves synthetic executor frames
-    // carry the private header before cross-worker resume probes it.
-    unsafe { frame_is_tracked(frame) }
-}
-
 #[cfg(test)]
 pub(crate) const fn frame_alignment_for_test() -> usize {
     FRAME_ALIGN
-}
-
-#[expect(
-    clippy::cast_ptr_alignment,
-    reason = "the allocator guarantees 16-byte base alignment and the registry word is at offset 16"
-)]
-unsafe fn frame_cleanup_registry_slot(frame: *mut c_void) -> *mut *mut CrashCleanupRegistry {
-    // SAFETY: every continuation frame returned by this module has a
-    // FRAME_HEADER-byte private prefix, and the registry word is within it.
-    let base = unsafe { frame.cast::<u8>().sub(FRAME_HEADER) };
-    // SAFETY: the offset names the third word in the private header.
-    unsafe {
-        base.add(FRAME_CLEANUP_REGISTRY_OFFSET)
-            .cast::<*mut CrashCleanupRegistry>()
-    }
-}
-
-#[cfg(test)]
-unsafe fn frame_cleanup_registry(frame: *mut c_void) -> *mut CrashCleanupRegistry {
-    // SAFETY: test callers supply a live frame allocation.
-    unsafe { ptr::read_unaligned(frame_cleanup_registry_slot(frame)) }
-}
-
-unsafe fn ensure_frame_cleanup_registry(frame: *mut c_void) -> *mut CrashCleanupRegistry {
-    // SAFETY: caller supplies a live tracked frame.
-    let slot = unsafe { frame_cleanup_registry_slot(frame) };
-    // SAFETY: initialized header word, as above.
-    let existing = unsafe { ptr::read_unaligned(slot) };
-    if !existing.is_null() {
-        return existing;
-    }
-    let registry = Box::into_raw(Box::new(CrashCleanupRegistry::default()));
-    // SAFETY: slot is the live frame's private registry header word.
-    unsafe { ptr::write_unaligned(slot, registry) };
-    registry
-}
-
-unsafe fn take_frame_cleanup_registry(frame: *mut c_void) -> *mut CrashCleanupRegistry {
-    // SAFETY: caller supplies a live frame from this allocator.
-    let slot = unsafe { frame_cleanup_registry_slot(frame) };
-    // SAFETY: read with respect to the frame's exclusive owner; no other worker
-    // may resume/destroy this frame concurrently.
-    let registry = unsafe { ptr::read_unaligned(slot) };
-    // SAFETY: the same exclusive ownership permits clearing the header word.
-    unsafe { ptr::write_unaligned(slot, ptr::null_mut()) };
-    registry
 }
 
 /// Run one arbitrary crash-cleanup callback without allowing its unwind to
@@ -614,12 +328,9 @@ unsafe fn free_crash_cleanup_entry(entry: *mut CrashCleanupEntry, run: bool) -> 
         // callback faults, it is never retried: resource finalizers are not
         // generally idempotent and may have completed a partial close.
         entry.run_state = CrashCleanupRunState::Running;
-        let cleanup_slot = match entry.storage {
-            CrashCleanupStorage::DirectFrame => entry.slot,
-            CrashCleanupStorage::Snapshot => entry.snapshot.cast(),
-        };
+        let cleanup_slot = entry.snapshot.cast();
         // SAFETY: codegen supplied the exact `void(ptr)` ElabDrop thunk for
-        // this live frame slot or ABI-aligned byte snapshot. It remains live
+        // this ABI-aligned byte snapshot. It remains live
         // throughout the call and the abandoned original will never be dropped.
         // A genuinely unwind-capable `C-unwind` callback (including the
         // Rust-authored test/plugin boundary) is quarantined here. Generated
@@ -680,7 +391,7 @@ unsafe fn free_crash_cleanup_registry(
         eprintln!("fatal: crash-cleanup drain nesting depth overflow");
         std::process::abort();
     };
-    // SAFETY: the registry was detached from its sole TLS/frame owner before
+    // SAFETY: the registry was detached from its sole TLS owner before
     // this reconstruction.
     let mut registry = unsafe { Box::from_raw(registry) };
     let mut entries = std::mem::take(&mut registry.entries);
@@ -698,51 +409,6 @@ unsafe fn free_crash_cleanup_registry(
     // and generated typed drop metadata to this drain.
     faulted |= unsafe { free_dispatch_state_snapshot(&mut registry, run_state) };
     faulted
-}
-
-unsafe fn discard_frame_crash_cleanup_registry(frame: *mut c_void) {
-    // SAFETY: caller supplies a live frame whose raw allocation is about to be
-    // freed through the ordinary MIR/coro.destroy authority.
-    let registry = unsafe { take_frame_cleanup_registry(frame) };
-    if registry.is_null() {
-        return;
-    }
-    // SAFETY: pointer came from Box::into_raw in ensure_frame_cleanup_registry.
-    let registry = unsafe { Box::from_raw(registry) };
-    if registry.entries.iter().any(|entry| {
-        entry.is_null() || {
-            // SAFETY: every non-null registry member is a live stable box until
-            // this function consumes it below.
-            unsafe { (**entry).active }
-        }
-    }) {
-        eprintln!(
-            "fatal: raw coroutine frame free attempted with an active typed crash-cleanup owner"
-        );
-        std::process::abort();
-    }
-    for entry in registry.entries {
-        // SAFETY: the fail-closed scan proved this entry inactive, so ordinary
-        // cleanup has already consumed/transferred the typed value. Discard
-        // only the non-owning escrow bytes.
-        let _ = unsafe { free_crash_cleanup_entry(entry, false) };
-    }
-}
-
-// KEEP(wasm32): same native crash-drain path as `quarantine_reclaimed_frame`;
-// this half discharges the frame's typed escrow owners before the storage is
-// released.
-unsafe fn run_frame_crash_cleanups(frame: *mut c_void) {
-    // Detach before running user/resource thunks so recursive runtime calls
-    // cannot observe a half-drained registry.
-    // SAFETY: crash recovery owns this abandoned live frame exclusively.
-    let registry = unsafe { take_frame_cleanup_registry(frame) };
-    if registry.is_null() {
-        return;
-    }
-    // SAFETY: detachment transferred the frame registry's sole authority;
-    // frame registries never carry actor-state escrow.
-    let _ = unsafe { free_crash_cleanup_registry(registry, true, false) };
 }
 
 fn crash_cleanup_ranges_overlap(
@@ -768,9 +434,6 @@ fn crash_cleanup_ranges_overlap(
 
 fn parse_crash_cleanup_storage(value: u32) -> Option<CrashCleanupStorage> {
     match value {
-        value if value == CrashCleanupStorage::DirectFrame as u32 => {
-            Some(CrashCleanupStorage::DirectFrame)
-        }
         value if value == CrashCleanupStorage::Snapshot as u32 => {
             Some(CrashCleanupStorage::Snapshot)
         }
@@ -783,82 +446,22 @@ fn parse_crash_cleanup_relocation(value: u32) -> Option<CrashCleanupRelocation> 
         value if value == CrashCleanupRelocation::Bitwise as u32 => {
             Some(CrashCleanupRelocation::Bitwise)
         }
-        value if value == CrashCleanupRelocation::FrameInterior as u32 => {
-            Some(CrashCleanupRelocation::FrameInterior)
-        }
         _ => None,
     }
 }
 
-fn validate_crash_cleanup_slot(
-    owner_frame: *mut c_void,
-    slot: *mut c_void,
-    size: u64,
-    align: u64,
-    storage: CrashCleanupStorage,
-    relocation: CrashCleanupRelocation,
-) -> bool {
+fn validate_crash_cleanup_slot(slot: *mut c_void, size: u64, align: u64) -> bool {
     let Ok(align_host) = usize::try_from(align) else {
         return false;
     };
-    if slot.is_null()
-        || size == 0
-        || align_host == 0
-        || !align_host.is_power_of_two()
-        || !(slot as usize).is_multiple_of(align_host)
-    {
-        return false;
-    }
-    if storage == CrashCleanupStorage::DirectFrame
-        && !active_frame_contains_range(owner_frame, slot, size)
-    {
-        return false;
-    }
-    if relocation == CrashCleanupRelocation::FrameInterior {
-        let Ok(size_host) = usize::try_from(size) else {
-            return false;
-        };
-        if size_host < size_of::<crate::trait_object::HewTraitObject>() {
-            return false;
-        }
-        // A FrameOwned trait-object stores `(data, vtable)`. The vtable prefix
-        // carries the complete concrete size/alignment; validating one byte
-        // would admit a pointee that straddles the frame boundary.
-        let words = slot.cast::<*mut c_void>();
-        // SAFETY: the fat-slot size check proves both pointer words readable,
-        // and `add(1)` remains within that checked slot.
-        let (data, vtable) = unsafe {
-            (
-                ptr::read_unaligned(words),
-                ptr::read_unaligned(words.add(1)).cast::<crate::trait_object::HewVtable>(),
-            )
-        };
-        if data.is_null() || vtable.is_null() {
-            return false;
-        }
-        // SAFETY: generated trait objects carry a codegen-emitted static vtable
-        // whose prefix has the runtime's repr(C) `(drop,size,align)` layout.
-        let (concrete_size, concrete_align) = unsafe { ((*vtable).size_of, (*vtable).align_of) };
-        if concrete_align == 0
-            || !concrete_align.is_power_of_two()
-            || !(data as usize).is_multiple_of(concrete_align)
-        {
-            return false;
-        }
-        let Ok(concrete_size) = u64::try_from(concrete_size) else {
-            return false;
-        };
-        if !active_frame_contains_range(owner_frame, data, concrete_size) {
-            return false;
-        }
-    }
-    true
+    !slot.is_null()
+        && size != 0
+        && align_host != 0
+        && align_host.is_power_of_two()
+        && (slot as usize).is_multiple_of(align_host)
 }
 
 unsafe fn copy_crash_cleanup_snapshot(entry: &mut CrashCleanupEntry, slot: *mut c_void) -> bool {
-    if entry.storage != CrashCleanupStorage::Snapshot {
-        return true;
-    }
     let Ok(align_host) = usize::try_from(entry.align) else {
         return false;
     };
@@ -896,20 +499,19 @@ unsafe fn copy_crash_cleanup_snapshot(entry: &mut CrashCleanupEntry, slot: *mut 
 
 /// Arm or reactivate one exact typed owner for native crash recovery.
 ///
-/// A zero `token` creates a stable entry on the active tracked frame. A
-/// non-zero token reactivates that same entry after reassignment without
-/// changing its first-activation order. `DirectFrame` entries point at a
-/// range-validated coroutine slot; `Snapshot` entries keep an ABI-aligned
-/// emergency copy of a synchronous helper's stack slot.
+/// A zero `token` creates a stable entry in the active dispatch scope. A
+/// non-zero token reactivates that entry after reassignment without changing
+/// its first-activation order. Each entry keeps an ABI-aligned emergency copy
+/// of a synchronous helper's stack slot.
 ///
-/// Returns zero only for a NEW arm when no tracked coroutine is active,
+/// Returns zero only for a new arm when no dispatch scope is active,
 /// [`CRASH_CLEANUP_ARM_FAILED`] for every hard error, or the stable token.
 ///
 /// # Safety
 ///
 /// `slot` must point to a live initialized value of the descriptor type
 /// represented by `size`, `align`, and `thunk`. A non-zero `token` must have
-/// been returned by an earlier arm of the currently active tracked frame and
+/// been returned by an earlier arm of the currently active dispatch scope and
 /// must not have been retired.
 #[no_mangle]
 pub unsafe extern "C" fn hew_cont_crash_cleanup_arm(
@@ -921,7 +523,7 @@ pub unsafe extern "C" fn hew_cont_crash_cleanup_arm(
     storage: u32,
     relocation: u32,
 ) -> u64 {
-    let Some((registry, owner_frame)) = current_crash_cleanup_registry() else {
+    let Some(registry) = active_dispatch_cleanup_registry() else {
         return if token == 0 {
             0
         } else {
@@ -935,10 +537,7 @@ pub unsafe extern "C" fn hew_cont_crash_cleanup_arm(
     ) else {
         return CRASH_CLEANUP_ARM_FAILED;
     };
-    if align == 0
-        || !align.is_power_of_two()
-        || !validate_crash_cleanup_slot(owner_frame, slot, size, align, storage, relocation)
-    {
+    if align == 0 || !align.is_power_of_two() || !validate_crash_cleanup_slot(slot, size, align) {
         return CRASH_CLEANUP_ARM_FAILED;
     }
 
@@ -977,7 +576,6 @@ pub unsafe extern "C" fn hew_cont_crash_cleanup_arm(
         // owner frame.
         let entry = unsafe { &mut *entry };
         if entry.owner_registry != ptr::from_mut(registry)
-            || entry.owner_frame != owner_frame
             || entry.active
             || entry.slot != slot
             || entry.size != size
@@ -1007,7 +605,6 @@ pub unsafe extern "C" fn hew_cont_crash_cleanup_arm(
     let mut boxed = Box::new(CrashCleanupEntry {
         token,
         owner_registry: ptr::from_mut(registry),
-        owner_frame,
         slot,
         snapshot: ptr::null_mut(),
         size,
@@ -1036,7 +633,7 @@ pub unsafe extern "C" fn hew_cont_crash_cleanup_arm(
 /// # Safety
 ///
 /// A non-zero `token` must have been returned by
-/// [`hew_cont_crash_cleanup_arm`] for the currently active tracked frame and
+/// [`hew_cont_crash_cleanup_arm`] for the currently active dispatch scope and
 /// must still name an active, unretired entry.
 #[no_mangle]
 pub unsafe extern "C" fn hew_cont_crash_cleanup_deactivate(token: u64) -> bool {
@@ -1046,7 +643,7 @@ pub unsafe extern "C" fn hew_cont_crash_cleanup_deactivate(token: u64) -> bool {
     if token == CRASH_CLEANUP_ARM_FAILED {
         return false;
     }
-    let Some((registry, owner_frame)) = current_crash_cleanup_registry() else {
+    let Some(registry) = active_dispatch_cleanup_registry() else {
         return false;
     };
     // Resolve the process-unique generation through the live owner registry.
@@ -1062,7 +659,7 @@ pub unsafe extern "C" fn hew_cont_crash_cleanup_deactivate(token: u64) -> bool {
     };
     // SAFETY: registry membership proves a live stable token.
     let entry = unsafe { &mut *entry };
-    if entry.owner_registry != registry || entry.owner_frame != owner_frame || !entry.active {
+    if entry.owner_registry != registry || !entry.active {
         return false;
     }
     entry.active = false;
@@ -1074,7 +671,7 @@ pub unsafe extern "C" fn hew_cont_crash_cleanup_deactivate(token: u64) -> bool {
 /// # Safety
 ///
 /// A non-zero `token` must have been returned by
-/// [`hew_cont_crash_cleanup_arm`] for the currently active tracked frame and
+/// [`hew_cont_crash_cleanup_arm`] for the currently active dispatch scope and
 /// must not already have been retired.
 #[no_mangle]
 pub unsafe extern "C" fn hew_cont_crash_cleanup_retire(token: u64) -> bool {
@@ -1084,18 +681,14 @@ pub unsafe extern "C" fn hew_cont_crash_cleanup_retire(token: u64) -> bool {
     if token == CRASH_CLEANUP_ARM_FAILED {
         return false;
     }
-    let Some((registry, owner_frame)) = current_crash_cleanup_registry() else {
+    let Some(registry) = active_dispatch_cleanup_registry() else {
         return false;
     };
-    // SAFETY: frame lifecycle excludes concurrent mutation.
+    // SAFETY: the dispatch scope excludes concurrent registry mutation.
     let entries = unsafe { &mut (*registry).entries };
     let Some(index) = entries.iter().position(|entry| {
         // SAFETY: all registry members are live stable boxes.
-        unsafe {
-            (**entry).token == token
-                && (**entry).owner_registry == registry
-                && (**entry).owner_frame == owner_frame
-        }
+        unsafe { (**entry).token == token && (**entry).owner_registry == registry }
     }) else {
         return false;
     };
@@ -1110,19 +703,6 @@ fn active_dispatch_cleanup_registry() -> Option<*mut CrashCleanupRegistry> {
         return None;
     }
     DISPATCH_CRASH_CLEANUP_SCOPES.with(|scopes| scopes.borrow().last().copied())
-}
-
-fn current_crash_cleanup_registry() -> Option<(*mut CrashCleanupRegistry, *mut c_void)> {
-    if crash_cleanup_drain_active() {
-        return None;
-    }
-    if let Some(frame) = active_top_tracked_frame() {
-        // SAFETY: the tracked frame is live and exclusively executing. Lazily
-        // allocate its registry exactly as the historical frame-only path did.
-        let registry = unsafe { ensure_frame_cleanup_registry(frame) };
-        return Some((registry, frame));
-    }
-    active_dispatch_cleanup_registry().map(|registry| (registry, ptr::null_mut()))
 }
 
 /// Open one cooperative scheduler dispatch crash domain.
@@ -1498,7 +1078,7 @@ pub unsafe extern "C" fn hew_dispatch_state_cleanup_prepare_transfer(
     if unsafe { !(*state_registry).state_finalizer_critical } {
         return false;
     }
-    let Some((registry, owner_frame)) = current_crash_cleanup_registry() else {
+    let Some(registry) = active_dispatch_cleanup_registry() else {
         return false;
     };
     // SAFETY: the executing generated code exclusively owns its current
@@ -1513,7 +1093,6 @@ pub unsafe extern "C" fn hew_dispatch_state_cleanup_prepare_transfer(
     // SAFETY: membership above proves the stable entry remains live.
     let entry = unsafe { &mut *entry };
     if entry.owner_registry != registry
-        || entry.owner_frame != owner_frame
         || !entry.active
         || entry.slot != owner_source
         || usize::try_from(entry.size).ok() != Some(size)
@@ -1539,227 +1118,6 @@ pub unsafe extern "C" fn hew_dispatch_state_cleanup_prepare_transfer(
     true
 }
 
-/// Return the currently executing positively tracked coroutine frame.
-///
-/// Individual typed slots are range-checked when they are armed.
-pub(crate) fn active_top_tracked_frame() -> Option<*mut c_void> {
-    ACTIVE_COROUTINE_FRAMES.with(|active| {
-        let frame = active.borrow().last()?.frame;
-        // SAFETY: the frame came from the live active-frame stack.
-        unsafe { frame_is_tracked(frame) }.then_some(frame)
-    })
-}
-
-/// Check that a positively tracked active frame still contains a registered
-/// cleanup range. Crash unwind uses this as a debug-time invariant before
-/// invoking a typed drop thunk.
-pub(crate) fn active_frame_contains_range(
-    frame: *mut c_void,
-    slot: *mut c_void,
-    size: u64,
-) -> bool {
-    let is_active = ACTIVE_COROUTINE_FRAMES
-        .with(|active| active.borrow().iter().any(|record| record.frame == frame));
-    is_active && tracked_frame_contains_range(frame, slot, size)
-}
-
-fn tracked_frame_contains_range(frame: *mut c_void, slot: *mut c_void, size: u64) -> bool {
-    if slot.is_null() {
-        return false;
-    }
-    let Ok(size) = usize::try_from(size) else {
-        return false;
-    };
-    // SAFETY: callers source `frame` from the live active-frame stack. The
-    // marker is rechecked so only positively tracked coroutine allocations
-    // qualify.
-    if !unsafe { frame_is_tracked(frame) } {
-        return false;
-    }
-
-    // SAFETY: a tracked frame has the allocator header immediately before its
-    // public payload pointer.
-    let base = unsafe { frame.cast::<u8>().sub(FRAME_HEADER) };
-    // SAFETY: the first header word is the allocation size written by
-    // `allocate_frame`.
-    let total = unsafe { ptr::read_unaligned(base.cast::<u64>()) };
-    let Ok(total) = usize::try_from(total) else {
-        return false;
-    };
-    let Some(payload_size) = total.checked_sub(FRAME_HEADER) else {
-        return false;
-    };
-    let frame_start = frame as usize;
-    let Some(frame_end) = frame_start.checked_add(payload_size) else {
-        return false;
-    };
-    let slot_start = slot as usize;
-    let Some(slot_end) = slot_start.checked_add(size) else {
-        return false;
-    };
-    slot_start >= frame_start && slot_end <= frame_end
-}
-
-fn active_coroutine_enter_phase(frame: *mut c_void, phase: ActiveCoroutinePhase) -> bool {
-    // SAFETY: this helper is called only with a live continuation handle. The
-    // marker gates admission so untracked companion/environment allocations can
-    // never enter the raw crash-reclamation authority.
-    if frame.is_null() || !unsafe { frame_is_tracked(frame) } {
-        return false;
-    }
-    ACTIVE_COROUTINE_FRAMES.with(|active| {
-        active
-            .borrow_mut()
-            .push(ActiveCoroutineFrame { frame, phase });
-    });
-    true
-}
-
-fn active_coroutine_enter(frame: *mut c_void) -> bool {
-    active_coroutine_enter_phase(frame, ActiveCoroutinePhase::Resume)
-}
-
-fn active_coroutine_leave(frame: *mut c_void, phase: ActiveCoroutinePhase) -> bool {
-    if frame.is_null() {
-        return false;
-    }
-    ACTIVE_COROUTINE_FRAMES.with(|active| {
-        let mut active = active.borrow_mut();
-        if !active
-            .last()
-            .is_some_and(|record| record.frame == frame && record.phase == phase)
-        {
-            return false;
-        }
-        active.pop();
-        true
-    })
-}
-
-fn active_coroutine_contains(frame: *mut c_void) -> bool {
-    ACTIVE_COROUTINE_FRAMES
-        .with(|active| active.borrow().iter().any(|record| record.frame == frame))
-}
-
-fn remove_matching_active_frame(frame: *mut c_void) -> bool {
-    if frame.is_null() {
-        return false;
-    }
-    ACTIVE_COROUTINE_FRAMES.with(|active| {
-        let mut active = active.borrow_mut();
-        let Some(index) = active
-            .iter()
-            .rposition(|candidate| candidate.frame == frame)
-        else {
-            return false;
-        };
-        active.remove(index);
-        true
-    })
-}
-
-/// Transfer a normally returned tracked ramp frame to its caller.
-#[no_mangle]
-pub extern "C" fn hew_cont_frame_handoff(frame: *mut c_void) {
-    let _ = active_coroutine_leave(frame, ActiveCoroutinePhase::Ramp);
-}
-
-unsafe fn drain_active_coroutine_frames_excluding(
-    excluded: *mut c_void,
-    mut reclaim: impl FnMut(*mut c_void),
-) -> usize {
-    // Transfer the abandoned activation stack out of TLS before invoking any
-    // typed thunk. Resource close functions are arbitrary generated code and
-    // may allocate, hand off, destroy, or even crash-recover another tracked
-    // continuation; holding RefCell::borrow_mut across that re-entry would
-    // panic before the cleanup authority could finish.
-    let mut abandoned =
-        ACTIVE_COROUTINE_FRAMES.with(|active| std::mem::take(&mut *active.borrow_mut()));
-    let mut retained_excluded = None;
-    let mut reclaimed = 0;
-    // A nested drain (a finalizer that crash-recovers another continuation) only
-    // releases the frames IT quarantined. Snapshot the quarantine depth on entry;
-    // frames held below this mark belong to an outer drain and stay held (and
-    // their addresses reserved) until that drain unwinds.
-    let quarantine_base = CRASH_QUARANTINED_FRAMES.with(|frames| frames.borrow().len());
-    while let Some(record) = abandoned.pop() {
-        let frame = record.frame;
-        // Typed escrow is independent of raw-allocation ownership. Even an
-        // excluded resumed root has lost its running stack and therefore
-        // must discharge its typed owners now; only its empty allocation
-        // remains reserved for the actor-slot authority.
-        // SAFETY: every active record names a live tracked frame abandoned
-        // by the recovered native stack.
-        unsafe { run_frame_crash_cleanups(frame) };
-        if !excluded.is_null() && frame == excluded && retained_excluded.is_none() {
-            retained_excluded = Some(record);
-            continue;
-        }
-        // SAFETY: only the tracked allocator and tracked resume-enter path
-        // can populate this stack. Re-check the header marker before raw
-        // reclamation so corrupted/mismatched records fail closed.
-        if unsafe { frame_is_tracked(frame) } {
-            // HOLD the frame — do NOT free it here. Quarantining before running
-            // any further escrow thunk keeps its address reserved for the whole
-            // drain, so a later thunk's allocation cannot reuse it and no
-            // concurrent `hew_cont_destroy` can alias its record (the ABA a
-            // record-then-free reconciliation would leave open). A parent pump
-            // escrow that reaches this child handle skips its own destroy; the
-            // deferred release below is the child's single free.
-            quarantine_reclaimed_frame(frame);
-            reclaimed += 1;
-        }
-    }
-    if let Some(record) = retained_excluded {
-        ACTIVE_COROUTINE_FRAMES.with(|active| {
-            // Reentrant thunks may have established newer live activations.
-            // The retained scheduler-owned root predates them, so restore it
-            // at the bottom rather than claiming the top-of-stack position.
-            active.borrow_mut().insert(0, record);
-        });
-    }
-    // Every escrow thunk for this drain has now run, so no destroy can still
-    // alias a held address. Release the frames THIS drain quarantined, exactly
-    // once each and in the SAME LIFO order they were claimed (nested before its
-    // parent — the raw-reclaim contract). Detach our slice first so the set
-    // borrow is not held across `reclaim`; both an escrow-consumed frame (its
-    // destroy was skipped) and an unmatched frame are freed identically here —
-    // the drain is their sole free authority. A nested drain has already
-    // released and truncated its own frames above `quarantine_base`, so this
-    // detaches exactly the frames this drain claimed.
-    let deferred =
-        CRASH_QUARANTINED_FRAMES.with(|frames| frames.borrow_mut().split_off(quarantine_base));
-    for frame in deferred {
-        reclaim(frame);
-    }
-    reclaimed
-}
-
-/// Raw-reclaim every crash-abandoned active coroutine except one optional
-/// scheduler-owned root.
-///
-/// Frames are drained in LIFO order. This never calls `coro.destroy`: each
-/// reclaimed frame was RUNNING when signal recovery killed its native stack,
-/// so its suspend cleanup outline is not legal to re-enter. The operation frees
-/// only positively tracked coroutine allocations and therefore makes no claim
-/// to run typed destructors for arbitrary frame-owned values.
-///
-/// `excluded` is used by resumed-handler recovery: the actor slot remains the
-/// sole owner of that root allocation, and `abandon_resuming_after_crash` frees
-/// it after nested frames have been drained. Typed field drops run separately
-/// before this raw drain.
-pub(crate) unsafe fn reclaim_active_coroutine_frames_excluding(excluded: *mut c_void) -> usize {
-    // SAFETY: scheduler calls this only after catch_unwind has retired every
-    // non-excluded active frame on this thread.
-    unsafe {
-        drain_active_coroutine_frames_excluding(excluded, |frame| {
-            // SAFETY: the drain admitted only a positively tracked live frame
-            // whose synchronous execution was abandoned by crash recovery.
-            free_frame_allocation(frame);
-        })
-    }
-}
-
 /// Resume a suspended continuation through its frame entry.
 ///
 /// Runs the coroutine body from its current suspend point to the next suspend
@@ -1769,8 +1127,9 @@ pub(crate) unsafe fn reclaim_active_coroutine_frames_excluding(excluded: *mut c_
 ///
 /// # Safety
 ///
-/// `handle` must be a live frame from [`hew_cont_frame_alloc`] with an
-/// initialized [`CoroFramePrefix`], currently suspended and not completed.
+/// `handle` must be a live LLVM switched-resume frame with an initialized
+/// [`CoroFramePrefix`], currently suspended and not completed. Its storage may
+/// be supplied by the caller when LLVM elides the heap allocation.
 /// Resuming a completed or destroyed continuation is undefined behaviour the
 /// compiler's emission and the executor's [`ResumePoll`] discipline prevent.
 #[no_mangle]
@@ -1778,15 +1137,8 @@ pub unsafe extern "C-unwind" fn hew_cont_resume(handle: *mut c_void) {
     if handle.is_null() {
         return;
     }
-    let tracked = active_coroutine_enter(handle);
     // SAFETY: handle is a live, suspended coroutine frame per the fn contract.
     unsafe { coro_resume(handle) };
-    if tracked {
-        debug_assert!(
-            active_coroutine_leave(handle, ActiveCoroutinePhase::Resume),
-            "tracked coroutine resume returned with a mismatched active-frame stack"
-        );
-    }
 }
 
 /// Report whether a continuation has reached its terminal state.
@@ -1857,33 +1209,8 @@ pub unsafe extern "C-unwind" fn hew_cont_destroy(handle: *mut c_void) {
     if handle.is_null() {
         return;
     }
-    // Exactly-once reconciliation with the crash-reclamation authority. A frame
-    // a language unwind abandoned between suspend points belongs to that
-    // authority for the whole recovery: from the abandoned activation record
-    // `hew_cont_resume` left standing, through the drain's quarantine, to the
-    // drain's single free. Both a generated cleanup landing pad running ON the
-    // unwind edge (a `receive gen fn` pump dropping its faulted producer
-    // generator) and a crash-cleanup escrow thunk running after the catch reach
-    // this destroy for such a frame; neither may re-enter its cleanup outline or
-    // free it. Skip — do not consume the record; the drain, not this call,
-    // releases the frame.
-    if frame_is_crash_owned(handle) {
-        return;
-    }
-    // Make the frame registry discoverable to cleanup-outline deactivate /
-    // retire calls. The outline's eventual `hew_cont_frame_free` removes this
-    // active record; a hand-built/no-free destroy thunk falls back to the
-    // pointer-only leave below.
-    let tracked = active_coroutine_enter_phase(handle, ActiveCoroutinePhase::Destroy);
     // SAFETY: handle is a live, not-yet-destroyed coroutine frame per contract.
     unsafe { coro_destroy(handle) };
-    if tracked {
-        let left = active_coroutine_leave(handle, ActiveCoroutinePhase::Destroy);
-        debug_assert!(
-            left || !active_coroutine_contains(handle),
-            "tracked coroutine destroy returned with a mismatched active-frame stack"
-        );
-    }
 }
 
 /// Destroy a generator's coro **companion** — the heap block a `Generator<Y, R>`
@@ -2022,8 +1349,8 @@ pub unsafe extern "C-unwind" fn hew_gen_coro_destroy(companion: *mut c_void) {
     unsafe { hew_cont_frame_free(companion) };
 }
 
-/// The continuation prefix shared by generated bodies and runtime drivers.
-/// Codegen checks its offsets before emitting the target-specific frame.
+/// The prefix of LLVM switched-resume coroutine frames.
+/// The runtime reads the null resume entry to detect completion.
 #[repr(C)]
 #[derive(Debug)]
 pub struct CoroFramePrefix {
@@ -2036,6 +1363,7 @@ pub struct CoroFramePrefix {
 /// # Safety
 /// `handle` is a live, suspended coroutine frame (slot 0 = resume fn).
 #[inline]
+#[cfg(test)]
 unsafe fn coro_resume(handle: *mut c_void) {
     let prefix = handle.cast::<CoroFramePrefix>();
     // SAFETY: the live frame holds its resume entry at offset zero.
@@ -2050,6 +1378,7 @@ unsafe fn coro_resume(handle: *mut c_void) {
 /// # Safety
 /// `handle` is a live, not-yet-destroyed coroutine frame (slot 1 = destroy fn).
 #[inline]
+#[cfg(test)]
 unsafe fn coro_destroy(handle: *mut c_void) {
     let prefix = handle.cast::<CoroFramePrefix>();
     // SAFETY: the live prefix holds its exact destroy entry.
@@ -2057,6 +1386,28 @@ unsafe fn coro_destroy(handle: *mut c_void) {
         // SAFETY: the caller owns this live frame exclusively.
         unsafe { destroy(handle) }
     }
+}
+
+#[cfg(not(test))]
+unsafe extern "C-unwind" {
+    fn hew_llvm_coro_resume(handle: *mut c_void);
+    fn hew_llvm_coro_destroy(handle: *mut c_void);
+}
+
+// Rust-only fixtures above use C callbacks. Compiled-program acceptance uses
+// these LLVM operations, which call real coroutine outlines with fastcc.
+#[cfg(not(test))]
+#[inline]
+unsafe fn coro_resume(handle: *mut c_void) {
+    // SAFETY: the caller supplies a live suspended LLVM coroutine.
+    unsafe { hew_llvm_coro_resume(handle) };
+}
+
+#[cfg(not(test))]
+#[inline]
+unsafe fn coro_destroy(handle: *mut c_void) {
+    // SAFETY: the caller exclusively owns this suspended LLVM coroutine.
+    unsafe { hew_llvm_coro_destroy(handle) };
 }
 
 /// A continuation is complete when its resume entry is null.
@@ -2081,8 +1432,6 @@ mod tests {
         static CRASH_CLEANUP_PANIC_PAYLOAD_DROPS: Cell<u64> = const { Cell::new(0) };
     }
 
-    static MIGRATED_CRASH_CLEANUP_VALUE: AtomicU64 = AtomicU64::new(0);
-
     unsafe extern "C-unwind" fn record_u64_cleanup(slot: *mut c_void) {
         // SAFETY: these tests register only initialized u64 slots/snapshots.
         let value = unsafe { ptr::read_unaligned(slot.cast::<u64>()) };
@@ -2092,25 +1441,6 @@ mod tests {
     unsafe extern "C" fn record_u64_state_cleanup(slot: *mut c_void) {
         // SAFETY: state-cleanup tests use the same initialized u64 contract.
         unsafe { record_u64_cleanup(slot) };
-    }
-
-    unsafe extern "C-unwind" fn record_migrated_u64_cleanup(slot: *mut c_void) {
-        // SAFETY: the migration test registers one initialized u64 frame slot.
-        let value = unsafe { ptr::read_unaligned(slot.cast::<u64>()) };
-        MIGRATED_CRASH_CLEANUP_VALUE.store(value, Ordering::Release);
-    }
-
-    unsafe extern "C-unwind" fn record_u64_cleanup_with_cont_reentry(slot: *mut c_void) {
-        // SAFETY: same initialized u64 contract as record_u64_cleanup.
-        unsafe { record_u64_cleanup(slot) };
-        // Exercise every TLS mutation that used to collide with the outer
-        // drain's RefCell::borrow_mut: tracked allocation pushes, handoff pops,
-        // and ordinary free checks/removes a matching activation.
-        let nested = hew_cont_frame_alloc_tracked(16);
-        assert!(!nested.is_null());
-        hew_cont_frame_handoff(nested);
-        // SAFETY: nested is a live allocation from the tracked allocator.
-        unsafe { hew_cont_frame_free(nested) };
     }
 
     struct CleanupPanicPayload {
@@ -2128,243 +1458,6 @@ mod tests {
 
     fn take_crash_cleanup_panic_payload_drops() -> u64 {
         CRASH_CLEANUP_PANIC_PAYLOAD_DROPS.with(|drops| drops.replace(0))
-    }
-
-    // ── Crash-drain / escrow exactly-once reconciliation (#2865) ────────────
-
-    #[test]
-    fn quarantined_frame_is_held_as_membership() {
-        // Quarantining is membership, not consume-once: a held frame stays a
-        // member on repeat checks (the drain, not a reader, releases it). Clean
-        // up the manual entries at the end so no stale record leaks into the
-        // next test's drain.
-        let a = 0x1000 as *mut c_void;
-        let b = 0x2000 as *mut c_void;
-        assert!(!frame_is_quarantined(a));
-        quarantine_reclaimed_frame(a);
-        quarantine_reclaimed_frame(b);
-        assert!(frame_is_quarantined(a));
-        assert!(frame_is_quarantined(a), "membership does not consume");
-        assert!(frame_is_quarantined(b));
-        // A null frame is never recorded and never matches.
-        quarantine_reclaimed_frame(ptr::null_mut());
-        assert!(!frame_is_quarantined(ptr::null_mut()));
-        CRASH_QUARANTINED_FRAMES.with(|frames| frames.borrow_mut().clear());
-    }
-
-    #[test]
-    fn hew_cont_destroy_skips_a_quarantined_frame() {
-        // The crash-recovery contract the fix reconciles: the generator's coro
-        // frame is held by the active drain (quarantined), then the pump's
-        // crash-cleanup escrow reaches the SAME frame through `hew_cont_destroy`.
-        // Destroy must SKIP — it must not re-enter the abandoned frame's cleanup
-        // outline or free it (the drain owns the single free). A real, live
-        // tracked frame stands in so the skip's contract is observable: a
-        // non-skipping destroy would drive `coro_destroy` into the frame and free
-        // it; the skip leaves it intact and still held.
-        // SAFETY: the tracked allocator accepts any size and returns a live
-        // frame requiring one matching free (performed at the end of the test).
-        let frame = unsafe { hew_cont_frame_alloc_tracked(64) };
-        assert!(!frame.is_null());
-        let sentinel: u64 = 0xA5A5_5A5A_1234_5678;
-        // SAFETY: `frame` has 64 writable bytes.
-        unsafe { ptr::write(frame.cast::<u64>(), sentinel) };
-
-        quarantine_reclaimed_frame(frame);
-        // SAFETY: the reconciliation guard fires before any dereference of the
-        // handle, so this is sound even though `frame` is not a real coroutine.
-        unsafe { hew_cont_destroy(frame) };
-
-        // The skip left the frame allocated, its bytes intact, and still held
-        // (the drain, not the destroy, would release it).
-        assert!(
-            frame_is_quarantined(frame),
-            "skip must not release the frame"
-        );
-        // SAFETY: the skip left the frame allocated and its bytes intact.
-        assert_eq!(unsafe { ptr::read(frame.cast::<u64>()) }, sentinel);
-
-        // Release the manual quarantine entry and free the frame exactly once.
-        CRASH_QUARANTINED_FRAMES.with(|frames| frames.borrow_mut().clear());
-        // SAFETY: `frame` is still the live tracked allocation; free it once.
-        unsafe { hew_cont_frame_free(frame) };
-    }
-
-    // Stand-in for a `CoroSplit` `.destroy` outline: it records that it was
-    // entered and frees the frame, exactly as the real outline's trailing
-    // `coro.free` does. `hew_cont_destroy_skips_a_frame_abandoned_mid_execution`
-    // asserts it is never entered for a crash-owned frame.
-    static ABANDONED_OUTLINE_ENTERED: std::sync::atomic::AtomicBool =
-        std::sync::atomic::AtomicBool::new(false);
-
-    unsafe extern "C-unwind" fn abandoned_frame_destroy_outline(frame: *mut c_void) {
-        ABANDONED_OUTLINE_ENTERED.store(true, std::sync::atomic::Ordering::SeqCst);
-        // SAFETY: the outline's trailing `coro.free` releases the frame the
-        // destroy was driven into; mirroring it makes a non-skipping destroy
-        // observable as the frame actually going away.
-        unsafe { hew_cont_frame_free(frame) };
-    }
-
-    #[test]
-    fn hew_cont_destroy_skips_a_frame_abandoned_mid_execution() {
-        // #2865, the running-producer leg. A `receive gen fn` producer that
-        // traps mid-stream is abandoned by the language unwind while its
-        // activation record is still standing (`hew_cont_resume` pops only on
-        // the normal return edge). On that same unwind a generated cleanup
-        // landing pad drops the pump's `Generator` value and reaches this frame
-        // through `hew_cont_destroy` — BEFORE the scheduler catches the unwind,
-        // so before the drain's quarantine exists. Destroy must still skip: the
-        // crash-reclamation authority owns the frame from the abandoned record
-        // onward. A non-skipping destroy drives the abandoned frame's cleanup
-        // outline, whose resume edge already released its registrations, frees
-        // the frame, and leaves the stale record naming freed storage for the
-        // drain to read back as a live registry pointer.
-        ABANDONED_OUTLINE_ENTERED.store(false, std::sync::atomic::Ordering::SeqCst);
-        // SAFETY: the tracked allocator returns a live frame needing one
-        // matching free, performed at the end of the test.
-        let frame = unsafe { hew_cont_frame_alloc_tracked(64) };
-        assert!(!frame.is_null());
-        // Plant the destroy fn-ptr where `CoroSplit` stores it (frame slot 1),
-        // so a non-skipping destroy really enters an outline.
-        // SAFETY: `frame` has 64 writable bytes and the prefix is its first two
-        // pointer-sized slots.
-        unsafe {
-            ptr::write(
-                frame.cast::<CoroFramePrefix>(),
-                CoroFramePrefix {
-                    resume: None,
-                    destroy: Some(abandoned_frame_destroy_outline),
-                },
-            );
-        }
-        // The ramp record `hew_cont_frame_alloc_tracked` pushed stands in for
-        // the abandoned activation an unwound resume leaves behind.
-        assert!(active_coroutine_contains(frame));
-        assert!(!frame_is_quarantined(frame), "no drain has claimed it yet");
-
-        // SAFETY: the reconciliation guard fires before any dereference of the
-        // handle; if it did not, the planted outline is a real callable.
-        unsafe { hew_cont_destroy(frame) };
-
-        assert!(
-            !ABANDONED_OUTLINE_ENTERED.load(std::sync::atomic::Ordering::SeqCst),
-            "destroy must not re-enter an abandoned frame's cleanup outline"
-        );
-        // The skip left the record untouched, so the drain still finds exactly
-        // one frame to reclaim — and no freed storage under a live record.
-        assert_eq!(
-            active_frames().iter().filter(|f| **f == frame).count(),
-            1,
-            "skip must leave the abandoned activation record exactly as it was"
-        );
-
-        // Counterfactual: with no activation record and no quarantine, the same
-        // handle is an ordinary destroy the guard must NOT refuse — that leg is
-        // the suspended-teardown twin, and refusing it would leak every
-        // generator whose producer parked. The guard is the record, not the
-        // pointer.
-        assert!(remove_matching_active_frame(frame));
-        assert!(!frame_is_crash_owned(frame));
-        // SAFETY: `frame` is the live tracked allocation and no record names it;
-        // this destroy takes the ordinary path into the planted outline, which
-        // frees it exactly once.
-        unsafe { hew_cont_destroy(frame) };
-        assert!(
-            ABANDONED_OUTLINE_ENTERED.load(std::sync::atomic::Ordering::SeqCst),
-            "an unclaimed frame must still reach its cleanup outline"
-        );
-    }
-
-    // ABA regression (#2865): between a reclaimed frame's
-    // record and the owning escrow consuming it, other crash-cleanup thunks run
-    // generated code that CAN allocate. A record-then-free reconciliation frees
-    // the frame while its record is live, so the allocator can hand the freed
-    // address back and a later destroy aliases the stale record → leak + UAF.
-    // These statics let one such cleanup thunk observe whether the address of a
-    // frame the drain is holding gets reused mid-drain.
-    // Native-only: exercises the crash-drain reclaim path, which is
-    // `#[cfg(not(target_arch = "wasm32"))]` (wasm is single-threaded and has no
-    // cross-frame crash drain).
-    #[cfg(not(target_arch = "wasm32"))]
-    static ABA_HELD_FRAME: std::sync::atomic::AtomicPtr<c_void> =
-        std::sync::atomic::AtomicPtr::new(ptr::null_mut());
-    #[cfg(not(target_arch = "wasm32"))]
-    static ABA_THUNK_ALLOC: std::sync::atomic::AtomicPtr<c_void> =
-        std::sync::atomic::AtomicPtr::new(ptr::null_mut());
-    #[cfg(not(target_arch = "wasm32"))]
-    const ABA_FRAME_SIZE: u64 = 128;
-
-    #[cfg(not(target_arch = "wasm32"))]
-    unsafe extern "C-unwind" fn aba_alias_probe_cleanup(_slot: *mut c_void) {
-        // Runs from the PARENT frame's crash cleanup DURING the drain, after the
-        // child frame was claimed (held). Allocate a frame of the child's exact
-        // size: if the drain had already freed the child, this allocation would
-        // reuse the child's address (the ABA). With the deferred-free fix the
-        // child is held, so its address is reserved and cannot come back.
-        // SAFETY: the untracked frame allocator is callable mid-drain (only
-        // cleanup REGISTRATION is refused while a drain is active).
-        let probe = unsafe { hew_cont_frame_alloc(ABA_FRAME_SIZE) };
-        ABA_THUNK_ALLOC.store(probe, Ordering::Release);
-        // SAFETY: `probe` is a live allocation from the untracked frame allocator.
-        unsafe { hew_cont_frame_free(probe) };
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    #[test]
-    fn crash_drain_holds_reclaimed_frame_so_a_cleanup_cannot_alias_it() {
-        ABA_HELD_FRAME.store(ptr::null_mut(), Ordering::Release);
-        ABA_THUNK_ALLOC.store(ptr::null_mut(), Ordering::Release);
-
-        // Parent first so it is drained AFTER the child (LIFO): the child is
-        // claimed/held before the parent's cleanup thunk runs. Arm on the parent
-        // while it is the active tracked frame.
-        // SAFETY: the tracked allocator returns a live frame; the arm targets it.
-        let parent = unsafe { hew_cont_frame_alloc_tracked(ABA_FRAME_SIZE) };
-        assert!(!parent.is_null());
-        let mut arm_slot = 0_u64;
-        // SAFETY: `arm_slot` is a live initialized u64 for the duration of arm;
-        // Snapshot storage copies it now and the thunk ignores the copy.
-        let token = unsafe {
-            hew_cont_crash_cleanup_arm(
-                0,
-                ptr::from_mut(&mut arm_slot).cast(),
-                size_of::<u64>() as u64,
-                align_of::<u64>() as u64,
-                Some(aba_alias_probe_cleanup),
-                CrashCleanupStorage::Snapshot as u32,
-                CrashCleanupRelocation::Bitwise as u32,
-            )
-        };
-        assert_ne!(token, 0, "arm must attach to the active parent frame");
-        assert_ne!(token, CRASH_CLEANUP_ARM_FAILED);
-
-        // Child on top: it is drained (and held) first, its address the one the
-        // parent's cleanup thunk must not be able to reuse.
-        // SAFETY: same tracked allocator contract.
-        let child = unsafe { hew_cont_frame_alloc_tracked(ABA_FRAME_SIZE) };
-        assert!(!child.is_null());
-        ABA_HELD_FRAME.store(child, Ordering::Release);
-
-        // Drive the exact crash-recovery path: raw-reclaim the abandoned frames.
-        // SAFETY: no live native stack references these frames in the test.
-        let reclaimed = unsafe { reclaim_active_coroutine_frames_excluding(ptr::null_mut()) };
-        assert_eq!(reclaimed, 2, "both abandoned frames are reclaimed");
-
-        // The parent's cleanup ran and allocated a probe frame. Because the child
-        // was HELD across the whole drain, the probe could not reuse the child's
-        // address — the ABA the review found is closed by construction.
-        let probe = ABA_THUNK_ALLOC.load(Ordering::Acquire);
-        assert!(
-            !probe.is_null(),
-            "cleanup thunk must have run and allocated"
-        );
-        assert_ne!(
-            probe, child,
-            "a held reclaimed frame's address must not be reusable mid-drain"
-        );
-        // The drain released everything it held: no residue survives it.
-        assert!(!frame_is_quarantined(child));
-        assert!(!frame_is_quarantined(parent));
     }
 
     unsafe extern "C-unwind" fn record_u64_cleanup_then_panic(slot: *mut c_void) {
@@ -2401,21 +1494,12 @@ mod tests {
         }
     }
 
-    unsafe extern "C" fn noop_dyn_drop(_data: *mut u8) {}
-
-    static U64_DYN_VTABLE: crate::trait_object::HewVtable = crate::trait_object::HewVtable {
-        drop_in_place: noop_dyn_drop,
-        size_of: size_of::<u64>(),
-        align_of: align_of::<u64>(),
-        value_layout: std::ptr::null(),
-    };
-
     fn take_crash_cleanup_test_drops() -> Vec<u64> {
         CRASH_CLEANUP_TEST_DROPS.with(|drops| std::mem::take(&mut *drops.borrow_mut()))
     }
 
     #[test]
-    fn crash_cleanup_new_arm_without_active_frame_is_benign() {
+    fn crash_cleanup_new_arm_without_dispatch_is_benign() {
         let mut value = 7_u64;
         // SAFETY: value is a live initialized u64 slot for the duration of arm.
         let token = unsafe {
@@ -2429,7 +1513,7 @@ mod tests {
                 CrashCleanupRelocation::Bitwise as u32,
             )
         };
-        assert_eq!(token, 0, "new arm outside a tracked frame is a no-op");
+        assert_eq!(token, 0, "new arm outside a dispatch scope is a no-op");
         // SAFETY: token zero is the documented benign no-op sibling.
         assert!(unsafe { hew_cont_crash_cleanup_deactivate(token) });
         // SAFETY: token zero is also the documented benign retire no-op.
@@ -2954,114 +2038,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn crash_cleanup_snapshot_reactivation_preserves_first_activation_order() {
-        // SAFETY: allocate one tracked frame, publish two stack snapshots, then
-        // transfer raw ownership through the test drain exactly once.
-        unsafe {
-            let frame = hew_cont_frame_alloc_tracked(64);
-            let mut older = 11_u64;
-            let mut newer = 22_u64;
-            let older_token = hew_cont_crash_cleanup_arm(
-                0,
-                ptr::from_mut(&mut older).cast(),
-                size_of::<u64>() as u64,
-                align_of::<u64>() as u64,
-                Some(record_u64_cleanup),
-                CrashCleanupStorage::Snapshot as u32,
-                CrashCleanupRelocation::Bitwise as u32,
-            );
-            let newer_token = hew_cont_crash_cleanup_arm(
-                0,
-                ptr::from_mut(&mut newer).cast(),
-                size_of::<u64>() as u64,
-                align_of::<u64>() as u64,
-                Some(record_u64_cleanup),
-                CrashCleanupStorage::Snapshot as u32,
-                CrashCleanupRelocation::Bitwise as u32,
-            );
-            assert_ne!(older_token, 0);
-            assert_ne!(newer_token, 0);
-            assert!(hew_cont_crash_cleanup_deactivate(older_token));
-            older = 33;
-            assert_eq!(
-                hew_cont_crash_cleanup_arm(
-                    older_token,
-                    ptr::from_mut(&mut older).cast(),
-                    size_of::<u64>() as u64,
-                    align_of::<u64>() as u64,
-                    Some(record_u64_cleanup),
-                    CrashCleanupStorage::Snapshot as u32,
-                    CrashCleanupRelocation::Bitwise as u32,
-                ),
-                older_token
-            );
-
-            let mut reclaimed = Vec::new();
-            assert_eq!(
-                drain_active_coroutine_frames_excluding(ptr::null_mut(), |raw| {
-                    reclaimed.push(raw);
-                }),
-                1
-            );
-            assert_eq!(
-                take_crash_cleanup_test_drops(),
-                [22, 33],
-                "reactivating the older lexical owner must not move it above the newer owner"
-            );
-            free_frame_allocation(frame);
-        }
-    }
-
-    #[test]
-    fn crash_cleanup_drain_releases_tls_before_reentrant_thunks_and_stays_lifo() {
-        // SAFETY: both snapshots remain initialized until drain transfers their
-        // sole typed authority; the reentrant thunk creates and normally frees
-        // an independent nested tracked frame.
-        unsafe {
-            let frame = hew_cont_frame_alloc_tracked(64);
-            let mut older = 11_u64;
-            let mut newer = 22_u64;
-            for (slot, thunk) in [
-                (
-                    ptr::from_mut(&mut older).cast(),
-                    record_u64_cleanup as CrashCleanupThunk,
-                ),
-                (
-                    ptr::from_mut(&mut newer).cast(),
-                    record_u64_cleanup_with_cont_reentry as CrashCleanupThunk,
-                ),
-            ] {
-                let token = hew_cont_crash_cleanup_arm(
-                    0,
-                    slot,
-                    size_of::<u64>() as u64,
-                    align_of::<u64>() as u64,
-                    Some(thunk),
-                    CrashCleanupStorage::Snapshot as u32,
-                    CrashCleanupRelocation::Bitwise as u32,
-                );
-                assert_ne!(token, 0);
-                assert_ne!(token, CRASH_CLEANUP_ARM_FAILED);
-            }
-
-            let mut reclaimed = Vec::new();
-            assert_eq!(
-                drain_active_coroutine_frames_excluding(ptr::null_mut(), |raw| {
-                    reclaimed.push(raw);
-                }),
-                1
-            );
-            assert_eq!(reclaimed, [frame]);
-            assert_eq!(
-                take_crash_cleanup_test_drops(),
-                [22, 11],
-                "thunk reentry must not disturb lexical LIFO cleanup order"
-            );
-            free_frame_allocation(frame);
-        }
-    }
-
     // This verifies Rust unwinding through a `C-unwind` cleanup callback.
     // WASI uses aborting panics, so there is no in-process unwind contract.
     #[cfg(not(target_arch = "wasm32"))]
@@ -3466,445 +2442,6 @@ mod tests {
         assert_eq!(take_crash_cleanup_test_drops(), [44]);
     }
 
-    #[test]
-    fn crash_cleanup_snapshot_retire_discards_escrow_without_drop() {
-        // SAFETY: the helper value remains live while its snapshot is armed;
-        // lexical retirement must free only the escrow allocation.
-        unsafe {
-            let frame = hew_cont_frame_alloc_tracked(64);
-            let mut value = 17_u64;
-            let token = hew_cont_crash_cleanup_arm(
-                0,
-                ptr::from_mut(&mut value).cast(),
-                size_of::<u64>() as u64,
-                align_of::<u64>() as u64,
-                Some(record_u64_cleanup),
-                CrashCleanupStorage::Snapshot as u32,
-                CrashCleanupRelocation::Bitwise as u32,
-            );
-            assert_ne!(token, 0);
-            assert_ne!(token, CRASH_CLEANUP_ARM_FAILED);
-            assert!(hew_cont_crash_cleanup_retire(token));
-            assert!(
-                take_crash_cleanup_test_drops().is_empty(),
-                "normal lexical retirement must not invoke the typed destructor"
-            );
-            hew_cont_frame_handoff(frame);
-            hew_cont_frame_free(frame);
-        }
-    }
-
-    #[test]
-    fn raw_frame_free_accepts_inactive_crash_cleanup_entries() {
-        let _ = take_crash_cleanup_test_drops();
-        // SAFETY: the snapshot source remains live through deactivation. Raw
-        // free owns the handed-off frame and may discard the inactive escrow.
-        unsafe {
-            let frame = hew_cont_frame_alloc_tracked(64);
-            let mut value = 23_u64;
-            let token = hew_cont_crash_cleanup_arm(
-                0,
-                ptr::from_mut(&mut value).cast(),
-                size_of::<u64>() as u64,
-                align_of::<u64>() as u64,
-                Some(record_u64_cleanup),
-                CrashCleanupStorage::Snapshot as u32,
-                CrashCleanupRelocation::Bitwise as u32,
-            );
-            assert_ne!(token, 0);
-            assert_ne!(token, CRASH_CLEANUP_ARM_FAILED);
-            assert!(hew_cont_crash_cleanup_deactivate(token));
-            hew_cont_frame_handoff(frame);
-            hew_cont_frame_free(frame);
-        }
-        assert!(
-            take_crash_cleanup_test_drops().is_empty(),
-            "inactive escrow must be freed without running its typed thunk"
-        );
-    }
-
-    #[test]
-    #[cfg(not(target_arch = "wasm32"))]
-    #[cfg_attr(
-        miri,
-        ignore = "spawns a subprocess to observe abort(); Miri cannot posix_spawn"
-    )]
-    fn raw_frame_free_rejects_active_crash_cleanup_entries() {
-        const HELPER: &str =
-            "cont::tests::_helper_raw_frame_free_rejects_active_crash_cleanup_entries";
-        let output = std::process::Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", "--nocapture", HELPER])
-            .env("RUST_TEST_THREADS", "1")
-            .env("HEW_CONT_ACTIVE_CLEANUP_DEATH_TEST", "1")
-            .output()
-            .expect("spawn active-cleanup raw-free death helper");
-        assert!(
-            !output.status.success(),
-            "raw frame free with an active typed owner must terminate"
-        );
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(
-            stderr.contains("active typed crash-cleanup owner"),
-            "death helper must identify the violated ownership invariant; stderr:\n{stderr}"
-        );
-    }
-
-    #[test]
-    #[cfg(not(target_arch = "wasm32"))]
-    fn _helper_raw_frame_free_rejects_active_crash_cleanup_entries() {
-        if std::env::var_os("HEW_CONT_ACTIVE_CLEANUP_DEATH_TEST").is_none() {
-            return;
-        }
-        // SAFETY: the helper intentionally violates the normal-free contract
-        // after publishing one valid active snapshot. The process must abort
-        // before either the typed value or its escrow can be silently leaked.
-        unsafe {
-            let frame = hew_cont_frame_alloc_tracked(64);
-            let mut value = 29_u64;
-            let token = hew_cont_crash_cleanup_arm(
-                0,
-                ptr::from_mut(&mut value).cast(),
-                size_of::<u64>() as u64,
-                align_of::<u64>() as u64,
-                Some(record_u64_cleanup),
-                CrashCleanupStorage::Snapshot as u32,
-                CrashCleanupRelocation::Bitwise as u32,
-            );
-            assert_ne!(token, 0);
-            assert_ne!(token, CRASH_CLEANUP_ARM_FAILED);
-            hew_cont_frame_handoff(frame);
-            hew_cont_frame_free(frame);
-        }
-        panic!("raw frame free unexpectedly accepted an active cleanup entry");
-    }
-
-    #[test]
-    fn crash_cleanup_direct_frame_reads_latest_bytes_and_rejects_overlap() {
-        // SAFETY: every slot lies within the live 64-byte tracked payload.
-        unsafe {
-            let frame = hew_cont_frame_alloc_tracked(64);
-            let whole = frame.cast::<u64>();
-            ptr::write(whole, 41);
-            ptr::write(whole.add(1), 42);
-            let whole_token = hew_cont_crash_cleanup_arm(
-                0,
-                whole.cast(),
-                (size_of::<u64>() * 2) as u64,
-                align_of::<u64>() as u64,
-                Some(record_u64_cleanup),
-                CrashCleanupStorage::DirectFrame as u32,
-                CrashCleanupRelocation::Bitwise as u32,
-            );
-            assert_ne!(whole_token, 0);
-            let overlap = hew_cont_crash_cleanup_arm(
-                0,
-                whole.add(1).cast(),
-                size_of::<u64>() as u64,
-                align_of::<u64>() as u64,
-                Some(record_u64_cleanup),
-                CrashCleanupStorage::DirectFrame as u32,
-                CrashCleanupRelocation::Bitwise as u32,
-            );
-            assert_eq!(
-                overlap, CRASH_CLEANUP_ARM_FAILED,
-                "aggregate and projected field obligations must not coexist"
-            );
-            assert!(hew_cont_crash_cleanup_deactivate(whole_token));
-            let field_token = hew_cont_crash_cleanup_arm(
-                0,
-                whole.add(1).cast(),
-                size_of::<u64>() as u64,
-                align_of::<u64>() as u64,
-                Some(record_u64_cleanup),
-                CrashCleanupStorage::DirectFrame as u32,
-                CrashCleanupRelocation::Bitwise as u32,
-            );
-            assert_ne!(field_token, CRASH_CLEANUP_ARM_FAILED);
-            assert!(hew_cont_crash_cleanup_deactivate(field_token));
-            assert!(hew_cont_crash_cleanup_retire(field_token));
-            assert!(hew_cont_crash_cleanup_retire(whole_token));
-            hew_cont_frame_handoff(frame);
-            hew_cont_frame_free(frame);
-        }
-    }
-
-    // Cross-worker migration is the native M:N scheduler contract.  The
-    // wasm32 runtime has no OS-thread worker migration to exercise.
-    #[cfg(not(target_arch = "wasm32"))]
-    #[test]
-    fn crash_cleanup_registry_survives_cross_worker_frame_migration() {
-        MIGRATED_CRASH_CLEANUP_VALUE.store(0, Ordering::Release);
-
-        // Allocate and arm on the first worker, then perform the ordinary ramp
-        // handoff. The registry lives in the frame header, not this thread's
-        // active-frame TLS.
-        // SAFETY: this thread exclusively owns the live tracked frame and slot
-        // until handoff transfers the raw addresses below.
-        let (frame_addr, slot_addr, token) = unsafe {
-            let frame = hew_cont_frame_alloc_tracked(64);
-            assert!(!frame.is_null());
-            let slot = frame.cast::<u64>().add(4);
-            ptr::write(slot, 71);
-            let token = hew_cont_crash_cleanup_arm(
-                0,
-                slot.cast(),
-                size_of::<u64>() as u64,
-                align_of::<u64>() as u64,
-                Some(record_migrated_u64_cleanup),
-                CrashCleanupStorage::DirectFrame as u32,
-                CrashCleanupRelocation::Bitwise as u32,
-            );
-            assert_ne!(token, 0);
-            assert_ne!(token, CRASH_CLEANUP_ARM_FAILED);
-            hew_cont_frame_handoff(frame);
-            (frame as usize, slot as usize, token)
-        };
-
-        // Resume ownership on another real OS thread, exercise token lookup
-        // and reactivation there, then model the worker's crash drain. The
-        // direct cleanup must read the latest frame bytes on that worker.
-        // SAFETY: the first worker handed off the still-live frame; this worker
-        // becomes its exclusive active owner and drains it before returning.
-        let reclaimed_addr = std::thread::spawn(move || unsafe {
-            let frame = frame_addr as *mut c_void;
-            let slot = slot_addr as *mut u64;
-            assert!(active_coroutine_enter(frame));
-            assert!(hew_cont_crash_cleanup_deactivate(token));
-            ptr::write(slot, 89);
-            assert_eq!(
-                hew_cont_crash_cleanup_arm(
-                    token,
-                    slot.cast(),
-                    size_of::<u64>() as u64,
-                    align_of::<u64>() as u64,
-                    Some(record_migrated_u64_cleanup),
-                    CrashCleanupStorage::DirectFrame as u32,
-                    CrashCleanupRelocation::Bitwise as u32,
-                ),
-                token
-            );
-            ptr::write(slot, 97);
-            let mut reclaimed = None;
-            assert_eq!(
-                drain_active_coroutine_frames_excluding(ptr::null_mut(), |raw| {
-                    reclaimed = Some(raw as usize);
-                }),
-                1
-            );
-            reclaimed.expect("migrated frame must transfer to crash reclamation")
-        })
-        .join()
-        .expect("migration worker panicked");
-
-        assert_eq!(
-            MIGRATED_CRASH_CLEANUP_VALUE.load(Ordering::Acquire),
-            97,
-            "the migrated worker must run the frame registry's sole typed cleanup"
-        );
-        assert_eq!(reclaimed_addr, frame_addr);
-        // SAFETY: the other worker transferred raw allocation ownership to us
-        // after draining the typed registry exactly once.
-        unsafe { free_frame_allocation(reclaimed_addr as *mut c_void) };
-    }
-
-    #[test]
-    fn crash_cleanup_rejects_misaligned_direct_and_snapshot_slots() {
-        // SAFETY: the deliberately unaligned slots still lie inside readable
-        // live allocations; arm must reject them before copying or publishing
-        // an entry.
-        unsafe {
-            let frame = hew_cont_frame_alloc_tracked(64);
-            let direct_unaligned = frame.cast::<u8>().add(1).cast::<c_void>();
-            assert_eq!(
-                hew_cont_crash_cleanup_arm(
-                    0,
-                    direct_unaligned,
-                    size_of::<u64>() as u64,
-                    align_of::<u64>() as u64,
-                    Some(record_u64_cleanup),
-                    CrashCleanupStorage::DirectFrame as u32,
-                    CrashCleanupRelocation::Bitwise as u32,
-                ),
-                CRASH_CLEANUP_ARM_FAILED
-            );
-
-            let mut helper_bytes = [0_u8; size_of::<u64>() + align_of::<u64>()];
-            let snapshot_unaligned = helper_bytes.as_mut_ptr().add(1).cast::<c_void>();
-            assert_eq!(
-                hew_cont_crash_cleanup_arm(
-                    0,
-                    snapshot_unaligned,
-                    size_of::<u64>() as u64,
-                    align_of::<u64>() as u64,
-                    Some(record_u64_cleanup),
-                    CrashCleanupStorage::Snapshot as u32,
-                    CrashCleanupRelocation::Bitwise as u32,
-                ),
-                CRASH_CLEANUP_ARM_FAILED
-            );
-
-            hew_cont_frame_handoff(frame);
-            hew_cont_frame_free(frame);
-        }
-    }
-
-    #[test]
-    fn crash_cleanup_frame_interior_refuses_helper_stack_pointee() {
-        // SAFETY: direct fat slot and its pointee are both inside the tracked
-        // payload; the helper twin deliberately points outside and is refused
-        // before any cleanup entry is published.
-        unsafe {
-            let frame = hew_cont_frame_alloc_tracked(64);
-            let fat_slot = frame.cast::<*mut c_void>().add(2);
-            let concrete = frame.cast::<u8>().add(48).cast::<c_void>();
-            ptr::write(fat_slot, concrete);
-            ptr::write(
-                fat_slot.add(1),
-                ptr::from_ref(&U64_DYN_VTABLE).cast_mut().cast(),
-            );
-            let direct = hew_cont_crash_cleanup_arm(
-                0,
-                fat_slot.cast(),
-                size_of::<crate::trait_object::HewTraitObject>() as u64,
-                align_of::<crate::trait_object::HewTraitObject>() as u64,
-                Some(record_u64_cleanup),
-                CrashCleanupStorage::DirectFrame as u32,
-                CrashCleanupRelocation::FrameInterior as u32,
-            );
-            assert_ne!(direct, CRASH_CLEANUP_ARM_FAILED);
-            assert!(hew_cont_crash_cleanup_deactivate(direct));
-            assert!(hew_cont_crash_cleanup_retire(direct));
-
-            let mut helper_concrete = 9_u64;
-            let mut helper_fat = crate::trait_object::HewTraitObject {
-                data: ptr::from_mut(&mut helper_concrete).cast(),
-                vtable: ptr::from_ref(&U64_DYN_VTABLE),
-            };
-            let refused = hew_cont_crash_cleanup_arm(
-                0,
-                ptr::from_mut(&mut helper_fat).cast(),
-                size_of::<crate::trait_object::HewTraitObject>() as u64,
-                align_of::<crate::trait_object::HewTraitObject>() as u64,
-                Some(record_u64_cleanup),
-                CrashCleanupStorage::Snapshot as u32,
-                CrashCleanupRelocation::FrameInterior as u32,
-            );
-            assert_eq!(refused, CRASH_CLEANUP_ARM_FAILED);
-
-            ptr::write(fat_slot, frame.cast::<u8>().add(64).cast());
-            let out_of_range = hew_cont_crash_cleanup_arm(
-                0,
-                fat_slot.cast(),
-                size_of::<crate::trait_object::HewTraitObject>() as u64,
-                align_of::<crate::trait_object::HewTraitObject>() as u64,
-                Some(record_u64_cleanup),
-                CrashCleanupStorage::DirectFrame as u32,
-                CrashCleanupRelocation::FrameInterior as u32,
-            );
-            assert_eq!(
-                out_of_range, CRASH_CLEANUP_ARM_FAILED,
-                "the full concrete vtable size must fit, not merely data[0]"
-            );
-            hew_cont_frame_handoff(frame);
-            hew_cont_frame_free(frame);
-        }
-    }
-
-    #[test]
-    fn crash_cleanup_forged_stale_and_inactive_tokens_fail_without_dereference() {
-        // SAFETY: the only dereference-worthy token is created by arm; forged
-        // and stale values are checked against registry membership first.
-        unsafe {
-            let frame = hew_cont_frame_alloc_tracked(64);
-            assert!(!hew_cont_crash_cleanup_deactivate(0x1000));
-            assert!(!hew_cont_crash_cleanup_retire(0x1000));
-
-            let mut value = 5_u64;
-            let token = hew_cont_crash_cleanup_arm(
-                0,
-                ptr::from_mut(&mut value).cast(),
-                size_of::<u64>() as u64,
-                align_of::<u64>() as u64,
-                Some(record_u64_cleanup),
-                CrashCleanupStorage::Snapshot as u32,
-                CrashCleanupRelocation::Bitwise as u32,
-            );
-            assert_ne!(token, 0);
-            assert!(hew_cont_crash_cleanup_deactivate(token));
-            assert!(hew_cont_crash_cleanup_retire(token));
-            assert!(!hew_cont_crash_cleanup_deactivate(token));
-            assert!(!hew_cont_crash_cleanup_retire(token));
-
-            hew_cont_frame_handoff(frame);
-            assert_eq!(
-                hew_cont_crash_cleanup_arm(
-                    0x1000,
-                    ptr::from_mut(&mut value).cast(),
-                    size_of::<u64>() as u64,
-                    align_of::<u64>() as u64,
-                    Some(record_u64_cleanup),
-                    CrashCleanupStorage::Snapshot as u32,
-                    CrashCleanupRelocation::Bitwise as u32,
-                ),
-                CRASH_CLEANUP_ARM_FAILED,
-                "reactivation with no active frame must fail before token access"
-            );
-            hew_cont_frame_free(frame);
-        }
-    }
-
-    #[test]
-    fn crash_cleanup_same_address_new_generation_rejects_stale_token() {
-        // Model the allocator's strongest ABA case deterministically: the
-        // replacement logical entry occupies the exact same Box address. Only
-        // its process-unique generation changes, so the retired generation
-        // must not deactivate or retire the replacement.
-        // SAFETY: the test owns the tracked frame and stack value for the whole
-        // registry mutation, and frees the frame exactly once after restoring
-        // a valid live replacement entry.
-        unsafe {
-            let frame = hew_cont_frame_alloc_tracked(64);
-            let mut value = 13_u64;
-            let stale = hew_cont_crash_cleanup_arm(
-                0,
-                ptr::from_mut(&mut value).cast(),
-                size_of::<u64>() as u64,
-                align_of::<u64>() as u64,
-                Some(record_u64_cleanup),
-                CrashCleanupStorage::Snapshot as u32,
-                CrashCleanupRelocation::Bitwise as u32,
-            );
-            assert_ne!(stale, 0);
-            assert_ne!(stale, CRASH_CLEANUP_ARM_FAILED);
-            assert!(hew_cont_crash_cleanup_deactivate(stale));
-
-            let registry = frame_cleanup_registry(frame);
-            assert!(!registry.is_null());
-            let entry = (&(*registry).entries)[0];
-            assert_ne!(
-                stale, entry as usize as u64,
-                "the public token must be independent of the allocation address"
-            );
-            let replacement = next_crash_cleanup_token().expect("test token space");
-            (*entry).token = replacement;
-            (*entry).active = true;
-
-            assert!(
-                !hew_cont_crash_cleanup_deactivate(stale),
-                "an allocator-reused address must not revive a stale generation"
-            );
-            assert!(
-                !hew_cont_crash_cleanup_retire(stale),
-                "a stale generation must not retire the replacement entry"
-            );
-            assert!(hew_cont_crash_cleanup_deactivate(replacement));
-            assert!(hew_cont_crash_cleanup_retire(replacement));
-
-            hew_cont_frame_handoff(frame);
-            hew_cont_frame_free(frame);
-        }
-    }
-
     /// The frame allocator round-trips: a non-zero request returns a usable,
     /// aligned block whose stored size lets the symmetric free reconstruct the
     /// layout. Exercises the header push/pop and the (ptr, size, align)
@@ -3944,140 +2481,6 @@ mod tests {
         unsafe { hew_cont_frame_free(ptr::null_mut()) };
     }
 
-    fn active_frames() -> Vec<*mut c_void> {
-        ACTIVE_COROUTINE_FRAMES
-            .with(|active| active.borrow().iter().map(|record| record.frame).collect())
-    }
-
-    #[test]
-    fn tracked_crash_frames_drain_in_lifo_order() {
-        // SAFETY: allocate three tracked test frames and raw-free them exactly
-        // once after the drain transfers their ownership into `order`.
-        unsafe {
-            let outer = hew_cont_frame_alloc_tracked(32);
-            let child = hew_cont_frame_alloc_tracked(48);
-            let nested = hew_cont_frame_alloc_tracked(64);
-            let mut order = Vec::new();
-            let reclaimed = drain_active_coroutine_frames_excluding(ptr::null_mut(), |frame| {
-                order.push(frame);
-            });
-            assert_eq!(reclaimed, 3);
-            assert_eq!(order, [nested, child, outer]);
-            assert!(active_frames().is_empty());
-            for frame in order {
-                free_frame_allocation(frame);
-            }
-        }
-    }
-
-    #[test]
-    fn active_frame_mismatch_preserves_lifo_stack() {
-        // SAFETY: allocate two tracked frames and free each exactly once after
-        // exercising the pointer-only handoff discipline.
-        unsafe {
-            let outer = hew_cont_frame_alloc_tracked(32);
-            let inner = hew_cont_frame_alloc_tracked(48);
-            assert_eq!(active_frames(), [outer, inner]);
-
-            hew_cont_frame_handoff(outer);
-            assert_eq!(
-                active_frames(),
-                [outer, inner],
-                "a non-top handoff must not punch through a nested active frame"
-            );
-            hew_cont_frame_handoff(inner);
-            hew_cont_frame_handoff(outer);
-            assert!(active_frames().is_empty());
-
-            hew_cont_frame_free(inner);
-            hew_cont_frame_free(outer);
-        }
-    }
-
-    #[test]
-    fn null_and_untracked_frames_never_enter_active_stack() {
-        // SAFETY: zero-sized tracked allocation is a documented null result;
-        // the untracked allocation is freed exactly once below.
-        unsafe {
-            let null = hew_cont_frame_alloc_tracked(0);
-            assert!(null.is_null());
-            hew_cont_frame_handoff(null);
-            assert!(!active_coroutine_enter(null));
-            assert!(!active_coroutine_leave(null, ActiveCoroutinePhase::Resume));
-
-            let companion = hew_cont_frame_alloc(32);
-            assert!(!active_coroutine_enter(companion));
-            assert!(active_frames().is_empty());
-            hew_cont_frame_free(companion);
-        }
-    }
-
-    #[test]
-    fn normal_handoff_and_frame_free_remove_active_records() {
-        // SAFETY: both tracked frames are freed exactly once. `handoff` removes
-        // the first; the public free removes the second matching active record.
-        unsafe {
-            let handed_off = hew_cont_frame_alloc_tracked(32);
-            hew_cont_frame_handoff(handed_off);
-            assert!(active_frames().is_empty());
-            hew_cont_frame_free(handed_off);
-
-            let freed_while_active = hew_cont_frame_alloc_tracked(48);
-            assert_eq!(active_frames(), [freed_while_active]);
-            hew_cont_frame_free(freed_while_active);
-            assert!(active_frames().is_empty());
-        }
-    }
-
-    #[test]
-    fn split_resume_handoff_clone_does_not_consume_resume_record() {
-        // SAFETY: one tracked frame is handed off from its ramp, entered as a
-        // resume, then freed exactly once after the resume record is removed.
-        unsafe {
-            let frame = hew_cont_frame_alloc_tracked(48);
-            hew_cont_frame_handoff(frame);
-            assert!(active_frames().is_empty());
-
-            assert!(active_coroutine_enter(frame));
-            assert_eq!(active_frames(), [frame]);
-            // CoroSplit clones the shared return block into `.resume`; this
-            // generated Ramp-phase handoff must not steal Resume ownership.
-            hew_cont_frame_handoff(frame);
-            assert_eq!(active_frames(), [frame]);
-            assert!(active_coroutine_leave(frame, ActiveCoroutinePhase::Resume));
-            assert!(active_frames().is_empty());
-            hew_cont_frame_free(frame);
-        }
-    }
-
-    #[test]
-    fn resumed_root_exclusion_reclaims_only_nested_frames() {
-        // SAFETY: the drain transfers child/grandchild ownership into `order`;
-        // the excluded root remains active and is released by its sole owner.
-        unsafe {
-            let root = hew_cont_frame_alloc_tracked(32);
-            let child = hew_cont_frame_alloc_tracked(48);
-            let nested = hew_cont_frame_alloc_tracked(64);
-            let mut order = Vec::new();
-            let reclaimed = drain_active_coroutine_frames_excluding(root, |frame| {
-                order.push(frame);
-            });
-            assert_eq!(reclaimed, 2);
-            assert_eq!(order, [nested, child]);
-            assert_eq!(
-                active_frames(),
-                [root],
-                "the scheduler-owned resumed root remains for \
-                 abandon_resuming_after_crash"
-            );
-            for frame in order {
-                free_frame_allocation(frame);
-            }
-            hew_cont_frame_free(root);
-            assert!(active_frames().is_empty());
-        }
-    }
-
     /// `done`/`destroy`/`resume`/`poll` on a null handle are fail-closed: done
     /// reports true (reclaim, don't spin), the others no-op, poll reports Ready.
     #[test]
@@ -4093,6 +2496,41 @@ mod tests {
             hew_cont_resume(ptr::null_mut());
             hew_cont_destroy(ptr::null_mut());
         }
+    }
+
+    #[test]
+    fn caller_owned_frame_resumes_and_destroys_without_allocator_metadata() {
+        #[repr(C)]
+        struct LocalFrame {
+            prefix: CoroFramePrefix,
+            visits: u32,
+        }
+        unsafe extern "C-unwind" fn resume(handle: *mut c_void) {
+            // SAFETY: the test passes its exclusively borrowed LocalFrame.
+            let frame = unsafe { &mut *handle.cast::<LocalFrame>() };
+            frame.visits += 1;
+            frame.prefix.resume = None;
+        }
+        unsafe extern "C-unwind" fn destroy(handle: *mut c_void) {
+            // SAFETY: the test retains its LocalFrame through destruction.
+            unsafe { (*handle.cast::<LocalFrame>()).visits += 10 };
+        }
+        let mut frame = LocalFrame {
+            prefix: CoroFramePrefix {
+                resume: Some(resume),
+                destroy: Some(destroy),
+            },
+            visits: 0,
+        };
+        let handle = (&raw mut frame).cast();
+        // SAFETY: the caller owns the frame and follows its suspend/done protocol.
+        unsafe {
+            assert!(!hew_cont_done(handle));
+            hew_cont_resume(handle);
+            assert!(hew_cont_done(handle));
+            hew_cont_destroy(handle);
+        }
+        assert_eq!(frame.visits, 11);
     }
 
     /// `coro_done` reads slot 0: a frame with a live resume fn-ptr is not done;

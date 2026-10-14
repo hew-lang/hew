@@ -1,0 +1,13 @@
+[[case]]
+id = "actor-interceptor-chain"
+intent = "Nested supervisor interceptors specialize the child turn in outermost-to-innermost order without changing an unsupervised instance of the same actor."
+source = "cases/actor-interceptor-chain.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "1"
+
+[case.expected]
+stdout = "root before\nbranch before\nactor before\nhandler\nactor after\nbranch after\nroot after\nactor before\nhandler\nactor after\n"
+exit = 0

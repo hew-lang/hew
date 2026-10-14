@@ -16,5 +16,5 @@ impl Renderable for i64 {
 
 fn main() {
     let x: i64 = 42;
-    println(x.fmt());
+    println(Renderable.fmt(x));
 }

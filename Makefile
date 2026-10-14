@@ -673,9 +673,10 @@ sandbox-vm-test: sandbox-vm-deps
 # Native Hew <-> sandbox VM parity harness. The browser compiler package is
 # excluded from generic nextest runs and owned here with Node provisioned.
 SANDBOX_PARITY_ARGS ?=
+SANDBOX_PARITY_RUNNER ?= cargo test -p hew-wasm
 sandbox-parity: hew-native sandbox-vm-deps
 	npm --prefix hew-sandbox-vm run build
-	$(TEST_RUN_ENV) cargo test -p hew-wasm $(SANDBOX_PARITY_ARGS)
+	$(TEST_RUN_ENV) $(SANDBOX_PARITY_RUNNER) $(SANDBOX_PARITY_ARGS)
 
 # Browser analysis and source-to-VM execution need Node and the built VM, but
 # not LLVM. Native comparisons run with the complete package in sandbox-parity.
@@ -1458,15 +1459,15 @@ hew-fmt-fidelity: ## Check: prove every .hew source reprints faithfully through 
 		--test fmt_roundtrip_corpus --test fmt_fidelity -- --nocapture
 
 # Check that std/ and examples/ .hew sources are formatted.
-# Run `find std examples -name "*.hew" -print0 | xargs -0 hew fmt` to fix.
+# Run `find std examples -type f -name "*.hew" -print0 | xargs -0 hew fmt` to fix.
 hew-fmt-check: hew-native hew-fmt-fidelity
 	@echo "==> hew-fmt-check: checking std/ and examples/ .hew sources"
-	@total=$$(find std examples -name "*.hew" | wc -l | tr -d ' '); \
+	@total=$$(find std examples -type f -name "*.hew" | wc -l | tr -d ' '); \
 	bash scripts/lib/corpus-nonempty.sh hew-fmt-check-files "$$total" || exit 1; \
-	find std examples -name "*.hew" -print0 \
+	find std examples -type f -name "*.hew" -print0 \
 	    | xargs -0 "$(DEBUG_HEW)" fmt --check \
 	    && echo "hew-fmt-check passed: all $$total .hew sources are formatted." \
-	    || { echo "error: unformatted .hew sources found — run 'find std examples -name \"*.hew\" -print0 | xargs -0 hew fmt' to fix." >&2; exit 1; }
+	    || { echo "error: unformatted .hew sources found — run 'find std examples -type f -name \"*.hew\" -print0 | xargs -0 hew fmt' to fix." >&2; exit 1; }
 
 # Exercise representative migration inputs in an isolated copy so the proof
 # never edits the checkout. The second pass must leave the first-pass snapshot

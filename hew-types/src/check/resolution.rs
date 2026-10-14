@@ -1812,7 +1812,9 @@ impl Checker {
                 // Record declarations carry no function-signature holes (only
                 // type-def inference holes, which `register_record_decl` records
                 // via `record_type_def_inference_holes`).  No action needed here.
-                Item::Import(_)
+                Item::Macro(_)
+                | Item::MacroCall(_)
+                | Item::Import(_)
                 | Item::Const(_)
                 | Item::Supervisor(_)
                 | Item::Machine(_)
@@ -2109,7 +2111,11 @@ impl Checker {
             if let Some(binding) = self
                 .impl_assoc_type_bindings
                 .get(&(key, trait_id, associated))
-                .and_then(|binding| binding.instantiate(&resolved_base))
+                .and_then(|bindings| {
+                    bindings
+                        .iter()
+                        .find_map(|binding| binding.instantiate(&resolved_base))
+                })
             {
                 return self.project_assoc_types(&binding);
             }

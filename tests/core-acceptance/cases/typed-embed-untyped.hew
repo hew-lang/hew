@@ -1,0 +1,4 @@
+fn main() {
+    let config = embed!("typed-embed-data/config.json");
+    println(config);
+}

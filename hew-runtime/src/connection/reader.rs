@@ -180,6 +180,13 @@ pub(super) fn reader_loop(
                         set_last_error("connection reader envelope source Location mismatch");
                         continue;
                     }
+                    let crate::envelope::EnvelopeMessage::Handler(identity) = &envelope.message
+                    else {
+                        set_last_error("request envelope has reply status");
+                        continue;
+                    };
+                    let identity = std::ffi::CString::new(identity.as_str())
+                        .expect("decoded wire identity excludes NUL");
                     // I/O recv span: bracket the router call so the
                     // mailbox enqueue captures the io_recv span as the
                     // parent of the actor-dispatch span.
@@ -197,12 +204,13 @@ pub(super) fn reader_loop(
                     unsafe {
                         router_fn(
                             crate::pid::hew_pid_make(mgr_ref.local_node_id, target.slot()),
-                            envelope.msg_type,
+                            identity.as_ptr(),
                             payload_ptr,
                             envelope.payload.len(),
                             envelope.request_id,
                             authenticated,
                             mgr,
+                            peer_identity.node_id.into(),
                         );
                     }
                     if let Some(saved) = saved_ctx {

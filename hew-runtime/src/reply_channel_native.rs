@@ -88,6 +88,9 @@ pub unsafe extern "C" fn hew_reply_channel_status_native(
             return AskError::Cancelled as i32;
         }
         let failure = hew_reply_channel_failure_kind(channel);
+        if failure == crate::internal::types::HEW_REPLY_FAIL_REFUSED {
+            return AskError::Refused as i32;
+        }
         if failure == HEW_REPLY_FAIL_HANDLER_TRAPPED {
             return AskError::HandlerTrapped as i32;
         }
@@ -128,8 +131,14 @@ pub unsafe extern "C-unwind" fn hew_actor_ask_submit_native(
             return AskError::SendFailed as i32;
         }
         hew_reply_channel_retain(channel);
-        let outcome =
-            crate::actor::try_submit_native_request(token, message, envelope, channel.cast(), true);
+        let outcome = crate::actor::try_submit_native_request(
+            token,
+            message,
+            envelope,
+            channel.cast(),
+            true,
+            crate::actor_caller::local_sender(),
+        );
         let error = match outcome {
             crate::mailbox::SendOutcome::Enqueued => return AskError::None as i32,
             crate::mailbox::SendOutcome::Failed => AskError::MailboxFull,
@@ -413,7 +422,14 @@ mod tests {
                 );
                 assert!(!envelope.is_null());
                 assert!(matches!(
-                    mailbox::try_admit_native_request(&*mailbox, 1, envelope, channel.cast(), true),
+                    mailbox::try_admit_native_request(
+                        &*mailbox,
+                        1,
+                        envelope,
+                        channel.cast(),
+                        true,
+                        crate::actor_caller::local_sender()
+                    ),
                     SendOutcome::Failed
                 ));
                 mailbox::hew_mailbox_free(mailbox);

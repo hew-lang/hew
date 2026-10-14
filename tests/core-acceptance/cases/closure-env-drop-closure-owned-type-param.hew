@@ -1,4 +1,4 @@
-fn hold<T>(consume x: T) -> fn() -> i64 {
+fn hold<T>(consume x: T) -> fn[suspends]() -> i64 {
     move || {
         let _h = x;
         0

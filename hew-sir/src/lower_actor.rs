@@ -117,11 +117,21 @@ impl InstanceService<'_> {
         ty: &ResolvedTy,
         exact: Option<&str>,
     ) -> Result<crate::ActorId, String> {
+        self.require_actor_intercepted(ty, exact, &[])
+    }
+
+    pub(super) fn require_actor_intercepted(
+        &mut self,
+        ty: &ResolvedTy,
+        exact: Option<&str>,
+        chain: &[ResolvedTy],
+    ) -> Result<crate::ActorId, String> {
         if let Some(actor) = self.actors.iter().find(|actor| {
-            exact.map_or_else(
-                || actor.admits_target(ty),
-                |name| self.module.defs.path(actor.declaration) == name,
-            )
+            actor.interceptor_chain == chain
+                && exact.map_or_else(
+                    || actor.admits_target(ty),
+                    |name| self.module.defs.path(actor.declaration) == name,
+                )
         }) {
             return Ok(actor.id);
         }
@@ -186,6 +196,7 @@ impl InstanceService<'_> {
             id,
             declaration: source.declaration,
             handle_ty: ty.clone(),
+            interceptor_chain: chain.to_vec(),
             state_ty,
             fields,
             init: None,
@@ -326,14 +337,15 @@ impl InstanceService<'_> {
                 substitution.apply(&method.return_ty),
                 &method.body,
                 &format!("method_{}", method.name),
-                false,
+                source.protocol_descriptor.interceptor == Some(method.declaration),
                 None,
             )?;
             // Internal calls select a method from this actor's descriptor;
             // generic actor instances never overwrite a declaration-wide row.
             self.actors[id.0 as usize].methods.push(body);
         }
-        self.register_actor_handlers(id, source, substitution)
+        self.register_actor_handlers(id, source, substitution)?;
+        self.weave_actor_interceptor(id, source, substitution)
     }
 
     #[expect(
@@ -441,21 +453,29 @@ impl InstanceService<'_> {
                     ))
                 }
             };
-            let codec = if row.remote_codec {
+            let codec = if row
+                .remote_receivers
+                .iter()
+                .any(|receiver| receiver.matches(&substitution.args))
+                && self.actor_codec_eligible(&params, &return_ty)
+            {
                 Some(self.resolve_actor_codec(&params, &return_ty)?)
             } else {
                 None
             };
+            let wire_identity = self.actor_wire_identity(&row.wire_identity, &substitution.args)?;
             self.actors[id.0 as usize]
                 .handlers
                 .push(crate::SemActorHandler {
                     declaration: handler.declaration,
                     name: handler.name.clone(),
                     message_id: row.msg_id,
+                    wire_identity,
                     every_ns: handler.every_ns,
                     callable,
                     params,
                     return_ty,
+                    declared_failure: row.declared_failure,
                     stream,
                     failure_display,
                     codec,
@@ -468,7 +488,7 @@ impl InstanceService<'_> {
         clippy::too_many_arguments,
         reason = "one checked actor body supplies its complete callable contract"
     )]
-    fn register_actor_body(
+    pub(super) fn register_actor_body(
         &mut self,
         actor: crate::ActorId,
         source: &hew_hir::HirActorDecl,
@@ -551,7 +571,16 @@ impl InstanceService<'_> {
         });
         self.actor_sources.insert(
             id,
-            (function, state_bindings.to_vec(), substitution.clone()),
+            super::ActorBodySource {
+                function,
+                state_bindings: state_bindings.to_vec(),
+                substitution: substitution.clone(),
+                stream: implicit_owned.and_then(|ty| match ty {
+                    ResolvedTy::Named { args, .. } => args.first().cloned(),
+                    _ => None,
+                }),
+                weave: None,
+            },
         );
         self.states.push(CallableState::Unreached);
         self.statuses.push(None);
@@ -594,6 +623,22 @@ pub(super) struct StartedActorCall {
 }
 
 impl Builder<'_, '_> {
+    fn supervised_spawn_role(&self, expression: &HirExpr) -> Option<crate::SemSupervisedRole> {
+        if expression.node != self.function.node {
+            return None;
+        }
+        let CallableInstance::SupervisorChild { supervisor, child } = &self.callable.instance
+        else {
+            return None;
+        };
+        self.service
+            .supervisors
+            .get(supervisor.0 as usize)?
+            .children
+            .get(*child as usize)
+            .map(|child| child.role)
+    }
+
     /// Evaluate payloads in the call's evaluation order, applying the same
     /// value coercions as ordinary calls, and return the owners in protocol
     /// order. Earlier owners stay live until all later arguments have
@@ -923,7 +968,13 @@ impl Builder<'_, '_> {
                 .is_some() =>
             {
                 let ty = self.ty(&expression.ty);
-                let id = self.service.require_supervisor(&ty)?;
+                let id = match self.supervised_spawn_role(expression) {
+                    Some(crate::SemSupervisedRole::Supervisor(id)) => id,
+                    Some(crate::SemSupervisedRole::Actor(_)) => {
+                        return Err("supervisor spawn has an actor child role".into())
+                    }
+                    None => self.service.require_supervisor(&ty)?,
+                };
                 let source = super::supervisor::declaration(self.service.module, &ty)
                     .ok_or("spawn lost its supervisor declaration")?;
                 if slots.len() != source.params.len() {
@@ -956,7 +1007,13 @@ impl Builder<'_, '_> {
                 let exact = ty
                     .is_builtin(hew_types::BuiltinType::ActorFn)
                     .then_some(actor_name.as_str());
-                let id = self.service.require_actor_declaration(&ty, exact)?;
+                let id = match self.supervised_spawn_role(expression) {
+                    Some(crate::SemSupervisedRole::Actor(id)) => id,
+                    Some(crate::SemSupervisedRole::Supervisor(_)) => {
+                        return Err("actor spawn has a supervisor child role".into())
+                    }
+                    None => self.service.require_actor_declaration(&ty, exact)?,
+                };
                 let declaration = self.service.actors[id.0 as usize].declaration;
                 let source = self
                     .service
@@ -1227,6 +1284,7 @@ impl Builder<'_, '_> {
         let BodySource::Actor {
             actor,
             state_bindings,
+            ..
         } = source
         else {
             return Ok(());
@@ -1237,9 +1295,6 @@ impl Builder<'_, '_> {
             .get(actor.0 as usize)
             .ok_or_else(|| "actor body has no state descriptor".to_string())?
             .clone();
-        if state_bindings.len() != descriptor.fields.len() {
-            return Err("actor body bindings differ from its complete state".into());
-        }
         let abi = &self.callable.signature.params[0];
         if abi.ty != descriptor.state_ty || abi.passing != SemParamPassing::BorrowMut {
             return Err("actor body requires its exclusive state receiver".into());
@@ -1252,6 +1307,20 @@ impl Builder<'_, '_> {
                 own: OwnKind::Guaranteed,
             },
         );
+        // A supervisor layer forwards the child's state seat to proceed(),
+        // but its source body has no bindings for the child's private fields.
+        if matches!(
+            self.callable.instance,
+            CallableInstance::ActorSupervisorIntercept { .. }
+        ) {
+            if !state_bindings.is_empty() {
+                return Err("supervisor interceptor unexpectedly binds actor fields".into());
+            }
+            return Ok(());
+        }
+        if state_bindings.len() != descriptor.fields.len() {
+            return Err("actor body bindings differ from its complete state".into());
+        }
         for (index, (binding, field)) in state_bindings.iter().zip(&descriptor.fields).enumerate() {
             if self.ty(&binding.ty) != field.ty {
                 return Err("actor field binding changes its declared type".into());
@@ -1426,6 +1495,9 @@ impl Builder<'_, '_> {
             unreachable!()
         };
         match operation {
+            ActorDeliveryCall::Intercept(operation) => {
+                self.lower_interceptor_operation(expression, receiver, args, *operation)
+            }
             ActorDeliveryCall::Resume {
                 policy,
                 source_method: expected_source_method,

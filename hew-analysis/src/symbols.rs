@@ -27,6 +27,21 @@ pub fn build_document_symbols(source: &str, parse_result: &ParseResult) -> Vec<S
 )]
 fn item_to_symbol(source: &str, item: &Item, item_span: OffsetSpan) -> SymbolInfo {
     match item {
+        Item::Macro(declaration) => named_symbol(
+            source,
+            declaration.name.name.as_str(),
+            SymbolKind::Function,
+            item_span,
+        ),
+        Item::MacroCall(call) => named_symbol(
+            source,
+            call.path
+                .segments
+                .last()
+                .map_or("", |(ident, _)| ident.name.as_str()),
+            SymbolKind::Function,
+            item_span,
+        ),
         Item::Function(f) => named_symbol(
             source,
             f.name.name.as_str(),

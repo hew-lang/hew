@@ -1,0 +1,15 @@
+[[case]]
+id = "typed-embed-syntax"
+source = "cases/typed-embed-syntax.hew"
+intent = "Embedded format syntax errors retain their position in the consumed data file."
+kind = "check"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "InvalidOperation"
+file = "typed-embed-data/syntax.json"
+line = 2
+column = 10
+message = "E_EMBED_DECODE"

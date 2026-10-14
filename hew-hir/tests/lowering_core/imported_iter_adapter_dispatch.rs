@@ -55,6 +55,7 @@ fn std_iter_output(root_body: &str) -> hew_hir::LowerOutput {
         .expect("add root module");
     graph.topo_order = vec![iter_id, root_id];
     let program = Program {
+        expansions: hew_parser::macro_syntax::ExpansionMap::default(),
         items: root.program.items,
         module_graph: Some(graph),
         ..root.program

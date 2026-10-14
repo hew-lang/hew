@@ -128,6 +128,9 @@ impl Parser<'_> {
         reason = "recursive descent parser requires sequential case handling"
     )]
     pub(crate) fn parse_base_pattern(&mut self) -> Option<Spanned<Pattern>> {
+        if let Some(fragment) = self.take_pattern_fragment().ok()? {
+            return Some(fragment);
+        }
         let _guard = self.enter_recursion()?;
         let start = self.peek_span().start;
 
@@ -178,7 +181,7 @@ impl Parser<'_> {
                 Pattern::ContextVariant(ContextVariantPattern { name, payload })
             }
             Some(Token::Identifier(name)) => {
-                let first = Ident::new(name);
+                let first = self.ident_at(name, &self.peek_span());
                 let first_span = self.peek_span();
                 self.advance();
                 if first.name == sym::UNDERSCORE {
@@ -341,8 +344,9 @@ impl Parser<'_> {
             // Contextual keywords used as identifiers in patterns
             Some(tok) if Self::contextual_keyword_name(tok).is_some() => {
                 let name = Self::contextual_keyword_name(self.peek().unwrap()).unwrap();
+                let ident = self.ident_at(name, &self.peek_span());
                 self.advance();
-                Pattern::Identifier(Ident::new(name))
+                Pattern::Identifier(ident)
             }
             _ => {
                 let found = match self.peek() {

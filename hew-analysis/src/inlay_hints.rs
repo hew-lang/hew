@@ -588,6 +588,7 @@ fn collect_inlay_hints_from_expr(
         | Expr::ChainValue
         | Expr::RegexLiteral(_)
         | Expr::ByteStringLiteral(_)
+        | Expr::MacroCall(_)
         | Expr::MacroInvocation { .. }
         | Expr::ByteArrayLiteral(_)
         | Expr::Yield(None)

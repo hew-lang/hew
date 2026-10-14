@@ -1337,6 +1337,26 @@ impl Builder<'_, '_> {
             },
         )?;
         let mut failures = vec![self.branch_candidate_test(condition)?];
+        let fields =
+            self.borrow_variant_payload_fields(shape, predicate.variant_idx, &source, &desired)?;
+        for literal in &predicate.literals {
+            let condition = self.lower_payload_literal_test(&fields, literal)?;
+            failures.push(self.branch_candidate_test(condition)?);
+        }
+        self.bind_match_fields(&predicate.bindings, &fields, span)?;
+        for nested in &predicate.nested {
+            failures.extend(self.lower_nested_predicate(&fields, nested, span)?);
+        }
+        Ok(failures)
+    }
+
+    fn borrow_variant_payload_fields(
+        &mut self,
+        shape: VariantShapeId,
+        variant: u32,
+        source: &Operand,
+        desired: &crate::SemVariant,
+    ) -> Result<Vec<Option<BlockArg>>, String> {
         let mut fields = Vec::with_capacity(desired.fields.len());
         for (index, field) in desired.fields.iter().enumerate() {
             self.service.require_type_facts(&field.ty)?;
@@ -1346,14 +1366,14 @@ impl Builder<'_, '_> {
             let kind = if owning {
                 SemOpKind::VariantProjectBorrow {
                     shape,
-                    variant: predicate.variant_idx,
+                    variant,
                     source: source.clone(),
                     field: field_index,
                 }
             } else {
                 SemOpKind::VariantProjectCopy {
                     shape,
-                    variant: predicate.variant_idx,
+                    variant,
                     source: source.clone(),
                     field: field_index,
                 }
@@ -1372,15 +1392,7 @@ impl Builder<'_, '_> {
                 },
             }));
         }
-        for literal in &predicate.literals {
-            let condition = self.lower_payload_literal_test(&fields, literal)?;
-            failures.push(self.branch_candidate_test(condition)?);
-        }
-        self.bind_match_fields(&predicate.bindings, &fields, span)?;
-        for nested in &predicate.nested {
-            failures.extend(self.lower_nested_predicate(&fields, nested, span)?);
-        }
-        Ok(failures)
+        Ok(fields)
     }
 
     fn nested_variant(
@@ -1439,40 +1451,49 @@ impl Builder<'_, '_> {
                 .value;
             let payload_ty = self.ty(&predicate.payload_ty);
             let (shape, desired) = self.nested_variant(&payload_ty, predicate)?;
-            let mut fields = Vec::with_capacity(desired.fields.len());
-            for field in &desired.fields {
-                fields.push(ValueDef {
-                    id: self.fresh_value(),
-                    ty: field.ty.clone(),
-                    own: OwnKind::of_ty(&field.ty, self.service.checked_facts.rows())?,
-                });
-            }
-            let id = crate::OpId(self.ops);
-            self.current_block_mut().append_op(SemOp {
-                id,
-                results: fields.clone(),
-                kind: SemOpKind::VariantDestructure {
+            let fields = if self.value_own_kind(source) == Some(OwnKind::Guaranteed) {
+                self.borrow_variant_payload_fields(
                     shape,
-                    variant: predicate.variant_idx,
-                    source: Operand { value: source },
-                },
-                provenance: Provenance::Synthesized,
-            })?;
-            self.ops += 1;
-            self.owned_live.remove(&source);
-            let fields = fields
-                .into_iter()
-                .map(|field| {
-                    if field.own == OwnKind::Owned {
-                        self.owned_live.insert(field.id, field.ty.clone());
-                    }
-                    Some(BlockArg {
-                        value: field.id,
-                        ty: field.ty,
-                        own: field.own,
+                    predicate.variant_idx,
+                    &Operand { value: source },
+                    &desired,
+                )?
+            } else {
+                let mut fields = Vec::with_capacity(desired.fields.len());
+                for field in &desired.fields {
+                    fields.push(ValueDef {
+                        id: self.fresh_value(),
+                        ty: field.ty.clone(),
+                        own: OwnKind::of_ty(&field.ty, self.service.checked_facts.rows())?,
+                    });
+                }
+                let id = crate::OpId(self.ops);
+                self.current_block_mut().append_op(SemOp {
+                    id,
+                    results: fields.clone(),
+                    kind: SemOpKind::VariantDestructure {
+                        shape,
+                        variant: predicate.variant_idx,
+                        source: Operand { value: source },
+                    },
+                    provenance: Provenance::Synthesized,
+                })?;
+                self.ops += 1;
+                self.owned_live.remove(&source);
+                fields
+                    .into_iter()
+                    .map(|field| {
+                        if field.own == OwnKind::Owned {
+                            self.owned_live.insert(field.id, field.ty.clone());
+                        }
+                        Some(BlockArg {
+                            value: field.id,
+                            ty: field.ty,
+                            own: field.own,
+                        })
                     })
-                })
-                .collect::<Vec<_>>();
+                    .collect::<Vec<_>>()
+            };
             for binding in &predicate.bindings {
                 let slot = fields
                     .get(binding.field_idx as usize)

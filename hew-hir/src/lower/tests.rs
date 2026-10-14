@@ -375,80 +375,6 @@ impl Sample for Broken {
 }
 
 #[test]
-fn trait_method_identity_prefers_local_and_imported_same_leaf_traits_over_prelude_items() {
-    let mut ctx = LowerCtx::new(
-        &TypeCheckOutput::default(),
-        MONOMORPHISATION_REGISTRY_CAP,
-        TargetArch::host(),
-    );
-    ctx.current_module_name = Some("app".to_string());
-    for (lang_item, trait_name, method_name, prelude_owner) in [
-        (
-            hew_types::LangItem::IteratorNext,
-            "Iterator",
-            "next",
-            "std.builtins.Iterator",
-        ),
-        (
-            hew_types::LangItem::DisplayFmt,
-            "Display",
-            "fmt",
-            "std.builtins.Display",
-        ),
-    ] {
-        let prelude_trait = hew_types::DefId::for_test(prelude_owner);
-        let prelude_method = hew_types::DefId::for_test(format!("{prelude_owner}::{method_name}"));
-        ctx.lang_items.insert(
-            lang_item.key(),
-            hew_types::LangItemBinding {
-                trait_name: trait_name.to_string(),
-                trait_id: prelude_trait,
-                method_name: Some(method_name.to_string()),
-                method_id: Some(prelude_method),
-            },
-        );
-
-        let local_trait = hew_types::DefId::for_test(format!("app.{trait_name}"));
-        let local_method = hew_types::DefId::for_test(format!("app.{trait_name}::{method_name}"));
-        ctx.trait_method_ids.insert(
-            format!("app.{trait_name}::{method_name}"),
-            (local_trait, local_method),
-        );
-        assert_eq!(
-            ctx.trait_method_identity(trait_name, method_name),
-            Some((local_trait, local_method)),
-            "a local same-leaf {trait_name} must not be replaced by the prelude lang item"
-        );
-        ctx.trait_method_ids
-            .remove(&format!("app.{trait_name}::{method_name}"));
-
-        let imported_trait = hew_types::DefId::for_test(format!("vendor.{trait_name}"));
-        let imported_method =
-            hew_types::DefId::for_test(format!("vendor.{trait_name}::{method_name}"));
-        ctx.trait_method_ids_by_binding.insert(
-            (
-                Some("app".to_string()),
-                0,
-                trait_name.to_string(),
-                method_name.to_string(),
-            ),
-            (imported_trait, imported_method),
-        );
-        assert_eq!(
-            ctx.trait_method_identity(trait_name, method_name),
-            Some((imported_trait, imported_method)),
-            "an imported same-leaf {trait_name} must not be replaced by the prelude lang item"
-        );
-        ctx.trait_method_ids_by_binding.remove(&(
-            Some("app".to_string()),
-            0,
-            trait_name.to_string(),
-            method_name.to_string(),
-        ));
-    }
-}
-
-#[test]
 fn conflicting_impl_body_plan_is_a_checker_boundary_diagnostic_not_a_panic() {
     // The checker assigns distinct declarations. Present one declaration
     // with two incompatible emitted-body symbols to the HIR planner; it
@@ -828,6 +754,7 @@ fn checker_admitted_opaque_lifecycle_survives_into_exact_hir_authority() {
         .expect("add std.fs test module");
     graph.topo_order = vec![module_id, root_id];
     let program = Program {
+        expansions: hew_parser::macro_syntax::ExpansionMap::default(),
         module_graph: Some(graph),
         items: vec![],
         module_doc: None,
@@ -975,6 +902,7 @@ fn opaque_lifecycle_rejects_a_second_release_hidden_in_control_flow() {
         .expect("add std.fs test module");
     graph.topo_order = vec![module_id, root_id];
     let program = Program {
+        expansions: hew_parser::macro_syntax::ExpansionMap::default(),
         module_graph: Some(graph),
         items: vec![],
         module_doc: None,
@@ -1158,13 +1086,13 @@ fn main_function_body(output: &LowerOutput) -> &HirBlock {
     &function.body
 }
 
-fn const_value_named<'a>(output: &'a LowerOutput, name: &str) -> &'a crate::node::HirConstValue {
+fn const_value_named<'a>(output: &'a LowerOutput, name: &str) -> &'a HirExprKind {
     output
         .module
         .items
         .iter()
         .find_map(|item| match item {
-            HirItem::Const(item) if item.name == name => Some(&item.value),
+            HirItem::Const(item) if item.name == name => Some(&item.value.kind),
             _ => None,
         })
         .unwrap_or_else(|| panic!("expected lowered const `{name}`"))
@@ -1246,56 +1174,24 @@ fn checker_fact_named<'a>(
 }
 
 #[test]
-fn fold_const_expr_resolves_prior_const_ref() {
-    let (_program, _tco, lowered) = parse_typecheck_and_lower(
-        r"
-            const A: i64 = 10;
-            const B: i64 = A + 1;
-
-            fn main() -> i64 {
-                B
-            }
-            ",
-    );
-
-    assert!(
-        lowered.diagnostics.is_empty(),
-        "lower diagnostics: {:#?}",
-        lowered.diagnostics
-    );
-    assert_eq!(
-        const_value_named(&lowered, "B"),
-        &crate::node::HirConstValue::Integer(11)
-    );
-}
-
-#[test]
-fn fold_const_expr_forward_ref_fails_closed_at_checker() {
-    let parsed = hew_parser::parse(
-        r"
-            const B: i64 = A + 1;
-            const A: i64 = 10;
-
-            fn main() -> i64 {
-                B
-            }
-            ",
-    );
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:#?}",
-        parsed.errors
-    );
-
-    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-    let tco = checker.check_program(&parsed.program);
-    assert!(
-        tco.errors
-            .iter()
-            .any(|error| error.message == "undefined variable `A`"),
-        "forward const reference must fail closed before HIR lowering; type errors: {:#?}",
-        tco.errors
-    );
+fn fold_const_expr_resolves_references_in_either_declaration_order() {
+    for constants in [
+        "const A: i64 = 10; const B: i64 = A + 1;",
+        "const B: i64 = A + 1; const A: i64 = 10;",
+    ] {
+        let source = format!("{constants} fn main() -> i64 {{ B }}");
+        let (_program, _tco, lowered) = parse_typecheck_and_lower(&source);
+        assert!(
+            lowered.diagnostics.is_empty(),
+            "{constants}: lower diagnostics: {:#?}",
+            lowered.diagnostics
+        );
+        assert_eq!(
+            const_value_named(&lowered, "B"),
+            &HirExprKind::Literal(HirLiteral::Integer(11)),
+            "{constants}"
+        );
+    }
 }
 
 #[test]
@@ -1679,9 +1575,9 @@ fn builtin_lowering_gates_use_discriminants_not_type_spellings() {
     );
     let user_vec_literal_ty = user_vec_ctx.array_literal_ty(&(0..0));
     assert!(
-            user_vec_literal_ty.is_none(),
-            "a user Vec<T> must not acquire array literal runtime lowering, got {user_vec_literal_ty:?}"
-        );
+        user_vec_literal_ty.is_none(),
+        "a user Vec<T> must not acquire array literal runtime lowering, got {user_vec_literal_ty:?}"
+    );
 
     let mut map_ctx = LowerCtx::new(
         &TypeCheckOutput::default(),
@@ -3258,6 +3154,7 @@ pub fn make_error(msg: string) -> AppErr {
     mg.add_module(module).unwrap();
     mg.topo_order = vec![mod_id, root_id];
     let program = Program {
+        expansions: hew_parser::macro_syntax::ExpansionMap::default(),
         module_graph: Some(mg),
         items: vec![],
         module_doc: None,
@@ -3426,6 +3323,7 @@ fn named_import_enum_alias_resolves_variant_through_exact_source_owner() {
         .expect("add root module");
     graph.topo_order = vec![source_id, root_id];
     let program = Program {
+        expansions: hew_parser::macro_syntax::ExpansionMap::default(),
         items: root.program.items,
         module_graph: Some(graph),
         module_doc: None,
@@ -3593,6 +3491,7 @@ pub enum Switch {
             vec![beta_id, alpha_id, root_id]
         };
         let program = Program {
+            expansions: hew_parser::macro_syntax::ExpansionMap::default(),
             items: root.program.items,
             module_graph: Some(graph),
             module_doc: None,
@@ -3691,6 +3590,7 @@ pub fn make_error(msg: string) -> AppErr {
     mg.add_module(module).unwrap();
     mg.topo_order = vec![mod_id, root_id];
     let program = Program {
+        expansions: hew_parser::macro_syntax::ExpansionMap::default(),
         module_graph: Some(mg),
         items: vec![],
         module_doc: None,
@@ -3810,6 +3710,7 @@ fn same_short_name_actors_in_different_modules_canonicalize_independently() {
     }
     mg.topo_order = module_ids.into_iter().chain([root_id]).collect();
     let program = Program {
+        expansions: hew_parser::macro_syntax::ExpansionMap::default(),
         module_graph: Some(mg),
         items: vec![],
         module_doc: None,

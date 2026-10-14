@@ -1,0 +1,10 @@
+[[case]]
+id = "typed-embed-custom-hash"
+source = "cases/typed-embed-custom-hash.hew"
+intent = "Embedded structural collection keys use custom hashing during ordinary materialization."
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "1\n"
+exit = 0

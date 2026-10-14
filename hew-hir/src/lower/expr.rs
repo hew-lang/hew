@@ -145,7 +145,7 @@ impl LowerCtx {
                 Some(MethodCallRewrite::VecFrom)
             ) {
                 if let [arg] = args.as_slice() {
-                    let site = self.ids.site();
+                    let site = self.source_site(&span);
                     let lowered = self.lower_expr(arg.expr(), IntentKind::Consume);
                     return self.subsumed_value(site, &span, intent, lowered);
                 }
@@ -227,7 +227,7 @@ impl LowerCtx {
                         hew_types::DeclarationKind::Function
                             | hew_types::DeclarationKind::ExternFunction
                     ) {
-                        let site = self.ids.site();
+                        let site = self.source_site(&span);
                         let (kind, ty) = if let Some(value) =
                             self.lower_source_function_value(declaration, &span, site)
                         {
@@ -270,7 +270,7 @@ impl LowerCtx {
         // built. Allocation order: site before node so existing
         // SiteId counts in tests stay stable (lower_expr previously
         // allocated node before site at the same call).
-        let site = self.ids.site();
+        let site = self.source_site(&span);
         if let Some(operations) = self
             .checked_indexed_place_operations
             .get(&self.mk_key(&span))
@@ -280,6 +280,22 @@ impl LowerCtx {
         if let Some(operation) = self.actor_delivery_calls.get(&self.mk_key(&span)).cloned() {
             use hew_types::actor_delivery::ActorDeliveryCall;
             let (receiver, args) = match (&operation, &expr.0) {
+                (
+                    ActorDeliveryCall::Intercept(operation),
+                    Expr::MethodCall { receiver, args, .. },
+                ) => (
+                    self.lower_expr(
+                        receiver,
+                        if operation.consumes() {
+                            IntentKind::Consume
+                        } else {
+                            IntentKind::Read
+                        },
+                    ),
+                    args.iter()
+                        .map(|arg| self.lower_expr(arg.expr(), IntentKind::Read))
+                        .collect(),
+                ),
                 (
                     ActorDeliveryCall::Stop
                     | ActorDeliveryCall::Terminate
@@ -376,16 +392,17 @@ impl LowerCtx {
             };
         }
         let (kind, ty) = match &expr.0 {
-            Expr::MacroInvocation { .. } => {
-                match self.compile_time_values.get(&self.mk_key(&span)) {
-                    Some(hew_types::compile_time::ConstantValue::String(text)) => (
-                        HirExprKind::Literal(HirLiteral::String(text.clone())),
-                        ResolvedTy::String,
-                    ),
-                    Some(hew_types::compile_time::ConstantValue::Bytes(bytes)) => (
-                        HirExprKind::Literal(HirLiteral::Bytes(bytes.clone())),
-                        ResolvedTy::Bytes,
-                    ),
+            Expr::MacroCall(_) | Expr::MacroInvocation { .. } => {
+                match self.compile_time_values.get(&self.mk_key(&span)).cloned() {
+                    Some(value) => {
+                        if let Some(ty) = self.checker_expr_ty(&span, "compile-time input") {
+                            return self.lower_constant_value(&value, &ty, &span, intent);
+                        }
+                        (
+                            HirExprKind::Unsupported("untyped compile-time input".into()),
+                            ResolvedTy::Unit,
+                        )
+                    }
                     None => {
                         self.unsupported(
                             span.clone(),

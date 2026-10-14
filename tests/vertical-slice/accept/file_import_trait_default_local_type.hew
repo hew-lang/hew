@@ -4,7 +4,7 @@
 // impl in the importing file. The materialised body keeps the trait file's
 // spans while the impl lives here, so a split source context would misresolve
 // the trait-file-local names.
-import "file_import_trait_default_local_type_lib.hew";
+import file_import_trait_default_local_type_lib.{Describe};
 
 type Widget {
     id: string;

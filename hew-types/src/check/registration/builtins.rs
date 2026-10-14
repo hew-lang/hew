@@ -312,6 +312,12 @@ impl Checker {
             return;
         }
         let builtins_module = self.defs.mint_module("std.builtins", &[]);
+        if self.defs.module_source(builtins_module).is_none() {
+            self.defs.set_module_package(
+                builtins_module,
+                crate::def_table::PackageOrigin::StandardLibrary,
+            );
+        }
         for (item_ordinal, (item, span)) in parsed.program.items.iter().enumerate() {
             self.mint_item_declaration_identities(
                 Some(builtins_module),
@@ -971,7 +977,11 @@ impl Checker {
                     Item::Supervisor(item) => Some(item.name.name.as_str()),
                     Item::Machine(item) => Some(item.name.name.as_str()),
                     Item::Record(item) => Some(item.name.name.as_str()),
-                    Item::Import(_) | Item::Impl(_) | Item::ExternBlock(_) => None,
+                    Item::Macro(_)
+                    | Item::MacroCall(_)
+                    | Item::Import(_)
+                    | Item::Impl(_)
+                    | Item::ExternBlock(_) => None,
                 };
                 if let Some(name) = name {
                     self.reject_protected_prelude_declaration_for_owner(Some(&owner), name, span);

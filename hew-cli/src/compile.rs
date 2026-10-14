@@ -44,7 +44,7 @@ pub struct CompileOptions {
     /// Test functions selected for one shared dispatcher, in ordinal order.
     pub test_entry_selections: Vec<hew_types::DeclarationOccurrence>,
     /// Compile-time admission for entries run on the deterministic driver.
-    pub deterministic_admission: hew_compile::DeterministicAdmission,
+    pub host_admission: hew_compile::HostAdmission,
     /// Canonical `<stem>.hew` production peer for a selected test root.
     pub companion: Option<PathBuf>,
     /// Compile a synthetic `hew eval` REPL fragment rather than a finished
@@ -69,7 +69,7 @@ pub(crate) fn frontend_options(target: &TargetSpec, options: &CompileOptions) ->
         module_search_paths: options.module_search_paths.clone(),
         entry_selection: options.entry_selection,
         test_entry_selections: options.test_entry_selections.clone(),
-        deterministic_admission: options.deterministic_admission.clone(),
+        host_admission: options.host_admission.clone(),
         companion: options.companion.clone(),
         repl_fragment: options.repl_fragment,
         lint_levels: options.lint_levels.clone(),
@@ -93,7 +93,7 @@ pub(crate) fn frontend_options_for_check(options: &CompileOptions) -> FrontendOp
         module_search_paths: options.module_search_paths.clone(),
         entry_selection: options.entry_selection,
         test_entry_selections: options.test_entry_selections.clone(),
-        deterministic_admission: options.deterministic_admission.clone(),
+        host_admission: options.host_admission.clone(),
         companion: options.companion.clone(),
         repl_fragment: options.repl_fragment,
         lint_levels: options.lint_levels.clone(),

@@ -394,8 +394,12 @@ impl Checker {
                 .fn_sig(&callee_key)
                 .and_then(|sig| sig.impl_method.as_ref())
             {
-                crate::method_resolution::impl_receiver_substitution(method, owner_args)
-                    .unwrap_or_default()
+                crate::method_resolution::impl_receiver_substitution(
+                    &method.receiver_parameters,
+                    &method.receiver_args,
+                    owner_args,
+                )
+                .unwrap_or_default()
             } else {
                 self.type_def_at(owner_name)
                     .into_iter()
@@ -413,6 +417,16 @@ impl Checker {
                     .into_iter()
                     .map(|(parameter, ty)| (parameter, self.subst.resolve(&ty))),
             );
+        }
+
+        // Publish the same complete binder substitution to call consumers.
+        // Instantiated method signatures have already removed impl parameters.
+        if let Some(arguments) = declared_params
+            .iter()
+            .map(|parameter| substitution.get(parameter).cloned())
+            .collect::<Option<Vec<_>>>()
+        {
+            self.record_concrete_call_type_args(span, &arguments);
         }
 
         // Nothing pinned means nothing to discharge; a partially pinned

@@ -1,0 +1,10 @@
+[[case]]
+id = "attribute-macros"
+intent = "Imported attributes stack in reading order, preserve caller names and tests, forward generic functions and receiver methods through hygienic helpers, and retain return and failure targets in native and VM execution."
+source = "cases/attribute-macros.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "outer\n99\ninner\n99\n42\ngeneric\nfallible\n99\n42\nfallible\n99\ntrue\n42\n41\n42\ntrait\n99\n42\nactor\n99\n42\n42\npending\n99\ngenerated\n99\n7\n5\n"
+exit = 0

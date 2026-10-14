@@ -5,7 +5,7 @@
 //! is observed by every descendant. The tree carries no thread state, so it is
 //! the same authority on every target.
 
-use std::sync::atomic::{AtomicI32, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicI32, AtomicI64, AtomicUsize, Ordering};
 use std::sync::Mutex;
 
 use crate::util::MutexExt as _;
@@ -55,6 +55,7 @@ pub struct HewCancellationToken {
     state: AtomicI32,
     reason: AtomicI32,
     parent: *mut HewCancellationToken,
+    pub(crate) deadline_ns: AtomicI64,
     /// Readiness subscribers; token state remains the cancellation authority.
     observers: Mutex<Vec<std::sync::Weak<HewCancelObserver>>>,
     children_total: AtomicI32,
@@ -152,10 +153,26 @@ pub unsafe extern "C" fn hew_cancel_token_new_child(
         state: AtomicI32::new(HewCancellationState::Active as i32),
         reason: AtomicI32::new(0),
         parent,
+        deadline_ns: AtomicI64::new(-1),
         observers: Mutex::new(Vec::new()),
         children_total: AtomicI32::new(0),
     });
     Box::into_raw(token)
+}
+
+/// Read the minimum explicit scope deadline in this retained ancestry.
+pub(crate) unsafe fn token_deadline(
+    mut token: *mut HewCancellationToken,
+) -> crate::request_deadline::RequestDeadline {
+    let mut deadline = crate::request_deadline::RequestDeadline::default();
+    // SAFETY: each live token retains its parent until this borrow ends.
+    while let Some(current) = unsafe { token.as_ref() } {
+        deadline = deadline.earlier(crate::request_deadline::RequestDeadline::from_raw(
+            current.deadline_ns.load(Ordering::Acquire),
+        ));
+        token = current.parent;
+    }
+    deadline
 }
 
 /// Request cancellation on `token`.
@@ -200,11 +217,29 @@ pub unsafe extern "C" fn hew_cancel_token_cancel(token: *mut HewCancellationToke
     }
 }
 
+// The timer wakes parked work; a safepoint must also observe the same expiry
+// before a ready operation can outrun that callback.
+unsafe fn poll_token_state(token: *mut HewCancellationToken) -> HewCancellationState {
+    // SAFETY: the caller retains this token throughout the observation.
+    let current = unsafe { &*token };
+    if token_state(current) == HewCancellationState::Active
+        && crate::request_deadline::RequestDeadline::from_raw(
+            current.deadline_ns.load(Ordering::Acquire),
+        )
+        .expired()
+    {
+        // SAFETY: expiry publishes through the token's existing cancellation authority.
+        unsafe { hew_cancel_token_cancel(token, crate::fault::HEW_FAULT_DEADLINE) };
+    }
+    token_state(current)
+}
+
 unsafe fn cancel_token_is_requested_raw(mut token: *mut HewCancellationToken) -> bool {
     while !token.is_null() {
         // SAFETY: the caller retains the token and each token retains its parent.
         let current = unsafe { &*token };
-        if token_state(current).is_requested() {
+        // SAFETY: this token and its ancestry remain retained during the poll.
+        if unsafe { poll_token_state(token) }.is_requested() {
             return true;
         }
         token = current.parent;
@@ -240,7 +275,8 @@ pub(crate) unsafe fn cancel_token_reason(mut token: *mut HewCancellationToken) -
     while !token.is_null() {
         // SAFETY: the caller retains the token and each token retains its parent.
         let current = unsafe { &*token };
-        if token_state(current).is_requested() {
+        // SAFETY: this token and its ancestry remain retained during the poll.
+        if unsafe { poll_token_state(token) }.is_requested() {
             let reason = current.reason.load(Ordering::Acquire);
             if reason != crate::fault::HEW_FAULT_RACE_LOST {
                 return reason;

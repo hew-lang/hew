@@ -636,6 +636,26 @@
           },
           "patterns": [
             {
+              "name": "meta.type.parameters.hew",
+              "begin": "\\G\\s*(<)",
+              "beginCaptures": {
+                "1": {
+                  "name": "punctuation.definition.type-parameters.begin.hew"
+                }
+              },
+              "end": "(>)",
+              "endCaptures": {
+                "1": {
+                  "name": "punctuation.definition.type-parameters.end.hew"
+                }
+              },
+              "patterns": [
+                {
+                  "include": "#type-parameter-content"
+                }
+              ]
+            },
+            {
               "include": "#types"
             },
             {
@@ -882,6 +902,26 @@
     "callable-syntax": {
       "patterns": [
         {
+          "name": "meta.type.parameters.hew",
+          "begin": "(?<=\\bfn\\s*|\\bfn\\s*\\[[^\\]]*\\]\\s*)(<)",
+          "beginCaptures": {
+            "1": {
+              "name": "punctuation.definition.type-parameters.begin.hew"
+            }
+          },
+          "end": "(>)",
+          "endCaptures": {
+            "1": {
+              "name": "punctuation.definition.type-parameters.end.hew"
+            }
+          },
+          "patterns": [
+            {
+              "include": "#type-parameter-content"
+            }
+          ]
+        },
+        {
           "name": "meta.type.callable-capabilities.hew",
           "begin": "\\b(fn)\\s*(\\[)",
           "beginCaptures": {
@@ -943,6 +983,42 @@
               "include": "#punctuation"
             }
           ]
+        }
+      ]
+    },
+    "type-parameter-list": {
+      "name": "meta.type.parameters.hew",
+      "begin": "(<)",
+      "beginCaptures": {
+        "1": {
+          "name": "punctuation.definition.type-parameters.begin.hew"
+        }
+      },
+      "end": "(>)",
+      "endCaptures": {
+        "1": {
+          "name": "punctuation.definition.type-parameters.end.hew"
+        }
+      },
+      "patterns": [
+        {
+          "include": "#type-parameter-content"
+        }
+      ]
+    },
+    "type-parameter-content": {
+      "patterns": [
+        {
+          "include": "#comments"
+        },
+        {
+          "include": "#type-parameter-list"
+        },
+        {
+          "include": "#types"
+        },
+        {
+          "include": "#punctuation"
         }
       ]
     },

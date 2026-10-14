@@ -33,7 +33,7 @@ pub(super) fn operation_storage(
         }
         PhysicalOp::Unary { dest, source, .. }
         | PhysicalOp::Cast { dest, source, .. }
-        | PhysicalOp::CallableCoerce { dest, source }
+        | PhysicalOp::CallableCoerce { dest, source, .. }
         | PhysicalOp::GeneratorCoerce { dest, source }
         | PhysicalOp::DynMake { dest, source, .. }
         | PhysicalOp::Transfer { dest, source }

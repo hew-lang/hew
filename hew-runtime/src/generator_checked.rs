@@ -264,7 +264,9 @@ pub unsafe extern "C" fn hew_checked_generator_poll(
             // SAFETY: the compiler's once adapter owns environment cleanup on
             // every terminal path; output/state remain live until frame release.
             generator.frame = unsafe {
-                ((*callable.descriptor).invoke_once)(
+                ((*callable.descriptor)
+                    .invoke_once
+                    .unwrap_or_else(|| std::process::abort()))(
                     callable.environment,
                     ptr::null(),
                     generator.output,

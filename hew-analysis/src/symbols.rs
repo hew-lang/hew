@@ -238,23 +238,8 @@ fn item_to_symbol(source: &str, item: &Item, item_span: OffsetSpan) -> SymbolInf
         Item::Machine(m) => {
             let mut sym =
                 named_symbol(source, m.name.name.as_str(), SymbolKind::Machine, item_span);
-            let mut state_cursor = item_span.start;
             let mut event_cursor = item_span.start;
-            let mut children: Vec<SymbolInfo> = m
-                .states
-                .iter()
-                .map(|state| {
-                    let symbol = keyword_symbol(
-                        source,
-                        "state",
-                        state.name.name.as_str(),
-                        SymbolKind::State,
-                        state_cursor,
-                    );
-                    state_cursor = symbol.selection_span.end;
-                    symbol
-                })
-                .collect();
+            let mut children = machine_state_symbols(source, m, None);
             children.extend(m.events.iter().map(|event| {
                 let symbol = keyword_symbol(
                     source,
@@ -329,6 +314,58 @@ fn child_symbol(
 ) -> SymbolInfo {
     let selection_span = crate::util::find_name_span(source, search_from, name);
     symbol_with_spans(name, kind, span.unwrap_or(selection_span), selection_span)
+}
+
+fn machine_state_symbols(
+    source: &str,
+    machine: &hew_parser::ast::MachineDecl,
+    parent: Option<hew_parser::ast::Ident>,
+) -> Vec<SymbolInfo> {
+    let is_child = |name| {
+        machine
+            .composite_groups
+            .iter()
+            .find(|group| group.members.contains(&name))
+            .map(|group| group.name)
+            == parent
+    };
+    let mut children: Vec<_> = machine
+        .states
+        .iter()
+        .filter(|state| is_child(state.name))
+        .map(|state| {
+            child_symbol(
+                source,
+                state.name.name.as_str(),
+                SymbolKind::State,
+                Some(state.span.clone().into()),
+                state.span.start,
+            )
+        })
+        .collect();
+    children.extend(
+        machine
+            .composite_groups
+            .iter()
+            .filter(|group| is_child(group.name))
+            .map(|group| {
+                let mut symbol = child_symbol(
+                    source,
+                    group.name.name.as_str(),
+                    SymbolKind::State,
+                    Some(group.span.clone().into()),
+                    group.span.start,
+                );
+                if let Some(children) =
+                    crate::util::non_empty(machine_state_symbols(source, machine, Some(group.name)))
+                {
+                    symbol.children = children;
+                }
+                symbol
+            }),
+    );
+    children.sort_by_key(|child| child.selection_span.start);
+    children
 }
 
 fn keyword_symbol(
@@ -471,7 +508,11 @@ machine Traffic {
         Start;
     }
 
-    state Idle;
+    state Connected {
+        initial state Handshake {
+            initial state Idle;
+        }
+    }
     on Start: Idle => Idle;
 }
 ";
@@ -512,7 +553,17 @@ machine Traffic {
             .iter()
             .find(|symbol| symbol.name == "Start")
             .unwrap();
-        let state = machine
+        let connected = machine
+            .children
+            .iter()
+            .find(|symbol| symbol.name == "Connected")
+            .unwrap();
+        let handshake = connected
+            .children
+            .iter()
+            .find(|symbol| symbol.name == "Handshake")
+            .unwrap();
+        let state = handshake
             .children
             .iter()
             .find(|symbol| symbol.name == "Idle")

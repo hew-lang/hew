@@ -86,74 +86,7 @@ impl Checker {
                     resolved
                 }
             }
-            Ty::Named { head, args } => Ty::Named {
-                head: *head,
-                args: args
-                    .iter()
-                    .map(|a| self.freshen_inner(a, mapping))
-                    .collect(),
-            },
-            Ty::Tuple(ts) => Ty::Tuple(ts.iter().map(|t| self.freshen_inner(t, mapping)).collect()),
-            Ty::Array(inner, n) => Ty::Array(Box::new(self.freshen_inner(inner, mapping)), *n),
-            Ty::Slice(inner) => Ty::Slice(Box::new(self.freshen_inner(inner, mapping))),
-            Ty::Pointer {
-                is_mutable,
-                pointee,
-            } => Ty::Pointer {
-                is_mutable: *is_mutable,
-                pointee: Box::new(self.freshen_inner(pointee, mapping)),
-            },
-            Ty::TraitObject { traits } => Ty::TraitObject {
-                traits: traits
-                    .iter()
-                    .map(|bound| crate::ty::TraitObjectBound {
-                        trait_name: bound.trait_name.clone(),
-                        trait_id: bound.trait_id,
-                        args: bound
-                            .args
-                            .iter()
-                            .map(|arg| self.freshen_inner(arg, mapping))
-                            .collect(),
-                        assoc_bindings: bound
-                            .assoc_bindings
-                            .iter()
-                            .map(|(name, ty)| (name.clone(), self.freshen_inner(ty, mapping)))
-                            .collect(),
-                    })
-                    .collect(),
-            },
-            Ty::Function {
-                capabilities,
-                params,
-                ret,
-            } => Ty::Function {
-                capabilities: *capabilities,
-                params: params
-                    .iter()
-                    .map(|p| self.freshen_inner(p, mapping))
-                    .collect(),
-                ret: Box::new(self.freshen_inner(ret, mapping)),
-            },
-            Ty::Closure {
-                capabilities,
-                params,
-                ret,
-                captures,
-                identity,
-            } => Ty::Closure {
-                capabilities: *capabilities,
-                params: params
-                    .iter()
-                    .map(|p| self.freshen_inner(p, mapping))
-                    .collect(),
-                ret: Box::new(self.freshen_inner(ret, mapping)),
-                captures: captures
-                    .iter()
-                    .map(|c| self.freshen_inner(c, mapping))
-                    .collect(),
-                identity: identity.clone(),
-            },
-            _ => ty.clone(),
+            _ => ty.map_children(&mut |child| self.freshen_inner(child, mapping)),
         }
     }
 

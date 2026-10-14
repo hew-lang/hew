@@ -58,7 +58,7 @@ impl Checker {
                 .collect(),
             owned,
             own_close,
-            static_callable: matches!(&binding.ty, Ty::Function { .. })
+            static_callable: matches!(binding.ty.callable_body(), Ty::Function { .. })
                 && Self::static_callable_candidates(&binding.value_candidates),
         })
     }
@@ -154,7 +154,7 @@ impl Checker {
                 return;
             }
         }
-        let static_callable = matches!(ty, Ty::Function { .. })
+        let static_callable = matches!(ty.callable_body(), Ty::Function { .. })
             && self.expr_place(&target.0).is_some_and(|(root, path)| {
                 path.is_empty()
                     && self.env.lookup_ref(root).is_some_and(|binding| {
@@ -182,7 +182,7 @@ impl Checker {
                 absent: Vec::new(),
                 owned: None,
                 own_close: false,
-                static_callable: matches!(&capture.ty, Ty::Function { .. })
+                static_callable: matches!(capture.ty.callable_body(), Ty::Function { .. })
                     && Self::static_callable_candidates(&capture.value_candidates),
             })
             .collect();
@@ -288,7 +288,7 @@ impl Checker {
                 child_path.push(label);
                 pending.push((ty, child_path, false));
             };
-            match &ty {
+            match ty.callable_body() {
                 Ty::Closure { captures, .. } => {
                     for (index, ty) in captures.iter().enumerate() {
                         child(index.to_string(), ty.clone());

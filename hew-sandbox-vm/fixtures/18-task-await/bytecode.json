@@ -4,7 +4,12 @@
   "bytes": [],
   "closures": [
     {
-      "body": 1,
+      "entries": [
+        {
+          "body": 1,
+          "specialization": null
+        }
+      ],
       "fields": 0,
       "id": 0
     }

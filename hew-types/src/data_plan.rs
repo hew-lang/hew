@@ -101,7 +101,7 @@ impl crate::TypeFactService {
                             .map_err(|error| format!("invalid data enum payload: {error:?}"))?;
                         Ok((
                             name,
-                            crate::value_class::substitute(
+                            crate::resolved_ty::substitute_type_params(
                                 &ty,
                                 &definition.type_params,
                                 &instance.args,

@@ -28,7 +28,7 @@ use crate::node_identity::{Location, NodeId};
 /// Current wire protocol version.
 ///
 /// Frames carrying any other version value MUST be rejected by the decoder.
-pub const WIRE_VERSION: u8 = 3;
+pub const WIRE_VERSION: u8 = 4;
 
 /// Discriminant for a control frame (`frame_type` field value 0).
 pub const FRAME_TYPE_CONTROL: u8 = 0;
@@ -181,6 +181,7 @@ pub enum EnvelopeMessage {
     Handler(String),
     Reply,
     Rejected,
+    Withdraw,
 }
 
 impl EnvelopeMessage {
@@ -189,6 +190,7 @@ impl EnvelopeMessage {
             Self::Handler(identity) => Value::Text(identity.clone()),
             Self::Reply => Value::Integer(0.into()),
             Self::Rejected => Value::Integer(1.into()),
+            Self::Withdraw => Value::Integer(2.into()),
         }
     }
 
@@ -201,6 +203,7 @@ impl EnvelopeMessage {
             }
             Value::Integer(status) if *status == Integer::from(0) => Ok(Self::Reply),
             Value::Integer(status) if *status == Integer::from(1) => Ok(Self::Rejected),
+            Value::Integer(status) if *status == Integer::from(2) => Ok(Self::Withdraw),
             _ => Err(DecodeError::MalformedFrame {
                 reason: "invalid handler declaration or reply status",
             }),
@@ -249,6 +252,10 @@ pub struct EnvelopeFrame {
     ///
     /// CDDL key 7.
     pub request_id: u64,
+
+    /// Remaining request budget in nanoseconds; never an absolute clock value.
+    /// CDDL key 8. Absent for untimed requests, replies and withdrawals.
+    pub budget_ns: Option<u64>,
 }
 
 /// Top-level wire-frame dispatch.
@@ -461,7 +468,7 @@ impl Serialize for EnvelopeFrame {
     where
         S: Serializer,
     {
-        let mut map = serializer.serialize_map(Some(7))?;
+        let mut map = serializer.serialize_map(Some(8))?;
         map.serialize_entry(&1u64, &self.version)?;
         map.serialize_entry(&2u64, &FRAME_TYPE_ENVELOPE)?;
         map.serialize_entry(&3u64, &location_option_to_value(self.target))?;
@@ -469,6 +476,7 @@ impl Serialize for EnvelopeFrame {
         map.serialize_entry(&5u64, &self.message.to_value())?;
         map.serialize_entry(&6u64, &PayloadBytes(&self.payload))?;
         map.serialize_entry(&7u64, &self.request_id)?;
+        map.serialize_entry(&8u64, &self.budget_ns)?;
         map.end()
     }
 }
@@ -813,6 +821,17 @@ impl From<DecodeError> for MonitorPayloadError {
 
 impl EnvelopeFrame {
     fn validate(&self) -> Result<(), &'static str> {
+        if self
+            .budget_ns
+            .is_some_and(|budget| budget > i64::MAX.cast_unsigned())
+        {
+            return Err("request budget exceeds the supported range");
+        }
+        if self.budget_ns.is_some()
+            && (self.request_id == 0 || !matches!(self.message, EnvelopeMessage::Handler(_)))
+        {
+            return Err("only asks may carry a request budget");
+        }
         match &self.message {
             EnvelopeMessage::Handler(identity) => {
                 if self.target.is_none()
@@ -821,6 +840,17 @@ impl EnvelopeFrame {
                     || identity.contains('\0')
                 {
                     return Err("request requires a target and bounded declaration identity");
+                }
+            }
+            EnvelopeMessage::Withdraw => {
+                if self.target.is_none()
+                    || self.source.is_some()
+                    || self.request_id == 0
+                    || !self.payload.is_empty()
+                {
+                    return Err(
+                        "withdrawal requires an exact target and request id without a payload",
+                    );
                 }
             }
             EnvelopeMessage::Reply | EnvelopeMessage::Rejected => {
@@ -849,6 +879,7 @@ impl EnvelopeFrame {
             message,
             payload,
             request_id: 0,
+            budget_ns: None,
         }
     }
 }
@@ -892,6 +923,7 @@ pub(crate) unsafe fn encode_envelope_frame_from_raw_parts(
     payload: *const u8,
     payload_len: usize,
     request_id: u64,
+    budget_ns: Option<u64>,
 ) -> Result<Vec<u8>, EncodeError> {
     let payload = if payload_len == 0 {
         Vec::new()
@@ -908,6 +940,7 @@ pub(crate) unsafe fn encode_envelope_frame_from_raw_parts(
         message,
         payload,
         request_id,
+        budget_ns,
     })
 }
 
@@ -1584,7 +1617,7 @@ fn control_frame_from_map(map: &BTreeMap<u64, &Value>) -> Result<ControlFrame, D
 
 fn envelope_frame_from_map(map: &BTreeMap<u64, &Value>) -> Result<EnvelopeFrame, DecodeError> {
     ensure_frame_type(map, FRAME_TYPE_ENVELOPE)?;
-    ensure_exact_keys(map, &[1, 2, 3, 4, 5, 6, 7])?;
+    ensure_exact_keys(map, &[1, 2, 3, 4, 5, 6, 7, 8])?;
     let frame = EnvelopeFrame {
         version: value_to_u8(required(map, 1)?, 1)?,
         target: value_to_location_option(required(map, 3)?, 3)?,
@@ -1592,6 +1625,10 @@ fn envelope_frame_from_map(map: &BTreeMap<u64, &Value>) -> Result<EnvelopeFrame,
         message: EnvelopeMessage::from_value(required(map, 5)?)?,
         payload: value_to_bytes(required(map, 6)?, 6)?,
         request_id: value_to_u64(required(map, 7)?, 7)?,
+        budget_ns: match required(map, 8)? {
+            Value::Null => None,
+            value => Some(value_to_u64(value, 8)?),
+        },
     };
     frame
         .validate()

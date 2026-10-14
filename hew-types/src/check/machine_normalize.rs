@@ -22,6 +22,7 @@ use hew_parser::ast::{
     Visibility,
 };
 
+use super::machine_hierarchy::Hierarchy;
 use crate::error::{TypeError, TypeErrorKind};
 
 /// The program the checker checks and HIR lowers when the compiler writes
@@ -31,6 +32,8 @@ use crate::error::{TypeError, TypeErrorKind};
 #[derive(Debug, Clone)]
 pub struct NormalizedProgram {
     pub program: Program,
+    /// One checked hierarchy per physical machine declaration, shared by imports.
+    pub hierarchies: HashMap<ExpansionKey, Hierarchy>,
     pub source_spans: HashMap<Span, Span>,
     /// Each machine's transitions as `(source state, authored body span)`,
     /// keyed by the declaring module (`(root)` or its dotted path) and the
@@ -52,6 +55,7 @@ impl NormalizedProgram {
     ) -> Self {
         Self {
             program: displays.program,
+            hierarchies: machines.map(|m| m.hierarchies.clone()).unwrap_or_default(),
             source_spans: machines.map(|m| m.source_spans.clone()).unwrap_or_default(),
             transitions: machines.map(|m| m.transitions.clone()).unwrap_or_default(),
             implied_displays: displays.origins,
@@ -94,6 +98,7 @@ pub(super) fn normalize(
         origin: 0..0,
         expansions: HashMap::new(),
         transitions: HashMap::new(),
+        hierarchies: HashMap::new(),
     };
     let mut normalized = program.clone();
     let root_sources = program
@@ -154,6 +159,7 @@ pub(super) fn normalize(
     project_normalized_imports(&mut normalized);
     Ok(Some(Arc::new(NormalizedProgram {
         program: normalized,
+        hierarchies: builder.hierarchies,
         source_spans: builder.source_spans,
         transitions: builder.transitions,
         implied_displays: Vec::new(),
@@ -309,6 +315,7 @@ struct Builder {
     /// One expansion per physical declaration, shared by import projections.
     expansions: HashMap<ExpansionKey, Vec<Spanned<Item>>>,
     transitions: HashMap<(String, String), Vec<(String, Span)>>,
+    hierarchies: HashMap<ExpansionKey, Hierarchy>,
 }
 
 fn machine_companion(machine: &MachineDecl, suffix: &str) -> Ident {
@@ -562,15 +569,6 @@ impl Builder {
                 result[ordinal] = (Item::TypeDecl(declaration), span.clone());
                 continue;
             }
-            self.transitions
-                .entry((module.to_string(), machine.name.to_string()))
-                .or_insert_with(|| {
-                    machine
-                        .transitions
-                        .iter()
-                        .map(|rule| (rule.source_state.to_string(), rule.body.1.clone()))
-                        .collect()
-                });
             let source = sources.get(ordinal).cloned();
             let context = if source.is_some() {
                 String::new()
@@ -587,9 +585,15 @@ impl Builder {
                 .expansions
                 .get(&key)
                 .cloned()
-                .map_or_else(|| self.machine(machine, ordinal), Ok);
+                .map_or_else(|| self.machine(machine, ordinal, &key), Ok);
             match expansion {
                 Ok(mut generated) => {
+                    if let Some(hierarchy) = self.hierarchies.get(&key) {
+                        self.transitions.insert(
+                            (module.to_string(), machine.name.to_string()),
+                            hierarchy.transitions(machine),
+                        );
+                    }
                     self.expansions.insert(key, generated.clone());
                     // Replacing in place preserves every authored root's
                     // source occurrence, including the machine itself.
@@ -620,7 +624,11 @@ impl Builder {
         &mut self,
         machine: &MachineDecl,
         machine_ordinal: usize,
+        key: &ExpansionKey,
     ) -> Result<Vec<Spanned<Item>>, TypeError> {
+        let mut hierarchy = Hierarchy::check(machine)?;
+        let resolved = hierarchy.resolve_relation(machine)?;
+        let machine = &resolved;
         if let Some(state) = machine
             .states
             .iter()
@@ -635,7 +643,7 @@ impl Builder {
                 ),
             ));
         }
-        self.validate_relation(machine)?;
+        self.validate_relation(machine, &hierarchy)?;
         let params = if machine.type_params.is_empty() {
             None
         } else {
@@ -771,7 +779,7 @@ impl Builder {
         let step = &mut implementation.methods[0];
         step.origin = DeclarationOrigin::MachineStep;
         step.visibility = machine.visibility;
-        step.body = self.step_body(machine)?;
+        step.body = self.step_body(machine, &hierarchy)?;
         self.refresh_signature(step);
         let state_name = &mut implementation.methods[1];
         state_name.origin = DeclarationOrigin::MachineCompanion;
@@ -826,6 +834,7 @@ impl Builder {
         for span in &spans {
             self.source_spans.insert(span.clone(), self.origin.clone());
         }
+        self.hierarchies.insert(key.clone(), hierarchy);
         Ok(generated.into_iter().zip(spans).collect())
     }
 
@@ -869,7 +878,11 @@ impl Builder {
         }
     }
 
-    fn validate_relation(&self, machine: &MachineDecl) -> Result<(), TypeError> {
+    fn validate_relation(
+        &self,
+        machine: &MachineDecl,
+        hierarchy: &Hierarchy,
+    ) -> Result<(), TypeError> {
         if machine.states.is_empty() || machine.events.is_empty() {
             return Err(self.error("a machine must declare a state and an input event"));
         }
@@ -938,9 +951,10 @@ impl Builder {
         }
         for state in &machine.states {
             for event in &machine.events {
-                let rules = rules_for(machine, state, event);
+                let rules = hierarchy.rules_for(machine, state.name, event.name);
                 let mut covered = false;
-                for rule in rules {
+                for index in rules {
+                    let rule = &machine.transitions[index];
                     if covered {
                         return Err(self.error(format!(
                             "unreachable rule after the unconditional fallback for `{}` / `{}`",
@@ -957,7 +971,11 @@ impl Builder {
         Ok(())
     }
 
-    fn step_body(&mut self, machine: &MachineDecl) -> Result<Block, TypeError> {
+    fn step_body(
+        &mut self,
+        machine: &MachineDecl,
+        hierarchy: &Hierarchy,
+    ) -> Result<Block, TypeError> {
         let element_ty = self.machine_ty(machine, "Output");
         let outputs_span = self.span();
         let outputs_ty = (
@@ -979,7 +997,7 @@ impl Builder {
             let mut event_arms = Vec::new();
             for event in &machine.events {
                 let event_pattern = self.pattern(event.name, &event.fields, "_$machine_event_");
-                let rules = rules_for(machine, state, event);
+                let rules = hierarchy.rules_for(machine, state.name, event.name);
                 let current = self.state_value(machine, state);
                 let ignored = self.variant(Ident::new("Ignored"), Vec::new(), Vec::new());
                 let target = self.ident(DISPOSITION);
@@ -989,8 +1007,9 @@ impl Builder {
                     value: ignored,
                 });
                 let mut selected = self.block(vec![set_ignored], current);
-                for rule in rules.into_iter().rev() {
-                    let taken = self.transition(machine, state, event, rule)?;
+                for index in rules.into_iter().rev() {
+                    let rule = &machine.transitions[index];
+                    let taken = self.transition(machine, state, event, rule, hierarchy, index)?;
                     selected = if let Some(guard) = &rule.guard {
                         let guard = self.rewrite(guard, machine, state, event)?;
                         self.expr(Expr::If {
@@ -1066,17 +1085,27 @@ impl Builder {
         state: &MachineState,
         event: &MachineEvent,
         rule: &MachineTransition,
+        hierarchy: &Hierarchy,
+        index: usize,
     ) -> Result<Spanned<Expr>, TypeError> {
         // A wildcard target declares an external transition even if its body
         // returns the source tag. This makes exit/body/entry order independent
         // of the as-yet unevaluated body.
-        let run_hooks = rule.reenter || rule.target_state != state.name;
+        let (source, domain) = hierarchy.boundary(index);
+        let target = hierarchy.target(index).map(|node| hierarchy.leaf(node));
+        let run_hooks = rule.reenter || hierarchy.target(index) != Some(source);
         let mut stmts = Vec::new();
         if run_hooks {
-            if let Some(exit) = &state.exit {
-                let exit = self.rewrite_block(exit, machine, state, event)?;
-                let exit = self.expr(Expr::Block(exit));
-                stmts.push(self.stmt(Stmt::Expression(exit)));
+            let exits = hierarchy
+                .ancestors(source)
+                .into_iter()
+                .take_while(|node| Some(*node) != domain);
+            for node in exits {
+                if let Some(exit) = hierarchy.hooks(machine, node, false) {
+                    let exit = self.rewrite_block(exit, machine, state, event)?;
+                    let exit = self.expr(Expr::Block(exit));
+                    stmts.push(self.stmt(Stmt::Expression(exit)));
+                }
             }
         }
         let body = self.rewrite(&rule.body, machine, state, event)?;
@@ -1092,12 +1121,22 @@ impl Builder {
             // A fixed target reaches exactly one arm, so only that arm runs its
             // entry hook. Rewriting the others would check a hook against an
             // input it can never observe.
-            let reachable = rule.target_state.name == hew_parser::ast::sym::UNDERSCORE
-                || rule.target_state == next.name;
-            if let (true, Some(entry)) = (reachable, &next.entry) {
-                let entry = self.rewrite_block(entry, machine, next, event)?;
-                let entry = self.expr(Expr::Block(entry));
-                locals.push(self.stmt(Stmt::Expression(entry)));
+            let next_node = hierarchy.resolve(next.name, next.span.clone())?;
+            let reachable = target.is_none_or(|target| target == next_node);
+            if reachable {
+                let mut entries = hierarchy
+                    .ancestors(next_node)
+                    .into_iter()
+                    .take_while(|node| Some(*node) != domain)
+                    .collect::<Vec<_>>();
+                entries.reverse();
+                for node in entries {
+                    if let Some(entry) = hierarchy.hooks(machine, node, true) {
+                        let entry = self.rewrite_block(entry, machine, next, event)?;
+                        let entry = self.expr(Expr::Block(entry));
+                        locals.push(self.stmt(Stmt::Expression(entry)));
+                    }
+                }
             }
             let result = self.state_value(machine, next);
             let body = self.block(locals, result);
@@ -1703,26 +1742,6 @@ fn collect_pattern_fields(fields: &[PatternField], names: &mut Vec<Ident>) {
             None => names.push(field.name),
         }
     }
-}
-
-fn rules_for<'a>(
-    machine: &'a MachineDecl,
-    state: &MachineState,
-    event: &MachineEvent,
-) -> Vec<&'a MachineTransition> {
-    // State-local rules precede wildcard ancestor/fallback rules.
-    let mut rules: Vec<_> = machine
-        .transitions
-        .iter()
-        .filter(|rule| rule.event_name == event.name && rule.source_state == state.name)
-        .collect();
-    if !rules.iter().any(|rule| rule.guard.is_none()) {
-        rules.extend(machine.transitions.iter().filter(|rule| {
-            rule.event_name == event.name
-                && rule.source_state.name == hew_parser::ast::sym::UNDERSCORE
-        }));
-    }
-    rules
 }
 
 /// Does `expr` produce `target` on every normal path?

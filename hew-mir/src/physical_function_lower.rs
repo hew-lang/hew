@@ -412,9 +412,13 @@ impl FunctionLowerer<'_> {
                 dest: self.one_result(operation)?,
                 source: self.value(source.value)?,
             }),
-            SemOpKind::CallableCoerce { source } => one(PhysicalOp::CallableCoerce {
+            SemOpKind::CallableCoerce {
+                source,
+                specialization,
+            } => one(PhysicalOp::CallableCoerce {
                 dest: self.one_result(operation)?,
                 source: self.value(source.value)?,
+                specialization: *specialization,
             }),
             SemOpKind::LoadBorrow { place, .. } => one(PhysicalOp::Borrow {
                 dest: self.one_result(operation)?,

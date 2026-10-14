@@ -143,6 +143,12 @@ pub unsafe extern "C" fn hew_actor_ask_wait_poll(wait: *mut HewNativeAsk) -> i32
     let Some(wait) = (unsafe { wait.as_mut() }) else {
         return AskError::SendFailed as i32;
     };
+    // SAFETY: the unpublished request retains its channel until admission.
+    if unsafe { crate::reply_channel::native_request_deadline(wait.channel.cast()) }.expired() {
+        // SAFETY: expiry and the reply owner settle the same request.
+        unsafe { crate::reply_channel::native::expire_native_request(wait.channel.cast()) };
+        return AskError::Timeout as i32;
+    }
     // SAFETY: this operation owns its unpublished request until admission.
     let outcome = unsafe {
         crate::actor::try_submit_native_request(

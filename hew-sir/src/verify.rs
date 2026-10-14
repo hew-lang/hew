@@ -255,6 +255,7 @@ pub(crate) struct CallableContext<'a> {
     defs: &'a hew_types::DefTable,
     by_id: BTreeMap<CallableId, &'a SemCallable>,
     closures: &'a [crate::SemClosure],
+    callable_specializations: &'a [Vec<ResolvedTy>],
     actors: &'a [crate::SemActor],
     supervisors: &'a [crate::SemSupervisor],
     vtables: &'a [crate::SemVtable],
@@ -267,10 +268,15 @@ pub(crate) struct CallableContext<'a> {
 /// already run [`verify_module`] over the same callables needs only the index,
 /// and building it here lets that pass hold the table while it mutates the
 /// module's bodies.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "independent module tables stay borrowed while passes mutate bodies"
+)]
 pub(crate) fn callable_context<'a>(
     defs: &'a hew_types::DefTable,
     callables: &'a [SemCallable],
     closures: &'a [crate::SemClosure],
+    callable_specializations: &'a [Vec<ResolvedTy>],
     actors: &'a [crate::SemActor],
     supervisors: &'a [crate::SemSupervisor],
     vtables: &'a [crate::SemVtable],
@@ -279,6 +285,7 @@ pub(crate) fn callable_context<'a>(
     CallableContext {
         defs,
         closures,
+        callable_specializations,
         actors,
         supervisors,
         vtables,
@@ -1700,7 +1707,10 @@ fn verify_callable_table<'a>(
         });
         if let Err(reason) = result {
             diagnostics.push(module_diag(SirDiagnosticKind::InvalidCallable {
-                callable: closure.body,
+                callable: closure
+                    .entries
+                    .first()
+                    .map_or(closure.instance.enclosing, |entry| entry.body),
                 reason,
             }));
         }
@@ -1740,10 +1750,12 @@ fn verify_callable_table<'a>(
         }
         match &callable.instance {
             CallableInstance::Closure(id) => {
-                if module
-                    .closure(*id)
-                    .is_none_or(|closure| closure.body != callable.id)
-                {
+                if module.closure(*id).is_none_or(|closure| {
+                    !closure
+                        .entries
+                        .iter()
+                        .any(|entry| entry.body == callable.id)
+                }) {
                     diagnostics.push(module_diag(SirDiagnosticKind::InvalidCallable {
                         callable: callable.id,
                         reason: "closure body has no matching canonical environment descriptor"
@@ -2116,6 +2128,7 @@ fn verify_callable_table<'a>(
         defs: &module.defs,
         by_id,
         closures: &module.closures,
+        callable_specializations: &module.callable_specializations,
         actors: &module.actors,
         supervisors: &module.supervisors,
         vtables: &module.vtables,
@@ -2378,10 +2391,12 @@ fn closure_for_body<'a>(
 ) -> Result<&'a crate::SemClosure, String> {
     context
         .and_then(|context| {
-            context
-                .closures
-                .iter()
-                .find(|closure| closure.body == function.callable)
+            context.closures.iter().find(|closure| {
+                closure
+                    .entries
+                    .iter()
+                    .any(|entry| entry.body == function.callable)
+            })
         })
         .ok_or_else(|| "capture access has no concrete closure body descriptor".to_string())
 }
@@ -2600,6 +2615,10 @@ fn callable_mutation_permitted(
     }
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "verifies one indirect invocation and its ownership edges"
+)]
 fn verify_indirect_call(
     function: &SemFunction,
     terminator: &SemTerminator,
@@ -2610,6 +2629,7 @@ fn verify_indirect_call(
 ) -> Result<(), String> {
     let SemTerminator::IndirectCall {
         targets,
+        specialization,
         callee,
         signature,
         args,
@@ -2631,8 +2651,21 @@ fn verify_indirect_call(
         .get(&callee.operand.value)
         .ok_or_else(|| "indirect call has no typed receiver".to_string())?;
     let (_, _, capabilities) = crate::callable_parts(ty)?;
+    let invocation_ty = match specialization {
+        Some(id) => ty
+            .instantiate_callable(
+                context
+                    .and_then(|context| context.callable_specializations.get(id.0 as usize))
+                    .ok_or_else(|| "indirect call has no canonical specialization".to_string())?,
+            )
+            .ok_or_else(|| {
+                "indirect specialization disagrees with its quantified signature".to_string()
+            })?,
+        None if !matches!(ty, ResolvedTy::GenericCallable { .. }) => ty.clone(),
+        None => return Err("generic indirect call has no specialization".to_string()),
+    };
     if OwnKind::of_ty(ty, facts) != Ok(OwnKind::Owned)
-        || signature != &crate::callable_value_signature(ty, facts)?
+        || signature != &crate::callable_value_signature(&invocation_ty, facts)?
     {
         return Err("indirect call differs from its exact callable type and signature".to_string());
     }
@@ -2916,11 +2949,30 @@ fn verify_callable_operation(
                     .ok_or("generator coercion has no input definition")?;
                 crate::verify_generator_coercion(source_ty, &result.ty, facts)?;
             }
-            SemOpKind::CallableCoerce { source } => {
+            SemOpKind::CallableCoerce {
+                source,
+                specialization,
+            } => {
                 let source_ty = types
                     .get(&source.value)
                     .ok_or_else(|| "callable coercion has no input definition".to_string())?;
-                crate::verify_callable_coercion(source_ty, &result.ty, facts)?;
+                if let Some(id) = specialization {
+                    let instantiated = source_ty
+                        .instantiate_callable(
+                            context
+                                .callable_specializations
+                                .get(id.0 as usize)
+                                .ok_or_else(|| {
+                                    "callable coercion has no canonical specialization".to_string()
+                                })?,
+                        )
+                        .ok_or_else(|| {
+                            "callable specialization disagrees with its scheme".to_string()
+                        })?;
+                    crate::verify_callable_coercion(&instantiated, &result.ty, facts)?;
+                } else {
+                    crate::verify_callable_coercion(source_ty, &result.ty, facts)?;
+                }
             }
             SemOpKind::DynMake { vtable, value } => {
                 let table = context
@@ -3023,7 +3075,8 @@ fn is_supported_call_value(module: &SemModule, ty: &ResolvedTy) -> bool {
         || ty.is_builtin(hew_types::BuiltinType::YamlValue)
         || matches!(
             ty,
-            ResolvedTy::Function { .. }
+            ResolvedTy::GenericCallable { .. }
+                | ResolvedTy::Function { .. }
                 | ResolvedTy::Closure { .. }
                 | ResolvedTy::TraitObject { .. }
         )
@@ -5849,10 +5902,12 @@ fn verify_terminator_shape(
                 crate::SuspendKind::Yield => {
                     let yielded = callable_context
                         .and_then(|context| {
-                            context
-                                .closures
-                                .iter()
-                                .find(|closure| closure.body == function.callable)
+                            context.closures.iter().find(|closure| {
+                                closure
+                                    .entries
+                                    .iter()
+                                    .any(|entry| entry.body == function.callable)
+                            })
                         })
                         .and_then(|closure| closure.generator_yield.as_ref());
                     resumes.len() == 1
@@ -6430,7 +6485,7 @@ mod parameter_own_kind_tests {
         let function = function(ResolvedTy::String, OwnKind::Owned);
         let callables = vec![callable(&function, SemParamPassing::Borrow)];
         let defs = hew_types::DefTable::fixture();
-        let context = callable_context(&defs, &callables, &[], &[], &[], &[], &[]);
+        let context = callable_context(&defs, &callables, &[], &[], &[], &[], &[], &[]);
         let diagnostics = verify_function_with_context(
             &hew_types::DefTable::fixture(),
             &function,
@@ -6452,7 +6507,7 @@ mod parameter_own_kind_tests {
         let function = function(ResolvedTy::String, OwnKind::Guaranteed);
         let callables = vec![callable(&function, SemParamPassing::Borrow)];
         let defs = hew_types::DefTable::fixture();
-        let context = callable_context(&defs, &callables, &[], &[], &[], &[], &[]);
+        let context = callable_context(&defs, &callables, &[], &[], &[], &[], &[], &[]);
         let diagnostics = verify_function_with_context(
             &hew_types::DefTable::fixture(),
             &function,
@@ -6473,7 +6528,7 @@ mod parameter_own_kind_tests {
         let function = function(ResolvedTy::String, OwnKind::Guaranteed);
         let callables = vec![callable(&function, SemParamPassing::ReadOnly)];
         let defs = hew_types::DefTable::fixture();
-        let context = callable_context(&defs, &callables, &[], &[], &[], &[], &[]);
+        let context = callable_context(&defs, &callables, &[], &[], &[], &[], &[], &[]);
         let mut facts = TypeFactService::new(TypeFactContext::default(), TypeFactTable::new());
         facts.require(&ResolvedTy::String).unwrap();
         let diagnostics = verify_function_with_context(

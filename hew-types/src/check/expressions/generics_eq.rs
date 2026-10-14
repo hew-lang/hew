@@ -8,7 +8,6 @@
 )]
 use super::super::branch_join::BranchArmExit;
 use super::super::coerce::{cast_is_valid, common_integer_type, common_numeric_type};
-use super::super::types::GenericLambdaSig;
 #[allow(
     clippy::wildcard_imports,
     reason = "submodules mirror the legacy check namespace during the split"
@@ -24,100 +23,6 @@ use crate::BuiltinType;
 use std::collections::VecDeque;
 
 impl Checker {
-    pub(super) fn lambda_generic_schema_ty(
-        ty: &Ty,
-        generic_param_names: &HashMap<u32, crate::ParamHead>,
-    ) -> Ty {
-        match ty {
-            Ty::Var(v) => generic_param_names
-                .get(&v.0)
-                .map_or_else(|| ty.clone(), |name| Ty::param(*name)),
-            Ty::Named { head, args } => Ty::Named {
-                head: *head,
-                args: args
-                    .iter()
-                    .map(|arg| Self::lambda_generic_schema_ty(arg, generic_param_names))
-                    .collect(),
-            },
-            Ty::Tuple(ts) => Ty::Tuple(
-                ts.iter()
-                    .map(|elem| Self::lambda_generic_schema_ty(elem, generic_param_names))
-                    .collect(),
-            ),
-            Ty::Array(inner, n) => Ty::Array(
-                Box::new(Self::lambda_generic_schema_ty(inner, generic_param_names)),
-                *n,
-            ),
-            Ty::Slice(inner) => Ty::Slice(Box::new(Self::lambda_generic_schema_ty(
-                inner,
-                generic_param_names,
-            ))),
-            Ty::Pointer {
-                is_mutable,
-                pointee,
-            } => Ty::Pointer {
-                is_mutable: *is_mutable,
-                pointee: Box::new(Self::lambda_generic_schema_ty(pointee, generic_param_names)),
-            },
-            Ty::Function {
-                capabilities,
-                params,
-                ret,
-            } => Ty::Function {
-                capabilities: *capabilities,
-                params: params
-                    .iter()
-                    .map(|param| Self::lambda_generic_schema_ty(param, generic_param_names))
-                    .collect(),
-                ret: Box::new(Self::lambda_generic_schema_ty(ret, generic_param_names)),
-            },
-            Ty::Closure {
-                capabilities,
-                params,
-                ret,
-                captures,
-                identity,
-            } => Ty::Closure {
-                capabilities: *capabilities,
-                params: params
-                    .iter()
-                    .map(|param| Self::lambda_generic_schema_ty(param, generic_param_names))
-                    .collect(),
-                ret: Box::new(Self::lambda_generic_schema_ty(ret, generic_param_names)),
-                captures: captures
-                    .iter()
-                    .map(|capture| Self::lambda_generic_schema_ty(capture, generic_param_names))
-                    .collect(),
-                identity: identity.clone(),
-            },
-            Ty::TraitObject { traits } => Ty::TraitObject {
-                traits: traits
-                    .iter()
-                    .map(|bound| crate::ty::TraitObjectBound {
-                        trait_name: bound.trait_name.clone(),
-                        trait_id: bound.trait_id,
-                        args: bound
-                            .args
-                            .iter()
-                            .map(|arg| Self::lambda_generic_schema_ty(arg, generic_param_names))
-                            .collect(),
-                        assoc_bindings: bound
-                            .assoc_bindings
-                            .iter()
-                            .map(|(name, ty)| {
-                                (
-                                    name.clone(),
-                                    Self::lambda_generic_schema_ty(ty, generic_param_names),
-                                )
-                            })
-                            .collect(),
-                    })
-                    .collect(),
-            },
-            _ => ty.clone(),
-        }
-    }
-
     /// If `expr` is a bare identifier bound (via an unannotated `let`) to a
     /// still-open literal-defaulting `TypeVar`, return that var.
     ///
@@ -317,13 +222,53 @@ impl Checker {
         self.record_generic_requirement(GenericRequirementKind::Eq, ty, span);
     }
 
+    fn generic_obligation_owners(&self, types: &[&Ty]) -> Vec<crate::DefId> {
+        let mut owners = self
+            .fn_sigs
+            .values()
+            .flat_map(|signature| &signature.type_params)
+            .filter(|parameter| {
+                types
+                    .iter()
+                    .any(|ty| Self::ty_mentions_type_params(ty, &[**parameter]))
+            })
+            .map(|parameter| parameter.id.owner)
+            .collect::<Vec<_>>();
+        owners.sort_unstable();
+        owners.dedup();
+        owners
+    }
+
     pub(in crate::check) fn record_generic_requirement(
         &mut self,
         kind: GenericRequirementKind,
         ty: &Ty,
         span: &Span,
     ) {
-        let owner = self.current_function.clone();
+        let mut owner = self.current_function.clone();
+        if owner.as_ref().is_some_and(|key| {
+            self.fn_sig_keys
+                .get(key)
+                .is_some_and(|id| self.defs.kind(*id) == crate::DeclarationKind::Closure)
+        }) {
+            let mentioned_owners = self.generic_obligation_owners(&[ty]);
+            if mentioned_owners.len() > 1 && kind == GenericRequirementKind::Eq {
+                if let Ok(resolved) = ResolvedTy::from_ty(ty) {
+                    let service = TypeFactService::new(self.type_fact_context(), BTreeMap::new());
+                    if let Ok(Some(members)) = service.derived_eq_members(&resolved) {
+                        for member in members {
+                            self.record_generic_requirement(kind.clone(), &member.to_ty(), span);
+                        }
+                        return;
+                    }
+                }
+            }
+            if let [declaration] = mentioned_owners.as_slice() {
+                if self.fn_sigs.contains_key(declaration) {
+                    owner = Some(self.defs.path(*declaration).to_string());
+                }
+            }
+        }
         let params = owner
             .as_ref()
             .and_then(|key| self.fn_sig(key))
@@ -438,7 +383,38 @@ impl Checker {
         {
             return;
         }
-        let enclosing = self.current_function.clone();
+        self.record_generic_instantiation_site(
+            self.current_function.clone(),
+            callee_key,
+            substitution,
+            span,
+        );
+    }
+
+    pub(in crate::check) fn record_generic_instantiation_site(
+        &mut self,
+        enclosing: Option<String>,
+        callee: String,
+        substitution: HashMap<crate::ParamHead, Ty>,
+        span: &Span,
+    ) {
+        let enclosing = if enclosing.as_ref().is_some_and(|key| {
+            self.fn_sig_keys
+                .get(key)
+                .is_some_and(|id| self.defs.kind(*id) == crate::DeclarationKind::Closure)
+        }) {
+            match self
+                .generic_obligation_owners(&substitution.values().collect::<Vec<_>>())
+                .as_slice()
+            {
+                [owner] if self.fn_sigs.contains_key(owner) => {
+                    Some(self.defs.path(*owner).to_string())
+                }
+                _ => enclosing,
+            }
+        } else {
+            enclosing
+        };
         let enclosing_params = enclosing
             .as_ref()
             .and_then(|name| self.fn_sig(name))
@@ -447,7 +423,7 @@ impl Checker {
             .push(GenericFnInstantiationSite {
                 caller: enclosing,
                 caller_type_params: enclosing_params,
-                callee: callee_key,
+                callee,
                 substitution,
                 span: span.clone(),
                 source_module: self.current_module.clone(),
@@ -507,11 +483,21 @@ impl Checker {
     /// Build the diagnostic for one ineligible instantiation of a generic
     /// callee that requires Eq for `template`.
     pub(super) fn generic_structural_eq_instantiation_error(
+        &self,
         template: &Ty,
         concrete: &Ty,
         pending: &PendingInstantiation,
     ) -> crate::error::TypeError {
-        let callee = &pending.callee;
+        let callee = self
+            .fn_sig_keys
+            .get(&pending.callee)
+            .filter(|id| {
+                matches!(
+                    self.defs.kind(**id),
+                    crate::DeclarationKind::Closure | crate::DeclarationKind::CallableType
+                )
+            })
+            .map_or(pending.callee.as_str(), |_| "generic callable");
         let mut err = crate::error::TypeError::new(
             TypeErrorKind::InvalidOperation,
             pending.report_span.clone(),
@@ -602,7 +588,7 @@ impl Checker {
         let mut error = match &requirement.kind {
             GenericRequirementKind::Eq if !Self::selected_eq_available(service, concrete) => {
                 if let Some(pending) = pending {
-                    return Some(Self::generic_structural_eq_instantiation_error(
+                    return Some(self.generic_structural_eq_instantiation_error(
                         &requirement.ty, concrete, pending,
                     ));
                 }

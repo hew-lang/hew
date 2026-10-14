@@ -8,17 +8,17 @@ for the Hew CBOR wire protocol.
 [CDDL (Concise Data Definition Language, RFC 8610)](https://www.rfc-editor.org/rfc/rfc8610)
 is a schema language for CBOR and JSON data structures. Each `.cddl` file in
 this directory specifies the exact shape of one family of wire frames. The Rust
-types in `src/envelope.rs` and the codec in `src/cbor_envelope.rs` (W2) MUST
+types in `src/envelope.rs` and the codec in `src/connection/reader.rs` MUST
 remain consistent with these definitions.
 
 ## Files
 
 | File             | Covers                                                                                                         |
 | ---------------- | -------------------------------------------------------------------------------------------------------------- |
-| `envelope.cddl`  | Control frames and data envelope frames (CBOR wire layer, v1) — the transport CONTAINER                        |
+| `envelope.cddl`  | Control frames and data envelope frames (CBOR wire layer, v4) — the transport CONTAINER                        |
 | `wire-body.cddl` | The per-`#[wire]`-type CBOR body carried inside an envelope frame's `payload` (`bstr`) slot — the message BODY |
 
-> W2 will add `handshake.cddl` once the CBOR handshake codec lands.
+The fixed-width authenticated handshake is specified in HEW-DIST-SPEC §4.
 
 ### Frame vs body
 
@@ -48,6 +48,13 @@ and leaves older decoders unaffected (they reject unknown versions via the
 
 ### Version gating
 
-`wire-version = 1` is a constant in the schema. Any frame whose `version`
-field differs from 1 MUST be rejected by the decoder with an `UnknownVersion`
+`wire-version = 4` is a constant in the schema. Any frame whose `version`
+field differs from 4 MUST be rejected by the decoder with an `UnknownVersion`
 error. This allows the schema to evolve without silent misparsing.
+
+### Request budgets and withdrawal
+
+Envelope key 8 carries a bounded remaining ask budget or `nil`. It never holds
+an absolute clock value. Withdrawal uses message tag 2 with an exact target,
+positive request id, empty payload and nil source/budget. The receiver binds
+withdrawal to the authenticated connection publication that admitted the ask.

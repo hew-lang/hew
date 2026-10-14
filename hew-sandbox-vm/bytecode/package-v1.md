@@ -137,7 +137,11 @@ derived structural operation. `value.call` names an entry by its `id`.
 
 ### `closures` and `vtables`
 
-`closures` names each concrete environment and the function that is its body.
+`closures` names each concrete environment with an `id`, its captured `fields`
+count, and an `entries` array. Each entry names a `body` function and a
+`specialization`: `null` for an ordinary closure or a package-local integer
+for a generic invocation. All entries share the same environment. Specializing
+a callable selects an entry without copying that environment.
 `vtables` names each demanded trait-object table. `dyn.call` selects a slot by
 the checker's index, which SIR never recomputes, so a slot is found by its
 `slot` field and not by its position. Each slot carries the `receiver` decision

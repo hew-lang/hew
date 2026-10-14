@@ -1,0 +1,21 @@
+[[case]]
+id = "generic-closure-once-refused"
+intent = "A once callable consumes its shared environment on its first invocation, even when the second invocation selects another type argument."
+source = "cases/generic-closure-once-refused.hew"
+kind = "check"
+timeout_seconds = 15
+suites = ["acceptance"]
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "UseAfterMove"
+line = 7
+column = 5
+message = "use of moved value `once`"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "UseAfterMove"
+line = 7
+column = 5
+message = "cannot invoke consumed callable `once`"

@@ -1137,7 +1137,7 @@ pub(crate) fn apply_operation(
             define(function, borrows, state, *dest, block, "binary operation")?;
         }
         PhysicalOp::Transfer { dest, source }
-        | PhysicalOp::CallableCoerce { dest, source }
+        | PhysicalOp::CallableCoerce { dest, source, .. }
         | PhysicalOp::GeneratorCoerce { dest, source }
         | PhysicalOp::DynMake { dest, source, .. } => {
             initialized(function, state, *source, block, "transfer")?;

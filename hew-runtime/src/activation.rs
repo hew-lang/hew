@@ -392,12 +392,20 @@ unsafe fn resume_suspended_activation(actor: *mut HewActor) {
     let invocation = a.checked_invocation.load(Ordering::Acquire);
     // Snapshot before driving the frame: completion clears and frees invocation
     // state before this activation reports its fault.
-    let (message_type, caller) = if invocation.is_null() {
-        (0, crate::actor_caller::HewCallerStamp::default())
+    let (message_type, caller, request_deadline) = if invocation.is_null() {
+        (
+            0,
+            crate::actor_caller::HewCallerStamp::default(),
+            crate::request_deadline::RequestDeadline::default(),
+        )
     } else {
         // SAFETY: activation ownership keeps the parked invocation live here.
         let invocation = unsafe { &*invocation.cast::<crate::coro_state::HewCoroState>() };
-        (invocation.actor_message_type, invocation.actor_caller)
+        (
+            invocation.actor_message_type,
+            invocation.actor_caller,
+            invocation.request_deadline,
+        )
     };
     let stashed_reply = a.suspended_reply_channel.load(Ordering::Acquire);
     let stashed_cancel_token = a.suspended_cancel_token.load(Ordering::Acquire);
@@ -417,6 +425,7 @@ unsafe fn resume_suspended_activation(actor: *mut HewActor) {
         reply_channel: stashed_reply,
         checked_fault: crate::actor_native::CheckedActorFault::default(),
         caller,
+        request_deadline,
     };
     let prev_context = resume_context.prev_context;
     let installed_prev = crate::execution_context::set_current_context(&raw mut resume_context);
@@ -936,6 +945,10 @@ pub(crate) fn activate_queued_actor(actor: *mut HewActor) {
                     reply_channel: msg_ref.reply_channel,
                     checked_fault: crate::actor_native::CheckedActorFault::default(),
                     caller: msg_ref.caller,
+                    // SAFETY: this request node retains its optional reply channel.
+                    request_deadline: unsafe {
+                        crate::reply_channel::native_request_deadline(msg_ref.reply_channel.cast())
+                    },
                 };
                 let prev_context = execution_context.prev_context;
                 // Publish a single raw pointer to the dispatch-local context

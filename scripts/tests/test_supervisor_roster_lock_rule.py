@@ -118,7 +118,9 @@ def main() -> None:
         raise SystemExit("runtime supervisor modules are absent")
     for module in modules:
         if not findings(RED["mutex_get_mut_bypass"], module.name):
-            raise SystemExit(f"split supervisor module is outside rule scope: {module.name}")
+            raise SystemExit(
+                f"split supervisor module is outside rule scope: {module.name}"
+            )
 
     if unexpected := findings(GREEN):
         raise SystemExit(f"GREEN typed-guard fixtures unexpectedly fired: {unexpected}")

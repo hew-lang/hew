@@ -45,11 +45,12 @@ that conform to that schema live in
   branch.
 - An `envelope-frame` carries one actor-to-actor message and includes
   `version`, `frame_type`, exact target/source `Location` values, `message`,
-  `payload` (the user-level serialised body, as `bstr`), and `request_id`.
+  `payload` (the user-level serialised body, as `bstr`), `request_id` and
+  the optional remaining ask budget `budget_ns`.
 - A `Location` carries a 16-byte key-derived `NodeId`, non-zero actor slot,
   and non-zero durable session incarnation. Receiver-local route slots do not
   enter the frame.
-- `version` is fixed at `3`. Decoders **must** reject unknown
+- `version` is fixed at `4`. Decoders **must** reject unknown
   versions with `UnknownVersion`; they must not best-effort parse a frame
   whose version they do not recognise.
 
@@ -59,7 +60,7 @@ CDDL integer keys are mirrored as field-doc comments on each Rust mirror field.
 
 ### Handler identity and reply status
 
-Wire version 3 carries the canonical dotted handler declaration
+Wire version 4 carries the canonical dotted handler declaration
 (`package.module.Actor.handler`) in envelope key 5. The checker renders this
 from declaration ownership; import aliases, local dispatch indices and
 absolute source paths are not wire identities. Compilation roots have no
@@ -74,7 +75,7 @@ local dispatch numbering therefore do not change the protocol.
 Replies use key 5 status `0` for success or `1` for rejection, with no target
 or source and a positive request ID. These statuses are separate from the
 handler text namespace. The connection handshake requires protocol version
-3, and envelope decoders reject other versions before dispatch. There is no
+4, and envelope decoders reject other versions before dispatch. There is no
 numeric handler-hash compatibility path.
 
 ### The message body — CDDL-described tagged CBOR
@@ -429,3 +430,19 @@ deprecation in v0.5. The list in §2 is the v0.5 surface. S1 is closed
 - Cross-process body round-trip: [`hew-cli/tests/distributed_two_process_e2e.rs`](../../hew-cli/tests/distributed_two_process_e2e.rs).
 - Stdlib `Value` contract: [`std/encoding/wire/README.md`](../../std/encoding/wire/README.md), issue #1247.
 - Distributed actor companion doc: [`HEW-DIST-SPEC.md`](./HEW-DIST-SPEC.md).
+
+## Actor request budgets
+
+The envelope's budget is a bounded relative nanosecond count, never a sender's
+absolute clock. `nil` denotes an untimed request; zero is already expired.
+Only asks carry budgets. The sender charges setup and send admission, then the
+receiver charges decoding, admission and queue time against a local expiry.
+Nested calls inherit that expiry without making the handler cancellable by its
+caller. Transport transit cannot be deducted using independent clocks.
+
+The withdrawal message names the exact target and request id and is accepted
+only from the authenticated connection publication that submitted the ask.
+It reuses the inbound request owner and the existing queued-dispatch claim;
+there is no separate cancellation registry or token on the wire. Late replies
+are ignored after the outbound reply-table owner retires. The CDDL specifies
+all field ranges and permitted combinations; incompatible versions fail closed.

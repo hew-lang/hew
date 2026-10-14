@@ -357,6 +357,16 @@ pub fn named_type_components(ty: &ResolvedTy) -> Vec<NamedTypeComponent> {
 
 fn collect_named_type_components(ty: &ResolvedTy, components: &mut Vec<NamedTypeComponent>) {
     match ty {
+        ResolvedTy::GenericCallable { parameters, callable } => {
+            collect_named_type_components(callable, components);
+            for parameter in parameters {
+                for bound in &parameter.bounds {
+                    for ty in bound.args.iter().chain(bound.assoc_bindings.iter().map(|(_, ty)| ty)) {
+                        collect_named_type_components(ty, components);
+                    }
+                }
+            }
+        }
         ResolvedTy::Tuple(elems) => {
             for elem in elems {
                 collect_named_type_components(elem, components);

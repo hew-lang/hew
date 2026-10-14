@@ -54,6 +54,7 @@ pub mod effects;
 mod error_display;
 mod exhaustiveness;
 mod expressions;
+mod generic_callables;
 mod generic_schema;
 pub use generic_schema::AssociatedTypeSchemas;
 mod generics;
@@ -65,6 +66,7 @@ mod race;
 mod task_lifetimes;
 pub use self::lints::{directive_suppresses, LintId, LintLevel, LintLevels, LintSources};
 mod machine_effects;
+mod machine_hierarchy;
 mod machine_normalize;
 pub use machine_normalize::NormalizedProgram;
 mod methods;
@@ -356,6 +358,32 @@ pub(crate) fn restore_member_opacity(
 ) -> ResolvedTy {
     let resolve = |ty| restore_member_opacity(ty, defs, is_opaque_type);
     match ty {
+        ResolvedTy::GenericCallable {
+            parameters,
+            callable,
+        } => ResolvedTy::GenericCallable {
+            parameters: parameters
+                .into_iter()
+                .map(|parameter| crate::CallableTypeParameter {
+                    parameter: parameter.parameter,
+                    bounds: parameter
+                        .bounds
+                        .into_iter()
+                        .map(|bound| crate::ResolvedTraitBound {
+                            trait_name: bound.trait_name,
+                            trait_id: bound.trait_id,
+                            args: bound.args.into_iter().map(resolve).collect(),
+                            assoc_bindings: bound
+                                .assoc_bindings
+                                .into_iter()
+                                .map(|(name, ty)| (name, resolve(ty)))
+                                .collect(),
+                        })
+                        .collect(),
+                })
+                .collect(),
+            callable: Box::new(resolve(*callable)),
+        },
         ResolvedTy::Named {
             head,
             args,
@@ -478,6 +506,7 @@ pub(crate) fn declaration_walk_terminates(
 
     fn member_heads(ty: &Ty, out: &mut Vec<crate::TypeHead>) {
         match ty {
+            Ty::GenericCallable { callable, .. } => member_heads(callable, out),
             Ty::Named { head, args } => {
                 out.push(*head);
                 for arg in args {
@@ -3064,12 +3093,11 @@ impl Checker {
             const_values: self.const_values.clone(),
             source_constants: self.source_constants.clone(),
             call_type_args: self.call_type_args.clone(),
+            callable_value_specializations: self.callable_value_specializations.clone(),
             record_init_type_args: self.record_init_type_args.clone(),
             builtin_result_output_type_args: self.builtin_result_output_type_args.clone(),
             deferred_bound_checks: self.deferred_bound_checks.clone(),
             deferred_wire_codecs: self.deferred_wire_codecs.clone(),
-            lambda_poly_sig_map: self.lambda_poly_sig_map.clone(),
-            last_lambda_generic_sig: self.last_lambda_generic_sig.clone(),
             deferred_range_bounds: self.deferred_range_bounds.clone(),
             literal_binding_value_spans: self.literal_binding_value_spans.clone(),
             intrinsic_declarations: self.intrinsic_declarations.clone(),
@@ -3680,6 +3708,7 @@ impl Checker {
                 ))
             })
             .collect();
+        let callable_value_specializations = self.finalize_callable_value_specializations();
         let fn_sig_keys = self.fn_sig_keys.clone();
         let resolved_sigs =
             FnSigView::new(&resolved_fn_sigs, &fn_sig_keys, &resolved_builtin_fn_sigs);
@@ -4023,6 +4052,7 @@ impl Checker {
             cycle_capable_actors: HashSet::new(),
             user_modules: std::mem::take(&mut self.user_modules),
             call_type_args: resolved_call_type_args,
+            callable_value_specializations,
             vec_generic_element_abi,
             record_init_type_args: resolved_record_init_type_args,
             stack_hints: std::mem::take(&mut self.stack_hints),

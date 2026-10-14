@@ -28,7 +28,7 @@ pub struct MachineScope {
 /// outside every transition body, guard and hook.
 #[must_use]
 pub fn scope_at(machine: &MachineDecl, offset: usize) -> Option<MachineScope> {
-    for transition in &machine.transitions {
+    for transition in machine.authored_transitions() {
         let in_body = contains(&transition.body.1, offset);
         let in_guard = transition
             .guard
@@ -38,9 +38,21 @@ pub fn scope_at(machine: &MachineDecl, offset: usize) -> Option<MachineScope> {
             continue;
         }
         let source = if transition.source_state.name == hew_parser::ast::sym::UNDERSCORE {
-            machine.name.to_string()
+            machine
+                .composite_groups
+                .iter()
+                .find(|group| {
+                    group
+                        .parent_transitions
+                        .iter()
+                        .any(|rule| std::ptr::eq(rule, transition))
+                })
+                .map_or_else(
+                    || machine.name.to_string(),
+                    |group| qualified(machine, group.name),
+                )
         } else {
-            format!("{}.{}", machine.name, transition.source_state)
+            qualified(machine, transition.source_state)
         };
         let bindings = vec![
             MachineBinding {
@@ -62,25 +74,33 @@ pub fn scope_at(machine: &MachineDecl, offset: usize) -> Option<MachineScope> {
         });
     }
 
-    for state in &machine.states {
-        let hooks = [state.entry.as_ref(), state.exit.as_ref()];
-        if !hooks
-            .into_iter()
-            .flatten()
-            .any(|hook| block_span(hook).is_some_and(|span| contains(&span, offset)))
-        {
+    for (name, hook) in machine.state_hooks() {
+        if !block_span(hook).is_some_and(|span| contains(&span, offset)) {
             continue;
         }
         return Some(MachineScope {
             bindings: vec![MachineBinding {
                 name: "state",
-                ty: format!("{}.{}", machine.name, state.name),
+                ty: qualified(machine, name),
             }],
             head_bindings: Vec::new(),
         });
     }
 
     None
+}
+
+fn qualified(machine: &MachineDecl, name: hew_parser::ast::Ident) -> String {
+    format!(
+        "{}.{}",
+        machine.name,
+        machine
+            .state_path(name)
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(".")
+    )
 }
 
 fn contains(span: &Span, offset: usize) -> bool {

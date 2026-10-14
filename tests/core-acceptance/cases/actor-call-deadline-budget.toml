@@ -1,0 +1,14 @@
+[[case]]
+id = "actor-call-deadline-budget"
+intent = "Queued expiry skips invocation while a claimed handler retains its remaining budget across suspension, a longer inner scope and a forked nested call."
+source = "cases/actor-call-deadline-budget.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.env]
+HEW_ACTOR_LEAK_CHECK = "1"
+
+[case.expected]
+stdout = "queued caller expired\nstarted caller expired\ndeadline budget complete\n"
+stderr = ""
+exit = 0

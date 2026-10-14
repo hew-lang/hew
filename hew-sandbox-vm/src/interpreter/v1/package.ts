@@ -182,7 +182,7 @@ export interface ValueComponentCapabilities {
 
 export interface ClosureShape {
   id: number;
-  body: number;
+  entries: Array<{ body: number; specialization: number | null }>;
   fields: number;
 }
 
@@ -361,7 +361,12 @@ export type OpV1 =
       closure: number;
       fields: Operand[];
     })
-  | (OpBase & { op: "callable.coerce"; dst: number; source: Operand })
+  | (OpBase & {
+      op: "callable.coerce";
+      dst: number;
+      source: Operand;
+      specialization: number | null;
+    })
   | (OpBase & { op: "dyn.make"; dst: number; vtable: number; value: Operand })
   | (OpBase & {
       op: "register_defer";
@@ -460,7 +465,12 @@ export type TermV1 =
         /// unwind edge.
         handback?: ValueDef | null;
       })
-  | (TermBase & CallShape & { op: "indirect.call"; callee: BoundaryOperand })
+  | (TermBase &
+      CallShape & {
+        op: "indirect.call";
+        callee: BoundaryOperand;
+        specialization: number | null;
+      })
   | (TermBase &
       CallShape & { op: "dyn.call"; receiver: BoundaryOperand; slot: number })
   | (TermBase & CallShape & { op: "value.call"; plan: number })

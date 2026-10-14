@@ -90,6 +90,7 @@ type CallerStamp =
   | { kind: "Actor"; identity: bigint };
 
 interface FrameContext {
+  requestDeadline?: number;
   caller?: CallerStamp;
   reply?: boolean;
   id: string;
@@ -113,6 +114,7 @@ interface GeneratorEntry {
 }
 
 interface ActorMessage {
+  requestDeadline?: number;
   caller: CallerStamp;
   handler: ActorShape["handlers"][number];
   payload: VmValue[];
@@ -194,6 +196,7 @@ interface TaskEntry {
 }
 
 interface TaskGroup {
+  expiresAt?: number;
   tasks: TaskEntry[];
   changed: Array<() => void>;
   deadline: Fault | null;
@@ -887,7 +890,8 @@ class ExecutorV1 {
         const shape = this.closureAt(op.closure);
         this.define(act, op.dst, {
           kind: "closure",
-          body: shape.body,
+          entries: shape.entries,
+          specialization: null,
           environment: {
             kind: "record",
             typeId: "",
@@ -896,12 +900,28 @@ class ExecutorV1 {
         });
         return;
       }
-      case "callable.coerce":
-        // A coercion only weakens the callable's proved capabilities; SIR
-        // refuses one that changes an argument, a result or a capture shape,
-        // so the value itself is unchanged.
-        this.define(act, op.dst, this.read(act, op.source));
+      case "callable.coerce": {
+        const callable = this.read(act, op.source);
+        if (op.specialization === null) {
+          this.define(act, op.dst, callable);
+        } else {
+          if (
+            callable.kind !== "closure" ||
+            !callable.entries.some(
+              (entry) => entry.specialization === op.specialization,
+            )
+          ) {
+            throw new Error(
+              "callable specialization has no checked invocation entry",
+            );
+          }
+          this.define(act, op.dst, {
+            ...callable,
+            specialization: op.specialization,
+          });
+        }
         return;
+      }
       case "dyn.make":
         this.define(act, op.dst, {
           kind: "dyn",
@@ -942,6 +962,9 @@ class ExecutorV1 {
           const duration = this.read(act, op.duration);
           if (duration.kind !== "i64")
             throw new Error("scope duration is not a duration");
+          group.expiresAt =
+            this.trace.virtualTimeMs +
+            Math.max(0, Number(duration.value) / 1_000_000);
           group.cancelTimer = this.scheduler.after(duration.value, () => {
             group.deadline = {
               kind: "panic",
@@ -982,6 +1005,7 @@ class ExecutorV1 {
         const context: FrameContext = {
           id,
           actor: act.context.actor,
+          requestDeadline: this.requestDeadline(act),
           returned: (value) =>
             this.closeValueAsync(value, null, (fault) =>
               this.finishGenerator(generator, fault),
@@ -1156,6 +1180,7 @@ class ExecutorV1 {
         const context: FrameContext = {
           id: task.id,
           actor: act.context.actor,
+          requestDeadline: this.requestDeadline(act),
           returned: (value) => settle(value, null),
           failed: (fault) => settle(UNIT, fault),
         };
@@ -1357,7 +1382,7 @@ class ExecutorV1 {
         const callee = this.boundary(act, term.callee);
         const args = term.args.map((operand) => this.boundary(act, operand));
         this.current = this.activate(
-          this.functionAt(calleeFunction(callee)),
+          this.functionAt(calleeFunction(callee, term.specialization)),
           callee.kind === "closure" ? [callee.environment, ...args] : args,
           act,
           term.result,
@@ -3139,6 +3164,17 @@ class ExecutorV1 {
     }
   }
 
+  private requestDeadline(act: Activation): number | undefined {
+    let deadline = act.context.requestDeadline;
+    for (let frame: Activation | null = act; frame; frame = frame.caller) {
+      for (const group of frame.scopes.values()) {
+        if (group.expiresAt !== undefined)
+          deadline = Math.min(deadline ?? Infinity, group.expiresAt);
+      }
+    }
+    return deadline;
+  }
+
   private ask(
     protocol: ActorProtocol,
     inputs: VmValue[],
@@ -3153,6 +3189,9 @@ class ExecutorV1 {
     let admitted = false;
     let closing = false;
     const owner = this.current.context.actor;
+    const deadline = this.requestDeadline(this.current);
+    let cancelTimer: (() => void) | undefined;
+    let message: ActorMessage | undefined;
     const caller: CallerStamp = owner
       ? { kind: "Actor", identity: owner.identity }
       : { kind: "Task" };
@@ -3160,6 +3199,7 @@ class ExecutorV1 {
     const finish: ActorMessage["complete"] = (value, error, drained) => {
       const alreadySettled = settled;
       settled = true;
+      cancelTimer?.();
       if (alreadySettled || complete(value, error) === false) {
         // The finishing receiver still owns a reply that its caller no
         // longer accepts. Its next turn must wait for this release.
@@ -3204,11 +3244,16 @@ class ExecutorV1 {
       closeRequest((fault) => {
         if (settled) return;
         settled = true;
+        cancelTimer?.();
         complete(null, reason, fault);
       });
     };
     const attempt = () => {
       if (settled || closing) return;
+      if (deadline !== undefined && deadline <= this.trace.virtualTimeMs) {
+        reject("TimedOut");
+        return;
+      }
       const role = "id" in target ? this.roles.get(target.id) : undefined;
       if (role && this.rolePending(role)) {
         role.waiting.push(attempt);
@@ -3268,24 +3313,52 @@ class ExecutorV1 {
       }
       admitted = true;
       receiver = actor;
-      actor.mailbox.push({
+      message = {
         caller,
         handler,
         payload,
         complete: finish,
         reply: true,
         obligated: true,
-      });
+        requestDeadline: deadline,
+      };
+      actor.mailbox.push(message);
       this.trace.snapshot("actor.ask", {
         actor_id: actor.id,
         handler: handler.name,
       });
       this.dispatchActor(actor);
     };
+    const withdrawQueued = () => {
+      if (!message || !receiver) return;
+      const index = receiver.mailbox.indexOf(message);
+      if (index < 0) return;
+      receiver.mailbox.splice(index, 1);
+      admitted = false;
+      for (const admit of receiver.admission.splice(0)) admit();
+    };
+    if (deadline !== undefined) {
+      cancelTimer = this.scheduler.after(
+        BigInt(
+          Math.max(
+            0,
+            Math.round((deadline - this.trace.virtualTimeMs) * 1_000_000),
+          ),
+        ),
+        () => {
+          if (settled || closing) return;
+          withdrawQueued();
+          if (admitted) finish(null, "TimedOut");
+          else reject("TimedOut");
+        },
+      );
+    }
     attempt();
     return (done) => {
       const wasSettled = settled;
       settled = true;
+      cancelTimer?.();
+      withdrawQueued();
       if (admitted || (wasSettled && !closing)) done(null);
       else closeRequest(done);
     };
@@ -3335,6 +3408,23 @@ class ExecutorV1 {
         return;
       }
       for (const admit of actor.admission.splice(0)) admit();
+      if (
+        message.requestDeadline !== undefined &&
+        message.requestDeadline <= this.trace.virtualTimeMs
+      ) {
+        this.closeValueAsync(
+          { kind: "record", typeId: "", fields: message.payload },
+          null,
+          (fault) => {
+            message.complete(null, "TimedOut");
+            actor.busy = false;
+            if (fault) this.crashActor(actor, fault);
+            else this.dispatchActor(actor);
+          },
+          actor,
+        );
+        return;
+      }
       this.trace.snapshot("actor.receive", {
         actor_id: actor.id,
         handler: message.handler.name,
@@ -3350,6 +3440,7 @@ class ExecutorV1 {
           id: actor.id,
           actor,
           caller: message.caller,
+          requestDeadline: message.requestDeadline,
           reply: message.reply,
           returned: (value) => {
             actor.active = null;
@@ -4069,12 +4160,22 @@ function sendErrorRole(reason: string): RuntimeVariantRole {
   }
 }
 
-function calleeFunction(value: VmValue): number {
+function calleeFunction(
+  value: VmValue,
+  specialization: number | null = null,
+): number {
   switch (value.kind) {
     case "function":
       return Number(value.id);
-    case "closure":
-      return value.body;
+    case "closure": {
+      const selected = specialization ?? value.specialization;
+      const entry = value.entries.find(
+        (candidate) => candidate.specialization === selected,
+      );
+      if (!entry)
+        throw new Error("callable has no selected concrete invocation entry");
+      return entry.body;
+    }
     default:
       throw new TypeError(
         `indirect.call expected a callable value, got ${value.kind}`,

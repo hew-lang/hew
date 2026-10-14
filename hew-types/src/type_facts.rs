@@ -603,7 +603,11 @@ impl TypeFactService {
             .map(|(name, field)| {
                 (
                     name,
-                    crate::value_class::substitute(field, &definition.type_params, &instance.args),
+                    crate::resolved_ty::substitute_type_params(
+                        field,
+                        &definition.type_params,
+                        &instance.args,
+                    ),
                 )
             })
             .collect();
@@ -833,7 +837,7 @@ impl TypeFactService {
         };
         ty.map(|ty| {
             let source = ResolvedTy::from_ty(ty).map_err(|error| error.to_string())?;
-            Ok(crate::value_class::substitute(
+            Ok(crate::resolved_ty::substitute_type_params(
                 &source,
                 &definition.type_params,
                 args,
@@ -932,10 +936,33 @@ impl TypeFactService {
         ty: &ResolvedTy,
         visiting: &mut HashSet<(ResolvedTy, ValueCapability)>,
     ) -> Result<bool, ClassError> {
+        match self.derived_eq_members(ty)? {
+            Some(members) => self.members_have_capability(&members, ValueCapability::Eq, visiting),
+            None => Ok(false),
+        }
+    }
+
+    /// The member demands of structural equality, also used before generic substitution.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one exhaustive authority for structural equality member demands"
+    )]
+    pub(crate) fn derived_eq_members(
+        &self,
+        ty: &ResolvedTy,
+    ) -> Result<Option<Vec<ResolvedTy>>, ClassError> {
+        if !crate::check::declaration_walk_terminates(ty, self.context.types())
+            || selected_impl_method(
+                &self.context.method_ids,
+                ty,
+                ImplMethodSlot::Value(ValueCapability::Eq),
+            )
+            .is_some()
+        {
+            return Ok(None);
+        }
         match ty {
-            ResolvedTy::Tuple(members) => {
-                self.members_have_capability(members, ValueCapability::Eq, visiting)
-            }
+            ResolvedTy::Tuple(members) => Ok(Some(members.clone())),
             ResolvedTy::Named {
                 head:
                     crate::TypeHead::Builtin(
@@ -954,7 +981,7 @@ impl TypeFactService {
                         name: ty.user_facing().to_string(),
                     });
                 }
-                self.members_have_capability(args, ValueCapability::Eq, visiting)
+                Ok(Some(args.clone()))
             }
             ResolvedTy::Named {
                 head:
@@ -962,7 +989,7 @@ impl TypeFactService {
                         BuiltinType::NodeId | BuiltinType::Location | BuiltinType::RemotePid,
                     ),
                 ..
-            } => Ok(true),
+            } => Ok(Some(Vec::new())),
             ResolvedTy::Named {
                 head:
                     crate::TypeHead::Builtin(
@@ -974,7 +1001,7 @@ impl TypeFactService {
                         | BuiltinType::YamlValue,
                     ),
                 ..
-            } => Ok(false),
+            } => Ok(None),
             ResolvedTy::Named { head, args, .. } => {
                 let builtin = head.builtin();
                 let owner = ty.nominal_instance(&self.context.defs).map_or_else(
@@ -994,20 +1021,16 @@ impl TypeFactService {
                             .declaration(&self.context.defs)
                             .is_some_and(|id| self.context.declarations.contains_key(&id))
                     {
-                        return Ok(false);
+                        return Ok(None);
                     }
                     return Err(ClassError::UnknownDeclaration { name: owner });
                 };
                 if definition.is_indirect
                     || (builtin.is_some() && definition.type_params.len() != args.len())
                 {
-                    return Ok(false);
+                    return Ok(None);
                 }
-                self.members_have_capability(
-                    &self.declared_capability_members(ty)?,
-                    ValueCapability::Eq,
-                    visiting,
-                )
+                self.declared_capability_members(ty).map(Some)
             }
             _ => Ok(matches!(
                 ty,
@@ -1029,7 +1052,8 @@ impl TypeFactService {
                     | ResolvedTy::Unit
                     | ResolvedTy::String
                     | ResolvedTy::Bytes
-            )),
+            )
+            .then(Vec::new)),
         }
     }
 
@@ -1114,7 +1138,11 @@ impl TypeFactService {
                 .members
                 .iter()
                 .map(|member| {
-                    crate::value_class::substitute(member, &declaration.type_params, args)
+                    crate::resolved_ty::substitute_type_params(
+                        member,
+                        &declaration.type_params,
+                        args,
+                    )
                 })
                 .collect());
         }
@@ -1156,7 +1184,7 @@ impl TypeFactService {
                             .get(&name)
                             .is_some_and(|decl| decl.is_opaque)
                     });
-                Ok(crate::value_class::substitute(
+                Ok(crate::resolved_ty::substitute_type_params(
                     &member,
                     &declaration.type_params,
                     args,
@@ -1346,7 +1374,7 @@ impl TypeFactService {
     }
 
     fn send_fact(&self, ty: &ResolvedTy, as_ty: &crate::Ty) -> SendFact {
-        if matches!(ty, ResolvedTy::Closure { .. }) {
+        if matches!(ty.callable_body(), ResolvedTy::Closure { .. }) {
             return SendFact::DeferredToClosureFacts;
         }
         let component_deferred = matches!(
@@ -1396,7 +1424,7 @@ impl TypeFacts {
         partial_ord: bool,
     ) -> Result<Self, ClassError> {
         let (class, clone) = crate::value_class::classify_ty(ty, decls)?;
-        let send = match ty {
+        let send = match ty.callable_body() {
             ResolvedTy::Closure { .. } => SendFact::DeferredToClosureFacts,
             // MARKED SHORTCUT - a trait object's send fact is `false` here.
             // WHY: §6.3 makes it "the bound list contains `Send`", and that is
@@ -1426,6 +1454,11 @@ impl TypeFacts {
 /// the types its rows are built from.
 pub fn push_type_components(ty: &ResolvedTy, out: &mut Vec<ResolvedTy>) {
     match ty {
+        ResolvedTy::GenericCallable { callable, .. } => {
+            if let ResolvedTy::Closure { captures, .. } = callable.callable_body() {
+                out.extend(captures.iter().cloned());
+            }
+        }
         ResolvedTy::Tuple(elements) => out.extend(elements.iter().cloned()),
         ResolvedTy::Array(element, _) | ResolvedTy::Slice(element) => {
             out.push((**element).clone());

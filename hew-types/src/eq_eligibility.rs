@@ -100,7 +100,8 @@ fn eq_ineligibility(ty: &Ty, types: TypeDefView<'_>) -> Option<EqEligibilityFail
         | Ty::CancellationToken
         | Ty::Array(_, _)
         | Ty::Slice(_)
-        | Ty::Function { .. }
+        | Ty::GenericCallable { .. }
+            | Ty::Function { .. }
         | Ty::Closure { .. }
         | Ty::Pointer { .. }
         | Ty::Borrow { .. }

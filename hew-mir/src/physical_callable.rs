@@ -17,6 +17,29 @@ fn closure(module: &PhysicalModule, id: ClosureId) -> Result<&PhysicalClosure, P
         .ok_or_else(|| PhysicalError::new("unknown physical closure identity"))
 }
 
+fn invocation_type(
+    module: &PhysicalModule,
+    ty: &ResolvedTy,
+    specialization: Option<hew_sir::CallableSpecializationId>,
+) -> Result<ResolvedTy, PhysicalError> {
+    match specialization {
+        Some(id) => ty
+            .instantiate_callable(
+                module
+                    .callable_specializations
+                    .get(id.0 as usize)
+                    .ok_or_else(|| {
+                        PhysicalError::new("callable specialization has no argument row")
+                    })?,
+            )
+            .ok_or_else(|| PhysicalError::new("callable specialization disagrees with its scheme")),
+        None if !matches!(ty, ResolvedTy::GenericCallable { .. }) => Ok(ty.clone()),
+        None => Err(PhysicalError::new(
+            "generic callable requires a concrete invocation entry",
+        )),
+    }
+}
+
 fn expected_receiver(ty: &ResolvedTy) -> Result<SemParamPassing, PhysicalError> {
     let (_, _, capabilities) = hew_sir::callable_parts(ty).map_err(PhysicalError::new)?;
     Ok(match capabilities.call {
@@ -33,30 +56,34 @@ pub(super) fn verify_closures(module: &PhysicalModule) -> Result<(), PhysicalErr
                 "physical closure has noncanonical identity",
             ));
         }
-        let body = module
-            .callables
-            .get(closure.body.0 as usize)
-            .filter(|body| body.id == closure.body)
-            .ok_or_else(|| PhysicalError::new("physical closure lacks its exact body"))?;
-        let (params, ret, _) = hew_sir::callable_parts(&closure.ty).map_err(PhysicalError::new)?;
-        if body.instance != hew_sir::CallableInstance::Closure(closure.id)
-            || body.params.len() != params.len() + 1
-            || &body.return_ty != ret
-            || body.params[0].ty != closure.ty
-            || body.params[0].passing != expected_receiver(&closure.ty)?
-            || body.params[0].carrier != ParamCarrier::Indirect
-            || body.params[1..]
-                .iter()
-                .map(|param| &param.ty)
-                .ne(params.iter())
-            || !module
-                .environment_glue
-                .iter()
-                .any(|glue| glue.ty == closure.ty)
-        {
-            return Err(PhysicalError::new(
-                "physical closure body or environment disagrees with its contract",
-            ));
+        for entry in &closure.entries {
+            let invocation_ty = invocation_type(module, &closure.ty, entry.specialization)?;
+            let body = module
+                .callables
+                .get(entry.body.0 as usize)
+                .filter(|body| body.id == entry.body)
+                .ok_or_else(|| PhysicalError::new("physical closure lacks its exact body"))?;
+            let (params, ret, _) =
+                hew_sir::callable_parts(&invocation_ty).map_err(PhysicalError::new)?;
+            if body.instance != hew_sir::CallableInstance::Closure(closure.id)
+                || body.params.len() != params.len() + 1
+                || &body.return_ty != ret
+                || body.params[0].ty != closure.ty
+                || body.params[0].passing != expected_receiver(&closure.ty)?
+                || body.params[0].carrier != ParamCarrier::Indirect
+                || body.params[1..]
+                    .iter()
+                    .map(|param| &param.ty)
+                    .ne(params.iter())
+                || !module
+                    .environment_glue
+                    .iter()
+                    .any(|glue| glue.ty == closure.ty)
+            {
+                return Err(PhysicalError::new(
+                    "physical closure body or environment disagrees with its contract",
+                ));
+            }
         }
     }
     Ok(())
@@ -87,7 +114,7 @@ pub(super) fn verify_capture_slots(
     let closure = closure(module, id)?;
     let ResolvedTy::Closure {
         captures: fields, ..
-    } = &closure.ty
+    } = closure.ty.callable_body()
     else {
         return Err(PhysicalError::new(
             "physical closure lacks concrete capture types",
@@ -162,7 +189,7 @@ pub(super) fn verify_closure_make(
 ) -> Result<(), PhysicalError> {
     let closure = closure(module, id)?;
     let dest = storage(function, dest)?;
-    let ResolvedTy::Closure { captures, .. } = &closure.ty else {
+    let ResolvedTy::Closure { captures, .. } = closure.ty.callable_body() else {
         return Err(PhysicalError::new(
             "closure construction has no capture type",
         ));
@@ -187,11 +214,16 @@ pub(super) fn verify_closure_make(
     Ok(())
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "verifies the fields of one indirect-call terminator"
+)]
 pub(super) fn verify_indirect_call(
     module: &PhysicalModule,
     function: &PhysicalFunction,
     callee: ArgumentTransfer,
     targets: &hew_sir::CallableTargets,
+    specialization: Option<hew_sir::CallableSpecializationId>,
     signature: &PhysicalCallSignature,
     args: &[ArgumentTransfer],
     result: Option<StorageId>,
@@ -247,7 +279,8 @@ pub(super) fn verify_indirect_call(
             "indirect receiver transfer differs from its invocation capability",
         ));
     }
-    let semantic = hew_sir::callable_value_signature(&receiver.ty, &module.type_facts)
+    let invocation_ty = invocation_type(module, &receiver.ty, specialization)?;
+    let semantic = hew_sir::callable_value_signature(&invocation_ty, &module.type_facts)
         .map_err(PhysicalError::new)?;
     if signature.return_ty != semantic.return_ty
         || signature.params.len() != semantic.params.len()
@@ -433,6 +466,7 @@ impl FunctionLowerer<'_> {
     ) -> Result<PhysicalTerminator, PhysicalError> {
         let SemTerminator::IndirectCall {
             targets,
+            specialization,
             callee,
             signature,
             args,
@@ -448,6 +482,7 @@ impl FunctionLowerer<'_> {
         let params = self.call_params(signature)?;
         Ok(PhysicalTerminator::IndirectCall {
             targets: targets.clone(),
+            specialization: *specialization,
             callee: self.argument_transfer(callee.operand.value, callee.decision)?,
             signature: PhysicalCallSignature {
                 failure_domain: signature.failure_domain,
@@ -484,6 +519,7 @@ pub(super) fn verify_callable_coerce(
     function: &PhysicalFunction,
     dest: StorageId,
     source: StorageId,
+    specialization: Option<hew_sir::CallableSpecializationId>,
 ) -> Result<(), PhysicalError> {
     let source = storage(function, source)?;
     let dest = storage(function, dest)?;
@@ -492,8 +528,15 @@ pub(super) fn verify_callable_coerce(
             "callable coercion must transfer an owned carrier",
         ));
     }
-    hew_sir::verify_callable_coercion(&source.ty, &dest.ty, &module.type_facts)
-        .map_err(PhysicalError::new)?;
+    let selected = specialization
+        .map(|id| invocation_type(module, &source.ty, Some(id)))
+        .transpose()?;
+    hew_sir::verify_callable_coercion(
+        selected.as_ref().unwrap_or(&source.ty),
+        &dest.ty,
+        &module.type_facts,
+    )
+    .map_err(PhysicalError::new)?;
 
     Ok(())
 }
@@ -622,9 +665,11 @@ pub(super) fn verify_operation(
             closure,
             fields,
         } => verify_closure_make(module, function, *dest, *closure, fields),
-        PhysicalOp::CallableCoerce { dest, source } => {
-            verify_callable_coerce(module, function, *dest, *source)
-        }
+        PhysicalOp::CallableCoerce {
+            dest,
+            source,
+            specialization,
+        } => verify_callable_coerce(module, function, *dest, *source, *specialization),
         PhysicalOp::DynMake {
             dest,
             vtable,

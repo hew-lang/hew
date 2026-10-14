@@ -383,7 +383,12 @@ impl Checker {
         actual: &Ty,
         span: &Span,
     ) {
-        match (&self.subst.resolve(expected), &self.subst.resolve(actual)) {
+        let expected_resolved = self.subst.resolve(expected);
+        let actual_resolved = self.subst.resolve(actual);
+        match (
+            expected_resolved.callable_body(),
+            actual_resolved.callable_body(),
+        ) {
             (Ty::Function { capabilities, .. }, Ty::Closure { identity, .. }) => {
                 if !capabilities.suspends {
                     self.record_plain_callable_obligation(
@@ -592,7 +597,7 @@ impl Checker {
     ) -> bool {
         match origin {
             CallableOrigin::Unknown => false,
-            CallableOrigin::Typed(ty) => match self.subst.resolve(ty) {
+            CallableOrigin::Typed(ty) => match self.subst.resolve(ty).callable_body().clone() {
                 Ty::Closure {
                     identity: EffectBody::Closure(key),
                     ..
@@ -805,7 +810,11 @@ impl Checker {
         graph: &EffectGraph,
         bodies: &HashMap<EffectBody, bool>,
     ) -> bool {
-        match invocation.callee.as_ref().map(|ty| self.subst.resolve(ty)) {
+        match invocation
+            .callee
+            .as_ref()
+            .map(|ty| self.subst.resolve(ty).callable_body().clone())
+        {
             Some(Ty::Function { capabilities, .. }) => capabilities.suspends,
             Some(Ty::Closure {
                 identity,
@@ -890,6 +899,8 @@ impl Checker {
                             self.subst
                                 .resolve(ty)
                                 .substitute_type_params_parallel(substitutions)
+                                .callable_body()
+                                .clone()
                         }) {
                             Some(Ty::Closure {
                                 identity,

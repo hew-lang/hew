@@ -46,6 +46,11 @@ pub struct NominalInstance {
 /// those four states leaked past the checker.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ResolvedTy {
+    /// A quantified callable; its captured environment is independent of its binders.
+    GenericCallable {
+        parameters: Vec<crate::CallableTypeParameter<ResolvedTraitBound>>,
+        callable: Box<ResolvedTy>,
+    },
     /// 8-bit signed integer
     I8,
     /// 16-bit signed integer
@@ -313,6 +318,50 @@ impl fmt::Display for BoundaryError {
 impl std::error::Error for BoundaryError {}
 
 impl ResolvedTy {
+    /// The callable signature and environment beneath its own quantifiers.
+    #[must_use]
+    pub fn callable_body(&self) -> &Self {
+        match self {
+            Self::GenericCallable { callable, .. } => callable.callable_body(),
+            _ => self,
+        }
+    }
+
+    /// Substitute free source binders while preserving nested quantifiers.
+    #[must_use]
+    pub fn substitute_type_params(
+        &self,
+        parameters: &[crate::ParamHead],
+        arguments: &[Self],
+    ) -> Self {
+        debug_assert_eq!(
+            parameters.len(),
+            arguments.len(),
+            "type substitution arity mismatch"
+        );
+        substitute_type_params(self, parameters, arguments)
+    }
+
+    /// Substitute one checked application of a quantified callable.
+    #[must_use]
+    pub fn instantiate_callable(&self, arguments: &[Self]) -> Option<Self> {
+        let Self::GenericCallable {
+            parameters,
+            callable,
+        } = self
+        else {
+            return None;
+        };
+        if parameters.len() != arguments.len() {
+            return None;
+        }
+        let parameters: Vec<_> = parameters
+            .iter()
+            .map(|parameter| parameter.parameter)
+            .collect();
+        Some(substitute_type_params(callable, &parameters, arguments))
+    }
+
     /// The actor declaration an actor-handle type names, with the actor's own
     /// type arguments.
     ///
@@ -762,6 +811,25 @@ impl ResolvedTy {
     )]
     pub fn from_ty(ty: &Ty) -> Result<Self, BoundaryError> {
         match ty {
+            Ty::GenericCallable {
+                parameters,
+                callable,
+            } => Ok(Self::GenericCallable {
+                parameters: parameters
+                    .iter()
+                    .map(|parameter| {
+                        Ok(crate::CallableTypeParameter {
+                            parameter: parameter.parameter,
+                            bounds: parameter
+                                .bounds
+                                .iter()
+                                .map(Self::convert_trait_bound)
+                                .collect::<Result<_, _>>()?,
+                        })
+                    })
+                    .collect::<Result<_, BoundaryError>>()?,
+                callable: Box::new(Self::from_ty(callable)?),
+            }),
             Ty::I8 => Ok(ResolvedTy::I8),
             Ty::I16 => Ok(ResolvedTy::I16),
             Ty::I32 => Ok(ResolvedTy::I32),
@@ -901,8 +969,38 @@ impl ResolvedTy {
     /// checker-output cutover. It is structurally total because
     /// `ResolvedTy` has strictly fewer variants than `Ty`.
     #[must_use]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one conversion match covers every resolved type"
+    )]
     pub fn to_ty(&self) -> Ty {
         match self {
+            Self::GenericCallable {
+                parameters,
+                callable,
+            } => Ty::GenericCallable {
+                parameters: parameters
+                    .iter()
+                    .map(|parameter| crate::CallableTypeParameter {
+                        parameter: parameter.parameter,
+                        bounds: parameter
+                            .bounds
+                            .iter()
+                            .map(|bound| TraitObjectBound {
+                                trait_name: bound.trait_name.clone(),
+                                trait_id: bound.trait_id,
+                                args: bound.args.iter().map(Self::to_ty).collect(),
+                                assoc_bindings: bound
+                                    .assoc_bindings
+                                    .iter()
+                                    .map(|(name, ty)| (name.clone(), ty.to_ty()))
+                                    .collect(),
+                            })
+                            .collect(),
+                    })
+                    .collect(),
+                callable: Box::new(callable.to_ty()),
+            },
             ResolvedTy::I8 => Ty::I8,
             ResolvedTy::I16 => Ty::I16,
             ResolvedTy::I32 => Ty::I32,
@@ -1199,6 +1297,181 @@ impl fmt::Display for UserFacingResolvedTy<'_> {
 // unresolved or complex type arg), we fall back to the bare key so existing
 // behaviour is preserved.
 
+/// Substitute free source binders by identity, preserving nested quantifiers.
+/// Unbound parameters remain abstract until their enclosing instance supplies them.
+#[expect(
+    clippy::too_many_lines,
+    reason = "the shared binder substitution covers every structural type"
+)]
+#[must_use]
+pub fn substitute_type_params(
+    ty: &ResolvedTy,
+    params: &[crate::ParamHead],
+    args: &[ResolvedTy],
+) -> ResolvedTy {
+    // A declaration's own parameter reaches here spelled either as an abstract
+    // `TypeParam` or, when the declaration was resolved without a type-parameter
+    // scope, as a zero-argument user `Named`. Both are the same parameter.
+    let parameter_name = match ty {
+        ResolvedTy::TypeParam { name } => Some(name),
+        ResolvedTy::Named {
+            head: crate::TypeHead::Param(param),
+            args,
+            ..
+        } if args.is_empty() => Some(param),
+        _ => None,
+    };
+    if let Some(index) =
+        parameter_name.and_then(|name| params.iter().position(|param| param == name))
+    {
+        if let Some(argument) = args.get(index) {
+            return argument.clone();
+        }
+    }
+    match ty {
+        ResolvedTy::GenericCallable {
+            parameters,
+            callable,
+        } => {
+            let outer: Vec<_> = params
+                .iter()
+                .zip(args)
+                .filter(|(parameter, _)| {
+                    !parameters
+                        .iter()
+                        .any(|bound| bound.parameter == **parameter)
+                })
+                .collect();
+            let outer_params: Vec<_> = outer.iter().map(|(parameter, _)| **parameter).collect();
+            let outer_args: Vec<_> = outer
+                .iter()
+                .map(|(_, argument)| (*argument).clone())
+                .collect();
+            ResolvedTy::GenericCallable {
+                parameters: parameters
+                    .iter()
+                    .map(|parameter| crate::CallableTypeParameter {
+                        parameter: parameter.parameter,
+                        bounds: parameter
+                            .bounds
+                            .iter()
+                            .map(|bound| crate::ResolvedTraitBound {
+                                trait_id: bound.trait_id,
+                                trait_name: bound.trait_name.clone(),
+                                args: bound
+                                    .args
+                                    .iter()
+                                    .map(|ty| {
+                                        substitute_type_params(ty, &outer_params, &outer_args)
+                                    })
+                                    .collect(),
+                                assoc_bindings: bound
+                                    .assoc_bindings
+                                    .iter()
+                                    .map(|(name, ty)| {
+                                        (
+                                            name.clone(),
+                                            substitute_type_params(ty, &outer_params, &outer_args),
+                                        )
+                                    })
+                                    .collect(),
+                            })
+                            .collect(),
+                    })
+                    .collect(),
+                callable: Box::new(substitute_type_params(callable, &outer_params, &outer_args)),
+            }
+        }
+        ResolvedTy::Tuple(elements) => ResolvedTy::Tuple(
+            elements
+                .iter()
+                .map(|element| substitute_type_params(element, params, args))
+                .collect(),
+        ),
+        ResolvedTy::Array(element, len) => ResolvedTy::Array(
+            Box::new(substitute_type_params(element, params, args)),
+            *len,
+        ),
+        ResolvedTy::Slice(element) => {
+            ResolvedTy::Slice(Box::new(substitute_type_params(element, params, args)))
+        }
+        ResolvedTy::Named {
+            head,
+            args: named_args,
+            is_opaque,
+        } => ResolvedTy::Named {
+            head: *head,
+            args: named_args
+                .iter()
+                .map(|arg| substitute_type_params(arg, params, args))
+                .collect(),
+            is_opaque: *is_opaque,
+        },
+        ResolvedTy::Function {
+            capabilities,
+            params: callable_params,
+            ret,
+        } => ResolvedTy::Function {
+            capabilities: *capabilities,
+            params: callable_params
+                .iter()
+                .map(|param| substitute_type_params(param, params, args))
+                .collect(),
+            ret: Box::new(substitute_type_params(ret, params, args)),
+        },
+        ResolvedTy::Closure {
+            capabilities,
+            params: callable_params,
+            ret,
+            captures,
+        } => ResolvedTy::Closure {
+            capabilities: *capabilities,
+            params: callable_params
+                .iter()
+                .map(|param| substitute_type_params(param, params, args))
+                .collect(),
+            ret: Box::new(substitute_type_params(ret, params, args)),
+            captures: captures
+                .iter()
+                .map(|capture| substitute_type_params(capture, params, args))
+                .collect(),
+        },
+        ResolvedTy::Pointer {
+            is_mutable,
+            pointee,
+        } => ResolvedTy::Pointer {
+            is_mutable: *is_mutable,
+            pointee: Box::new(substitute_type_params(pointee, params, args)),
+        },
+        ResolvedTy::Borrow { pointee } => ResolvedTy::Borrow {
+            pointee: Box::new(substitute_type_params(pointee, params, args)),
+        },
+        ResolvedTy::Task(inner) => {
+            ResolvedTy::Task(Box::new(substitute_type_params(inner, params, args)))
+        }
+        ResolvedTy::TraitObject { traits } => ResolvedTy::TraitObject {
+            traits: traits
+                .iter()
+                .map(|bound| crate::ResolvedTraitBound {
+                    trait_name: bound.trait_name.clone(),
+                    trait_id: bound.trait_id,
+                    args: bound
+                        .args
+                        .iter()
+                        .map(|ty| substitute_type_params(ty, params, args))
+                        .collect(),
+                    assoc_bindings: bound
+                        .assoc_bindings
+                        .iter()
+                        .map(|(name, ty)| (name.clone(), substitute_type_params(ty, params, args)))
+                        .collect(),
+                })
+                .collect(),
+        },
+        other => other.clone(),
+    }
+}
+
 /// Selects how the shared segment encoder handles an abstract type parameter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TypeParamMangle {
@@ -1221,11 +1494,37 @@ pub enum TypeParamMangle {
 /// returns `None` for a `TypeParam` anywhere in the shape, allowing checker
 /// callers to retain the bare lookup key.
 #[must_use]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one canonical encoder covers every resolved type"
+)]
 pub fn mangle_resolved_ty_segment(
     ty: &ResolvedTy,
     type_param_mode: TypeParamMangle,
 ) -> Option<String> {
     match ty {
+        ResolvedTy::GenericCallable {
+            parameters,
+            callable,
+        } => {
+            if type_param_mode == TypeParamMangle::BareKeyFallback
+                && ty.to_ty().has_type_parameters()
+            {
+                return None;
+            }
+            let binders = parameters
+                .iter()
+                .map(|parameter| {
+                    let id = parameter.parameter.id;
+                    format!("{}i{}", id.owner.index_u32(), id.index)
+                })
+                .collect::<Vec<_>>()
+                .join("c");
+            Some(format!(
+                "fn$q{binders}$x{}$g",
+                mangle_resolved_ty_segment(callable, TypeParamMangle::Concrete)?
+            ))
+        }
         ResolvedTy::I8 => Some("i8".to_string()),
         ResolvedTy::I16 => Some("i16".to_string()),
         ResolvedTy::I32 => Some("i32".to_string()),

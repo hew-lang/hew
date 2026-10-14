@@ -425,24 +425,14 @@ fn hover_binding_in_item(
             None
         }
         Item::Machine(machine) => {
-            // Walk state entry/exit blocks, then each transition body.
-            for state in &machine.states {
-                if let Some(entry) = &state.entry {
-                    if let Some(result) =
-                        hover_binding_in_block(entry, type_output, word, word_span, offset)
-                    {
-                        return Some(result);
-                    }
-                }
-                if let Some(exit) = &state.exit {
-                    if let Some(result) =
-                        hover_binding_in_block(exit, type_output, word, word_span, offset)
-                    {
-                        return Some(result);
-                    }
+            for (_, hook) in machine.state_hooks() {
+                if let Some(result) =
+                    hover_binding_in_block(hook, type_output, word, word_span, offset)
+                {
+                    return Some(result);
                 }
             }
-            for transition in &machine.transitions {
+            for transition in machine.authored_transitions() {
                 // A braced transition body parses to `Expr::Block`, and
                 // `hover_binding_in_expr` expects an already-unwrapped trailing
                 // expression, so a block has to be walked as one — the same way
@@ -1165,8 +1155,10 @@ fn format_type_expr_hover(type_expr: &TypeExpr) -> String {
             params,
             return_type,
             capabilities,
+            type_params,
         } => format!(
-            "fn{capabilities}({}) -> {}",
+            "fn{capabilities}{}({}) -> {}",
+            format_type_parameters_hover(type_params.as_deref().unwrap_or_default()),
             params
                 .iter()
                 .map(|(param, _)| format_type_expr_hover(param))
@@ -1201,6 +1193,33 @@ fn format_type_expr_hover(type_expr: &TypeExpr) -> String {
             .join(" + "),
         TypeExpr::Infer => "_".to_string(),
     }
+}
+
+fn format_type_parameters_hover(parameters: &[hew_parser::ast::TypeParam]) -> String {
+    if parameters.is_empty() {
+        return String::new();
+    }
+    let parameters = parameters
+        .iter()
+        .map(|parameter| {
+            if parameter.bounds.is_empty() {
+                parameter.name.to_string()
+            } else {
+                format!(
+                    "{}: {}",
+                    parameter.name,
+                    parameter
+                        .bounds
+                        .iter()
+                        .map(format_trait_bound_hover)
+                        .collect::<Vec<_>>()
+                        .join(" + ")
+                )
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("<{parameters}>")
 }
 
 fn format_trait_bound_hover(bound: &TraitBound) -> String {
@@ -2464,9 +2483,11 @@ mod tests {
             "machine Counter {\n",
             "    events { Tick { by: i64 } }\n",
             "    state Idle,\n",
-            "    state Live { hits: i64 },\n",
+            "    state Connection {\n",
+            "        initial state Live { hits: i64 }\n",
+            "        on Tick: _ => Live reenter { hits: state.hits + event.by }\n",
+            "    }\n",
             "    on Tick: Idle => Live { hits: event.by }\n",
-            "    on Tick: Live => Live reenter { hits: state.hits + event.by }\n",
             "}\n",
         );
         let pr = hew_parser::parse(source);
@@ -2476,7 +2497,7 @@ mod tests {
         let state_hover = hover(source, &pr, Some(&tc), state_offset)
             .expect("hover over `state` in a transition body must resolve");
         assert!(
-            state_hover.contents.contains("state: Counter.Live"),
+            state_hover.contents.contains("state: Counter.Connection"),
             "hover should name the refined source state; got: {}",
             state_hover.contents
         );

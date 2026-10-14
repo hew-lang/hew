@@ -303,6 +303,7 @@ unsafe fn ask_for_test(
             size,
             reply_size,
             timeout_ms,
+            -1,
             waker.descriptor(),
         )
     };
@@ -1089,9 +1090,10 @@ fn remote_call_for_test(
     let timer = unsafe { crate::coro_sleep::hew_coro_sleep_new(i64::MAX, waker.descriptor()) };
     let (id, pending) = reply_table().register_with_waker(key, Some(waker), PendingReplyKind::Ask);
     let call = Box::into_raw(Box::new(HewRemoteCall {
-        route: RemoteCallRoute::Wire(pending),
+        route: RemoteCallRoute::Wire(pending, test_location(1, 1), 0),
         timer,
         timed_out: false,
+        deadline: crate::request_deadline::RequestDeadline::after(i64::MAX),
         dispatch: test_dispatch(),
         msg_type: 7,
         reply_size: 0,

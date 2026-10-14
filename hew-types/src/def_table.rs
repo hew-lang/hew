@@ -36,6 +36,7 @@ pub enum DeclarationKind {
     ImplMethod,
     ImplBlock,
     Closure,
+    CallableType,
     Actor,
     ActorInit,
     ActorReceive,

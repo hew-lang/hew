@@ -3,6 +3,24 @@
 use super::*;
 
 impl<'ctx> FunctionEmitter<'_, 'ctx> {
+    pub(super) fn request_deadline(&self) -> CodegenResult<IntValue<'ctx>> {
+        let frame = self.frame.as_ref().ok_or_else(|| {
+            CodegenError::FailClosed("request budget requires an invocation state".into())
+        })?;
+        let ptr = self.ctx.ptr_type(AddressSpace::default());
+        Ok(call_value(
+            &self.builder,
+            get_or_declare_external(
+                self.llvm,
+                "hew_coro_state_request_deadline",
+                self.ctx.i64_type().fn_type(&[ptr.into()], false),
+            )?,
+            &[frame.state.into()],
+            "request.deadline",
+        )?
+        .into_int_value())
+    }
+
     #[allow(clippy::too_many_arguments, reason = "exact actor suspension contract")]
     pub(in crate::physical) fn emit_actor_ask(
         &self,
@@ -257,22 +275,18 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 drop_request.as_global_value().as_pointer_value().into(),
             ]);
         }
-        types.extend::<[inkwell::types::BasicMetadataTypeEnum<'ctx>; 6]>([
+        types.extend::<[inkwell::types::BasicMetadataTypeEnum<'ctx>; 5]>([
             size_ty.into(),
             ptr.into(),
             ptr.into(),
             self.ctx.i64_type().into(),
             self.ctx.i32_type().into(),
-            self.ctx.i32_type().into(),
         ]);
-        arguments.extend::<[inkwell::values::BasicMetadataValueEnum<'ctx>; 6]>([
+        arguments.extend::<[inkwell::values::BasicMetadataValueEnum<'ctx>; 5]>([
             size_ty.const_int(reply_size, false).into(),
             drop_reply.into(),
             waker.into(),
-            // A source ask carries no deadline; the runtime timer serves the
-            // remote-local route only.
-            self.ctx.i64_type().const_zero().into(),
-            self.ctx.i32_type().const_zero().into(),
+            self.request_deadline()?.into(),
             self.ctx
                 .i32_type()
                 .const_int(

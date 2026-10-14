@@ -113,7 +113,7 @@ fn captured_snapshots_and_escaped_environments_have_exact_body_instances() {
         let body = module
             .functions
             .iter()
-            .find(|body| body.callable == closure.body)
+            .find(|body| body.callable == closure.entries[0].body)
             .unwrap();
         assert_eq!(body.places.len(), closure.fields.len());
         assert!(body
@@ -171,7 +171,7 @@ fn nested_owned_closure_can_outlive_the_environment_that_created_it() {
     assert_eq!(module.closures.len(), 2);
     assert_eq!(
         module.closures[1].instance.enclosing,
-        module.closures[0].body
+        module.closures[0].entries[0].body
     );
 }
 
@@ -191,7 +191,7 @@ fn consuming_capture_is_taken_before_invocation_and_environment_cleanup() {
     let body = module
         .functions
         .iter()
-        .find(|function| function.callable == closure.body)
+        .find(|function| function.callable == closure.entries[0].body)
         .unwrap();
     assert_eq!(body.params[0].own, hew_sir::OwnKind::Owned);
     assert!(body

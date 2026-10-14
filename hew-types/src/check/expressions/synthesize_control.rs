@@ -8,7 +8,6 @@
 )]
 use super::super::branch_join::BranchArmExit;
 use super::super::coerce::{cast_is_valid, common_integer_type, common_numeric_type};
-use super::super::types::GenericLambdaSig;
 #[allow(
     clippy::wildcard_imports,
     reason = "submodules mirror the legacy check namespace during the split"
@@ -644,7 +643,14 @@ impl Checker {
                     params,
                     return_type.as_ref(),
                     body,
-                    Some((expected_params, ret)),
+                    if type_params
+                        .as_ref()
+                        .is_some_and(|parameters| !parameters.is_empty())
+                    {
+                        None
+                    } else {
+                        Some((expected_params, ret))
+                    },
                     span,
                     false,
                     false,

@@ -47,7 +47,12 @@ export type VmValue =
    *  captures. Calling it passes `environment` to the body's first parameter,
    *  which is where a `capture` place reaches its field. The environment is
    *  owned by the closure, so `cloneValue` clones it. */
-  | { kind: "closure"; body: number; environment: VmValue };
+  | {
+      kind: "closure";
+      entries: ReadonlyArray<{ body: number; specialization: number | null }>;
+      specialization: number | null;
+      environment: VmValue;
+    };
 
 export const UNIT: VmValue = { kind: "unit" };
 
@@ -113,7 +118,8 @@ export function cloneValue(value: VmValue): VmValue {
     case "closure":
       return {
         kind: "closure",
-        body: value.body,
+        entries: value.entries,
+        specialization: value.specialization,
         environment: cloneValue(value.environment),
       };
     case "map":
@@ -280,7 +286,7 @@ export function renderStdout(value: VmValue): string {
     case "function":
       return value.id;
     case "closure":
-      return `closure:${value.body}`;
+      return `closure:${value.entries.find((entry) => entry.specialization === value.specialization)?.body ?? "generic"}`;
   }
 }
 
@@ -329,7 +335,7 @@ export function toJsonValue(value: VmValue): JsonValue {
     case "function":
       return value.id;
     case "closure":
-      return `closure:${value.body}`;
+      return `closure:${value.entries.find((entry) => entry.specialization === value.specialization)?.body ?? "generic"}`;
   }
 }
 

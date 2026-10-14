@@ -580,6 +580,7 @@ mod tests {
             resources: BTreeMap::new(),
             regex_patterns: Vec::new(),
             closures: Vec::new(),
+            callable_specializations: Vec::new(),
             vtables: Vec::new(),
             value_capabilities: BTreeMap::new(),
             structural_display: BTreeMap::new(),

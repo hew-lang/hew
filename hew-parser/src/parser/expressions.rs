@@ -1684,10 +1684,11 @@ impl Parser<'_> {
         start: usize,
         private_captures: Vec<Spanned<Ident>>,
     ) -> Option<Expr> {
-        let params = if self.eat(&Token::PipePipe) {
-            Vec::new()
+        let (type_params, params) = if self.eat(&Token::PipePipe) {
+            (None, Vec::new())
         } else {
             self.expect(&Token::Pipe)?;
+            let type_params = self.parse_opt_type_params()?;
             let params = self.try_parse_pipe_lambda_params().or_else(|| {
                 self.error_closure_pipe_syntax(
                     "E_CLOSURE_PIPE_SYNTAX: malformed closure parameter list".to_string(),
@@ -1704,7 +1705,7 @@ impl Parser<'_> {
                 );
                 None
             })?;
-            params
+            (type_params, params)
         };
 
         for (name, span) in &private_captures {
@@ -1748,7 +1749,7 @@ impl Parser<'_> {
         Some(Expr::Lambda {
             is_move,
             private_captures,
-            type_params: None,
+            type_params,
             params,
             return_type,
             body,

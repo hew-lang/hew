@@ -8,7 +8,6 @@
 )]
 use super::super::branch_join::BranchArmExit;
 use super::super::coerce::{cast_is_valid, common_integer_type, common_numeric_type};
-use super::super::types::GenericLambdaSig;
 #[allow(
     clippy::wildcard_imports,
     reason = "submodules mirror the legacy check namespace during the split"
@@ -872,65 +871,36 @@ impl Checker {
         let capture_depth = self.env.depth();
         self.lambda_capture_depth = Some(capture_depth);
 
-        // Clear any stale scratch state from a previous call in a non-let or
-        // nested context.  We unconditionally reset first so that re-entrant
-        // calls (e.g., a generic lambda inside a function argument) cannot
-        // bleed their type-var pairs out to an unrelated enclosing Stmt::Let.
-        self.last_lambda_generic_sig = None;
-
-        let generic_parameters =
-            if let Some(parameters) = type_params.filter(|parameters| !parameters.is_empty()) {
-                let module = self.current_declaration_module();
-                let occurrence = crate::DeclarationOccurrence::new_with_synthetic_ordinal(
-                    module,
-                    span,
-                    0,
-                    crate::DeclarationKind::Closure,
-                    0,
-                );
-                let path = scoped_module_item_name(
-                    self.canonical_fn_owner(),
-                    &format!("<closure@{}:{}>", span.start, span.end),
-                )
-                .unwrap_or_else(|| format!("<closure@{}:{}>", span.start, span.end));
-                let owner = self
-                    .defs
-                    .declare(occurrence, Symbol::intern("closure"), None, path)
-                    .expect("one closure occurrence has one declaration identity");
-                if let Some(module) = module {
-                    self.scopes.declare_type_parameters(
-                        module,
-                        owner,
-                        span.clone(),
-                        parameters.iter().map(|parameter| parameter.name),
-                    );
-                }
-                parameters
-                    .iter()
-                    .enumerate()
-                    .map(|(index, parameter)| {
-                        crate::ParamHead::new(
-                            crate::TypeParamId::new(owner, index),
-                            parameter.name.name,
-                        )
-                    })
-                    .collect::<Vec<_>>()
-            } else {
-                Vec::new()
-            };
-        let mut generic_bindings = std::collections::HashMap::new();
-        let mut generic_param_names = HashMap::new();
-        let mut generic_type_vars = Vec::new();
-        if let Some(tps) = type_params {
-            for (tp, parameter) in tps.iter().zip(&generic_parameters) {
-                let tv = TypeVar::fresh();
-                generic_bindings.insert(tp.name.to_string(), Ty::Var(tv));
-                generic_param_names.insert(tv.0, *parameter);
-                generic_type_vars.push(tv);
-            }
-        }
-        if !generic_bindings.is_empty() {
-            self.generic_ctx.push(generic_bindings);
+        let generic_parameters = self.declare_callable_parameters(
+            type_params.unwrap_or_default(),
+            span,
+            crate::DeclarationKind::Closure,
+        );
+        self.generic_ctx.push(
+            generic_parameters
+                .iter()
+                .map(|parameter| (parameter.spelling.to_string(), Ty::param(*parameter)))
+                .collect(),
+        );
+        let written_parameters = type_params.map(<[TypeParam]>::to_vec);
+        let generic_bounds =
+            self.collect_type_param_bounds(written_parameters.as_ref(), None, &mut Vec::new());
+        self.current_type_param_bounds.push(generic_bounds.clone());
+        let previous_function = self.current_function.clone();
+        if let Some(parameter) = generic_parameters.first() {
+            let owner = parameter.id.owner;
+            let key = self.defs.path(owner).to_string();
+            self.insert_fn_sig(
+                &key,
+                owner,
+                FnSig {
+                    type_params: generic_parameters.clone(),
+                    bounds: generic_bounds.clone(),
+                    ..FnSig::default()
+                },
+            );
+            self.record_call_edge(&key);
+            self.current_function = Some(key);
         }
 
         self.env.push_scope();
@@ -1060,29 +1030,20 @@ impl Checker {
         self.in_generator = prev_in_generator;
         self.pop_scope_with_cleanup();
 
-        if let Some(tps) = type_params {
-            if !tps.is_empty() {
-                let bounds =
-                    self.collect_type_param_bounds(Some(&tps.to_vec()), None, &mut Vec::new());
-                self.last_lambda_generic_sig = Some(GenericLambdaSig {
-                    call_sig: FnSig {
-                        type_params: generic_parameters.clone(),
-                        bounds,
-                        param_names: params.iter().map(|param| param.name.to_string()).collect(),
-                        params: param_tys
-                            .iter()
-                            .map(|param| {
-                                Self::lambda_generic_schema_ty(param, &generic_param_names)
-                            })
-                            .collect(),
-                        return_type: Self::lambda_generic_schema_ty(&ret_ty, &generic_param_names),
-                        ..FnSig::default()
-                    },
-                    type_vars: generic_type_vars,
-                });
-                self.generic_ctx.pop();
-            }
+        if !generic_parameters.is_empty() {
+            let key = self
+                .current_function
+                .clone()
+                .expect("generic closure owns its signature");
+            let signature = self
+                .fn_sig_mut(&key)
+                .expect("generic closure signature was registered");
+            signature.params.clone_from(&param_tys);
+            signature.return_type = ret_ty.clone();
         }
+        self.current_function = previous_function;
+        self.current_type_param_bounds.pop();
+        self.generic_ctx.pop();
 
         if let Some(owner) = self.effect_graph.current_body.clone() {
             let formals = params
@@ -1146,7 +1107,7 @@ impl Checker {
 
         // Every literal has a concrete environment type, including an empty one.
         // Callable guarantees do not erase the identity needed by HIR and SIR.
-        Ty::Closure {
+        let callable = Ty::Closure {
             capabilities,
             params: param_tys,
             ret: Box::new(ret_ty),
@@ -1155,6 +1116,14 @@ impl Checker {
                 span,
                 self.current_module_idx,
             )),
+        };
+        if generic_parameters.is_empty() {
+            callable
+        } else {
+            Ty::GenericCallable {
+                parameters: self.callable_type_parameters(&generic_parameters, &generic_bounds),
+                callable: Box::new(callable),
+            }
         }
     }
 

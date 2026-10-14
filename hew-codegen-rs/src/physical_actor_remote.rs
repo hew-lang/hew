@@ -119,6 +119,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                     size_ty.into(),
                     size_ty.into(),
                     self.ctx.i64_type().into(),
+                    self.ctx.i64_type().into(),
                     ptr.into(),
                 ],
                 false,
@@ -137,6 +138,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                     .const_int(reply_layout.map_or(0, |layout| layout.size), false)
                     .into(),
                 self.load(timeout, "remote.timeout")?.into(),
+                self.request_deadline()?.into(),
                 waker.into(),
             ],
             "remote.operation",

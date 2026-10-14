@@ -71,6 +71,35 @@ impl InboundAsks {
         }
     }
 
+    /// Only the authenticated connection publication that submitted an ask may retract it.
+    pub(crate) fn withdraw(&self, actor_id: u64, publication: u64, request_id: u64) {
+        let mut targets = self.targets.lock_or_recover();
+        let target = targets
+            .keys()
+            .find(|target| target.actor_id() == actor_id)
+            .copied();
+        let Some(target) = target else {
+            return;
+        };
+        let calls = targets.get_mut(&target).expect("selected target");
+        let index = calls.iter().position(|work| {
+            let call = work.call.lock_or_recover();
+            call.as_ref().is_some_and(|call| {
+                call.publication == publication && call.request_id == request_id
+            })
+        });
+        let Some(index) = index else {
+            return;
+        };
+        let work = calls.swap_remove(index);
+        if calls.is_empty() {
+            targets.remove(&target);
+        }
+        drop(targets);
+        let pending = work.call.lock_or_recover().take();
+        drop(pending);
+    }
+
     /// Admission is closed before this is called. Cleanup does not need a worker.
     pub(crate) fn cancel_all(&self) {
         let targets = std::mem::take(&mut *self.targets.lock_or_recover());
@@ -134,6 +163,8 @@ pub(super) struct PendingCall {
     caller: HewCallerStamp,
     source_node: u16,
     request_id: u64,
+    publication: u64,
+    deadline: crate::request_deadline::RequestDeadline,
     manager: SendConnMgr,
     shutdown: Arc<AtomicBool>,
     _guard: InboundAskGuard,
@@ -159,6 +190,8 @@ impl PendingCall {
         manager: SendConnMgr,
         shutdown: Arc<AtomicBool>,
         guard: InboundAskGuard,
+        publication: u64,
+        deadline: crate::request_deadline::RequestDeadline,
     ) -> Self {
         Self {
             token,
@@ -169,6 +202,8 @@ impl PendingCall {
             caller,
             source_node,
             request_id,
+            publication,
+            deadline,
             manager,
             shutdown,
             _guard: guard,
@@ -181,8 +216,14 @@ impl PendingCall {
         }
         let _remote_trace_source = crate::tracing::enter_remote_trace_source();
         if let Some(request) = self.request.take() {
-            self.operation =
-                request.ask_start(self.token, self.message, self.reply, self.caller, waker);
+            self.operation = request.ask_start(
+                self.token,
+                self.message,
+                self.reply,
+                self.caller,
+                waker,
+                self.deadline,
+            );
         }
         // SAFETY: the mutex gives this poll exclusive access to the operation.
         let status = unsafe { hew_actor_call_poll(self.operation) };

@@ -75,9 +75,10 @@ fn contains(haystack: &[u8], needle: &[u8]) -> bool {
 #[test]
 fn tcp_dial_refuses_plaintext_and_previous_protocol_peers() {
     let _guard = crate::runtime_test_guard();
+    let version = u16::from(crate::envelope::WIRE_VERSION);
     for (offers_noise, version, reason) in [
-        (false, 3_u16, ChannelRefusal::PlaintextPeer.to_string()),
-        (true, 2_u16, "handshake protocol mismatch".to_owned()),
+        (false, version, ChannelRefusal::PlaintextPeer.to_string()),
+        (true, version - 1, "handshake protocol mismatch".to_owned()),
     ] {
         let dir = tempfile::tempdir().expect("key directory");
         let (local, local_path) = mint_identity(dir.path(), "local.key");
@@ -247,6 +248,7 @@ fn tcp_noise_channel_never_carries_node_traffic_in_the_clear() {
             marker.as_ptr(),
             marker.len(),
             0,
+            None,
         )
     }
     .expect("encode envelope");

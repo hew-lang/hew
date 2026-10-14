@@ -830,6 +830,8 @@ pub enum TypeExpr {
     Slice(Box<Spanned<TypeExpr>>),
     Function {
         capabilities: CallableCapabilities,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        type_params: Option<Vec<TypeParam>>,
         params: Vec<Spanned<TypeExpr>>,
         return_type: Box<Spanned<TypeExpr>>,
     },
@@ -1980,17 +1982,6 @@ pub enum RestartPolicy {
 
 // ── Machine declarations ─────────────────────────────────────────────
 
-/// serde `skip_serializing_if` helper: true when the count is zero, keeping
-/// the additive `composite_prelude_len` field out of the wire form for the
-/// common (flat / non-boundary) case.
-#[expect(
-    clippy::trivially_copy_pass_by_ref,
-    reason = "serde `skip_serializing_if` requires a `fn(&T) -> bool` signature"
-)]
-fn is_zero_usize(n: &usize) -> bool {
-    *n == 0
-}
-
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MachineDecl {
     #[serde(default)]
@@ -2036,42 +2027,83 @@ pub struct MachineDecl {
     pub transitions: Vec<MachineTransition>,
     #[serde(default)]
     pub has_default: bool, // `default { self }` — unhandled events stay in current state
-    /// Composite-state grouping side-table populated by the parser when a
-    /// `state Name { … }` body contains substate declarations. Consumed only
-    /// by the formatter (to re-emit composite blocks) and the diagram renderer
-    /// (to draw nested boxes). Hierarchy desugars to the flat `transitions` /
-    /// `states` lists at parse time — HIR/MIR/codegen never see a composite.
-    /// Empty for flat machines, keeping the JSON/msgpack schema additive.
+    /// Authored compound declarations and direct child edges. Semantic checking
+    /// resolves hierarchy, initial descent and transition boundaries before
+    /// generating ordinary declarations. Source tools retain this nested view.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub composite_groups: Vec<CompositeGroup>,
 }
 
-/// Parser-level grouping record for a depth-1 composite state. Carries the
-/// information the flat `MachineDecl` lists drop during desugaring so the
-/// formatter and diagram renderer can reconstruct the nested view. Not seen by
-/// HIR/MIR/codegen.
+impl MachineDecl {
+    /// Authored rules, including rules scoped to compound states.
+    pub fn authored_transitions(&self) -> impl Iterator<Item = &MachineTransition> {
+        self.transitions.iter().chain(
+            self.composite_groups
+                .iter()
+                .flat_map(|group| &group.parent_transitions),
+        )
+    }
+
+    /// Authored hooks and the declaration whose payload they bind.
+    pub fn state_hooks(&self) -> impl Iterator<Item = (Ident, &Block)> {
+        self.states
+            .iter()
+            .map(|state| (state.name, state.entry.as_ref(), state.exit.as_ref()))
+            .chain(
+                self.composite_groups
+                    .iter()
+                    .map(|group| (group.name, group.entry.as_ref(), group.exit.as_ref())),
+            )
+            .flat_map(|(name, entry, exit)| {
+                [entry, exit]
+                    .into_iter()
+                    .flatten()
+                    .map(move |hook| (name, hook))
+            })
+    }
+
+    /// Source declaration path, without the machine prefix.
+    #[must_use]
+    pub fn state_path(&self, name: Ident) -> Vec<Ident> {
+        let mut path = vec![name];
+        let mut current = name;
+        for _ in 0..self.composite_groups.len() {
+            let Some(parent) = self
+                .composite_groups
+                .iter()
+                .find(|group| group.members.contains(&current))
+            else {
+                break;
+            };
+            current = parent.name;
+            path.push(current);
+        }
+        path.reverse();
+        path
+    }
+}
+
+/// One authored compound state. Members name direct leaf or compound children.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CompositeGroup {
     /// Composite (grouping) name. Not a live state — only its members are.
     pub name: Ident,
-    /// Leaf substate names, in declaration order.
+    /// Direct child declarations, in source order.
     pub members: Vec<Ident>,
     /// The substate marked `initial` — the state entered when the composite is
     /// targeted by name.
     pub initial: Ident,
-    /// Composite-level `entry` block, spliced parent-then-child on entry.
+    /// Compound entry hook, evaluated before entering its descendants.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub entry: Option<Block>,
-    /// Composite-level `exit` block, spliced child-then-parent on exit.
+    /// Compound exit hook, evaluated after exiting its descendants.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub exit: Option<Block>,
-    /// Composite-owned shared fields (sugar: stamped onto every member). Kept
-    /// here so the formatter re-emits them on the composite, not each member.
+    /// Compound-owned fields inherited by every descendant leaf.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub fields: Vec<(Ident, Spanned<TypeExpr>)>,
     /// Parent-level transitions authored inside the composite block, retained
-    /// verbatim (source `_` = any member) so the formatter re-emits them on the
-    /// composite rather than as the N expanded flat copies.
+    /// verbatim (source `_` = any descendant leaf).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub parent_transitions: Vec<MachineTransition>,
     /// Byte span of the whole `state Name { … }` block.
@@ -2122,16 +2154,21 @@ pub struct MachineTransition {
     pub event_name: Ident,
     pub source_state: Ident,
     pub target_state: Ident,
+    /// Authored qualified paths, retained for hierarchy checking and tools.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub source_path: Vec<Ident>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub target_path: Vec<Ident>,
     /// True when the target state was authored in the contextual form
     /// (`=> .Variant`) rather than bare (`=> Variant`). `target_state` holds
-    /// the flat leaf name either way, so the authored spelling would otherwise
+    /// the final path component either way, so the authored spelling would otherwise
     /// be lost and the formatter would have to guess it from the body
     /// expression — which is not the authority for it and is wrong for every
     /// non-implicit body form. Source states have no contextual form (see
     /// `StatePatternPosition`), so one flag covers the head.
     ///
     /// Additive and serde-defaulted, like `body_form` / `reenter` /
-    /// `composite_prelude_len`: bare targets keep the field out of the wire
+    /// qualified paths: bare targets keep the field out of the wire
     /// form entirely.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub target_is_contextual: bool,
@@ -2143,24 +2180,6 @@ pub struct MachineTransition {
     /// and strip that prelude. Empty when the rule used no head binding.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub event_bindings: Vec<Ident>,
-    /// The composite state this rule named as its target, when it named one.
-    /// `target_state` holds the group's `initial` substate, which is the live
-    /// target; without this the formatter would rewrite `=> Connected` into
-    /// `=> Authenticating` and the source would stop following a later change
-    /// of which substate is `initial`.
-    ///
-    /// Additive and serde-defaulted, like `target_is_contextual`: a rule that
-    /// named a leaf state keeps the field out of the wire form entirely.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub target_composite: Option<Ident>,
-    /// Number of leading `body` statements that are composite entry/exit hook
-    /// splices (D2/D3), prepended by the parser's composite post-pass. The
-    /// formatter strips exactly this many leading statements so the authored
-    /// transition (without the spliced hooks) is re-emitted; HIR/MIR see the
-    /// spliced body unchanged. Zero for flat machines and non-boundary
-    /// transitions, so the schema stays additive.
-    #[serde(default, skip_serializing_if = "is_zero_usize")]
-    pub composite_prelude_len: usize,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub guard: Option<Spanned<Expr>>,
     pub body: Spanned<Expr>,

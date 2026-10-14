@@ -359,6 +359,7 @@ impl LowerCtx {
                 receiver: object, ..
             }
             | HirExprKind::RecordCloneCall { src: object, .. }
+            | HirExprKind::CallableSpecialize { source: object, .. }
             | HirExprKind::SubsumedValue { source: object, .. }
             | HirExprKind::AwaitTask {
                 operand: object, ..

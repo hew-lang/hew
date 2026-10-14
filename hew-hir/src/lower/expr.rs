@@ -9,6 +9,28 @@ impl LowerCtx {
         let normalized_ty = self.restore_type_declaration_facts(lowered.ty.clone());
         lowered.ty = normalized_ty;
 
+        if matches!(lowered.ty, ResolvedTy::GenericCallable { .. }) {
+            if let Some(arguments) = self
+                .callable_value_specializations
+                .get(&self.mk_key(&expr.1))
+                .cloned()
+            {
+                if let Some(ty) = lowered.ty.instantiate_callable(&arguments) {
+                    return HirExpr {
+                        node: self.ids.node(),
+                        site: self.ids.site(),
+                        ty,
+                        intent,
+                        span: expr.1.clone(),
+                        kind: HirExprKind::CallableSpecialize {
+                            source: Box::new(lowered),
+                            type_args: arguments,
+                        },
+                    };
+                }
+            }
+        }
+
         if let Some(target) = self.numeric_operand_coercions.get(&self.mk_key(&expr.1)) {
             if let Ok(to_ty) = ResolvedTy::from_ty(target) {
                 if lowered.ty != to_ty {

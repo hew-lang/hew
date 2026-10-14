@@ -33,6 +33,7 @@ struct Driver {
     group: Option<RaceGroup>,
     fault: *mut HewFault,
     owner: u64,
+    request_deadline: crate::request_deadline::RequestDeadline,
 }
 
 // SAFETY: the phase transition grants exactly one worker access to the driver.
@@ -58,6 +59,7 @@ impl TaskExecution {
                 group: None,
                 fault: ptr::null_mut(),
                 owner: crate::fault::owning_actor_at_spawn(),
+                request_deadline: crate::request_deadline::RequestDeadline::current(),
             }),
         });
         enqueue(execution);
@@ -81,6 +83,7 @@ impl ReadyWork for TaskExecution {
             cancel_token: unsafe { (*driver.task).cancel_token },
             // SAFETY: structured drain keeps scope alive through completion.
             task_scope: unsafe { (*driver.task).scope },
+            request_deadline: driver.request_deadline,
             prev_context: previous,
             ..HewExecutionContext::default()
         };
@@ -120,7 +123,9 @@ impl Driver {
                 };
                 match invocation {
                     CheckedTaskInvocation::Callable(callable) => {
-                        self.frame = ((*callable.descriptor).invoke_once)(
+                        self.frame = ((*callable.descriptor)
+                            .invoke_once
+                            .unwrap_or_else(|| std::process::abort()))(
                             callable.environment,
                             ptr::null(),
                             result,

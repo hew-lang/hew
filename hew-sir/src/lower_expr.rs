@@ -490,6 +490,22 @@ impl Builder<'_, '_> {
             HirExprKind::Call { .. } | HirExprKind::CallTraitMethodStatic { .. } => self
                 .lower_call(expr, true)?
                 .ok_or_else(|| "value-producing checked call has no result".to_string()),
+            HirExprKind::CallableSpecialize { source, type_args } => {
+                let scheme = self.ty(&source.ty);
+                let arguments = type_args.iter().map(|ty| self.ty(ty)).collect();
+                let specialization = self
+                    .service
+                    .request_callable_specialization(&scheme, arguments)?;
+                let value = self.lower_expr_with_binding_use(source, binding_use)?;
+                self.owned_live.remove(&value);
+                self.emit(
+                    expr,
+                    SemOpKind::CallableCoerce {
+                        source: Operand { value },
+                        specialization: Some(specialization),
+                    },
+                )
+            }
             HirExprKind::SubsumedValue { source, .. } => {
                 self.lower_expr_with_binding_use(source, binding_use)
             }

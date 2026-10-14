@@ -818,6 +818,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         verify(&source, target, self.service.checked_facts.rows()).map_err(|reason| {
             format!("value coercion from {source:?} to {target:?} refused: {reason}")
         })?;
+        self.service.register_callable_coercion(&source, target)?;
         self.owned_live.remove(&value);
         self.emit_typed(
             provenance,
@@ -829,6 +830,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             } else {
                 SemOpKind::CallableCoerce {
                     source: Operand { value },
+                    specialization: None,
                 }
             },
         )

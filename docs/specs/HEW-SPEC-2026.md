@@ -290,6 +290,26 @@ fault and its supervision policy; the caller may handle the error and continue.
 Calling an actor does not join its lifetime to the caller's task scope. Caller
 cancellation still follows the caller's own cancellation and cleanup edges.
 
+**Request deadlines.** A completion call inherits the earliest active scope
+expiry and incoming request expiry, together with any explicit call timeout.
+An untimed call remains untimed. Setup, encoding, mailbox admission and queue
+waiting consume that budget; entering a handler or making a nested call never
+restarts it. Expired work MUST NOT begin a handler. Before dispatch, abandoning
+a call withdraws its queued request and releases its fields.
+
+Once dispatch claims a request, the actor owns the handler and its effects.
+Caller cancellation or expiry abandons the reply and does not cancel that
+handler. Its ordinary and forked nested calls still inherit the incoming
+expiry; an exhausted budget returns `ActorError.TimedOut` through the ordinary
+completion `Result`. It does not cancel the handler's own scope. A reply that
+already won completion remains selected; an unclaimed late reply is released
+with its typed ownership. Required ownership cleanup does not inherit the
+deadline being discharged; an explicit deadline established by cleanup itself
+still applies. Later unrelated calls receive their own budgets.
+A timeout or partition does not establish whether a remote effect happened;
+applications use idempotency, reconciliation or an explicit job protocol when
+that distinction matters. See HEW-DIST-SPEC §8 for relative wire budgets.
+
 ```hew
 actor Counter {
     var count: i64 = 0;
@@ -3459,9 +3479,41 @@ fn main() {
 }
 ```
 
-**Generic lambda constraints:**
+**Generic closures:**
 
-> **Not yet implemented.** Type-parameterized closures (`<T: Bound>(params) => body`) are rejected by the compiler: `E_CLOSURE_PIPE_SYNTAX: '<T>(params) => body' has been removed; type-parameterized closures are not supported`. Lambdas infer their parameter types from calling context; explicit generic parameters on a lambda literal are not available in this edition.
+A closure declares type parameters immediately after its opening pipe. Bounds
+use the same syntax as named functions. A quantified function type places the
+same binders after any callable qualifiers and before its parameter list:
+
+```hew
+fn make_identity() -> fn<T>(T) -> T {
+    |<T> value: T| -> T { value }
+}
+
+fn main() {
+    let identity = make_identity();
+    assert(identity(41) == 41);
+    assert(identity<string>("hello") == "hello");
+    let equal = |<T: Eq> left: T, right: T| -> bool { left == right };
+    assert(equal(7, 7));
+    let pair: fn[clone]<T, U>(T, U) -> (T, U) =
+        |<T, U> first: T, second: U| -> (T, U) { (first, second) };
+    assert(pair(1, "one") == (1, "one"));
+}
+```
+
+Each call chooses concrete type arguments, either from its arguments or from
+an explicit list such as `identity<string>(...)`. A quantified value can be
+stored, passed and returned without fixing those arguments in advance. Its
+body must be valid under the declared bounds.
+
+Capture prefixes stay before the opening pipe:
+`move capture(var count) |<T> value: T| -> T { ... }`. Type instantiation
+preserves the closure's captured state and invocation capabilities: calling a
+mutable generic closure requires a mutable callable place, and calling a
+`fn[once]<T>(T) -> T` consumes that value across all type instantiations.
+Ordinary closures continue to infer parameter types from context. The retired
+`<T>(params) => body` spelling remains invalid.
 
 **Ambiguous cases require annotations:**
 
@@ -4719,7 +4771,7 @@ payload is refused at the transition that takes it, naming the machine, state,
 field and type; `Rc<T>` shares it across the staged copy.
 
 The native evaluator admits ordinary concrete machines, const parameters and
-depth-1 composite state blocks (§3.11.9). An unclassified generic payload
+nested composite state blocks (§3.11.9). An unclassified generic payload
 parses but is not admitted by this execution path; parser or diagram support
 for a form is not evidence of executable support.
 
@@ -5077,22 +5129,34 @@ machine Retry<const MAX: usize = 3> {
 ```
 
 **Composite states.** A `state` block that declares substates is a composite
-state: a grouping name, not a live state. It nests exactly one level; a
-substate that declares substates of its own is refused. Exactly one substate
-is marked `initial`.
+state: a grouping name, not a live state. Its direct children may be leaves or
+further composites. Exactly one direct child is marked `initial`. A target
+naming a composite follows initial children recursively until it reaches a
+leaf. State names remain unique within the machine; qualified source and
+target heads must follow the declared ancestry.
 
-A composite flattens before checking. Every substate becomes a state of the
-machine, and the composite's own fields are stamped onto each of them.
+A compound's fields are inherited by every descendant leaf. Redeclaring an
+inherited field is refused. Parentage and transition domains are checked before
+the machine generates ordinary enums and methods.
 
-- A transition targeting the composite by name enters its `initial` substate.
-- A parent-level rule written inside the block applies from every substate. A
-  substate's own unguarded rule for the same event replaces it, wherever in
-  the machine that rule is written; a guarded one keeps the parent rule as its
-  fallback.
-- Entering the composite runs the composite's `entry` hook before the
-  substate's; leaving it runs the substate's `exit` hook before the
-  composite's. A move between two substates of the same composite runs neither
-  composite hook.
+- The active leaf's rules have priority, followed by its nearest ancestor's
+  rules, successively broader ancestors and machine-wide wildcard rules. A
+  guarded rule retains broader rules as fallback; an unconditional rule ends
+  fallback. Source order decides priority among rules at the same level.
+- A named transition retains the nearest common ancestor of source and target.
+  It exits descendants from the leaf outwards, evaluates the body once, then
+  enters the target branch from outside in. Shared ancestors run neither hook.
+- Targeting an active ancestor descends through its initial children, exiting
+  and entering its descendants even when the initial leaf is already active.
+  The target compound itself runs hooks only for `reenter`. A fixed
+  leaf self-transition runs no hooks unless marked `reenter`. Reentry of an
+  active composite exits and enters that composite as well as its descendants.
+
+A computed `_` target exits the full active branch before the body runs, then
+enters the full branch returned by its single evaluation. Even same-leaf and
+sibling returns exit and re-enter shared compounds. This differs from named
+sibling targets, which retain common ancestors. Existing intra-compound `_`
+transitions that depend on skipping compound hooks should use a named target.
 
 ```hew
 machine Session {
@@ -5130,9 +5194,10 @@ machine Session {
 }
 ```
 
-`hew machine diagram` draws the flattened machine; its JSON form keeps the
-grouping in a `composites` array naming each composite, its members and its
-initial substate.
+`hew machine diagram` draws nested groups. Its JSON form retains each state's
+qualified `path` and `parent`, and a `composites` array naming each compound,
+its direct members and its initial child. Parallel regions and history states
+are not admitted.
 
 ---
 
@@ -5225,6 +5290,10 @@ from a parent continues outward; an inner handler cannot clear it. It does not i
 To handle that Result, first bind the scope's result and apply ordinary
 Result `handle` to the binding (§2.2.1).
 
+A `within` expiry also bounds actor requests made in that scope (§2.1.1).
+The request budget can outlive the caller as metadata of a claimed handler;
+it does not extend the caller's task lifetime.
+
 ### 4.3 Spawning Child Tasks
 
 ```ebnf
@@ -5306,6 +5375,10 @@ and task waits. It is not preemption of an arbitrary instruction. The scope
 waits for cancelled children to drain before returning or running its attached
 failure handler. Nested lifetimes receive the cancellation; unrelated actors
 do not become children of that scope.
+
+Cancelling an actor call withdraws unclaimed work or abandons a claimed
+handler's reply (§2.1.1). It never makes the receiving actor a child of the
+caller's cancellation scope.
 
 Cleanup follows explicit ownership edges. Deferred actions and resource closes
 run according to their contracts; Hew has no user-defined `Drop` implementation
@@ -5416,6 +5489,8 @@ actor Counter {
 
 A call from that child to another actor still crosses an actor boundary. Its
 completion envelope follows §2.1.1; submission still requires a mailbox view.
+Incoming request expiry follows ordinary calls, suspension and forked task
+frames. A longer nested `scope within` cannot extend that request budget.
 
 ### 4.9 Summary: Tasks vs Actors
 
@@ -5426,6 +5501,7 @@ completion envelope follows §2.1.1; submission still requires a mailbox view.
 | Application error | an ordinary Result value | declared `fails` error reaches the completion envelope |
 | Fault | propagates through the owning scope | belongs to the actor and its supervisor |
 | Lifetime | bounded by its parent | independent actor lifetime |
+| Request expiry | bounds outgoing calls | prevents queued dispatch; claimed handlers retain ownership |
 | Termination wait | task join | `stopped(actor)` |
 
 **Historical note.** Earlier drafts exposed a scope handle with separate task
@@ -5445,6 +5521,9 @@ actor's entire lifetime. `fork pid.method(args)` runs it concurrently; `await`
 then joins that task. `for item in pid.stream()` waits per item using ordinary
 iteration (§4.12).
 
+Request expiry does not request `stop` or `terminate`. A claimed handler
+finishes under the actor's own lifetime even if its caller stops waiting.
+
 A supervisor uses the same three verbs. `stop(sup)` requests graceful
 shutdown of its children in reverse declaration order, and `stopped(sup)`
 waits for their cleanup; see §2.1.1 and §5.6.
@@ -5456,6 +5535,10 @@ multiple asynchronous operations. They are expressions — they produce
 values — and integrate with structured concurrency and the actor model.
 The all-of counterpart is not a third construct: waiting for every operand
 is batch `fork` (§4.4).
+
+A losing actor-call operand withdraws queued work or abandons its reply after
+dispatch, using the same ownership boundary as caller cancellation (§2.1.1).
+A timer arm does not create a new public cancellation token.
 
 #### 4.11.1 `select` Expression
 
@@ -6212,6 +6295,10 @@ refused call never reports `Dead`. A bare or `.Wait` completion call reports
 `policy(target, on_full: .Reject)` call reports `ActorError.Rejected` and a
 `mailbox(target)` submission reports its `SendFailure`, both with
 `reason == SendError.LocalShutdown` and the unaccepted request returned.
+
+Request deadlines retain the same queued/claimed boundary during shutdown.
+An expired queued ask does not begin merely because the runtime is draining;
+a claimed handler stays subject to the actor and shutdown lifetimes.
 
 **Termination signals.** SIGTERM and SIGINT on Unix, and Ctrl-C, Ctrl-Break
 and console close on Windows, are termination requests. By default a request
@@ -7496,7 +7583,7 @@ The `events { ... }`, `emits { ... }` and `default { ... }` blocks take no
 extra terminator. Supervisor child clauses such as `restart:` and
 `stop:` remain parts of one child member, which ends with `;`.
 
-**Implementation note:** pipe closures lower through `Expr::Lambda`; captured closure environment records are the current substrate direction. Generic `<T>(...) => ...` is not a valid source syntax; type-parameterized lambdas are not supported in this edition (see §3.8.6).
+Type-parameterized closures use `|<T: Bound> value: T| -> R { body }`, and quantified function types use `fn[qualifiers]<T: Bound>(T) -> R` (see §3.8.6). The retired `<T>(params) => body` spelling remains invalid.
 
 ### Keywords
 

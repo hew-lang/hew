@@ -923,6 +923,7 @@ fn dead_actor_calls_drain_their_consumed_message_before_returning() {
 #[test]
 fn shared_native_manifests_execute_with_matching_results() {
     for name in [
+        "machine-deep-handshake",
         "actor_state_closure_field",
         "resource-close-actor-composition",
         "resource-close-actor-queued",
@@ -934,7 +935,9 @@ fn shared_native_manifests_execute_with_matching_results() {
         "resource-close-actor-generator",
         "resource-receiver-fallible-argument",
         "actor-reference-identity",
+        "actor-call-deadline-budget",
         "generator-callable-view",
+        "generic-closure-composition",
         "float-sort-values",
     ] {
         assert_native_manifest(name, hew_compile::SourceSet::in_memory());

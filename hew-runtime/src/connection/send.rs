@@ -11,48 +11,100 @@ use crate::set_last_error;
 use crate::transport::HEW_CONN_INVALID;
 use crate::util::MutexExt;
 
-use super::channel::ChannelProtection;
+use super::channel::{ChannelError, ChannelProtection};
 use super::control::encode_envelope;
 use super::{HewConnMgr, ReaderLifecycleGuard, CONN_STATE_ACTIVE, CONN_STATE_CLOSED};
 
 /// One manager-issued authority for an authenticated peer and transport slot.
 /// The lease prevents removal or reuse of the slot until the send returns.
-pub(crate) struct SendClaim<'a> {
-    manager: &'a HewConnMgr,
+pub(crate) struct SendClaim {
+    transport: *mut crate::transport::HewTransport,
     conn_id: c_int,
     identity: NodeId,
     route_slot: u16,
     session_incarnation: u32,
     _guard: ReaderLifecycleGuard,
+    pub(crate) publication_token: u64,
     publication_removed: Arc<std::sync::atomic::AtomicBool>,
     channel: Arc<ChannelProtection>,
 }
 
-impl SendClaim<'_> {
+// SAFETY: the claim's lifecycle lease pins its transport connection until drop.
+// Manager removal closes the socket before waiting for all such leases, and the
+// channel serializes encryption and transport access across senders.
+unsafe impl Send for SendClaim {}
+
+impl SendClaim {
+    /// Transfer this lease to the existing pool. The caller never waits on the
+    /// channel's send lock or on a peer accepting the frame.
+    pub(crate) fn submit(
+        self,
+        prepare: impl FnOnce() -> Option<Vec<u8>> + Send + 'static,
+        complete: impl FnOnce(Result<(), ChannelError>) + Send + 'static,
+    ) -> bool {
+        fn enqueue<F: FnOnce() + Send + 'static>(work: F) -> bool {
+            unsafe extern "C" fn run<F: FnOnce()>(context: *mut std::ffi::c_void) {
+                // SAFETY: successful submission transfers this box to one callback.
+                let work = unsafe { Box::from_raw(context.cast::<F>()) };
+                work();
+            }
+            let Some(pool) = crate::blocking_pool::shared_blocking_pool_opt() else {
+                return false;
+            };
+            let job = Box::into_raw(Box::new(work));
+            // SAFETY: the installed pool receives an owned closure. Its send
+            // lease keeps the connection alive until this callback returns.
+            if unsafe { crate::blocking_pool::submit_on_worker(pool, run::<F>, job.cast()) } == 0 {
+                true
+            } else {
+                // SAFETY: failed admission did not transfer the box.
+                drop(unsafe { Box::from_raw(job) });
+                false
+            }
+        }
+        enqueue(move || complete(self.send_prepared_result(prepare)))
+    }
+
     pub(crate) fn send(&self, frame: &[u8]) -> c_int {
+        self.send_prepared(|| Some(frame))
+    }
+
+    pub(crate) fn send_prepared<B: AsRef<[u8]>>(
+        &self,
+        prepare: impl FnOnce() -> Option<B>,
+    ) -> c_int {
+        if self.send_prepared_result(prepare).is_ok() {
+            0
+        } else {
+            -1
+        }
+    }
+
+    fn send_prepared_result<B: AsRef<[u8]>>(
+        &self,
+        prepare: impl FnOnce() -> Option<B>,
+    ) -> Result<(), ChannelError> {
         if self.publication_removed.load(Ordering::Acquire) {
-            return -1;
+            return Err(ChannelError::Faulted);
         }
         // SAFETY: the manager owns the transport. The claim's lifecycle lease
         // prevents this exact connection slot from being removed or reused.
-        match unsafe {
+        let result = unsafe {
             self.channel
-                .send(self.manager.transport, self.conn_id, frame)
-        } {
-            Ok(()) => 0,
-            Err(error) => {
-                set_last_error(format!("connection send on conn {}: {error}", self.conn_id));
-                -1
-            }
+                .send_prepared(self.transport, self.conn_id, prepare)
+        };
+        if let Err(error) = result {
+            set_last_error(format!("connection send on conn {}: {error}", self.conn_id));
         }
+        result
     }
 }
 
-fn claim_send(
+pub(crate) fn claim_send(
     manager: &HewConnMgr,
     conn_id: c_int,
     expected_publication: Option<u64>,
-) -> Option<SendClaim<'_>> {
+) -> Option<SendClaim> {
     let (claim, publication_token, credential) = manager.connections.access(|connections| {
         let connection = connections.iter().find(|connection| {
             connection.conn_id == conn_id
@@ -64,12 +116,13 @@ fn claim_send(
         })?;
         Some((
             SendClaim {
-                manager,
+                transport: manager.transport,
                 conn_id,
                 identity: connection.peer_identity?,
                 route_slot: connection.peer_node_id,
                 session_incarnation: connection.peer_session_incarnation,
                 _guard: connection.claimed_send_lifecycle.register(),
+                publication_token: connection.publication_token,
                 publication_removed: Arc::clone(&connection.publication_removed),
                 channel: Arc::clone(&connection.channel),
             },
@@ -97,7 +150,7 @@ pub(crate) fn claim_send_to_location(
     manager: &HewConnMgr,
     conn_id: c_int,
     target: Location,
-) -> Option<SendClaim<'_>> {
+) -> Option<SendClaim> {
     let claim = claim_send(manager, conn_id, None)?;
     (claim.identity == target.node() && claim.session_incarnation == target.incarnation())
         .then_some(claim)
@@ -107,7 +160,7 @@ pub(crate) fn claim_send_to_route(
     manager: &HewConnMgr,
     conn_id: c_int,
     route_slot: u16,
-) -> Option<SendClaim<'_>> {
+) -> Option<SendClaim> {
     let claim = claim_send(manager, conn_id, None)?;
     (route_slot != 0 && claim.route_slot == route_slot).then_some(claim)
 }

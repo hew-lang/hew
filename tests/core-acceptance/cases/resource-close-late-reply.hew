@@ -39,7 +39,7 @@ actor Worker {
     // Holds the ticket until the caller releases the gate, which it does only
     // after its own deadline has passed.
     receive fn create(audit: Audit, gate: stream.Stream<i64>) -> Ticket {
-        audit.create(9).expect("audit");
+        mailbox(audit).create(9).expect("audit queued");
         gate.recv();
         Ticket { audit: audit, id: 9 }
     }

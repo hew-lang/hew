@@ -376,7 +376,7 @@ impl Hierarchy {
         if reenter && source_path.contains(&target) {
             return self.nodes[target.0].parent;
         }
-        self.ancestors(self.leaf(target))
+        self.ancestors(target)
             .into_iter()
             .find(|node| source_path.contains(node))
     }

@@ -7,6 +7,7 @@ machine Session {
         Bounce;
         Finish;
         Restart;
+        Reset;
         Recompute { verify: bool; }
         Cancel;
     }
@@ -74,6 +75,8 @@ machine Session {
             state
         }
     }
+    on Reset: Verifying => Handshake { attempt: state.attempt, token: state.token }
+    on Reset: Waiting => Handshake { attempt: state.attempt, token: state.token }
     on Restart: Verifying => Handshake reenter { attempt: state.attempt, token: state.token }
     on Finish: Verifying => Live {
         assert(state.attempt == 8);
@@ -103,6 +106,9 @@ fn main() {
     expect(session.step(.Open), "connection+|handshake+owned|challenge+|waiting+|");
     expect(session.step(.Probe { allow: false }), "waiting-|challenge-|handshake-owned|connection-|nearest|");
     expect(session.step(.Open), "connection+|handshake+owned|challenge+|waiting+|");
+    expect(session.step(.Advance), "waiting-|verifying+|");
+    expect(session.step(.Reset), "verifying-|challenge-|challenge+|waiting+|");
+    expect(session.step(.Reset), "waiting-|challenge-|challenge+|waiting+|");
     expect(session.step(.Advance), "waiting-|verifying+|");
     expect(session.step(.Restart), "verifying-|challenge-|handshake-owned|handshake+owned|challenge+|waiting+|");
     expect(session.step(.Advance), "waiting-|verifying+|");

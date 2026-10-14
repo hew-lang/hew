@@ -1046,7 +1046,7 @@ impl Builder {
         // of the as-yet unevaluated body.
         let (source, domain) = hierarchy.boundary(index);
         let target = hierarchy.target(index).map(|node| hierarchy.leaf(node));
-        let run_hooks = rule.reenter || target != Some(source);
+        let run_hooks = rule.reenter || hierarchy.target(index) != Some(source);
         let mut stmts = Vec::new();
         if run_hooks {
             let exits = hierarchy

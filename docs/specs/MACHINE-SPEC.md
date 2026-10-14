@@ -181,7 +181,9 @@ A named transition retains the source and target's nearest common ancestor.
 It exits only the active descendants below that boundary, from leaf outwards,
 evaluates the body once, and enters target descendants from outside in. A
 transition to an active ancestor descends through that ancestor's initial
-children. A fixed leaf self-transition runs no hooks unless marked `reenter`;
+children. Targeting an active compound exits and enters its descendants even
+when its initial leaf is already active; the compound itself runs hooks only
+for `reenter`. A fixed leaf self-transition runs no hooks unless marked `reenter`;
 reentry of an active compound also exits and enters that compound. Hook changes,
 state and outputs still stage together before the ordinary commit.
 

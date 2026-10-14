@@ -4993,7 +4993,9 @@ the machine generates ordinary enums and methods.
 - A named transition retains the nearest common ancestor of source and target.
   It exits descendants from the leaf outwards, evaluates the body once, then
   enters the target branch from outside in. Shared ancestors run neither hook.
-- Targeting an active ancestor descends through its initial children. A fixed
+- Targeting an active ancestor descends through its initial children, exiting
+  and entering its descendants even when the initial leaf is already active.
+  The target compound itself runs hooks only for `reenter`. A fixed
   leaf self-transition runs no hooks unless marked `reenter`. Reentry of an
   active composite exits and enters that composite as well as its descendants.
 

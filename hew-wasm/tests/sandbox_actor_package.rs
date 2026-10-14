@@ -921,6 +921,7 @@ fn shared_native_manifests_execute_with_matching_results() {
         "resource-receiver-fallible-argument",
         "actor-reference-identity",
         "generator-callable-view",
+        "float-sort-values",
     ] {
         assert_native_manifest(name);
     }

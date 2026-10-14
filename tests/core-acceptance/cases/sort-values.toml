@@ -1,0 +1,10 @@
+[[case]]
+id = "sort-values"
+intent = "Production integer and generic string merge sorts preserve copied inputs and owning elements."
+timeout_seconds = 30
+suites = ["acceptance", "safety"]
+source = "cases/sort-values.hew"
+
+[case.expected]
+exit = 0
+stdout = "sort-authority=0\n"

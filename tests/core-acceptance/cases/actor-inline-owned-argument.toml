@@ -1,0 +1,14 @@
+[[case]]
+id = "actor-inline-owned-argument"
+intent = "Inline and named actor constructors transfer affine stream fields once through actor-operand builtins and ordinary calls."
+source = "cases/actor-inline-owned-argument.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 20
+
+[case.env]
+HEW_TEST_ACTOR_LEAK_CHECK = "1"
+
+[case.expected]
+stdout = "actor arguments evaluated once\n"
+stderr = ""
+exit = 0

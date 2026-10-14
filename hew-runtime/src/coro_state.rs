@@ -146,7 +146,7 @@ pub unsafe extern "C" fn hew_coro_state_child(parent: *const HewCoroState) -> *m
 }
 
 /// Create a cleanup invocation with the same readiness and actor identity,
-/// shielded from cancellation already being discharged by its parent.
+/// shielded from cancellation and request expiry already being discharged by its parent.
 ///
 /// # Safety
 /// `parent` is live through construction. Destroy the cleanup frame before
@@ -166,7 +166,7 @@ pub unsafe extern "C" fn hew_coro_state_cleanup_child(
         (*child).actor_turn = parent.actor_turn;
         (*child).actor_message_type = parent.actor_message_type;
         (*child).actor_caller = parent.actor_caller;
-        (*child).request_deadline = parent.request_deadline;
+        (*child).request_deadline = crate::request_deadline::RequestDeadline::default();
         (*child).cleanup_fault.store(
             if parent.cleanup_fault.load(Ordering::Acquire) == CleanupFault::None as u8 {
                 CleanupFault::None as u8
@@ -547,6 +547,36 @@ mod tests {
                 crate::fault::HEW_FAULT_CANCELLED
             );
             hew_coro_state_free(state);
+        }
+    }
+
+    #[test]
+    fn expired_lexical_deadline_is_observed_before_its_timer_wake() {
+        let (_, waker) = Readiness::new();
+        // SAFETY: the test owns every state and token and releases children first.
+        unsafe {
+            let parent = hew_coro_state_new(waker.descriptor(), std::ptr::null_mut());
+            (*parent).request_deadline = crate::request_deadline::RequestDeadline::from_raw(0);
+            assert_eq!(hew_coro_state_is_cancelled(parent), 0);
+            let lexical = hew_cancel_token_new_child(hew_coro_state_token(parent));
+            (*lexical).deadline_ns.store(0, Ordering::Release);
+            hew_coro_state_enter_token(parent, lexical);
+            let child = hew_coro_state_child(parent);
+            assert_eq!(hew_coro_state_is_cancelled(child), 1);
+            assert_eq!(
+                hew_coro_state_cancel_code(child),
+                crate::fault::HEW_FAULT_DEADLINE
+            );
+            hew_cancel_token_cancel(lexical, crate::fault::HEW_FAULT_CANCELLED);
+            assert_eq!(
+                hew_coro_state_cancel_code(child),
+                crate::fault::HEW_FAULT_DEADLINE
+            );
+            hew_coro_state_free(child);
+            hew_coro_state_leave_token(parent);
+            hew_cancel_token_release(lexical);
+            assert_eq!(hew_coro_state_is_cancelled(parent), 0);
+            hew_coro_state_free(parent);
         }
     }
 

@@ -303,7 +303,9 @@ handler. Its ordinary and forked nested calls still inherit the incoming
 expiry; an exhausted budget returns `ActorError.TimedOut` through the ordinary
 completion `Result`. It does not cancel the handler's own scope. A reply that
 already won completion remains selected; an unclaimed late reply is released
-with its typed ownership. Later unrelated calls receive their own budgets.
+with its typed ownership. Required ownership cleanup does not inherit the
+deadline being discharged; an explicit deadline established by cleanup itself
+still applies. Later unrelated calls receive their own budgets.
 A timeout or partition does not establish whether a remote effect happened;
 applications use idempotency, reconciliation or an explicit job protocol when
 that distinction matters. See HEW-DIST-SPEC §8 for relative wire budgets.

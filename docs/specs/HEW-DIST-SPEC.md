@@ -329,7 +329,9 @@ remains actor-owned and any late reply is released. No retry is automatic.
 
 A claimed handler carries the remaining expiry through suspension, ordinary
 calls and child tasks. Nested local, local-Node and remote calls cannot extend
-it and report ordinary `ActorError.TimedOut` once exhausted. Timeout and
+it and report ordinary `ActorError.TimedOut` once exhausted. Required payload
+and late-reply cleanup is shielded from the abandoned request expiry; cleanup
+may establish its own explicit deadline. Timeout and
 partition leave the remote outcome uncertain; neither undoes a mutation.
 
 Inbound asks use the actor-call readiness protocol without retaining an OS

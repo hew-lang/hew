@@ -217,11 +217,29 @@ pub unsafe extern "C" fn hew_cancel_token_cancel(token: *mut HewCancellationToke
     }
 }
 
+// The timer wakes parked work; a safepoint must also observe the same expiry
+// before a ready operation can outrun that callback.
+unsafe fn poll_token_state(token: *mut HewCancellationToken) -> HewCancellationState {
+    // SAFETY: the caller retains this token throughout the observation.
+    let current = unsafe { &*token };
+    if token_state(current) == HewCancellationState::Active
+        && crate::request_deadline::RequestDeadline::from_raw(
+            current.deadline_ns.load(Ordering::Acquire),
+        )
+        .expired()
+    {
+        // SAFETY: expiry publishes through the token's existing cancellation authority.
+        unsafe { hew_cancel_token_cancel(token, crate::fault::HEW_FAULT_DEADLINE) };
+    }
+    token_state(current)
+}
+
 unsafe fn cancel_token_is_requested_raw(mut token: *mut HewCancellationToken) -> bool {
     while !token.is_null() {
         // SAFETY: the caller retains the token and each token retains its parent.
         let current = unsafe { &*token };
-        if token_state(current).is_requested() {
+        // SAFETY: this token and its ancestry remain retained during the poll.
+        if unsafe { poll_token_state(token) }.is_requested() {
             return true;
         }
         token = current.parent;
@@ -257,7 +275,8 @@ pub(crate) unsafe fn cancel_token_reason(mut token: *mut HewCancellationToken) -
     while !token.is_null() {
         // SAFETY: the caller retains the token and each token retains its parent.
         let current = unsafe { &*token };
-        if token_state(current).is_requested() {
+        // SAFETY: this token and its ancestry remain retained during the poll.
+        if unsafe { poll_token_state(token) }.is_requested() {
             let reason = current.reason.load(Ordering::Acquire);
             if reason != crate::fault::HEW_FAULT_RACE_LOST {
                 return reason;

@@ -721,19 +721,14 @@ fn collect_machine_locals(
             locals.push(local_completion(name));
         }
     }
-    for transition in &machine.transitions {
+    for transition in machine.authored_transitions() {
         if let Some(guard) = &transition.guard {
             collect_locals_from_spanned_expr(guard, offset, locals);
         }
         collect_locals_from_spanned_expr(&transition.body, offset, locals);
     }
-    for state in &machine.states {
-        for hook in [state.entry.as_ref(), state.exit.as_ref()]
-            .into_iter()
-            .flatten()
-        {
-            collect_locals_from_block(hook, offset, locals);
-        }
+    for (_, hook) in machine.state_hooks() {
+        collect_locals_from_block(hook, offset, locals);
     }
 }
 

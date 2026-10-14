@@ -365,11 +365,14 @@ impl<'src, 'ast, V: AstVisitor<'ast>> AstWalker<'src, 'ast, V> {
                 self.visitor
                     .enter_body(body_info, Self::context(Some(body_info)));
                 self.push_scope(Vec::new());
-                for transition in &machine.transitions {
+                for transition in machine.authored_transitions() {
                     if let Some(guard) = &transition.guard {
                         self.walk_expr(&guard.0, &guard.1, Some(body_info));
                     }
                     self.walk_expr(&transition.body.0, &transition.body.1, Some(body_info));
+                }
+                for (_, hook) in machine.state_hooks() {
+                    self.walk_block(hook, Some(body_info));
                 }
                 self.pop_scope();
                 self.visitor
@@ -435,11 +438,14 @@ impl<'src, 'ast, V: AstVisitor<'ast>> AstWalker<'src, 'ast, V> {
                 };
                 self.visitor.enter_body(body_info, Self::context(Some(body_info)));
                 self.push_scope(Vec::new());
-                for transition in &machine.transitions {
+                for transition in machine.authored_transitions() {
                     if let Some(guard) = &transition.guard {
                         self.walk_expr(&guard.0, &guard.1, Some(body_info));
                     }
                     self.walk_expr(&transition.body.0, &transition.body.1, Some(body_info));
+                }
+                for (_, hook) in machine.state_hooks() {
+                    self.walk_block(hook, Some(body_info));
                 }
                 self.pop_scope();
                 self.visitor.leave_body(body_info, Self::context(Some(body_info)));

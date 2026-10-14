@@ -2076,20 +2076,6 @@ impl<'a> Formatter<'a> {
             .flat_map(|g| g.members.iter().copied())
             .collect();
 
-        // Top-level transitions, excluding those that belong to a composite's
-        // parent-rule block (those are re-emitted inside the composite).
-        let parent_rule_keys: std::collections::HashSet<(Ident, Ident, Ident)> = decl
-            .composite_groups
-            .iter()
-            .flat_map(|g| {
-                g.members.iter().flat_map(move |m| {
-                    g.parent_transitions
-                        .iter()
-                        .map(move |pt| (*m, pt.event_name, pt.target_state))
-                })
-            })
-            .collect();
-
         // Sections and members print in source order; a synthesized machine
         // keeps the canonical order the list is built in.
         let mut members: Vec<(usize, MachineMember<'_>)> = Vec::new();
@@ -2110,14 +2096,12 @@ impl<'a> Formatter<'a> {
         members.extend(
             decl.composite_groups
                 .iter()
+                .filter(|group| !composite_members.contains(&group.name))
                 .map(|group| (group.span.start, MachineMember::Composite(group))),
         );
         members.extend(
             decl.transitions
                 .iter()
-                .filter(|t| {
-                    !parent_rule_keys.contains(&(t.source_state, t.event_name, t.target_state))
-                })
                 .map(|t| (t.span.start, MachineMember::Transition(t))),
         );
         if decl.has_default {
@@ -2148,7 +2132,7 @@ impl<'a> Formatter<'a> {
                     self.end_member(state.span.end);
                 }
                 MachineMember::Composite(group) => {
-                    self.format_machine_composite(decl, group, span_end);
+                    self.format_machine_composite(decl, group, span_end, false);
                     self.end_member(group.span.end);
                 }
                 MachineMember::Transition(transition) => {
@@ -2312,16 +2296,12 @@ impl<'a> Formatter<'a> {
         // authored-spelling flag — never inferred from the body expression,
         // which is not the authority for it and does not exist in the
         // block/payload-shorthand forms.
-        self.write_ident(transition.source_state);
+        self.format_machine_state_path(&transition.source_path, transition.source_state);
         self.write_token(" => ", |t| matches!(t, hew_lexer::Token::FatArrow));
         if transition.target_is_contextual {
             self.write(".");
         }
-        self.write_ident(
-            transition
-                .target_composite
-                .unwrap_or(transition.target_state),
-        );
+        self.format_machine_state_path(&transition.target_path, transition.target_state);
         if transition.reenter {
             self.write(" reenter");
         }
@@ -2329,27 +2309,13 @@ impl<'a> Formatter<'a> {
             self.write(" when ");
             self.format_expr(guard);
         }
-        // Re-emit the AUTHORED body: strip the composite entry/exit hook
-        // prelude (D2/D3 splices, counted by `composite_prelude_len`) first,
-        // then the head-binding `let a = event.a;` prelude. Both are parser
-        // desugar artifacts the formatter must not echo, or re-parsing would
-        // double-apply them.
-        let hook_stripped;
-        let after_hooks = if transition.composite_prelude_len == 0 {
-            &transition.body.0
-        } else {
-            hook_stripped = Self::strip_leading_block_stmts(
-                &transition.body.0,
-                transition.composite_prelude_len,
-            );
-            &hook_stripped
-        };
+        // Head bindings are parser-generated locals, not authored body statements.
         let stripped_body;
         let body_expr = if transition.event_bindings.is_empty() {
-            after_hooks
+            &transition.body.0
         } else {
             stripped_body =
-                Self::strip_event_binding_prelude(after_hooks, &transition.event_bindings);
+                Self::strip_event_binding_prelude(&transition.body.0, &transition.event_bindings);
             &stripped_body
         };
         match transition.body_form {
@@ -2408,28 +2374,6 @@ impl<'a> Formatter<'a> {
         }
     }
 
-    /// Drop the first `count` statements of a block body (the composite
-    /// entry/exit hook splice prelude). If only a tail remains, surface it
-    /// directly so the body collapses back to its authored shorthand.
-    fn strip_leading_block_stmts(body: &Expr, count: usize) -> Expr {
-        let Expr::Block(block) = body else {
-            return body.clone();
-        };
-        if count == 0 || count > block.stmts.len() {
-            return body.clone();
-        }
-        let remaining: Vec<Spanned<Stmt>> = block.stmts[count..].to_vec();
-        if remaining.is_empty() {
-            if let Some(tail) = &block.trailing_expr {
-                return tail.0.clone();
-            }
-        }
-        Expr::Block(Block {
-            stmts: remaining,
-            trailing_expr: block.trailing_expr.clone(),
-        })
-    }
-
     /// Strip the leading `let <binding> = event.<binding>;` prelude statements
     /// the parser splices in for an `on E { bindings }: …` head binding, so the
     /// formatter can re-emit the head form without the desugar. If, after
@@ -2477,16 +2421,31 @@ impl<'a> Formatter<'a> {
         })
     }
 
-    /// Re-emit a composite `state Composite { … }` block from the grouping
-    /// side-table: composite fields, entry/exit, `initial`-marked substates,
-    /// then the parent-level transitions authored inside the block.
+    fn format_machine_state_path(&mut self, path: &[Ident], leaf: Ident) {
+        if path.is_empty() {
+            self.write_ident(leaf);
+            return;
+        }
+        for (index, part) in path.iter().enumerate() {
+            if index > 0 {
+                self.write(".");
+            }
+            self.write_ident(*part);
+        }
+    }
+
+    /// Re-emit the authored compound and its direct children in source order.
     fn format_machine_composite(
         &mut self,
         decl: &MachineDecl,
         group: &crate::ast::CompositeGroup,
         span_end: usize,
+        initial: bool,
     ) {
         self.write_indent();
+        if initial {
+            self.write("initial ");
+        }
         self.write("state ");
         self.write_ident(group.name);
         self.write(" {\n");
@@ -2512,46 +2471,58 @@ impl<'a> Formatter<'a> {
             self.newline();
         }
 
-        let mut inner: Vec<(usize, Result<&MachineState, &MachineTransition>)> = group
+        let mut inner: Vec<(usize, MachineMember<'_>)> = group
             .members
             .iter()
-            .filter_map(|member| decl.states.iter().find(|s| &s.name == member))
-            .map(|state| (state.span.start, Ok(state)))
+            .filter_map(|member| {
+                decl.states
+                    .iter()
+                    .find(|state| state.name == *member)
+                    .map(|state| (state.span.start, MachineMember::State(state)))
+                    .or_else(|| {
+                        decl.composite_groups
+                            .iter()
+                            .find(|child| child.name == *member)
+                            .map(|child| (child.span.start, MachineMember::Composite(child)))
+                    })
+            })
             .chain(
                 group
                     .parent_transitions
                     .iter()
-                    .map(|pt| (pt.span.start, Err(pt))),
+                    .map(|rule| (rule.span.start, MachineMember::Transition(rule))),
             )
             .collect();
         inner.sort_by_key(|(start, _)| *start);
         for (start, item) in inner {
-            let state = match item {
-                Ok(state) => state,
-                Err(pt) => {
-                    self.begin_member(start, false);
-                    self.write_indent();
-                    self.format_machine_transition(pt, span_end);
-                    self.newline();
-                    self.end_member(pt.span.end);
-                    continue;
-                }
-            };
-            let member_name = &state.name;
             self.begin_member(start, false);
-            self.write_indent();
-            if &group.initial == member_name {
-                self.write("initial ");
+            match item {
+                MachineMember::State(state) => {
+                    self.write_indent();
+                    if group.initial == state.name {
+                        self.write("initial ");
+                    }
+                    let own_fields: Vec<_> = state.fields.iter().collect();
+                    self.format_machine_substate(state.name, &own_fields, state, span_end);
+                    self.end_member(state.span.end);
+                }
+                MachineMember::Composite(child) => {
+                    self.format_machine_composite(
+                        decl,
+                        child,
+                        span_end,
+                        group.initial == child.name,
+                    );
+                    self.end_member(child.span.end);
+                }
+                MachineMember::Transition(rule) => {
+                    self.write_indent();
+                    self.format_machine_transition(rule, span_end);
+                    self.newline();
+                    self.end_member(rule.span.end);
+                }
+                _ => unreachable!("a compound contains only states and rules"),
             }
-            // Substate fields exclude the composite-owned shared fields (which
-            // are emitted on the composite, not stamped here).
-            let own_fields: Vec<&(Ident, Spanned<TypeExpr>)> = state
-                .fields
-                .iter()
-                .filter(|(fname, _)| !group.fields.iter().any(|(gn, _)| gn == fname))
-                .collect();
-            self.format_machine_substate(state.name, &own_fields, state, span_end);
-            self.end_member(state.span.end);
         }
         if self.has_comments() {
             self.flush_block_end_comments(group.span.end);

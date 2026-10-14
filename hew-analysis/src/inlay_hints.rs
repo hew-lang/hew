@@ -146,11 +146,14 @@ fn collect_inlay_hints_from_item(
             }
         }
         Item::Machine(m) => {
-            for transition in &m.transitions {
+            for transition in m.authored_transitions() {
                 if let Some(guard) = &transition.guard {
                     collect_inlay_hints_from_expr(source, &guard.0, tc, hints);
                 }
                 collect_inlay_hints_from_expr(source, &transition.body.0, tc, hints);
+            }
+            for (_, hook) in m.state_hooks() {
+                collect_inlay_hints_from_block(source, hook, tc, hints);
             }
         }
         _ => {}

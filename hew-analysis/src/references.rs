@@ -837,11 +837,14 @@ fn count_idents_in_item(item: &Item, counts: &mut HashMap<String, usize>) {
             }
         }
         Item::Machine(m) => {
-            for transition in &m.transitions {
+            for transition in m.authored_transitions() {
                 if let Some(guard) = &transition.guard {
                     count_idents_in_expr(&guard.0, counts);
                 }
                 count_idents_in_expr(&transition.body.0, counts);
+            }
+            for (_, hook) in m.state_hooks() {
+                count_idents_in_block(hook, counts);
             }
         }
         // Record fields contain only type annotations; no expression idents to count.

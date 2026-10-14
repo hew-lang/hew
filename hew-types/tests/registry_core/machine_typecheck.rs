@@ -94,9 +94,9 @@ fn transition(event: &str, source: &str, target: &str) -> MachineTransition {
         source_state: Ident::new(source),
         target_state: Ident::new(target),
         target_is_contextual: false,
-        target_composite: None,
+        source_path: vec![],
+        target_path: vec![],
         event_bindings: vec![],
-        composite_prelude_len: 0,
         guard: None,
         body: (
             Expr::ContextVariant(ContextVariantExpr {
@@ -154,9 +154,9 @@ fn wildcard_transition(event: &str) -> MachineTransition {
         source_state: Ident::new("_"),
         target_state: Ident::new("_"),
         target_is_contextual: false,
-        target_composite: None,
+        source_path: vec![],
+        target_path: vec![],
         event_bindings: vec![],
-        composite_prelude_len: 0,
         guard: None,
         body: (Expr::Ident(Ident::new("state")), 0..0),
         body_form: MachineTransitionBodyForm::Block,
@@ -3177,35 +3177,32 @@ fn main() {
     );
 }
 
-/// A composite state nests one level. The parser refuses a substate that
-/// declares substates of its own, so the machine never reaches the checker.
+/// Initial descent and scoped fallback are checked through nested compounds.
 #[test]
-fn machine_composite_depth_two_is_refused() {
-    let parsed = hew_parser::parse(
-        r"machine Deep {
-    events {
-        Go,
-    }
-
-    state Outer {
-        initial state Inner {
-            initial state TooDeep,
+fn machine_nested_composites_resolve_initial_descent() {
+    let source = r"machine Deep {
+        events { Go; }
+        state Idle;
+        state Outer {
+            initial state Inner {
+                initial state Waiting;
+                state Done;
+                on Go: _ => Idle;
+            }
         }
-    },
-
-    on Go: _ => _ {
-        state
-    }
-}
-",
-    );
+        on Go: Idle => Outer;
+        on Go: Outer.Inner.Waiting => Outer.Inner.Done when true;
+    }";
+    let output = typecheck_isolated(source);
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+    let invalid = typecheck_isolated(&source.replace("Outer.Inner.Waiting", "Outer.Waiting"));
     assert!(
-        parsed
+        invalid
             .errors
             .iter()
-            .any(|error| format!("{error:?}").contains("a composite state nests one level")),
-        "expected the depth-two refusal, got: {:?}",
-        parsed.errors
+            .any(|error| error.message.contains("does not name")),
+        "{:?}",
+        invalid.errors
     );
 }
 

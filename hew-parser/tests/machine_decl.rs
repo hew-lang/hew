@@ -552,11 +552,8 @@ machine Bad {
 }
 
 #[test]
-fn composite_parent_rule_expands_to_concrete_source_transitions() {
-    // The load-bearing constraint: a parent-level `on E: _ => T` inside a
-    // composite expands to ONE transition per member with a CONCRETE source
-    // state, never a literal `_` source (which the checker rejects for
-    // `state.field` reads). The composite name is dropped from the flat lists.
+fn composite_parent_rules_retain_authored_scope() {
+    // Parsing retains authored rules; checking resolves their leaf domains.
     let source = r"machine Conn {
     events {
         Disconnect;
@@ -603,29 +600,11 @@ fn composite_parent_rule_expands_to_concrete_source_transitions() {
         assert!(state_names.contains(&sub), "missing flat state `{sub}`");
     }
 
-    // The parent `Disconnect` rule expanded to three concrete-source
-    // transitions — one per member — with NO literal `_` source.
-    let disconnect_sources: Vec<&str> = m
-        .transitions
-        .iter()
-        .filter(|t| {
-            t.event_name == Ident::new("Disconnect") && t.target_state == Ident::new("Disconnected")
-        })
-        .map(|t| t.source_state.name.as_str())
-        .collect();
-    let mut sorted = disconnect_sources.clone();
-    sorted.sort_unstable();
-    assert_eq!(
-        sorted,
-        vec!["Active", "Authenticating", "Draining"],
-        "parent rule must expand to concrete member sources, never `_`"
-    );
-    assert!(
-        !disconnect_sources.contains(&"_"),
-        "expanded parent rule must NOT carry a literal `_` source"
-    );
+    assert_eq!(m.transitions.len(), 3);
+    let parent_rule = &m.composite_groups[0].parent_transitions[0];
+    assert_eq!(parent_rule.source_state, Ident::new("_"));
+    assert_eq!(parent_rule.target_state, Ident::new("Disconnected"));
 
-    // The grouping side-table records the composite for the formatter/diagram.
     assert_eq!(m.composite_groups.len(), 1);
     let group = &m.composite_groups[0];
     assert_eq!(group.name, Ident::new("Connected"));
@@ -742,32 +721,50 @@ fn composite_name_target_survives_formatting() {
 }
 
 #[test]
-fn reject_depth_two_composite_nesting() {
-    // Depth-1 composites are accepted; a `state` inside a substate body nests
-    // deeper than one level and is rejected.
+fn nested_composite_paths_round_trip() {
     let source = r"
 machine Deep {
-    events {
-        Go;
-    }
-
+    events { Go; }
     state Outer {
         initial state Inner {
-            initial state TooDeep;
+            initial state Waiting;
+            state Done;
         }
     }
-
-    on Go: _ => _ { state }
+    on Go: Outer.Inner.Waiting => Outer.Inner.Done;
+    default { state }
 }
 ";
-    let result = hew_parser::parse(source);
+    let parsed = hew_parser::parse(source);
+    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+    let hew_parser::ast::Item::Machine(machine) = &parsed.program.items[0].0 else {
+        panic!("expected machine");
+    };
+    let outer = machine
+        .composite_groups
+        .iter()
+        .find(|group| group.name == Ident::new("Outer"))
+        .unwrap();
+    assert_eq!(outer.members, vec![Ident::new("Inner")]);
+    let transition = &machine.transitions[0];
+    assert_eq!(
+        transition.source_path,
+        vec![
+            Ident::new("Outer"),
+            Ident::new("Inner"),
+            Ident::new("Waiting")
+        ]
+    );
+    assert_eq!(
+        transition.target_path,
+        vec![Ident::new("Outer"), Ident::new("Inner"), Ident::new("Done")]
+    );
+    let formatted = hew_parser::fmt::format_program(&parsed.program);
+    let reparsed = hew_parser::parse(&formatted);
+    assert!(reparsed.errors.is_empty(), "{:?}", reparsed.errors);
     assert!(
-        result
-            .errors
-            .iter()
-            .any(|e| format!("{e:?}").contains("a composite state nests one level")),
-        "expected the depth-two refusal, errors: {:?}",
-        result.errors
+        hew_parser::ast_eq::program_eq_ignoring_spans(&parsed.program, &reparsed.program),
+        "{formatted}"
     );
 }
 

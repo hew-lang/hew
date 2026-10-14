@@ -22,8 +22,8 @@ pub(crate) enum StatePatternPosition {
 
 /// A parsed state pattern together with the authored spelling and source span.
 pub(crate) struct StatePattern {
-    /// The flat leaf state name, with any `.`/qualifier prefix stripped.
     pub name: Ident,
+    pub path: Vec<Ident>,
     /// True when the author wrote the contextual `.Variant` form. Only ever
     /// true in `StatePatternPosition::Target`.
     pub is_contextual: bool,
@@ -432,11 +432,7 @@ impl Parser<'_> {
                 self.expect(&Token::RightBrace)?;
                 self.refuse_mark_after_body();
             } else if self.peek() == Some(&Token::State) {
-                self.parse_machine_state_or_composite(
-                    &mut states,
-                    &mut transitions,
-                    &mut composite_groups,
-                )?;
+                self.parse_machine_state_or_composite(&mut states, &mut composite_groups)?;
             } else if self.peek() == Some(&Token::Event) {
                 // Legacy interleaved `event Name;` form is a hard cutover —
                 // events now live in the `events { … }` header.
@@ -484,8 +480,6 @@ impl Parser<'_> {
 
         self.expect(&Token::RightBrace)?;
 
-        Self::desugar_composites(&mut transitions, &composite_groups);
-
         Some(MachineDecl {
             visibility,
             name,
@@ -499,97 +493,6 @@ impl Parser<'_> {
             has_default,
             composite_groups,
         })
-    }
-
-    /// Finish the composite desugar once the whole machine body is parsed:
-    /// expand each group's parent rules onto its members, then splice the
-    /// group's hooks into every transition that crosses its boundary. Both run
-    /// here, not while the block is parsed, so rules written after the block
-    /// are seen — a substate override below the block still beats the parent
-    /// rule, and a top-level enter or leave still gets its hooks.
-    fn desugar_composites(
-        transitions: &mut Vec<MachineTransition>,
-        composite_groups: &[CompositeGroup],
-    ) {
-        Self::expand_all_composite_parent_rules(transitions, composite_groups);
-        Self::splice_all_composite_hooks(transitions, composite_groups);
-    }
-
-    /// Post-pass: expand each composite's wildcard-source parent rules (D1) to
-    /// one concrete-source transition per member. Concrete sources are required
-    /// because the checker refuses `state.field` under a literal `_` source.
-    ///
-    /// A substate's own unguarded rule for the same event wins outright and the
-    /// parent rule is not expanded onto it. A guarded substate rule keeps the
-    /// parent rule, appended after it as the unconditional fallback.
-    fn expand_all_composite_parent_rules(
-        transitions: &mut Vec<MachineTransition>,
-        composite_groups: &[CompositeGroup],
-    ) {
-        for group in composite_groups {
-            for parent in &group.parent_transitions {
-                if parent.source_state.name != sym::UNDERSCORE {
-                    continue;
-                }
-                for member in &group.members {
-                    let covered = transitions.iter().any(|existing| {
-                        existing.source_state == *member
-                            && existing.event_name == parent.event_name
-                            && existing.guard.is_none()
-                    });
-                    if covered {
-                        continue;
-                    }
-                    let mut expanded = parent.clone();
-                    expanded.source_state = *member;
-                    transitions.push(expanded);
-                }
-            }
-        }
-    }
-
-    /// Post-pass: splice composite `entry`/`exit` hooks into every transition
-    /// that crosses a composite boundary, for each depth-1 group. A transition
-    /// entering composite C (source ∉ C, target ∈ C) gets `C.entry` prepended;
-    /// one leaving C (source ∈ C, target ∉ C) gets `C.exit` prepended. With the
-    /// MIR firing the source substate's own `exit` before the body and the
-    /// target substate's own `entry` after, this yields Harel ordering.
-    fn splice_all_composite_hooks(
-        transitions: &mut [MachineTransition],
-        composite_groups: &[CompositeGroup],
-    ) {
-        // First resolve any transition targeting a composite BY NAME
-        // (`=> Connected`) to that composite's initial substate, so the live
-        // target is a real leaf state and the entry chain (D2) splices.
-        for group in composite_groups {
-            for transition in transitions.iter_mut() {
-                if transition.target_state == group.name {
-                    transition.target_composite = Some(group.name);
-                    transition.target_state.clone_from(&group.initial);
-                    // Rewrite a bare-identifier passthrough body that named the
-                    // composite to name the initial substate instead.
-                    if let Expr::Ident(name) = &transition.body.0 {
-                        if name == &group.name {
-                            transition.body.0 = Expr::Ident(group.initial);
-                        }
-                    }
-                }
-            }
-        }
-
-        for group in composite_groups {
-            let member_set: std::collections::HashSet<Ident> =
-                group.members.iter().copied().collect();
-            for transition in transitions.iter_mut() {
-                Self::splice_composite_hooks(
-                    transition,
-                    transition.source_state,
-                    &member_set,
-                    group.entry.as_ref(),
-                    group.exit.as_ref(),
-                );
-            }
-        }
     }
 
     /// The field names a transition head binds: `{ a, b }`, or the retired
@@ -664,12 +567,14 @@ impl Parser<'_> {
         };
 
         self.expect(&Token::Colon)?;
-        let source_state = self.parse_state_pattern(StatePatternPosition::Source)?.name;
+        let source = self.parse_state_pattern(StatePatternPosition::Source)?;
+        let source_state = source.name;
         // Hard cutover: `=>` (Token::FatArrow) is the state-routing arrow.
         self.expect(&Token::FatArrow)?;
         let target = self.parse_state_pattern(StatePatternPosition::Target)?;
         let StatePattern {
             name: target_state,
+            path: target_path,
             is_contextual: target_is_contextual,
             span: target_span,
         } = target;
@@ -766,9 +671,9 @@ impl Parser<'_> {
             source_state,
             target_state,
             target_is_contextual,
-            target_composite: None,
+            source_path: source.path,
+            target_path,
             event_bindings: head_bindings,
-            composite_prelude_len: 0,
             guard,
             body: (body, body_start..body_end),
             body_form,
@@ -797,16 +702,13 @@ impl Parser<'_> {
     }
 
     /// Parse a `state Name … ` declaration that begins at the current `state`
-    /// token. A leaf state pushes one `MachineState`; a composite (a `state`
-    /// body containing substate declarations) desugars to flat substates plus
-    /// concrete-source transitions (D1–D5) and records a `CompositeGroup` for
-    /// the formatter / diagram renderer.
+    /// token. Keep compound membership and rules for semantic checking.
     pub(crate) fn parse_machine_state_or_composite(
         &mut self,
         states: &mut Vec<MachineState>,
-        transitions: &mut Vec<MachineTransition>,
         composite_groups: &mut Vec<CompositeGroup>,
-    ) -> Option<()> {
+    ) -> Option<Ident> {
+        let _guard = self.enter_recursion()?;
         let state_start = self.peek_span().start;
         self.expect(&Token::State)?;
         let state_name = self.expect_ident()?;
@@ -837,7 +739,6 @@ impl Parser<'_> {
                         entry_block,
                         exit_block,
                         states,
-                        transitions,
                         composite_groups,
                     );
                 } else {
@@ -863,30 +764,13 @@ impl Parser<'_> {
             exit: exit_block,
             span: state_start..self.last_token_end,
         });
-        Some(())
+        Some(state_name)
     }
 
-    /// Parse a depth-1 composite-state block and desugar it to the flat state
-    /// and transition lists, recording a `CompositeGroup` for the formatter and
-    /// diagram renderer. The `state`/`initial state` cursor is positioned at
-    /// the first substate; `composite_name`/`fields`/`entry`/`exit` are the
-    /// prefix already parsed by the caller.
-    ///
-    /// Desugar (all at parser/AST level, per the hierarchy contract):
-    ///   * each substate becomes a flat `MachineState`; composite-owned fields
-    ///     are stamped onto every member (shared-layout shorthand).
-    ///   * D1: each parent-level `on E: _ => T { body }` expands to one
-    ///     transition per member `Sk` with a CONCRETE `source_state = "Sk"`
-    ///     (never literal `_`, which the checker rejects for `self.field`).
-    ///     An explicit per-member `(Sk, E)` rule wins (override-skip).
-    ///   * D2/D3: composite `entry`/`exit` hooks splice into transition bodies
-    ///     so the existing MIR per-state hook firing yields Harel ordering:
-    ///     enter C ⇒ `C.entry` then child entry; leave C ⇒ child exit then
-    ///     `C.exit`. Intra-composite moves fire no composite hook (D4).
+    /// Parse nested declarations without resolving targets or splicing hooks.
     #[expect(
         clippy::too_many_arguments,
-        reason = "threads the leaf-parse prefix plus the machine-body \
-                  accumulators the composite desugar appends to"
+        reason = "the parsed compound prefix and declaration accumulators"
     )]
     pub(crate) fn parse_composite_block(
         &mut self,
@@ -896,10 +780,8 @@ impl Parser<'_> {
         entry: Option<Block>,
         exit: Option<Block>,
         states: &mut Vec<MachineState>,
-        transitions: &mut Vec<MachineTransition>,
         composite_groups: &mut Vec<CompositeGroup>,
-    ) -> Option<()> {
-        let mut members: Vec<MachineState> = Vec::new();
+    ) -> Option<Ident> {
         let mut member_names: Vec<Ident> = Vec::new();
         let mut initial: Option<Ident> = None;
         let mut parent_transitions: Vec<MachineTransition> = Vec::new();
@@ -908,7 +790,7 @@ impl Parser<'_> {
         while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
             let is_initial = self.eat_machine_kw("initial");
             if self.peek() == Some(&Token::State) {
-                let substate = self.parse_machine_substate(composite_name)?;
+                let substate = self.parse_machine_state_or_composite(states, composite_groups)?;
                 if is_initial {
                     if initial.is_some() {
                         self.error_at(
@@ -919,10 +801,9 @@ impl Parser<'_> {
                             self.peek_span(),
                         );
                     }
-                    initial = Some(substate.name);
+                    initial = Some(substate);
                 }
-                member_names.push(substate.name);
-                members.push(substate);
+                member_names.push(substate);
             } else if is_initial {
                 self.error_at(
                     "`initial` must be followed by a substate declaration \
@@ -932,9 +813,7 @@ impl Parser<'_> {
                 );
                 break;
             } else if self.peek() == Some(&Token::On) {
-                // Parent-level rule. Source is `_` (any member of THIS
-                // composite); kept verbatim on the group for the formatter and
-                // expanded to concrete members below.
+                // `_` is scoped to this compound; checking selects its descendants.
                 parent_transitions.push(self.parse_machine_transition()?);
             } else {
                 self.error_at(
@@ -958,28 +837,8 @@ impl Parser<'_> {
                 ),
                 self.peek_span(),
             );
-            return Some(());
+            return Some(composite_name);
         };
-
-        // ── Desugar to the flat lists. ───────────────────────────────────────
-        // Stamp composite-owned fields onto every member (shared layout).
-        for member in &mut members {
-            for (fname, fty) in &fields {
-                if !member.fields.iter().any(|(n, _)| n == fname) {
-                    member.fields.push((*fname, fty.clone()));
-                }
-            }
-        }
-
-        // A parent rule written with a concrete member source (`on E: Sk => …`
-        // inside the block) is that member's own rule; it joins the flat list
-        // here. Wildcard-source parent rules are expanded per member by the
-        // post-pass, once every top-level rule is also in the list.
-        for pt in &parent_transitions {
-            if pt.source_state.name != sym::UNDERSCORE {
-                transitions.push(pt.clone());
-            }
-        }
 
         composite_groups.push(CompositeGroup {
             name: composite_name,
@@ -992,143 +851,7 @@ impl Parser<'_> {
             span: composite_start..self.last_token_end,
         });
 
-        for member in members {
-            states.push(member);
-        }
-        Some(())
-    }
-
-    /// Parse a single substate declaration (`state Name;` /
-    /// `state Name { fields; entry {} exit {} }`). A `state` inside a substate
-    /// body nests deeper than one level and is refused.
-    pub(crate) fn parse_machine_substate(&mut self, composite_name: Ident) -> Option<MachineState> {
-        let state_start = self.peek_span().start;
-        self.expect(&Token::State)?;
-        let name = self.expect_ident()?;
-        let mut fields = Vec::new();
-        let mut entry_block: Option<Block> = None;
-        let mut exit_block: Option<Block> = None;
-        let bodied = self.eat(&Token::LeftBrace);
-        if bodied {
-            while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
-                if self.peek() == Some(&Token::Entry) {
-                    self.advance();
-                    entry_block = Some(self.parse_block()?);
-                } else if self.peek() == Some(&Token::Exit) {
-                    self.advance();
-                    exit_block = Some(self.parse_block()?);
-                } else if self.peek() == Some(&Token::State) || self.peek_machine_kw("initial") {
-                    self.error_at(
-                        format!(
-                            "a composite state nests one level; substate `{name}` of \
-                             composite `{composite_name}` may not declare substates of \
-                             its own"
-                        ),
-                        self.peek_span(),
-                    );
-                    // Recover: skip the nested block.
-                    let mut depth = 0;
-                    while !self.at_end() {
-                        match self.peek() {
-                            Some(Token::LeftBrace) => depth += 1,
-                            Some(Token::RightBrace) => {
-                                if depth == 0 {
-                                    break;
-                                }
-                                depth -= 1;
-                            }
-                            _ => {}
-                        }
-                        self.advance();
-                    }
-                } else {
-                    let field_name = self.expect_ident()?;
-                    self.expect(&Token::Colon)?;
-                    let ty = self.parse_type()?;
-                    self.expect_member_terminator("field");
-                    fields.push((field_name, ty));
-                }
-            }
-            self.expect(&Token::RightBrace)?;
-        }
-        if bodied {
-            self.refuse_mark_after_body();
-        } else {
-            self.expect_member_terminator("state");
-        }
-        Some(MachineState {
-            name,
-            fields,
-            entry: entry_block,
-            exit: exit_block,
-            span: state_start..self.last_token_end,
-        })
-    }
-
-    /// Splice composite `entry`/`exit` hook statements into a transition body
-    /// so the existing MIR per-state hook firing produces Harel ordering. The
-    /// composite hooks are prepended as body statements; MIR runs the source
-    /// substate's own `exit` before the body and the target substate's own
-    /// `entry` after it, so:
-    ///
-    ///   * leaving C (source ∈ C, target ∉ C): MIR `Sk.exit` → spliced
-    ///     `C.exit` → next.
-    ///   * entering C (source ∉ C, target ∈ C): spliced `C.entry` → MIR
-    ///     `Sk.entry`.
-    ///   * intra-composite moves splice nothing (both endpoints ∈ C).
-    pub(crate) fn splice_composite_hooks(
-        transition: &mut MachineTransition,
-        source_member: Ident,
-        member_set: &std::collections::HashSet<Ident>,
-        entry: Option<&Block>,
-        exit: Option<&Block>,
-    ) {
-        let target = transition.target_state;
-        let source_in = member_set.contains(&source_member);
-        let target_in = target.name != sym::UNDERSCORE && member_set.contains(&target);
-
-        // Prepend order matters: statements pushed last end up first. For a
-        // cross-composite move we want `exit-of-source-composite` before
-        // `entry-of-target-composite`; here each call handles ONE composite, so
-        // a single prepend per relevant hook is correct.
-        if source_in && !target_in {
-            if let Some(exit_block) = exit {
-                Self::prepend_block_stmts(transition, exit_block);
-            }
-        } else if !source_in && target_in {
-            if let Some(entry_block) = entry {
-                Self::prepend_block_stmts(transition, entry_block);
-            }
-        }
-        // Intra-composite (source_in && target_in) or unrelated: no splice.
-    }
-
-    /// Prepend a hook block's statements to the front of a transition body,
-    /// wrapping a non-block body into a block whose tail is the original value.
-    pub(crate) fn prepend_block_stmts(transition: &mut MachineTransition, hook: &Block) {
-        let body = std::mem::replace(&mut transition.body.0, Expr::Tuple(Vec::new()));
-        let mut block = match body {
-            Expr::Block(block) => block,
-            other => Block {
-                stmts: Vec::new(),
-                trailing_expr: Some(Box::new((other, transition.body.1.clone()))),
-            },
-        };
-        let mut prelude = hook.stmts.clone();
-        // If the hook block has a trailing expression (rare for entry/exit),
-        // treat it as a statement so it runs for its effect.
-        if let Some(tail) = &hook.trailing_expr {
-            prelude.push((
-                Stmt::Expression((tail.0.clone(), tail.1.clone())),
-                tail.1.clone(),
-            ));
-        }
-        // Record how many leading statements are composite-hook splices so the
-        // formatter can strip them and re-emit the authored transition body.
-        transition.composite_prelude_len += prelude.len();
-        prelude.append(&mut block.stmts);
-        block.stmts = prelude;
-        transition.body.0 = Expr::Block(block);
+        Some(composite_name)
     }
 
     /// Rewrite a transition body so the named head bindings (`on E { a, b }: …`)
@@ -1177,8 +900,7 @@ impl Parser<'_> {
 
     /// Parse a state pattern: `_` (wildcard) or a state name, optionally a
     /// contextual (`.Leaf`, target position only) or qualified
-    /// (`Composite.Leaf`) dotted name. The parser strips dotted prefixes so
-    /// the flat leaf name reaches the AST.
+    /// (`Composite.Leaf`) dotted name, retained for checking.
     pub(crate) fn parse_state_pattern(
         &mut self,
         position: StatePatternPosition,
@@ -1188,6 +910,7 @@ impl Parser<'_> {
             self.advance();
             return Some(StatePattern {
                 name: Ident::from_symbol(sym::UNDERSCORE),
+                path: Vec::new(),
                 is_contextual: false,
                 span: start..self.last_token_end,
             });
@@ -1225,18 +948,24 @@ impl Parser<'_> {
             let name = self.expect_ident()?;
             return Some(StatePattern {
                 name,
+                path: Vec::new(),
                 is_contextual: true,
                 span: start..self.last_token_end,
             });
         }
         let mut name = self.expect_ident()?;
-        // Strip any qualifier prefix: `Composite.Leaf` → `Leaf`.
+        let mut path = vec![name];
         while self.peek() == Some(&Token::Dot) {
             self.advance();
             name = self.expect_ident()?;
+            path.push(name);
+        }
+        if path.len() == 1 {
+            path.clear();
         }
         Some(StatePattern {
             name,
+            path,
             is_contextual: false,
             span: start..self.last_token_end,
         })

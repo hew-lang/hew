@@ -93,14 +93,12 @@ fn machine_diagram_dot_emits_graphviz_on_stdout() {
 }
 
 fn composite_fixture() -> &'static str {
-    "machine Conn {\n    events {\n        Connect;\n        Disconnect;\n    }\n    state Disconnected;\n    state Connected {\n        initial state Authenticating;\n        state Active;\n        on Disconnect: _ => .Disconnected;\n    }\n    on Connect: Disconnected => .Authenticating;\n    on Connect: _ => _ {\n        state\n    }\n    on Disconnect: _ => _ {\n        state\n    }\n}\n"
+    "machine Conn {\n    events {\n        Connect;\n        Disconnect;\n    }\n    state Disconnected;\n    state Connected {\n        initial state Handshake {\n            initial state Authenticating;\n            state Active;\n        }\n        on Disconnect: _ => .Disconnected;\n    }\n    on Connect: Disconnected => .Authenticating;\n    on Connect: _ => _ {\n        state\n    }\n    on Disconnect: _ => _ {\n        state\n    }\n}\n"
 }
 
 #[test]
 fn machine_diagram_renders_composite_nesting_in_mermaid() {
-    // The diagram threads the AST composite grouping over the flat HIR (HIR has
-    // no composite concept), so a depth-1 composite draws a nested
-    // `state Connected { … }` block with the initial-substate marker.
+    // Authored compound nodes retain their nesting and initial-child markers.
     let dir = support::tempdir();
     let input = dir.path().join("conn.hew");
     std::fs::write(&input, composite_fixture()).unwrap();
@@ -126,10 +124,15 @@ fn machine_diagram_renders_composite_nesting_in_mermaid() {
         stdout.contains("[*] --> Authenticating"),
         "nested block must mark the initial substate; stdout:\n{stdout}"
     );
-    // The parent Disconnect rule expanded to concrete-source transitions.
+    assert!(stdout.contains("state Handshake {"), "{stdout}");
+    // Parent rules remain attached to the authored compound.
     assert!(
-        stdout.contains("Authenticating --> Disconnected : Disconnect"),
+        stdout.contains("Connected --> Disconnected : Disconnect"),
         "stdout:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("Authenticating --> _ : Disconnect"),
+        "{stdout}"
     );
 
     let dot = Command::new(hew_binary())
@@ -145,12 +148,9 @@ fn machine_diagram_renders_composite_nesting_in_mermaid() {
     );
     let dot = String::from_utf8_lossy(&dot.stdout);
     assert!(dot.contains("subgraph cluster_Connected {"), "{dot}");
+    assert!(dot.contains("__start_Connected -> Handshake;"), "{dot}");
     assert!(
-        dot.contains("__start_Connected -> Authenticating;"),
-        "{dot}"
-    );
-    assert!(
-        dot.contains("Authenticating -> Disconnected [label=\"Disconnect\"]"),
+        dot.contains("Connected -> Disconnected [label=\"Disconnect\"]"),
         "{dot}"
     );
 }
@@ -179,9 +179,11 @@ fn machine_diagram_composite_json_carries_composites_array() {
     assert_eq!(
         diagram["composites"],
         serde_json::json!([{
-            "name": "Connected",
-            "initial": "Authenticating",
-            "members": ["Authenticating", "Active"],
+            "name": "Handshake", "path": ["Connected", "Handshake"], "parent": "Connected",
+            "initial": "Authenticating", "members": ["Authenticating", "Active"],
+        }, {
+            "name": "Connected", "path": ["Connected"], "parent": null,
+            "initial": "Handshake", "members": ["Handshake"],
         }]),
         "json must carry the composite group with its initial substate; stdout:\n{stdout}"
     );
@@ -778,11 +780,11 @@ fn machine_diagram_json_no_wildcard_rows() {
     assert_eq!(
         transitions,
         vec![
-            serde_json::json!({"event": "Flip", "from": "A", "to": "B",
+            serde_json::json!({"event": "Flip", "from": "A", "to": "B", "fromPath": [], "toPath": [],
                 "selfTransition": false, "guarded": false, "reenter": false, "external": true}),
-            serde_json::json!({"event": "Reset", "from": "A", "to": "A",
+            serde_json::json!({"event": "Reset", "from": "A", "to": "A", "fromPath": [], "toPath": [],
                 "selfTransition": true, "guarded": false, "reenter": false, "external": false}),
-            serde_json::json!({"event": "Reset", "from": "B", "to": "A",
+            serde_json::json!({"event": "Reset", "from": "B", "to": "A", "fromPath": [], "toPath": [],
                 "selfTransition": false, "guarded": false, "reenter": false, "external": true}),
         ],
         "wildcard Reset must expand to both concrete sources; stdout:\n{stdout}"

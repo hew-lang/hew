@@ -163,6 +163,39 @@ after the machine changes or leaves scope.
 The surrounding application interprets output data and performs effects.
 Embedding the value in an actor does not move those effects into `step`.
 
+## Hierarchy
+
+A compound state groups leaf states or other compounds. Exactly one direct
+child is marked `initial`; targeting a compound follows those markers until a
+leaf is reached. Compound fields are inherited by descendant leaves, and an
+inherited field name cannot be redeclared. State names remain unique within a
+machine; a qualified transition head such as `Connection.Handshake.Waiting`
+must follow the declared parentage.
+
+For each event the active leaf's rules precede its nearest ancestor's rules,
+then successively broader ancestors, then machine-wide wildcards. A guarded
+rule that does not match falls through in that order. An unconditional rule
+ends fallback; narrower rules take priority regardless of their source order.
+
+A named transition retains the source and target's nearest common ancestor.
+It exits only the active descendants below that boundary, from leaf outwards,
+evaluates the body once, and enters target descendants from outside in. A
+transition to an active ancestor descends through that ancestor's initial
+children. A fixed leaf self-transition runs no hooks unless marked `reenter`;
+reentry of an active compound also exits and enters that compound. Hook changes,
+state and outputs still stage together before the ordinary commit.
+
+A computed `_` target has the machine root as its transition domain. It exits
+the full active branch before evaluating the body once, then enters the full
+branch of the returned leaf. This includes same-leaf and sibling returns;
+shared compounds exit and re-enter for a computed target. Named sibling targets
+continue to retain their shared ancestors. Code that previously used `_` for
+an intra-compound move and relied on skipped compound hooks should name the
+target instead.
+
+The hierarchy represents one active branch. Parallel regions and history
+states are not part of this surface.
+
 ## Implementation scope
 
 The native evaluator supports ordinary machines, owning value payloads,
@@ -170,9 +203,10 @@ guarded fallback, source wildcards, dynamic targets, hooks and typed outputs.
 A generic machine is admitted; each concrete instantiation must support the
 staged copy, so an argument with none is refused at the transition that takes
 it. A direct `#[resource]` payload waits for a step that takes an affine
-receiver and hands it back on a pre-commit fault. `usize` const parameters and depth-1
-composite states are admitted: a const parameter's declared default is its
-value, and a composite flattens to its substates before checking. Additional
+receiver and hands it back on a pre-commit fault. `usize` const parameters and
+nested composite states are admitted: a const parameter's declared default is
+its value. Compound parentage, initial descent and transition domains are
+checked before generating ordinary state declarations. Additional
 source forms are not yet admitted by this path. Parser or diagram support for
 a form is not evidence of executable support.
 

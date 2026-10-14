@@ -425,24 +425,14 @@ fn hover_binding_in_item(
             None
         }
         Item::Machine(machine) => {
-            // Walk state entry/exit blocks, then each transition body.
-            for state in &machine.states {
-                if let Some(entry) = &state.entry {
-                    if let Some(result) =
-                        hover_binding_in_block(entry, type_output, word, word_span, offset)
-                    {
-                        return Some(result);
-                    }
-                }
-                if let Some(exit) = &state.exit {
-                    if let Some(result) =
-                        hover_binding_in_block(exit, type_output, word, word_span, offset)
-                    {
-                        return Some(result);
-                    }
+            for (_, hook) in machine.state_hooks() {
+                if let Some(result) =
+                    hover_binding_in_block(hook, type_output, word, word_span, offset)
+                {
+                    return Some(result);
                 }
             }
-            for transition in &machine.transitions {
+            for transition in machine.authored_transitions() {
                 // A braced transition body parses to `Expr::Block`, and
                 // `hover_binding_in_expr` expects an already-unwrapped trailing
                 // expression, so a block has to be walked as one — the same way
@@ -2464,9 +2454,11 @@ mod tests {
             "machine Counter {\n",
             "    events { Tick { by: i64 } }\n",
             "    state Idle,\n",
-            "    state Live { hits: i64 },\n",
+            "    state Connection {\n",
+            "        initial state Live { hits: i64 }\n",
+            "        on Tick: _ => Live reenter { hits: state.hits + event.by }\n",
+            "    }\n",
             "    on Tick: Idle => Live { hits: event.by }\n",
-            "    on Tick: Live => Live reenter { hits: state.hits + event.by }\n",
             "}\n",
         );
         let pr = hew_parser::parse(source);
@@ -2476,7 +2468,7 @@ mod tests {
         let state_hover = hover(source, &pr, Some(&tc), state_offset)
             .expect("hover over `state` in a transition body must resolve");
         assert!(
-            state_hover.contents.contains("state: Counter.Live"),
+            state_hover.contents.contains("state: Counter.Connection"),
             "hover should name the refined source state; got: {}",
             state_hover.contents
         );

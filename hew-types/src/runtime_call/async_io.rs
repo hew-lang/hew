@@ -105,6 +105,23 @@ pub enum AsyncIoOp {
 
 impl AsyncIoOp {
     #[must_use]
+    pub const fn authority(self) -> crate::runtime_call::RuntimeAuthority {
+        match self {
+            Self::StdinReadLine | Self::TcpConnect | Self::TcpConnectTimeout | Self::TlsConnect => {
+                crate::runtime_call::RuntimeAuthority::Ambient
+            }
+            Self::TcpRead
+            | Self::TcpWrite
+            | Self::TcpAccept
+            | Self::SinkFinish
+            | Self::TlsRead
+            | Self::TlsWrite
+            | Self::FileRead
+            | Self::FileWrite => crate::runtime_call::RuntimeAuthority::Service,
+        }
+    }
+
+    #[must_use]
     pub const fn argument_loan(self) -> AsyncIoLoan {
         match self {
             Self::TcpConnect

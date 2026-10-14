@@ -100,6 +100,9 @@ impl Checker {
             Expr::Array(values) => self.callable_sequence_candidates(
                 values.iter().map(hew_parser::ast::ArrayElement::expr),
             ),
+            Expr::Spawn { .. } | Expr::StructInit { .. } => IndirectCallCandidates::single(
+                CallableCandidate::Aggregate(SpanKey::in_module(span, self.current_module_idx)),
+            ),
             Expr::Lambda { .. } | Expr::SpawnLambdaActor { .. } => IndirectCallCandidates::single(
                 CallableCandidate::Closure(SpanKey::in_module(span, self.current_module_idx)),
             ),
@@ -114,9 +117,6 @@ impl Checker {
                     self.current_module_idx,
                 )))
             }
-            Expr::StructInit { .. } => IndirectCallCandidates::single(
-                CallableCandidate::Aggregate(SpanKey::in_module(span, self.current_module_idx)),
-            ),
             Expr::Call { args, .. }
                 if matches!(
                     self.actor_delivery_calls
@@ -491,8 +491,14 @@ impl Checker {
         });
         if matches!(
             self.selected_callable_target(span),
-            Some(CallTarget::StaticTraitMethod { .. })
+            Some(CallTarget::StaticTraitMethod { .. } | CallTarget::IndirectFunctionValue)
         ) {
+            let receiver = receiver.filter(|_| {
+                matches!(
+                    self.selected_callable_target(span),
+                    Some(CallTarget::StaticTraitMethod { .. })
+                )
+            });
             let receiver_offset = usize::from(receiver.is_some());
             let mut actuals = Vec::with_capacity(args.len() + receiver_offset);
             if let Some(receiver) = receiver {
@@ -509,8 +515,14 @@ impl Checker {
                     candidates: self.callable_candidates_for_expr(value, value_span),
                 });
             }
-            self.generic_trait_call_arguments.insert(key, actuals);
-            return;
+            self.generic_trait_call_arguments
+                .insert(key.clone(), actuals);
+            if matches!(
+                self.selected_callable_target(span),
+                Some(CallTarget::StaticTraitMethod { .. })
+            ) {
+                return;
+            }
         }
         let callee = if let Some(declaration) = self.selected_callable_declaration(span) {
             PendingCallableTarget::Declaration(declaration)
@@ -548,6 +560,9 @@ impl Checker {
                 field_labels,
                 ..
             } => (fields, field_labels),
+            Expr::Spawn {
+                args, arg_labels, ..
+            } => (args, arg_labels),
             Expr::ContextVariant(context) => {
                 let Some(record) = context.record.as_ref() else {
                     return;

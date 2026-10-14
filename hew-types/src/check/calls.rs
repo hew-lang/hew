@@ -2425,6 +2425,18 @@ impl Checker {
             if assertion {
                 self.record_unrendered_assertion_operands(args);
             }
+            if matches!(
+                self.call_target_for_signature(&resolved_fn_name),
+                CallTarget::Builtin { endpoint }
+                    if crate::stdlib_authority::OverloadGroup::from_key(&endpoint)
+                        == Some(crate::stdlib_authority::OverloadGroup::ToString)
+            ) {
+                if let Some(value) = args.first().map(CallArg::expr) {
+                    if let Some(ty) = self.callee_value_type(value) {
+                        self.record_rendering_effect(&value.1, &ty);
+                    }
+                }
+            }
 
             // A codec imported by name (`import std.encoding.json.{encode}`)
             // is the same compiler operation as `json.encode(..)`.

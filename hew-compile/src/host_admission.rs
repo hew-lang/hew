@@ -29,11 +29,7 @@ struct CallEdge {
     target: CallTarget,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-enum CallableNode {
-    Declaration(DefId),
-    Closure(SpanKey),
-}
+type CallableNode = hew_types::check::effects::EffectBody;
 
 /// A value origin resolved under its calling context. Aggregate fields and
 /// closure captures retain that context when the value crosses another call.
@@ -42,20 +38,65 @@ enum ResolvedValue {
     Declaration(DefId),
     Closure {
         span: SpanKey,
-        captures: Vec<(TypeBindingId, Vec<Self>)>,
+        captures: ResolvedContext,
     },
     Aggregate {
         span: SpanKey,
-        captures: Vec<(TypeBindingId, Vec<Self>)>,
+        captures: ResolvedContext,
     },
     Source {
         candidates: IndirectCallCandidates,
-        captures: Vec<(TypeBindingId, Vec<Self>)>,
+        captures: ResolvedContext,
     },
     Unknown,
 }
 
-type CandidateEnv = HashMap<TypeBindingId, Vec<ResolvedValue>>;
+#[derive(Clone, Debug, Default)]
+struct CandidateEnv {
+    values: HashMap<TypeBindingId, Vec<ResolvedValue>>,
+    types: Vec<(hew_types::ParamHead, Ty)>,
+}
+
+impl CandidateEnv {
+    fn new() -> Self {
+        Self::default()
+    }
+}
+
+impl std::ops::Deref for CandidateEnv {
+    type Target = HashMap<TypeBindingId, Vec<ResolvedValue>>;
+    fn deref(&self) -> &Self::Target {
+        &self.values
+    }
+}
+impl std::ops::DerefMut for CandidateEnv {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.values
+    }
+}
+impl FromIterator<(TypeBindingId, Vec<ResolvedValue>)> for CandidateEnv {
+    fn from_iter<T: IntoIterator<Item = (TypeBindingId, Vec<ResolvedValue>)>>(values: T) -> Self {
+        Self {
+            values: values.into_iter().collect(),
+            types: Vec::new(),
+        }
+    }
+}
+
+/// Value and type substitutions belong to the same saved calling context.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct ResolvedContext {
+    values: Vec<(TypeBindingId, Vec<ResolvedValue>)>,
+    types: Vec<(hew_types::ParamHead, Ty)>,
+}
+impl ResolvedContext {
+    fn env(&self) -> CandidateEnv {
+        CandidateEnv {
+            values: self.values.iter().cloned().collect(),
+            types: self.types.clone(),
+        }
+    }
+}
 
 fn selected_call_target<'a>(output: &'a TypeCheckOutput, span: &SpanKey) -> Option<&'a CallTarget> {
     output
@@ -79,11 +120,7 @@ fn selected_call_declaration(output: &TypeCheckOutput, span: &SpanKey) -> Option
 }
 
 type Projection = (NominalId, u32);
-type CandidateVisit = (
-    CallableCandidate,
-    Vec<Projection>,
-    Vec<(TypeBindingId, Vec<ResolvedValue>)>,
-);
+type CandidateVisit = (CallableCandidate, Vec<Projection>, ResolvedContext);
 
 fn resolve_candidates(
     output: &TypeCheckOutput,
@@ -149,7 +186,7 @@ fn project_values(
             } => resolve_candidates_at(
                 output,
                 candidates,
-                &captures.iter().cloned().collect(),
+                &captures.env(),
                 projections,
                 nominal_only,
                 depth + 1,
@@ -171,7 +208,7 @@ fn project_values(
                             resolve_candidates_at(
                                 output,
                                 &field.candidates,
-                                &captures.iter().cloned().collect(),
+                                &captures.env(),
                                 rest,
                                 nominal_only,
                                 depth + 1,
@@ -419,6 +456,65 @@ fn callee_env(
     callee: DefId,
     caller_env: &CandidateEnv,
 ) -> CandidateEnv {
+    let mut env = callee_value_env(output, span, callee, caller_env);
+    env.types.clone_from(&caller_env.types);
+    let substitutions: HashMap<_, _> = caller_env.types.iter().cloned().collect();
+    let args: Vec<_> = output
+        .call_type_args
+        .get(span)
+        .into_iter()
+        .flatten()
+        .map(|ty| ty.substitute_type_params_parallel(&substitutions))
+        .collect();
+    bind_type_context(output, &CallableNode::Declaration(callee), &args, &mut env);
+    env
+}
+
+fn bind_type_context(
+    output: &TypeCheckOutput,
+    body: &CallableNode,
+    args: &[Ty],
+    env: &mut CandidateEnv,
+) {
+    for (parameter, argument) in body_parameters(output, body).into_iter().zip(args) {
+        env.types.retain(|(existing, _)| *existing != parameter);
+        env.types.push((parameter, argument.clone()));
+    }
+    env.types.sort_by_key(|(parameter, _)| parameter.id);
+}
+
+fn closure_env(
+    output: &TypeCheckOutput,
+    call: &SpanKey,
+    closure: &SpanKey,
+    captures: &ResolvedContext,
+    caller_env: &CandidateEnv,
+) -> CandidateEnv {
+    let mut env = captures.env();
+    if let Some(formals) = output
+        .callable_formals
+        .get(&CallableNode::Closure(closure.clone()))
+    {
+        for actual in output
+            .generic_trait_call_arguments
+            .get(call)
+            .into_iter()
+            .flatten()
+        {
+            if let Some(formal) = formals.get(actual.slot) {
+                env.insert(*formal, actual_values(&actual.candidates, caller_env));
+            }
+        }
+    }
+    env
+}
+
+fn callee_value_env(
+    output: &TypeCheckOutput,
+    span: &SpanKey,
+    callee: DefId,
+    caller_env: &CandidateEnv,
+) -> CandidateEnv {
     let direct: CandidateEnv = output
         .callable_argument_flows
         .get(span)
@@ -450,13 +546,117 @@ fn callee_env(
         .collect()
 }
 
-fn env_key(env: &CandidateEnv) -> Vec<(TypeBindingId, Vec<ResolvedValue>)> {
+fn confined_callee_env(
+    output: &TypeCheckOutput,
+    span: &SpanKey,
+    callee: DefId,
+    caller_env: &CandidateEnv,
+) -> CandidateEnv {
+    let mut env = callee_env(output, span, callee, caller_env);
+    let actor = if output.defs.kind(callee) == DeclarationKind::Actor {
+        Some(callee)
+    } else {
+        output
+            .defs
+            .owner(callee)
+            .filter(|id| output.defs.kind(*id) == DeclarationKind::Actor)
+    };
+    let Some(actor) = actor else {
+        return env;
+    };
+    for (binding, (owner, index)) in &output.suspension_effects.actor_fields {
+        if owner.declaration() != actor {
+            continue;
+        }
+        let value = if output.defs.kind(callee) == DeclarationKind::Actor {
+            output
+                .aggregate_field_candidates
+                .get(span)
+                .and_then(|fields| {
+                    fields
+                        .iter()
+                        .find(|field| field.owner == *owner && field.index == *index)
+                })
+                .map_or_else(
+                    || vec![ResolvedValue::Unknown],
+                    |field| actual_values(&field.candidates, caller_env),
+                )
+        } else {
+            caller_env
+                .get(binding)
+                .cloned()
+                .unwrap_or_else(|| vec![ResolvedValue::Unknown])
+        };
+        env.insert(*binding, value);
+    }
+    env
+}
+
+fn body_parameters(output: &TypeCheckOutput, body: &CallableNode) -> Vec<hew_types::ParamHead> {
+    match body {
+        CallableNode::Declaration(id) | CallableNode::Generator(id) => output
+            .fn_sigs
+            .get(id)
+            .map(|sig| sig.type_params.clone())
+            .or_else(|| {
+                output
+                    .type_defs
+                    .get(&NominalId::of_declaration(*id))
+                    .map(|definition| definition.type_params.clone())
+            })
+            .unwrap_or_default(),
+        CallableNode::Closure(span) => match output.expr_types.get(span) {
+            Some(Ty::GenericCallable { parameters, .. }) => parameters
+                .iter()
+                .map(|parameter| parameter.parameter)
+                .collect(),
+            _ => Vec::new(),
+        },
+        CallableNode::GeneratorBlock(_) => Vec::new(),
+    }
+}
+
+fn nominal_actuals(
+    output: &TypeCheckOutput,
+    candidates: &IndirectCallCandidates,
+    env: &CandidateEnv,
+) -> Vec<(NominalId, Vec<Ty>)> {
+    let values = resolve_candidates_at(output, candidates, env, &[], true, 0, &mut Vec::new());
+    let mut instances = Vec::new();
+    for value in values {
+        if let ResolvedValue::Aggregate { span, captures } = value {
+            if let Some(instance) = output
+                .expr_types
+                .get(&span)
+                .map(|ty| {
+                    ty.substitute_type_params_parallel(&captures.types.iter().cloned().collect())
+                })
+                .and_then(|ty| ResolvedTy::from_ty(&ty).ok())
+                .and_then(|ty| ty.impl_receiver_instance(&output.defs))
+            {
+                let instance = (
+                    instance.nominal,
+                    instance.args.iter().map(ResolvedTy::to_ty).collect(),
+                );
+                if !instances.contains(&instance) {
+                    instances.push(instance);
+                }
+            }
+        }
+    }
+    instances
+}
+
+fn env_key(env: &CandidateEnv) -> ResolvedContext {
     let mut key = env
         .iter()
         .map(|(formal, values)| (*formal, values.clone()))
         .collect::<Vec<_>>();
     key.sort_by_key(|(formal, _)| formal.0);
-    key
+    ResolvedContext {
+        values: key,
+        types: env.types.clone(),
+    }
 }
 
 #[derive(Clone)]
@@ -576,6 +776,8 @@ fn call_graph(
     program: &Program,
     output: &TypeCheckOutput,
     generating: bool,
+    confined: bool,
+    stdlib_roots: &[PathBuf],
 ) -> HashMap<CallableNode, Vec<CallEdge>> {
     let bodies: Vec<_> = output
         .defs
@@ -587,6 +789,12 @@ fn call_graph(
         })
         .collect();
     let owner_for = |span: &SpanKey| {
+        if let Some(owner) = output.suspension_effects.call_owners.get(span) {
+            return Some(owner.clone());
+        }
+        if confined {
+            return None;
+        }
         if let Some(closure) = output
             .closure_escape_facts
             .keys()
@@ -615,6 +823,17 @@ fn call_graph(
             edges.entry(owner).or_default().push(CallEdge {
                 span: span.clone(),
                 target: target.clone(),
+            });
+        }
+    }
+    for (span, call) in &output.resolved_calls {
+        if selected_call_target(output, span).is_some() {
+            continue;
+        }
+        if let Some(owner) = owner_for(span) {
+            edges.entry(owner).or_default().push(CallEdge {
+                span: span.clone(),
+                target: call.target.clone(),
             });
         }
     }
@@ -723,6 +942,8 @@ fn call_graph(
                 }
             }
         }
+    }
+    if generating || confined {
         // Once spawned, an actor can receive callbacks through messages,
         // lifecycle events or supervision. Admission conservatively checks
         // every callback of that checked actor, including its initializers.
@@ -759,6 +980,90 @@ fn call_graph(
                             target: CallTarget::User(callback),
                         });
                 }
+            }
+        }
+    }
+    if confined {
+        // An annotation also applies to exported or otherwise unconstructed
+        // actors. Concrete construction contexts still arrive through spawn.
+        for actor in &output.suspension_effects.confined {
+            if output.defs.kind(*actor) != DeclarationKind::Actor {
+                continue;
+            }
+            let Some(site) = output.defs.site(*actor) else {
+                continue;
+            };
+            let Some(module) = module_index(program, output, *actor) else {
+                continue;
+            };
+            let calls = edges.entry(CallableNode::Declaration(*actor)).or_default();
+            for (site_kind, callback) in output.defs.declarations() {
+                if output.defs.owner(callback) == Some(*actor)
+                    && matches!(
+                        site_kind.kind(),
+                        DeclarationKind::ActorInit
+                            | DeclarationKind::ActorReceive
+                            | DeclarationKind::ActorMethod
+                    )
+                    && !calls
+                        .iter()
+                        .any(|call| target_declaration(&call.target) == Some(callback))
+                {
+                    calls.push(CallEdge {
+                        span: SpanKey::in_module(&site.span(), module),
+                        target: CallTarget::User(callback),
+                    });
+                }
+            }
+        }
+        for (span, owner) in &output.suspension_effects.unresolved_calls {
+            edges.entry(owner.clone()).or_default().push(CallEdge {
+                span: span.clone(),
+                target: CallTarget::IndirectFunctionValue,
+            });
+        }
+        for (site, id) in output.defs.declarations() {
+            let Some(declaration) = output
+                .extern_contracts
+                .declaration(id)
+                .filter(|declaration| declaration.owns_endpoint)
+            else {
+                continue;
+            };
+            let Some(index) = module_index(program, output, id) else {
+                continue;
+            };
+            let trusted_compiled_stdlib = declaration
+                .declaring_module
+                .as_deref()
+                .is_some_and(|module| module.starts_with("std."))
+                && output
+                    .defs
+                    .module(id)
+                    .and_then(|module| output.defs.module_source(module))
+                    .is_some_and(|source| {
+                        stdlib_roots.iter().any(|root| path_is_below(source, root))
+                    });
+            edges
+                .entry(CallableNode::Declaration(id))
+                .or_default()
+                .push(CallEdge {
+                    span: SpanKey::in_module(&site.span(), index),
+                    target: CallTarget::Extern {
+                        declaration: id,
+                        endpoint: declaration.symbol.clone(),
+                        trusted_compiled_stdlib,
+                    },
+                });
+        }
+        for (span, dispatch) in &output.user_comparison_dispatch {
+            let (hew_types::check::UserComparisonDispatch::Eq { method }
+            | hew_types::check::UserComparisonDispatch::Ordering { method }) = dispatch;
+            if let Some(owner) = owner_for(span) {
+                edges.entry(owner).or_default().push(CallEdge {
+                    span: span.clone(),
+                    target: CallTarget::User(*method),
+                });
             }
         }
     }
@@ -958,11 +1263,7 @@ fn selected_entries(output: &TypeCheckOutput, options: &FrontendOptions) -> Vec<
     }
 }
 
-/// Check each selected root independently using checker-owned call edges.
-#[allow(
-    clippy::too_many_lines,
-    reason = "one breadth-first traversal keeps dispatch candidates and source-site provenance together"
-)]
+/// Apply source boundaries independently of the selected execution profile.
 pub(super) fn check(
     program: &Program,
     output: &TypeCheckOutput,
@@ -970,14 +1271,180 @@ pub(super) fn check(
     root_label: &str,
     options: &FrontendOptions,
 ) -> Vec<FrontendDiagnostic> {
-    let generating = matches!(options.host_admission, HostAdmission::Generate);
-    let roots = selected_entries(output, options);
+    let mut diagnostics = check_profile(program, output, root_source, root_label, options, false);
+    if !output.suspension_effects.confined.is_empty() {
+        diagnostics.extend(check_profile(
+            program,
+            output,
+            root_source,
+            root_label,
+            options,
+            true,
+        ));
+    }
+    diagnostics
+}
+
+fn confined_roots(
+    output: &TypeCheckOutput,
+    graph: &HashMap<CallableNode, Vec<CallEdge>>,
+    stdlib_roots: &[PathBuf],
+) -> Vec<DefId> {
+    let incoming: HashSet<_> = graph
+        .values()
+        .flatten()
+        .filter_map(|call| target_declaration(&call.target))
+        .collect();
+    output
+        .suspension_effects
+        .bodies
+        .keys()
+        .filter_map(|body| {
+            let CallableNode::Declaration(id) = body else {
+                return None;
+            };
+            if !matches!(
+                output.defs.kind(*id),
+                DeclarationKind::Function | DeclarationKind::Actor
+            ) || (incoming.contains(id) && output.defs.name(*id).as_str() != "main")
+                || output
+                    .defs
+                    .module(*id)
+                    .and_then(|module| output.defs.module_source(module))
+                    .is_some_and(|source| {
+                        stdlib_roots.iter().any(|root| path_is_below(source, root))
+                    })
+            {
+                return None;
+            }
+            Some(*id)
+        })
+        .collect()
+}
+
+/// Trusted primitive summaries are owned by the runtime row or stdlib declaration.
+/// A user declaration never adopts those summaries by reusing its linker symbol.
+fn confined_primitive_refusal(
+    output: &TypeCheckOutput,
+    target: &CallTarget,
+) -> Option<&'static str> {
+    use hew_types::runtime_call::{RuntimeAuthority, RuntimeCallFamily};
+    use hew_types::stdlib_authority::ExternRuntimeCapability;
+    let authority = match target {
+        CallTarget::Runtime(family) | CallTarget::DeclaredRuntime { family, .. } => {
+            Some(family.row().authority)
+        }
+        CallTarget::RuntimeCollection(_) | CallTarget::RecordConstructor(_) => {
+            Some(RuntimeAuthority::Value)
+        }
+        CallTarget::Extern {
+            trusted_compiled_stdlib: false,
+            ..
+        } => return Some("an opaque user extern/raw escape"),
+        CallTarget::Extern {
+            declaration,
+            endpoint,
+            ..
+        } => {
+            let module = output
+                .defs
+                .module(*declaration)
+                .map(|module| output.defs.module_path(module));
+            module
+                .and_then(|module| {
+                    hew_types::stdlib_authority::authority()
+                        .extern_runtime_capability(module, output.defs.name(*declaration).as_str())
+                })
+                .map(|capability| match capability {
+                    ExternRuntimeCapability::Ambient | ExternRuntimeCapability::Metrics => {
+                        RuntimeAuthority::Ambient
+                    }
+                    ExternRuntimeCapability::ResourceOperation => RuntimeAuthority::Service,
+                    ExternRuntimeCapability::Value => RuntimeAuthority::Value,
+                })
+                .or_else(|| {
+                    RuntimeCallFamily::from_c_symbol(endpoint).map(|family| family.row().authority)
+                })
+        }
+        CallTarget::Builtin { endpoint } => RuntimeCallFamily::from_catalog_endpoint(endpoint)
+            .or_else(|| RuntimeCallFamily::from_c_symbol(endpoint))
+            .map(|family| family.row().authority)
+            .or_else(|| hew_types::stdlib_catalog_identity::builtin_authority(endpoint)),
+        CallTarget::Unsupported { .. } => return Some("an unsupported operation"),
+        CallTarget::User(_)
+        | CallTarget::ImplMethod(_)
+        | CallTarget::DynamicVtable { .. }
+        | CallTarget::StaticTraitMethod { .. }
+        | CallTarget::IndirectFunctionValue => return None,
+    };
+    match authority {
+        Some(RuntimeAuthority::Ambient) => Some("ambient authority acquisition"),
+        Some(RuntimeAuthority::Value | RuntimeAuthority::Service) => None,
+        None => Some("an extern without a checked authority summary"),
+    }
+}
+
+fn body_site(
+    program: &Program,
+    output: &TypeCheckOutput,
+    root: DefId,
+    source: &str,
+    label: &str,
+    options: &FrontendOptions,
+) -> Option<(SourceSite, String, String)> {
+    let site = output.defs.site(root)?;
+    let (mut site, source, filename) = site_for_call(
+        program,
+        source,
+        label,
+        &options.documents,
+        &SpanKey::in_module(&site.span(), module_index(program, output, root)?),
+    )?;
+    site.spelling = format!("implicit release in {}", output.defs.name(root));
+    Some((site, source, filename))
+}
+
+fn confinement_diagnostic(
+    output: &TypeCheckOutput,
+    root: DefId,
+    site: SourceSite,
+    source: &str,
+    filename: &str,
+    reason: &str,
+) -> FrontendDiagnostic {
+    FrontendDiagnostic::coded_message_at("E_CONFINED_AUTHORITY", format!("confined `{}` reaches `{}`: {reason}; supply a narrow resource or service at construction", output.defs.name(root), site.spelling), site.span, source, filename)
+}
+
+/// Check each selected root independently using checker-owned call edges.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one breadth-first traversal keeps dispatch candidates and source-site provenance together"
+)]
+fn check_profile(
+    program: &Program,
+    output: &TypeCheckOutput,
+    root_source: &str,
+    root_label: &str,
+    options: &FrontendOptions,
+    confined: bool,
+) -> Vec<FrontendDiagnostic> {
+    if !confined && matches!(options.host_admission, HostAdmission::Off) {
+        return Vec::new();
+    }
+    let generating = !confined && matches!(options.host_admission, HostAdmission::Generate);
+    let stdlib_roots = configured_stdlib_roots(options);
+    let graph = call_graph(program, output, generating, confined, &stdlib_roots);
+    let roots = if confined {
+        confined_roots(output, &graph, &stdlib_roots)
+    } else {
+        selected_entries(output, options)
+    };
     let requested = match &options.host_admission {
         HostAdmission::Off => 0,
         HostAdmission::ProcessEntry | HostAdmission::Generate => 1,
         HostAdmission::Tests(entries) => entries.len(),
     };
-    if roots.len() != requested {
+    if !confined && roots.len() != requested {
         return vec![FrontendDiagnostic::coded_message(
             if generating {
                 "E_GENERATE_ENTRY"
@@ -987,11 +1454,9 @@ pub(super) fn check(
             "a selected host-admission entry has no checked declaration identity",
         )];
     }
-    if roots.is_empty() {
+    if roots.is_empty() && !confined {
         return Vec::new();
     }
-    let graph = call_graph(program, output, generating);
-    let stdlib_roots = configured_stdlib_roots(options);
     let mut diagnostics = Vec::new();
     if generating {
         for (site, id) in output.defs.declarations() {
@@ -1025,22 +1490,122 @@ pub(super) fn check(
         }
     }
     let mut reported = HashSet::new();
+    let mut reported_confined = HashSet::new();
     let mut reported_indirect = HashSet::new();
     let mut reported_extern = HashSet::new();
-    for root in roots {
+    let mut value_facts = confined.then(|| {
+        hew_types::TypeFactService::new(output.type_fact_context.clone(), output.type_facts.clone())
+    });
+    let mut pending_roots: VecDeque<_> = roots.into_iter().collect();
+    let mut covered_boundaries = HashSet::new();
+    while let Some(root) = pending_roots.pop_front().or_else(|| {
+        confined
+            .then(|| {
+                output
+                    .suspension_effects
+                    .confined
+                    .iter()
+                    .find(|id| !covered_boundaries.contains(*id))
+                    .copied()
+            })
+            .flatten()
+    }) {
         let mut queue = VecDeque::from([(
             CallableNode::Declaration(root),
             None::<(SourceSite, String, String)>,
             Vec::<Ty>::new(),
             CandidateEnv::new(),
             Vec::<(CallableNode, Vec<Ty>)>::new(),
+            None::<DefId>,
         )]);
         let mut visited = HashSet::new();
-        while let Some((caller, user_site, type_args, mut caller_env, mut ancestors)) =
-            queue.pop_front()
+        while let Some((
+            caller,
+            user_site,
+            type_args,
+            mut caller_env,
+            mut ancestors,
+            mut boundary,
+        )) = queue.pop_front()
         {
+            if confined {
+                if let CallableNode::Declaration(id) | CallableNode::Generator(id) = &caller {
+                    if output.suspension_effects.confined.contains(id) {
+                        covered_boundaries.insert(*id);
+                        if boundary.is_none() {
+                            boundary = Some(*id);
+                        }
+                    }
+                }
+            }
+            if confined {
+                bind_type_context(output, &caller, &type_args, &mut caller_env);
+            }
+            let substitutions: HashMap<_, _> = caller_env.types.iter().cloned().collect();
+            let checking = !confined || boundary.is_some();
+            let diagnostic_root = boundary.unwrap_or(root);
+            if confined
+                && checking
+                && !output.suspension_effects.bodies.contains_key(&caller)
+                && graph.get(&caller).is_none_or(Vec::is_empty)
+            {
+                if let Some((site, source, filename)) = user_site.clone().or_else(|| {
+                    body_site(
+                        program,
+                        output,
+                        diagnostic_root,
+                        root_source,
+                        root_label,
+                        options,
+                    )
+                }) {
+                    diagnostics.push(confinement_diagnostic(
+                        output,
+                        diagnostic_root,
+                        site,
+                        &source,
+                        &filename,
+                        "a callable without a checked body or authority summary",
+                    ));
+                }
+                continue;
+            }
+
+            if confined
+                && checking
+                && ancestors
+                    .iter()
+                    .any(|(ancestor, args)| ancestor == &caller && args != &type_args)
+            {
+                if let Some((site, source, filename)) = user_site.clone().or_else(|| {
+                    body_site(
+                        program,
+                        output,
+                        diagnostic_root,
+                        root_source,
+                        root_label,
+                        options,
+                    )
+                }) {
+                    diagnostics.push(confinement_diagnostic(
+                        output,
+                        diagnostic_root,
+                        site,
+                        &source,
+                        &filename,
+                        "a recursive instance without a finite authority proof",
+                    ));
+                }
+                continue;
+            }
+
             if ancestors.contains(&(caller.clone(), type_args.clone()))
-                && !visited.contains(&(caller.clone(), type_args.clone(), env_key(&caller_env)))
+                && !visited.contains(&(
+                    caller.clone(),
+                    type_args.clone(),
+                    env_key(&caller_env),
+                    boundary,
+                ))
             {
                 // Changed origins on a recursive instance have no finite
                 // receiver-writeback proof. Keep its formals conservative.
@@ -1048,21 +1613,287 @@ pub(super) fn check(
                     *values = vec![ResolvedValue::Unknown];
                 }
             }
-            if !visited.insert((caller.clone(), type_args.clone(), env_key(&caller_env))) {
+            if !visited.insert((
+                caller.clone(),
+                type_args.clone(),
+                env_key(&caller_env),
+                boundary,
+            )) {
                 continue;
             }
             ancestors.push((caller.clone(), type_args.clone()));
             let caller_source = match &caller {
-                CallableNode::Declaration(id) => output
+                CallableNode::Declaration(id) | CallableNode::Generator(id) => output
                     .defs
                     .module(*id)
                     .and_then(|module| output.defs.module_source(module))
                     .map(std::path::Path::to_path_buf),
-                CallableNode::Closure(span) => source_path(program, span.module_idx),
+                CallableNode::Closure(span) | CallableNode::GeneratorBlock(span) => {
+                    source_path(program, span.module_idx)
+                }
             };
             let caller_is_std = caller_source
                 .as_deref()
                 .is_some_and(|path| stdlib_roots.iter().any(|root| path_is_below(path, root)));
+            if let CallableNode::Declaration(id) = &caller {
+                let deferred = CallableNode::Generator(*id);
+                if output.suspension_effects.bodies.contains_key(&deferred) {
+                    queue.push_back((
+                        deferred,
+                        user_site.clone(),
+                        type_args.clone(),
+                        caller_env.clone(),
+                        ancestors.clone(),
+                        boundary,
+                    ));
+                }
+            }
+            for body in output
+                .suspension_effects
+                .constructed_bodies
+                .get(&caller)
+                .into_iter()
+                .flatten()
+            {
+                queue.push_back((
+                    body.clone(),
+                    user_site.clone(),
+                    type_args.clone(),
+                    caller_env.clone(),
+                    ancestors.clone(),
+                    boundary,
+                ));
+            }
+
+            if confined && checking {
+                let facts = value_facts
+                    .as_mut()
+                    .expect("confinement owns its value-fact service");
+                let mut implicit = Vec::new();
+                for (span, ty) in &output.suspension_effects.rendering_operations {
+                    if output.suspension_effects.call_owners.get(span) != Some(&caller) {
+                        continue;
+                    }
+                    let ty = ty
+                        .substitute_type_params_parallel(&substitutions)
+                        .materialize_literal_defaults();
+                    let calls = ResolvedTy::from_ty(&ty)
+                        .ok()
+                        .and_then(|ty| facts.rendering_calls(&ty).ok());
+                    if let Some(calls) = calls {
+                        implicit.extend(calls.into_iter().map(|(method, args)| {
+                            (
+                                span.clone(),
+                                method,
+                                args.iter().map(ResolvedTy::to_ty).collect::<Vec<_>>(),
+                            )
+                        }));
+                    } else if let Some((site, source, filename)) =
+                        site_for_call(program, root_source, root_label, &options.documents, span)
+                    {
+                        diagnostics.push(confinement_diagnostic(
+                            output,
+                            diagnostic_root,
+                            site,
+                            &source,
+                            &filename,
+                            "a Display implementation without a checked authority summary",
+                        ));
+                    }
+                }
+                let mut value_calls = Vec::new();
+                for call in graph.get(&caller).into_iter().flatten() {
+                    let family = match call.target {
+                        CallTarget::Runtime(family)
+                        | CallTarget::DeclaredRuntime { family, .. } => Some(family),
+                        CallTarget::RuntimeCollection(method) => method.runtime_family(),
+                        _ => None,
+                    };
+                    if let Some(family) = family {
+                        value_calls.push((call.span.clone(), family));
+                    }
+                }
+                for (span, (read, write)) in &output.indexed_place_operations {
+                    if output.suspension_effects.call_owners.get(span) == Some(&caller) {
+                        value_calls.extend([(span.clone(), *read), (span.clone(), *write)]);
+                    }
+                }
+                let mut value_demands: Vec<_> = output
+                    .suspension_effects
+                    .value_operations
+                    .iter()
+                    .filter(|(span, _)| {
+                        output.suspension_effects.call_owners.get(*span) == Some(&caller)
+                    })
+                    .map(|(span, (ty, capability))| (span.clone(), ty.clone(), *capability))
+                    .collect();
+                for (span, family) in value_calls {
+                    let capabilities = family.value_callback_capabilities();
+                    if capabilities.is_empty() {
+                        continue;
+                    }
+                    let element = output
+                        .suspension_effects
+                        .receivers
+                        .get(&span)
+                        .and_then(|ty| match ty {
+                            Ty::Named { args, .. } => args.first().cloned(),
+                            _ => None,
+                        });
+                    for capability in capabilities {
+                        value_demands.push((
+                            span.clone(),
+                            element.clone().unwrap_or(Ty::Error),
+                            *capability,
+                        ));
+                    }
+                }
+                for (span, ty, capability) in value_demands {
+                    let ty = ty
+                        .substitute_type_params_parallel(&substitutions)
+                        .materialize_literal_defaults();
+                    let selection = ResolvedTy::from_ty(&ty)
+                        .ok()
+                        .and_then(|ty| facts.capability_plan(&ty, capability).ok())
+                        .flatten();
+                    if let Some(selection) = selection {
+                        for (method, args) in selection.calls() {
+                            implicit.push((
+                                span.clone(),
+                                *method,
+                                args.iter().map(ResolvedTy::to_ty).collect(),
+                            ));
+                        }
+                    } else if let Some((site, source, filename)) =
+                        site_for_call(program, root_source, root_label, &options.documents, &span)
+                    {
+                        diagnostics.push(confinement_diagnostic(
+                            output,
+                            diagnostic_root,
+                            site,
+                            &source,
+                            &filename,
+                            "a value callback without a checked authority summary",
+                        ));
+                    }
+                }
+                for (span, method, args) in implicit {
+                    let site =
+                        site_for_call(program, root_source, root_label, &options.documents, &span)
+                            .or_else(|| user_site.clone());
+                    queue.push_back((
+                        CallableNode::Declaration(method),
+                        site,
+                        args,
+                        callee_env(output, &span, method, &caller_env),
+                        ancestors.clone(),
+                        boundary,
+                    ));
+                }
+            }
+            if confined && checking {
+                let mut releases: VecDeque<_> = output
+                    .suspension_effects
+                    .releases
+                    .iter()
+                    .filter(|effect| effect.owner == caller)
+                    .flat_map(|effect| output.release_targets(effect, &substitutions))
+                    .collect();
+                let mut released_callables = HashSet::new();
+                while let Some(release) = releases.pop_front() {
+                    use hew_types::check::cleanup_effects::CleanupTarget;
+                    match release {
+                        CleanupTarget::Body {
+                            body,
+                            type_args: cleanup_args,
+                        } => {
+                            queue.push_back((
+                                body,
+                                user_site.clone(),
+                                cleanup_args,
+                                caller_env.clone(),
+                                ancestors.clone(),
+                                boundary,
+                            ));
+                        }
+                        CleanupTarget::Callable(candidates) => {
+                            for value in resolve_candidates(output, &candidates, &caller_env) {
+                                match value {
+                                    ResolvedValue::Declaration(_) => {}
+                                    ResolvedValue::Closure { span, captures } => {
+                                        if released_callables
+                                            .insert((span.clone(), captures.clone()))
+                                        {
+                                            if let Some(ty) = output.expr_types.get(&span) {
+                                                releases.extend(output.callable_release_targets(
+                                                    ty,
+                                                    &captures.types.iter().cloned().collect(),
+                                                ));
+                                            } else if let Some((site, source, filename)) =
+                                                user_site.clone().or_else(|| {
+                                                    body_site(
+                                                        program,
+                                                        output,
+                                                        diagnostic_root,
+                                                        root_source,
+                                                        root_label,
+                                                        options,
+                                                    )
+                                                })
+                                            {
+                                                diagnostics.push(confinement_diagnostic(output, diagnostic_root, site, &source, &filename, "cleanup of a callable without checked captures"));
+                                            }
+                                        }
+                                    }
+                                    _ => {
+                                        if let Some((site, source, filename)) =
+                                            user_site.clone().or_else(|| {
+                                                body_site(
+                                                    program,
+                                                    output,
+                                                    diagnostic_root,
+                                                    root_source,
+                                                    root_label,
+                                                    options,
+                                                )
+                                            })
+                                        {
+                                            diagnostics.push(confinement_diagnostic(output, diagnostic_root, site, &source, &filename, "cleanup of a callable with unknown captured authority"));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        CleanupTarget::Unknown(ty) => {
+                            if let Some((site, source, filename)) =
+                                user_site.clone().or_else(|| {
+                                    body_site(
+                                        program,
+                                        output,
+                                        diagnostic_root,
+                                        root_source,
+                                        root_label,
+                                        options,
+                                    )
+                                })
+                            {
+                                diagnostics.push(confinement_diagnostic(
+                                    output,
+                                    diagnostic_root,
+                                    site,
+                                    &source,
+                                    &filename,
+                                    &format!(
+                                        "cleanup of `{}` without a checked authority summary",
+                                        ty.user_facing()
+                                    ),
+                                ));
+                            }
+                        }
+                        CleanupTarget::Suspends => {}
+                    }
+                }
+            }
             for call in graph.get(&caller).into_iter().flatten() {
                 let current = site_for_call(
                     program,
@@ -1076,13 +1907,59 @@ pub(super) fn check(
                 } else {
                     current.or_else(|| user_site.clone())
                 };
-                if matches!(
-                    call.target,
-                    CallTarget::Extern {
-                        trusted_compiled_stdlib: false,
-                        ..
+                if confined {
+                    if let Some(reason) = confined_primitive_refusal(output, &call.target) {
+                        if checking {
+                            if let Some((site, source, filename)) = selected_site.clone() {
+                                if reported_confined.insert((
+                                    diagnostic_root,
+                                    filename.clone(),
+                                    site.span.start,
+                                    reason,
+                                )) {
+                                    diagnostics.push(confinement_diagnostic(
+                                        output,
+                                        diagnostic_root,
+                                        site,
+                                        &source,
+                                        &filename,
+                                        reason,
+                                    ));
+                                }
+                            }
+                        }
+                        continue;
                     }
-                ) {
+                    if matches!(
+                        call.target,
+                        CallTarget::Runtime(_)
+                            | CallTarget::DeclaredRuntime { .. }
+                            | CallTarget::Builtin { .. }
+                            | CallTarget::RuntimeCollection(_)
+                            | CallTarget::RecordConstructor(_)
+                            | CallTarget::Extern { .. }
+                    ) {
+                        // The selected primitive's row owns its effects. Value
+                        // callbacks were queued through TypeFactService above.
+                        continue;
+                    }
+                    // A supplied actor reference grants invocation of that service;
+                    // its private construction authority is not inherited here.
+                    if output.actor_method_dispatch.contains_key(&call.span)
+                        || output.actor_delivery_calls.contains_key(&call.span)
+                    {
+                        continue;
+                    }
+                }
+                if !confined
+                    && matches!(
+                        call.target,
+                        CallTarget::Extern {
+                            trusted_compiled_stdlib: false,
+                            ..
+                        }
+                    )
+                {
                     if let Some((site, source, filename)) = selected_site {
                         if reported_extern.insert((root, filename.clone(), site.span.start)) {
                             diagnostics.push(opaque_extern_diagnostic(
@@ -1095,8 +1972,16 @@ pub(super) fn check(
                             ));
                         }
                     }
-                } else if let Some(operation) =
-                    target_operation(output, &call.target, &stdlib_roots, &options.host_admission)
+                } else if let Some(operation) = (!confined)
+                    .then(|| {
+                        target_operation(
+                            output,
+                            &call.target,
+                            &stdlib_roots,
+                            &options.host_admission,
+                        )
+                    })
+                    .flatten()
                 {
                     if let Some((site, source, filename)) = selected_site {
                         if !reported.insert((
@@ -1149,21 +2034,23 @@ pub(super) fn check(
                         .indirect_call_candidates
                         .get(&call.span)
                         .map(|candidates| resolve_candidates(output, candidates, &caller_env));
-                    if values.as_ref().is_none_or(|values| {
-                        values.iter().any(|value| {
-                            matches!(
-                                value,
-                                ResolvedValue::Unknown
-                                    | ResolvedValue::Aggregate { .. }
-                                    | ResolvedValue::Source { .. }
-                            )
+                    if checking
+                        && values.as_ref().is_none_or(|values| {
+                            values.iter().any(|value| {
+                                matches!(
+                                    value,
+                                    ResolvedValue::Unknown
+                                        | ResolvedValue::Aggregate { .. }
+                                        | ResolvedValue::Source { .. }
+                                )
+                            })
                         })
-                    }) {
+                    {
                         if let Some((site, source, filename)) = selected_site.clone() {
                             if reported_indirect.insert((root, filename.clone(), site.span.start)) {
-                                let name = output.defs.name(root);
+                                let name = output.defs.name(diagnostic_root);
                                 let mut diagnostic = FrontendDiagnostic::coded_message_at(
-                                    if generating { "E_GENERATE_INDIRECT_CALL" } else { "E_DETERMINISTIC_INDIRECT_CALL" },
+                                    if confined { "E_CONFINED_INDIRECT_CALL" } else if generating { "E_GENERATE_INDIRECT_CALL" } else { "E_DETERMINISTIC_INDIRECT_CALL" },
                                     format!(
                                         "`{name}` reaches indirect call `{}` whose callable target is not fully known",
                                         site.spelling
@@ -1175,11 +2062,15 @@ pub(super) fn check(
                                 if let crate::FrontendDiagnosticKind::Message(detail) =
                                     &mut diagnostic.kind
                                 {
-                                    let help = match options.host_admission {
+                                    let help = if confined {
+                                        "supply a callable whose transitive authority is known at the confined boundary".to_string()
+                                    } else {
+                                        match options.host_admission {
                                         HostAdmission::ProcessEntry => "run without `--deterministic` or call a locally known function".to_string(),
                                         HostAdmission::Tests(_) => format!("mark `{name}` `#[real_time]` or call a locally known function"),
                                         HostAdmission::Generate => "call a function whose target is known during generator admission".to_string(),
                                         HostAdmission::Off => unreachable!("admission has no selected roots when off"),
+                                    }
                                     };
                                     detail.help.push(help);
                                 }
@@ -1198,15 +2089,31 @@ pub(super) fn check(
                                         Vec::new(),
                                         next_env,
                                         ancestors.clone(),
+                                        boundary,
                                     ));
                                 }
                                 ResolvedValue::Closure { span, captures } => {
                                     queue.push_back((
                                         CallableNode::Closure(span.clone()),
                                         selected_site.clone(),
-                                        Vec::new(),
-                                        captures.iter().cloned().collect(),
+                                        output
+                                            .call_type_args
+                                            .get(&call.span)
+                                            .into_iter()
+                                            .flatten()
+                                            .map(|ty| {
+                                                ty.substitute_type_params_parallel(&substitutions)
+                                            })
+                                            .collect(),
+                                        closure_env(
+                                            output,
+                                            &call.span,
+                                            span,
+                                            captures,
+                                            &caller_env,
+                                        ),
                                         ancestors.clone(),
+                                        boundary,
                                     ));
                                 }
                                 ResolvedValue::Aggregate { .. }
@@ -1216,31 +2123,60 @@ pub(super) fn check(
                         }
                     }
                 } else if let Some(next) = target_declaration(&call.target) {
-                    let substitutions = match &caller {
-                        CallableNode::Declaration(id) => output.fn_sigs.get(id).map(|sig| {
-                            sig.type_params
-                                .iter()
-                                .copied()
-                                .zip(type_args.iter().cloned())
-                                .collect()
-                        }),
-                        CallableNode::Closure(_) => None,
-                    }
-                    .unwrap_or_default();
-                    let next_args = output
+                    let substitutions = if confined {
+                        substitutions.clone()
+                    } else {
+                        match &caller {
+                            CallableNode::Declaration(id) | CallableNode::Generator(id) => {
+                                output.fn_sigs.get(id).map(|sig| {
+                                    sig.type_params
+                                        .iter()
+                                        .copied()
+                                        .zip(type_args.iter().cloned())
+                                        .collect()
+                                })
+                            }
+                            CallableNode::Closure(_) | CallableNode::GeneratorBlock(_) => None,
+                        }
+                        .unwrap_or_default()
+                    };
+                    let next_args: Vec<_> = output
                         .call_type_args
                         .get(&call.span)
                         .into_iter()
                         .flatten()
                         .map(|ty| ty.substitute_type_params_parallel(&substitutions))
                         .collect();
-                    let next_env = callee_env(output, &call.span, next, &caller_env);
+                    let next_args = if confined && output.defs.kind(next) == DeclarationKind::Actor
+                    {
+                        output
+                            .expr_types
+                            .get(&call.span)
+                            .and_then(Ty::actor_handle_identity)
+                            .map_or(next_args, |(_, args)| {
+                                args.iter()
+                                    .map(|ty| ty.substitute_type_params_parallel(&substitutions))
+                                    .collect()
+                            })
+                    } else if confined
+                        && matches!(&caller, CallableNode::Declaration(id) if output.defs.kind(*id) == DeclarationKind::Actor)
+                    {
+                        type_args.clone()
+                    } else {
+                        next_args
+                    };
+                    let next_env = if confined {
+                        confined_callee_env(output, &call.span, next, &caller_env)
+                    } else {
+                        callee_env(output, &call.span, next, &caller_env)
+                    };
                     queue.push_back((
                         CallableNode::Declaration(next),
                         selected_site,
                         next_args,
                         next_env,
                         ancestors.clone(),
+                        boundary,
                     ));
                 } else if let CallTarget::StaticTraitMethod {
                     declaring_trait,
@@ -1260,29 +2196,51 @@ pub(super) fn check(
                             _ => None,
                         },
                     );
-                    let concrete = receiver_param
-                        .and_then(|param| {
-                            output
-                                .fn_sigs
-                                .get(match &caller {
-                                    CallableNode::Declaration(id) => id,
-                                    CallableNode::Closure(_) => return None,
-                                })?
-                                .type_params
-                                .iter()
-                                .position(|name| name == param)
-                        })
-                        .and_then(|index| type_args.get(index))
-                        .and_then(|ty| ResolvedTy::from_ty(ty).ok())
-                        .and_then(|ty| ty.impl_receiver_instance(&output.defs))
-                        .map(|instance| {
-                            (
-                                instance.nominal,
-                                instance.args.iter().map(ResolvedTy::to_ty).collect(),
-                            )
-                        });
+                    let concrete = if confined {
+                        receiver_param
+                            .and_then(|parameter| substitutions.get(parameter))
+                            .and_then(|ty| ResolvedTy::from_ty(ty).ok())
+                            .and_then(|ty| ty.impl_receiver_instance(&output.defs))
+                            .map(|instance| {
+                                (
+                                    instance.nominal,
+                                    instance.args.iter().map(ResolvedTy::to_ty).collect(),
+                                )
+                            })
+                    } else {
+                        receiver_param
+                            .and_then(|param| {
+                                output
+                                    .fn_sigs
+                                    .get(match &caller {
+                                        CallableNode::Declaration(id)
+                                        | CallableNode::Generator(id) => id,
+                                        CallableNode::Closure(_)
+                                        | CallableNode::GeneratorBlock(_) => return None,
+                                    })?
+                                    .type_params
+                                    .iter()
+                                    .position(|name| name == param)
+                            })
+                            .and_then(|index| type_args.get(index))
+                            .and_then(|ty| ResolvedTy::from_ty(ty).ok())
+                            .and_then(|ty| ty.impl_receiver_instance(&output.defs))
+                            .map(|instance| {
+                                (
+                                    instance.nominal,
+                                    instance.args.iter().map(ResolvedTy::to_ty).collect(),
+                                )
+                            })
+                    };
                     let nominals: Vec<_> = concrete.map_or_else(
                         || {
+                            if confined {
+                                return receiver_actual(output, &call.span)
+                                    .map(|candidates| {
+                                        nominal_actuals(output, candidates, &caller_env)
+                                    })
+                                    .unwrap_or_default();
+                            }
                             output
                                 .type_defs
                                 .keys()
@@ -1291,8 +2249,27 @@ pub(super) fn check(
                         },
                         |concrete| vec![concrete],
                     );
+                    let mut matched = false;
                     for (nominal, next_args) in nominals {
-                        for (name, owner, candidate) in output.dispatch.methods_of(nominal) {
+                        let instance = hew_types::NominalInstance {
+                            nominal,
+                            args: next_args
+                                .iter()
+                                .map(ResolvedTy::from_ty)
+                                .collect::<Result<_, _>>()
+                                .unwrap_or_default(),
+                        };
+                        let methods: Vec<_> = if confined {
+                            output
+                                .dispatch
+                                .candidates(nominal, Some(&instance), method_name)
+                                .into_iter()
+                                .map(|(owner, method)| (method_name, owner, method))
+                                .collect()
+                        } else {
+                            output.dispatch.methods_of(nominal).collect()
+                        };
+                        for (name, owner, candidate) in methods {
                             if name == method_name
                                 && (owner
                                     == hew_types::check::dispatch_table::MethodOwner::Inherent
@@ -1301,6 +2278,7 @@ pub(super) fn check(
                                             *declaring_trait,
                                         ))
                             {
+                                matched = true;
                                 let next_env =
                                     callee_env(output, &call.span, candidate, &caller_env);
                                 queue.push_back((
@@ -1309,8 +2287,14 @@ pub(super) fn check(
                                     next_args.clone(),
                                     next_env,
                                     ancestors.clone(),
+                                    boundary,
                                 ));
                             }
+                        }
+                    }
+                    if checking && confined && !matched {
+                        if let Some((site, source, filename)) = selected_site.clone() {
+                            diagnostics.push(confinement_diagnostic(output, diagnostic_root, site, &source, &filename, "a trait service implementation whose authority is not known in this construction"));
                         }
                     }
                 } else if let CallTarget::DynamicVtable { method, .. } = &call.target {
@@ -1349,6 +2333,11 @@ pub(super) fn check(
                             )
                         })
                         .collect();
+                    if checking && confined && candidates.is_empty() {
+                        if let Some((site, source, filename)) = selected_site.clone() {
+                            diagnostics.push(confinement_diagnostic(output, diagnostic_root, site, &source, &filename, "a dynamic service implementation without a checked authority summary"));
+                        }
+                    }
                     for candidate in candidates {
                         let next_env = callee_env(output, &call.span, candidate, &caller_env);
                         queue.push_back((
@@ -1357,6 +2346,7 @@ pub(super) fn check(
                             Vec::new(),
                             next_env,
                             ancestors.clone(),
+                            boundary,
                         ));
                     }
                 }

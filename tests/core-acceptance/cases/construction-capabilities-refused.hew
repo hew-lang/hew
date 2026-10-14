@@ -1,0 +1,159 @@
+import std.fs;
+
+fn acquire() {
+    let _ = fs.open_read("ungranted.txt");
+}
+
+#[confined]
+fn through_helper() {
+    acquire();
+}
+
+#[confined]
+fn through_callback(callback: fn[suspends]()) {
+    callback();
+}
+
+#[confined]
+actor LateAcquisition {
+    #[on(stop)]
+    fn finish() {
+        acquire();
+    }
+}
+
+#[resource]
+type HiddenCleanup {
+    tag: i64;
+}
+
+impl HiddenCleanup {
+    fn close(consume self) {
+        let _ = self.tag;
+        acquire();
+    }
+}
+
+#[confined]
+fn through_cleanup() {
+    let resource = HiddenCleanup { tag: 1 };
+    let _ = resource.tag;
+}
+
+extern "C" {
+    fn raw_host();
+}
+
+#[confined]
+fn through_extern() {
+    unsafe {
+        raw_host();
+    };
+}
+
+fn main() {
+    through_helper();
+    through_callback(acquire);
+    let late = spawn LateAcquisition;
+    stop(late);
+    stopped(late);
+    through_cleanup();
+    through_extern();
+    let _ = through_display();
+    let _ = through_structural_display();
+    through_structural_hash();
+    let _ = through_structural_eq();
+}
+
+#[confined]
+actor Unconstructed {
+    #[on(stop)]
+    fn finish() {
+        acquire();
+    }
+}
+
+type HashKey {
+    id: i64;
+}
+
+impl Hash for HashKey {
+    fn hash(self) -> i64 {
+        acquire();
+        self.id
+    }
+}
+
+type HashWrapper {
+    key: HashKey;
+}
+
+#[confined]
+fn through_structural_hash() {
+    var values: HashMap<HashWrapper, i64> = HashMap.new();
+    values.insert(HashWrapper { key: HashKey { id: 1 } }, 1);
+}
+
+type EqKey {
+    id: i64;
+}
+
+impl Eq for EqKey {
+    fn eq(self, other: EqKey) -> bool {
+        acquire();
+        self.id == other.id
+    }
+}
+
+type EqWrapper {
+    key: EqKey;
+}
+
+#[confined]
+fn through_structural_eq() -> bool {
+    EqWrapper { key: EqKey { id: 1 } } == EqWrapper { key: EqKey { id: 2 } }
+}
+
+type DisplayKey {
+    id: i64;
+}
+
+impl Display for DisplayKey {
+    fn fmt(self) -> string {
+        acquire();
+        f"{self.id}"
+    }
+}
+
+type DisplayWrapper {
+    key: DisplayKey;
+}
+
+#[confined]
+fn through_display() -> string {
+    f"{DisplayKey { id: 1 }}"
+}
+
+#[confined]
+fn through_structural_display() -> string {
+    f"{DisplayWrapper { key: DisplayKey { id: 1 } }:?}"
+}
+
+#[confined]
+fn through_assert_display() {
+    assert(DisplayWrapper { key: DisplayKey { id: 1 } } == DisplayWrapper { key: DisplayKey { id: 2 } });
+}
+
+#[confined]
+fn through_lambda_actor() {
+    let service = actor || {
+        acquire();
+    };
+    stop(service);
+    stopped(service);
+}
+
+#[confined]
+fn through_to_string() -> string {
+    to_string(DisplayKey { id: 1 })
+}

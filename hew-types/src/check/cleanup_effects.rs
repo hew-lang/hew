@@ -10,20 +10,21 @@ use crate::env::{Binding, BindingOrigin, InitState};
 use crate::{BuiltinType, ParamHead, Ty};
 
 #[derive(Debug, Clone)]
-pub(super) struct CleanupValue {
+pub struct CleanupValue {
     ty: Ty,
     absent: Vec<Vec<String>>,
     /// A borrowed parameter owns only the places it has replaced.
     owned: Option<Vec<Vec<String>>>,
     own_close: bool,
     static_callable: bool,
+    candidates: super::IndirectCallCandidates,
 }
 
 #[derive(Debug, Clone)]
-pub(super) struct CleanupEffect {
-    pub(super) owner: EffectBody,
+pub struct CleanupEffect {
+    pub owner: EffectBody,
     value: CleanupValue,
-    pub(super) witness: String,
+    pub witness: String,
 }
 
 impl Checker {
@@ -58,6 +59,7 @@ impl Checker {
                 .collect(),
             owned,
             own_close,
+            candidates: binding.value_candidates.clone(),
             static_callable: matches!(binding.ty.callable_body(), Ty::Function { .. })
                 && Self::static_callable_candidates(&binding.value_candidates),
         })
@@ -133,6 +135,7 @@ impl Checker {
             owned: None,
             own_close: false,
             static_callable: false,
+            candidates: super::IndirectCallCandidates::unknown(),
         });
     }
 
@@ -167,6 +170,7 @@ impl Checker {
             owned: None,
             own_close: false,
             static_callable,
+            candidates: self.callable_candidates_for_expr(&target.0, &target.1),
         });
     }
 
@@ -182,6 +186,7 @@ impl Checker {
                 absent: Vec::new(),
                 owned: None,
                 own_close: false,
+                candidates: capture.value_candidates.clone(),
                 static_callable: matches!(capture.ty.callable_body(), Ty::Function { .. })
                     && Self::static_callable_candidates(&capture.value_candidates),
             })
@@ -189,6 +194,23 @@ impl Checker {
         self.effect_graph
             .once_releases
             .insert(EffectBody::Closure(key), values);
+    }
+
+    pub(super) fn published_cleanup_effects(&self, graph: &EffectGraph) -> Vec<CleanupEffect> {
+        let mut effects = graph.releases.clone();
+        for (owner, values) in &graph.once_releases {
+            for value in values {
+                effects.push(CleanupEffect {
+                    owner: owner.clone(),
+                    value: value.clone(),
+                    witness: "release of captured values".to_string(),
+                });
+            }
+        }
+        for effect in &mut effects {
+            effect.value.ty = self.subst.resolve(&effect.value.ty);
+        }
+        effects
     }
 
     pub(super) fn cleanup_suspends(
@@ -216,10 +238,6 @@ impl Checker {
         })
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "Keep the structural cleanup walk and its ownership filters together"
-    )]
     fn cleanup_value_suspends(
         &self,
         value: &CleanupValue,
@@ -227,163 +245,286 @@ impl Checker {
         bodies: &HashMap<EffectBody, bool>,
         unknown: bool,
     ) -> bool {
-        let ty = self
-            .subst
-            .resolve(&value.ty)
-            .substitute_type_params_parallel(substitutions);
-        let mut pending = vec![(ty, Vec::<String>::new(), value.own_close)];
-        let mut seen = HashSet::new();
-        let declarations = self.class_declarations();
-        let classes = crate::value_class::ClassContext::new(&declarations);
-        while let Some((ty, path, own_close)) = pending.pop() {
-            if value.absent.iter().any(|absent| path.starts_with(absent)) {
-                continue;
-            }
-            if value.owned.as_ref().is_some_and(|owned| {
-                !owned
-                    .iter()
-                    .any(|owned| path.starts_with(owned) || owned.starts_with(&path))
-            }) {
-                continue;
-            }
-            let whole = value
-                .owned
-                .as_ref()
-                .is_none_or(|owned| owned.iter().any(|owned| path.starts_with(owned)));
-            let remaining_absent: Vec<_> = value
-                .absent
+        let mut value = value.clone();
+        value.ty = self.subst.resolve(&value.ty);
+        cleanup_targets(&value, substitutions, self, unknown)
+            .iter()
+            .any(|target| match target {
+                CleanupTarget::Body { body, .. } => bodies.get(body).copied().unwrap_or(true),
+                CleanupTarget::Callable(_)
+                | CleanupTarget::Unknown(_)
+                | CleanupTarget::Suspends => true,
+            })
+    }
+}
+
+/// Executable releases selected by the same structural walk used for suspension.
+#[derive(Debug, Clone)]
+pub enum CleanupTarget {
+    Body {
+        body: EffectBody,
+        type_args: Vec<Ty>,
+    },
+    Callable(super::IndirectCallCandidates),
+    Unknown(Ty),
+    Suspends,
+}
+
+trait CleanupModel {
+    fn trivial(&self, ty: &Ty) -> bool;
+    fn resource(&self, ty: &Ty) -> bool;
+    fn close(&self, ty: &Ty) -> Option<crate::DefId>;
+    fn definition(&self, id: crate::NominalId) -> Option<&super::TypeDef>;
+}
+
+impl CleanupModel for Checker {
+    fn trivial(&self, ty: &Ty) -> bool {
+        cleanup_is_trivial(ty, &self.class_declarations())
+    }
+    fn resource(&self, ty: &Ty) -> bool {
+        (match ty {
+            Ty::Named { head, .. } => head.nominal(),
+            _ => None,
+        })
+        .is_some_and(|id| self.registry.is_resource(id))
+    }
+    fn close(&self, ty: &Ty) -> Option<crate::DefId> {
+        self.inherent_impl_method_declaration(ty, "close")
+    }
+    fn definition(&self, id: crate::NominalId) -> Option<&super::TypeDef> {
+        self.type_defs.get(&id)
+    }
+}
+
+impl CleanupModel for super::TypeCheckOutput {
+    fn trivial(&self, ty: &Ty) -> bool {
+        cleanup_is_trivial(ty, self.type_fact_context.declarations())
+    }
+    fn resource(&self, ty: &Ty) -> bool {
+        (match ty {
+            Ty::Named { head, .. } => head.nominal(),
+            _ => None,
+        })
+        .and_then(|id| self.type_fact_context.declarations().get(&id))
+        .is_some_and(|decl| decl.marker == crate::DeclarationMarker::Resource)
+    }
+    fn close(&self, ty: &Ty) -> Option<crate::DefId> {
+        let instance = crate::ResolvedTy::from_ty(ty)
+            .ok()?
+            .impl_receiver_instance(&self.defs)?;
+        self.dispatch
+            .candidates(
+                instance.nominal,
+                Some(&instance),
+                hew_parser::ast::Symbol::intern("close"),
+            )
+            .into_iter()
+            .find_map(|(owner, id)| {
+                (owner == super::dispatch_table::MethodOwner::Inherent).then_some(id)
+            })
+    }
+    fn definition(&self, id: crate::NominalId) -> Option<&super::TypeDef> {
+        self.type_defs.get(&id)
+    }
+}
+
+fn cleanup_is_trivial(ty: &Ty, declarations: &impl crate::value_class::ClassDeclarations) -> bool {
+    crate::ResolvedTy::from_ty(ty).ok().is_some_and(|ty| {
+        matches!(
+            crate::value_class::classify_ty(
+                &ty,
+                &crate::value_class::ClassContext::new(declarations)
+            ),
+            Ok((
+                crate::value_class::ValueClass::BitCopy
+                    | crate::value_class::ValueClass::View
+                    | crate::value_class::ValueClass::Linear,
+                _
+            )) | Err(crate::value_class::ClassError::RecursiveInstantiation { .. })
+        )
+    })
+}
+
+impl super::TypeCheckOutput {
+    #[must_use]
+    pub fn release_targets(
+        &self,
+        effect: &CleanupEffect,
+        substitutions: &HashMap<ParamHead, Ty>,
+    ) -> Vec<CleanupTarget> {
+        cleanup_targets(&effect.value, substitutions, self, true)
+    }
+
+    #[must_use]
+    pub fn callable_release_targets(
+        &self,
+        ty: &Ty,
+        substitutions: &HashMap<ParamHead, Ty>,
+    ) -> Vec<CleanupTarget> {
+        cleanup_targets(
+            &CleanupValue {
+                ty: ty.clone(),
+                absent: Vec::new(),
+                owned: None,
+                own_close: false,
+                static_callable: false,
+                candidates: super::IndirectCallCandidates::unknown(),
+            },
+            substitutions,
+            self,
+            true,
+        )
+    }
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "Keep the structural cleanup walk and its ownership filters together"
+)]
+fn cleanup_targets(
+    value: &CleanupValue,
+    substitutions: &HashMap<ParamHead, Ty>,
+    model: &impl CleanupModel,
+    unknown: bool,
+) -> Vec<CleanupTarget> {
+    let ty = value.ty.substitute_type_params_parallel(substitutions);
+    let mut effects = Vec::new();
+    let mut pending = vec![(ty, Vec::<String>::new(), value.own_close)];
+    let mut seen = HashSet::new();
+
+    while let Some((ty, path, own_close)) = pending.pop() {
+        if value.absent.iter().any(|absent| path.starts_with(absent)) {
+            continue;
+        }
+        if value.owned.as_ref().is_some_and(|owned| {
+            !owned
                 .iter()
-                .filter_map(|absent| absent.strip_prefix(path.as_slice()).map(<[String]>::to_vec))
-                .collect();
-            let remaining_owned: Vec<_> = value
-                .owned
-                .iter()
-                .flatten()
-                .filter_map(|owned| owned.strip_prefix(path.as_slice()).map(<[String]>::to_vec))
-                .collect();
-            if !seen.insert((
-                ty.clone(),
-                own_close,
-                whole,
-                remaining_absent,
-                remaining_owned,
-            )) {
-                continue;
-            }
-            if crate::ResolvedTy::from_ty(&ty).ok().is_some_and(|ty| {
-                matches!(
-                    crate::value_class::classify_ty(&ty, &classes),
-                    Ok((
-                        crate::value_class::ValueClass::BitCopy
-                            | crate::value_class::ValueClass::View
-                            | crate::value_class::ValueClass::Linear,
-                        _
-                    )) | Err(crate::value_class::ClassError::RecursiveInstantiation { .. })
-                )
-            }) {
-                continue;
-            }
-            let mut child = |label: String, ty: Ty| {
-                let mut child_path = path.clone();
-                child_path.push(label);
-                pending.push((ty, child_path, false));
-            };
-            match ty.callable_body() {
-                Ty::Closure { captures, .. } => {
-                    for (index, ty) in captures.iter().enumerate() {
-                        child(index.to_string(), ty.clone());
-                    }
+                .any(|owned| path.starts_with(owned) || owned.starts_with(&path))
+        }) {
+            continue;
+        }
+        let whole = value
+            .owned
+            .as_ref()
+            .is_none_or(|owned| owned.iter().any(|owned| path.starts_with(owned)));
+        let remaining_absent: Vec<_> = value
+            .absent
+            .iter()
+            .filter_map(|absent| absent.strip_prefix(path.as_slice()).map(<[String]>::to_vec))
+            .collect();
+        let remaining_owned: Vec<_> = value
+            .owned
+            .iter()
+            .flatten()
+            .filter_map(|owned| owned.strip_prefix(path.as_slice()).map(<[String]>::to_vec))
+            .collect();
+        if !seen.insert((
+            ty.clone(),
+            own_close,
+            whole,
+            remaining_absent,
+            remaining_owned,
+        )) {
+            continue;
+        }
+        if model.trivial(&ty) {
+            continue;
+        }
+        let mut child = |label: String, ty: Ty| {
+            let mut child_path = path.clone();
+            child_path.push(label);
+            pending.push((ty, child_path, false));
+        };
+        match ty.callable_body() {
+            Ty::Closure { captures, .. } => {
+                for (index, ty) in captures.iter().enumerate() {
+                    child(index.to_string(), ty.clone());
                 }
-                Ty::Function { .. } if whole && !value.static_callable => return true,
-                Ty::TraitObject { .. } if whole => return true,
-                Ty::Var(_) if whole && unknown => return true,
-                Ty::Tuple(fields) => {
-                    for (index, ty) in fields.iter().enumerate() {
-                        child(index.to_string(), ty.clone());
-                    }
+            }
+            Ty::Function { .. } if whole && !value.static_callable => {
+                effects.push(CleanupTarget::Callable(value.candidates.clone()));
+            }
+            Ty::TraitObject { .. } if whole => effects.push(CleanupTarget::Unknown(ty.clone())),
+            Ty::Var(_) if whole && unknown => effects.push(CleanupTarget::Unknown(ty.clone())),
+            Ty::Tuple(fields) => {
+                for (index, ty) in fields.iter().enumerate() {
+                    child(index.to_string(), ty.clone());
                 }
-                Ty::Array(element, size) if *size != 0 => child("[]".into(), (**element).clone()),
-                Ty::Named { head, args } => {
-                    if head.is_param() && whole && unknown {
-                        return true;
+            }
+            Ty::Array(element, size) if *size != 0 => child("[]".into(), (**element).clone()),
+            Ty::Named { head, args } => {
+                if head.is_param() && whole && unknown {
+                    effects.push(CleanupTarget::Unknown(ty.clone()));
+                    continue;
+                }
+                if whole && model.resource(&ty) && !own_close {
+                    match model.close(&ty) {
+                        Some(close) => effects.push(CleanupTarget::Body {
+                            body: EffectBody::Declaration(close),
+                            type_args: args.clone(),
+                        }),
+                        None => effects.push(CleanupTarget::Unknown(ty.clone())),
                     }
-                    if whole
-                        && head
-                            .nominal()
-                            .is_some_and(|id| self.registry.is_resource(id))
-                        && !own_close
-                    {
-                        let Some(close) = self.inherent_impl_method_declaration(&ty, "close")
-                        else {
-                            return true;
-                        };
-                        if bodies
-                            .get(&EffectBody::Declaration(close))
-                            .copied()
-                            .unwrap_or(true)
+                    continue;
+                }
+                match head.builtin() {
+                    Some(
+                        BuiltinType::Generator
+                        | BuiltinType::ActorCall
+                        | BuiltinType::Stream
+                        | BuiltinType::Sink,
+                    ) if whole => effects.push(CleanupTarget::Suspends),
+                    Some(
+                        BuiltinType::Vec
+                        | BuiltinType::HashMap
+                        | BuiltinType::HashSet
+                        | BuiltinType::Rc
+                        | BuiltinType::Option
+                        | BuiltinType::Result,
+                    ) => {
+                        for (index, ty) in args.iter().enumerate() {
+                            child(index.to_string(), ty.clone());
+                        }
+                    }
+                    Some(_) => {}
+                    None => {
+                        if let Some(definition) = head.nominal().and_then(|id| model.definition(id))
                         {
-                            return true;
-                        }
-                        continue;
-                    }
-                    match head.builtin() {
-                        Some(
-                            BuiltinType::Generator
-                            | BuiltinType::ActorCall
-                            | BuiltinType::Stream
-                            | BuiltinType::Sink,
-                        ) if whole => return true,
-                        Some(
-                            BuiltinType::Vec
-                            | BuiltinType::HashMap
-                            | BuiltinType::HashSet
-                            | BuiltinType::Rc
-                            | BuiltinType::Option
-                            | BuiltinType::Result,
-                        ) => {
-                            for (index, ty) in args.iter().enumerate() {
-                                child(index.to_string(), ty.clone());
+                            for (label, ty) in &definition.fields {
+                                child(
+                                    label.clone(),
+                                    Checker::instantiate_type_def_member(
+                                        ty,
+                                        &definition.type_params,
+                                        args,
+                                    ),
+                                );
                             }
-                        }
-                        Some(_) => {}
-                        None => {
-                            if let Some(definition) = self.head_type_def(*head) {
-                                for (label, ty) in &definition.fields {
-                                    child(
-                                        label.clone(),
-                                        Self::instantiate_type_def_member(
-                                            ty,
-                                            &definition.type_params,
-                                            args,
-                                        ),
-                                    );
-                                }
-                                for variant in definition.variants.values() {
-                                    match variant {
-                                        VariantDef::Unit => {}
-                                        VariantDef::Tuple(fields) => {
-                                            for (index, ty) in fields.iter().enumerate() {
-                                                child(
-                                                    index.to_string(),
-                                                    Self::instantiate_type_def_member(
-                                                        ty,
-                                                        &definition.type_params,
-                                                        args,
-                                                    ),
-                                                );
-                                            }
+                            for variant in definition.variants.values() {
+                                match variant {
+                                    VariantDef::Unit => {}
+                                    VariantDef::Tuple(fields) => {
+                                        for (index, ty) in fields.iter().enumerate() {
+                                            child(
+                                                index.to_string(),
+                                                Checker::instantiate_type_def_member(
+                                                    ty,
+                                                    &definition.type_params,
+                                                    args,
+                                                ),
+                                            );
                                         }
-                                        VariantDef::Struct(fields) => {
-                                            for (label, ty) in fields {
-                                                child(
-                                                    label.clone(),
-                                                    Self::instantiate_type_def_member(
-                                                        ty,
-                                                        &definition.type_params,
-                                                        args,
-                                                    ),
-                                                );
-                                            }
+                                    }
+                                    VariantDef::Struct(fields) => {
+                                        for (label, ty) in fields {
+                                            child(
+                                                label.clone(),
+                                                Checker::instantiate_type_def_member(
+                                                    ty,
+                                                    &definition.type_params,
+                                                    args,
+                                                ),
+                                            );
                                         }
                                     }
                                 }
@@ -391,9 +532,9 @@ impl Checker {
                         }
                     }
                 }
-                _ => {}
             }
+            _ => {}
         }
-        false
     }
+    effects
 }

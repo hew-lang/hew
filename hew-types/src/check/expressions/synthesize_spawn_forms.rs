@@ -808,6 +808,9 @@ impl Checker {
     ) -> Ty {
         let key = SpanKey::in_module(span, self.current_module_idx);
         let owner = super::effects::EffectBody::Closure(key.clone());
+        if is_fork_body || is_actor_body {
+            self.record_constructed_effect_body(&owner);
+        }
         self.effect_graph.bodies.entry(owner.clone()).or_default();
         let previous = self.effect_graph.current_body.replace(owner);
         let result = self.check_lambda_body(

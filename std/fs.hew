@@ -821,13 +821,21 @@ impl FileReadStream {
 extern "C" {
     // Acquisitions return owned resources synchronously so cancellation cannot
     // discard an unobserved handle in an offload job.
+    #[runtime_capability(ambient)]
     fn hew_file_open_read(path: string) -> ReadFile;
+    #[runtime_capability(ambient)]
     fn hew_file_open_write(path: string) -> WriteFile;
+    #[runtime_capability(resource_operation)]
     fn hew_file_read_is_valid(file: ReadFile) -> bool;
+    #[runtime_capability(resource_operation)]
     fn hew_file_write_is_valid(file: WriteFile) -> bool;
+    #[runtime_capability(resource_operation)]
     fn hew_file_read_remaining(file: ReadFile) -> bytes;
+    #[runtime_capability(resource_operation)]
     fn hew_file_write_handle(file: WriteFile, data: bytes) -> i32;
+    #[runtime_capability(resource_operation)]
     fn hew_file_read_close(consume file: ReadFile);
+    #[runtime_capability(resource_operation)]
     fn hew_file_write_close(consume file: WriteFile);
     #[offload]
     fn hew_file_read(path: string) -> string;

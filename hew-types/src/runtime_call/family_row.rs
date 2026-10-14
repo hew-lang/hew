@@ -29,6 +29,7 @@ impl RuntimeCallFamily {
             // The async IO, file and TCP operation sets and the encoding
             // matrix each carry their row in their own operation enum.
             Self::AsyncIo(op) => RuntimeOpRow {
+                authority: op.authority(),
                 symbol: op.c_symbol(),
                 contract: Some(op.contract()),
                 staging: RuntimeStaging::Declared,
@@ -37,6 +38,7 @@ impl RuntimeCallFamily {
                 physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::FileRead(op) => RuntimeOpRow {
+                authority: op.authority(),
                 symbol: op.c_symbol(),
                 contract: Some(op.contract()),
                 staging: RuntimeStaging::Declared,
@@ -49,6 +51,7 @@ impl RuntimeCallFamily {
                 physical: RuntimePhysicalForm::Direct,
             },
             Self::Tcp(op) => RuntimeOpRow {
+                authority: op.authority(),
                 symbol: op.c_symbol(),
                 contract: Some(op.contract()),
                 staging: RuntimeStaging::Declared,
@@ -57,6 +60,7 @@ impl RuntimeCallFamily {
                 physical: RuntimePhysicalForm::Direct,
             },
             Self::Encoding { format, op } => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: op.c_symbol(format),
                 contract: Some(op.contract(format)),
                 staging: RuntimeStaging::Declared,
@@ -65,6 +69,7 @@ impl RuntimeCallFamily {
                 physical: RuntimePhysicalForm::Direct,
             },
             Self::SupervisorPool(op) => RuntimeOpRow {
+                authority: RuntimeAuthority::Service,
                 symbol: op.symbol(),
                 contract: Some(op.contract()),
                 staging: RuntimeStaging::Declared,
@@ -78,6 +83,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::ActorAsk => RuntimeOpRow {
+                authority: RuntimeAuthority::Service,
                 symbol: "hew_actor_ask",
                 contract: None,
                 staging: RuntimeStaging::Declared,
@@ -86,6 +92,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::ActorAskWithChannel => RuntimeOpRow {
+                authority: RuntimeAuthority::Service,
                 symbol: "hew_actor_ask_with_channel",
                 contract: None,
                 staging: RuntimeStaging::Declared,
@@ -94,6 +101,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::ActorCooperate => RuntimeOpRow {
+                authority: RuntimeAuthority::Service,
                 symbol: "hew_actor_cooperate",
                 contract: None,
                 staging: RuntimeStaging::Declared,
@@ -102,6 +110,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::ActorDemonitor => RuntimeOpRow {
+                authority: RuntimeAuthority::Service,
                 symbol: "hew_actor_demonitor",
                 contract: None,
                 staging: RuntimeStaging::Declared,
@@ -110,6 +119,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::ActorGenSinkComplete => RuntimeOpRow {
+                authority: RuntimeAuthority::Service,
                 symbol: "hew_actor_gen_sink_complete",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
@@ -118,6 +128,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::ActorGenSinkRegister => RuntimeOpRow {
+                authority: RuntimeAuthority::Service,
                 symbol: "hew_actor_gen_sink_register",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
@@ -126,6 +137,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::ActorLink => RuntimeOpRow {
+                authority: RuntimeAuthority::Service,
                 symbol: "hew_actor_link",
                 contract: None,
                 staging: RuntimeStaging::Declared,
@@ -134,6 +146,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::LinkRemote => RuntimeOpRow {
+                authority: RuntimeAuthority::Ambient,
                 symbol: "hew_node_link_remote_location",
                 contract: None,
                 staging: RuntimeStaging::Declared,
@@ -142,6 +155,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::ActorMonitor => RuntimeOpRow {
+                authority: RuntimeAuthority::Service,
                 symbol: "hew_actor_monitor",
                 contract: None,
                 staging: RuntimeStaging::Declared,
@@ -150,6 +164,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::ActorCaller => RuntimeOpRow {
+                authority: RuntimeAuthority::Service,
                 symbol: "hew_call_caller",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[],
@@ -162,6 +177,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::ActorRefusalLog => RuntimeOpRow {
+                authority: RuntimeAuthority::Service,
                 symbol: "hew_call_refusal_log",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -187,6 +203,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::ActorSelf => RuntimeOpRow {
+                authority: RuntimeAuthority::Service,
                 symbol: "hew_actor_self",
                 contract: None,
                 staging: RuntimeStaging::Declared,
@@ -195,6 +212,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::ActorSendById => RuntimeOpRow {
+                authority: RuntimeAuthority::Ambient,
                 symbol: "hew_actor_send_by_id",
                 contract: None,
                 staging: RuntimeStaging::Declared,
@@ -203,6 +221,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::ActorSpawn => RuntimeOpRow {
+                authority: RuntimeAuthority::Service,
                 symbol: "hew_actor_spawn",
                 contract: None,
                 staging: RuntimeStaging::Declared,
@@ -211,6 +230,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::ActorUnlink => RuntimeOpRow {
+                authority: RuntimeAuthority::Service,
                 symbol: "hew_actor_unlink",
                 contract: None,
                 staging: RuntimeStaging::Declared,
@@ -219,6 +239,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::AutoMutexAlloc => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_auto_mutex_alloc",
                 contract: None,
                 staging: RuntimeStaging::Declared,
@@ -227,6 +248,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::AutoMutexFree => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_auto_mutex_free",
                 contract: None,
                 staging: RuntimeStaging::Declared,
@@ -235,6 +257,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::AutoMutexLock => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_auto_mutex_lock",
                 contract: None,
                 staging: RuntimeStaging::Declared,
@@ -243,6 +266,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::AutoMutexUnlock => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_auto_mutex_unlock",
                 contract: None,
                 staging: RuntimeStaging::Declared,
@@ -251,6 +275,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::BytesAppend => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_bytes_append",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -272,6 +297,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::BytesClear => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_bytes_clear",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -287,6 +313,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::BytesConcat => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_bytes_concat_owned",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -311,6 +338,7 @@ impl RuntimeCallFamily {
             Self::BytesEndsWith => declared::BYTESENDSWITH.row,
             Self::BytesStartsWith => declared::BYTESSTARTSWITH.row,
             Self::BytesDecodeUtf8 => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_bytes_decode_utf8",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -326,6 +354,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::BytesDecodeUtf8Lossy => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_bytes_decode_utf8_lossy",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -341,6 +370,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::BytesGet => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_bytes_get",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -362,6 +392,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::BytesIndex => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_bytes_index",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -385,6 +416,7 @@ impl RuntimeCallFamily {
             Self::BytesIsEmpty => declared::BYTESISEMPTY.row,
             Self::BytesLen => declared::BYTESLEN.row,
             Self::BytesPop => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_bytes_pop",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -403,6 +435,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::BytesPush => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_bytes_push",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -424,6 +457,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::BytesSet => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_bytes_set",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -449,6 +483,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::BytesSlice => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_bytes_slice",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -474,6 +509,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::BytesSliceFrom => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_bytes_slice_from",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -495,6 +531,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::BytesNew => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "bytes::new",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[],
@@ -507,6 +544,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::CancelTokenIsRequested => RuntimeOpRow {
+                authority: RuntimeAuthority::Service,
                 symbol: "hew_cancel_token_is_requested",
                 contract: None,
                 staging: RuntimeStaging::Declared,
@@ -515,6 +553,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::CancelTokenRelease => RuntimeOpRow {
+                authority: RuntimeAuthority::Service,
                 symbol: "hew_cancel_token_release",
                 contract: None,
                 staging: RuntimeStaging::Declared,
@@ -523,6 +562,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::CancelTokenRetain => RuntimeOpRow {
+                authority: RuntimeAuthority::Service,
                 symbol: "hew_cancel_token_retain",
                 contract: None,
                 staging: RuntimeStaging::Declared,
@@ -531,6 +571,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::ActorRequestRelease => RuntimeOpRow {
+                authority: RuntimeAuthority::Service,
                 symbol: "hew_msg_envelope_release",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -546,6 +587,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::ActorCallFree => RuntimeOpRow {
+                authority: RuntimeAuthority::Service,
                 symbol: "hew_actor_call_free",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -561,6 +603,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::ActorRequestTake => RuntimeOpRow {
+                authority: RuntimeAuthority::Service,
                 symbol: "hew_actor_ask_wait_take_request",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -584,6 +627,7 @@ impl RuntimeCallFamily {
             Self::DurationNanos => declared::DURATIONNANOS.row,
             Self::DurationSecs => declared::DURATIONSECS.row,
             Self::DynBoxAlloc => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_dyn_box_alloc",
                 contract: None,
                 staging: RuntimeStaging::Declared,
@@ -592,6 +636,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::DynBoxFree => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_dyn_box_free",
                 contract: None,
                 staging: RuntimeStaging::Declared,
@@ -600,6 +645,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::HashMapContainsKeyLayout => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_hashmap_contains_key_layout",
                 contract: None,
                 staging: RuntimeStaging::Declared,
@@ -608,6 +654,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::HashMapClearLayout => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_hashmap_clear_layout",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
@@ -616,6 +663,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::HashMapCloneLayout => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_hashmap_clone_layout",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
@@ -624,6 +672,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::HashMapEntriesLayout => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_hashmap_entries_layout",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
@@ -632,6 +681,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::HashMapFreeLayout => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_hashmap_free_layout",
                 contract: None,
                 staging: RuntimeStaging::Declared,
@@ -640,6 +690,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::HashMapGetLayout => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_hashmap_get_layout",
                 contract: None,
                 staging: RuntimeStaging::Declared,
@@ -648,6 +699,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::HashMapInsertLayout => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_hashmap_insert_layout",
                 contract: None,
                 staging: RuntimeStaging::Declared,
@@ -656,6 +708,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::HashMapKeysLayout => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_hashmap_keys_layout",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
@@ -664,6 +717,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::HashMapLenLayout => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_hashmap_len_layout",
                 contract: None,
                 staging: RuntimeStaging::Declared,
@@ -672,6 +726,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::HashMapNew => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "HashMap::new",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
@@ -680,6 +735,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::HashMapNewWithLayout => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_hashmap_new_with_layout",
                 contract: None,
                 staging: RuntimeStaging::Declared,
@@ -688,6 +744,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::HashMapRemoveLayout => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_hashmap_remove_layout",
                 contract: None,
                 staging: RuntimeStaging::Declared,
@@ -696,6 +753,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::HashMapValuesLayout => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_hashmap_values_layout",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
@@ -704,6 +762,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::HashSetContainsLayout => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_hashset_contains_layout",
                 contract: None,
                 staging: RuntimeStaging::Declared,
@@ -712,6 +771,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::HashSetClearLayout => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_hashset_clear_layout",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
@@ -720,6 +780,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::HashSetCloneLayout => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_hashset_clone_layout",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
@@ -728,6 +789,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::HashSetFreeLayout => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_hashset_free_layout",
                 contract: None,
                 staging: RuntimeStaging::Declared,
@@ -736,6 +798,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::HashSetInsertLayout => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_hashset_insert_layout",
                 contract: None,
                 staging: RuntimeStaging::Declared,
@@ -744,6 +807,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::HashSetIsEmptyLayout => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_hashset_is_empty_layout",
                 contract: None,
                 staging: RuntimeStaging::Declared,
@@ -752,6 +816,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::HashSetLenLayout => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_hashset_len_layout",
                 contract: None,
                 staging: RuntimeStaging::Declared,
@@ -760,6 +825,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::HashSetNew => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "HashSet::new",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
@@ -768,6 +834,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::HashSetNewWithLayout => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_hashset_new_with_layout",
                 contract: None,
                 staging: RuntimeStaging::Declared,
@@ -776,6 +843,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::HashSetRemoveLayout => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_hashset_remove_layout",
                 contract: None,
                 staging: RuntimeStaging::Declared,
@@ -784,6 +852,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::HashSetToVecLayout => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_hashset_to_vec_layout",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
@@ -795,6 +864,7 @@ impl RuntimeCallFamily {
             Self::InstantElapsed => declared::INSTANTELAPSED.row,
             Self::InstantNow => declared::INSTANTNOW.row,
             Self::MathIntrinsic(MathIntrinsic::Sqrt) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "sqrt",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -810,6 +880,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::MathIntrinsic(MathIntrinsic::Exp) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "exp",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -825,6 +896,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::MathIntrinsic(MathIntrinsic::Log) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "log",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -840,6 +912,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::MathIntrinsic(MathIntrinsic::Sin) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "sin",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -855,6 +928,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::MathIntrinsic(MathIntrinsic::Cos) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "cos",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -870,6 +944,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::MathIntrinsic(MathIntrinsic::AbsI64) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "abs",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -885,6 +960,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::MathIntrinsic(MathIntrinsic::MinI64) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "min",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -906,6 +982,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::MathIntrinsic(MathIntrinsic::MaxI64) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "max",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -927,6 +1004,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::MathIntrinsic(MathIntrinsic::AbsF64) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "abs_f",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -942,6 +1020,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::MathIntrinsic(MathIntrinsic::MinF64) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "min_f",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -963,6 +1042,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::MathIntrinsic(MathIntrinsic::MaxF64) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "max_f",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -984,6 +1064,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::MathIntrinsic(MathIntrinsic::Pow) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "pow",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -1005,6 +1086,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::MathIntrinsic(MathIntrinsic::Floor) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "floor",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -1020,6 +1102,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::MathIntrinsic(MathIntrinsic::Ceil) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "ceil",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -1035,6 +1118,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::MathIntrinsic(MathIntrinsic::Round) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "round",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -1050,6 +1134,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::MathIntrinsic(MathIntrinsic::Tan) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "tan",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -1065,6 +1150,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::MathIntrinsic(MathIntrinsic::Asin) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "asin",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -1080,6 +1166,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::MathIntrinsic(MathIntrinsic::Acos) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "acos",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -1095,6 +1182,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::MathIntrinsic(MathIntrinsic::Atan) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "atan",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -1110,6 +1198,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::MathIntrinsic(MathIntrinsic::Atan2) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "atan2",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -1131,6 +1220,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::MathIntrinsic(MathIntrinsic::Sinh) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "sinh",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -1146,6 +1236,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::MathIntrinsic(MathIntrinsic::Cosh) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "cosh",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -1161,6 +1252,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::MathIntrinsic(MathIntrinsic::Tanh) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "tanh",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -1176,6 +1268,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::MathIntrinsic(MathIntrinsic::Exp2) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "exp2",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -1191,6 +1284,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::MathIntrinsic(MathIntrinsic::Log2) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "log2",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -1206,6 +1300,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::MathIntrinsic(MathIntrinsic::Log10) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "log10",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -1221,6 +1316,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::MathIntrinsic(MathIntrinsic::Log1p) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "log1p",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -1236,6 +1332,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::MathIntrinsic(MathIntrinsic::Expm1) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "expm1",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -1251,6 +1348,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::MathIntrinsic(MathIntrinsic::Cbrt) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "cbrt",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -1266,6 +1364,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::MathIntrinsic(MathIntrinsic::Hypot) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hypot",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -1287,6 +1386,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::MathIntrinsic(MathIntrinsic::Fma) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "fma",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -1312,6 +1412,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::MathIntrinsic(MathIntrinsic::Trunc) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "trunc",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -1327,6 +1428,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::MathIntrinsic(MathIntrinsic::Copysign) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "copysign",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -1348,6 +1450,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::MathIntrinsic(MathIntrinsic::Powi) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "powi",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -1369,6 +1472,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::MathIntrinsic(MathIntrinsic::FromBits) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "from_bits",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -1384,6 +1488,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::FloatMethod(FloatMethodOp::ToBits) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "to_bits",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -1399,6 +1504,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::FloatMethod(FloatMethodOp::IsNan) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "is_nan",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -1414,6 +1520,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::FloatMethod(FloatMethodOp::IsFinite) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "is_finite",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -1429,6 +1536,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::FloatMethod(FloatMethodOp::IsInfinite) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "is_infinite",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -1444,6 +1552,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::FloatMethod(FloatMethodOp::IsSignNegative) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "is_sign_negative",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -1459,6 +1568,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntMethod(IntBitOp::CountOnes, IntMethodWidth::I8) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "count_ones.i8",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -1474,6 +1584,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntMethod(IntBitOp::CountOnes, IntMethodWidth::I16) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "count_ones.i16",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -1489,6 +1600,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntMethod(IntBitOp::CountOnes, IntMethodWidth::I32) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "count_ones.i32",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -1504,6 +1616,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntMethod(IntBitOp::CountOnes, IntMethodWidth::I64) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "count_ones.i64",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -1519,6 +1632,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntMethod(IntBitOp::CountOnes, IntMethodWidth::Isize) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "count_ones.isize",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -1534,6 +1648,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntMethod(IntBitOp::CountOnes, IntMethodWidth::U8) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "count_ones.u8",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -1549,6 +1664,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntMethod(IntBitOp::CountOnes, IntMethodWidth::U16) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "count_ones.u16",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -1564,6 +1680,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntMethod(IntBitOp::CountOnes, IntMethodWidth::U32) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "count_ones.u32",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -1579,6 +1696,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntMethod(IntBitOp::CountOnes, IntMethodWidth::U64) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "count_ones.u64",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -1594,6 +1712,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntMethod(IntBitOp::CountOnes, IntMethodWidth::Usize) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "count_ones.usize",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -1609,6 +1728,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntMethod(IntBitOp::CountZeros, IntMethodWidth::I8) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "count_zeros.i8",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -1624,6 +1744,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntMethod(IntBitOp::CountZeros, IntMethodWidth::I16) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "count_zeros.i16",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -1639,6 +1760,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntMethod(IntBitOp::CountZeros, IntMethodWidth::I32) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "count_zeros.i32",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -1654,6 +1776,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntMethod(IntBitOp::CountZeros, IntMethodWidth::I64) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "count_zeros.i64",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -1669,6 +1792,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntMethod(IntBitOp::CountZeros, IntMethodWidth::Isize) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "count_zeros.isize",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -1684,6 +1808,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntMethod(IntBitOp::CountZeros, IntMethodWidth::U8) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "count_zeros.u8",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -1699,6 +1824,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntMethod(IntBitOp::CountZeros, IntMethodWidth::U16) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "count_zeros.u16",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -1714,6 +1840,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntMethod(IntBitOp::CountZeros, IntMethodWidth::U32) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "count_zeros.u32",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -1729,6 +1856,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntMethod(IntBitOp::CountZeros, IntMethodWidth::U64) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "count_zeros.u64",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -1744,6 +1872,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntMethod(IntBitOp::CountZeros, IntMethodWidth::Usize) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "count_zeros.usize",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -1759,6 +1888,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntMethod(IntBitOp::LeadingZeros, IntMethodWidth::I8) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "leading_zeros.i8",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -1774,6 +1904,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntMethod(IntBitOp::LeadingZeros, IntMethodWidth::I16) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "leading_zeros.i16",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -1789,6 +1920,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntMethod(IntBitOp::LeadingZeros, IntMethodWidth::I32) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "leading_zeros.i32",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -1804,6 +1936,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntMethod(IntBitOp::LeadingZeros, IntMethodWidth::I64) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "leading_zeros.i64",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -1819,6 +1952,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntMethod(IntBitOp::LeadingZeros, IntMethodWidth::Isize) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "leading_zeros.isize",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -1834,6 +1968,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntMethod(IntBitOp::LeadingZeros, IntMethodWidth::U8) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "leading_zeros.u8",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -1849,6 +1984,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntMethod(IntBitOp::LeadingZeros, IntMethodWidth::U16) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "leading_zeros.u16",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -1864,6 +2000,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntMethod(IntBitOp::LeadingZeros, IntMethodWidth::U32) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "leading_zeros.u32",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -1879,6 +2016,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntMethod(IntBitOp::LeadingZeros, IntMethodWidth::U64) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "leading_zeros.u64",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -1894,6 +2032,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntMethod(IntBitOp::LeadingZeros, IntMethodWidth::Usize) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "leading_zeros.usize",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -1909,6 +2048,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntMethod(IntBitOp::TrailingZeros, IntMethodWidth::I8) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "trailing_zeros.i8",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -1924,6 +2064,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntMethod(IntBitOp::TrailingZeros, IntMethodWidth::I16) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "trailing_zeros.i16",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -1939,6 +2080,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntMethod(IntBitOp::TrailingZeros, IntMethodWidth::I32) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "trailing_zeros.i32",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -1954,6 +2096,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntMethod(IntBitOp::TrailingZeros, IntMethodWidth::I64) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "trailing_zeros.i64",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -1969,6 +2112,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntMethod(IntBitOp::TrailingZeros, IntMethodWidth::Isize) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "trailing_zeros.isize",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -1984,6 +2128,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntMethod(IntBitOp::TrailingZeros, IntMethodWidth::U8) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "trailing_zeros.u8",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -1999,6 +2144,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntMethod(IntBitOp::TrailingZeros, IntMethodWidth::U16) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "trailing_zeros.u16",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -2014,6 +2160,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntMethod(IntBitOp::TrailingZeros, IntMethodWidth::U32) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "trailing_zeros.u32",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -2029,6 +2176,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntMethod(IntBitOp::TrailingZeros, IntMethodWidth::U64) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "trailing_zeros.u64",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -2044,6 +2192,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntMethod(IntBitOp::TrailingZeros, IntMethodWidth::Usize) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "trailing_zeros.usize",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -2059,6 +2208,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntMethod(IntBitOp::SwapBytes, IntMethodWidth::I8) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "swap_bytes.i8",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -2074,6 +2224,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntMethod(IntBitOp::SwapBytes, IntMethodWidth::I16) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "swap_bytes.i16",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -2089,6 +2240,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntMethod(IntBitOp::SwapBytes, IntMethodWidth::I32) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "swap_bytes.i32",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -2104,6 +2256,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntMethod(IntBitOp::SwapBytes, IntMethodWidth::I64) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "swap_bytes.i64",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -2119,6 +2272,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntMethod(IntBitOp::SwapBytes, IntMethodWidth::Isize) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "swap_bytes.isize",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -2134,6 +2288,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntMethod(IntBitOp::SwapBytes, IntMethodWidth::U8) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "swap_bytes.u8",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -2149,6 +2304,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntMethod(IntBitOp::SwapBytes, IntMethodWidth::U16) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "swap_bytes.u16",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -2164,6 +2320,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntMethod(IntBitOp::SwapBytes, IntMethodWidth::U32) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "swap_bytes.u32",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -2179,6 +2336,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntMethod(IntBitOp::SwapBytes, IntMethodWidth::U64) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "swap_bytes.u64",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -2194,6 +2352,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntMethod(IntBitOp::SwapBytes, IntMethodWidth::Usize) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "swap_bytes.usize",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -2209,6 +2368,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntMethod(IntBitOp::ReverseBits, IntMethodWidth::I8) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "reverse_bits.i8",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -2224,6 +2384,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntMethod(IntBitOp::ReverseBits, IntMethodWidth::I16) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "reverse_bits.i16",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -2239,6 +2400,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntMethod(IntBitOp::ReverseBits, IntMethodWidth::I32) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "reverse_bits.i32",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -2254,6 +2416,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntMethod(IntBitOp::ReverseBits, IntMethodWidth::I64) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "reverse_bits.i64",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -2269,6 +2432,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntMethod(IntBitOp::ReverseBits, IntMethodWidth::Isize) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "reverse_bits.isize",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -2284,6 +2448,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntMethod(IntBitOp::ReverseBits, IntMethodWidth::U8) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "reverse_bits.u8",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -2299,6 +2464,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntMethod(IntBitOp::ReverseBits, IntMethodWidth::U16) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "reverse_bits.u16",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -2314,6 +2480,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntMethod(IntBitOp::ReverseBits, IntMethodWidth::U32) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "reverse_bits.u32",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -2329,6 +2496,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntMethod(IntBitOp::ReverseBits, IntMethodWidth::U64) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "reverse_bits.u64",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -2344,6 +2512,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntMethod(IntBitOp::ReverseBits, IntMethodWidth::Usize) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "reverse_bits.usize",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -2359,6 +2528,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntMethod(IntBitOp::RotateLeft, IntMethodWidth::I8) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "rotate_left.i8",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -2380,6 +2550,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntMethod(IntBitOp::RotateLeft, IntMethodWidth::I16) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "rotate_left.i16",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -2401,6 +2572,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntMethod(IntBitOp::RotateLeft, IntMethodWidth::I32) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "rotate_left.i32",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -2422,6 +2594,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntMethod(IntBitOp::RotateLeft, IntMethodWidth::I64) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "rotate_left.i64",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -2443,6 +2616,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntMethod(IntBitOp::RotateLeft, IntMethodWidth::Isize) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "rotate_left.isize",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -2464,6 +2638,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntMethod(IntBitOp::RotateLeft, IntMethodWidth::U8) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "rotate_left.u8",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -2485,6 +2660,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntMethod(IntBitOp::RotateLeft, IntMethodWidth::U16) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "rotate_left.u16",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -2506,6 +2682,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntMethod(IntBitOp::RotateLeft, IntMethodWidth::U32) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "rotate_left.u32",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -2527,6 +2704,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntMethod(IntBitOp::RotateLeft, IntMethodWidth::U64) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "rotate_left.u64",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -2548,6 +2726,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntMethod(IntBitOp::RotateLeft, IntMethodWidth::Usize) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "rotate_left.usize",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -2569,6 +2748,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntMethod(IntBitOp::RotateRight, IntMethodWidth::I8) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "rotate_right.i8",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -2590,6 +2770,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntMethod(IntBitOp::RotateRight, IntMethodWidth::I16) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "rotate_right.i16",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -2611,6 +2792,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntMethod(IntBitOp::RotateRight, IntMethodWidth::I32) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "rotate_right.i32",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -2632,6 +2814,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntMethod(IntBitOp::RotateRight, IntMethodWidth::I64) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "rotate_right.i64",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -2653,6 +2836,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntMethod(IntBitOp::RotateRight, IntMethodWidth::Isize) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "rotate_right.isize",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -2674,6 +2858,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntMethod(IntBitOp::RotateRight, IntMethodWidth::U8) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "rotate_right.u8",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -2695,6 +2880,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntMethod(IntBitOp::RotateRight, IntMethodWidth::U16) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "rotate_right.u16",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -2716,6 +2902,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntMethod(IntBitOp::RotateRight, IntMethodWidth::U32) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "rotate_right.u32",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -2737,6 +2924,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntMethod(IntBitOp::RotateRight, IntMethodWidth::U64) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "rotate_right.u64",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -2758,6 +2946,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntMethod(IntBitOp::RotateRight, IntMethodWidth::Usize) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "rotate_right.usize",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -2779,6 +2968,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntArith(IntArithKind::WrappingAdd, IntMethodWidth::I8) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "wrapping_add.i8",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -2800,6 +2990,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntArith(IntArithKind::WrappingAdd, IntMethodWidth::I16) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "wrapping_add.i16",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -2821,6 +3012,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntArith(IntArithKind::WrappingAdd, IntMethodWidth::I32) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "wrapping_add.i32",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -2842,6 +3034,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntArith(IntArithKind::WrappingAdd, IntMethodWidth::I64) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "wrapping_add.i64",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -2863,6 +3056,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntArith(IntArithKind::WrappingAdd, IntMethodWidth::Isize) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "wrapping_add.isize",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -2884,6 +3078,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntArith(IntArithKind::WrappingAdd, IntMethodWidth::U8) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "wrapping_add.u8",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -2905,6 +3100,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntArith(IntArithKind::WrappingAdd, IntMethodWidth::U16) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "wrapping_add.u16",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -2926,6 +3122,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntArith(IntArithKind::WrappingAdd, IntMethodWidth::U32) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "wrapping_add.u32",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -2947,6 +3144,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntArith(IntArithKind::WrappingAdd, IntMethodWidth::U64) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "wrapping_add.u64",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -2968,6 +3166,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntArith(IntArithKind::WrappingAdd, IntMethodWidth::Usize) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "wrapping_add.usize",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -2989,6 +3188,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntArith(IntArithKind::WrappingSub, IntMethodWidth::I8) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "wrapping_sub.i8",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -3010,6 +3210,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntArith(IntArithKind::WrappingSub, IntMethodWidth::I16) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "wrapping_sub.i16",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -3031,6 +3232,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntArith(IntArithKind::WrappingSub, IntMethodWidth::I32) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "wrapping_sub.i32",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -3052,6 +3254,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntArith(IntArithKind::WrappingSub, IntMethodWidth::I64) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "wrapping_sub.i64",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -3073,6 +3276,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntArith(IntArithKind::WrappingSub, IntMethodWidth::Isize) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "wrapping_sub.isize",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -3094,6 +3298,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntArith(IntArithKind::WrappingSub, IntMethodWidth::U8) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "wrapping_sub.u8",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -3115,6 +3320,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntArith(IntArithKind::WrappingSub, IntMethodWidth::U16) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "wrapping_sub.u16",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -3136,6 +3342,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntArith(IntArithKind::WrappingSub, IntMethodWidth::U32) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "wrapping_sub.u32",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -3157,6 +3364,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntArith(IntArithKind::WrappingSub, IntMethodWidth::U64) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "wrapping_sub.u64",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -3178,6 +3386,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntArith(IntArithKind::WrappingSub, IntMethodWidth::Usize) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "wrapping_sub.usize",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -3199,6 +3408,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntArith(IntArithKind::WrappingMul, IntMethodWidth::I8) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "wrapping_mul.i8",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -3220,6 +3430,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntArith(IntArithKind::WrappingMul, IntMethodWidth::I16) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "wrapping_mul.i16",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -3241,6 +3452,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntArith(IntArithKind::WrappingMul, IntMethodWidth::I32) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "wrapping_mul.i32",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -3262,6 +3474,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntArith(IntArithKind::WrappingMul, IntMethodWidth::I64) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "wrapping_mul.i64",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -3283,6 +3496,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntArith(IntArithKind::WrappingMul, IntMethodWidth::Isize) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "wrapping_mul.isize",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -3304,6 +3518,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntArith(IntArithKind::WrappingMul, IntMethodWidth::U8) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "wrapping_mul.u8",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -3325,6 +3540,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntArith(IntArithKind::WrappingMul, IntMethodWidth::U16) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "wrapping_mul.u16",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -3346,6 +3562,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntArith(IntArithKind::WrappingMul, IntMethodWidth::U32) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "wrapping_mul.u32",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -3367,6 +3584,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntArith(IntArithKind::WrappingMul, IntMethodWidth::U64) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "wrapping_mul.u64",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -3388,6 +3606,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntArith(IntArithKind::WrappingMul, IntMethodWidth::Usize) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "wrapping_mul.usize",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -3409,6 +3628,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntArith(IntArithKind::SaturatingAdd, IntMethodWidth::I8) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "saturating_add.i8",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -3430,6 +3650,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntArith(IntArithKind::SaturatingAdd, IntMethodWidth::I16) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "saturating_add.i16",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -3451,6 +3672,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntArith(IntArithKind::SaturatingAdd, IntMethodWidth::I32) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "saturating_add.i32",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -3472,6 +3694,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntArith(IntArithKind::SaturatingAdd, IntMethodWidth::I64) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "saturating_add.i64",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -3493,6 +3716,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntArith(IntArithKind::SaturatingAdd, IntMethodWidth::Isize) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "saturating_add.isize",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -3514,6 +3738,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntArith(IntArithKind::SaturatingAdd, IntMethodWidth::U8) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "saturating_add.u8",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -3535,6 +3760,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntArith(IntArithKind::SaturatingAdd, IntMethodWidth::U16) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "saturating_add.u16",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -3556,6 +3782,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntArith(IntArithKind::SaturatingAdd, IntMethodWidth::U32) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "saturating_add.u32",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -3577,6 +3804,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntArith(IntArithKind::SaturatingAdd, IntMethodWidth::U64) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "saturating_add.u64",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -3598,6 +3826,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntArith(IntArithKind::SaturatingAdd, IntMethodWidth::Usize) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "saturating_add.usize",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -3619,6 +3848,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntArith(IntArithKind::SaturatingSub, IntMethodWidth::I8) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "saturating_sub.i8",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -3640,6 +3870,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntArith(IntArithKind::SaturatingSub, IntMethodWidth::I16) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "saturating_sub.i16",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -3661,6 +3892,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntArith(IntArithKind::SaturatingSub, IntMethodWidth::I32) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "saturating_sub.i32",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -3682,6 +3914,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntArith(IntArithKind::SaturatingSub, IntMethodWidth::I64) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "saturating_sub.i64",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -3703,6 +3936,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntArith(IntArithKind::SaturatingSub, IntMethodWidth::Isize) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "saturating_sub.isize",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -3724,6 +3958,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntArith(IntArithKind::SaturatingSub, IntMethodWidth::U8) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "saturating_sub.u8",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -3745,6 +3980,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntArith(IntArithKind::SaturatingSub, IntMethodWidth::U16) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "saturating_sub.u16",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -3766,6 +4002,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntArith(IntArithKind::SaturatingSub, IntMethodWidth::U32) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "saturating_sub.u32",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -3787,6 +4024,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntArith(IntArithKind::SaturatingSub, IntMethodWidth::U64) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "saturating_sub.u64",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -3808,6 +4046,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntArith(IntArithKind::SaturatingSub, IntMethodWidth::Usize) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "saturating_sub.usize",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -3829,6 +4068,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntArith(IntArithKind::SaturatingMul, IntMethodWidth::I8) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "saturating_mul.i8",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -3850,6 +4090,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntArith(IntArithKind::SaturatingMul, IntMethodWidth::I16) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "saturating_mul.i16",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -3871,6 +4112,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntArith(IntArithKind::SaturatingMul, IntMethodWidth::I32) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "saturating_mul.i32",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -3892,6 +4134,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntArith(IntArithKind::SaturatingMul, IntMethodWidth::I64) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "saturating_mul.i64",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -3913,6 +4156,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntArith(IntArithKind::SaturatingMul, IntMethodWidth::Isize) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "saturating_mul.isize",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -3934,6 +4178,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntArith(IntArithKind::SaturatingMul, IntMethodWidth::U8) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "saturating_mul.u8",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -3955,6 +4200,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntArith(IntArithKind::SaturatingMul, IntMethodWidth::U16) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "saturating_mul.u16",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -3976,6 +4222,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntArith(IntArithKind::SaturatingMul, IntMethodWidth::U32) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "saturating_mul.u32",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -3997,6 +4244,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntArith(IntArithKind::SaturatingMul, IntMethodWidth::U64) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "saturating_mul.u64",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -4018,6 +4266,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntArith(IntArithKind::SaturatingMul, IntMethodWidth::Usize) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "saturating_mul.usize",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -4039,6 +4288,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntArith(IntArithKind::CheckedAdd, IntMethodWidth::I8) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "checked_add.i8",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -4060,6 +4310,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntArith(IntArithKind::CheckedAdd, IntMethodWidth::I16) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "checked_add.i16",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -4081,6 +4332,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntArith(IntArithKind::CheckedAdd, IntMethodWidth::I32) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "checked_add.i32",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -4102,6 +4354,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntArith(IntArithKind::CheckedAdd, IntMethodWidth::I64) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "checked_add.i64",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -4123,6 +4376,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntArith(IntArithKind::CheckedAdd, IntMethodWidth::Isize) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "checked_add.isize",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -4144,6 +4398,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntArith(IntArithKind::CheckedAdd, IntMethodWidth::U8) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "checked_add.u8",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -4165,6 +4420,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntArith(IntArithKind::CheckedAdd, IntMethodWidth::U16) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "checked_add.u16",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -4186,6 +4442,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntArith(IntArithKind::CheckedAdd, IntMethodWidth::U32) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "checked_add.u32",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -4207,6 +4464,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntArith(IntArithKind::CheckedAdd, IntMethodWidth::U64) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "checked_add.u64",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -4228,6 +4486,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntArith(IntArithKind::CheckedAdd, IntMethodWidth::Usize) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "checked_add.usize",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -4249,6 +4508,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntArith(IntArithKind::CheckedSub, IntMethodWidth::I8) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "checked_sub.i8",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -4270,6 +4530,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntArith(IntArithKind::CheckedSub, IntMethodWidth::I16) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "checked_sub.i16",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -4291,6 +4552,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntArith(IntArithKind::CheckedSub, IntMethodWidth::I32) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "checked_sub.i32",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -4312,6 +4574,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntArith(IntArithKind::CheckedSub, IntMethodWidth::I64) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "checked_sub.i64",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -4333,6 +4596,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntArith(IntArithKind::CheckedSub, IntMethodWidth::Isize) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "checked_sub.isize",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -4354,6 +4618,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntArith(IntArithKind::CheckedSub, IntMethodWidth::U8) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "checked_sub.u8",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -4375,6 +4640,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntArith(IntArithKind::CheckedSub, IntMethodWidth::U16) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "checked_sub.u16",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -4396,6 +4662,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntArith(IntArithKind::CheckedSub, IntMethodWidth::U32) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "checked_sub.u32",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -4417,6 +4684,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntArith(IntArithKind::CheckedSub, IntMethodWidth::U64) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "checked_sub.u64",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -4438,6 +4706,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntArith(IntArithKind::CheckedSub, IntMethodWidth::Usize) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "checked_sub.usize",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -4459,6 +4728,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntArith(IntArithKind::CheckedMul, IntMethodWidth::I8) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "checked_mul.i8",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -4480,6 +4750,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntArith(IntArithKind::CheckedMul, IntMethodWidth::I16) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "checked_mul.i16",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -4501,6 +4772,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntArith(IntArithKind::CheckedMul, IntMethodWidth::I32) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "checked_mul.i32",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -4522,6 +4794,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntArith(IntArithKind::CheckedMul, IntMethodWidth::I64) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "checked_mul.i64",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -4543,6 +4816,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntArith(IntArithKind::CheckedMul, IntMethodWidth::Isize) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "checked_mul.isize",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -4564,6 +4838,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntArith(IntArithKind::CheckedMul, IntMethodWidth::U8) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "checked_mul.u8",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -4585,6 +4860,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntArith(IntArithKind::CheckedMul, IntMethodWidth::U16) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "checked_mul.u16",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -4606,6 +4882,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntArith(IntArithKind::CheckedMul, IntMethodWidth::U32) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "checked_mul.u32",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -4627,6 +4904,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntArith(IntArithKind::CheckedMul, IntMethodWidth::U64) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "checked_mul.u64",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -4648,6 +4926,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::IntArith(IntArithKind::CheckedMul, IntMethodWidth::Usize) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "checked_mul.usize",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -4669,6 +4948,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::NodeAllowPeer => RuntimeOpRow {
+                authority: RuntimeAuthority::Ambient,
                 symbol: "Node::allow_peer",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
@@ -4677,6 +4957,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::NodeConnect => RuntimeOpRow {
+                authority: RuntimeAuthority::Ambient,
                 symbol: "Node::connect",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -4695,6 +4976,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::NodeIdDisplay => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_node_id_display",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -4710,6 +4992,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::LocationNodeId => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_location_node_id",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -4725,6 +5008,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::LocationSlot => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_location_slot",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -4740,6 +5024,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::LocationIncarnation => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_location_incarnation",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -4755,6 +5040,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::LocationDisplay => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_location_display",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -4770,6 +5056,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::RemotePidLocation => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_remote_pid_location",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -4785,6 +5072,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::RemotePidNodeId => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_remote_pid_node_id",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -4800,6 +5088,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::RemotePidSlot => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_remote_pid_slot",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -4815,6 +5104,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::RemotePidIncarnation => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_remote_pid_incarnation",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -4830,6 +5120,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::RemotePidDisplay => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_remote_pid_display",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -4845,6 +5136,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::NodeId => RuntimeOpRow {
+                authority: RuntimeAuthority::Ambient,
                 symbol: "Node::id",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[],
@@ -4860,6 +5152,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::NodeIdentityKey => RuntimeOpRow {
+                authority: RuntimeAuthority::Ambient,
                 symbol: "Node::identity_key",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[],
@@ -4872,6 +5165,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::NodeLoadKeys => RuntimeOpRow {
+                authority: RuntimeAuthority::Ambient,
                 symbol: "Node::load_keys",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
@@ -4880,6 +5174,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::NodeLookup => RuntimeOpRow {
+                authority: RuntimeAuthority::Ambient,
                 symbol: "Node::lookup",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -4895,6 +5190,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::NodeMonitor => RuntimeOpRow {
+                authority: RuntimeAuthority::Ambient,
                 symbol: "hew_node_monitor_location",
                 contract: None,
                 staging: RuntimeStaging::Declared,
@@ -4903,6 +5199,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::NodeRegister => RuntimeOpRow {
+                authority: RuntimeAuthority::Ambient,
                 symbol: "Node::register",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -4924,6 +5221,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::NodeSetTransport => RuntimeOpRow {
+                authority: RuntimeAuthority::Ambient,
                 symbol: "Node::set_transport",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
@@ -4932,6 +5230,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::NodeShutdown => RuntimeOpRow {
+                authority: RuntimeAuthority::Ambient,
                 symbol: "Node::shutdown",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[],
@@ -4944,6 +5243,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::NodeStart => RuntimeOpRow {
+                authority: RuntimeAuthority::Ambient,
                 symbol: "Node::start",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -4962,6 +5262,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::MetricCounterRegister => RuntimeOpRow {
+                authority: RuntimeAuthority::Ambient,
                 symbol: "hew_metric_counter_register",
                 contract: None,
                 staging: RuntimeStaging::Declared,
@@ -4970,6 +5271,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::MetricCounterInc => RuntimeOpRow {
+                authority: RuntimeAuthority::Service,
                 symbol: "hew_metric_counter_inc",
                 contract: None,
                 staging: RuntimeStaging::Declared,
@@ -4978,6 +5280,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::MetricCounterAdd => RuntimeOpRow {
+                authority: RuntimeAuthority::Service,
                 symbol: "hew_metric_counter_add",
                 contract: None,
                 staging: RuntimeStaging::Declared,
@@ -4986,6 +5289,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::MetricGaugeRegister => RuntimeOpRow {
+                authority: RuntimeAuthority::Ambient,
                 symbol: "hew_metric_gauge_register",
                 contract: None,
                 staging: RuntimeStaging::Declared,
@@ -4994,6 +5298,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::MetricGaugeSet => RuntimeOpRow {
+                authority: RuntimeAuthority::Service,
                 symbol: "hew_metric_gauge_set",
                 contract: None,
                 staging: RuntimeStaging::Declared,
@@ -5002,6 +5307,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::MetricGaugeInc => RuntimeOpRow {
+                authority: RuntimeAuthority::Service,
                 symbol: "hew_metric_gauge_inc",
                 contract: None,
                 staging: RuntimeStaging::Declared,
@@ -5010,6 +5316,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::MetricGaugeDec => RuntimeOpRow {
+                authority: RuntimeAuthority::Service,
                 symbol: "hew_metric_gauge_dec",
                 contract: None,
                 staging: RuntimeStaging::Declared,
@@ -5018,6 +5325,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::MetricGaugeAdd => RuntimeOpRow {
+                authority: RuntimeAuthority::Service,
                 symbol: "hew_metric_gauge_add",
                 contract: None,
                 staging: RuntimeStaging::Declared,
@@ -5026,6 +5334,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::MetricHistogramRegister => RuntimeOpRow {
+                authority: RuntimeAuthority::Ambient,
                 symbol: "hew_metric_histogram_register",
                 contract: None,
                 staging: RuntimeStaging::Declared,
@@ -5034,6 +5343,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::MetricHistogramRegisterSimple => RuntimeOpRow {
+                authority: RuntimeAuthority::Ambient,
                 symbol: "hew_metric_histogram_register_simple",
                 contract: None,
                 staging: RuntimeStaging::Declared,
@@ -5042,6 +5352,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::MetricHistogramRecord => RuntimeOpRow {
+                authority: RuntimeAuthority::Service,
                 symbol: "hew_metric_histogram_record",
                 contract: None,
                 staging: RuntimeStaging::Declared,
@@ -5050,6 +5361,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::MetricVecRegister => RuntimeOpRow {
+                authority: RuntimeAuthority::Ambient,
                 symbol: "hew_metric_vec_register",
                 contract: None,
                 staging: RuntimeStaging::Declared,
@@ -5058,6 +5370,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::MetricVecWith => RuntimeOpRow {
+                authority: RuntimeAuthority::Service,
                 symbol: "hew_metric_vec_with",
                 contract: None,
                 staging: RuntimeStaging::Declared,
@@ -5066,6 +5379,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::ObserveReadU64 => RuntimeOpRow {
+                authority: RuntimeAuthority::Ambient,
                 symbol: "hew_observe_read_u64",
                 contract: None,
                 staging: RuntimeStaging::Declared,
@@ -5074,6 +5388,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::ObserveScrape => RuntimeOpRow {
+                authority: RuntimeAuthority::Ambient,
                 symbol: "hew_observe_scrape",
                 contract: None,
                 staging: RuntimeStaging::Declared,
@@ -5082,6 +5397,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::ObserveSeries => RuntimeOpRow {
+                authority: RuntimeAuthority::Ambient,
                 symbol: "hew_observe_series",
                 contract: None,
                 staging: RuntimeStaging::Declared,
@@ -5090,6 +5406,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::ObserveBarrier => RuntimeOpRow {
+                authority: RuntimeAuthority::Ambient,
                 symbol: "hew_observe_barrier",
                 contract: None,
                 staging: RuntimeStaging::Declared,
@@ -5105,6 +5422,7 @@ impl RuntimeCallFamily {
             // and `Weak.drop` are destroy actions rather than call sites:
             // physical MIR reaches their symbols through `DestroyAction`.
             Self::RcNew => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_rc_new",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[RuntimeArgumentContract {
@@ -5120,6 +5438,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::RcClone => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_rc_clone",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[RuntimeArgumentContract {
@@ -5135,6 +5454,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::RcDowngrade => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_rc_downgrade",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[RuntimeArgumentContract {
@@ -5150,6 +5470,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::RcDrop => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_rc_drop",
                 contract: None,
                 staging: RuntimeStaging::Declared,
@@ -5158,6 +5479,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::RcGet => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_rc_get",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[RuntimeArgumentContract {
@@ -5173,6 +5495,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::RcIsUnique => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_rc_is_unique",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[RuntimeArgumentContract {
@@ -5188,6 +5511,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::TruthI32,
             },
             Self::RcSet => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_rc_set",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -5209,6 +5533,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::RcStrongCount => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_rc_strong_count",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[RuntimeArgumentContract {
@@ -5224,6 +5549,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::RcWeakCount => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_rc_weak_count",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[RuntimeArgumentContract {
@@ -5239,6 +5565,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::WeakCloneRc => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_weak_clone_rc",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[RuntimeArgumentContract {
@@ -5254,6 +5581,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::WeakDropRc => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_weak_drop_rc",
                 contract: None,
                 staging: RuntimeStaging::Declared,
@@ -5262,6 +5590,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::WeakUpgradeRc => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_weak_upgrade_rc",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[RuntimeArgumentContract {
@@ -5280,6 +5609,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::RegexCapture => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_regex_capture",
                 contract: None,
                 staging: RuntimeStaging::Declared,
@@ -5288,6 +5618,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::RegexCompile => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_regex_compile",
                 contract: None,
                 staging: RuntimeStaging::Declared,
@@ -5296,6 +5627,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::RegexFreeCapture => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_regex_free_capture",
                 contract: None,
                 staging: RuntimeStaging::Declared,
@@ -5304,6 +5636,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::RegexHandle => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_regex_handle",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -5319,6 +5652,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::RegexMatch => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_regex_match",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -5340,6 +5674,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::ReplyChannelCancel => RuntimeOpRow {
+                authority: RuntimeAuthority::Service,
                 symbol: "hew_reply_channel_cancel",
                 contract: None,
                 staging: RuntimeStaging::Declared,
@@ -5348,6 +5683,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::ReplyChannelFree => RuntimeOpRow {
+                authority: RuntimeAuthority::Service,
                 symbol: "hew_reply_channel_free",
                 contract: None,
                 staging: RuntimeStaging::Declared,
@@ -5356,6 +5692,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::ReplyChannelNew => RuntimeOpRow {
+                authority: RuntimeAuthority::Service,
                 symbol: "hew_reply_channel_new",
                 contract: None,
                 staging: RuntimeStaging::Declared,
@@ -5364,6 +5701,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::ReplyPayloadFree => RuntimeOpRow {
+                authority: RuntimeAuthority::Service,
                 symbol: "hew_reply_payload_free",
                 contract: None,
                 staging: RuntimeStaging::Declared,
@@ -5372,6 +5710,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::ReplyWait => RuntimeOpRow {
+                authority: RuntimeAuthority::Service,
                 symbol: "hew_reply_wait",
                 contract: None,
                 staging: RuntimeStaging::Declared,
@@ -5380,6 +5719,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::SelectFirst => RuntimeOpRow {
+                authority: RuntimeAuthority::Service,
                 symbol: "hew_select_first",
                 contract: None,
                 staging: RuntimeStaging::Declared,
@@ -5388,6 +5728,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::SinkClone => RuntimeOpRow {
+                authority: RuntimeAuthority::Service,
                 symbol: "hew_sink_clone",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -5403,6 +5744,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::SinkClose => RuntimeOpRow {
+                authority: RuntimeAuthority::Service,
                 symbol: "hew_sink_close",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -5418,6 +5760,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::SinkPeerClosed => RuntimeOpRow {
+                authority: RuntimeAuthority::Service,
                 symbol: "hew_sink_peer_closed",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
@@ -5426,6 +5769,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::StreamClose => RuntimeOpRow {
+                authority: RuntimeAuthority::Service,
                 symbol: "hew_stream_close",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -5441,6 +5785,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::StreamChunks => RuntimeOpRow {
+                authority: RuntimeAuthority::Service,
                 symbol: "hew_stream_chunks",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -5462,6 +5807,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::StreamForward => RuntimeOpRow {
+                authority: RuntimeAuthority::Service,
                 symbol: "hew_stream_pipe",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -5483,6 +5829,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::StreamPairSink => RuntimeOpRow {
+                authority: RuntimeAuthority::Service,
                 symbol: "hew_stream_pair_sink",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -5498,6 +5845,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::StreamPairStream => RuntimeOpRow {
+                authority: RuntimeAuthority::Service,
                 symbol: "hew_stream_pair_stream",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -5513,6 +5861,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::StreamLines => RuntimeOpRow {
+                authority: RuntimeAuthority::Service,
                 symbol: "hew_stream_lines",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -5530,6 +5879,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::StreamTake => RuntimeOpRow {
+                authority: RuntimeAuthority::Service,
                 symbol: "hew_stream_take",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -5551,6 +5901,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::StreamNextLayout => RuntimeOpRow {
+                authority: RuntimeAuthority::Service,
                 symbol: "hew_stream_next_layout",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
@@ -5559,6 +5910,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::StreamSendLayout => RuntimeOpRow {
+                authority: RuntimeAuthority::Service,
                 symbol: "hew_stream_send_layout",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
@@ -5567,6 +5919,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::StreamTryNextLayout => RuntimeOpRow {
+                authority: RuntimeAuthority::Service,
                 symbol: "hew_stream_try_next_layout",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
@@ -5575,6 +5928,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::StreamTrySendLayout => RuntimeOpRow {
+                authority: RuntimeAuthority::Service,
                 symbol: "hew_stream_try_send_layout",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
@@ -5583,6 +5937,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::StringCharAt => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_string_char_at",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -5604,6 +5959,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::StringCharAtUtf8 => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_string_char_at_utf8",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -5625,6 +5981,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::StringCharCount => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_string_char_count",
                 contract: None,
                 staging: RuntimeStaging::Declared,
@@ -5633,6 +5990,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::StringByteLen => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_string_byte_length",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -5648,6 +6006,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::StringConcat => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_string_concat",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -5669,6 +6028,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::StringEquals => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_string_equals",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -5690,6 +6050,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::TruthI32,
             },
             Self::StringCompare => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_string_compare",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -5711,6 +6072,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::StringStartsWith => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_string_starts_with",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -5732,6 +6094,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::TruthBool,
             },
             Self::StringEndsWith => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_string_ends_with",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -5753,6 +6116,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::TruthBool,
             },
             Self::StringContains => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_string_contains",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -5774,6 +6138,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::TruthBool,
             },
             Self::StringIsEmpty => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_string_is_empty",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -5789,6 +6154,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::TruthBool,
             },
             Self::StringIsDigit => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_string_is_digit",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -5804,6 +6170,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::TruthBool,
             },
             Self::StringIsAlpha => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_string_is_alpha",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -5819,6 +6186,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::TruthBool,
             },
             Self::StringIsAlphanumeric => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_string_is_alphanumeric",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -5834,6 +6202,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::TruthBool,
             },
             Self::StructuralFormat => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 // The render dispatches per type, so this names the operation
                 // rather than a linker symbol: physical MIR selects the
                 // operand's recipe tree and codegen emits one borrow-only
@@ -5856,6 +6225,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::StringFind => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_string_find",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -5877,6 +6247,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::StringIndex => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_string_index",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -5898,6 +6269,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::StringLen => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_string_length",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -5913,6 +6285,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::StringRepeat => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_string_repeat",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -5934,6 +6307,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::StringReplace => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_string_replace",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -5959,6 +6333,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::StringClone => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_string_clone",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -5974,6 +6349,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::StringSplit => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_string_split",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -5995,6 +6371,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::StringLines => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_string_lines",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -6010,6 +6387,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::StringChars => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_string_chars",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -6025,6 +6403,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::StringSliceCodepoints => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_string_slice_codepoints",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -6050,6 +6429,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::StringSliceCodepointsFrom => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_string_slice_codepoints_from",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -6071,6 +6451,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::StringSlice => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_string_slice",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -6096,6 +6477,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::StringToLowercase => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_string_to_lowercase",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -6111,6 +6493,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::StringToBytes => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_string_to_bytes",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -6126,6 +6509,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::StringToUppercase => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_string_to_uppercase",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -6141,6 +6525,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::StringTrim => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_string_trim",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -6156,6 +6541,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::U8ToString => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_u8_to_string",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -6171,6 +6557,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::I32ToString => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_int_to_string",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -6186,6 +6573,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::I64ToString => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_i64_to_string",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -6201,6 +6589,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::U32ToString => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_uint_to_string",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -6216,6 +6605,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::U64ToString => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_u64_to_string",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -6231,6 +6621,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::F64ToString => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_float_to_string",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -6246,6 +6637,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::CharToString => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_char_to_string",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -6264,6 +6656,7 @@ impl RuntimeCallFamily {
                 kind: PrintKind::I32,
                 newline: false,
             } => RuntimeOpRow {
+                authority: RuntimeAuthority::Ambient,
                 symbol: "hew_print_value",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -6282,6 +6675,7 @@ impl RuntimeCallFamily {
                 kind: PrintKind::I32,
                 newline: true,
             } => RuntimeOpRow {
+                authority: RuntimeAuthority::Ambient,
                 symbol: "hew_print_value",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -6300,6 +6694,7 @@ impl RuntimeCallFamily {
                 kind: PrintKind::I64,
                 newline: false,
             } => RuntimeOpRow {
+                authority: RuntimeAuthority::Ambient,
                 symbol: "hew_print_value",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -6318,6 +6713,7 @@ impl RuntimeCallFamily {
                 kind: PrintKind::I64,
                 newline: true,
             } => RuntimeOpRow {
+                authority: RuntimeAuthority::Ambient,
                 symbol: "hew_print_value",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -6336,6 +6732,7 @@ impl RuntimeCallFamily {
                 kind: PrintKind::U8,
                 newline: false,
             } => RuntimeOpRow {
+                authority: RuntimeAuthority::Ambient,
                 symbol: "hew_print_value",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -6354,6 +6751,7 @@ impl RuntimeCallFamily {
                 kind: PrintKind::U8,
                 newline: true,
             } => RuntimeOpRow {
+                authority: RuntimeAuthority::Ambient,
                 symbol: "hew_print_value",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -6372,6 +6770,7 @@ impl RuntimeCallFamily {
                 kind: PrintKind::U32,
                 newline: false,
             } => RuntimeOpRow {
+                authority: RuntimeAuthority::Ambient,
                 symbol: "hew_print_value",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -6390,6 +6789,7 @@ impl RuntimeCallFamily {
                 kind: PrintKind::U32,
                 newline: true,
             } => RuntimeOpRow {
+                authority: RuntimeAuthority::Ambient,
                 symbol: "hew_print_value",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -6408,6 +6808,7 @@ impl RuntimeCallFamily {
                 kind: PrintKind::U64,
                 newline: false,
             } => RuntimeOpRow {
+                authority: RuntimeAuthority::Ambient,
                 symbol: "hew_print_value",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -6426,6 +6827,7 @@ impl RuntimeCallFamily {
                 kind: PrintKind::U64,
                 newline: true,
             } => RuntimeOpRow {
+                authority: RuntimeAuthority::Ambient,
                 symbol: "hew_print_value",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -6444,6 +6846,7 @@ impl RuntimeCallFamily {
                 kind: PrintKind::F64,
                 newline: false,
             } => RuntimeOpRow {
+                authority: RuntimeAuthority::Ambient,
                 symbol: "hew_print_value",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -6462,6 +6865,7 @@ impl RuntimeCallFamily {
                 kind: PrintKind::F64,
                 newline: true,
             } => RuntimeOpRow {
+                authority: RuntimeAuthority::Ambient,
                 symbol: "hew_print_value",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -6480,6 +6884,7 @@ impl RuntimeCallFamily {
                 kind: PrintKind::Bool,
                 newline: false,
             } => RuntimeOpRow {
+                authority: RuntimeAuthority::Ambient,
                 symbol: "hew_print_value",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -6498,6 +6903,7 @@ impl RuntimeCallFamily {
                 kind: PrintKind::Bool,
                 newline: true,
             } => RuntimeOpRow {
+                authority: RuntimeAuthority::Ambient,
                 symbol: "hew_print_value",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -6516,6 +6922,7 @@ impl RuntimeCallFamily {
                 kind: PrintKind::Str,
                 newline: false,
             } => RuntimeOpRow {
+                authority: RuntimeAuthority::Ambient,
                 symbol: "hew_print_value",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -6534,6 +6941,7 @@ impl RuntimeCallFamily {
                 kind: PrintKind::Str,
                 newline: true,
             } => RuntimeOpRow {
+                authority: RuntimeAuthority::Ambient,
                 symbol: "hew_print_value",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -6549,6 +6957,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::ProcessExit => RuntimeOpRow {
+                authority: RuntimeAuthority::Ambient,
                 symbol: "hew_exit",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -6564,6 +6973,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::StderrWrite => RuntimeOpRow {
+                authority: RuntimeAuthority::Ambient,
                 symbol: "hew_io_write_err",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -6579,6 +6989,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::BoolToString => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_bool_to_string",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -6594,6 +7005,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::SupervisorDirectId => RuntimeOpRow {
+                authority: RuntimeAuthority::Service,
                 symbol: "hew_supervisor_direct_id",
                 contract: None,
                 staging: RuntimeStaging::Declared,
@@ -6602,6 +7014,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::SupervisorChildGet => RuntimeOpRow {
+                authority: RuntimeAuthority::Service,
                 symbol: "hew_supervisor_child_get",
                 contract: None,
                 staging: RuntimeStaging::Declared,
@@ -6610,6 +7023,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::LocalPidSupervisorChildGet => RuntimeOpRow {
+                authority: RuntimeAuthority::Service,
                 symbol: "hew_local_pid_supervisor_child_get",
                 contract: None,
                 staging: RuntimeStaging::Declared,
@@ -6618,6 +7032,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::SupervisorNestedGet => RuntimeOpRow {
+                authority: RuntimeAuthority::Service,
                 symbol: "hew_supervisor_nested_get",
                 contract: None,
                 staging: RuntimeStaging::Declared,
@@ -6626,6 +7041,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::SupervisorPoolChildGet => RuntimeOpRow {
+                authority: RuntimeAuthority::Service,
                 symbol: "hew_supervisor_pool_child_get",
                 contract: None,
                 staging: RuntimeStaging::Declared,
@@ -6634,6 +7050,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::LocalPidSupervisorPoolChildRefGet => RuntimeOpRow {
+                authority: RuntimeAuthority::Service,
                 symbol: "hew_local_pid_supervisor_pool_child_ref_get",
                 contract: None,
                 staging: RuntimeStaging::Declared,
@@ -6642,6 +7059,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::SupervisorPoolLen => RuntimeOpRow {
+                authority: RuntimeAuthority::Service,
                 symbol: "hew_supervisor_pool_len",
                 contract: None,
                 staging: RuntimeStaging::Declared,
@@ -6650,6 +7068,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::SupervisorStop => RuntimeOpRow {
+                authority: RuntimeAuthority::Service,
                 symbol: "hew_supervisor_stop",
                 contract: None,
                 staging: RuntimeStaging::Declared,
@@ -6660,6 +7079,7 @@ impl RuntimeCallFamily {
             Self::TlsAttachLocal => declared::TLSATTACHLOCAL.row,
             Self::WebSocketAttachLocal => declared::WEBSOCKETATTACHLOCAL.row,
             Self::TaskFree => RuntimeOpRow {
+                authority: RuntimeAuthority::Service,
                 symbol: "hew_task_free",
                 contract: None,
                 staging: RuntimeStaging::Declared,
@@ -6668,6 +7088,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::GeneratorFree => RuntimeOpRow {
+                authority: RuntimeAuthority::Service,
                 symbol: "hew_checked_generator_free",
                 contract: None,
                 staging: RuntimeStaging::Declared,
@@ -6676,6 +7097,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::Vector(VecValueOp::New) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "vec.value.new",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[],
@@ -6688,6 +7110,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::Vector(VecValueOp::Len) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "vec.value.len",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -6703,6 +7126,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::Vector(VecValueOp::Contains) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "vec.value.contains",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -6724,6 +7148,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::Vector(VecValueOp::Index) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "vec.value.index",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -6745,6 +7170,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::Vector(VecValueOp::Get) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "vec.value.get",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -6769,6 +7195,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::Vector(VecValueOp::Push) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "vec.value.push",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -6790,6 +7217,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::Vector(VecValueOp::Set) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "vec.value.set",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -6815,6 +7243,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::Vector(VecValueOp::Pop) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "vec.value.pop",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -6833,6 +7262,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::Vector(VecValueOp::Remove) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "vec.value.remove",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -6857,6 +7287,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::Vector(VecValueOp::TakeAll) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "vec.value.take_all",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -6875,6 +7306,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::Vector(VecValueOp::Clear) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "vec.value.clear",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -6890,6 +7322,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::Vector(VecValueOp::IndexBorrow) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "vec.value.index_borrow",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -6911,6 +7344,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::Vector(VecValueOp::GetBorrow) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "vec.value.get_borrow",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -6932,6 +7366,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::Vector(VecValueOp::TakeFirst) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "vec.value.take_first",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -6950,6 +7385,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::Vector(VecValueOp::Slice) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "vec.value.slice",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -6975,6 +7411,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::Vector(VecValueOp::SliceFrom) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "vec.value.slice_from",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -6996,6 +7433,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::Vector(VecValueOp::Append) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "vec.value.append",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -7017,6 +7455,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::Vector(VecValueOp::Join) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "vec.value.join",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -7038,6 +7477,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::Array(ArrayValueOp::Len) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "array.value.len",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -7053,6 +7493,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::Array(ArrayValueOp::Index) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "array.value.index",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -7074,6 +7515,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::Array(ArrayValueOp::IndexBorrow) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "array.value.index_borrow",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -7095,6 +7537,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::Array(ArrayValueOp::Set) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "array.value.set",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -7120,6 +7563,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::Map(MapValueOp::New) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "map.value.new",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[],
@@ -7132,6 +7576,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::Map(MapValueOp::Len) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "map.value.len",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -7147,6 +7592,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::Map(MapValueOp::Index) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "map.value.index",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -7171,6 +7617,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::Map(MapValueOp::Get) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "map.value.get",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -7195,6 +7642,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::Map(MapValueOp::GetBorrow) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "map.value.get_borrow",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -7216,6 +7664,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::Map(MapValueOp::ContainsKey) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "map.value.contains_key",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -7237,6 +7686,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::Map(MapValueOp::Insert) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "map.value.insert",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -7262,6 +7712,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::Map(MapValueOp::Remove) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "map.value.remove",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -7286,6 +7737,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::Map(MapValueOp::Clear) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "map.value.clear",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -7301,6 +7753,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::Map(MapValueOp::Keys) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "map.value.keys",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -7319,6 +7772,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::Map(MapValueOp::Values) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "map.value.values",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -7337,6 +7791,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::Map(MapValueOp::Entries) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "map.value.entries",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -7355,6 +7810,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::Set(SetValueOp::New) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "set.value.new",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[],
@@ -7367,6 +7823,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::Set(SetValueOp::Len) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "set.value.len",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -7382,6 +7839,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::Set(SetValueOp::Contains) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "set.value.contains",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -7403,6 +7861,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::Set(SetValueOp::Insert) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "set.value.insert",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -7427,6 +7886,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::Set(SetValueOp::Remove) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "set.value.remove",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
@@ -7451,6 +7911,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::Set(SetValueOp::Clear) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "set.value.clear",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -7466,6 +7927,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::Set(SetValueOp::Elements) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "set.value.elements",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
@@ -7484,6 +7946,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::VecAppend => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_vec_append",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
@@ -7492,6 +7955,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::VecClear => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_vec_clear",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
@@ -7500,6 +7964,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::VecClone => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_vec_clone",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
@@ -7508,6 +7973,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::VecCloneLayout => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_vec_clone_layout",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
@@ -7516,6 +7982,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::VecCloneOwned => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_vec_clone_owned",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
@@ -7524,6 +7991,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::VecContainsLayout => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_vec_contains_thunk",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
@@ -7532,6 +8000,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::VecTakeAll => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_vec_take_all",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
@@ -7540,6 +8009,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::VecContainsOwned => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_vec_contains_owned",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
@@ -7548,6 +8018,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::VecContainsScalar(VecContainsScalarElem::F64) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_vec_contains_f64",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
@@ -7556,6 +8027,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::VecContainsScalar(VecContainsScalarElem::I32) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_vec_contains_i32",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
@@ -7564,6 +8036,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::VecContainsScalar(VecContainsScalarElem::I64) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_vec_contains_i64",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
@@ -7572,6 +8045,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::VecContainsScalar(VecContainsScalarElem::Str) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_vec_contains_str",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
@@ -7580,6 +8054,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::VecGet(VecGetElem::Bool) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_vec_get_bool",
                 contract: None,
                 staging: RuntimeStaging::Declared,
@@ -7588,6 +8063,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::VecGet(VecGetElem::F32) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_vec_get_f32",
                 contract: None,
                 staging: RuntimeStaging::Declared,
@@ -7596,6 +8072,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::VecGet(VecGetElem::F64) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_vec_get_f64",
                 contract: None,
                 staging: RuntimeStaging::Declared,
@@ -7604,6 +8081,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::VecGet(VecGetElem::I8) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_vec_get_i8",
                 contract: None,
                 staging: RuntimeStaging::Declared,
@@ -7612,6 +8090,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::VecGet(VecGetElem::I16) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_vec_get_i16",
                 contract: None,
                 staging: RuntimeStaging::Declared,
@@ -7620,6 +8099,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::VecGet(VecGetElem::I32) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_vec_get_i32",
                 contract: None,
                 staging: RuntimeStaging::Declared,
@@ -7628,6 +8108,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::VecGet(VecGetElem::I64) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_vec_get_i64",
                 contract: None,
                 staging: RuntimeStaging::Declared,
@@ -7636,6 +8117,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::VecGet(VecGetElem::Clone) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_vec_get_clone",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
@@ -7644,6 +8126,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::VecGet(VecGetElem::Take) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_vec_take_owned",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
@@ -7652,6 +8135,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::VecGet(VecGetElem::Layout) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_vec_get_layout",
                 contract: None,
                 staging: RuntimeStaging::Declared,
@@ -7660,6 +8144,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::VecGet(VecGetElem::Owned) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_vec_get_owned",
                 contract: None,
                 staging: RuntimeStaging::Declared,
@@ -7668,6 +8153,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::VecGet(VecGetElem::Ptr) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_vec_get_ptr",
                 contract: None,
                 staging: RuntimeStaging::Declared,
@@ -7676,6 +8162,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::VecGet(VecGetElem::Str) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_vec_get_str",
                 contract: None,
                 staging: RuntimeStaging::Declared,
@@ -7684,6 +8171,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::VecGet(VecGetElem::U8) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_vec_get_u8",
                 contract: None,
                 staging: RuntimeStaging::Declared,
@@ -7692,6 +8180,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::VecGet(VecGetElem::U16) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_vec_get_u16",
                 contract: None,
                 staging: RuntimeStaging::Declared,
@@ -7700,6 +8189,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::VecIsEmpty => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_vec_is_empty",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
@@ -7708,6 +8198,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::VecJoinStr => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_vec_join_str",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
@@ -7716,6 +8207,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::VecLen => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_vec_len",
                 contract: None,
                 staging: RuntimeStaging::Declared,
@@ -7724,6 +8216,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::VecNew => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "Vec::new",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
@@ -7732,6 +8225,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::VecPopBool => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_vec_pop_bool",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
@@ -7740,6 +8234,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::VecPopLayout => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_vec_pop_layout",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
@@ -7748,6 +8243,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::VecPopOwned => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_vec_pop_owned",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
@@ -7756,6 +8252,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::VecPushBool => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_vec_push_bool",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
@@ -7764,6 +8261,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::VecPushLayout => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_vec_push_layout",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
@@ -7772,6 +8270,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::VecPushOwned => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_vec_push_owned",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
@@ -7780,6 +8279,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::VecPushOwnedMove => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_vec_push_owned_move",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
@@ -7791,6 +8291,7 @@ impl RuntimeCallFamily {
                 op: VecScalarOp::Push,
                 elem: VecScalarElem::F32,
             } => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_vec_push_f32",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
@@ -7802,6 +8303,7 @@ impl RuntimeCallFamily {
                 op: VecScalarOp::Push,
                 elem: VecScalarElem::F64,
             } => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_vec_push_f64",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
@@ -7813,6 +8315,7 @@ impl RuntimeCallFamily {
                 op: VecScalarOp::Push,
                 elem: VecScalarElem::I8,
             } => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_vec_push_i8",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
@@ -7824,6 +8327,7 @@ impl RuntimeCallFamily {
                 op: VecScalarOp::Push,
                 elem: VecScalarElem::I16,
             } => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_vec_push_i16",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
@@ -7835,6 +8339,7 @@ impl RuntimeCallFamily {
                 op: VecScalarOp::Push,
                 elem: VecScalarElem::I32,
             } => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_vec_push_i32",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
@@ -7846,6 +8351,7 @@ impl RuntimeCallFamily {
                 op: VecScalarOp::Push,
                 elem: VecScalarElem::I64,
             } => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_vec_push_i64",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
@@ -7857,6 +8363,7 @@ impl RuntimeCallFamily {
                 op: VecScalarOp::Push,
                 elem: VecScalarElem::Ptr,
             } => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_vec_push_ptr",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
@@ -7868,6 +8375,7 @@ impl RuntimeCallFamily {
                 op: VecScalarOp::Push,
                 elem: VecScalarElem::Str,
             } => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_vec_push_str",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
@@ -7879,6 +8387,7 @@ impl RuntimeCallFamily {
                 op: VecScalarOp::Push,
                 elem: VecScalarElem::U8,
             } => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_vec_push_u8",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
@@ -7890,6 +8399,7 @@ impl RuntimeCallFamily {
                 op: VecScalarOp::Push,
                 elem: VecScalarElem::U16,
             } => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_vec_push_u16",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
@@ -7901,6 +8411,7 @@ impl RuntimeCallFamily {
                 op: VecScalarOp::Pop,
                 elem: VecScalarElem::F32,
             } => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_vec_pop_f32",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
@@ -7912,6 +8423,7 @@ impl RuntimeCallFamily {
                 op: VecScalarOp::Pop,
                 elem: VecScalarElem::F64,
             } => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_vec_pop_f64",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
@@ -7923,6 +8435,7 @@ impl RuntimeCallFamily {
                 op: VecScalarOp::Pop,
                 elem: VecScalarElem::I8,
             } => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_vec_pop_i8",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
@@ -7934,6 +8447,7 @@ impl RuntimeCallFamily {
                 op: VecScalarOp::Pop,
                 elem: VecScalarElem::I16,
             } => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_vec_pop_i16",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
@@ -7945,6 +8459,7 @@ impl RuntimeCallFamily {
                 op: VecScalarOp::Pop,
                 elem: VecScalarElem::I32,
             } => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_vec_pop_i32",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
@@ -7956,6 +8471,7 @@ impl RuntimeCallFamily {
                 op: VecScalarOp::Pop,
                 elem: VecScalarElem::I64,
             } => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_vec_pop_i64",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
@@ -7967,6 +8483,7 @@ impl RuntimeCallFamily {
                 op: VecScalarOp::Pop,
                 elem: VecScalarElem::Ptr,
             } => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_vec_pop_ptr",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
@@ -7978,6 +8495,7 @@ impl RuntimeCallFamily {
                 op: VecScalarOp::Pop,
                 elem: VecScalarElem::Str,
             } => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_vec_pop_str",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
@@ -7989,6 +8507,7 @@ impl RuntimeCallFamily {
                 op: VecScalarOp::Pop,
                 elem: VecScalarElem::U8,
             } => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_vec_pop_u8",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
@@ -8000,6 +8519,7 @@ impl RuntimeCallFamily {
                 op: VecScalarOp::Pop,
                 elem: VecScalarElem::U16,
             } => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_vec_pop_u16",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
@@ -8011,6 +8531,7 @@ impl RuntimeCallFamily {
                 op: VecScalarOp::Set,
                 elem: VecScalarElem::F32,
             } => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_vec_set_f32",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
@@ -8022,6 +8543,7 @@ impl RuntimeCallFamily {
                 op: VecScalarOp::Set,
                 elem: VecScalarElem::F64,
             } => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_vec_set_f64",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
@@ -8033,6 +8555,7 @@ impl RuntimeCallFamily {
                 op: VecScalarOp::Set,
                 elem: VecScalarElem::I8,
             } => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_vec_set_i8",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
@@ -8044,6 +8567,7 @@ impl RuntimeCallFamily {
                 op: VecScalarOp::Set,
                 elem: VecScalarElem::I16,
             } => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_vec_set_i16",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
@@ -8055,6 +8579,7 @@ impl RuntimeCallFamily {
                 op: VecScalarOp::Set,
                 elem: VecScalarElem::I32,
             } => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_vec_set_i32",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
@@ -8066,6 +8591,7 @@ impl RuntimeCallFamily {
                 op: VecScalarOp::Set,
                 elem: VecScalarElem::I64,
             } => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_vec_set_i64",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
@@ -8077,6 +8603,7 @@ impl RuntimeCallFamily {
                 op: VecScalarOp::Set,
                 elem: VecScalarElem::Ptr,
             } => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_vec_set_ptr",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
@@ -8088,6 +8615,7 @@ impl RuntimeCallFamily {
                 op: VecScalarOp::Set,
                 elem: VecScalarElem::Str,
             } => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_vec_set_str",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
@@ -8099,6 +8627,7 @@ impl RuntimeCallFamily {
                 op: VecScalarOp::Set,
                 elem: VecScalarElem::U8,
             } => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_vec_set_u8",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
@@ -8110,6 +8639,7 @@ impl RuntimeCallFamily {
                 op: VecScalarOp::Set,
                 elem: VecScalarElem::U16,
             } => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_vec_set_u16",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
@@ -8121,6 +8651,7 @@ impl RuntimeCallFamily {
                 op: VecScalarOp::RemoveAt,
                 elem: VecScalarElem::F32,
             } => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_vec_remove_at_f32",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
@@ -8132,6 +8663,7 @@ impl RuntimeCallFamily {
                 op: VecScalarOp::RemoveAt,
                 elem: VecScalarElem::F64,
             } => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_vec_remove_at_f64",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
@@ -8143,6 +8675,7 @@ impl RuntimeCallFamily {
                 op: VecScalarOp::RemoveAt,
                 elem: VecScalarElem::I8,
             } => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_vec_remove_at_i8",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
@@ -8154,6 +8687,7 @@ impl RuntimeCallFamily {
                 op: VecScalarOp::RemoveAt,
                 elem: VecScalarElem::I16,
             } => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_vec_remove_at_i16",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
@@ -8165,6 +8699,7 @@ impl RuntimeCallFamily {
                 op: VecScalarOp::RemoveAt,
                 elem: VecScalarElem::I32,
             } => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_vec_remove_at_i32",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
@@ -8176,6 +8711,7 @@ impl RuntimeCallFamily {
                 op: VecScalarOp::RemoveAt,
                 elem: VecScalarElem::I64,
             } => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_vec_remove_at_i64",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
@@ -8187,6 +8723,7 @@ impl RuntimeCallFamily {
                 op: VecScalarOp::RemoveAt,
                 elem: VecScalarElem::Ptr,
             } => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_vec_remove_at_ptr",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
@@ -8198,6 +8735,7 @@ impl RuntimeCallFamily {
                 op: VecScalarOp::RemoveAt,
                 elem: VecScalarElem::Str,
             } => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_vec_remove_at_str",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
@@ -8209,6 +8747,7 @@ impl RuntimeCallFamily {
                 op: VecScalarOp::RemoveAt,
                 elem: VecScalarElem::U8,
             } => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_vec_remove_at_u8",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
@@ -8220,6 +8759,7 @@ impl RuntimeCallFamily {
                 op: VecScalarOp::RemoveAt,
                 elem: VecScalarElem::U16,
             } => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_vec_remove_at_u16",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
@@ -8228,6 +8768,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::VecRemoveAtBool => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_vec_remove_at_bool",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
@@ -8236,6 +8777,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::VecRemoveAtLayout => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_vec_remove_at_layout",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
@@ -8244,6 +8786,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::VecRemoveAtOwned => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_vec_remove_at_owned",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
@@ -8252,6 +8795,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::VecSetBool => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_vec_set_bool",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
@@ -8260,6 +8804,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::VecSetLayout => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_vec_set_layout",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
@@ -8268,6 +8813,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::VecSetOwned => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_vec_set_owned",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
@@ -8276,6 +8822,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::VecSetOwnedMove => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_vec_set_owned_move",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
@@ -8284,6 +8831,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::VecSliceRange(VecSliceElem::Bytesize) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_vec_slice_range_bytesize",
                 contract: None,
                 staging: RuntimeStaging::Declared,
@@ -8292,6 +8840,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::VecSliceRange(VecSliceElem::F64) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_vec_slice_range_f64",
                 contract: None,
                 staging: RuntimeStaging::Declared,
@@ -8300,6 +8849,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::VecSliceRange(VecSliceElem::I32) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_vec_slice_range_i32",
                 contract: None,
                 staging: RuntimeStaging::Declared,
@@ -8308,6 +8858,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::VecSliceRange(VecSliceElem::I64) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_vec_slice_range_i64",
                 contract: None,
                 staging: RuntimeStaging::Declared,
@@ -8316,6 +8867,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::VecSliceRange(VecSliceElem::Layout) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_vec_slice_range_layout",
                 contract: None,
                 staging: RuntimeStaging::Declared,
@@ -8324,6 +8876,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::VecSliceRange(VecSliceElem::Owned) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_vec_slice_range_owned",
                 contract: None,
                 staging: RuntimeStaging::Declared,
@@ -8332,6 +8885,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::VecSliceRange(VecSliceElem::Ptr) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_vec_slice_range_ptr",
                 contract: None,
                 staging: RuntimeStaging::Declared,
@@ -8340,6 +8894,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::VecSliceRange(VecSliceElem::Str) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_vec_slice_range_str",
                 contract: None,
                 staging: RuntimeStaging::Declared,
@@ -8348,6 +8903,7 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::Storage,
             },
             Self::VtableDispatchPanicOnOob => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
                 symbol: "hew_vtable_dispatch_panic_on_oob",
                 contract: None,
                 staging: RuntimeStaging::Declared,

@@ -1955,6 +1955,10 @@ impl<'a> Formatter<'a> {
     fn format_actor(&mut self, decl: &ActorDecl, span_start: usize, span_end: usize) {
         self.write_outer_doc(decl.doc_comment.as_ref());
         if !self.format_item_attributes(span_start) {
+            if decl.is_confined {
+                self.write_indent();
+                self.write("#[confined]\n");
+            }
             if let Some(bytes) = decl.max_heap_bytes {
                 self.write_indent();
                 self.write(&format!("#[max_heap({bytes})]\n"));

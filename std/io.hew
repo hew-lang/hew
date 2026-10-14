@@ -158,7 +158,7 @@ impl bytes {
     fn pop(self) -> Option<u8> {
         .None
     }
-    #[runtime(family = BytesLen, lowering = direct, target = native, classification = stable, c_return = storage, receiver = borrow)]
+    #[runtime(authority = Value, family = BytesLen, lowering = direct, target = native, classification = stable, c_return = storage, receiver = borrow)]
     #[extern_symbol(hew_bytes_len)]
     fn len(self) -> i64 {
         0
@@ -169,14 +169,14 @@ impl bytes {
     }
     #[extern_symbol(hew_bytes_set)]
     fn set(self, index: i64, byte: u8) {}
-    #[runtime(family = BytesIsEmpty, lowering = direct, target = native, classification = stable, c_return = truth_bool, receiver = borrow)]
+    #[runtime(authority = Value, family = BytesIsEmpty, lowering = direct, target = native, classification = stable, c_return = truth_bool, receiver = borrow)]
     #[extern_symbol(hew_bytes_is_empty)]
     fn is_empty(self) -> bool {
         false
     }
     #[extern_symbol(hew_bytes_clear)]
     fn clear(self) {}
-    #[runtime(family = BytesContains, lowering = direct, target = native, classification = stable, c_return = truth_bool, receiver = borrow)]
+    #[runtime(authority = Value, family = BytesContains, lowering = direct, target = native, classification = stable, c_return = truth_bool, receiver = borrow)]
     #[extern_symbol(hew_bytes_contains)]
     fn contains(self, byte: u8) -> bool {
         false
@@ -184,13 +184,13 @@ impl bytes {
     #[extern_symbol(hew_bytes_append)]
     fn append(self, other: bytes) {}
     /// Whether the buffer begins with the run `prefix`.
-    #[runtime(family = BytesStartsWith, lowering = direct, target = native, classification = stable, c_return = truth_bool, receiver = borrow)]
+    #[runtime(authority = Value, family = BytesStartsWith, lowering = direct, target = native, classification = stable, c_return = truth_bool, receiver = borrow)]
     #[extern_symbol(hew_bytes_starts_with)]
     fn starts_with(self, prefix: bytes) -> bool {
         false
     }
     /// Whether the buffer ends with the run `suffix`.
-    #[runtime(family = BytesEndsWith, lowering = direct, target = native, classification = stable, c_return = truth_bool, receiver = borrow)]
+    #[runtime(authority = Value, family = BytesEndsWith, lowering = direct, target = native, classification = stable, c_return = truth_bool, receiver = borrow)]
     #[extern_symbol(hew_bytes_ends_with)]
     fn ends_with(self, suffix: bytes) -> bool {
         false

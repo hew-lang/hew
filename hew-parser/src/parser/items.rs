@@ -479,6 +479,7 @@ impl Parser<'_> {
         // is wired onto the resulting `Item::Actor` post-dispatch, so its
         // value (if present) is captured here as an owned clone.
         let max_heap_attr = attrs.iter().find(|a| a.name == "max_heap").cloned();
+        let is_confined = attrs.iter().any(|a| a.name == "confined");
 
         let item = match self.peek() {
             Some(Token::Macro) => Item::Macro(self.parse_macro_decl(Visibility::Private)?),
@@ -661,6 +662,7 @@ impl Parser<'_> {
         // diagnostic here.
         let item = match item {
             Item::Actor(mut actor) => {
+                actor.is_confined = is_confined;
                 if let Some(attr) = max_heap_attr {
                     match resolve_max_heap_args(&attr.args) {
                         Ok(bytes) => actor.max_heap_bytes = Some(bytes),

@@ -10,6 +10,13 @@ pub fn reader<I: OrderInput>(consume input: I) -> fn[suspends]() -> Result<bytes
     move || input.load()
 }
 
+#[confined]
+pub fn read_order<I: OrderInput>(consume input: I) -> bytes fails string {
+    let load = reader(input);
+    load()?
+}
+
+#[confined]
 pub fn copy_order<I: OrderInput, O: ReceiptOutput>(input: I, output: O, format: fn[clone](bytes) -> bytes) -> i64 fails string {
     let order = input.load()?;
     let receipt = format(order);
@@ -18,6 +25,7 @@ pub fn copy_order<I: OrderInput, O: ReceiptOutput>(input: I, output: O, format: 
     size
 }
 
+#[confined]
 pub actor OrderCopier<I: OrderInput, O: ReceiptOutput> {
     let input: I;
     let output: O;
@@ -26,4 +34,24 @@ pub actor OrderCopier<I: OrderInput, O: ReceiptOutput> {
         let prefix = "receipt:".to_bytes();
         copy_order(input, output, |data| prefix + data)
     }
+}
+
+type OrderId {
+    value: i64;
+}
+
+impl Display for OrderId {
+    fn fmt(self) -> string {
+        f"order-{self.value}"
+    }
+}
+
+type Summary {
+    id: OrderId;
+}
+
+#[confined]
+pub fn describe_order(id: i64) -> string {
+    let summary = Summary { id: OrderId { value: id } };
+    f"{summary:?}"
 }

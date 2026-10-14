@@ -279,6 +279,7 @@ impl Parser<'_> {
             overflow_policy,
             mailbox_span,
             is_isolated: false,
+            is_confined: false,
             doc_comment: None,
             max_heap_bytes: None, // set by parse_item from outer #[max_heap] attr
         })

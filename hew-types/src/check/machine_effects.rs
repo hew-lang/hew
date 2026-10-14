@@ -794,6 +794,10 @@ impl NodeVisitor for EffectVisitor<'_> {
 
 fn pure_runtime(family: RuntimeCallFamily) -> bool {
     use RuntimeCallFamily as R;
+
+    if family.row().authority != crate::runtime_call::RuntimeAuthority::Value {
+        return false;
+    }
     matches!(
         family,
         // A fresh local collection's own constructor is as pure as

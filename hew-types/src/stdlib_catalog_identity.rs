@@ -9,6 +9,25 @@
 
 /// The catalog identity of the `assert` builtin, which HIR desugars.
 pub const ASSERT: &str = "assert";
+pub const PANIC: &str = "panic";
+
+/// Authority of catalogue surfaces which HIR realizes without a runtime row.
+/// Runtime operations retain their summaries on `RuntimeOpRow`.
+#[must_use]
+pub fn builtin_authority(endpoint: &str) -> Option<crate::runtime_call::RuntimeAuthority> {
+    use crate::runtime_call::RuntimeAuthority::{Ambient, Value};
+    use crate::stdlib_authority::OverloadGroup;
+    if let Some(group) = OverloadGroup::from_key(endpoint) {
+        return Some(match group {
+            OverloadGroup::Print | OverloadGroup::Println => Ambient,
+            OverloadGroup::ToString | OverloadGroup::Len => Value,
+        });
+    }
+    match endpoint {
+        ASSERT | PANIC => Some(Value),
+        _ => None,
+    }
+}
 
 /// Closed identities of catalog callables that are both monomorphic in the
 /// checker and executable as ordinary HIR/MIR calls.
@@ -21,7 +40,7 @@ pub const MONOMORPHIC_CALLABLE_IDENTITIES: &[&str] = &[
     ASSERT,
     "bytes::new",
     "exit",
-    "panic",
+    PANIC,
     "print_bool",
     "print_f64",
     "print_str",

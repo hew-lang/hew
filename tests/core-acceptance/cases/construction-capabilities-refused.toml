@@ -1,0 +1,98 @@
+[[case]]
+id = "construction-capabilities-refused"
+intent = "Confined function and actor boundaries reject ambient acquisition hidden behind helpers, callbacks, lifecycle hooks, structural value callbacks and cleanup, and reject opaque user extern escapes."
+source = "cases/construction-capabilities-refused.hew"
+kind = "reject"
+timeout_seconds = 15
+suites = ["acceptance"]
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "E_CONFINED_AUTHORITY"
+line = 4
+column = 13
+message = "confined `through_helper` reaches `fs.open_read`: ambient authority acquisition"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "E_CONFINED_AUTHORITY"
+line = 4
+column = 13
+message = "confined `through_callback` reaches `fs.open_read`: ambient authority acquisition"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "E_CONFINED_AUTHORITY"
+line = 4
+column = 13
+message = "confined `LateAcquisition` reaches `fs.open_read`: ambient authority acquisition"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "E_CONFINED_AUTHORITY"
+line = 4
+column = 13
+message = "confined `through_cleanup` reaches `fs.open_read`: ambient authority acquisition"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "E_CONFINED_AUTHORITY"
+line = 50
+column = 9
+message = "confined `through_extern` reaches `raw_host`: an opaque user extern/raw escape"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "E_CONFINED_AUTHORITY"
+line = 4
+column = 13
+message = "confined `Unconstructed` reaches `fs.open_read`: ambient authority acquisition"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "E_CONFINED_AUTHORITY"
+line = 4
+column = 13
+message = "confined `through_structural_hash` reaches `fs.open_read`: ambient authority acquisition"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "E_CONFINED_AUTHORITY"
+line = 4
+column = 13
+message = "confined `through_structural_eq` reaches `fs.open_read`: ambient authority acquisition"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "E_CONFINED_AUTHORITY"
+line = 4
+column = 13
+message = "confined `through_display` reaches `fs.open_read`: ambient authority acquisition"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "E_CONFINED_AUTHORITY"
+line = 4
+column = 13
+message = "confined `through_structural_display` reaches `fs.open_read`: ambient authority acquisition"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "E_CONFINED_AUTHORITY"
+line = 4
+column = 13
+message = "confined `through_assert_display` reaches `fs.open_read`: ambient authority acquisition"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "E_CONFINED_AUTHORITY"
+line = 4
+column = 13
+message = "confined `through_lambda_actor` reaches `fs.open_read`: ambient authority acquisition"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "E_CONFINED_AUTHORITY"
+line = 4
+column = 13
+message = "confined `through_to_string` reaches `fs.open_read`: ambient authority acquisition"

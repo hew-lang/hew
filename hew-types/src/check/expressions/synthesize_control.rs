@@ -408,6 +408,7 @@ impl Checker {
                     span,
                     self.current_module_idx,
                 ));
+                self.record_constructed_effect_body(&effect_body);
                 self.effect_graph
                     .bodies
                     .entry(effect_body.clone())

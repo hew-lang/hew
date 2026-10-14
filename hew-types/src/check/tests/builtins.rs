@@ -179,6 +179,7 @@ fn test_receive_gen_fn_returns_stream() {
         overflow_policy: None,
         mailbox_span: None,
         is_isolated: false,
+        is_confined: false,
         doc_comment: None,
         max_heap_bytes: None,
     };

@@ -134,9 +134,16 @@ fn render_method(
         family.chars().all(|c| c.is_ascii_alphanumeric()),
         "invalid runtime family"
     );
+    let authority = take(&mut fields, "authority");
+    assert!(
+        matches!(authority, "Value" | "Service" | "Ambient"),
+        "unknown runtime authority"
+    );
     let lowering = take(&mut fields, "lowering");
     if lowering == "direct" {
-        return Some(render_direct(module, receiver, method, family, fields));
+        return Some(render_direct(
+            module, receiver, method, family, authority, fields,
+        ));
     }
     assert_eq!(lowering, "actor_ingress");
     let symbol = take(&mut fields, "symbol");
@@ -156,7 +163,7 @@ fn render_method(
     let consumes = method.consumes_self || method.params.first().is_some_and(|p| p.is_consume);
     let effect = if consumes { "Move" } else { "Borrow" };
     let declaration = format!("{module}.{receiver}::{}", method.name);
-    let row = format!("DeclaredRuntimeMethod {{ module: {module:?}, declaration: {declaration:?}, family: RuntimeCallFamily::{family}, data_handler: {data:?}, close_handler: {close:?}, consumes_receiver: {consumes}, row: RuntimeOpRow {{ symbol: {symbol:?}, contract: Some(RuntimeSemanticContract {{ arguments: &[A {{ ty: {receiver_kind}, effect: E::{effect} }}, A {{ ty: K::ActorHandle, effect: E::Borrow }}, A {{ ty: K::ConstBytePointer, effect: E::Copy }}, A {{ ty: K::ConstBytePointer, effect: E::Copy }}], result: R::BitCopy(K::I32), failures: &[] }}), staging: RuntimeStaging::Declared, abi_shape: RuntimeCallAbiShape::Other, physical: RuntimePhysicalForm::Direct, c_return: RuntimeCReturn::Storage }} }}");
+    let row = format!("DeclaredRuntimeMethod {{ module: {module:?}, declaration: {declaration:?}, family: RuntimeCallFamily::{family}, data_handler: {data:?}, close_handler: {close:?}, consumes_receiver: {consumes}, row: RuntimeOpRow {{ authority: super::RuntimeAuthority::{authority}, symbol: {symbol:?}, contract: Some(RuntimeSemanticContract {{ arguments: &[A {{ ty: {receiver_kind}, effect: E::{effect} }}, A {{ ty: K::ActorHandle, effect: E::Borrow }}, A {{ ty: K::ConstBytePointer, effect: E::Copy }}, A {{ ty: K::ConstBytePointer, effect: E::Copy }}], result: R::BitCopy(K::I32), failures: &[] }}), staging: RuntimeStaging::Declared, abi_shape: RuntimeCallAbiShape::Other, physical: RuntimePhysicalForm::Direct, c_return: RuntimeCReturn::Storage }} }}");
     let ownership_effect = if consumes { "consume" } else { "borrow" };
     let nominal = format!("{module}.{receiver}");
     let ownership = format!("[[ownership.contracts]]\nsymbol = {symbol:?}\nresult = \"none\"\nparams = [{ownership_effect:?}, \"borrow\", \"borrow\", \"borrow\"]\nresource-param-types = [{nominal:?}, \"\", \"\", \"\"]\nrelease-symbol = \"\"\ndischarge-depth = \"none\"\n\n");
@@ -249,6 +256,7 @@ fn render_direct(
     receiver: &str,
     method: &FnDecl,
     family: &str,
+    authority: &str,
     mut fields: BTreeMap<&str, &str>,
 ) -> (String, GeneratedMethod) {
     let classification = take(&mut fields, "classification");
@@ -339,7 +347,7 @@ fn render_direct(
         String::new()
     };
     let result_kind = if result == "Instant" { "I64" } else { result };
-    let rust = format!("DeclaredDirectRuntimeMethod {{ signature: super::CanonicalStdlibExternSignature {{ module: {module:?}, signature_key: {signature_key:?}, symbol: {symbol:?}, family: Some(RuntimeCallFamily::{family}), params: &[{logical}], result: super::CanonicalExternTy::{result} }}, params: &[{physical}], target: DeclaredRuntimeTarget::Native, row: RuntimeOpRow {{ symbol: {symbol:?}, contract: Some(RuntimeSemanticContract {{ arguments: &[{arguments}], result: R::BitCopy(K::{result_kind}), failures: &[] }}), staging: RuntimeStaging::Declared, abi_shape: RuntimeCallAbiShape::Other, physical: RuntimePhysicalForm::Direct, c_return: RuntimeCReturn::{c_return} }} }}");
+    let rust = format!("DeclaredDirectRuntimeMethod {{ signature: super::CanonicalStdlibExternSignature {{ module: {module:?}, signature_key: {signature_key:?}, symbol: {symbol:?}, family: Some(RuntimeCallFamily::{family}), params: &[{logical}], result: super::CanonicalExternTy::{result} }}, params: &[{physical}], target: DeclaredRuntimeTarget::Native, row: RuntimeOpRow {{ authority: super::RuntimeAuthority::{authority}, symbol: {symbol:?}, contract: Some(RuntimeSemanticContract {{ arguments: &[{arguments}], result: R::BitCopy(K::{result_kind}), failures: &[] }}), staging: RuntimeStaging::Declared, abi_shape: RuntimeCallAbiShape::Other, physical: RuntimePhysicalForm::Direct, c_return: RuntimeCReturn::{c_return} }} }}");
     (
         family.to_ascii_uppercase(),
         GeneratedMethod {

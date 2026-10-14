@@ -31,6 +31,7 @@ impl worker.ReceiptOutput for FileReceipts {
 fn main() {
     fs.write("orders.txt", "order-41").expect("prepare order");
     let input = fs.open_read("orders.txt").expect("grant input");
+    assert(worker.read_order(FileOrders { file: fs.open_read("orders.txt").expect("captured grant") }).expect("confined captured service") == "order-41".to_bytes());
     {
         let independent = worker.reader(FileOrders { file: fs.open_read("orders.txt").expect("independent read owner") });
         assert(independent().expect("captured read authority") == "order-41".to_bytes());

@@ -176,7 +176,7 @@ impl TlsStreamMethods for TlsStream {
     /// Compiler-lowered active-mode attach.
     ///
     /// The runtime delivers owned messages using the selected actor handlers.
-    #[runtime(family = TlsAttachLocal, symbol = hew_tls_attach_native, lowering = actor_ingress, target = native, classification = "non-declarable-stdlib", receiver = opaque, data = on_data, close = on_close)]
+    #[runtime(family = TlsAttachLocal, authority = Service, symbol = hew_tls_attach_native, lowering = actor_ingress, target = native, classification = "non-declarable-stdlib", receiver = opaque, data = on_data, close = on_close)]
     fn attach(self, handler: TlsHandler) {}
 }
 

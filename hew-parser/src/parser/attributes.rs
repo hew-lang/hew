@@ -78,6 +78,7 @@ fn legal_positions(name: &str) -> Option<&'static [AttrPosition]> {
         "intercept" => &[ActorMemberFn, SupervisorMemberFn],
         "every" => &[ActorReceiveFn],
         "max_heap" => &[ActorDecl],
+        "confined" => &[FreeFn, ActorDecl],
         "extern_symbol" => &[ImplMethod, ExternFn],
         "offload" => &[ExternFn],
         "runtime" => &[ImplMethod],
@@ -107,7 +108,7 @@ impl Parser<'_> {
         quoted_arguments: bool,
     ) {
         let (valid, hint) = match attr.name.as_str() {
-            "test" | "bench" | "real_time" | "offload" => {
+            "test" | "bench" | "real_time" | "offload" | "confined" => {
                 (argument_count == 0, "remove the arguments")
             }
             "ignore" | "should_panic" => (

@@ -119,15 +119,16 @@ where
         )));
         return Arc::into_raw(operation);
     };
-    let job = Box::into_raw(Box::new(Job {
+    let job = Box::new(Job {
         operation: IoProducer::new(Arc::clone(&operation)),
         cancel,
         run,
-    }));
+    });
     // SAFETY: the job owns all inputs and successful admission transfers it.
-    if unsafe { crate::blocking_pool::submit_abandonable(pool, run_job::<F, T>, job.cast()) } != 0 {
-        // SAFETY: failed admission did not transfer the job.
-        drop(unsafe { Box::from_raw(job) });
+    let submission =
+        unsafe { crate::blocking_pool::submit_abandonable_owned(pool, run_job::<F, T>, job) };
+    if let Err(job) = submission {
+        drop(job);
         operation.complete(Err(IoFailure::invalid(
             "native socket operation pool could not accept work",
         )));

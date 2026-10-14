@@ -159,20 +159,15 @@ pub unsafe extern "C" fn hew_async_offload(
     let operation = unsafe { HewAsyncIo::new(waker) };
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(pool) = crate::blocking_pool::shared_blocking_pool_opt() {
-        let job = Box::into_raw(Box::new((
-            super::IoProducer::new(Arc::clone(&operation)),
-            env,
-        )));
+        let job = Box::new((super::IoProducer::new(Arc::clone(&operation)), env));
         // SAFETY: the pool is installed; the job is owned until its callback.
         // It owns its arguments and finishing it touches only the job, so
         // runtime exit leaves a call whose caller gave up running.
-        let status =
-            unsafe { crate::blocking_pool::submit_abandonable(pool, run_offload_job, job.cast()) };
-        if status == 0 {
-            return Arc::into_raw(operation);
+        match unsafe { crate::blocking_pool::submit_abandonable_owned(pool, run_offload_job, job) }
+        {
+            Ok(()) => return Arc::into_raw(operation),
+            Err(job) => drop(job),
         }
-        // SAFETY: failed admission did not transfer the job.
-        drop(unsafe { Box::from_raw(job) });
         operation.complete(Err(super::IoFailure::invalid(
             "offload blocking pool could not accept work",
         )));

@@ -1,0 +1,10 @@
+[[case]]
+id = "float-sort-values"
+intent = "The pure-Hew float merge sort preserves input snapshots and exact IEEE total ordering, including signed zeros and NaN payloads."
+timeout_seconds = 30
+suites = ["acceptance", "safety"]
+source = "cases/float-sort-values.hew"
+
+[case.expected]
+exit = 0
+stdout = "sort-authority=0\n"

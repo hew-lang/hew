@@ -1,6 +1,6 @@
 [[case]]
 id = "listener-accept-shutdown-refusal"
-intent = "A held listener reports NetError.Cancelled when shutdown closes new accept admission, instead of fabricating an invalid connection."
+intent = "A held listener takes task cancellation and runs cleanup when shutdown closes accept admission, without fabricating a connection or reporting a fault."
 source = "cases/listener-accept-shutdown-refusal.hew"
 suites = ["acceptance", "safety"]
 timeout_seconds = 15

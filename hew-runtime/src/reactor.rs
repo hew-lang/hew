@@ -466,7 +466,9 @@ impl Slot {
         // Shutdown closes admission before sweeping under this same slot lock.
         // An accept that just returned WouldBlock must not register behind it.
         if self.listener().is_some() && listener_admission_closed() {
-            return Err(cancelled_failure("wait on closed listener admission"));
+            drop(state);
+            operation.cancel_and_wake();
+            return Ok(false);
         }
         // Completion publishes the terminal operation state before withdrawing
         // from this slot. Checking it under the slot lock closes the only gap

@@ -1,0 +1,21 @@
+[[case]]
+id = "associated-projection-bound-refused"
+intent = "An imported helper rejects an iterator whose item does not satisfy the declared Display projection bound."
+source = "cases/associated-projection-bound-refused.hew"
+kind = "check"
+suites = ["acceptance"]
+timeout_seconds = 15
+
+[[case.expected.diagnostics]]
+severity = "error"
+line = 10
+column = 5
+code = "BoundsNotSatisfied"
+message = "does not implement trait `Display`"
+
+[[case.expected.diagnostics]]
+severity = "error"
+line = 11
+column = 5
+code = "BoundsNotSatisfied"
+message = "does not implement trait `Display`"

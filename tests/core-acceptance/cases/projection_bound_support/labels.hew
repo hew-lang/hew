@@ -1,0 +1,14 @@
+pub fn first_label<I: Iterator>(var items: I) -> string where I.Item: Display {
+    match items.next() {
+        .Some(item) => {
+            let text = f"{item}";
+            assert(text == item.fmt());
+            text
+        }
+        .None => "empty",
+    }
+}
+
+pub fn equal_label<I: Iterator<Item = T>, T>(var items: I) -> string where <I as Iterator>.Item: Display {
+    first_label(items)
+}

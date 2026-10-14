@@ -544,7 +544,9 @@ impl Checker {
         self.place_base_depth += 1;
         let receiver_ty = self.synthesize(&receiver.0, &receiver.1);
         self.place_base_depth -= 1;
-        let resolved = self.subst.resolve(&receiver_ty);
+        // Resolve projections before lookup without erasing an alias's own impl.
+        let resolved = self.project_assoc_types(&self.subst.resolve(&receiver_ty));
+        let resolved = self.bound_parameter(&resolved).map_or(resolved, Ty::param);
         if let Some(result) =
             self.check_actor_delivery_method(receiver, &resolved, method, args, span)
         {
@@ -2327,7 +2329,7 @@ impl Checker {
                         let (declaring_id, mut trait_sig) = hits.into_iter().next().unwrap();
                         let declaring_trait = self.defs.path(declaring_id).to_string();
                         // Replace `Self` references with the type parameter type.
-                        let self_ty = resolved.clone();
+                        let self_ty = self.normalize_for_use(&receiver_ty);
                         let self_parameter = crate::ParamHead::receiver(declaring_id);
                         for param_ty in &mut trait_sig.params {
                             *param_ty = param_ty.substitute_type_param(self_parameter, &self_ty);

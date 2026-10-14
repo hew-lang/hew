@@ -7,6 +7,15 @@ pub struct AssociatedTypeSchemas {
 }
 
 impl AssociatedTypeSchemas {
+    pub(super) fn projection_of(
+        &self,
+        parameter: crate::ParamHead,
+    ) -> Option<(crate::ParamHead, crate::DefId, Symbol)> {
+        self.parameters
+            .iter()
+            .find_map(|(projection, binder)| (*binder == parameter).then_some(*projection))
+    }
+
     /// Project implicit associated binders through a method's checked receiver.
     #[must_use]
     pub fn instantiate_receiver_type(
@@ -75,20 +84,66 @@ impl Checker {
             );
         }
         self.current_module = saved_module;
-        let mut next_indices = HashMap::new();
-        for key @ (parameter, _, associated) in projections {
-            let index = next_indices
-                .entry(parameter.id.owner)
-                .or_insert_with(|| self.scopes.declaration_parameters(parameter.id.owner).len());
-            let binder = crate::ParamHead::new(
-                crate::TypeParamId::new(parameter.id.owner, *index),
-                Symbol::intern(&format!("{}.{}", parameter.spelling, associated)),
-            );
-            *index += 1;
-            self.associated_schema_parameters
-                .parameters
-                .insert(key, binder);
+        for projection in projections {
+            self.intern_associated_schema_parameter(projection);
         }
+    }
+
+    fn intern_associated_schema_parameter(
+        &mut self,
+        projection: (crate::ParamHead, crate::DefId, Symbol),
+    ) -> crate::ParamHead {
+        if let Some(parameter) = self
+            .associated_schema_parameters
+            .parameters
+            .get(&projection)
+        {
+            return *parameter;
+        }
+        let (base, _, associated) = projection;
+        let index = self
+            .associated_schema_parameters
+            .parameters
+            .values()
+            .filter(|parameter| parameter.id.owner == base.id.owner)
+            .map(|parameter| usize::from(parameter.id.index) + 1)
+            .max()
+            .unwrap_or_else(|| self.scopes.declaration_parameters(base.id.owner).len());
+        let parameter = crate::ParamHead::new(
+            crate::TypeParamId::new(base.id.owner, index),
+            Symbol::intern(&format!("{}.{}", base.spelling, associated)),
+        );
+        self.associated_schema_parameters
+            .parameters
+            .insert(projection, parameter);
+        parameter
+    }
+
+    /// Use the same declaration-owned binder for a projection's written bounds
+    /// and the generic body's specialization schema.
+    pub(super) fn register_projection_bound_subject(
+        &mut self,
+        ty: &Ty,
+    ) -> Option<crate::ParamHead> {
+        let normalized = self.normalize_for_use(ty);
+        Self::bare_param(&normalized).or_else(|| {
+            let projection = self
+                .associated_schema_key(&normalized)
+                .or_else(|| self.associated_schema_key(ty))?;
+            Some(self.intern_associated_schema_parameter(projection))
+        })
+    }
+
+    pub(super) fn bound_parameter(&self, ty: &Ty) -> Option<crate::ParamHead> {
+        Self::bare_param(ty).or_else(|| {
+            self.associated_schema_key(ty)
+                .and_then(|projection| {
+                    self.associated_schema_parameters
+                        .parameters
+                        .get(&projection)
+                })
+                .copied()
+        })
     }
 
     fn collect_associated_schema_projections(

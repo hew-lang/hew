@@ -17,9 +17,10 @@ RULE = (
 AST_GREP = ROOT / ".ast-grep/tool/bin/ast-grep"
 
 
-def findings(source: str) -> list[dict[str, object]]:
+def findings(source: str, module: str = "mod.rs") -> list[dict[str, object]]:
     with tempfile.TemporaryDirectory(prefix="hew-supervisor-roster-rule-") as temp:
-        fixture = Path(temp) / "supervisor.rs"
+        fixture = Path(temp) / "hew-runtime" / "src" / "supervisor" / module
+        fixture.parent.mkdir(parents=True)
         fixture.write_text(source, encoding="utf-8")
         result = subprocess.run(
             [
@@ -111,6 +112,13 @@ def main() -> None:
     for name, source in RED.items():
         if not findings(source):
             raise SystemExit(f"RED counterfactual did not fire: {name}")
+
+    modules = sorted((ROOT / "hew-runtime/src/supervisor").glob("*.rs"))
+    if not modules:
+        raise SystemExit("runtime supervisor modules are absent")
+    for module in modules:
+        if not findings(RED["mutex_get_mut_bypass"], module.name):
+            raise SystemExit(f"split supervisor module is outside rule scope: {module.name}")
 
     if unexpected := findings(GREEN):
         raise SystemExit(f"GREEN typed-guard fixtures unexpectedly fired: {unexpected}")

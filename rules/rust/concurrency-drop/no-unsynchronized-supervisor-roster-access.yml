@@ -7,7 +7,7 @@ message: >-
   roster borrow without an audited helper marker, or retain a guard across an
   arbitrary callback or blocking wait.
 files:
-  - '**/supervisor.rs'
+  - '**/hew-runtime/src/supervisor/*.rs'
 rule:
   any:
     # The mutex projection must immediately feed the canonical poison-safe lock

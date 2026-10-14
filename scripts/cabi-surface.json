@@ -15978,21 +15978,6 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "stable-stdlib",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_sort_floats( *mut HewVec) -> *mut HewVec",
-        "wasm32-wasip1": "fn hew_sort_floats( *mut HewVec) -> *mut HewVec"
-      },
-      "symbol": "hew_sort_floats"
-    },
-    {
-      "availability": [
-        "native",
-        "wasm32-wasip1"
-      ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
       "nul": "nul-terminated",

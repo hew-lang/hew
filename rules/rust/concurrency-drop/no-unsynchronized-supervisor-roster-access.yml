@@ -7,7 +7,7 @@ message: >-
   roster borrow without an audited helper marker, or retain a guard across an
   arbitrary callback or blocking wait.
 files:
-  - '**/supervisor.rs'
+  - "**/hew-runtime/src/supervisor/*.rs"
 rule:
   any:
     # The mutex projection must immediately feed the canonical poison-safe lock
@@ -28,14 +28,14 @@ rule:
               stopBy: end
               has:
                 field: name
-                regex: '^(tests|.*_tests|test_support)$'
+                regex: "^(tests|.*_tests|test_support)$"
     # A helper that accepts SupervisorRoster directly must declare that its
     # borrow is guard-bounded. Normal runtime entry points acquire the guard
     # locally and therefore do not expose SupervisorRoster in their signature.
     - all:
         - kind: function_item
         - has:
-            regex: 'SupervisorRoster'
+            regex: "SupervisorRoster"
             field: parameters
         - has:
             any:
@@ -58,7 +58,7 @@ rule:
         - not:
             has:
               kind: line_comment
-              regex: 'ROSTER-GUARDED-HELPER'
+              regex: "ROSTER-GUARDED-HELPER"
               stopBy: end
     # Access which precedes acquisition is invalid even if a same-named guard
     # is created later in the block.
@@ -84,13 +84,13 @@ rule:
               stopBy: end
               has:
                 field: name
-                regex: '^(tests|.*_tests|test_support)$'
+                regex: "^(tests|.*_tests|test_support)$"
     # Once a guard is explicitly dropped, later use of the same receiver is a
     # stale-authority error. Target the drop statement so statement ordering is
     # structural rather than inferred from function-wide text.
     - all:
         - pattern:
-            context: 'fn f() { drop($G); }'
+            context: "fn f() { drop($G); }"
             selector: expression_statement
         - precedes:
             has:
@@ -109,7 +109,7 @@ rule:
               stopBy: end
               has:
                 field: name
-                regex: '^(tests|.*_tests|test_support)$'
+                regex: "^(tests|.*_tests|test_support)$"
     # Never carry a roster guard into user/codegen function pointers. Snapshot
     # owned state, release the guard, then invoke the callback.
     - all:
@@ -138,7 +138,7 @@ rule:
               stopBy: end
               has:
                 field: name
-                regex: '^(tests|.*_tests|test_support)$'
+                regex: "^(tests|.*_tests|test_support)$"
     # Likewise, no Condvar/channel/thread wait may extend a roster critical
     # section. These are the blocking primitives used in this runtime module.
     - all:
@@ -164,4 +164,4 @@ rule:
               stopBy: end
               has:
                 field: name
-                regex: '^(tests|.*_tests|test_support)$'
+                regex: "^(tests|.*_tests|test_support)$"

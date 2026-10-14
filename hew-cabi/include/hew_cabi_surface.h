@@ -16,10 +16,10 @@ struct hew_cabi_manifest_row {
   enum hew_cabi_manifest_ownership ownership;
 };
 
-#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1620u
+#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1619u
 #define HEW_CABI_MANIFEST_STATIC_COUNT 24u
 
-static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1620] = {
+static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1619] = {
     {"hew_actor_ask",
      "{\"native\": \"fn hew_actor_ask( *mut HewActor, i32, *mut c_void, usize, "
      ") -> *mut c_void\"}",
@@ -5996,11 +5996,6 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1620] = {
      "HewString, *const HewString, ) -> i32\"}",
      "native", "stable-stdlib", "not-applicable", "no-in-signature-extent",
      HEW_CABI_OWNERSHIP_UNMEASURED},
-    {"hew_sort_floats",
-     "{\"native\": \"fn hew_sort_floats( *mut HewVec) -> *mut HewVec\", "
-     "\"wasm32-wasip1\": \"fn hew_sort_floats( *mut HewVec) -> *mut HewVec\"}",
-     "native,wasm32-wasip1", "stable-stdlib", "not-applicable",
-     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_stderr_write",
      "{\"native\": \"fn hew_stderr_write( *const c_char)\", \"wasm32-wasip1\": "
      "\"fn hew_stderr_write( *const c_char)\"}",

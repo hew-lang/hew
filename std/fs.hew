@@ -190,6 +190,83 @@ fn last_io_error() -> IoError {
     }
 }
 
+/// Read authority over one opened file. This value contains no public path or
+/// descriptor and has no writing operations. Its cursor advances on reads.
+#[resource]
+#[opaque]
+pub type ReadFile {
+}
+
+impl ReadFile {
+    /// Read the remaining bytes, leaving the cursor at EOF on success.
+    fn read(self) -> Result<bytes, IoError> {
+        unsafe {
+            let data = hew_file_read_remaining(self);
+            if hew_stream_has_error() {
+                .Err(last_io_error())
+            } else {
+                .Ok(data)
+            }
+        }
+    }
+
+    fn close(consume self) {
+        unsafe {
+            hew_file_read_close(self)
+        };
+    }
+}
+
+/// Write authority over one opened file. It cannot read, seek to another file
+/// or acquire another resource. Writes advance its cursor and report errors.
+#[resource]
+#[opaque]
+pub type WriteFile {
+}
+
+impl WriteFile {
+    fn write(self, data: bytes) -> Result<(), IoError> {
+        match unsafe {
+            hew_file_write_handle(self, data)
+        } {
+            0 => .Ok(()),
+            _ => .Err(last_io_error()),
+        }
+    }
+
+    fn close(consume self) {
+        unsafe {
+            hew_file_write_close(self)
+        };
+    }
+}
+
+/// Acquire read authority over a file. Call this in the trusted launcher and
+/// pass the returned value to the component that needs it.
+pub fn open_read(path: string) -> Result<ReadFile, IoError> {
+    unsafe {
+        let file = hew_file_open_read(path);
+        if hew_file_read_is_valid(file) {
+            .Ok(file)
+        } else {
+            .Err(last_io_error())
+        }
+    }
+}
+
+/// Create or truncate a file and acquire write authority over it. The returned
+/// resource writes only that opened file; construction is an ambient operation.
+pub fn open_write(path: string) -> Result<WriteFile, IoError> {
+    unsafe {
+        let file = hew_file_open_write(path);
+        if hew_file_write_is_valid(file) {
+            .Ok(file)
+        } else {
+            .Err(last_io_error())
+        }
+    }
+}
+
 /// Read the entire contents of a file as a UTF-8 string.
 ///
 /// Returns a structured error if the file does not exist or cannot be read.
@@ -742,6 +819,16 @@ impl FileReadStream {
 }
 
 extern "C" {
+    // Acquisitions return owned resources synchronously so cancellation cannot
+    // discard an unobserved handle in an offload job.
+    fn hew_file_open_read(path: string) -> ReadFile;
+    fn hew_file_open_write(path: string) -> WriteFile;
+    fn hew_file_read_is_valid(file: ReadFile) -> bool;
+    fn hew_file_write_is_valid(file: WriteFile) -> bool;
+    fn hew_file_read_remaining(file: ReadFile) -> bytes;
+    fn hew_file_write_handle(file: WriteFile, data: bytes) -> i32;
+    fn hew_file_read_close(consume file: ReadFile);
+    fn hew_file_write_close(consume file: WriteFile);
     #[offload]
     fn hew_file_read(path: string) -> string;
     #[offload]

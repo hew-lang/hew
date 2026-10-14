@@ -1,0 +1,10 @@
+[[case]]
+id = "construction-capabilities-files"
+intent = "An actor receives opened read/write file resources once and copies through an imported trait helper and captured callback."
+source = "cases/construction-capabilities/native.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "opened services copied the order\n"
+exit = 0

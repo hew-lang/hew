@@ -287,19 +287,33 @@ categories = ["runtime", "streams"]
 [[feature]]
 id = "filesystem-streams"
 generate = "refuse"
-generate_functions = ["std.stream.open"]
-generate_endpoints = ["hew_stream_from_file_read", "hew_file_read_stream_open"]
+generate_functions = [
+  "std.stream.open",
+  "std.fs.open_read",
+  "std.fs.open_write",
+]
+generate_endpoints = [
+  "hew_stream_from_file_read",
+  "hew_file_read_stream_open",
+  "hew_file_open_read",
+  "hew_file_open_write",
+]
 enum_variant = "FilesystemStreams"
-label = "File-backed stream operations"
-prose_label = "`std.fs.read` and `std.stream.open` (file-stream ownership path)"
-reason = "a file-backed stream reads its chunks through the native I/O reactor, which is not compiled for wasm32; the in-memory pipe half of the same handle types is implemented"
+label = "File-backed streams and resources"
+prose_label = "`std.fs.read`, `std.stream.open`, `std.fs.open_read` and `std.fs.open_write`"
+reason = "file-backed streams and directional file resources use native I/O facilities, which are not compiled for wasm32; in-memory services remain available"
 checker = "reject"
 runtime = "unavailable"
 runtime_status = "File-backed stream runtime is native-only; path-independent fs helpers remain separately classified"
 categories = ["stdlib", "filesystem"]
 tracking = "WASM-TODO"
 tracking_label = "WASM-TODO(filesystem-streams):"
-native_only_functions = ["std.fs.read", "std.stream.open"]
+native_only_functions = [
+  "std.fs.read",
+  "std.stream.open",
+  "std.fs.open_read",
+  "std.fs.open_write",
+]
 
 [[feature]]
 id = "termination-signals"

@@ -14,11 +14,13 @@ enum FileRequest {
     StreamRead(*mut crate::stream::HewStream),
     SinkWrite(*mut crate::stream::HewSink, Vec<u8>),
     SinkFinish(*mut crate::stream::HewSink),
+    ReadFile(*const crate::file_resources::HewReadFile),
+    WriteFile(*const crate::file_resources::HewWriteFile, Vec<u8>),
 }
 
-// SAFETY: a stream or sink submission lends its heap handle exclusively
-// until the caller observes IoProducer quiescence; no job points into a
-// generated coroutine frame.
+// SAFETY: submissions retain their heap-resource loans until the caller
+// observes producer quiescence. File resources serialize borrowed operations;
+// stream/sink loans are exclusive. No job points into a coroutine frame.
 unsafe impl Send for FileRequest {}
 
 impl FileRequest {
@@ -29,12 +31,29 @@ impl FileRequest {
                 // SAFETY: this request retains the exclusive sink loan.
                 unsafe { (**sink).native_pipe_handle() }
             }
-            Self::StreamRead(_) => None,
+            Self::StreamRead(_) | Self::ReadFile(_) | Self::WriteFile(_, _) => None,
         }
     }
 
     fn run(self) -> Result<IoValue, IoFailure> {
         match self {
+            Self::ReadFile(file) => {
+                // SAFETY: the producer retains the caller's resource loan.
+                let file = unsafe { file.as_ref() }
+                    .ok_or_else(|| IoFailure::invalid("closed read resource"))?;
+                file.read_remaining()
+                    .map(IoValue::Bytes)
+                    .map_err(|error| IoFailure::from_io("read file resource", &error))
+            }
+            Self::WriteFile(file, bytes) => {
+                // SAFETY: the producer retains the caller's resource loan.
+                let file = unsafe { file.as_ref() }
+                    .ok_or_else(|| IoFailure::invalid("closed write resource"))?;
+                file.write(&bytes)
+                    .map_err(|error| IoFailure::from_io("write file resource", &error))?;
+                // The source wrapper declares a status, not a byte count.
+                Ok(IoValue::Count(0))
+            }
             Self::StreamRead(stream) => {
                 // SAFETY: the producer lease keeps the caller's exclusive loan live.
                 unsafe { crate::stream::native::read_content(stream) }.map(IoValue::StreamItem)
@@ -174,6 +193,59 @@ pub(crate) unsafe fn start_sink_write(
             Ok(FileRequest::SinkWrite(sink, data)),
         )
     }
+}
+
+/// Submit a read while retaining its source resource until quiescence.
+///
+/// # Safety
+/// `file` is a live resource loan until cleanup is ready; `waker` is borrowed.
+#[no_mangle]
+pub unsafe extern "C" fn hew_async_file_read(
+    file: *const crate::file_resources::HewReadFile,
+    waker: *const HewWaker,
+) -> *const HewAsyncIo {
+    // SAFETY: the compiler retains the caller's resource loan through cleanup.
+    unsafe {
+        submit(
+            shared_blocking_pool_opt(),
+            waker,
+            Ok(FileRequest::ReadFile(file)),
+        )
+    }
+}
+
+/// Copy the submitted bytes and retain the write-resource loan to quiescence.
+///
+/// # Safety
+/// `file` remains live until cleanup is ready. `data` lends a valid bytes triple
+/// and storage through submission; `waker` is a borrowed descriptor.
+#[no_mangle]
+pub unsafe extern "C" fn hew_async_file_write(
+    file: *const crate::file_resources::HewWriteFile,
+    data: *const crate::bytes::BytesTriple,
+    waker: *const HewWaker,
+) -> *const HewAsyncIo {
+    // SAFETY: the caller lends the triple and its storage through submission.
+    let request = unsafe { data.as_ref() }.map_or_else(
+        || Err(IoFailure::invalid("null bytes triple")),
+        |data| {
+            let bytes = if data.len == 0 {
+                Vec::new()
+            } else {
+                // SAFETY: the triple lends data.len initialized bytes at offset.
+                unsafe {
+                    std::slice::from_raw_parts(
+                        data.ptr.add(data.offset as usize),
+                        data.len as usize,
+                    )
+                }
+                .to_vec()
+            };
+            Ok(FileRequest::WriteFile(file, bytes))
+        },
+    );
+    // SAFETY: the job owns its bytes and the compiler retains the file loan.
+    unsafe { submit(shared_blocking_pool_opt(), waker, request) }
 }
 
 #[cfg(windows)]

@@ -1,0 +1,54 @@
+import std.fs;
+
+import worker;
+
+type FileOrders {
+    file: fs.ReadFile;
+}
+
+impl worker.OrderInput for FileOrders {
+    fn load(self) -> Result<bytes, string> {
+        match self.file.read() {
+            .Ok(data) => .Ok(data),
+            .Err(_) => .Err("read order file"),
+        }
+    }
+}
+
+type FileReceipts {
+    file: fs.WriteFile;
+}
+
+impl worker.ReceiptOutput for FileReceipts {
+    fn save(self, receipt: bytes) -> Result<(), string> {
+        match self.file.write(receipt) {
+            .Ok(()) => .Ok(()),
+            .Err(_) => .Err("write receipt file"),
+        }
+    }
+}
+
+fn main() {
+    fs.write("orders.txt", "order-41").expect("prepare order");
+    let input = fs.open_read("orders.txt").expect("grant input");
+    {
+        let independent = worker.reader(FileOrders { file: fs.open_read("orders.txt").expect("independent read owner") });
+        assert(independent().expect("captured read authority") == "order-41".to_bytes());
+        assert(independent().expect("captured read EOF").is_empty());
+    };
+    let output = fs.open_write("receipts.txt").expect("grant output");
+    fs.rename("orders.txt", "granted-orders.txt").expect("move granted input");
+    fs.write("orders.txt", "ungranted input").expect("replace input path");
+    fs.rename("receipts.txt", "granted-receipts.txt").expect("move granted output");
+    fs.write("receipts.txt", "ungranted output").expect("replace output path");
+    let copier = spawn worker.OrderCopier { input: FileOrders { file: input }, output: FileReceipts { file: output } };
+    assert(copier.copy().expect("actor reply").expect("copy order") == 16);
+    stop(copier);
+    stopped(copier);
+    assert(fs.read("granted-receipts.txt").expect("inspect receipt") == "receipt:order-41");
+    assert(fs.read("receipts.txt").expect("ungranted path unchanged") == "ungranted output");
+    for path in ["orders.txt", "receipts.txt", "granted-orders.txt", "granted-receipts.txt"] {
+        fs.delete(path).expect("remove fixture file");
+    }
+    println("opened services copied the order");
+}

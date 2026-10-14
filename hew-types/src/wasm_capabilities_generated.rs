@@ -160,7 +160,7 @@ impl WasmUnsupportedFeature {
             Self::BlockingSemaphoreAcquire => "Blocking semaphore acquire operations",
             Self::Timers => "Timer operations",
             Self::PeriodicTimers => "Timer operations",
-            Self::FilesystemStreams => "File-backed stream operations",
+            Self::FilesystemStreams => "File-backed streams and resources",
             Self::TerminationSignals => "Termination signal subscriptions",
             Self::DescriptorReadiness => "Descriptor readiness watches",
             Self::HttpClient => "std.net.http.http_client operations",
@@ -192,7 +192,7 @@ impl WasmUnsupportedFeature {
             Self::BlockingSemaphoreAcquire => "Semaphore.acquire and Semaphore.acquire_timeout still require a blocking permit wait that has no cooperative wasm32 implementation; use try_acquire or actor coordination instead",
             Self::Timers => "timers are cooperative on wasm32: a sleep parks the coroutine and an #[every(duration)] handler fires when the process driver next ticks the shared timer wheel, so granularity follows the driver steps rather than a dedicated ticker",
             Self::PeriodicTimers => "timers are cooperative on wasm32: a sleep parks the coroutine and an #[every(duration)] handler fires when the process driver next ticks the shared timer wheel, so granularity follows the driver steps rather than a dedicated ticker",
-            Self::FilesystemStreams => "a file-backed stream reads its chunks through the native I/O reactor, which is not compiled for wasm32; the in-memory pipe half of the same handle types is implemented",
+            Self::FilesystemStreams => "file-backed streams and directional file resources use native I/O facilities, which are not compiled for wasm32; in-memory services remain available",
             Self::TerminationSignals => "termination requests arrive through native signal handlers and a dispatcher thread; a wasm32 module receives no SIGTERM or console control events",
             Self::DescriptorReadiness => "a readiness watch waits on the native I/O reactor, which is not compiled for wasm32",
             Self::HttpClient => "the std.net.http.http_client wrappers are still native-only; no wasm32 networking bridge exists yet",
@@ -301,6 +301,8 @@ pub const NATIVE_ONLY_WASM_MODULE_REJECTIONS: &[WasmModuleRejection] = &[
 pub const NATIVE_ONLY_WASM_FUNCTION_REJECTIONS: &[WasmFunctionRejection] = &[
     WasmFunctionRejection { module: "std.fs", function: "read", feature: WasmUnsupportedFeature::FilesystemStreams },
     WasmFunctionRejection { module: "std.stream", function: "open", feature: WasmUnsupportedFeature::FilesystemStreams },
+    WasmFunctionRejection { module: "std.fs", function: "open_read", feature: WasmUnsupportedFeature::FilesystemStreams },
+    WasmFunctionRejection { module: "std.fs", function: "open_write", feature: WasmUnsupportedFeature::FilesystemStreams },
     WasmFunctionRejection { module: "std.os", function: "shutdown_signal", feature: WasmUnsupportedFeature::TerminationSignals },
     WasmFunctionRejection { module: "std.io", function: "watch_readable", feature: WasmUnsupportedFeature::DescriptorReadiness },
     WasmFunctionRejection { module: "std.net.http", function: "request", feature: WasmUnsupportedFeature::HttpClient },
@@ -436,6 +438,8 @@ pub const DETERMINISTIC_ENDPOINT_REJECTIONS: &[HostOperation] = &[
 /// Manifest-owned GENERATE FUNCTION refusals.
 pub const GENERATE_FUNCTION_REJECTIONS: &[HostOperation] = &[
     HostOperation { identity: "std.stream.open", capability: WasmCapabilityId("filesystem-streams") },
+    HostOperation { identity: "std.fs.open_read", capability: WasmCapabilityId("filesystem-streams") },
+    HostOperation { identity: "std.fs.open_write", capability: WasmCapabilityId("filesystem-streams") },
     HostOperation { identity: "std.os.shutdown_signal", capability: WasmCapabilityId("termination-signals") },
     HostOperation { identity: "std.io.watch_readable", capability: WasmCapabilityId("descriptor-readiness") },
     HostOperation { identity: "std.net.listen", capability: WasmCapabilityId("tcp-networking") },
@@ -483,6 +487,8 @@ pub const GENERATE_FUNCTION_REJECTIONS: &[HostOperation] = &[
 pub const GENERATE_ENDPOINT_REJECTIONS: &[HostOperation] = &[
     HostOperation { identity: "hew_stream_from_file_read", capability: WasmCapabilityId("filesystem-streams") },
     HostOperation { identity: "hew_file_read_stream_open", capability: WasmCapabilityId("filesystem-streams") },
+    HostOperation { identity: "hew_file_open_read", capability: WasmCapabilityId("filesystem-streams") },
+    HostOperation { identity: "hew_file_open_write", capability: WasmCapabilityId("filesystem-streams") },
     HostOperation { identity: "hew_shutdown_signal_stream", capability: WasmCapabilityId("termination-signals") },
     HostOperation { identity: "hew_io_watch_readable", capability: WasmCapabilityId("descriptor-readiness") },
     HostOperation { identity: "hew_http_request_hew", capability: WasmCapabilityId("http-client") },

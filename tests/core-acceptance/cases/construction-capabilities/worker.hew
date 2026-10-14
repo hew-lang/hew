@@ -1,0 +1,29 @@
+pub trait OrderInput {
+    fn[suspends] load(self) -> Result<bytes, string>;
+}
+
+pub trait ReceiptOutput {
+    fn[suspends] save(self, receipt: bytes) -> Result<(), string>;
+}
+
+pub fn reader<I: OrderInput>(consume input: I) -> fn[suspends]() -> Result<bytes, string> {
+    move || input.load()
+}
+
+pub fn copy_order<I: OrderInput, O: ReceiptOutput>(input: I, output: O, format: fn[clone](bytes) -> bytes) -> i64 fails string {
+    let order = input.load()?;
+    let receipt = format(order);
+    let size = receipt.len();
+    output.save(receipt)?;
+    size
+}
+
+pub actor OrderCopier<I: OrderInput, O: ReceiptOutput> {
+    let input: I;
+    let output: O;
+
+    receive fn copy() -> Result<i64, string> {
+        let prefix = "receipt:".to_bytes();
+        copy_order(input, output, |data| prefix + data)
+    }
+}

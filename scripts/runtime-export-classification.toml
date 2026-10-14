@@ -297,6 +297,14 @@ stable = [
   "hew_file_append",
   "hew_file_delete",
   "hew_file_exists",
+  "hew_file_open_read",
+  "hew_file_open_write",
+  "hew_file_read_close",
+  "hew_file_read_is_valid",
+  "hew_file_read_remaining",
+  "hew_file_write_close",
+  "hew_file_write_handle",
+  "hew_file_write_is_valid",
   "hew_file_read",
   "hew_file_read_bytes",
   "hew_file_read_stream_collect_string",
@@ -1305,6 +1313,8 @@ non-declarable = [
   "hew_async_io_take_offload",
   "hew_async_offload",
   "hew_async_stdin_read_line",
+  "hew_async_file_read",
+  "hew_async_file_write",
   "hew_async_sink_finish",
   "hew_async_tcp_accept",
   "hew_async_tcp_connect",
@@ -3290,6 +3300,75 @@ params = ["consume"]
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
 result-retention = "transferred"
+
+[[ownership.contracts]]
+symbol = "hew_file_open_read"
+result = "fresh"
+params = ["borrow"]
+resource-result-type = "std.fs.ReadFile"
+release-symbol = "hew_file_read_close"
+discharge-depth = "shallow"
+result-retention = "resource-transfer"
+result-retention-basis = "returns the sole Box::into_raw owner of a directional File resource; no registry or retained owner; the exact consuming close drops that box"
+
+[[ownership.contracts]]
+symbol = "hew_file_read_is_valid"
+result = "none"
+params = ["borrow"]
+resource-param-types = ["std.fs.ReadFile"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_file_read_close"
+result = "none"
+params = ["consume"]
+resource-param-types = ["std.fs.ReadFile"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_file_open_write"
+result = "fresh"
+params = ["borrow"]
+resource-result-type = "std.fs.WriteFile"
+release-symbol = "hew_file_write_close"
+discharge-depth = "shallow"
+result-retention = "resource-transfer"
+result-retention-basis = "returns the sole Box::into_raw owner of a directional File resource; no registry or retained owner; the exact consuming close drops that box"
+
+[[ownership.contracts]]
+symbol = "hew_file_write_is_valid"
+result = "none"
+params = ["borrow"]
+resource-param-types = ["std.fs.WriteFile"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_file_write_close"
+result = "none"
+params = ["consume"]
+resource-param-types = ["std.fs.WriteFile"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_file_read_remaining"
+result = "fresh"
+params = ["borrow"]
+resource-param-types = ["std.fs.ReadFile"]
+release-symbol = "hew_bytes_drop"
+discharge-depth = "shallow"
+result-retention = "transferred"
+
+[[ownership.contracts]]
+symbol = "hew_file_write_handle"
+result = "none"
+params = ["borrow", "borrow"]
+resource-param-types = ["std.fs.WriteFile", ""]
+release-symbol = ""
+discharge-depth = "none"
 
 [[ownership.contracts]]
 symbol = "hew_stream_from_file_read"

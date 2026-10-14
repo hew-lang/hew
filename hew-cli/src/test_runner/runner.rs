@@ -794,7 +794,7 @@ fn compile_test(
             .map(|_| emit_dir.path().join("coverage.json")),
         module_search_paths: Some(compile_paths.paths.module_search_paths.clone()),
         test_entry_selections: tests.iter().map(|test| test.occurrence).collect(),
-        deterministic_admission: hew_compile::DeterministicAdmission::Tests(
+        host_admission: hew_compile::HostAdmission::Tests(
             tests
                 .iter()
                 .filter(|test| test.clock == TestClock::Deterministic)

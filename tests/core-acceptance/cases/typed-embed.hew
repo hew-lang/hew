@@ -1,0 +1,56 @@
+type Pair<T> {
+    first: T;
+    second: T;
+}
+
+enum Transport {
+    Local;
+    Tcp { host: string; port: u16; }
+}
+
+#[serial(case = "camelCase")]
+type Config {
+    service_name: string;
+    enabled: bool;
+    workers: Pair<i64>;
+    transport: Transport;
+    labels: Vec<string>;
+    retry_limit: Option<i64>;
+    weights: HashMap<string, i64>;
+    flags: HashSet<string>;
+    origin: (i64, f64, bool);
+    blob: bytes;
+    grade: char;
+}
+
+const JSON_CONFIG: Config = embed!("typed-embed-data/config.json");
+
+fn show(consume config: Config) {
+    println(config.service_name);
+    println(config.enabled);
+    println(config.workers.first + config.workers.second);
+    match config.transport {
+        .Tcp { host, port } => println(f"{host}:{port}"),
+        .Local => println("local"),
+    }
+    println(config.labels[1]);
+    println(config.retry_limit.expect("retry limit"));
+    println(config.weights.get("cpu").expect("cpu weight"));
+    println(config.flags.contains("fast"));
+    println(config.origin.0);
+    println(config.blob.len());
+    println(config.grade);
+}
+
+fn main() {
+    show(JSON_CONFIG);
+    show(embed!("typed-embed-data/config.yaml"));
+    let toml_config: Config = embed!("typed-embed-data/config.toml");
+    show(toml_config);
+    var labels = JSON_CONFIG.labels;
+    labels.push("extra");
+    println(JSON_CONFIG.labels.len());
+    println(labels.len());
+    let default_label = || JSON_CONFIG.labels[0];
+    println(default_label());
+}

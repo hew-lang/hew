@@ -1,13 +1,10 @@
 [[case]]
 id = "const_ref_forward"
-intent = "The fixture is refused, and the refusal names this diagnostic."
-source = "../vertical-slice/reject/const_ref_forward.hew"
+intent = "Acyclic module constants resolve independently of declaration order."
+source = "../vertical-slice/accept/const_ref_forward.hew"
 suites = ["acceptance"]
 timeout_seconds = 30
-kind = "reject"
 
-[[case.expected.diagnostics]]
-code = "UndefinedVariable"
-line = 1
-column = 16
-message = "undefined variable `A`"
+[case.expected]
+stdout = ""
+exit = 11

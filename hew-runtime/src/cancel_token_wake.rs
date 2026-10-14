@@ -10,7 +10,26 @@ use std::sync::Arc;
 #[derive(Debug)]
 pub struct HewCancelObserver {
     token: *mut HewCancellationToken,
-    waker: Arc<OwnedWaker>,
+    waker: OwnedWaker,
+}
+
+// SAFETY: the observer retains its thread-safe token and readiness descriptor;
+// its fields are immutable throughout shared ownership.
+unsafe impl Send for HewCancelObserver {}
+// SAFETY: waking and releasing the retained descriptor obey its shared contract.
+unsafe impl Sync for HewCancelObserver {}
+
+impl HewCancelObserver {
+    pub(super) fn wake(&self) {
+        self.waker.wake();
+    }
+}
+
+impl Drop for HewCancelObserver {
+    fn drop(&mut self) {
+        // SAFETY: this consumes the reference acquired when observing.
+        unsafe { hew_cancel_token_release(self.token) };
+    }
 }
 
 /// Subscribe a readiness target to cancellation of a token or any ancestor.
@@ -30,9 +49,13 @@ pub unsafe extern "C" fn hew_cancel_observe(
     }
     // SAFETY: the caller keeps both inputs live; these references own their
     // lifetimes after this call returns.
-    let retained = unsafe { Arc::new(OwnedWaker::retain(&*waker)) };
+    let retained = unsafe { OwnedWaker::retain(&*waker) };
     // SAFETY: the caller supplies a live token or null.
     unsafe { hew_cancel_token_retain(token) };
+    let observer = Arc::new(HewCancelObserver {
+        token,
+        waker: retained,
+    });
     let mut current = token;
     let mut cancelled = false;
     while !current.is_null() {
@@ -46,18 +69,15 @@ pub unsafe extern "C" fn hew_cancel_observe(
             if token_state(ancestor).is_requested() {
                 cancelled = true;
             } else {
-                observers.push(Arc::downgrade(&retained));
+                observers.push(Arc::downgrade(&observer));
             }
         }
         current = ancestor.parent;
     }
     if cancelled {
-        retained.wake();
+        observer.wake();
     }
-    Box::into_raw(Box::new(HewCancelObserver {
-        token,
-        waker: retained,
-    }))
+    Arc::into_raw(observer).cast_mut()
 }
 
 /// Detach a cancellation subscription and release its retained references.
@@ -73,8 +93,8 @@ pub unsafe extern "C" fn hew_cancel_unobserve(observer: *mut HewCancelObserver) 
         return;
     }
     // SAFETY: caller transfers the sole subscription handle.
-    let observer = unsafe { Box::from_raw(observer) };
-    let identity = Arc::as_ptr(&observer.waker);
+    let observer = unsafe { Arc::from_raw(observer) };
+    let identity = Arc::as_ptr(&observer);
     let mut current = observer.token;
     while !current.is_null() {
         // SAFETY: the observer's retained leaf keeps every ancestor live.
@@ -85,8 +105,6 @@ pub unsafe extern "C" fn hew_cancel_unobserve(observer: *mut HewCancelObserver) 
             .retain(|entry| entry.as_ptr() != identity);
         current = ancestor.parent;
     }
-    // SAFETY: consumes the reference acquired by observe.
-    unsafe { hew_cancel_token_release(observer.token) };
 }
 
 #[cfg(test)]

@@ -181,14 +181,15 @@ connection; there is no plaintext retry and no nonce reuse. One sealed TCP frame
 carries at most 65 519 bytes. A dial that is refused returns
 `Err(NodeError.Config)` from `Node.connect`.
 
-## 4. Protocol-epoch 2 handshake
+## 4. Protocol-version 3 handshake
 
-Every connection exchanges exactly 72 bytes before actor traffic:
+Every connection exchanges exactly 72 bytes before actor traffic. The layout
+magic remains `HEW\x02`; the independently checked protocol version is `3`:
 
 | Offset | Size | Field |
 |---:|---:|---|
 | `0` | 4 | magic `HEW\x02` |
-| `4` | 2 | protocol version, big-endian, value `2` |
+| `4` | 2 | protocol version, big-endian, value `3` |
 | `6` | 2 | reserved, zero |
 | `8` | 4 | schema hash, big-endian |
 | `12` | 4 | feature flags, big-endian |
@@ -200,7 +201,7 @@ Every connection exchanges exactly 72 bytes before actor traffic:
 The receiver MUST reject:
 
 - any length other than 72 bytes;
-- any magic or protocol version other than epoch 2;
+- magic other than `HEW\x02` or protocol version other than `3`;
 - non-zero reserved bytes;
 - an all-zero `NodeId`;
 - session incarnation `0`;
@@ -217,7 +218,13 @@ buried member.
 ## 5. Wire framing and schema
 
 Transport framing carries CBOR wire frames defined by
-`hew-runtime/schemas/envelope.cddl`. The wire schema version is `2`.
+`hew-runtime/schemas/envelope.cddl`. The wire schema version is `3`.
+
+Envelope key `5` names the canonical dotted handler declaration for a request,
+or carries reply status `0` (success) / `1` (rejection). Local dispatch indices
+do not cross the wire. A receiver resolves the handler within the target actor
+type before decoding the payload. Root declarations have no portable module
+prefix; shared protocols use their declared module/package path.
 
 A wire `location` is a CBOR map containing:
 
@@ -271,9 +278,9 @@ not a node has started, and publishes cluster-wide once one has.
 Result<A, LookupError>` is the local view of the same registry and
 performs the same comparison.
 
-At v0.6.0 the declaration identity is recorded and compared on the registering
-node. The gossiped identity rides the wire-version bump, and the cluster-wide
-comparison is v0.8.0.
+The current registry records and compares declaration identity on the
+registering node. Cluster-wide lookup type comparison remains deferred.
+Wire version 3 resolves handler declarations when a message is dispatched.
 
 Names are discovery aliases, not identity:
 
@@ -291,6 +298,14 @@ connection MUST be rejected.
 `RemotePid<T>.send(message)` is fire-and-forget delivery. `RemotePid<T>.ask`
 creates a request identifier, sends the typed request, suspends the caller, and
 resumes with the completion-call `Result` and its `ActorError` envelope.
+
+Inbound asks use the actor-call readiness protocol without retaining an OS
+thread while waiting. A node admits at most 64 pending inbound asks for one
+exact actor incarnation; saturation returns `WorkerAtCapacity` without
+dispatching the request. Another destination retains its own capacity. A
+declared mailbox bound still refuses full-mailbox admission independently.
+Node shutdown drains completed replies, then cancels remaining observations
+after its bounded drain period and releases their request/reply ownership.
 
 Pending asks are owned by one reply table. Connection loss, SWIM death, local
 shutdown, cancellation, timeout, version mismatch, stale identity, and explicit

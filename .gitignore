@@ -76,6 +76,7 @@ out/
 tests/hew/hew_test_*.hew
 tests/hew/hew_test_emit_*/
 **/.hew/test-runs/
+**/.hew/generate/
 
 # Root-level compiled scratch outputs. `hew build` at the repo root drops a
 # bare executable plus its `.o`/`.ll` next to it; these are never source and

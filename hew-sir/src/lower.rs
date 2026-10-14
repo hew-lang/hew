@@ -18,6 +18,8 @@ mod writable;
 mod actor;
 #[path = "lower_actor_codec.rs"]
 mod actor_codec;
+#[path = "lower_actor_intercept.rs"]
+mod actor_intercept;
 #[path = "lower_remote_actor.rs"]
 mod remote_actor;
 
@@ -540,6 +542,7 @@ enum CallableState {
 /// `HirModule::monomorphisations` or invokes MIR lowering.
 struct InstanceService<'a> {
     module: &'a HirModule,
+    callable_facts: callable_facts::CallableFacts<'a>,
     /// The checker's §6.2 rows. The lowering reads a decided class out of this
     /// rather than recomputing one, and projects the rows its own bodies
     /// mention onto the module it produces.
@@ -550,7 +553,7 @@ struct InstanceService<'a> {
     by_instance: HashMap<SirInstanceKey, CallableId>,
     closures: Vec<crate::SemClosure>,
     actors: Vec<crate::SemActor>,
-    actor_sources: HashMap<CallableId, (HirFn, Vec<HirBinding>, TypeSubstitution)>,
+    actor_sources: HashMap<CallableId, ActorBodySource>,
     supervisors: Vec<crate::SemSupervisor>,
     /// Bodies the lowering synthesizes outside the HIR item table.
     synthetic_sources: HashMap<CallableId, (HirFn, TypeSubstitution)>,
@@ -1036,10 +1039,17 @@ pub(crate) fn runtime_variant_tags(
             (Role::SendErrorDead, "Dead"),
             (Role::SendErrorWriteTimedOut, "WriteTimedOut"),
         ],
+        head if *head == KnownDecl::Caller.head() => &[
+            (Role::CallerActor, "Actor"),
+            (Role::CallerTask, "Task"),
+            (Role::CallerTimer, "Timer"),
+            (Role::CallerNode, "Node"),
+        ],
         head if *head == KnownDecl::ActorError.head() => &[
             (Role::ActorErrorRejected, "Rejected"),
             (Role::ActorErrorFailed, "Failed"),
             (Role::ActorErrorTrapped, "Trapped"),
+            (Role::ActorErrorRefused, "Refused"),
             (Role::ActorErrorDead, "Dead"),
             (Role::ActorErrorTimedOut, "TimedOut"),
             (Role::ActorErrorNodeNotRunning, "NodeNotRunning"),
@@ -1313,12 +1323,40 @@ struct LoweringInput<'a> {
     source: BodySource,
 }
 
+#[derive(Clone)]
+struct ActorBodySource {
+    function: HirFn,
+    state_bindings: Vec<HirBinding>,
+    substitution: TypeSubstitution,
+    stream: Option<ResolvedTy>,
+    weave: Option<ActorWeave>,
+}
+
+#[derive(Clone)]
+enum ActorWeave {
+    Entry {
+        handler: usize,
+        interceptor: CallableId,
+    },
+    Interceptor {
+        next: InterceptorNext,
+    },
+}
+
+#[derive(Clone)]
+enum InterceptorNext {
+    Layer(CallableId),
+    Handlers(Vec<crate::SemActorHandler>),
+}
+
 enum BodySource {
     Function,
     Closure(Box<HirExpr>),
     Actor {
         actor: crate::ActorId,
         state_bindings: Vec<HirBinding>,
+        stream: Option<ResolvedTy>,
+        weave: Option<ActorWeave>,
     },
     EntryAdapter(EntryAdapter),
 }
@@ -1765,8 +1803,14 @@ enum OwnedBindingUse {
 
 /// The evaluated receiver is retained separately from the ordinary arguments.
 enum PreparedCallee {
-    Direct(CallableId),
-    Indirect(crate::BoundaryOperand),
+    Direct {
+        target: CallableId,
+        site: Option<hew_hir::SiteId>,
+    },
+    Indirect {
+        receiver: crate::BoundaryOperand,
+        site: hew_hir::SiteId,
+    },
     Dyn {
         receiver: crate::BoundaryOperand,
         slot: u32,
@@ -1800,7 +1844,7 @@ impl PreparedCallee {
         handback: Option<ValueDef>,
     ) -> SemTerminator {
         match self {
-            Self::Direct(callee) => SemTerminator::Call {
+            Self::Direct { target: callee, .. } => SemTerminator::Call {
                 id,
                 callee,
                 args,
@@ -1809,8 +1853,11 @@ impl PreparedCallee {
                 unwind,
                 handback,
             },
-            Self::Indirect(callee) => SemTerminator::IndirectCall {
+            Self::Indirect {
+                receiver: callee, ..
+            } => SemTerminator::IndirectCall {
                 id,
+                targets: crate::CallableTargets::default(),
                 callee,
                 signature,
                 args,
@@ -2082,6 +2129,8 @@ mod aggregate;
 mod builder_core;
 #[path = "lower_call.rs"]
 mod call;
+#[path = "lower_callable_facts.rs"]
+mod callable_facts;
 #[path = "lower_control.rs"]
 mod control;
 #[path = "lower_expr.rs"]

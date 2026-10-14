@@ -178,6 +178,13 @@ impl Verifier {
                     // uniqueness in S-A; children-list resolution and
                     // wired_to validation are S-B's job.
                     self.node(sup.node, sup.span.clone());
+                    if let Some(interceptor) = &sup.interceptor {
+                        self.node(interceptor.node, interceptor.span.clone());
+                        for parameter in &interceptor.params {
+                            self.binding(parameter.id, parameter.span.clone());
+                        }
+                        self.block(&interceptor.body);
+                    }
                     // Register each child's declaration site and every
                     // init-arg/pool-count expression's real site. Without
                     // this, MIR diagnostics that carry a supervisor child's
@@ -223,11 +230,8 @@ impl Verifier {
                     self.node(ef.node, ef.span.clone());
                 }
                 HirItem::Const(c) => {
-                    // Const declarations contribute only their HirNodeId
-                    // uniqueness — the initializer was constant-folded into a
-                    // value at lowering time, so there are no bindings, sites,
-                    // or expressions to verify.
                     self.node(c.node, c.span.clone());
+                    self.expr(&c.value);
                 }
             }
             self.current_source_module = None;
@@ -1318,6 +1322,7 @@ mod tests {
 
     fn module(items: Vec<HirItem>) -> HirModule {
         HirModule {
+            checked_sites: HashMap::new(),
             indexed_place_operations: HashMap::new(),
             entry_exit_plan: None,
             test_entry_plans: Vec::new(),

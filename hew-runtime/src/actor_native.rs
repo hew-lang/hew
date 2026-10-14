@@ -284,6 +284,7 @@ pub unsafe extern "C" fn hew_actor_submit_native(
             false,
             payload_release,
             discarded_release_out,
+            crate::actor_caller::local_sender(),
         )
     }
 }
@@ -314,6 +315,7 @@ pub unsafe extern "C" fn hew_actor_submit_native_terminal(
             true,
             payload_release,
             discarded_release_out,
+            crate::actor_caller::local_sender(),
         )
     }
 }
@@ -322,7 +324,7 @@ pub unsafe extern "C" fn hew_actor_submit_native_terminal(
     clippy::too_many_arguments,
     reason = "complete compiler-private payload admission and cleanup contract"
 )]
-unsafe fn submit_native(
+pub(crate) unsafe fn submit_native(
     token: crate::lifetime::local_handles::HewLocalPidId,
     message: i32,
     payload: *mut std::ffi::c_void,
@@ -332,6 +334,7 @@ unsafe fn submit_native(
     terminal: bool,
     payload_release: Option<hew_cabi::value::HewValueReleaseStart>,
     discarded_release_out: *mut *mut crate::release_walker::HewReleaseCursor,
+    caller: crate::actor_caller::HewCallerStamp,
 ) -> i32 {
     // SAFETY: the generated caller supplies its writable cursor output.
     if !discarded_release_out.is_null() {
@@ -358,7 +361,7 @@ unsafe fn submit_native(
         if terminal {
             crate::actor::submit_native_terminal(token, message, envelope)
         } else {
-            crate::actor::try_submit_native_envelope(token, message, envelope)
+            crate::actor::try_submit_native_envelope(token, message, envelope, caller)
         }
     };
     let status = match submission_status(outcome) {
@@ -453,7 +456,7 @@ pub(crate) unsafe fn dispatch_result(
             // SAFETY: the callback returned and this activation owns the slot.
             let fault = unsafe { (*ctx).checked_fault.take() }.and_then(|fault| {
                 // SAFETY: the returned dispatch context still owns this actor.
-                unsafe { normalize_stopped_turn((*ctx).actor, fault) }
+                unsafe { normalize_dispatch_completion(ctx, fault) }
             });
             match fault {
                 None => Ok(handle),
@@ -467,6 +470,40 @@ pub(crate) unsafe fn dispatch_result(
             }
         }
     }
+}
+
+/// Complete a refused delivery after the wrapper has released its owned values.
+/// Cleanup faults retain their ordinary actor-failure behaviour.
+///
+/// # Safety
+/// The caller exclusively owns this installed activation and its fault.
+pub(crate) unsafe fn normalize_dispatch_completion(
+    ctx: *mut HewExecutionContext,
+    fault: Box<HewFault>,
+) -> Option<Box<HewFault>> {
+    if fault.code() != crate::fault::HEW_FAULT_REFUSED {
+        // SAFETY: this activation owns its actor and fault.
+        return unsafe { normalize_stopped_turn((*ctx).actor, fault) };
+    }
+    if let Some(fault) = fault.without_primary() {
+        // SAFETY: this activation owns the remaining cleanup failure.
+        return unsafe { normalize_stopped_turn((*ctx).actor, Box::new(fault)) };
+    }
+    // SAFETY: the context retains its current reply sender until publication.
+    let channel: *mut crate::reply_channel::HewReplyChannel =
+        unsafe { (*ctx).reply_channel.cast() };
+    if !channel.is_null() && !crate::activation::current_reply_channel_consumed_on(ctx) {
+        // SAFETY: a refused wrapper never initialized a success reply. Publishing
+        // the classified empty completion retires this one sender reference.
+        unsafe {
+            crate::reply_channel::hew_reply_channel_mark_failed(
+                channel,
+                crate::internal::types::HEW_REPLY_FAIL_REFUSED,
+            );
+            let _ = crate::reply_channel::hew_reply(channel, ptr::null_mut(), 0);
+        }
+    }
+    None
 }
 
 /// Remove an expected stop's cancellation after its checked source cleanup,
@@ -533,9 +570,6 @@ pub(crate) unsafe fn finish_dispatch_failure(
         }
         DispatchFailure::Unwind(payload) => {
             crate::execution_context::reply_channel_swap_unwind();
-            // SAFETY: catch_unwind proves synchronous ramp frames are dead.
-            let _ =
-                unsafe { crate::cont::reclaim_active_coroutine_frames_excluding(ptr::null_mut()) };
             // SAFETY: the scheduler owns the legacy state-recovery boundary.
             let outcome =
                 unsafe { crate::cont::recover_dispatch_crash_cleanup_with_outcome(false) };

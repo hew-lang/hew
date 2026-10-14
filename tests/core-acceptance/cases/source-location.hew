@@ -1,0 +1,11 @@
+const DEFINITION: SourceLocation = location!();
+
+fn main() {
+    let here = location!();
+    assert(!DEFINITION.file.is_empty());
+    println(DEFINITION.file == here.file);
+    println(DEFINITION.line);
+    println(DEFINITION.column);
+    println(here.line);
+    println(here.column);
+}

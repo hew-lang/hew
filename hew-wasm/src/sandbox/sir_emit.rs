@@ -111,6 +111,11 @@ fn runtime_role_name(role: RuntimeVariantRole) -> &'static str {
         Role::ActorErrorRejected => "ActorErrorRejected",
         Role::ActorErrorFailed => "ActorErrorFailed",
         Role::ActorErrorTrapped => "ActorErrorTrapped",
+        Role::ActorErrorRefused => "ActorErrorRefused",
+        Role::CallerActor => "CallerActor",
+        Role::CallerTask => "CallerTask",
+        Role::CallerTimer => "CallerTimer",
+        Role::CallerNode => "CallerNode",
         Role::ActorErrorDead => "ActorErrorDead",
         Role::ActorErrorTimedOut => "ActorErrorTimedOut",
         Role::ActorErrorNodeNotRunning => "ActorErrorNodeNotRunning",
@@ -880,7 +885,7 @@ impl<'m> Walker<'m> {
                                 callable: self.function_id(handler.callable)?,
                                 params: table_index(handler.params.len()),
                                 streams: handler.stream.is_some(),
-                                fallible: handler.failure_display.is_some(),
+                                fallible: handler.declared_failure,
                                 result_shape: self
                                     .module
                                     .variant_shape_for_type(&handler.return_ty)
@@ -2196,6 +2201,7 @@ const fn trap_name(kind: TrapKind) -> &'static str {
         TrapKind::DivideByZero => "divide_by_zero",
         TrapKind::ShiftOutOfRange => "shift_out_of_range",
         TrapKind::IndexOutOfBounds => "vector_bounds",
+        TrapKind::ActorRefused => "actor_refused",
     }
 }
 

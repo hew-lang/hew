@@ -129,6 +129,12 @@ impl Checker {
                 self.type_defs
                     .iter()
                     .filter(|(id, td)| {
+                        if crate::actor_protocol::is_interceptor_member(
+                            &self.defs,
+                            id.declaration(),
+                        ) {
+                            return false;
+                        }
                         let type_name = self.defs.path(id.declaration());
                         let is_local = self.local_type_defs.contains(td.name.as_str())
                             || self.source_type_defs.contains(td.name.as_str())
@@ -584,6 +590,7 @@ impl Checker {
             }
         }
 
+        self.reject_interceptor_return(&freshened_ret, span);
         self.enforce_signature_bounds(sig, &resolved_type_args, span);
         if let Some(GenericCallee::Method {
             type_name, method, ..
@@ -623,6 +630,7 @@ impl Checker {
         expected: &Ty,
         span: &Span,
     ) -> Option<Ty> {
+        self.record_value_path_resolution(&func.0, &func.1);
         if let Expr::ContextVariant(context) = &func.0 {
             if let Some(result) = self.dispatch_context_builtin_variant(
                 expected,
@@ -681,7 +689,8 @@ impl Checker {
 
         let resolved_expected = self.subst.resolve(expected);
 
-        if let Some(context_name) = contextual_name.map(|ident| ident.name.as_str()) {
+        if let Some(context_ident) = contextual_name {
+            let context_name = context_ident.name.as_str();
             let owner = func_name
                 .rsplit_once("::")
                 .map_or(func_name.as_str(), |(owner, _)| owner);
@@ -717,6 +726,7 @@ impl Checker {
                     return Some(Ty::Error);
                 }
             }
+            self.record_context_variant_resolution(&resolved_expected, context_ident.name, &func.1);
         }
 
         if let Some(targs) = type_args {
@@ -1274,7 +1284,7 @@ impl Checker {
                     .get(&key)
                     .map_or_else(|| span.clone(), |(s, _)| s.clone());
                 let acc_module_owned = self.current_module.clone();
-                if !visibility::access_allowed(
+                if !self.visibility_access_allowed(
                     decl_module_owned.as_deref(),
                     acc_module_owned.as_deref(),
                     vis,
@@ -1823,7 +1833,7 @@ impl Checker {
         // polymorphic closures and actor-handle capture checks.
         let lexical_shadow_of_item = matches!(&func.0, Expr::Ident(name)
             if self.env.lookup_ref_with_depth(*name).is_some_and(|(depth, _)| depth > 0)
-                && self.visible_fn_signature_key(name.name.as_str()).is_some());
+                && self.visible_fn_signature_key(*name).is_some());
         let func_name = match &func.0 {
             Expr::Ident(name) => name.to_string(),
             Expr::FieldAccess { object, field } => {
@@ -1840,7 +1850,7 @@ impl Checker {
                     // identifiers on the existing name-building path
                     // (`(Vec.new)(args)` → `"Vec::new"`) because type/module
                     // names are not registered as value bindings.
-                    if self.env.lookup_ref(obj_name.name.as_str()).is_some() {
+                    if self.env.lookup_ref(obj_name).is_some() {
                         let field_ty = self.synthesize(&func.0, &func.1);
                         let resolved = self.subst.resolve(&field_ty);
                         return self.check_call_with_type(&resolved, func, args, span);
@@ -2348,8 +2358,11 @@ impl Checker {
         let visible_fn_key = if lexical_shadow_of_item {
             None
         } else {
-            self.visible_fn_signature_key(&func_name)
-                .or_else(|| self.enclosing_actor_method_key(&func_name))
+            self.visible_fn_signature_key(match &func.0 {
+                Expr::Ident(ident) => *ident,
+                _ => Ident::new(&func_name),
+            })
+            .or_else(|| self.enclosing_actor_method_key(&func_name))
         };
         let has_visible_fn_signature = visible_fn_key.is_some();
         let resolved_fn_name = visible_fn_key.unwrap_or_else(|| func_name.clone());
@@ -2401,7 +2414,7 @@ impl Checker {
                         .get(&resolved_fn_name)
                         .and_then(|(_, m)| m.as_deref());
                     let acc_module = self.current_module.as_deref();
-                    if !visibility::access_allowed(decl_module, acc_module, vis) {
+                    if !self.visibility_access_allowed(decl_module, acc_module, vis) {
                         // Extract just the function name (last segment after '.').
                         let symbol = crate::short_name(&resolved_fn_name);
                         let decl_span = self
@@ -2581,7 +2594,10 @@ impl Checker {
         // Then check if it's a variable with a function type (e.g., lambda parameters)
         if let Some((binding_depth, binding)) = self
             .env
-            .lookup_with_depth(&func_name)
+            .lookup_with_depth(match &func.0 {
+                Expr::Ident(name) => *name,
+                _ => Ident::new(&func_name),
+            })
             .map(|(depth, binding)| (depth, binding.clone()))
         {
             let recursive_actor_receiver = self.in_lambda_actor_body
@@ -2888,6 +2904,7 @@ impl Checker {
                         self.check_against(expr, sp, param);
                     }
                 }
+                self.reject_interceptor_return(&ret, span);
                 self.check_callable_receiver(func_ty, func);
                 *ret
             }

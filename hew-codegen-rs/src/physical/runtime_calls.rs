@@ -238,6 +238,9 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 )?;
                 let _ = self.runtime_call_value(function, &[], "node.shutdown")?;
             }
+            RuntimeCallFamily::ActorCaller => {
+                self.emit_actor_caller(variant_carrier(action)?, required_result()?)?;
+            }
             RuntimeCallFamily::NodeId => {
                 // `hew_node_api_id` writes the identity and returns 0 only
                 // when a stable key-derived identity is loaded.
@@ -1763,6 +1766,114 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
         Ok(self
             .runtime_call_value(declaration, &[operand.into()], "int_method.result")?
             .into_int_value())
+    }
+
+    fn emit_actor_caller(
+        &self,
+        variant: PhysicalVariantId,
+        result: StorageId,
+    ) -> CodegenResult<()> {
+        use hew_mir::RuntimeVariantRole as Role;
+        let glue = self
+            .module
+            .variant_glue
+            .iter()
+            .find(|glue| glue.id == variant)
+            .ok_or_else(|| {
+                CodegenError::FailClosed("caller identity lacks its variant shape".into())
+            })?;
+        let word = self.ctx.i64_type();
+        let stamp_ty = self
+            .ctx
+            .struct_type(&[word.into(), word.into(), word.into()], false);
+        let stamp = self
+            .value_emitter()
+            .entry_scratch(stamp_ty.into(), "caller.stamp")?;
+        let query = get_or_declare_external(
+            self.llvm,
+            "hew_call_caller",
+            self.ctx
+                .void_type()
+                .fn_type(&[self.ctx.ptr_type(AddressSpace::default()).into()], false),
+        )?;
+        self.runtime_call_void(query, &[stamp.into()], "caller.query")?;
+        let stamp = self
+            .builder
+            .build_load(stamp_ty, stamp, "caller.stamp.value")
+            .llvm_ctx("read the current caller stamp")?
+            .into_struct_value();
+        let kind = self
+            .builder
+            .build_extract_value(stamp, 0, "caller.kind")
+            .llvm_ctx("read the caller kind")?
+            .into_int_value();
+        let hi = self
+            .builder
+            .build_extract_value(stamp, 1, "caller.hi")
+            .llvm_ctx("read the caller identity high word")?;
+        let lo = self
+            .builder
+            .build_extract_value(stamp, 2, "caller.lo")
+            .llvm_ctx("read the caller identity low word")?;
+        let complete = self.ctx.append_basic_block(self.value, "caller.complete");
+        let invalid = self.ctx.append_basic_block(self.value, "caller.invalid");
+        let roles = [
+            Role::CallerTask,
+            Role::CallerActor,
+            Role::CallerTimer,
+            Role::CallerNode,
+        ];
+        let branches: Vec<_> = roles
+            .iter()
+            .enumerate()
+            .map(|(kind, _)| {
+                (
+                    word.const_int(kind as u64, false),
+                    self.ctx.append_basic_block(self.value, "caller.kind"),
+                )
+            })
+            .collect();
+        self.builder
+            .build_switch(kind, invalid, &branches)
+            .llvm_ctx("select the caller identity")?;
+        self.builder.position_at_end(invalid);
+        self.builder
+            .build_unreachable()
+            .llvm_ctx("reject an invalid runtime caller kind")?;
+        for ((_, block), role) in branches.into_iter().zip(roles) {
+            self.builder.position_at_end(block);
+            let tag = glue.runtime_tag(role).ok_or_else(|| {
+                CodegenError::FailClosed("caller shape lacks its runtime role".into())
+            })?;
+            let mut payload = Vec::new();
+            if matches!(role, Role::CallerActor | Role::CallerNode) {
+                let ty = &glue.variants[tag as usize].fields[0].ty;
+                let layout = self.module.target.layout(ty).ok_or_else(|| {
+                    CodegenError::FailClosed("caller payload lacks its layout".into())
+                })?;
+                let payload_ty = llvm_type(self.ctx, &layout.repr)?.into_struct_type();
+                let mut value = payload_ty.get_undef();
+                let words = if role == Role::CallerActor {
+                    vec![lo]
+                } else {
+                    vec![hi, lo]
+                };
+                for (index, word) in words.into_iter().enumerate() {
+                    value = self
+                        .builder
+                        .build_insert_value(value, word, index as u32, "caller.identity")
+                        .llvm_ctx("construct the opaque caller identity")?
+                        .into_struct_value();
+                }
+                payload.push(value.into());
+            }
+            self.write_variant_value(self.slots[result.0 as usize], tag, &payload, variant)?;
+            self.builder
+                .build_unconditional_branch(complete)
+                .llvm_ctx("finish caller identity")?;
+        }
+        self.builder.position_at_end(complete);
+        Ok(())
     }
 
     /// Like [`Self::call_intrinsic1`] but for `ctlz`/`cttz`, which take a

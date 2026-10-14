@@ -2,6 +2,7 @@
 members = [
   "hew-cabi",
   "hew-codec",
+  "hew-expand",
   "hew-std",
   "std/text/template",
   "hew-cli",
@@ -30,7 +31,7 @@ exclude = ["hew-parser/fuzz"]
 resolver = "2"
 
 [workspace.package]
-version = "0.6.0"
+version = "0.6.1"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 authors = ["Stephen Olesen <slepp@slepp.ca>"]

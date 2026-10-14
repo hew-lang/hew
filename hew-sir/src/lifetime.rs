@@ -2632,6 +2632,7 @@ mod tests {
                     vec![],
                     SemTerminator::IndirectCall {
                         id: OpId(0),
+                        targets: crate::CallableTargets::default(),
                         callee: BoundaryOperand {
                             operand: operand(0),
                             decision,
@@ -3171,6 +3172,7 @@ mod tests {
     fn exclusive_indirect_receiver_cannot_overlap_a_second_loan_or_argument() {
         let call = SemTerminator::IndirectCall {
             id: OpId(2),
+            targets: crate::CallableTargets::default(),
             callee: BoundaryOperand {
                 operand: operand(1),
                 decision: BoundaryDecision::BorrowMut,

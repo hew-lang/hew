@@ -21,6 +21,12 @@ impl<'src> Parser<'src> {
     /// that every AST node span — including deeply nested sub-nodes — and every
     /// parse error emitted by this parser is already absolute on return.
     pub(crate) fn new_with_offset(source: &'src str, offset: usize) -> Self {
+        Self::with_contexts(source, offset, Arc::default())
+    }
+
+    /// Parse generated source with the contexts assigned by its expander.
+    #[must_use]
+    pub fn with_contexts(source: &'src str, offset: usize, contexts: Arc<TokenContexts>) -> Self {
         let raw_tokens = hew_lexer::lex(source);
         let mut errors = Vec::new();
         let mut tokens = Vec::new();
@@ -104,11 +110,22 @@ impl<'src> Parser<'src> {
             statement_block: Cell::new(false),
             source,
             source_offset: offset,
+            contexts,
+            fragments: FragmentInputs::default(),
+            expander: None,
+            macro_source: std::path::PathBuf::new(),
             last_token_end: offset,
         }
     }
 
     // ── Helpers ──
+    pub(crate) fn ident_at(&self, spelling: &str, span: &Span) -> Ident {
+        Ident {
+            name: hew_lexer::Symbol::intern(spelling),
+            ctx: self.contexts.at(span),
+        }
+    }
+
     /// Whether the current token starts on the same line the previous token
     /// ends on.
     pub(crate) fn peek_on_same_line(&self) -> bool {
@@ -873,17 +890,25 @@ impl<'src> Parser<'src> {
     /// Consume an identifier and keep its span, for path segments and member
     /// names that tooling points at.
     pub(crate) fn expect_ident_spanned(&mut self) -> Option<Spanned<Ident>> {
+        if let Some(fragment) = self.peek_fragment() {
+            if let Fragment::Ident(ident) = fragment {
+                self.consume_fragment(&ident.1);
+                return Some(ident);
+            }
+            self.invalid_fragment_position(&fragment, "an identifier");
+            return None;
+        }
         let span = self.peek_span();
         match self.peek() {
             Some(Token::Identifier(name)) => {
-                let ident = Ident::new(name);
+                let ident = self.ident_at(name, &span);
                 self.advance();
                 Some((ident, span))
             }
             Some(tok) => {
                 if let Some(name) = Self::contextual_keyword_name(tok) {
                     self.advance();
-                    Some((Ident::new(name), span))
+                    Some((self.ident_at(name, &span), span))
                 } else if let Some(kw) = tok.keyword_str() {
                     // Reserved keyword in a name position — emit a targeted
                     // diagnostic so the user knows the word is off-limits.
@@ -947,10 +972,10 @@ impl<'src> Parser<'src> {
             Some(tok) => {
                 if let Some(name) = Self::import_path_segment_keyword(tok) {
                     self.advance();
-                    Some((Ident::new(name), span))
+                    Some((self.ident_at(name, &span), span))
                 } else if let Some(name) = Self::contextual_keyword_name(tok) {
                     self.advance();
-                    Some((Ident::new(name), span))
+                    Some((self.ident_at(name, &span), span))
                 } else {
                     self.expect_ident_spanned()
                 }

@@ -27,7 +27,11 @@ fn stderr(output: &Output) -> String {
 /// `::` paths, plus a nested importer.
 fn legacy_tree(dir: &Path) {
     // A directory module belongs to a package (HEW-SPEC-2026 §3.5.1).
-    std::fs::write(dir.join("hew.toml"), "[package]\nname = \"app\"\n").unwrap();
+    std::fs::write(
+        dir.join("hew.toml"),
+        "[package]\nname = \"app\"\nversion = \"0.1.0\"\n",
+    )
+    .unwrap();
     let module = dir.join("greeting");
     std::fs::create_dir(&module).unwrap();
     std::fs::write(

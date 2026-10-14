@@ -460,11 +460,20 @@ impl Checker {
     /// Whether `ty` has a declared impl of `trait_id`, directly or through an
     /// impl of a trait extending it. An alias answers for its target.
     pub(in crate::check) fn type_implements_trait(&self, ty: &Ty, trait_id: crate::DefId) -> bool {
+        let ty = &ty.materialize_literal_defaults();
         if let Some(key) = Self::impl_self_key(ty) {
-            if self.trait_impls.contains_key(&(key.clone(), trait_id))
-                || self.trait_impls.keys().any(|(implemented, declared)| {
-                    *implemented == key && self.trait_extends(*declared, trait_id)
-                })
+            if self
+                .trait_impls
+                .get(&(key.clone(), trait_id))
+                .is_some_and(|rows| rows.iter().any(|row| row.matches_receiver(ty)))
+                || self
+                    .trait_impls
+                    .iter()
+                    .any(|((implemented, declared), rows)| {
+                        *implemented == key
+                            && self.trait_extends(*declared, trait_id)
+                            && rows.iter().any(|row| row.matches_receiver(ty))
+                    })
             {
                 return true;
             }
@@ -670,18 +679,6 @@ impl Checker {
                 marker == MarkerTrait::Send
                     && self.param_carries_marker(param.id, MarkerTrait::Send)
             })
-    }
-
-    /// Whether trait `trait_id` is declared in the module being checked.
-    pub(in crate::check) fn trait_is_local(&self, trait_id: crate::DefId) -> bool {
-        let here = self
-            .current_declaration_module()
-            .map(|module| self.scopes.namespace_of(module));
-        let owner = self
-            .defs
-            .module(trait_id)
-            .map(|module| self.scopes.namespace_of(module));
-        here.is_some() && here == owner
     }
 
     /// The trait a qualified associated path (`<T as Trait>.member`) names,

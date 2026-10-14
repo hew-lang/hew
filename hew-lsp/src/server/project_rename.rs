@@ -316,6 +316,7 @@ fn checked_frontend(source: &Source, mut state: hew_compile::DocumentFrontendSta
         functions,
         tokens,
         doc: DocumentState {
+            expanded_program: None,
             source: source.text.clone(),
             line_offsets: hew_analysis::util::compute_line_offsets(&source.text),
             parse_result: state.parse_result.expect("source frontend parses its root"),
@@ -631,6 +632,7 @@ fn legacy_documents(snapshot: &HashMap<Uri, OpenDocument>) -> dashmap::DashMap<U
             (
                 uri.clone(),
                 DocumentState {
+                    expanded_program: None,
                     source: document.source.clone(),
                     line_offsets: hew_analysis::util::compute_line_offsets(&document.source),
                     parse_result: hew_parser::parse(&document.source),

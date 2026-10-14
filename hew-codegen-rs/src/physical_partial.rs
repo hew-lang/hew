@@ -17,17 +17,11 @@ pub(super) fn allocate_storage<'ctx>(
     signature: &PhysicalCallable,
     value: FunctionValue<'ctx>,
     builder: &Builder<'ctx>,
-    frame: Option<&super::coro::Frame<'ctx>>,
 ) -> CodegenResult<Vec<PointerValue<'ctx>>> {
-    let address_builder = module.ctx.create_builder();
-    let addressing = if let Some(frame) = frame {
-        address_builder.position_before(&frame.allocations.get_terminator().ok_or_else(|| {
-            CodegenError::FailClosed("frame storage has no dispatch point".into())
-        })?);
-        &address_builder
-    } else {
-        builder
-    };
+    let addressing = builder;
+    let entry = value
+        .get_first_basic_block()
+        .ok_or_else(|| CodegenError::FailClosed("physical function has no entry block".into()))?;
     let mut slots = function
         .storage
         .iter()
@@ -60,14 +54,10 @@ pub(super) fn allocate_storage<'ctx>(
                     .llvm_ctx("address exclusive actor state field")
                     .map(Some);
             }
-            if let StorageOrigin::Capture { environment, .. } = storage.origin {
+            if let StorageOrigin::Capture { .. } = storage.origin {
                 let slot = callable::capture_parameter_slot(
                     module, function, signature, value, builder, storage,
                 )?;
-                if let Some(frame) = frame.filter(|_| function.frame_storage.contains(&environment))
-                {
-                    frame.carry(module.ctx, builder, slot, "capture.address.slot")?;
-                }
                 return Ok(Some(slot));
             }
             if let Some((index, _)) = function
@@ -90,15 +80,7 @@ pub(super) fn allocate_storage<'ctx>(
             }
             let ty = llvm_type(module.ctx, &storage.layout.repr)?;
             let name = format!("s{}", storage.id.0);
-            let slot = match frame.filter(|_| function.frame_storage.contains(&storage.id)) {
-                Some(frame) => frame.storage(module.ctx, ty, &name)?,
-                None => builder
-                    .build_alloca(ty, &name)
-                    .llvm_ctx("allocate physical storage")?,
-            };
-            if let Some(frame) = frame.filter(|_| !function.frame_storage.contains(&storage.id)) {
-                frame.stack(module.ctx, slot)?;
-            }
+            let slot = super::coro::entry_storage(module.ctx, entry, ty, &name)?;
             slot.as_instruction()
                 .ok_or_else(|| {
                     CodegenError::FailClosed(
@@ -163,17 +145,13 @@ pub(super) fn allocate_flags<'ctx>(
     function: &PhysicalFunction,
     builder: &Builder<'ctx>,
     slots: &[PointerValue<'ctx>],
-    frame: Option<&super::coro::Frame<'ctx>>,
 ) -> CodegenResult<BTreeMap<StorageId, PointerValue<'ctx>>> {
-    let address_builder = module.ctx.create_builder();
-    let addressing = if let Some(frame) = frame {
-        address_builder.position_before(&frame.allocations.get_terminator().ok_or_else(|| {
-            CodegenError::FailClosed("frame storage has no dispatch point".into())
-        })?);
-        &address_builder
-    } else {
-        builder
-    };
+    let addressing = builder;
+    let entry_block = builder
+        .get_insert_block()
+        .and_then(|block| block.get_parent())
+        .and_then(|function| function.get_first_basic_block())
+        .ok_or_else(|| CodegenError::FailClosed("physical function has no entry block".into()))?;
     let mut flags = BTreeMap::new();
     for projection in function.place_storage.values() {
         for leaf in &projection.leaves {
@@ -191,19 +169,13 @@ pub(super) fn allocate_flags<'ctx>(
                     )?);
                     continue;
                 }
-                let flag = builder
-                    .build_alloca(
-                        module.ctx.bool_type(),
-                        &format!("s{}.initialized", leaf.storage.0),
-                    )
-                    .llvm_ctx("allocate aggregate leaf initialization")?;
+                let flag = super::coro::entry_storage(
+                    module.ctx,
+                    entry_block,
+                    module.ctx.bool_type().into(),
+                    &format!("s{}.initialized", leaf.storage.0),
+                )?;
                 let initialized = function.parameters.contains(&projection.root);
-                if let Some(frame) = frame.filter(|_| {
-                    !function.frame_storage.contains(&leaf.storage)
-                        && !function.frame_storage.contains(&projection.root)
-                }) {
-                    frame.stack(module.ctx, flag)?;
-                }
                 builder
                     .build_store(
                         flag,

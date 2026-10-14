@@ -12,7 +12,7 @@
   ],
   "bytes": [],
   "closures": [],
-  "compiler_version": "hew-wasm-0.6.0",
+  "compiler_version": "hew-wasm-0.6.1",
   "entry": {
     "exit": "unit",
     "function": 0
@@ -543,7 +543,7 @@
             },
             {
               "dst": 7,
-              "op": "load.copy",
+              "op": "load.take",
               "own": "owned",
               "place": 0,
               "span": null
@@ -746,7 +746,7 @@
             },
             {
               "dst": 17,
-              "op": "load.copy",
+              "op": "load.take",
               "own": "owned",
               "place": 2,
               "span": null
@@ -1187,7 +1187,7 @@
           "ops": [
             {
               "dst": 18,
-              "op": "load.copy",
+              "op": "load.take",
               "own": "owned",
               "place": 0,
               "span": null
@@ -2677,7 +2677,7 @@
       "places": []
     }
   ],
-  "hew_version": "0.6.0",
+  "hew_version": "0.6.1",
   "profile": "sandbox.sandbox-vm-export.v0",
   "regex_patterns": [],
   "resources": [],

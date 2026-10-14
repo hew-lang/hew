@@ -41,8 +41,13 @@ impl Checker {
     /// Read the binder inventory when registering a named source declaration.
     pub(in crate::check) fn declaration_parameter_heads(
         &mut self,
-        name: &str,
+        name: impl crate::env::LexicalName,
     ) -> Vec<crate::ParamHead> {
+        let ident = name.lexical_key();
+        if let Some(owner) = self.named_item_declaration(ident) {
+            return self.scopes.declaration_parameters(owner);
+        }
+        let name = ident.name.as_str();
         let path = self.declaration_identity(name);
         let Some(owner) = self
             .lookup_declaration(&path)
@@ -110,7 +115,12 @@ impl Checker {
 
     pub(super) fn collect_item_type_param_names(&mut self, item: &Item) {
         match item {
-            Item::Supervisor(sd) => self.insert_type_param_names(&sd.type_params),
+            Item::Supervisor(sd) => {
+                self.insert_type_param_names(&sd.type_params);
+                for method in &sd.methods {
+                    self.insert_opt_type_param_names(method.type_params.as_ref());
+                }
+            }
             Item::Function(fd) => self.insert_opt_type_param_names(fd.type_params.as_ref()),
             Item::TypeDecl(td) => self.insert_opt_type_param_names(td.type_params.as_ref()),
             Item::Record(rd) => self.insert_opt_type_param_names(rd.type_params.as_ref()),
@@ -321,8 +331,10 @@ impl Checker {
                 // `current_module` (None = root): it is the display/provenance
                 // axis, and the legacy root render at publication boundaries
                 // derives from it.
-                let scoped_name =
-                    Self::declared_fn_identity(self.canonical_fn_owner(), fd.name.name.as_str());
+                let scoped_name = self.named_item_declaration(fd.name).map_or_else(
+                    || Self::declared_fn_identity(self.canonical_fn_owner(), fd.name.name.as_str()),
+                    |id| self.defs.path(id).to_string(),
+                );
                 if let Some((prev_span, _)) = self.fn_def_spans.get(&scoped_name) {
                     // Root diagnostics render the bare leaf, exactly as the
                     // declaration is spelled in source.
@@ -362,8 +374,7 @@ impl Checker {
                 // already registered; restore it only if import registration
                 // replaced its bare compatibility slot with a non-actor type.
                 let module_identity = self.current_module.clone();
-                let identity =
-                    Self::actor_identity(module_identity.as_deref(), ad.name.name.as_str());
+                let identity = self.declaration_identity(ad.name);
                 let local_actor_needs_restore = self
                     .type_def_at(&identity)
                     .is_none_or(|definition| definition.kind != TypeDefKind::Actor);
@@ -380,6 +391,15 @@ impl Checker {
                 for rf in &ad.receive_fns {
                     self.register_receive_fn(&identity, rf);
                 }
+                let actor_parameters = self
+                    .declaration_parameter_heads(&identity)
+                    .into_iter()
+                    .map(Ty::param)
+                    .collect();
+                let actor_self = self.named_ty_for_key(&identity, actor_parameters);
+                let previous_self = self
+                    .current_self_type
+                    .replace((identity.clone(), actor_self));
                 for method in &ad.methods {
                     let method_name = format!("{identity}::{}", method.name);
                     self.register_fn_sig_with_name(&method_name, method, None);
@@ -402,13 +422,18 @@ impl Checker {
                     // trampoline and MIR emits it under a hook symbol. It gets
                     // no declaration row, so a call naming one still fails the
                     // way it does today.
-                    if !method.attributes.iter().any(|a| a.name.as_str() == "on") {
+                    if !method
+                        .attributes
+                        .iter()
+                        .any(|a| matches!(a.name.as_str(), "on" | "intercept"))
+                    {
                         self.fn_def_spans.insert(
                             method_name,
                             (method.fn_span.clone(), self.current_module.clone()),
                         );
                     }
                 }
+                self.current_self_type = previous_self;
                 self.exit_primary_sig_scope(actor_sig_scope);
             }
             Item::Impl(id) => {
@@ -430,7 +455,7 @@ impl Checker {
                                                                // resolution looks the receiver up under. Leaving it as
                                                                // written registers the methods where nothing can find
                                                                // them, and the impl is silently ignored.
-                    let canonical_target = self.canonical_impl_target_identity(target_name);
+                    let canonical_target = self.canonical_impl_target_identity(named_path);
                     let type_name = canonical_target.as_ref().unwrap_or(target_name);
                     let prev_impl_surface_target = self
                         .current_impl_surface_target
@@ -442,7 +467,6 @@ impl Checker {
                     // Set current_self_type for resolving `Self` in method parameters
                     let prev_self_type = self.current_self_type.take();
                     let self_ty = self.resolve_impl_target(id);
-                    let self_type_args = Self::impl_target_args(&self_ty);
                     self.current_self_type = Some((type_name.clone(), self_ty));
                     if !self.admit_source_impl(id, span, SourceImplOrigin::Source) {
                         self.current_self_type = prev_self_type;
@@ -491,12 +515,6 @@ impl Checker {
                         if let (Some(canonical), Some(trait_ref)) =
                             (primitive_key.clone(), impl_trait.as_ref())
                         {
-                            self.record_primitive_trait_impl_self_args(
-                                canonical.clone(),
-                                trait_ref.trait_id,
-                                self_type_args.clone(),
-                                &id.target_type.1,
-                            );
                             self.record_primitive_trait_impl_method(
                                 canonical,
                                 trait_ref.trait_id,
@@ -738,7 +756,7 @@ impl Checker {
                         let method_name = method.name;
                         let type_name = td.name;
                         if let Some((owner, member)) = self
-                            .lookup_declaration(&self.declaration_identity(type_name.name.as_str()))
+                            .lookup_declaration(&self.declaration_identity(type_name))
                             .and_then(|owner| {
                                 self.defs
                                     .member_of_kind(
@@ -778,7 +796,7 @@ impl Checker {
                 }
             }
             Item::Trait(td) => {
-                let trait_path = self.declaration_identity(td.name.name.as_str());
+                let trait_path = self.declaration_identity(td.name);
                 let Some(trait_id) = self.require_declaration_path(&trait_path, span) else {
                     return;
                 };
@@ -805,9 +823,26 @@ impl Checker {
                 // `source_module` tells the diagnostic renderer which file owns the span.
                 self.register_import(id, Some(span));
             }
-            Item::Const(_)
+            Item::Supervisor(supervisor) => {
+                let identity = self.declaration_identity(supervisor.name);
+                let scope = self.enter_primary_sig_scope(&[(Some(&supervisor.type_params), None)]);
+                for method in &supervisor.methods {
+                    self.register_fn_sig_with_name(
+                        &format!("{identity}::{}", method.name),
+                        method,
+                        None,
+                    );
+                }
+                self.exit_primary_sig_scope(scope);
+            }
+            Item::Const(declaration) => {
+                let ty = self.resolve_registered_annotation_ty_no_holes(&declaration.ty);
+                let owner = self.current_module.clone();
+                self.register_source_constant(owner.as_deref(), declaration, ty);
+            }
+            Item::Macro(_)
+            | Item::MacroCall(_)
             | Item::TypeAlias(_)
-            | Item::Supervisor(_)
             | Item::Machine(_)
             | Item::Record(_) => {
                 // Records have no method body items in v0.5; method registration
@@ -834,7 +869,11 @@ impl Checker {
         // on a *different* item) is reported as unknown rather than silently
         // exempted.
         let guard = self.enter_primary_sig_scope(&[]);
-        self.register_fn_sig_with_name(fd.name.name.as_str(), fd, None);
+        self.register_fn_sig_with_name(
+            fd.name.name.as_str(),
+            fd,
+            self.named_item_declaration(fd.name),
+        );
         self.exit_primary_sig_scope(guard);
     }
 
@@ -1053,8 +1092,13 @@ impl Checker {
         // identical to the key the same declaration mints when its module is
         // imported. The side registries (`fn_sig_inference_holes`,
         // `intrinsic_declarations`) are co-minted under this same key.
-        let key = scoped_module_item_name(self.canonical_fn_owner(), name)
-            .unwrap_or_else(|| name.to_string());
+        let key = declaration.map_or_else(
+            || {
+                scoped_module_item_name(self.canonical_fn_owner(), name)
+                    .unwrap_or_else(|| name.to_string())
+            },
+            |id| self.defs.path(id).to_string(),
+        );
         match declaration {
             Some(declaration) => self.insert_fn_sig(&key, declaration, sig),
             None => self.insert_fn_sig_at(&key, sig),
@@ -1463,19 +1507,6 @@ impl Checker {
                     declaration_id,
                 );
             }
-            if let Some(ids) = implemented_trait
-                .and_then(|trait_id| self.trait_method_ids_of(trait_id, method.name.name.as_str()))
-            {
-                self.trait_method_ids_by_binding.insert(
-                    (
-                        self.current_module.clone(),
-                        self.current_module_idx,
-                        bound.path.to_string(), // TRANSITION(P1): deleted by A1 commit 2
-                        method.name.to_string(),
-                    ),
-                    ids,
-                );
-            }
         }
         // Push impl-level bounds onto the resolver's stack so the method
         // signature can reference `T.Bar` where `T` is an impl type param
@@ -1585,6 +1616,9 @@ impl Checker {
         let mut sig = FnSig {
             impl_method: Some(super::types::ImplMethodProvenance {
                 declaration: declaration_id,
+                trait_method: implemented_trait.and_then(|trait_id| {
+                    self.trait_method_ids_of(trait_id, method.name.name.as_str())
+                }),
                 receiver: self.lookup_declaration(
                     &self
                         .canonical_nominal_name(type_name)
@@ -1980,8 +2014,19 @@ impl Checker {
                     .collect();
                 format!("<{}>", rendered.join(", "))
             });
+        // A foreign receiver's owner does not identify the source impl;
+        // in particular, a user override must not reuse its prelude method.
+        let receiver_declaration = self.lookup_declaration(&receiver);
+        let source_owner = self.current_declaration_module().filter(|source| {
+            receiver_declaration
+                .and_then(|receiver| self.defs.module(receiver))
+                .is_some_and(|owner| owner != *source)
+        });
+        let source_prefix = source_owner.map_or_else(String::new, |module| {
+            format!("{}.", self.defs.module_path(module))
+        });
         let path = format!(
-            "{receiver}::<impl {trait_identity}{trait_args} for {declared_receiver}>::{}",
+            "{source_prefix}{receiver}::<impl {trait_identity}{trait_args} for {declared_receiver}>::{}",
             method.name
         );
         let occurrence = crate::DeclarationOccurrence::new_with_synthetic_ordinal(
@@ -1996,7 +2041,7 @@ impl Checker {
         let declaration = self.defs.declaration(occurrence).map_or_else(
             || {
                 self.defs
-                    .declare(occurrence, method.name.name, None, path.clone())
+                    .declare(occurrence, method.name, receiver_declaration, path.clone())
             },
             Ok,
         );

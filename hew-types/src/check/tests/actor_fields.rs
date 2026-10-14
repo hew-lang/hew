@@ -1281,81 +1281,16 @@ fn main() -> i64 {
     }
 
     #[test]
-    fn cross_actor_msg_id_collision_is_rejected() {
-        // `Alpha::h69862` and `Beta::h103299` are a real SipHash-1-3 low-32-bit
-        // collision (pinned in `actor_protocol::tests`). Two DISTINCT actors
-        // sharing the 32-bit cross-node wire discriminant must be refused at
-        // compile time (defense-in-depth: the runtime keys its codec registry by
-        // (actor-type, msg_id) and routes correctly in-process, but the wire
-        // discriminant itself is ambiguous for relays / mixed-binary peers).
-        let output = check_source(
-            r"
-            actor Alpha {
-                receive fn h69862() {}
-            }
-            actor Beta {
-                receive fn h103299() {}
-            }
-
-            fn main() {}
-            ",
-        );
-
-        let collision = output.errors.iter().find(|e| {
-            matches!(
-                &e.kind,
-                TypeErrorKind::CrossActorProtocolCollision { msg_id, .. } if *msg_id == 0xc0f6_cc98
-            )
-        });
-        assert!(
-            collision.is_some(),
-            "two distinct actors with msg_id-colliding handlers must be rejected \
-             with CrossActorProtocolCollision; got: {:#?}",
-            output.errors
-        );
-        let err = collision.unwrap();
-        if let TypeErrorKind::CrossActorProtocolCollision {
-            actor_a,
-            handler_a,
-            actor_b,
-            handler_b,
-            ..
-        } = &err.kind
-        {
-            // Both actors and both handlers are named (order: first-seen, then
-            // the later offender).
-            let actors = [actor_a.as_str(), actor_b.as_str()];
-            assert!(actors.contains(&"Alpha") && actors.contains(&"Beta"));
-            let handlers = [handler_a.as_str(), handler_b.as_str()];
-            assert!(handlers.contains(&"h69862") && handlers.contains(&"h103299"));
-        }
-    }
-
-    #[test]
-    fn distinct_actor_non_colliding_handlers_are_clean() {
-        // Negative control: two actors whose handler names do NOT collide on the
-        // 32-bit msg_id must produce no cross-actor collision diagnostic.
-        let output = check_source(
-            r"
-            actor Alpha {
-                receive fn ping() {}
-            }
-            actor Beta {
-                receive fn pong() {}
-            }
-
-            fn main() {}
-            ",
-        );
-
-        assert!(
-            !output
-                .errors
-                .iter()
-                .any(|e| matches!(&e.kind, TypeErrorKind::CrossActorProtocolCollision { .. })),
-            "non-colliding actor handlers must not produce a cross-actor collision; \
-             got: {:#?}",
-            output.errors
+    fn former_hash_collision_has_distinct_wire_declarations() {
+        let output = check_source("actor Alpha { receive fn h69862() {} } actor Beta { receive fn h103299() {} } fn main() {}");
+        assert!(output.errors.is_empty(), "{:?}", output.errors);
+        let alpha = &output.actor_protocol_descriptors["Alpha"].handlers[0];
+        let beta = &output.actor_protocol_descriptors["Beta"].handlers[0];
+        assert_eq!(alpha.wire_identity, "Alpha.h69862");
+        assert_eq!(beta.wire_identity, "Beta.h103299");
+        assert_eq!(
+            alpha.msg_id, beta.msg_id,
+            "dispatch indices are actor-local"
         );
     }
 
@@ -1410,6 +1345,7 @@ fn main() -> i64 {
         mg.topo_order = vec![alpha_id, beta_id, root_id];
 
         Program {
+            expansions: hew_parser::macro_syntax::ExpansionMap::default(),
             module_graph: Some(mg),
             items: root_parsed.program.items,
             module_doc: None,
@@ -1438,11 +1374,14 @@ fn main() -> i64 {
             "fn main() {}",
         );
 
-        let mut identities: Vec<_> = collect_program_actors(&program)
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let output = checker.check_program(&program);
+        assert!(output.errors.is_empty(), "{:#?}", output.errors);
+        let mut identities: Vec<_> = collect_program_actors(&program, &checker.defs)
             .into_iter()
-            .map(|(identity, _)| identity)
+            .map(|(identity, _)| checker.defs.path(identity))
             .collect();
-        identities.sort();
+        identities.sort_unstable();
         assert_eq!(
             identities,
             ["left.render.Worker", "right.render.Worker"],
@@ -1474,7 +1413,10 @@ fn main() -> i64 {
         assert_eq!(right.handlers[0].return_ty, ResolvedTy::Bool);
         assert_eq!(left.handlers[0].symbol, "left.render.Worker__handle");
         assert_eq!(right.handlers[0].symbol, "right.render.Worker__handle");
-        assert_ne!(left.handlers[0].msg_id, right.handlers[0].msg_id);
+        assert_ne!(
+            left.handlers[0].wire_identity,
+            right.handlers[0].wire_identity
+        );
         assert!(!descriptors.contains_key("render.Worker"));
     }
 
@@ -1497,6 +1439,7 @@ fn main() -> i64 {
         mg.add_module(module).unwrap();
         mg.topo_order = vec![mod_id, root_id];
         let program = Program {
+            expansions: hew_parser::macro_syntax::ExpansionMap::default(),
             module_graph: Some(mg),
             items: vec![],
             module_doc: None,
@@ -1545,54 +1488,22 @@ fn main() -> i64 {
     }
 
     #[test]
-    fn module_cross_actor_collision_is_caught() {
-        // `b.Alpha::h804959` and `d.Beta::h3600` are a real SipHash-1-3 low-32-bit
-        // collision for actors owned by the single-segment modules `b` and `d`.
-        // Pair is pinned in `actor_protocol::tests::module_qualified_cross_actor_handler_names_share_msg_id`.
-        // The whole-program collision checker must detect this even though each
-        // actor lives in a separate nested module — it must not silently skip
-        // actors from the module graph.
+    fn module_handler_identity_preserves_full_declaration_owner() {
         let output = check_two_module_actors(
             "actor Alpha { receive fn h804959() {} }",
-            vec!["b".to_string()],
+            vec!["a".to_string(), "b".to_string()],
             "actor Beta { receive fn h3600() {} }",
-            vec!["d".to_string()],
+            vec!["c".to_string(), "d".to_string()],
         );
-
-        let collision = output.errors.iter().find(|e| {
-            matches!(
-                &e.kind,
-                TypeErrorKind::CrossActorProtocolCollision { msg_id, .. } if *msg_id == 0x3e59_ee08
-            )
-        });
-        assert!(
-            collision.is_some(),
-            "two distinct module-nested actors with msg_id-colliding handlers \
-             must be rejected with CrossActorProtocolCollision (0x3e59_ee08); \
-             got: {:#?}",
-            output.errors
+        assert!(output.errors.is_empty(), "{:?}", output.errors);
+        assert_eq!(
+            output.actor_protocol_descriptors["a.b.Alpha"].handlers[0].wire_identity,
+            "a.b.Alpha.h804959"
         );
-        if let TypeErrorKind::CrossActorProtocolCollision {
-            actor_a,
-            handler_a,
-            actor_b,
-            handler_b,
-            ..
-        } = &collision.unwrap().kind
-        {
-            let actors = [actor_a.as_str(), actor_b.as_str()];
-            // The identity in the diagnostic is the full owner form.
-            assert!(
-                actors.iter().any(|a| a.ends_with("Alpha"))
-                    && actors.iter().any(|a| a.ends_with("Beta")),
-                "collision diagnostic must name both actors (qualified); got: {actor_a}, {actor_b}"
-            );
-            let handlers = [handler_a.as_str(), handler_b.as_str()];
-            assert!(
-                handlers.contains(&"h804959") && handlers.contains(&"h3600"),
-                "collision diagnostic must name both handlers; got: {handler_a}, {handler_b}"
-            );
-        }
+        assert_eq!(
+            output.actor_protocol_descriptors["c.d.Beta"].handlers[0].wire_identity,
+            "c.d.Beta.h3600"
+        );
     }
 }
 

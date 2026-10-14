@@ -33,6 +33,82 @@ fn read_source_or_io_error(uri: &Url) -> Result<String, hew_analysis::RenameErro
 
 // ── Go-to-definition ─────────────────────────────────────────────────
 
+pub(super) fn macro_definition_locations(
+    uri: &Url,
+    doc: &DocumentState,
+    offset: usize,
+    documents: &DashMap<Url, DocumentState>,
+) -> Option<Vec<Location>> {
+    use hew_parser::macro_syntax::Origin;
+    let program = doc.expanded_program.as_ref()?;
+    let map = &program.expansions;
+    let location = |origin: &Origin| -> Option<Location> {
+        let (Origin::Caller { file, span } | Origin::Template { file, span }) = origin;
+        let (file, span) = map
+            .source_origin(span)
+            .unwrap_or_else(|| (file.clone(), span.clone()));
+        let target_uri = Url::from_checked_file_path(&file)?;
+        let source = super::analysis::source_for_path(&file, documents)?;
+        let lines = compute_line_offsets(&source);
+        Some(Location {
+            uri: target_uri,
+            range: offset_range_to_lsp(&source, &lines, span.start, span.end),
+        })
+    };
+    for expansion in &map.expansions {
+        let (Origin::Caller { file, span } | Origin::Template { file, span }) = &expansion.callee;
+        if span.contains(&offset)
+            && Url::from_checked_file_path(file)
+                .is_some_and(|target| same_source_file(uri, &target))
+        {
+            return location(&expansion.definition).map(|target| vec![target]);
+        }
+    }
+    if let Some(expansion) = generated_expansion_at(uri, doc, offset) {
+        let mut locations = Vec::new();
+        if let Some(invocation) = location(&expansion.invocation) {
+            locations.push(invocation);
+        }
+        if let Some(definition) = location(&expansion.definition) {
+            if !locations.contains(&definition) {
+                locations.push(definition);
+            }
+        }
+        return (!locations.is_empty()).then_some(locations);
+    }
+    None
+}
+
+pub(super) fn generated_expansion_at<'a>(
+    uri: &Url,
+    doc: &'a DocumentState,
+    offset: usize,
+) -> Option<&'a hew_parser::macro_syntax::Expansion> {
+    let map = &doc.expanded_program.as_ref()?.expansions;
+    let output = doc.type_output.as_ref()?;
+    let resolution = hew_analysis::identity::resolution_at(output, 0, offset)
+        .map(|(_, resolution)| resolution)
+        .or_else(|| {
+            output
+                .resolutions
+                .iter()
+                .filter_map(|(key, resolution)| {
+                    let (file, span) = map.source_origin(&(key.start..key.end))?;
+                    (span.contains(&offset)
+                        && Url::from_checked_file_path(&file)
+                            .is_some_and(|target| same_source_file(uri, &target)))
+                    .then_some((span.len(), *resolution))
+                })
+                .min_by_key(|(length, _)| *length)
+                .map(|(_, resolution)| resolution)
+        })?;
+    let target = hew_analysis::identity::declaration_target(output, resolution)?;
+    let span = target.occurrence.span();
+    map.expansions
+        .iter()
+        .find(|expansion| expansion.synthetic.contains(&span.start))
+}
+
 fn checked_resolution_at(
     doc: &DocumentState,
     offset: usize,
@@ -2083,6 +2159,7 @@ mod tests {
 
     fn make_doc(source: &str) -> DocumentState {
         DocumentState {
+            expanded_program: None,
             source: source.to_string(),
             line_offsets: compute_line_offsets(source),
             parse_result: hew_parser::parse(source),

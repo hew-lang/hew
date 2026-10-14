@@ -18,7 +18,7 @@ use super::types::SpanKey;
 use crate::builtin_type::BuiltinType;
 use crate::def_table::{DeclarationKind, Predicate, TypeParamId};
 use crate::env::{TypeBindingId, TypeEnv};
-use crate::{DefId, DefTable, ModuleId, NominalId};
+use crate::{DefId, DefTable, ModuleId, NominalId, TypeHead};
 
 /// What a name is bound to in a module or the prelude.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -46,7 +46,10 @@ impl Binding {
             | DeclarationKind::Record
             | DeclarationKind::Supervisor
             | DeclarationKind::Machine
-            | DeclarationKind::MachineEventType => Self::Type(nominal()),
+            | DeclarationKind::MachineEventType
+            | DeclarationKind::ActorRequestType
+            | DeclarationKind::ActorResponseType
+            | DeclarationKind::ActorStreamType => Self::Type(nominal()),
             DeclarationKind::Actor => Self::Actor(nominal()),
             DeclarationKind::Trait if DefTable::as_predicate(id).is_some() => Self::Predicate(id),
             DeclarationKind::Trait => Self::Trait(id),
@@ -79,12 +82,28 @@ pub enum Resolution {
     Module(ModuleId),
     Builtin(BuiltinType),
     /// A variant of an enum, by declaration index.
-    Variant(NominalId, u32),
+    Variant(TypeHead, u32),
     /// A declared record field, by its nominal owner and declaration index.
     Field(NominalId, u32),
-    /// A member row under a nominal, trait or actor: a method, handler,
-    /// machine state or companion.
+    /// A member row under a nominal, trait or actor: a method, handler or companion.
     Member(DefId),
+}
+
+impl Resolution {
+    pub(super) fn of_member(defs: &DefTable, id: DefId) -> Self {
+        if matches!(
+            defs.kind(id),
+            DeclarationKind::Variant | DeclarationKind::MachineState
+        ) {
+            if let (Some(owner), Some(site)) = (defs.owner(id), defs.site(id)) {
+                return Self::Variant(
+                    TypeHead::of_declaration(defs, NominalId::of_declaration(owner)),
+                    site.ordinal(),
+                );
+            }
+        }
+        Binding::of_item(defs, id).map_or(Self::Member(id), Binding::resolution)
+    }
 }
 
 /// Which namespace a head identifier is looked up in. A type position never
@@ -231,11 +250,10 @@ struct GenericScope {
 /// Every scope of one compilation, and the resolutions made through them.
 #[derive(Debug, Clone, Default)]
 pub struct Scopes {
-    items: HashMap<ModuleId, HashMap<Symbol, Binding>>,
+    items: HashMap<ModuleId, HashMap<Ident, Binding>>,
     files: HashMap<ModuleId, FileScope>,
     prelude: HashMap<Symbol, Binding>,
     members: HashMap<(DefId, Symbol), Resolution>,
-    variants: HashMap<(NominalId, Symbol), u32>,
     source_type_params: Vec<GenericScope>,
     contexts: SyntaxContexts,
     resolutions: HashMap<SpanKey, Resolution>,
@@ -298,9 +316,10 @@ impl Scopes {
     pub fn declare_item(
         &mut self,
         namespace: ModuleId,
-        name: Symbol,
+        name: impl crate::env::LexicalName,
         binding: Binding,
     ) -> Option<Binding> {
+        let name = name.lexical_key();
         let previous = self
             .items
             .entry(namespace)
@@ -317,7 +336,8 @@ impl Scopes {
 
     /// Withdraw the item `name` binds in `namespace`: a declaration the
     /// checker refused, so the name keeps reaching what it reached before.
-    pub fn unbind_item(&mut self, namespace: ModuleId, name: Symbol) {
+    pub fn unbind_item(&mut self, namespace: ModuleId, name: impl crate::env::LexicalName) {
+        let name = name.lexical_key();
         if let Some(items) = self.items.get_mut(&namespace) {
             items.remove(&name);
         }
@@ -325,8 +345,11 @@ impl Scopes {
 
     /// The item `name` binds in `namespace`.
     #[must_use]
-    pub fn item(&self, namespace: ModuleId, name: Symbol) -> Option<Binding> {
-        self.items.get(&namespace)?.get(&name).copied()
+    pub fn item(&self, namespace: ModuleId, name: impl crate::env::LexicalName) -> Option<Binding> {
+        self.items
+            .get(&namespace)?
+            .get(&name.lexical_key())
+            .copied()
     }
 
     /// Every item of `namespace`.
@@ -335,7 +358,8 @@ impl Scopes {
         self.items.get(&namespace).map_or_else(Vec::new, |items| {
             items
                 .iter()
-                .map(|(name, binding)| (*name, *binding))
+                .filter(|(name, _)| name.ctx == SyntaxContext::ROOT)
+                .map(|(name, binding)| (name.name, *binding))
                 .collect()
         })
     }
@@ -343,20 +367,6 @@ impl Scopes {
     /// Bind a member row under its owner.
     pub fn declare_member(&mut self, owner: DefId, name: Symbol, member: Resolution) {
         self.members.entry((owner, name)).or_insert(member);
-    }
-
-    /// Bind an enum's variants in declaration order.
-    ///
-    /// # Panics
-    ///
-    /// Panics when an enum declares more than `u32::MAX` variants.
-    pub fn declare_variants(&mut self, nominal: NominalId, variants: &[Symbol]) {
-        for (index, name) in variants.iter().enumerate() {
-            self.variants.insert(
-                (nominal, *name),
-                u32::try_from(index).expect("more than u32::MAX variants"),
-            );
-        }
     }
 
     /// Bind an import in one file's scope.
@@ -400,7 +410,7 @@ impl Scopes {
             .filter(|module| {
                 self.items
                     .get(&self.namespace_of(*module))
-                    .is_some_and(|items| items.contains_key(&name))
+                    .is_some_and(|items| items.contains_key(&Ident::new(name.as_str())))
             })
             .collect();
         modules.dedup();
@@ -450,6 +460,11 @@ impl Scopes {
         {
             self.used_imports.insert(*site);
         }
+    }
+
+    /// Credit an import resolved by an earlier shared frontend stage.
+    pub(crate) fn mark_import_used(&mut self, site: ImportSite) {
+        self.used_imports.insert(site);
     }
 
     /// Whether a resolution went through the import declaration at `site`.
@@ -581,6 +596,17 @@ impl Scopes {
     #[must_use]
     pub fn resolutions(&self) -> &HashMap<SpanKey, Resolution> {
         &self.resolutions
+    }
+
+    /// Resolve a value head without publishing a source use.
+    pub(crate) fn value_head(
+        &self,
+        env: &TypeEnv,
+        site: ScopeSite,
+        head: Ident,
+    ) -> Option<Resolution> {
+        self.resolve_head(env, site, Namespace::Value, head, &(0..0))
+            .map(|(resolution, _)| resolution)
     }
 
     /// Take the resolution table for publication.
@@ -727,8 +753,13 @@ impl Scopes {
         let own = file.and_then(|file| file.namespace).unwrap_or(module);
         let item = self
             .items
-            .get(&own)
-            .and_then(|items| items.get(&head.name))
+            .get(&self.namespace_of(site.file))
+            .and_then(|items| items.get(&head))
+            .or_else(|| {
+                self.items
+                    .get(&own)
+                    .and_then(|items| items.get(&Ident::from_symbol(head.name)))
+            })
             .map(|binding| (*binding, None))
             .or_else(|| {
                 file.filter(|file| !file.ambiguous.contains_key(&head.name))
@@ -768,13 +799,9 @@ impl Scopes {
             Resolution::Module(module) => self
                 .items
                 .get(&self.namespace_of(module))
-                .and_then(|items| items.get(&name))
+                .and_then(|items| items.get(&Ident::from_symbol(name)))
                 .map(|binding| binding.resolution()),
-            Resolution::Nominal(nominal) => self
-                .variants
-                .get(&(nominal, name))
-                .map(|index| Resolution::Variant(nominal, *index))
-                .or_else(|| self.member(nominal.declaration(), name)),
+            Resolution::Nominal(nominal) => self.member(nominal.declaration(), name),
             Resolution::Def(owner) | Resolution::Member(owner) => self.member(owner, name),
             Resolution::Param(_)
             | Resolution::Local(_)
@@ -1029,7 +1056,12 @@ mod tests {
             "mb.X",
         );
         let shape_nominal = NominalId::from_minted_declaration(shape);
-        scopes.declare_variants(shape_nominal, &[Symbol::intern("Circle")]);
+        let shape_head = TypeHead::of_declaration(&defs, shape_nominal);
+        scopes.declare_member(
+            shape,
+            Symbol::intern("Circle"),
+            Resolution::Variant(shape_head, 0),
+        );
         scopes.bind_import(
             root,
             Symbol::intern("ma"),
@@ -1061,7 +1093,7 @@ mod tests {
         let variant = [at("ma", 20), at("Shape", 23), at("Circle", 29)];
         assert_eq!(
             scopes.resolve(&env, site, Namespace::Value, &variant),
-            Ok(Resolution::Variant(shape_nominal, 0))
+            Ok(Resolution::Variant(shape_head, 0))
         );
         let transitive = [at("mb", 40), at("X", 43)];
         assert_eq!(

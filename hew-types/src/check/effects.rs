@@ -53,6 +53,7 @@ pub struct ForkTransferFact {
 #[derive(Debug, Clone)]
 struct Invocation {
     owner: Option<EffectBody>,
+    receiver: Option<Ty>,
     /// The callee value's type when the call dispatches through a value.
     callee: Option<Ty>,
     /// Source spelling of the callee for diagnostics.
@@ -123,6 +124,7 @@ struct PendingForkTransfer {
 #[derive(Debug, Clone)]
 struct SuspensionObligation {
     body: EffectBody,
+    once: bool,
     key: SpanKey,
     slot: ObligationSlot,
     source_module: Option<String>,
@@ -166,6 +168,8 @@ pub(super) struct EffectGraph {
     fork_transfers: Vec<PendingForkTransfer>,
     obligations: Vec<SuspensionObligation>,
     crash_hooks: Vec<CrashHook>,
+    pub(super) releases: Vec<super::cleanup_effects::CleanupEffect>,
+    pub(super) once_releases: HashMap<EffectBody, Vec<super::cleanup_effects::CleanupValue>>,
 }
 
 impl Checker {
@@ -360,6 +364,7 @@ impl Checker {
             if plain {
                 obligations.push(SuspensionObligation {
                     body: EffectBody::Declaration(impl_method),
+                    once: false,
                     key: SpanKey::in_module(span, self.current_module_idx),
                     slot: ObligationSlot::Dyn {
                         method: self.defs.display(method).to_string(),
@@ -380,21 +385,34 @@ impl Checker {
     ) {
         match (&self.subst.resolve(expected), &self.subst.resolve(actual)) {
             (Ty::Function { capabilities, .. }, Ty::Closure { identity, .. }) => {
-                let slot = ObligationSlot::Callable(expected.user_facing().to_string());
-                // A function tail is checked against its return and then the
-                // body against it again; one closure owes one slot once.
-                let owed = self
-                    .effect_graph
-                    .obligations
-                    .iter()
-                    .any(|owed| owed.body == *identity && owed.slot == slot);
-                if !capabilities.suspends && !owed {
-                    self.effect_graph.obligations.push(SuspensionObligation {
-                        body: identity.clone(),
-                        key: SpanKey::in_module(span, self.current_module_idx),
-                        slot,
-                        source_module: self.current_module.clone(),
-                    });
+                if !capabilities.suspends {
+                    self.record_plain_callable_obligation(
+                        identity.clone(),
+                        expected,
+                        capabilities.call == crate::CallableCallMode::Once,
+                        span,
+                    );
+                }
+            }
+            (Ty::Function { capabilities, .. }, Ty::Function { .. }) if !capabilities.suspends => {
+                let key = SpanKey::in_module(span, self.current_module_idx);
+                let candidates = self
+                    .expression_value_candidates
+                    .get(&key)
+                    .cloned()
+                    .unwrap_or_else(|| self.resolved_callable_candidate(span));
+                for candidate in candidates.known {
+                    let body = match candidate {
+                        super::CallableCandidate::Declaration(id) => EffectBody::Declaration(id),
+                        super::CallableCandidate::Closure(key) => EffectBody::Closure(key),
+                        _ => continue,
+                    };
+                    self.record_plain_callable_obligation(
+                        body,
+                        expected,
+                        capabilities.call == crate::CallableCallMode::Once,
+                        span,
+                    );
                 }
             }
             (Ty::Named { args: expected, .. }, Ty::Named { args: actual, .. })
@@ -408,6 +426,31 @@ impl Checker {
             }
             _ => {}
         }
+    }
+
+    fn record_plain_callable_obligation(
+        &mut self,
+        body: EffectBody,
+        expected: &Ty,
+        once: bool,
+        span: &Span,
+    ) {
+        let slot = ObligationSlot::Callable(expected.user_facing().to_string());
+        if self
+            .effect_graph
+            .obligations
+            .iter()
+            .any(|owed| owed.body == body && owed.slot == slot)
+        {
+            return;
+        }
+        self.effect_graph.obligations.push(SuspensionObligation {
+            body,
+            once,
+            key: SpanKey::in_module(span, self.current_module_idx),
+            slot,
+            source_module: self.current_module.clone(),
+        });
     }
 
     pub(super) fn callee_value_type(&self, callee: &Spanned<Expr>) -> Option<Ty> {
@@ -448,7 +491,7 @@ impl Checker {
                 })
         };
         match expr {
-            Expr::Ident(name) => match self.env.lookup_ref(name.name.as_str()) {
+            Expr::Ident(name) => match self.env.lookup_ref(name) {
                 Some(binding) if self.effect_graph.bindings.contains_key(&binding.id) => {
                     CallableOrigin::Binding {
                         binding: binding.id,
@@ -497,7 +540,7 @@ impl Checker {
                 let Some((root, path)) = self.expr_place(&target.0) else {
                     return;
                 };
-                let Some(binding) = self.env.lookup_ref(&root).map(|binding| binding.id) else {
+                let Some(binding) = self.env.lookup_ref(root).map(|binding| binding.id) else {
                     return;
                 };
                 let origin = self.expression_callable_origin(&value.0, &value.1);
@@ -645,6 +688,10 @@ impl Checker {
                 key,
                 Invocation {
                     owner: self.effect_graph.current_body.clone(),
+                    receiver: match expr {
+                        Expr::MethodCall { receiver, .. } => self.callee_value_type(receiver),
+                        _ => None,
+                    },
                     callee,
                     name: format!("{name}(...)"),
                     deferred: self.deferred_body.is_some(),
@@ -752,12 +799,177 @@ impl Checker {
         result
     }
 
-    fn callee_suspends(&self, invocation: &Invocation, bodies: &HashMap<EffectBody, bool>) -> bool {
+    fn callee_suspends(
+        &self,
+        invocation: &Invocation,
+        graph: &EffectGraph,
+        bodies: &HashMap<EffectBody, bool>,
+    ) -> bool {
         match invocation.callee.as_ref().map(|ty| self.subst.resolve(ty)) {
             Some(Ty::Function { capabilities, .. }) => capabilities.suspends,
-            Some(Ty::Closure { identity, .. }) => bodies.get(&identity).copied().unwrap_or(true),
+            Some(Ty::Closure {
+                identity,
+                capabilities,
+                ..
+            }) => {
+                bodies.get(&identity).copied().unwrap_or(true)
+                    || self.body_cleanup_suspends(
+                        &identity,
+                        graph,
+                        &HashMap::new(),
+                        bodies,
+                        false,
+                        &mut HashSet::new(),
+                    )
+                    || (capabilities.call == crate::CallableCallMode::Once
+                        && self.once_cleanup_suspends(
+                            &identity,
+                            graph,
+                            &HashMap::new(),
+                            bodies,
+                            false,
+                        ))
+            }
             _ => true,
         }
+    }
+
+    /// Conditional cleanup remains in the declaration's type terms. A concrete
+    /// generic call substitutes its checked arguments; unrelated instantiations
+    /// never acquire each other's resource effects.
+    fn body_cleanup_suspends(
+        &self,
+        body: &EffectBody,
+        graph: &EffectGraph,
+        substitutions: &HashMap<crate::ParamHead, Ty>,
+        bodies: &HashMap<EffectBody, bool>,
+        unknown: bool,
+        visiting: &mut HashSet<(EffectBody, Vec<(crate::ParamHead, Ty)>)>,
+    ) -> bool {
+        let mut arguments: Vec<_> = substitutions
+            .iter()
+            .map(|(key, value)| (*key, value.clone()))
+            .collect();
+        arguments.sort_by_key(|(key, _)| key.id);
+        let key = (body.clone(), arguments);
+        if !visiting.insert(key.clone()) {
+            return false;
+        }
+        let suspends = graph
+            .releases
+            .iter()
+            .filter(|effect| &effect.owner == body)
+            .any(|effect| self.cleanup_suspends(effect, substitutions, bodies, unknown))
+            || graph
+                .calls
+                .iter()
+                .filter(|(_, invocation)| invocation.owner.as_ref() == Some(body))
+                .any(|(key, invocation)| match self.call_target(key) {
+                    Some(
+                        CallTarget::User(id)
+                        | CallTarget::ImplMethod(id)
+                        | CallTarget::StaticTraitMethod { method: id, .. },
+                    ) => {
+                        let actuals = self.call_cleanup_substitutions(
+                            *id,
+                            key,
+                            invocation.receiver.as_ref(),
+                            substitutions,
+                        );
+                        self.body_cleanup_suspends(
+                            &EffectBody::Declaration(*id),
+                            graph,
+                            &actuals,
+                            bodies,
+                            unknown,
+                            visiting,
+                        )
+                    }
+                    Some(CallTarget::IndirectFunctionValue) => {
+                        match invocation.callee.as_ref().map(|ty| {
+                            self.subst
+                                .resolve(ty)
+                                .substitute_type_params_parallel(substitutions)
+                        }) {
+                            Some(Ty::Closure {
+                                identity,
+                                capabilities,
+                                ..
+                            }) => {
+                                self.body_cleanup_suspends(
+                                    &identity,
+                                    graph,
+                                    substitutions,
+                                    bodies,
+                                    unknown,
+                                    visiting,
+                                ) || (capabilities.call == crate::CallableCallMode::Once
+                                    && self.once_cleanup_suspends(
+                                        &identity,
+                                        graph,
+                                        substitutions,
+                                        bodies,
+                                        unknown,
+                                    ))
+                            }
+                            _ => false,
+                        }
+                    }
+                    _ => false,
+                });
+        visiting.remove(&key);
+        suspends
+    }
+
+    fn call_cleanup_substitutions(
+        &self,
+        declaration: crate::DefId,
+        key: &SpanKey,
+        receiver: Option<&Ty>,
+        enclosing: &HashMap<crate::ParamHead, Ty>,
+    ) -> HashMap<crate::ParamHead, Ty> {
+        let Some(signature) = self.fn_sigs.get(&declaration) else {
+            return HashMap::new();
+        };
+        let mut substitutions = HashMap::new();
+        if let (Some(method), Some(receiver)) = (&signature.impl_method, receiver) {
+            if let Ty::Named { args, .. } = self
+                .subst
+                .resolve(receiver)
+                .substitute_type_params_parallel(enclosing)
+            {
+                substitutions.extend(
+                    crate::method_resolution::impl_receiver_substitution(
+                        &method.receiver_parameters,
+                        &method.receiver_args,
+                        &args,
+                    )
+                    .unwrap_or_default(),
+                );
+            }
+        }
+        let parameters: Vec<_> = signature
+            .type_params
+            .iter()
+            .copied()
+            .filter(|parameter| !substitutions.contains_key(parameter))
+            .collect();
+        substitutions.extend(
+            parameters
+                .into_iter()
+                .zip(
+                    self.call_type_args
+                        .get(key)
+                        .into_iter()
+                        .flatten()
+                        .map(|ty| {
+                            self.subst
+                                .resolve(ty)
+                                .substitute_type_params_parallel(enclosing)
+                        }),
+                ),
+        );
+        substitutions
     }
 
     fn invocation_suspends(
@@ -772,15 +984,30 @@ impl Checker {
         }
         match self.call_target(key) {
             Some(target) if graph.builtin_suspensions.contains(target) => true,
-            Some(CallTarget::IndirectFunctionValue) => self.callee_suspends(invocation, bodies),
+            Some(CallTarget::IndirectFunctionValue) => {
+                self.callee_suspends(invocation, graph, bodies)
+            }
             Some(
                 CallTarget::User(id)
                 | CallTarget::ImplMethod(id)
                 | CallTarget::StaticTraitMethod { method: id, .. },
-            ) => bodies
-                .get(&EffectBody::Declaration(*id))
-                .copied()
-                .unwrap_or(true),
+            ) => {
+                let body = EffectBody::Declaration(*id);
+                bodies.get(&body).copied().unwrap_or(true)
+                    || self.body_cleanup_suspends(
+                        &body,
+                        graph,
+                        &self.call_cleanup_substitutions(
+                            *id,
+                            key,
+                            invocation.receiver.as_ref(),
+                            &HashMap::new(),
+                        ),
+                        bodies,
+                        false,
+                        &mut HashSet::new(),
+                    )
+            }
             Some(CallTarget::Runtime(family) | CallTarget::DeclaredRuntime { family, .. }) => {
                 family.is_async_suspending().is_some()
             }
@@ -801,7 +1028,7 @@ impl Checker {
                 Some(
                     MethodCallRewrite::RecordFnFieldCall { .. }
                     | MethodCallRewrite::BuiltinVecHigherOrder { .. },
-                ) => self.callee_suspends(invocation, bodies),
+                ) => self.callee_suspends(invocation, graph, bodies),
                 Some(
                     MethodCallRewrite::RemoteActorAsk | MethodCallRewrite::GeneratorNext { .. },
                 ) => true,
@@ -898,6 +1125,10 @@ impl Checker {
         }
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "Resolve the effect fixed point and report its source obligations in one pass"
+    )]
     pub(super) fn finish_suspension_effects(&mut self) -> SuspensionEffects {
         let graph = std::mem::take(&mut self.effect_graph);
         let mut bodies = graph.bodies.clone();
@@ -905,6 +1136,15 @@ impl Checker {
         // Monotone least fixed point handles recursive declarations.
         loop {
             let mut changed = false;
+            for effect in &graph.releases {
+                if !bodies.get(&effect.owner).copied().unwrap_or(false)
+                    && self.cleanup_suspends(effect, &HashMap::new(), &bodies, false)
+                {
+                    bodies.insert(effect.owner.clone(), true);
+                    witnesses.insert(effect.owner.clone(), effect.witness.clone());
+                    changed = true;
+                }
+            }
             for (key, invocation) in &graph.calls {
                 let Some(owner) = &invocation.owner else {
                     continue;
@@ -924,9 +1164,20 @@ impl Checker {
         }
         let mut output = SuspensionEffects::default();
         for (body, suspends) in &bodies {
-            output
-                .bodies
-                .insert(body.clone(), SuspensionEffect::from_bool(*suspends));
+            output.bodies.insert(
+                body.clone(),
+                SuspensionEffect::from_bool(
+                    *suspends
+                        || self.body_cleanup_suspends(
+                            body,
+                            &graph,
+                            &HashMap::new(),
+                            &bodies,
+                            true,
+                            &mut HashSet::new(),
+                        ),
+                ),
+            );
         }
         for (key, invocation) in &graph.calls {
             let suspends = self.invocation_suspends(key, invocation, &graph, &bodies);
@@ -947,16 +1198,29 @@ impl Checker {
             }
         }
         for obligation in &graph.obligations {
-            // TRANSITION(D1a): WHY std and primitive impl bodies (`i64` as
-            // `Display`) are not in this program's effect graph, so a dyn
-            // slot cannot judge them; WHEN their bodies publish an effect
-            // fact; WHAT this skip goes and an unknown body refuses.
-            if matches!(obligation.slot, ObligationSlot::Dyn { .. })
+            if matches!(obligation.body, EffectBody::Declaration(_))
                 && !bodies.contains_key(&obligation.body)
             {
                 continue;
             }
-            if !bodies.get(&obligation.body).copied().unwrap_or(true) {
+            let suspends = bodies.get(&obligation.body).copied().unwrap_or(true)
+                || self.body_cleanup_suspends(
+                    &obligation.body,
+                    &graph,
+                    &HashMap::new(),
+                    &bodies,
+                    true,
+                    &mut HashSet::new(),
+                )
+                || (obligation.once
+                    && self.once_cleanup_suspends(
+                        &obligation.body,
+                        &graph,
+                        &HashMap::new(),
+                        &bodies,
+                        true,
+                    ));
+            if !suspends {
                 continue;
             }
             let subject = match &obligation.body {
@@ -965,7 +1229,29 @@ impl Checker {
             };
             let witness = witnesses
                 .get(&obligation.body)
-                .map_or("an unchecked body", String::as_str);
+                .cloned()
+                .or_else(|| {
+                    graph
+                        .releases
+                        .iter()
+                        .find(|effect| {
+                            effect.owner == obligation.body
+                                && self.cleanup_suspends(effect, &HashMap::new(), &bodies, true)
+                        })
+                        .map(|effect| effect.witness.clone())
+                })
+                .or_else(|| {
+                    (obligation.once
+                        && self.once_cleanup_suspends(
+                            &obligation.body,
+                            &graph,
+                            &HashMap::new(),
+                            &bodies,
+                            true,
+                        ))
+                    .then(|| "implicit release of captured values".to_string())
+                })
+                .unwrap_or_else(|| "an unchecked body".to_string());
             let message = match &obligation.slot {
                 ObligationSlot::Callable(slot) => format!(
                     "{subject} suspends via `{witness}`; `{slot}` never suspends, write `fn[suspends]`"

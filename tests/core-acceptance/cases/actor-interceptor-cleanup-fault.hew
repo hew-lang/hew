@@ -1,0 +1,40 @@
+import std.failure;
+
+#[resource]
+type BrokenTicket {
+    text: string;
+}
+
+impl BrokenTicket {
+    fn close(consume self) { panic(self.text); }
+}
+
+actor BrokenCleanup {
+    #[intercept]
+    fn guard(call: Call<Self>) -> Outcome<Self> {
+        call.refuse("request denied")
+    }
+    receive fn work(ticket: BrokenTicket) {}
+    #[on(crash)]
+    fn crashed(info: failure.CrashInfo) -> failure.CrashAction {
+        assert(info.code == 212);
+        failure.CrashAction.Restart
+    }
+}
+
+supervisor Group {
+    child worker: BrokenCleanup;
+}
+
+fn main() {
+    let group = spawn Group;
+    let worker = group.worker;
+    match worker.work(BrokenTicket { text: "refused request cleanup failed" }) {
+        .Err(.Trapped) => {}
+        _ => panic("cleanup failure must trap instead of becoming Refused"),
+    }
+    restarted(worker);
+    stop(group);
+    stopped(group);
+    println("refusal cleanup fault is preserved");
+}

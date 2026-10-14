@@ -81,13 +81,8 @@ impl Checker {
         // `#[lang_item("display")]` declaration has no Display at all, and
         // f-string interpolation accepts only the cases handled above.
         let display = self.lang_trait(crate::LangItem::Display)?;
-        if let Some(canonical) = resolved.canonical_lowering_name() {
-            if self
-                .primitive_trait_impls
-                .contains_key(&(canonical.to_string(), display))
-            {
-                return Some(resolved);
-            }
+        if self.type_implements_trait(&resolved, display) {
+            return Some(resolved);
         }
         // R6: a trait object is Display when Display is in its bounds'
         // supertrait closure; HIR renders it through that layout slot.
@@ -297,7 +292,7 @@ else needs `impl Display for {rendered}`)"
 
     pub(super) fn expect_inferable_literal_binding(
         &mut self,
-        name: &str,
+        name: Ident,
         expected: &Ty,
         span: &Span,
     ) {
@@ -332,7 +327,7 @@ else needs `impl Display for {rendered}`)"
         }
         // A local/parameter in an inner body scope shadows imports normally.
         // Only an outer import-scope binding can be ill-formed here.
-        if !matches!(self.env.lookup_ref_with_depth(name), Some((0, _))) {
+        if matches!(self.env.lookup_ref_with_depth(name), Some((depth, _)) if depth > 0) {
             return false;
         }
         if self.current_module.is_none() && self.root_value_bindings.contains(name) {
@@ -485,6 +480,15 @@ else needs `impl Display for {rendered}`)"
         None
     }
 
+    pub(in crate::check) fn type_decl_has_bare_variants(&self, id: crate::NominalId) -> bool {
+        matches!(
+            self.defs.kind(id.declaration()),
+            crate::DeclarationKind::Type
+                | crate::DeclarationKind::Machine
+                | crate::DeclarationKind::MachineEventType
+        )
+    }
+
     /// Look up an identifier as a unit enum variant or qualified variant name.
     #[allow(
         clippy::too_many_lines,
@@ -507,6 +511,9 @@ else needs `impl Display for {rendered}`)"
         let mut found = None;
         // Pass 1: user-declared types.
         for (id, td) in &self.type_defs {
+            if !self.type_decl_has_bare_variants(*id) {
+                continue;
+            }
             let type_name = self.defs.path(id.declaration());
             if !self.local_type_defs.contains(td.name.as_str())
                 && !self.source_type_defs.contains(td.name.as_str())
@@ -525,6 +532,9 @@ else needs `impl Display for {rendered}`)"
         // Pass 2: builtin/imported types (only when no user type matched).
         if found.is_none() {
             for (id, td) in &self.type_defs {
+                if !self.type_decl_has_bare_variants(*id) {
+                    continue;
+                }
                 let type_name = self.defs.path(id.declaration());
                 if self.local_type_defs.contains(td.name.as_str())
                     || self.source_type_defs.contains(td.name.as_str())
@@ -823,6 +833,37 @@ else needs `impl Display for {rendered}`)"
         self.type_def_at(owner)
             .and_then(|definition| definition.variants.get(variant))
             .cloned()
+    }
+
+    pub(in crate::check) fn record_context_variant_resolution(
+        &mut self,
+        expected: &Ty,
+        name: hew_parser::ast::Symbol,
+        span: &Span,
+    ) {
+        let Ty::Named { head, .. } = self.subst.resolve(expected) else {
+            return;
+        };
+        let Some(owner) = head.declaration(&self.defs) else {
+            return;
+        };
+        let declaration = self
+            .defs
+            .member_of_kind(owner.declaration(), name, crate::DeclarationKind::Variant)
+            .or_else(|| {
+                self.defs.member_of_kind(
+                    owner.declaration(),
+                    name,
+                    crate::DeclarationKind::MachineState,
+                )
+            });
+        if let (Some(declaration), Some(site)) = (declaration, self.scope_site()) {
+            self.scopes.record_resolution(
+                site,
+                span,
+                super::super::scope::Resolution::of_member(&self.defs, declaration),
+            );
+        }
     }
 
     pub(in crate::check) fn require_unsafe(&mut self, name: &str, span: &Span) {

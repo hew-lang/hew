@@ -9,6 +9,6 @@ kind = "check"
 [[case.expected.diagnostics]]
 severity = "warning"
 code = "dead_code"
-line = 5
+line = 3
 column = 1
 message = "function `genuinely_uncalled` is never called"

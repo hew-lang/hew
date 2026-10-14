@@ -784,7 +784,9 @@ fn load_source(
                 collect_prelude_export(&mut authority.prelude_exports, import)
                     .map_err(|kind| error(source, None, kind))?;
             }
-            Item::Import(_)
+            Item::Macro(_)
+            | Item::MacroCall(_)
+            | Item::Import(_)
             | Item::Const(_)
             | Item::TypeAlias(_)
             | Item::Actor(_)

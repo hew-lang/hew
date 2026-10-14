@@ -20,13 +20,15 @@
 use std::ffi::{c_char, CStr};
 use std::mem::offset_of;
 
+use hew_runtime::actor_caller::HewCallerStamp;
+
 use hew_runtime::mailbox::{
     hew_mailbox_free, hew_mailbox_new, hew_mailbox_send, hew_mailbox_try_recv, hew_msg_node_free,
     HewMsgNode,
 };
 use hew_runtime::mailbox_envelope::{
     validate_cross_node_send_params, CancellationTokenHandle, MailboxPayloadClass,
-    CANCEL_TOKEN_NONE, SOURCE_PID_UNKNOWN,
+    CANCEL_TOKEN_NONE,
 };
 use hew_runtime::{hew_clear_error, hew_last_error};
 
@@ -74,18 +76,19 @@ fn payload_class_serialized_cross_node_roundtrip() {
 // 5–6: HewMsgNode field-offset pins
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Pin the 64-bit offsets of payload metadata and the sender identity.
+/// Pin the native 64-bit envelope ABI, including the caller identity.
 #[test]
-fn msg_node_layout_payload_class_and_source_pid_offsets() {
+#[cfg(target_pointer_width = "64")]
+fn msg_node_layout_payload_class_and_caller_offsets() {
     assert_eq!(offset_of!(HewMsgNode, payload_class), 96);
-    assert_eq!(offset_of!(HewMsgNode, source_pid), 104);
+    assert_eq!(offset_of!(HewMsgNode, caller), 104);
 }
 
-/// Pin the 64-bit cancellation handle offset and total node size.
 #[test]
+#[cfg(target_pointer_width = "64")]
 fn msg_node_layout_cancel_token_handle_offset() {
-    assert_eq!(offset_of!(HewMsgNode, cancel_token_handle), 112);
-    assert_eq!(std::mem::size_of::<HewMsgNode>(), 120);
+    assert_eq!(offset_of!(HewMsgNode, cancel_token_handle), 128);
+    assert_eq!(std::mem::size_of::<HewMsgNode>(), 136);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -95,11 +98,10 @@ fn msg_node_layout_cancel_token_handle_offset() {
 #[test]
 fn cancel_token_handle_zero_is_none() {
     assert_eq!(CANCEL_TOKEN_NONE, 0u64);
-    assert_eq!(SOURCE_PID_UNKNOWN, 0u64);
-    // Zero-init node has CANCEL_TOKEN_NONE and SOURCE_PID_UNKNOWN.
+    // A zeroed identity denotes a non-actor task.
     let node: HewMsgNode = unsafe { std::mem::zeroed() };
     assert_eq!(node.cancel_token_handle, CANCEL_TOKEN_NONE);
-    assert_eq!(node.source_pid, SOURCE_PID_UNKNOWN);
+    assert_eq!(node.caller, HewCallerStamp::default());
     assert_eq!(node.payload_class, MailboxPayloadClass::Unit as u8);
 }
 
@@ -108,10 +110,8 @@ fn cancel_token_handle_nonzero_survives_round_trip() {
     const SENTINEL: CancellationTokenHandle = 0xDEAD_BEEF_CAFE_1234;
     let mut node: HewMsgNode = unsafe { std::mem::zeroed() };
     node.cancel_token_handle = SENTINEL;
-    node.source_pid = 42;
     node.payload_class = MailboxPayloadClass::SerializedCrossNode as u8;
     assert_eq!(node.cancel_token_handle, SENTINEL);
-    assert_eq!(node.source_pid, 42);
     assert_eq!(
         node.payload_class,
         MailboxPayloadClass::SerializedCrossNode as u8
@@ -235,12 +235,6 @@ fn cross_node_gate_release_build_enforcement_is_not_debug_only() {
 /// that an uninitialized `payload_class` byte cannot silently equal
 /// `SerializedCrossNode` (3) and bypass the cross-node gate.
 ///
-/// `alloc_stub_node` is also patched but is never returned to consumers
-/// (it lives inside the MPSC queue structure); it is covered by code review
-/// and the explicit zero-init in the source, not by a separate observable test.
-/// `msg_node_alloc_aliased` is Phase-α fail-closed (dead production path) and
-/// is exercised via the in-module `aliased_node_alloc_consumes_envelope_refcount`
-/// unit test in mailbox.rs.
 #[test]
 fn msg_node_alloc_zero_inits_new_abi_fields() {
     // SAFETY: this test owns the mailbox and node exclusively; the mailbox is
@@ -265,9 +259,9 @@ fn msg_node_alloc_zero_inits_new_abi_fields() {
             "payload_class must be zero (MailboxPayloadClass::Unit) after msg_node_alloc"
         );
         assert_eq!(
-            (*node).source_pid,
-            0,
-            "source_pid must be zero (SOURCE_PID_UNKNOWN) after msg_node_alloc"
+            (*node).caller,
+            HewCallerStamp::default(),
+            "a non-actor send must carry Task identity"
         );
         assert_eq!(
             (*node).cancel_token_handle,

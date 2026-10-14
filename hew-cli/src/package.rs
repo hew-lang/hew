@@ -56,6 +56,7 @@ pub struct Failure {
 /// Returns [`Failure`] when the current directory is unavailable or the package
 /// cannot be resolved.
 pub fn resolve(input: Option<&Path>) -> Result<Input, Failure> {
+    crate::generate::prepare(input).map_err(|message| Failure { message, code: 1 })?;
     match input {
         Some(path) if !path.is_dir() => Ok(Input::File(path.to_path_buf())),
         Some(dir) => resolve_package(dir),

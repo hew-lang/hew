@@ -121,9 +121,9 @@ impl Checker {
         actual
     }
 
-    fn method_chain_root_binding(expr: &Expr) -> Option<&str> {
+    fn method_chain_root_binding(expr: &Expr) -> Option<Ident> {
         match expr {
-            Expr::Ident(name) => Some(name.name.as_str()),
+            Expr::Ident(name) => Some(*name),
             Expr::MethodCall { receiver, .. } => Self::method_chain_root_binding(&receiver.0),
             _ => None,
         }
@@ -190,12 +190,12 @@ impl Checker {
         span: &Span,
         stmt_span: &Span,
     ) -> Ty {
-        let root = Self::method_chain_root_binding(expr).map(str::to_string);
+        let root = Self::method_chain_root_binding(expr);
         // Probing the move state is bookkeeping, not a use: `lookup` would
         // count a read the source never wrote and hide a genuinely unused
         // binding behind its own discarded method call.
         let root_was_moved = root
-            .as_deref()
+            .as_ref()
             .and_then(|name| self.env.lookup_ref(name))
             .is_some_and(|binding| binding.is_moved);
         self.task_lifetimes
@@ -228,6 +228,7 @@ impl Checker {
                 self.env.unmark_moved(&root);
             }
         }
+        self.record_discard_cleanup_effect(expr, &ty);
         ty
     }
 
@@ -352,9 +353,9 @@ impl Checker {
         Some(joined)
     }
 
-    pub(super) fn assignment_root_binding_name<'a>(&self, expr: &'a Expr) -> Option<&'a str> {
+    pub(super) fn assignment_root_binding_name(&self, expr: &Expr) -> Option<Ident> {
         match expr {
-            Expr::Ident(name) => Some(name.name.as_str()),
+            Expr::Ident(name) => Some(*name),
             Expr::FieldAccess { object, field } => {
                 // The receiver is not a binding: `self.items[0]` is rooted in
                 // the state binding `items`, exactly where the bare spelling
@@ -557,7 +558,7 @@ impl Checker {
         self.env.push_scope();
         // Snapshot const_values so let-bound literal entries added in this
         // scope are cleaned up when the scope exits.
-        let const_values_snapshot: HashMap<String, ConstValue> = self.const_values.clone();
+        let const_values_snapshot: HashMap<Ident, ConstValue> = self.const_values.clone();
         let num_stmts = block.stmts.len();
         let mut terminated = false;
         for (i, (stmt, span)) in block.stmts.iter().enumerate() {
@@ -732,6 +733,8 @@ impl Checker {
         if let Some(value) = value {
             self.record_task_return(value);
         }
+        self.record_return_cleanup_effects();
+        self.record_receiver_output(false);
     }
 
     fn check_return_operand_inner(&mut self, value: Option<&Spanned<Expr>>, span: &Span) {
@@ -889,7 +892,7 @@ impl Checker {
                         ownership: self.env.ownership_snapshot(),
                         diverges: Self::arm_skips_join(&then_ty),
                     };
-                    self.env.pop_scope();
+                    self.pop_scope_with_cleanup();
                     self.join_fall_through(&entry, then_exit, span);
                     Ty::Unit
                 }
@@ -989,9 +992,10 @@ impl Checker {
         // User enums: scan every type definition for a unit variant of this
         // name, exactly as the use-side's `resolve_identifier_variant` does.
         // A bare name that is a unit variant of *any* known enum is a pattern.
-        self.type_defs
-            .values()
-            .any(|td| matches!(td.variants.get(name), Some(VariantDef::Unit)))
+        self.type_defs.iter().any(|(id, td)| {
+            self.type_decl_has_bare_variants(*id)
+                && matches!(td.variants.get(name), Some(VariantDef::Unit))
+        })
     }
 
     /// Does an identifier in `let`/binding position name a unit variant — a
@@ -1231,6 +1235,12 @@ impl Checker {
                         self.record_value_transfer(value, span);
                     }
                 }
+                if matches!(pattern.0, Pattern::Wildcard) && collection_borrow.is_none() {
+                    if let Some((value, span)) = value {
+                        self.record_value_transfer(value, span);
+                        self.record_owned_cleanup_effect(&val_ty);
+                    }
+                }
                 if let Some(name) = plain_identifier {
                     if val_ty == Ty::Unit && value.is_some() && !name.name.as_str().starts_with('_')
                     {
@@ -1244,7 +1254,7 @@ impl Checker {
                             source_module: self.current_module.clone(),
                         });
                     }
-                    self.check_shadowing(name.name.as_str(), &pattern.1);
+                    self.check_shadowing(*name, &pattern.1);
                     self.env
                         .define_with_span(*name, val_ty.clone(), false, pattern.1.clone());
                     if value.is_none() {
@@ -1259,7 +1269,7 @@ impl Checker {
                         self.record_local_resolution(*name, &(pattern.1.start..name_end));
                     }
                     self.env
-                        .set_collection_borrow(name.name.as_str(), collection_borrow.clone());
+                        .set_collection_borrow(*name, collection_borrow.clone());
                     // Register generic lambda binding for call-site inference.
                     // Both guards must hold: the scratch field was populated
                     // AND the let value is itself (not just contains) a generic
@@ -1281,13 +1291,11 @@ impl Checker {
                         if let Some((val, _)) = value {
                             if is_integer_literal(val) {
                                 if let Some(v) = extract_integer_literal_value(val) {
-                                    self.const_values
-                                        .insert(name.to_string(), ConstValue::Integer(v));
+                                    self.const_values.insert(*name, ConstValue::Integer(v));
                                 }
                             } else if val_ty.is_float_literal() {
                                 if let Some(v) = extract_float_literal_value(val) {
-                                    self.const_values
-                                        .insert(name.to_string(), ConstValue::Float(v));
+                                    self.const_values.insert(*name, ConstValue::Float(v));
                                 }
                             }
                         }
@@ -1557,17 +1565,15 @@ impl Checker {
                         more_specific_hole_vars,
                     );
                 }
-                self.check_shadowing(name.name.as_str(), span);
-                self.env
-                    .define_with_span(name.to_string(), val_ty, true, span.clone());
+                self.check_shadowing(*name, span);
+                self.env.define_with_span(*name, val_ty, true, span.clone());
                 if value.is_none() {
                     self.env.mark_unassigned(*name);
                 }
                 self.record_local_resolution(*name, span);
                 self.record_binding_value_candidates(*name, value.as_ref());
                 self.record_local_resolution(*name, name_span);
-                self.env
-                    .set_collection_borrow(name.name.as_str(), collection_borrow);
+                self.env.set_collection_borrow(*name, collection_borrow);
                 if value_is_direct_generic_lambda {
                     if let Some(sig) = generic_sig {
                         self.lambda_poly_sig_map
@@ -1588,11 +1594,9 @@ impl Checker {
                     Expr::FieldAccess { object, field } => {
                         match self.actor_self_state_field(&object.0, field.0.name.as_str()) {
                             Some(state_field) => {
-                                let state_field = state_field.to_string();
                                 self.record_actor_self_state_field(&target.1);
                                 receiver_field = Some(field.clone());
-                                receiver_target =
-                                    (Expr::Ident(Ident::new(&state_field)), target.1.clone());
+                                receiver_target = (Expr::Ident(state_field), target.1.clone());
                                 &receiver_target
                             }
                             None => target,
@@ -1601,11 +1605,8 @@ impl Checker {
                     _ => target,
                 };
                 if !matches!(&target.0, Expr::Ident(_)) {
-                    if let Some(name) = self
-                        .assignment_root_binding_name(&target.0)
-                        .map(str::to_string)
-                    {
-                        if self.env.unassigned(&name) {
+                    if let Some(name) = self.assignment_root_binding_name(&target.0) {
+                        if self.env.unassigned(name) {
                             self.report_error(TypeErrorKind::LocalUninitialized, &target.1,
                                 format!("E_LOCAL_UNINITIALIZED: local `{name}` must hold a whole value before a field or indexed store"));
                         }
@@ -1631,12 +1632,8 @@ impl Checker {
                 // resolves the target place or computes the new value from the
                 // old one (`n = n + 1`). Neither observes the result, so the
                 // mutation-observation bookkeeping ignores them.
-                let outer_mutation = self
-                    .assignment_root_binding_name(&target.0)
-                    .map(str::to_string);
-                let outer_mutation = outer_mutation
-                    .as_deref()
-                    .map(|root| self.env.begin_mutation(root));
+                let outer_mutation = self.assignment_root_binding_name(&target.0);
+                let outer_mutation = outer_mutation.map(|root| self.env.begin_mutation(root));
                 // Classify the assignment target for the side-table before synthesising
                 // so that the entry is always emitted whenever the target is syntactically
                 // valid, regardless of whether subsequent type-checking finds errors.
@@ -1648,7 +1645,7 @@ impl Checker {
                             .any(|f| f.name == name.name.as_str())
                         {
                             Some(AssignTargetKind::ActorField)
-                        } else if self.env.lookup_ref(name.name.as_str()).is_some() {
+                        } else if self.env.lookup_ref(*name).is_some() {
                             Some(AssignTargetKind::LocalVar)
                         } else {
                             None
@@ -1705,7 +1702,9 @@ impl Checker {
                         let root_is_mutable = self
                             .assignment_root_binding_name(&target.0)
                             .is_some_and(|root| {
-                                self.current_actor_fields.iter().any(|f| f.name == root)
+                                self.current_actor_fields
+                                    .iter()
+                                    .any(|f| f.name == root.name.as_str())
                                     || self
                                         .env
                                         .lookup_ref(root)
@@ -1787,7 +1786,7 @@ impl Checker {
                 if let Some((root, path)) = self.expr_place(&target.0) {
                     if path.is_empty() {
                         self.reject_prepared_task_access(
-                            &root,
+                            root,
                             &path,
                             span,
                             TypeErrorKind::OwnMutateBorrowed,
@@ -1802,23 +1801,27 @@ impl Checker {
                             // plain locals keep the variable-shaped error.
                             if let Some(error) = self.private_capture_mutation_error(name, span) {
                                 self.errors.push(error);
-                            } else if let Some(field) =
-                                self.current_actor_fields.iter().find(|f| f.name == *name)
+                            } else if let Some(field) = self
+                                .current_actor_fields
+                                .iter()
+                                .find(|f| f.name == name.name.as_str())
                             {
                                 self.errors.push(TypeError::immutable_field_assignment(
                                     span.clone(),
-                                    name,
+                                    name.name.as_str(),
                                     field.decl_span.clone(),
                                 ));
                             } else {
-                                self.errors
-                                    .push(TypeError::mutability_error(span.clone(), name));
+                                self.errors.push(TypeError::mutability_error(
+                                    span.clone(),
+                                    name.name.as_str(),
+                                ));
                             }
                         } else if let Some((root, path)) = self.expr_place(&target.0) {
                             // Replacing the root acquires a fresh local value;
                             // a projection instead writes through its owner.
                             if !path.is_empty() {
-                                self.reject_borrowed_parameter_mutation(&root, &path, span);
+                                self.reject_borrowed_parameter_mutation(root, &path, span);
                             }
                         }
                     }
@@ -1838,6 +1841,9 @@ impl Checker {
                 let value_ty = self
                     .rebind_inferred_closure_binding(&target.0, value, &target_ty)
                     .unwrap_or_else(|| self.check_against(&value.0, &value.1, &target_ty));
+                if !first_store {
+                    self.record_assignment_cleanup_effect(target, &target_ty);
+                }
                 self.record_assigned_value_candidates(target, value);
                 let collection_borrow = self.collection_borrow_origin(&value.0, &value.1);
                 if collection_borrow.is_none() || !matches!(target.0, Expr::Ident(_)) {
@@ -1857,7 +1863,7 @@ impl Checker {
                 // width then fails `check_against`'s ordinary implicit-convert
                 // gate instead of drifting.
                 if let Expr::Ident(name) = &target.0 {
-                    if let Some(binding) = self.env.lookup_ref(name.name.as_str()) {
+                    if let Some(binding) = self.env.lookup_ref(*name) {
                         if let binding_ty @ Ty::Var(_) = binding.ty.clone() {
                             let value_resolved = self.subst.resolve(&value_ty);
                             if self.subst.resolve(&binding_ty).is_numeric_literal()
@@ -1906,9 +1912,9 @@ impl Checker {
                             .insert(SpanKey::in_module(&target.1, self.current_module_idx));
                     }
                     if let Some((root, path)) = self.expr_place(&target.0) {
-                        self.env.reinit_place(&root, &path);
+                        self.env.reinit_place(root, &path);
                         if path.is_empty() {
-                            self.env.set_collection_borrow(&root, collection_borrow);
+                            self.env.set_collection_borrow(root, collection_borrow);
                         }
                     }
                 }
@@ -1925,14 +1931,11 @@ impl Checker {
                 } = expr
                 {
                     if method.0.name.as_str() == "set" {
-                        if let Some(name) = self
-                            .assignment_root_binding_name(&receiver.0)
-                            .map(str::to_string)
-                        {
-                            self.env.mark_written(&name);
+                        if let Some(name) = self.assignment_root_binding_name(&receiver.0) {
+                            self.env.mark_written(name);
                             // `x.set(v)` replaces the binding's value: the
                             // receiver and argument reads belong to the write.
-                            outer_mutation = Some(self.env.begin_mutation(&name));
+                            outer_mutation = Some(self.env.begin_mutation(name));
                         }
                     }
                 }
@@ -1960,7 +1963,7 @@ impl Checker {
                     ownership: self.env.ownership_snapshot(),
                     diverges: Self::arm_skips_join(&then_ty),
                 };
-                self.env.pop_scope();
+                self.pop_scope_with_cleanup();
                 if let Some(else_expr) = else_body {
                     self.env.restore_ownership(&entry);
                     let else_ty = self.synthesize(&else_expr.0, &else_expr.1);
@@ -1985,7 +1988,10 @@ impl Checker {
                     self.loop_labels.push(lbl.to_string());
                 }
                 self.loop_depth += 1;
-                self.env.enter_loop(label.map(|ident| ident.name.as_str()));
+                self.env.enter_loop(
+                    label.map(|ident| ident.name.as_str()),
+                    &SpanKey::in_module(span, self.current_module_idx),
+                );
                 let body_ty = self.check_block(body, None);
                 self.exit_loop_checked(&body_ty);
                 self.loop_depth -= 1;
@@ -2279,7 +2285,10 @@ impl Checker {
                 self.env.push_scope();
                 // The pattern binds afresh on every iteration, so it opens
                 // inside the loop rather than among the values the loop carries.
-                self.env.enter_loop(label.map(|ident| ident.name.as_str()));
+                self.env.enter_loop(
+                    label.map(|ident| ident.name.as_str()),
+                    &SpanKey::in_module(span, self.current_module_idx),
+                );
                 self.in_for_binding = true;
                 // Each element of a borrowed-element loop is a loan of the slot
                 // the sequence still owns (D432).
@@ -2299,7 +2308,7 @@ impl Checker {
                 if label.is_some() {
                     self.loop_labels.pop();
                 }
-                self.env.pop_scope();
+                self.pop_scope_with_cleanup();
             }
             Stmt::While {
                 label,
@@ -2321,7 +2330,10 @@ impl Checker {
                     });
                 }
                 // The condition runs at the head of every iteration.
-                self.env.enter_loop(label.map(|ident| ident.name.as_str()));
+                self.env.enter_loop(
+                    label.map(|ident| ident.name.as_str()),
+                    &SpanKey::in_module(span, self.current_module_idx),
+                );
                 self.check_against(&condition.0, &condition.1, &Ty::Bool);
                 if let Some(lbl) = label {
                     self.loop_labels.push(lbl.to_string());
@@ -2340,7 +2352,10 @@ impl Checker {
                 body,
             } => {
                 // The condition runs at the head of every iteration.
-                self.env.enter_loop(label.map(|ident| ident.name.as_str()));
+                self.env.enter_loop(
+                    label.map(|ident| ident.name.as_str()),
+                    &SpanKey::in_module(span, self.current_module_idx),
+                );
                 self.check_condition(conditions);
                 if let Some(lbl) = label {
                     self.loop_labels.push(lbl.to_string());
@@ -2352,7 +2367,7 @@ impl Checker {
                 if label.is_some() {
                     self.loop_labels.pop();
                 }
-                self.env.pop_scope();
+                self.pop_scope_with_cleanup();
             }
             Stmt::Break { label, value } => {
                 if self.reject_deferred_loop_exit(label.map(|ident| ident.name.as_str()), span) {
@@ -2495,7 +2510,7 @@ impl Checker {
                 ownership: self.env.ownership_snapshot(),
                 diverges: guard_diverges || Self::arm_skips_join(&arm_ty),
             });
-            self.env.pop_scope();
+            self.pop_scope_with_cleanup();
         }
         self.join_branch_ownership(&ownership_entry, &arm_exits, span);
 

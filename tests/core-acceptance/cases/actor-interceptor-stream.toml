@@ -1,0 +1,13 @@
+[[case]]
+id = "actor-interceptor-stream"
+intent = "Intercepted stream starts retain owned items and expose their typed unit response after completion."
+source = "cases/actor-interceptor-stream.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "1"
+
+[case.expected]
+stdout = "stream interception preserves typed completion\n"
+exit = 0

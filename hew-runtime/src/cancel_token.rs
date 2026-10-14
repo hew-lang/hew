@@ -56,7 +56,7 @@ pub struct HewCancellationToken {
     reason: AtomicI32,
     parent: *mut HewCancellationToken,
     /// Readiness subscribers; token state remains the cancellation authority.
-    observers: Mutex<Vec<std::sync::Weak<crate::wake::OwnedWaker>>>,
+    observers: Mutex<Vec<std::sync::Weak<HewCancelObserver>>>,
     children_total: AtomicI32,
 }
 

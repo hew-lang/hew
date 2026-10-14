@@ -5,6 +5,7 @@ pub mod ast_eq;
 pub mod fmt;
 pub mod init_analysis;
 pub mod loop_analysis;
+pub mod macro_syntax;
 pub mod module;
 pub mod parser;
 pub mod tail_call;
@@ -14,5 +15,6 @@ pub use loop_analysis::{
     stmt_leaves_enclosing_loop,
 };
 pub use parser::{
-    parse, parse_duration_ns, ParseDiagnosticKind, ParseError, ParseResult, Severity,
+    parse, parse_duration_ns, parse_fragment, parse_generated, parse_generated_fragment,
+    FragmentParseResult, ParseDiagnosticKind, ParseError, ParseResult, Severity,
 };

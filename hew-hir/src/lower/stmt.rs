@@ -1,7 +1,6 @@
 //! Block and statement lowering.
 
 use super::*;
-use hew_parser::ast::Ident;
 
 impl LowerCtx {
     pub(super) fn lower_block(&mut self, block: &Block, expected_ty: &ResolvedTy) -> HirBlock {
@@ -200,7 +199,7 @@ impl LowerCtx {
                     };
                     let field_pattern = match field.sub {
                         hew_types::PlanSub::Binding(name) => {
-                            (Pattern::Identifier(Ident::new(&name)), field.span.clone())
+                            (Pattern::Identifier(name), field.span.clone())
                         }
                         hew_types::PlanSub::Wildcard => (Pattern::Wildcard, field.span.clone()),
                         hew_types::PlanSub::Literal(literal) => {
@@ -209,7 +208,7 @@ impl LowerCtx {
                         hew_types::PlanSub::Nested(_) => {
                             let Some(source_pattern) = source_fields
                                 .iter()
-                                .find(|source| source.name == Ident::new(&field.name))
+                                .find(|source| source.name.name.as_str() == field.name)
                                 .and_then(|source| source.pattern.clone())
                             else {
                                 let _ = self.lower_expr(value_expr, IntentKind::Consume);

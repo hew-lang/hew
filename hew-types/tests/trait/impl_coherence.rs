@@ -126,6 +126,7 @@ fn canonical_io_lazy_registration_completes_impl_identities() {
         .expect("canonical io fixture");
     graph.topo_order = vec![module_id, root_id];
     let program = Program {
+        expansions: hew_parser::macro_syntax::ExpansionMap::default(),
         items: vec![],
         module_graph: Some(graph),
         module_doc: None,
@@ -255,7 +256,7 @@ fn distinct_receiver_trait_and_trait_argument_heads_remain_valid() {
          impl From<string> for R { fn from(value: string) -> R { R {} } }\n\
          fn main() {}",
     );
-    assert_clean(
+    assert_conflict(
         "trait Label<A> { fn label(self) -> i64; }\n\
          type Pair<A, B> { a: A; b: B; }\n\
          impl<T, U> Label<T> for Pair<T, U> { fn label(self) -> i64 { 1 } }\n\
@@ -265,19 +266,24 @@ fn distinct_receiver_trait_and_trait_argument_heads_remain_valid() {
 }
 
 #[test]
-fn disjoint_inherent_methods_and_user_record_specialisation_remain_valid() {
+fn disjoint_inherent_methods_remain_valid_and_overlapping_trait_heads_conflict() {
     assert_clean(
         "trait Label { fn label(self) -> i64; }\n\
          type Box<T> { value: T; }\n\
          impl<T> Label for Box<T> { fn label(self) -> i64 { 1 } }\n\
-         impl Label for Box<i64> { fn label(self) -> i64 { 2 } }\n\
          impl<T> Box<T> { fn first(self) -> i64 { 3 } }\n\
          impl<U> Box<U> { fn second(self) -> i64 { 4 } }\n\
-         impl Box<i64> { fn first(self) -> i64 { 5 } }\n\
          fn main() {\n\
              println(Box { value: 1 }.label());\n\
              println(Box { value: \"text\" }.label());\n\
          }",
+    );
+    assert_conflict(
+        "trait Label { fn label(self) -> i64; }\n\
+         type Box<T> { value: T; }\n\
+         impl<T> Label for Box<T> { fn label(self) -> i64 { 1 } }\n\
+         impl Label for Box<i64> { fn label(self) -> i64 { 2 } }\n\
+         fn main() {}",
     );
 }
 
@@ -380,7 +386,9 @@ fn repeated_registration_of_one_physical_impl_is_idempotent() {
     let declarations: HashSet<_> = output
         .impl_method_declaration_ids
         .values()
-        .filter(|declaration| output.defs.path(**declaration).starts_with("lib.R::<impl "))
+        .filter(|declaration| {
+            output.defs.module(**declaration) == output.defs.module_for_path("lib")
+        })
         .collect();
     assert_eq!(declarations.len(), 1);
 }

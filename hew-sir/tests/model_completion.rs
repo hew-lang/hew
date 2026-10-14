@@ -352,6 +352,7 @@ fn snapshot_boundary_decisions_are_visible_to_the_terminator_visitor() {
 #[test]
 fn indirect_callee_rewrites_without_shifting_arguments_or_result_edges() {
     let mut call = SemTerminator::IndirectCall {
+        targets: hew_sir::CallableTargets::default(),
         id: hew_sir::OpId(4),
         callee: boundary(ValueId(9), BoundaryDecision::Borrow),
         signature: hew_sir::SemSignature {

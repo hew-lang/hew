@@ -10,28 +10,17 @@ use crate::set_last_error;
 use crate::transport::HewTransport;
 
 use super::{
-    HewHandshake, FNV1A32_OFFSET_BASIS, FNV1A32_PRIME, HEW_FEATURE_SUPPORTS_ASK_REJECTION,
-    HEW_FEATURE_SUPPORTS_GOSSIP, HEW_HANDSHAKE_SIZE, HEW_PROTOCOL_VERSION, NOISE_STATIC_PUBKEY_LEN,
+    HewHandshake, FNV1A32_OFFSET_BASIS, FNV1A32_PRIME, HEW_FEATURE_SUPPORTS_GOSSIP,
+    HEW_HANDSHAKE_SIZE, HEW_PROTOCOL_VERSION, NOISE_STATIC_PUBKEY_LEN,
 };
 use super::{HEW_FEATURE_SUPPORTS_ENCRYPTION, NOISE_MAX_MSG_SIZE, NOISE_PATTERN};
 
 fn local_feature_flags() -> u32 {
-    HEW_FEATURE_SUPPORTS_ENCRYPTION
-        | HEW_FEATURE_SUPPORTS_GOSSIP
-        | HEW_FEATURE_SUPPORTS_ASK_REJECTION
-}
-
-pub(crate) fn supports_ask_rejection(flags: u32) -> bool {
-    flags & HEW_FEATURE_SUPPORTS_ASK_REJECTION != 0
+    HEW_FEATURE_SUPPORTS_ENCRYPTION | HEW_FEATURE_SUPPORTS_GOSSIP
 }
 
 pub(crate) fn supports_gossip(flags: u32) -> bool {
     flags & HEW_FEATURE_SUPPORTS_GOSSIP != 0
-}
-
-pub(super) fn is_ask_rejection_reply(msg_type: i32, peer_feature_flags: u32) -> bool {
-    msg_type == crate::hew_node::HEW_REPLY_REJECT_MSG_TYPE
-        && supports_ask_rejection(peer_feature_flags)
 }
 
 pub(super) fn local_schema_hash() -> u32 {

@@ -1,0 +1,16 @@
+#[resource]
+type Ticket { id: i64; }
+
+impl Ticket {
+    fn close(consume self) {
+        sleep(1ms);
+        println(self.id);
+    }
+}
+
+fn main() {
+    let ticket = Ticket { id: 2 };
+    let callback: fn[once]() -> Ticket = move || ticket;
+    let released = callback();
+    released.close();
+}

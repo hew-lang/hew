@@ -47,6 +47,42 @@ pub fn format_program(program: &Program) -> String {
     f.output
 }
 
+/// Render expanded syntax with display-only hygiene context annotations.
+#[must_use]
+pub fn format_expanded_program(program: &Program) -> String {
+    let mut f = Formatter::new("", Vec::new());
+    f.show_contexts = true;
+    f.format_program(program);
+    f.output
+}
+
+/// Render one expanded declaration with hygiene contexts.
+#[must_use]
+pub fn format_expanded_item(item: &Item, span: &Span) -> String {
+    let mut f = Formatter::new("", Vec::new());
+    f.show_contexts = true;
+    f.format_item(item, span.start, span.end);
+    f.output
+}
+
+/// Render one expanded default trait method with hygiene contexts.
+#[must_use]
+pub fn format_expanded_trait_method(method: &TraitMethod) -> String {
+    let mut f = Formatter::new("", Vec::new());
+    f.show_contexts = true;
+    f.format_trait_method(method);
+    f.output
+}
+
+/// Render one expanded expression with hygiene contexts.
+#[must_use]
+pub fn format_expanded_expression(expr: &Expr, span: &Span) -> String {
+    let mut f = Formatter::new("", Vec::new());
+    f.show_contexts = true;
+    f.format_expr(&(expr.clone(), span.clone()));
+    f.output
+}
+
 /// Format one expression as canonical Hew source text: the text a failed
 /// `assert` reports for its condition.
 #[must_use]
@@ -222,6 +258,7 @@ fn rewrite_path_separators(source: &str) -> String {
 
 struct Formatter<'a> {
     output: String,
+    show_contexts: bool,
     indent: usize,
     source: &'a str,
     /// The source's tokens, from the lexer that also yields its comments.
@@ -270,6 +307,7 @@ impl<'a> Formatter<'a> {
             .collect();
         Self {
             output: String::new(),
+            show_contexts: false,
             indent: 0,
             source,
             tokens,
@@ -432,6 +470,9 @@ impl<'a> Formatter<'a> {
     /// token, so a comment keeps its place between the same two tokens.
     fn write_ident(&mut self, ident: Ident) {
         self.write(ident.name.as_str());
+        if self.show_contexts && ident.ctx != crate::ast::SyntaxContext::ROOT {
+            let _ = write!(self.output, "/*ctx:{}*/", ident.ctx.row());
+        }
     }
 
     fn write(&mut self, s: &str) {
@@ -1236,6 +1277,22 @@ impl<'a> Formatter<'a> {
 
     fn format_item(&mut self, item: &Item, span_start: usize, span_end: usize) {
         match item {
+            Item::Macro(_) | Item::MacroCall(_) => {
+                self.write_indent();
+                self.write(
+                    self.source
+                        .get(span_start..span_end)
+                        .unwrap_or_default()
+                        .trim_end(),
+                );
+                self.newline();
+                self.prev_source_pos = span_end;
+                while self.next_comment < self.comments.len()
+                    && self.comments[self.next_comment].span.start < span_end
+                {
+                    self.next_comment += 1;
+                }
+            }
             Item::Import(decl) => self.format_import(decl, span_start..span_end),
             Item::Const(decl) => self.format_const(decl),
             Item::TypeDecl(decl) => self.format_type_decl(decl, span_start, span_end),
@@ -2717,6 +2774,17 @@ impl<'a> Formatter<'a> {
                             }
                         }
                         AttributeArg::Duration(ns) => self.write(&format_duration_ns(*ns)),
+                        AttributeArg::Tokens(call) => {
+                            if let crate::macro_syntax::TokenTree::Group { children, .. } =
+                                &call.input
+                            {
+                                let mut source = String::new();
+                                for tree in children {
+                                    tree.write_source(&mut source);
+                                }
+                                self.write(source.trim());
+                            }
+                        }
                     }
                 }
                 self.write(")");
@@ -2750,6 +2818,12 @@ impl<'a> Formatter<'a> {
     }
 
     fn format_supervisor(&mut self, decl: &SupervisorDecl, span_start: usize, span_end: usize) {
+        enum Member<'a> {
+            Strategy,
+            Intensity,
+            Child(&'a ChildSpec),
+            Method(&'a FnDecl),
+        }
         self.write_indent();
         self.write_visibility(decl.visibility);
         self.write("supervisor ");
@@ -2771,53 +2845,70 @@ impl<'a> Formatter<'a> {
         // Clauses and children print in source order. Write `strategy:` only
         // when the declaration carries one: materializing the default would
         // rewrite the program instead of formatting it.
-        let mut clauses: Vec<(usize, Option<&ChildSpec>, &str)> = Vec::new();
+        let mut clauses: Vec<(usize, Member<'_>)> = Vec::new();
         if decl.strategy.is_some() {
             clauses.push((
                 self.machine_section(span_start, span_end, "strategy"),
-                None,
-                "strategy",
+                Member::Strategy,
             ));
         }
         if decl.intensity.is_some() {
             clauses.push((
                 self.machine_section(span_start, span_end, "intensity"),
-                None,
-                "intensity",
+                Member::Intensity,
             ));
         }
         clauses.extend(
             decl.children
                 .iter()
-                .map(|c| (c.span.start, Some(c), "child")),
+                .map(|child| (child.span.start, Member::Child(child))),
         );
-        clauses.sort_by_key(|(start, _, _)| *start);
+        clauses.extend(decl.methods.iter().map(|method| {
+            (
+                member_start(&method.attributes, method.fn_span.start),
+                Member::Method(method),
+            )
+        }));
+        clauses.sort_by_key(|(start, _)| *start);
 
-        let mut previous_was_child = false;
-        for (i, (start, child, clause)) in clauses.into_iter().enumerate() {
-            let canonical = child.is_some() && (i == 0 || !previous_was_child);
-            previous_was_child = child.is_some();
-            self.begin_member(start, canonical);
-            if let Some(child) = child {
-                self.format_child_spec(child);
-                self.end_member(child.span.end);
-                continue;
-            }
-            self.write_indent();
-            if clause == "strategy" {
-                self.write("strategy: ");
-                match decl.strategy {
-                    Some(SupervisorStrategy::OneForOne) => self.write("one_for_one"),
-                    Some(SupervisorStrategy::OneForAll) => self.write("one_for_all"),
-                    Some(SupervisorStrategy::RestForOne) => self.write("rest_for_one"),
-                    Some(SupervisorStrategy::SimpleOneForOne) => self.write("simple_one_for_one"),
-                    None => {}
+        let mut previous_was_body = false;
+        for (i, (start, member)) in clauses.into_iter().enumerate() {
+            let body = matches!(member, Member::Child(_) | Member::Method(_));
+            self.begin_member(start, body && (i == 0 || !previous_was_body));
+            previous_was_body = body;
+            match member {
+                Member::Child(child) => {
+                    self.format_child_spec(child);
+                    self.end_member(child.span.end);
+                    continue;
                 }
-            } else if let Some(intensity) = &decl.intensity {
-                self.write("intensity: ");
-                self.write(&intensity.restarts.to_string());
-                self.write(" within ");
-                self.write(&intensity.window);
+                Member::Method(method) => {
+                    self.format_fn(method, method.fn_span.end);
+                    self.end_member(method.fn_span.end);
+                    continue;
+                }
+                Member::Strategy => {
+                    self.write_indent();
+                    self.write("strategy: ");
+                    match decl.strategy {
+                        Some(SupervisorStrategy::OneForOne) => self.write("one_for_one"),
+                        Some(SupervisorStrategy::OneForAll) => self.write("one_for_all"),
+                        Some(SupervisorStrategy::RestForOne) => self.write("rest_for_one"),
+                        Some(SupervisorStrategy::SimpleOneForOne) => {
+                            self.write("simple_one_for_one");
+                        }
+                        None => {}
+                    }
+                }
+                Member::Intensity => {
+                    if let Some(intensity) = &decl.intensity {
+                        self.write_indent();
+                        self.write("intensity: ");
+                        self.write(&intensity.restarts.to_string());
+                        self.write(" within ");
+                        self.write(&intensity.window);
+                    }
+                }
             }
             self.write(";\n");
         }
@@ -3412,6 +3503,7 @@ impl<'a> Formatter<'a> {
             | Expr::ChainValue
             | Expr::RegexLiteral(_)
             | Expr::ByteStringLiteral(_)
+            | Expr::MacroCall(_)
             | Expr::MacroInvocation { .. }
             | Expr::ByteArrayLiteral(_)
             | Expr::Yield(None)
@@ -4224,6 +4316,23 @@ impl<'a> Formatter<'a> {
             self.flush_inline_comments(expr.1.start);
         }
         match &expr.0 {
+            Expr::MacroCall(call) => {
+                if let Some(source) = self.source.get(expr.1.clone()) {
+                    self.write(source);
+                } else {
+                    self.write(&call.path.to_string());
+                    self.write("!");
+                    let mut input = String::new();
+                    call.input.write_source(&mut input);
+                    self.write(input.trim_start());
+                }
+                self.prev_source_pos = expr.1.end;
+                while self.next_comment < self.comments.len()
+                    && self.comments[self.next_comment].span.start < expr.1.end
+                {
+                    self.next_comment += 1;
+                }
+            }
             Expr::Binary { left, op, right } => {
                 let prec = binop_precedence(*op);
                 self.format_expr_prec(left, prec, false);

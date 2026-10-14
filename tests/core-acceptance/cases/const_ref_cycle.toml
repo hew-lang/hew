@@ -1,0 +1,13 @@
+[[case]]
+id = "const_ref_cycle"
+intent = "A constant dependency cycle is rejected once as an invalid source initializer."
+source = "../vertical-slice/reject/const_ref_cycle.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "ConstDependencyCycle"
+line = 1
+column = 16
+message = "E_CONST_INITIALIZER: cyclic constant initializer"

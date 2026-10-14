@@ -1,0 +1,13 @@
+[[case]]
+id = "source-assignment-cleanup-effect-reject"
+intent = "Replacing a captured callable reads the old value's cleanup effect before updating callable provenance."
+source = "cases/source-assignment-cleanup-effect-reject.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "InvalidOperation"
+line = 21
+column = 32
+message = "suspends via `implicit release of fn() -> i64`"

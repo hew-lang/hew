@@ -90,17 +90,14 @@ pub const CONN_STATE_CLOSED: i32 = 3;
 
 const HEW_HANDSHAKE_SIZE: usize = 72;
 const HEW_HANDSHAKE_MAGIC: [u8; 4] = *b"HEW\x02";
-const HEW_PROTOCOL_VERSION: u16 = 2;
+const HEW_PROTOCOL_VERSION: u16 = 3;
 // Every node advertises Noise; a TCP peer whose record lacks this bit is a
 // plaintext peer and is refused (`ChannelRefusal::PlaintextPeer`).
 const HEW_FEATURE_SUPPORTS_ENCRYPTION: u32 = 1 << 0;
 const HEW_FEATURE_SUPPORTS_GOSSIP: u32 = 1 << 1;
 // Bit 2 (HEW_FEATURE_SUPPORTS_REMOTE_SPAWN) is reserved; not advertised until a
 // bootstrap-based remote-spawn path is implemented.
-/// Indicates that this node understands `HEW_REPLY_REJECT_MSG_TYPE = 65535` in
-/// reply envelopes.  A node MUST only send the rejection sentinel to peers that
-/// advertise this flag; old nodes would misinterpret it as a void-success reply.
-pub(crate) const HEW_FEATURE_SUPPORTS_ASK_REJECTION: u32 = 1 << 3;
+// Bit 3 was the v2 ask-rejection capability; v3 replies always carry status.
 const MAX_REGISTRY_GOSSIP_FLUSH_EVENTS: usize = 64;
 
 /// Ceiling on retry ATTEMPTS for a parked registry-gossip flush (finding:
@@ -277,30 +274,14 @@ pub struct HewConnMgr {
     /// Global shutdown signal shared with reconnect workers and stop-time
     /// ask-reply teardown guards.
     reconnect_shutdown: Arc<AtomicBool>,
-    /// Spawn gate for inbound workers, distinct from `reconnect_shutdown`.
-    ///
-    /// `hew_node_stop` sets this FIRST — before draining in-flight workers —
-    /// so the drain terminates (no new workers spawn) while already-running
-    /// `handle_inbound_ask` threads still flush their computed replies to the
-    /// wire (those threads bail only on `reconnect_shutdown` / `CURRENT_NODE`,
-    /// which are set AFTER the drain). Separating the gate from the teardown
-    /// guard is what lets a graceful stop deliver in-flight replies instead of
-    /// abandoning them as a spurious `ConnectionDropped`. Reverse-link setup
-    /// workers use the same gate and drain because they also access node state.
-    ///
-    /// This flag and `inbound_ask_active` form a Dekker pair accessed under
-    /// `SeqCst` (see `node_inbound_router` and `drain_inbound_ask_workers`): the
-    /// store here is ordered with the counter load in the drain such that a
-    /// router which passes the gate is always visible to a concurrent drain, so
-    /// no worker can spawn after the drain observed a zero counter.
+    /// Close admission before draining inbound asks and reverse-link setup.
+    /// `SeqCst` pairs this gate with the active counter's increment/re-check so
+    /// every admitted owner is visible to node shutdown. Reply publication
+    /// remains open until the drain completes and `reconnect_shutdown` is set.
     inbound_spawn_closed: Arc<AtomicBool>,
-    /// Count of inbound ask and reverse-link setup workers active for this manager.
-    ///
-    /// Incremented before each worker's gate re-check (so a concurrent drain
-    /// always sees a spawning worker), then decremented by its RAII guard. Used
-    /// by `hew_node_stop` to drain workers before freeing node resources.
-    /// Accessed under `SeqCst` on the spawn/drain path.
+    /// Admitted inbound asks and reverse-link setup owners for this manager.
     pub(crate) inbound_ask_active: Arc<AtomicUsize>,
+    pub(crate) inbound_asks: Arc<crate::hew_node::InboundAsks>,
     /// Background reconnect worker handles.
     reconnect_workers: PoisonSafe<Vec<JoinHandle<()>>>,
     /// Deferred reverse-link setup workers, joined before manager teardown.
@@ -512,13 +493,22 @@ struct ReconnectPlan {
 
 /// Inbound message routing callback.
 ///
-/// Parameters: `(target_actor_id, msg_type, data, size, request_id, source_node_id, conn_mgr)`.
+/// Carries the authenticated peer identity separately from reply routing.
 /// `request_id` > 0 with `source_node_id` > 0 means this is an ask that expects
 /// a reply. `request_id` == 0 is fire-and-forget.
 /// `conn_mgr` is the manager that received the message; the callback must
 /// use it to route replies so they go out on the correct connection regardless
 /// of which node is stored in the process-global `CURRENT_NODE`.
-type InboundRouter = unsafe extern "C" fn(u64, i32, *mut u8, usize, u64, u16, *mut HewConnMgr);
+type InboundRouter = unsafe extern "C" fn(
+    u64,
+    *const std::ffi::c_char,
+    *mut u8,
+    usize,
+    u64,
+    u16,
+    *mut HewConnMgr,
+    crate::node_identity::HewNodeId,
+);
 
 // SAFETY: HewConnMgr is only accessed through C ABI functions that
 // serialize access via the internal Mutex. The transport pointer is

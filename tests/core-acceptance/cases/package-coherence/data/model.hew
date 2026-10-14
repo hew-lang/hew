@@ -1,0 +1,11 @@
+pub type Widget {
+    label: string;
+}
+
+pub type Wrapped<T> {
+    value: T;
+}
+
+package fn render_label(label: string) -> string {
+    f"widget: {label}"
+}

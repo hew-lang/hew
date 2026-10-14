@@ -72,6 +72,7 @@ pub fn collect_calls_in_item(item: &Item, calls: &mut Vec<CallSite>) {
     let mut visitor = CallCollector::default();
     let parse_result = ParseResult {
         program: hew_parser::ast::Program {
+            expansions: hew_parser::macro_syntax::ExpansionMap::default(),
             items: vec![(item.clone(), 0..0)],
             module_doc: None,
             module_graph: None,
@@ -439,6 +440,7 @@ fn collect_calls_in_expr(spanned: &(Expr, Span), calls: &mut Vec<CallSite>) {
         | Expr::ChainValue
         | Expr::RegexLiteral(_)
         | Expr::ByteStringLiteral(_)
+        | Expr::MacroCall(_)
         | Expr::MacroInvocation { .. }
         | Expr::ByteArrayLiteral(_)
         | Expr::Yield(None)

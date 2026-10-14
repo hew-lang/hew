@@ -57,6 +57,7 @@ mod calls;
 mod captures;
 mod closures;
 mod collections;
+mod const_literals;
 mod consts;
 mod ctx;
 mod dispatch;
@@ -808,13 +809,14 @@ struct FnEntry {
 ///
 /// Populated in the first pass (`register_const_entry`) so that const
 /// references resolve to a stable `ItemId` regardless of source order. The
-/// folded value is NOT stored here — it is produced once, canonically, in the
-/// emit pass (`lower_const`) on the `HirItem::Const`. A const reference only
-/// needs the id (for `ResolvedRef::Const`) and the declared type.
+/// Initializers are folded on demand by declaration identity; references only
+/// need the id (for `ResolvedRef::Const`) and the declared type.
 #[derive(Debug, Clone)]
 struct ConstEntry {
     id: ItemId,
     ty: ResolvedTy,
+    initializer: Spanned<Expr>,
+    module_idx: u32,
 }
 ///
 /// Populated in the type-decl / record pre-pass and consulted at
@@ -919,12 +921,11 @@ fn machine_event_surface_type(machine: &str) -> String {
     format!("{machine}.Event")
 }
 
-type TraitMethodBindingKey = (Option<String>, u32, String, String);
-
 #[derive(Debug)]
 struct LowerCtx {
     compile_time_values: HashMap<SpanKey, hew_types::compile_time::ConstantValue>,
     ids: IdGen,
+    checked_sites: HashMap<SiteId, SpanKey>,
     /// Binding metadata for capture analysis; keyed by the HIR binding id.
     binding_scopes: Vec<HashMap<BindingId, OuterClosureBinding>>,
     /// Checker-owned source binding identities in the current lexical scopes.
@@ -983,21 +984,13 @@ struct LowerCtx {
     diagnostics: Vec<HirDiagnostic>,
     /// Checker-owned function and method signatures used for iterator dispatch
     /// and concrete call instantiation.
-    /// TRANSITION(B1): signatures by the keys the checker published.
-    fn_sigs_by_path: HashMap<String, hew_types::FnSig>,
+    fn_sigs: HashMap<hew_types::DefId, hew_types::FnSig>,
+    fn_sig_keys: HashMap<String, hew_types::DefId>,
+    builtin_fn_sigs: HashMap<hew_parser::ast::Symbol, hew_types::FnSig>,
     /// Checker-selected targets for ordinary calls, keyed by the call span.
     /// Missing facts lower as an explicit unsupported target; HIR never
     /// guesses from the callee spelling.
     direct_call_targets: HashMap<SpanKey, CallTarget>,
-    /// Checker-published canonical `(trait, method)` declaration identities,
-    /// keyed by owner-qualified source method paths. HIR only carries these
-    /// declaration facts; it does not rebuild IDs from method spellings.
-    trait_method_ids: HashMap<String, (hew_types::DefId, hew_types::DefId)>,
-    /// Checker-published canonical trait identities addressed through an exact
-    /// importer binding.  This resolves default-method ownership for `impl
-    /// AliasTrait for Type` without a leaf-name or suffix lookup.
-    trait_method_ids_by_binding:
-        HashMap<TraitMethodBindingKey, (hew_types::DefId, hew_types::DefId)>,
     /// Checker-owned impl-method declaration identities.  Keys are linker
     /// presentation strings retained only to locate the already-allocated ID;
     /// HIR never constructs an ID from a method spelling.
@@ -1446,11 +1439,9 @@ struct LowerCtx {
     /// regardless of source order. See [`ConstEntry`].
     const_registry: HashMap<String, ConstEntry>,
     source_const_entries: HashMap<hew_types::DefId, ConstEntry>,
-    /// Same-module integer const values folded earlier in source order.
-    /// Populates `ConstEnv` for subsequent const initializers; values are not
-    /// used for ordinary expression lowering, which continues to resolve const
-    /// references through `const_registry`.
-    folded_integer_consts: HashMap<String, i128>,
+    /// Folded constants, keyed by checker identity.
+    folded_constants: HashMap<hew_types::DefId, hew_types::compile_time::TypedConstant>,
+    folding_constants: HashSet<hew_types::DefId>,
     /// Per-enum variant descriptors keyed by the enum's type name. Populated
     /// between the type-decl second pass and the source-order third pass so
     /// `Expr::Call` (tuple variant ctors like `Shape::Line(5)`) and
@@ -1514,7 +1505,6 @@ struct LowerCtx {
     /// function body.
     current_fn_type_params: HashSet<hew_types::ParamHead>,
     /// Checker-selected trait bindings and default source bodies.
-    trait_bindings: HashMap<(Option<String>, u32, String), hew_types::DefId>,
     trait_defaults: HashMap<hew_types::DefId, Vec<hew_types::ResolvedTraitDefault>>,
     /// Source-declared type names visible in the root namespace, including
     /// declarations flattened from file imports. These identities must be

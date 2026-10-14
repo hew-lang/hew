@@ -331,6 +331,23 @@ mailbox(counter, on_full: .Reject).increment(10)?;
 let n = counter.get()?;
 ```
 
+**Read after a write:** handle the write's successful completion before issuing
+its dependent read:
+
+```hew,ignore
+counter.increment(10)?;
+let n = counter.get()?;
+```
+
+The write has completed before this read starts. Other callers may still
+change the actor between the two calls; return the needed value from the
+write handler when the update and observation must be one turn. A successful
+read does not confirm an earlier one-way submission that was discarded,
+refused, cancelled or lost when the actor stopped. Neither completion nor a
+read promises durable storage. A transport failure may leave the caller
+uncertain whether a remote write completed, so retry policy belongs to the
+application's operation.
+
 **Sending messages:**
 
 Lambda actors receive messages via call-syntax. Named actors expose typed receive methods:
@@ -651,6 +668,69 @@ complete; use `stopped(worker)` alone to observe an earlier stop request.
 - Lambda actors cannot implement traits
 - Lambda actors cannot be named children in supervisor declarations
 
+### 2.1.4 Actor Interceptors
+
+An actor may declare one `#[intercept]` method around its receive handlers:
+
+```hew
+actor Store {
+    #[intercept]
+    fn guard(call: Call<Self>) -> Outcome<Self> {
+        if call.handler_name() == "erase" {
+            call.refuse("read-only store")
+        } else {
+            let outcome = call.proceed();
+            match outcome.response {
+                .Some(.read(value)) => println(value),
+                _ => {}
+            }
+            outcome
+        }
+    }
+
+    receive fn read() -> string { "stored value" }
+    receive fn erase() {}
+}
+```
+
+`Call<A>` owns one delivery. Its `request` field lends an `A.Request` enum,
+with one record variant per handler named after that handler and containing
+its parameters. `handler_name()` returns the handler's name. `caller()`
+returns `Caller.Task`, `Caller.Actor(ActorId)`, `Caller.Timer` or
+`Caller.Node(NodeId)` for an authenticated peer delivery. `ActorId` is an
+opaque incarnation identity with equality, hashing and display; it does not
+grant access to the actor.
+
+The interceptor must consume its call exactly once with `proceed()` or
+`refuse(reason)` and return the resulting `Outcome<A>`. Neither token may
+escape into fields, collections, closures or messages. Interceptors inspect
+requests and responses through borrows and cannot replace either value.
+
+`proceed()` invokes the next interceptor and then the handler. The returned
+outcome lends `response: Option<A.Response>`: `Some` contains the exact
+handler variant and its result; `None` means a layer refused the delivery.
+A unit or stream-start handler has a variant without a payload. A `fails E`
+handler carries its complete `Result<R, E>`. `failed()` reports that handler's
+declared failure, while `refused()` reports an interceptor refusal. An
+ordinary `Result`-valued handler does not count as a declared failure.
+
+A supervisor may declare one stateless generic interceptor with the signature
+`#[intercept] fn guard<A>(call: Call<A>) -> Outcome<A>`. Delivery enters the
+outermost supervisor's interceptor, each nested supervisor's, and then the
+actor's. Completion returns through these layers in reverse order. All layers
+execute within the receiving actor's turn. Refusal skips all inner layers.
+
+A refused completion call returns `Err(ActorError.Refused)` without crashing
+the actor. Mailbox acceptance remains an admission result; a later refusal
+emits an `actor.delivery_refused` event and warning containing the reason.
+A refused stream start faults the reader when it reads instead of returning
+clean end-of-stream, and leaves the producer actor alive. A panic before or
+after `proceed()` follows ordinary actor fault and supervision rules.
+
+Interceptors cover receive deliveries, including stream starts and `#[every]`
+ticks. Lifecycle hooks, system messages, replies and stream items do not
+enter an interceptor.
+
 ### 2.2 Failure model
 
 - Functions do not throw exceptions for control flow.
@@ -947,7 +1027,7 @@ to use `type`.
 
 - **Value types** (copy): integers, floats, bool, char, small fixed aggregates.
 - **Owned heap types**: `string`, `bytes`, `Vec<T>`, `HashMap<K,V>`, user-defined types.
-- **Shared immutable types**: `Frozen` values are the conceptual shared-immutable category. The runtime has internal `Arc`/ABI support, but no user-facing `Arc<T>` type is exposed (HEW-FUTURE §2.3).
+- **Shared immutable types**: `Frozen` values are the conceptual shared-immutable category. Internal reference-count selection belongs to the compiler and runtime and preserves value semantics and actor isolation (HEW-FUTURE §2.3).
 - **Actor references**: an actor handle is sendable.
 - **Pipe halves**: `Stream<T>` (readable) and `Sink<T>` (writable) — move-only handles, `Send` when `T` is (§6.4).
 
@@ -1124,6 +1204,16 @@ name binds by name only inside braces.
 - Mutable bindings: `var`.
 - Type fields have no mutability qualifier. Field mutation is governed by the binding: a `var`-bound value allows `p.x = …`; a `let`-bound value rejects it. The same wall covers every place rooted at the binding — `p.x = …`, `v[0] = …`, `m["k"] = …`, and `t.0 = …` — and calling a method declared `var self` (§3.7.1), which is how a value-category type is mutated.
 
+**Constants.** A module-level `const NAME: T = value;` declares a compile-time
+value. Its initializer may contain scalar, record, enum, tuple, fixed array,
+vector and map literals with constant leaves, including constant references,
+record updates, vector spreads, fixed array repeats and compile-time inputs
+(§12.8). Integer arithmetic follows the declared integer type's range and
+overflow rules. Ordinary function calls are not evaluated at compile time.
+Constant references are independent of declaration order; cyclic initializers are rejected.
+Each use materializes an independent value; consuming or mutating one use
+does not change the declaration or another use.
+
 **The binding wall (normative).** A `let` binding cannot be reassigned, and no
 place rooted at it can be assigned. `p.x = …`, `v[0] = …`, `m["k"] = …`, and
 `t.0 = …` on a `let` binding are all `MutabilityError` (User channel) carrying
@@ -1247,7 +1337,6 @@ The compiler automatically determines `Send` and `Frozen` for user-defined types
 | `type S` where all field types are `Frozen` | `Frozen` (recursive over field types) |
 | `type S` where any field type is not `Frozen` | NOT `Frozen`                        |
 | `enum E`                      | All variant payloads are `Frozen`         |
-| `Arc<T>`                      | _Not currently surfaced in Hew source; runtime-only support today_ |
 | `Vec<T>`, `HashMap<K,V>`      | NOT `Frozen` (mutable containers)         |
 
 > **Soundness requirement:** The compiler MUST reject as non-`Send` any type whose `Send` status cannot be determined (e.g., opaque foreign types). Foreign types are non-`Send` by default. The runtime/ABI has internal escape hatches, but there is currently **no surfaced Hew `#[send]` attribute** for user code.
@@ -2021,6 +2110,21 @@ match.
 
 Traits define shared behaviour that types can implement. Hew has built-in marker traits and supports user-defined traits.
 
+An explicit trait impl must belong to the package defining the trait or the
+outer receiver type. A local type argument does not make a foreign receiver
+local: `Vec<Local>` still belongs to the standard library. Package identity is
+the canonical `hew.toml` anchor, independent of module depth or import aliases;
+sources without a manifest share the compilation package. The authenticated
+standard library is a distinct package. Explicit replacements of implicit
+prelude impls retain their existing override behaviour.
+
+Two impl heads for the same trait must not overlap.
+The checker freshens their generic parameters and compares both receiver and
+trait arguments by unification. Bounds do not establish disjointness. Thus
+`impl<T> Render for Wrapped<T>` conflicts with `impl Render for Wrapped<i64>`,
+while `impl Render for Wrapped<i64>` and `impl Render for Wrapped<string>` are
+permitted. Hew has no specialization or declaration-order tie breaker.
+
 **Trait declaration:**
 
 ```hew
@@ -2068,7 +2172,7 @@ impl PointRenderer for Point {
 - `Sync` - Type is safe to share across concurrent actors without synchronisation. Derived structurally from field types; the compiler determines this automatically. A type is `Sync` if all its fields are `Sync`. Value types are always `Sync`; mutable containers (`Vec<T>`, `HashMap<K,V>`) are not.
 
 - `Frozen` - Type is deeply immutable and thus safely shareable. Implies `Send`. `Frozen ⊇ Send` holds by structural coincidence — every type whose fields are all deeply immutable is also send-admissible — not via an explicit impl chain.
-  - Runtime-internal shared immutable handles (the planned `Arc<T>` surface is not yet exposed in Hew source)
+  - Runtime-internal shared immutable handles
   - Types where all fields are `Frozen`
 
 - `Copy` - Type is copied on assignment rather than moved.
@@ -2577,7 +2681,7 @@ fn eval(e: Expr) -> i64 {
 - `indirect` can only be used with `enum` declarations, not `type` declarations
 - Only enums that contain self-referential variants benefit from `indirect`
 
-#### 3.7.5 Reference Counting (Rc and Arc)
+#### 3.7.5 Reference Counting (Rc and Weak)
 
 **`Rc<T>` — single-actor reference counting:**
 
@@ -2647,11 +2751,11 @@ Strong `Rc` cycles leak because Hew does not run a tracing collector. Use weak
 back-edges to break cycles. `Rc.new_cyclic`, dereference/borrow access to an Rc
 payload, and cross-actor transfer are not supported in edition 2026.
 
-> See HEW-FUTURE.md §2.3 for the user-facing `Arc<T>` surface — targeted
-> for v0.7. The runtime contains internal atomic-refcount machinery, but
-> source code has no `Arc<T>` keyword in edition 2026. Cross-actor sharing
-> is via owned messages and actor state; the intended invariant is that
-> only deeply-immutable (`Frozen`) data is shareable.
+The compiler and runtime select internal reference-count implementations for
+ordinary values. Cross-actor transfer preserves isolation and the checked
+`Frozen` restrictions. Concrete sharing depends on implemented lowering;
+additional aggregate sharing is not implied. Explicit `Rc` retains its
+observable within-actor aliasing contract.
 
 **When to use which:**
 | Type | Cross-actor? | Send mechanism | Use case |
@@ -3157,15 +3261,12 @@ type MutableContainer<T> {
 
 **Conditional implementations:**
 
-```hew
-// Vec<T> is Send if T is Send
-impl<T: Send> Send for Vec<T> {}
+`Vec<T>` is `Send` when `T` is `Send`, and `Frozen` when `T` is `Frozen`.
+These implementations belong to the standard library; application code cannot
+redeclare an implementation of a foreign trait for a foreign type.
 
-// Vec<T> is Frozen if T is Frozen
-impl<T: Frozen> Frozen for Vec<T> {}
-```
-
-The runtime also has internal `Arc` support, but those `Send`/`Frozen` rules are not yet part of surfaced Hew source syntax.
+Internal atomic reference counts do not introduce another source type or relax
+the checked `Send` and `Frozen` rules.
 
 **Actor boundary enforcement:**
 
@@ -5524,14 +5625,32 @@ stream receive arm (so `None` is a legitimate winning value indicating
 the pipe observed end of data on that call); `p3: C` for the task arm;
 and no binding for `after`.
 
-**Why sealed?**
+**Custom waiting through ordinary functions.**
 
-A user-implementable `Awaitable` trait would have to specify coherence
-rules, cancellation hooks, fairness rules, pinning constraints, and a
-loser-cleanup protocol — all unsettled in edition 2026. The four forms
-above are the workloads `select` exists to serve. A user `Awaitable`
-surface may land in a future edition once trait lowering and generator
-cancellation are proven; see HEW-FUTURE.md.
+A user function can suspend while composing existing operations. Forking that
+function produces a `Task` that participates in `select`, without a poll,
+waker or pinning interface. For example, the existing
+[`select-task-arm-loop-poll` source case](../../tests/core-acceptance/cases/select-task-arm-loop-poll.hew)
+uses this adapter:
+
+```hew
+import std.stream;
+
+fn wait_for(consume rx: stream.Stream<i64>) -> i64 {
+    let value = match rx.recv() {
+        .Some(v) => v,
+        .None => -1,
+    };
+    rx.close();
+    value
+}
+```
+
+The caller starts `let job = fork wait_for(rx)` inside a scope and selects on
+`job`. Its timer arms leave the same task live until the caller releases the
+pipe and receives the result. A losing task arm continues scope-owned work;
+withdrawing a native readiness registration has a different cleanup contract.
+Direct custom `select` registrations remain design-dependent future work.
 
 The source forms and cleanup table are the intended contract. The current
 native actor-call gap is recorded in §2.1.1.
@@ -7864,12 +7983,12 @@ LetElseStmt  = "let" Pattern "=" Expr "else" Block ";" ;
 
 ### 12.6 Attributes
 
-**The attribute set is closed (normative).** The tables below list every
-attribute of edition 2026 and the positions each one is legal in. An
-attribute whose name is not in a table, or that appears in a position the
-table does not list, is `E_UNKNOWN_ATTRIBUTE` (User) — on type declarations,
-functions, parameters, fields, actor members, and `impl` blocks alike. There
-is no position where an unrecognised attribute is ignored.
+**Attribute resolution is closed after macro expansion (normative).** The
+following tables define the built-in attributes and their legal positions.
+Other names retain balanced argument tokens during parsing and must resolve to
+an attribute macro (§12.9.1); otherwise they are `E_UNKNOWN_ATTRIBUTE`.
+Built-in names retain their argument and position checks and cannot be used as
+user macro names.
 
 A silently ignored attribute is a fail-open in the shape the language least
 tolerates: a misspelled `#[test]` produces a function nothing calls, the test
@@ -7896,6 +8015,7 @@ refuses the name it does not know rather than dropping it.
 | `#[real_time]` | `#[test]` function | Runs on the threaded scheduler with the host clock instead of the deterministic single-thread driver and virtual clock. |
 | `#[on(kind)]` | actor member `fn` | Lifecycle hook; `kind` is one of `start`, `stop`, `crash`, `exit`, `down` (§9.1.2). |
 | `#[every(<duration>)]` | actor `receive fn` | Periodic receive handler (§2.1.2). |
+| `#[intercept]` | actor or supervisor method | Typed receive interceptor (§2.1.4). |
 | `#[max_heap(N)]` | actor declaration | Per-actor arena ceiling; a breach is an unrecoverable actor failure (§2.1). |
 | `#[extern_symbol(name)]` | `fn` inside an `extern "C"` block or an `impl` block | Binds the declaration to a named C-ABI symbol (§3.9.1). Not legal on an actor member. |
 | `#[offload]` | `fn` inside an `extern "C"` block | A call parks its task while the function runs on the blocking pool (§3.9.1, §4.7). Takes no arguments. |
@@ -7974,8 +8094,8 @@ breaking change for callers that name it.
 
 ### 12.8 Compile-time inputs
 
-The compiler-provided invocations `include_str!(path)`, `include_bytes!(path)`
-and `stringify!(expression)` are expressions. Their names remain ordinary
+The compiler-provided invocations `include_str!(path)`, `include_bytes!(path)`,
+`stringify!(expression)`, `location!()` and `embed!(path)` are expressions. Their names remain ordinary
 identifiers outside invocation syntax. Invocations accept a trailing comma.
 
 `include_str!` and `include_bytes!` take exactly one string literal path and
@@ -8007,6 +8127,134 @@ Included files are compilation inputs. Their contents become part of the
 compiled value; subsequent changes to those files do not affect an existing
 executable. A published package must contain every package file consumed by
 its frontend check.
+
+`location!()` takes no arguments and produces a constant `SourceLocation`
+record with `file: string`, `line: i64` and `column: i64`. The file is
+package-relative using `/` separators. Line and column are one-based;
+columns count Unicode characters. A constant initializer records its own
+invocation, rather than the place where the constant is later used.
+
+`embed!` takes one string literal path ending in `.json`, `.yaml`, `.yml` or
+`.toml`. It decodes the file against its concrete expected type during
+compilation, using the ordinary typed data decoder and `#[serial]` schema.
+It may appear in a constant initializer or an expression. Without an
+expected type it is an error; embedding does not infer types from data.
+The resulting records, variants and collections follow ordinary value and
+ownership semantics. Data errors are attributed to the consumed file.
+An aggregate constant is materialized as a fresh value at each use; consuming
+one materialization does not consume the constant declaration. A reference
+to a constant is therefore a value expression, rather than a mutable or
+consumable binding place.
+Duplicate map keys and set elements are errors. Keys using user-defined
+equality require runtime decoding, since compile-time embedding does not
+execute user methods. The input obeys the same package confinement and
+compilation dependency rules as `include_str!`.
+
+### 12.9 Declarative macros
+
+Macros occupy a separate module namespace. A declaration has the form
+`[pub] macro name { (pattern) => expr { expression } ... }`; an `items`
+rule instead produces ordinary declarations. `name!(...)` invokes an expression
+or item rule; module qualification and named imports apply. The first rule whose
+pattern matches the complete input wins. A category or type error never selects
+a later rule.
+
+Captures use `$name:ident`, `expr`, `ty`, `pat`, `block` or `literal`.
+Fragments are parsed syntax: substituting an expression preserves its precedence.
+Other pattern tokens match literally. `$(...),*`, `$(...),+` and `$(...)?`
+express non-nested repetition. The optional form has no separator. An expression
+capture may be followed only by `,`, `;` or a closing delimiter; a type capture
+additionally permits `=`; a pattern capture permits `=>`, `,`, `|`, `if` or a
+closing delimiter. These follow sets are checked at definition. A template
+repetition must reference repeated captures from one pattern repetition group.
+
+Captured identifiers retain their caller context. Template identifiers carry an
+expansion context: introduced bindings are fresh, and free references resolve in
+the defining module. Caller-supplied identifiers may deliberately name generated
+declarations, fields and parameters. A public macro may reference only public
+items. Unbound template names and invalid public references are errors even when
+the macro is unused.
+
+Expansion does not evaluate arguments. Each occurrence evaluates where it is
+inserted and receives the ordinary ownership and suspension checks. A captured
+jump retains its caller target. Template-written `return`, `?`, `break` and
+`continue` may target only a function or loop introduced by the template.
+
+Expansion follows module resolution and precedes type checking for every host.
+It is bounded to 64 nested invocations and one million generated nodes per
+outermost invocation. Macro definitions cannot execute code, inspect types,
+read files or access the network. Built-in compile-time input operations retain
+their separately specified host capabilities.
+
+The formatter preserves macro bodies and invocation arguments as token trees.
+`hew tool expand file.hew [--at LINE:COL]` displays expanded syntax and syntax
+context annotations; this display is not guaranteed to recompile. The language
+server's `hew/expandMacro` request and browser's `expand_macro` export share that
+view. Diagnostics retain caller and definition origins.
+
+#### 12.9.1 Attribute rules
+
+`#[(argument pattern)] $f:fn => items { template }` defines an attribute
+rule. `$m:method` requires a receiver; either fragment may add `fails` to require
+a fallible function. Invocation uses `#[name(arguments)]`, `#[name]` for empty
+arguments, or a module-qualified name. Attribute and `!` rules may coexist;
+each invocation form considers only its own rules in declaration order.
+
+An item capture inserts the function without held-aside attributes. Projections
+are `.vis`, `.name` (caller context), `.generics`, `.params` (without parentheses),
+`.args` (non-receiver forwarding arguments), `.ret` (the complete return and
+`fails` clause), `.where`, and `.body`. A `method` capture additionally supports
+`.receiver`. Missing optional clauses insert no tokens. Projections apply only
+to function captures; member access on expression captures is unchanged.
+
+A projected `.body` forms the body of a function written by the template, or
+occurs directly as a statement or tail within it, at most once per function. Its `return`, `?` and `return error`
+target that function. Placement inside a closure, loop or nested block is
+`E_MACRO_BODY_PLACEMENT`, checked at definition. Exactly one output function
+must carry the caller's `.name` (`E_MACRO_NAME_CARRIER`). Attribute rules must
+produce `items` (`E_MACRO_BAD_CATEGORY`).
+
+Attribute macros are legal on free functions, impl methods, default trait
+methods with bodies and plain actor methods. Receive handlers, lifecycle hooks,
+extern functions, bodiless trait signatures and declaration headers are refused
+with `E_ATTRIBUTE_MACRO_POSITION`; receive diagnostics recommend `#[intercept]`.
+
+The nearest attribute expands first. Every other attribute is held aside and
+reattached to the unique caller-name carrier before continuing outward. Built-in
+attribute names, substrate names and built-in macro names are reserved
+(`E_MACRO_RESERVED_NAME`). A missing macro or matching attribute rule is
+`E_UNKNOWN_ATTRIBUTE` after expansion.
+
+See [Declarative macros](../guides/macros.md) for examples.
+
+### 12.10 Build-time source generation
+
+An ordered `[[generate]]` manifest table names a step, a Hew source or
+dev-dependency `run`, optional argument strings, input globs and one exclusively
+owned output directory. Paths are package-relative. Overlapping outputs and
+input-dependency cycles are errors. A consumer step runs after its producer.
+
+`hew generate` runs stale steps. Build, run, check and test commands prepare
+them before reading generated modules. Stamps cover tracked compiler inputs,
+lockfiles, data, arguments and compiler version. `--check` regenerates in scratch
+space and refuses differing output. Publication requires that check and ships
+the generated sources; registry dependencies never execute generators. Local
+path dependencies prepare their own steps.
+
+The generate admission profile refuses native packages, user extern declarations
+and host capabilities outside generation, including network, process and
+environment access. Runtime filesystem checks allow declared input reads and
+reads of the generator's package, with writes confined to its output directory.
+They resolve symlinks and map output paths to staging. Refused filesystem access
+returns `IoError.PermissionDenied`. Clocks return the Unix epoch, randomness is
+seeded, and actor work uses the deterministic driver. This is not an OS sandbox.
+
+Output files must be `.hew` source, parse successfully and start with
+`// @generated by hew generate (<step>) from <inputs>; do not edit`. The driver
+formats them before publication. The formatter preserves marked files. The LSP
+analyses them normally and reports their provenance and stale stamps; it runs
+generation only for an explicit editor command. Browser and VM compilation
+accept supplied generated source without executing generators.
 
 ## 13. Self-Hosting Roadmap
 
@@ -8086,11 +8334,8 @@ current compiler stages and their responsibilities are described in §8.1.
   ladder: AST → typed HIR → ownership SIR → checked physical MIR → LLVM
   IR via inkwell. The v0.4 Rust-frontend / C++ backend / MessagePack-AST
   pipeline is no longer the design.
-- **Deferred to next edition.** Generators (`Lazy<T>` / `#[prefetch(N)]`),
-  closures with captured
-  environment, user-facing `Arc<T>`, `dyn Trait`, `DoubleEndedIterator`,
-  cancellation tokens, actor await + read-after-send barrier, and the self-hosting
-  roadmap. See HEW-FUTURE.md for the surface and version targets.
-  Pipes (`std.stream`, §6.4) and the rest of the `Iterator`/`IntoIterator`
-  trait hierarchy shipped in this edition (§2.4, §2.5). Cross-node actor
-  communication is shipped and normative — see §11 and HEW-DIST-SPEC.md.
+- **Further implementation.** HEW-FUTURE.md records pending language,
+  library and tooling work and its version targets. Accepted additions can
+  amend edition 2026 during the 0.6 series; an edition boundary is not a
+  prerequisite. Cross-node actor communication is normative — see §11 and
+  HEW-DIST-SPEC.md.

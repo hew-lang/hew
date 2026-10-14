@@ -30,7 +30,18 @@ impl Checker {
     /// imported module path.  The spelling is an input-namespace key only;
     /// declaration IDs must use this source owner, never an alias or final
     /// path segment.
-    pub(in crate::check) fn canonical_module_import_owner(&self, module_name: &str) -> String {
+    pub(in crate::check) fn canonical_module_import_owner(
+        &self,
+        module_name: impl crate::env::LexicalName,
+    ) -> String {
+        let ident = module_name.lexical_key();
+        if let Some(scope::Resolution::Module(module)) = self
+            .scope_site()
+            .and_then(|site| self.scopes.value_head(&self.env, site, ident))
+        {
+            return self.defs.module_path(module).to_string();
+        }
+        let module_name = ident.name.as_str();
         self.module_import_bindings
             .get(&(
                 self.current_module.clone(),
@@ -43,7 +54,18 @@ impl Checker {
 
     /// Whether `module_name` is a lexical module binding in the current file.
     /// The process-wide module registry is deliberately not consulted.
-    pub(in crate::check) fn module_binding_in_current_file(&self, module_name: &str) -> bool {
+    pub(in crate::check) fn module_binding_in_current_file(
+        &self,
+        module_name: impl crate::env::LexicalName,
+    ) -> bool {
+        let ident = module_name.lexical_key();
+        if let Some(scope::Resolution::Module(_)) = self
+            .scope_site()
+            .and_then(|site| self.scopes.value_head(&self.env, site, ident))
+        {
+            return true;
+        }
+        let module_name = ident.name.as_str();
         self.module_import_bindings.contains_key(&(
             self.current_module.clone(),
             self.current_module_idx,
@@ -455,88 +477,23 @@ impl Checker {
     /// Canonicalize a supervisor child's user-spelled `actor_type` to the
     /// registered actor identity.
     ///
-    /// A supervisor child records its actor type as the raw source string the
-    /// user wrote (`child b: bank.Account` stores `bank.Account`). For a
-    /// package-module child that spelling carries the user's import *alias*
-    /// (`bank`), whereas the checker registers the actor under its exact source
-    /// owner (`hew.bank.Account`, keyed off `current_module`). Left raw, the
-    /// alias-prefixed string never matches the canonical `fn_sigs` /
-    /// `actor_init_params` / `type_defs` keys, so `bank.Account`'s own
-    /// actor-handle type finds no `receive fn` and every wall keyed on the
-    /// actor identity silently skips.
-    ///
-    /// Resolve dotted module bindings and bare named/aliased import bindings
-    /// through the same lexical facts ordinary type resolution consumes. A
-    /// declaration authored in the current scope wins before an import, and a
-    /// bare import resolves only when that exact binding published one source
-    /// identity. There is deliberately no scan over globally loaded exports.
-    pub(in crate::check) fn resolve_supervisor_child_type(&mut self, raw: &str) -> Option<String> {
-        if let Some((module_short, type_name)) = raw.split_once('.') {
-            return self
-                .resolve_module_type(module_short, type_name)
-                .map(|td| td.name);
-        }
-
-        if self.supervisor_children.contains_key(raw) {
-            return Some(raw.to_string());
-        }
-
-        // A supervisor declared inside a non-root module shares that module's
-        // nominal scope with its actors. Resolve only the exact owner-qualified
-        // actor declaration; never search another loaded module by leaf name.
-        // This rung precedes selected imports so a same-file actor retains
-        // lexical authority over an imported binding with the same spelling.
-        if let Some(owner) = self.current_module_identity() {
-            let local_actor = format!("{owner}.{raw}");
-            if self
-                .type_def_exact(&local_actor)
-                .is_some_and(|type_def| type_def.kind == TypeDefKind::Actor)
-            {
-                return Some(local_actor);
-            }
-        }
-
-        if self.local_type_defs.contains(raw) || self.source_type_defs.contains(raw) {
-            let local = self.declaration_identity(raw);
-            if self.type_def_at(&local).is_some() {
-                return Some(local);
-            }
-            if self.type_def_at(raw).is_some() {
-                return Some(raw.to_string());
-            }
-            // A flattened file import is root-visible in the source sets but
-            // its compatibility leaf key is retired after registration. Fall
-            // through to the exact published bare binding below; a genuine
-            // current-scope declaration returned from one of the two keys.
-        }
-
-        // Root actors and flattened file-import actors both publish an exact
-        // root-surface key. This is not a leaf search: the key exists only
-        // because that spelling was registered into the current root scope.
-        if self.current_module_identity().is_none() && self.type_def_at(raw).is_some() {
-            return Some(raw.to_string());
-        }
-
-        if let Some(identity) = self.published_bare_type_qualified(raw) {
-            if let Some(owner) = self
-                .unqualified_to_module
-                .get(&(
-                    self.current_module.clone(),
-                    self.current_module_idx,
-                    raw.to_string(),
-                ))
-                .cloned()
-            {
-                self.note_path_use(&owner);
-            }
-            return Some(identity);
-        }
-        None
+    /// Resolve a child through the same declaration scope as its actor type.
+    pub(in crate::check) fn resolve_supervisor_child_type(
+        &mut self,
+        path: &hew_parser::ast::Path,
+    ) -> Option<String> {
+        let super::super::scope::Resolution::Nominal(owner) = self.resolve_type_path(path)? else {
+            return None;
+        };
+        Some(self.defs.path(owner.declaration()).to_string())
     }
 
-    pub(in crate::check) fn canonical_supervisor_child_type(&mut self, raw: &str) -> String {
-        self.resolve_supervisor_child_type(raw)
-            .unwrap_or_else(|| raw.to_string())
+    pub(in crate::check) fn canonical_supervisor_child_type(
+        &mut self,
+        path: &hew_parser::ast::Path,
+    ) -> String {
+        self.resolve_supervisor_child_type(path)
+            .unwrap_or_else(|| path.to_string())
     }
 
     /// Resolve a `(module, type, variant)` triple to its `VariantDef`, gated on
@@ -581,7 +538,15 @@ impl Checker {
     /// transition bodies, for instance - must mint it the same way, because the
     /// bare spelling is only a transient row on the import path and is retired
     /// once the canonical owner is published (`retire_imported_type_keys`).
-    pub(in crate::check) fn declaration_identity(&self, bare_name: &str) -> String {
+    pub(in crate::check) fn declaration_identity(
+        &self,
+        bare_name: impl crate::env::LexicalName,
+    ) -> String {
+        let ident = bare_name.lexical_key();
+        if let Some(id) = self.named_item_declaration(ident) {
+            return self.defs.path(id).to_string();
+        }
+        let bare_name = ident.name.as_str();
         self.current_module_identity().map_or_else(
             || bare_name.to_string(),
             |module| format!("{module}.{bare_name}"),
@@ -592,9 +557,21 @@ impl Checker {
     /// actor is, so both declaration kinds answer to the same resolution.
     pub(in crate::check) fn resolve_bare_spawn_target_identity(
         &self,
-        name: &str,
+        name: impl crate::env::LexicalName,
     ) -> BareActorResolution {
-        self.resolve_bare_declaration_identity(name, &[TypeDefKind::Actor, TypeDefKind::Supervisor])
+        let ident = name.lexical_key();
+        if let Some(id) = self.named_item_declaration(ident) {
+            if matches!(
+                self.defs.kind(id),
+                crate::DeclarationKind::Actor | crate::DeclarationKind::Supervisor
+            ) {
+                return BareActorResolution::Resolved(self.defs.path(id).to_string());
+            }
+        }
+        self.resolve_bare_declaration_identity(
+            ident.name.as_str(),
+            &[TypeDefKind::Actor, TypeDefKind::Supervisor],
+        )
     }
 
     pub(super) fn resolve_bare_declaration_identity(

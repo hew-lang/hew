@@ -33,14 +33,22 @@ pub struct HewCoroState {
     /// Original mailbox message identity, recorded before the actor turn parks.
     /// Read only by the scheduler while it owns the activation.
     pub(crate) actor_message_type: i32,
+    pub(crate) actor_caller: crate::actor_caller::HewCallerStamp,
     waker: OwnedWaker,
     token: *mut HewCancellationToken,
     enclosing_tokens: Vec<*mut HewCancellationToken>,
     observer: *mut HewCancelObserver,
     status: AtomicI32,
     private_status: AtomicI32,
-    cleanup_fault: std::sync::atomic::AtomicBool,
+    cleanup_fault: std::sync::atomic::AtomicU8,
     cleanup_abandon_io: std::sync::atomic::AtomicU8,
+}
+
+#[repr(u8)]
+enum CleanupFault {
+    None,
+    Local,
+    Inherited,
 }
 
 #[repr(u8)]
@@ -86,13 +94,14 @@ pub unsafe extern "C" fn hew_coro_state_new(
     Box::into_raw(Box::new(HewCoroState {
         actor_turn: crate::lifetime::live_actors::ActorIncarnation::NONE,
         actor_message_type: 0,
+        actor_caller: crate::actor_caller::HewCallerStamp::default(),
         waker: retained,
         token,
         enclosing_tokens: Vec::new(),
         observer,
         status: AtomicI32::new(CoroStatus::Pending as i32),
         private_status: AtomicI32::new(1),
-        cleanup_fault: std::sync::atomic::AtomicBool::new(false),
+        cleanup_fault: std::sync::atomic::AtomicU8::new(CleanupFault::None as u8),
         cleanup_abandon_io: std::sync::atomic::AtomicU8::new(CleanupIo::Normal as u8),
     }))
 }
@@ -128,6 +137,7 @@ pub unsafe extern "C" fn hew_coro_state_child(parent: *const HewCoroState) -> *m
     unsafe {
         (*child).actor_turn = parent.actor_turn;
         (*child).actor_message_type = parent.actor_message_type;
+        (*child).actor_caller = parent.actor_caller;
     }
     child
 }
@@ -152,8 +162,13 @@ pub unsafe extern "C" fn hew_coro_state_cleanup_child(
     unsafe {
         (*child).actor_turn = parent.actor_turn;
         (*child).actor_message_type = parent.actor_message_type;
+        (*child).actor_caller = parent.actor_caller;
         (*child).cleanup_fault.store(
-            parent.cleanup_fault.load(Ordering::Acquire),
+            if parent.cleanup_fault.load(Ordering::Acquire) == CleanupFault::None as u8 {
+                CleanupFault::None as u8
+            } else {
+                CleanupFault::Inherited as u8
+            },
             Ordering::Release,
         );
         let abandon = cleanup_abandons_io(parent) || hew_coro_state_is_cancelled(parent) != 0;
@@ -184,7 +199,19 @@ pub unsafe extern "C" fn hew_coro_state_set_cleanup_fault(
                     | crate::fault::HEW_FAULT_RACE_LOST
             )
         });
-        state.cleanup_fault.store(failed, Ordering::Release);
+        // A nested release's empty local fault slot cannot erase the fault
+        // whose cleanup created it. The parent owns and eventually clears that
+        // fault; this shielded invocation retains its inherited disposition.
+        if state.cleanup_fault.load(Ordering::Acquire) != CleanupFault::Inherited as u8 {
+            state.cleanup_fault.store(
+                if failed {
+                    CleanupFault::Local as u8
+                } else {
+                    CleanupFault::None as u8
+                },
+                Ordering::Release,
+            );
+        }
         if state.cleanup_abandon_io.load(Ordering::Acquire) != CleanupIo::InheritedAbandon as u8 {
             state.cleanup_abandon_io.store(
                 if fault.is_null() {
@@ -202,7 +229,8 @@ pub(crate) unsafe fn cleanup_fault_owner(state: *const HewCoroState) -> Option<u
     // SAFETY: this optional state is retained by the consuming callback.
     let state = unsafe { state.as_ref() }?;
     let id = state.actor_turn.actor_id();
-    (id != 0 && state.cleanup_fault.load(Ordering::Acquire)).then_some(id)
+    (id != 0 && state.cleanup_fault.load(Ordering::Acquire) != CleanupFault::None as u8)
+        .then_some(id)
 }
 
 /// # Safety

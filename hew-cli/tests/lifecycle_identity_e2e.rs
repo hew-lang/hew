@@ -15,7 +15,7 @@ fn root_and_imported_module_members_accept_canonical_lifecycle_payloads() {
         .expect("create lifecycle fixture workspace");
     fs::write(
         workspace.path().join("hew.toml"),
-        "[package]\nname = \"lifecyclepkg\"\n",
+        "[package]\nname = \"lifecyclepkg\"\nversion = \"0.1.0\"\n",
     )
     .expect("write hew.toml");
 

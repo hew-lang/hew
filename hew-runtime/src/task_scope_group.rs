@@ -1,7 +1,7 @@
 use super::{
     checked, hew_cancel_token_cancel, hew_checked_scope_wait_cancel_losers,
-    hew_checked_scope_wait_status, hew_checked_scope_wait_take_fault, hew_checked_task_wait_new,
-    hew_checked_task_wait_take, hew_fault_combine, HewCheckedScopeWait, HewCoroState, HewFault,
+    hew_checked_scope_wait_status, hew_checked_scope_wait_take_fault, hew_checked_task_wait_take,
+    hew_fault_combine, HewCheckedScopeWait, HewCheckedTaskWait, HewCoroState, HewFault,
     HewReleaseCursor, HewTask, HewWaker, Mutex, MutexExt, ReleaseDriver, ScopeCancellation,
     ScopeResultClose, PENDING, READY,
 };
@@ -30,7 +30,7 @@ impl RaceGroup {
         // SAFETY: invocation owns every member reference, transferred into waits.
         let tasks = members
             .into_iter()
-            .map(|member| unsafe { *Box::from_raw(hew_checked_task_wait_new(member, waker)) })
+            .map(|member| unsafe { HewCheckedTaskWait::new(member, waker) })
             .collect();
         Self {
             task,

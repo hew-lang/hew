@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 
 pub const OBSERVE_SCHEMA_VERSION: &str = "v1";
 pub const ACTIONABLE_TRACE_EVENT_TYPES: &[&str] = &[
+    "actor.delivery_refused",
     "send",
     "spawn",
     "crash",
@@ -444,6 +445,8 @@ struct TraceEventWire {
     timestamp_ns: u64,
     #[serde(deserialize_with = "deserialize_required_nullable")]
     handler_name: Option<String>,
+    #[serde(default)]
+    reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -461,6 +464,7 @@ pub struct TraceEvent {
     pub msg_type: i32,
     pub timestamp_ns: u64,
     pub handler_name: Option<String>,
+    pub reason: Option<String>,
 }
 
 fn validate_actor_attribution(
@@ -507,6 +511,7 @@ impl TryFrom<TraceEventWire> for TraceEvent {
             msg_type: value.msg_type,
             timestamp_ns: value.timestamp_ns,
             handler_name: value.handler_name,
+            reason: value.reason,
         })
     }
 }
@@ -527,6 +532,7 @@ impl From<&TraceEvent> for TraceEventWire {
             msg_type: value.msg_type,
             timestamp_ns: value.timestamp_ns,
             handler_name: value.handler_name.clone(),
+            reason: value.reason.clone(),
         }
     }
 }

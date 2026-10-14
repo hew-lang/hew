@@ -234,7 +234,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                 value: function,
                 fault_sink: Some((fault_slot, status)),
             };
-            release::drain_cursor(&values, frame, cleanup)?;
+            release::drain(&values, Some(frame), cleanup)?;
         }
         builder
             .build_unconditional_branch(complete)
@@ -2029,13 +2029,6 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             &self.builder,
             allocation_size,
         )?;
-        if let Some(frame) = self
-            .frame
-            .as_ref()
-            .filter(|_| actor.init.is_some() || actor.start.is_some())
-        {
-            frame.carry(self.ctx, &self.builder, state, "spawn.state.slot")?;
-        }
         let state_repr = llvm_type(self.ctx, &layout.repr)?.into_struct_type();
         for index in 0..actor.fields.len() {
             let index = u32::try_from(index)
@@ -2121,9 +2114,6 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                         .unwrap()
                         .into_int_value()
                 };
-                if let Some(frame) = &self.frame {
-                    frame.carry(self.ctx, &self.builder, status, "spawn.init.status.slot")?;
-                }
                 let initialized = self.ctx.append_basic_block(self.value, "actor.initialized");
                 let failed = self.ctx.append_basic_block(
                     self.value,
@@ -2429,13 +2419,12 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .unwrap()
             .into_int_value();
         if let Some(frame) = &self.frame {
-            frame.carry(self.ctx, &self.builder, token, "spawn.token.slot")?;
             let cursor = self
                 .builder
                 .build_load(ptr, rejected, "spawn.rejected.cursor")
                 .llvm_ctx("take rejected state cleanup cursor")?
                 .into_pointer_value();
-            release::drain_cursor(&self.value_emitter(), frame, cursor)?;
+            release::drain(&self.value_emitter(), Some(frame), cursor)?;
         }
         self.store(result, token.into())?;
         let failed = self
@@ -2658,9 +2647,6 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 )
             })?;
         let object = self.load(source, "submission.message")?.into_struct_value();
-        if let Some(frame) = &self.frame {
-            frame.carry(self.ctx, &self.builder, object, "submission.message.slot")?;
-        }
         let target = self
             .builder
             .build_extract_value(object, 0, "submission.target")
@@ -2854,13 +2840,12 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             let status =
                 call_value(&self.builder, submit, &args, "submission.status")?.into_int_value();
             if let Some(frame) = &self.frame {
-                frame.carry(self.ctx, &self.builder, status, "submission.status.slot")?;
                 let cursor = self
                     .builder
                     .build_load(ptr, discarded, "submission.discarded.cursor")
                     .llvm_ctx("take discarded payload cursor")?
                     .into_pointer_value();
-                release::drain_cursor(&self.value_emitter(), frame, cursor)?;
+                release::drain(&self.value_emitter(), Some(frame), cursor)?;
             }
             status
         };

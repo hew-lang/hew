@@ -1,4 +1,4 @@
-type ImportedHashKey {
+pub type ImportedHashKey {
     id: i64;
 }
 

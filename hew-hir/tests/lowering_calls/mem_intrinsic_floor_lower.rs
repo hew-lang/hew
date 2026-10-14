@@ -63,6 +63,7 @@ fn build_program_with_floor_module(module_path: &[&str], floor_src: &str) -> Pro
     graph.topo_order = vec![floor_id, root_id];
 
     Program {
+        expansions: hew_parser::macro_syntax::ExpansionMap::default(),
         items: root.program.items,
         module_graph: Some(graph),
         ..root.program

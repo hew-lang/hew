@@ -11,7 +11,7 @@
   ],
   "bytes": [],
   "closures": [],
-  "compiler_version": "hew-wasm-0.6.0",
+  "compiler_version": "hew-wasm-0.6.1",
   "entry": {
     "exit": "unit",
     "function": 0
@@ -710,33 +710,39 @@
             "args": [
               {
                 "decision": "borrow",
+                "value": 9
+              },
+              {
+                "decision": "borrow",
                 "value": 0
               }
             ],
-            "callee": 4,
+            "callbacks": [],
+            "family": 1,
             "normal": {
               "args": [
                 10
               ],
               "to": 5
             },
-            "op": "call",
+            "op": "runtime.call",
+            "releases_contents": false,
             "result": {
               "own": "owned",
               "value": 10
             },
+            "result_member_shapes": [],
+            "result_shape": null,
             "span": null,
-            "unwind": {
-              "args": [],
-              "to": 6
-            }
+            "structural": null,
+            "unwind": null
           }
         },
         {
           "id": 4,
           "ops": [
             {
-              "dst": 14,
+              "dst": 12,
               "op": "load.take",
               "own": "owned",
               "place": 0,
@@ -753,11 +759,11 @@
           "term": {
             "fault": {
               "args": [],
-              "to": 18
+              "to": 13
             },
             "normal": {
               "args": [],
-              "to": 17
+              "to": 12
             },
             "op": "cleanup.dispatch",
             "span": null
@@ -765,7 +771,14 @@
         },
         {
           "id": 5,
-          "ops": [],
+          "ops": [
+            {
+              "dst": null,
+              "op": "destroy_value",
+              "span": null,
+              "value": 9
+            }
+          ],
           "params": [
             {
               "own": "owned",
@@ -773,35 +786,17 @@
             }
           ],
           "term": {
-            "args": [
-              {
-                "decision": "borrow",
-                "value": 9
-              },
-              {
-                "decision": "borrow",
-                "value": 11
-              }
-            ],
-            "callbacks": [],
-            "family": 1,
-            "normal": {
-              "args": [
-                12
-              ],
-              "to": 12
+            "assertion": null,
+            "cleanup": {
+              "args": [],
+              "to": 6
             },
-            "op": "runtime.call",
-            "releases_contents": false,
-            "result": {
-              "own": "owned",
-              "value": 12
+            "message": {
+              "decision": "borrow",
+              "value": 11
             },
-            "result_member_shapes": [],
-            "result_shape": null,
-            "span": null,
-            "structural": null,
-            "unwind": null
+            "op": "panic",
+            "span": null
           }
         },
         {
@@ -853,7 +848,7 @@
               "dst": null,
               "op": "destroy_value",
               "span": null,
-              "value": 9
+              "value": 11
             }
           ],
           "params": [],
@@ -894,37 +889,14 @@
         },
         {
           "id": 12,
-          "ops": [
-            {
-              "dst": null,
-              "op": "destroy_value",
-              "span": null,
-              "value": 11
-            },
-            {
-              "dst": null,
-              "op": "destroy_value",
-              "span": null,
-              "value": 9
-            }
-          ],
-          "params": [
-            {
-              "own": "owned",
-              "value": 13
-            }
-          ],
+          "ops": [],
+          "params": [],
           "term": {
-            "assertion": null,
-            "cleanup": {
+            "edge": {
               "args": [],
-              "to": 13
+              "to": 17
             },
-            "message": {
-              "decision": "borrow",
-              "value": 13
-            },
-            "op": "panic",
+            "op": "goto",
             "span": null
           }
         },
@@ -948,14 +920,14 @@
               "dst": null,
               "op": "destroy_value",
               "span": null,
-              "value": 13
+              "value": 12
             }
           ],
           "params": [],
           "term": {
             "edge": {
               "args": [],
-              "to": 8
+              "to": 7
             },
             "op": "goto",
             "span": null
@@ -992,83 +964,11 @@
           "ops": [],
           "params": [],
           "term": {
-            "edge": {
-              "args": [],
-              "to": 22
-            },
-            "op": "goto",
-            "span": null
-          }
-        },
-        {
-          "id": 18,
-          "ops": [],
-          "params": [],
-          "term": {
-            "edge": {
-              "args": [],
-              "to": 20
-            },
-            "op": "goto",
-            "span": null
-          }
-        },
-        {
-          "id": 19,
-          "ops": [
-            {
-              "dst": null,
-              "op": "destroy_value",
-              "span": null,
-              "value": 14
-            }
-          ],
-          "params": [],
-          "term": {
-            "edge": {
-              "args": [],
-              "to": 7
-            },
-            "op": "goto",
-            "span": null
-          }
-        },
-        {
-          "id": 20,
-          "ops": [],
-          "params": [],
-          "term": {
-            "edge": {
-              "args": [],
-              "to": 21
-            },
-            "op": "goto",
-            "span": null
-          }
-        },
-        {
-          "id": 21,
-          "ops": [],
-          "params": [],
-          "term": {
-            "edge": {
-              "args": [],
-              "to": 19
-            },
-            "op": "goto",
-            "span": null
-          }
-        },
-        {
-          "id": 22,
-          "ops": [],
-          "params": [],
-          "term": {
             "op": "return",
             "span": null,
             "value": {
               "decision": "move",
-              "value": 14
+              "value": 12
             }
           }
         }
@@ -1327,57 +1227,9 @@
           "origin": "local"
         }
       ]
-    },
-    {
-      "blocks": [
-        {
-          "id": 0,
-          "ops": [
-            {
-              "dst": 1,
-              "op": "copy_value",
-              "own": "owned",
-              "source": 0,
-              "span": null
-            }
-          ],
-          "params": [],
-          "term": {
-            "edge": {
-              "args": [],
-              "to": 1
-            },
-            "op": "goto",
-            "span": null
-          }
-        },
-        {
-          "id": 1,
-          "ops": [],
-          "params": [],
-          "term": {
-            "op": "return",
-            "span": null,
-            "value": {
-              "decision": "move",
-              "value": 1
-            }
-          }
-        }
-      ],
-      "entry": 0,
-      "id": 4,
-      "name": "__hew_fn_std.builtins.string::fmt",
-      "params": [
-        {
-          "own": "guaranteed",
-          "value": 0
-        }
-      ],
-      "places": []
     }
   ],
-  "hew_version": "0.6.0",
+  "hew_version": "0.6.1",
   "profile": "sandbox.sandbox-vm-export.v0",
   "regex_patterns": [],
   "resources": [

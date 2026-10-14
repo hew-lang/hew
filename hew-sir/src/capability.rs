@@ -133,6 +133,8 @@ pub(crate) fn verify_value_capability(
     }
     let exact_instance = match &selected.instance {
         CallableInstance::ActorMember
+        | CallableInstance::ActorInterceptEntry { .. }
+        | CallableInstance::ActorSupervisorIntercept { .. }
         | CallableInstance::Closure(_)
         | CallableInstance::EntryAdapter
         | CallableInstance::SupervisorChild { .. } => false,

@@ -551,9 +551,9 @@ impl Checker {
         reason = "literal coercion requires many match arms with range checks"
     )]
     pub(super) fn check_against_inner(&mut self, expr: &Expr, span: &Span, expected: &Ty) -> Ty {
-        // Resolve type variables so that Ty::Var(v) unified with e.g. Ty::I32
-        // is seen as Ty::I32 by the coercion arms below.
-        let resolved = self.subst.resolve(expected);
+        // Contextual literals and constructors need the concrete expected
+        // type, including an associated type selected by the receiver.
+        let resolved = self.normalize_for_use(expected);
         let expected = &resolved;
         // A struct literal's written path names its nominal by identity; it
         // meets the expected type only when both name one declaration.
@@ -562,6 +562,9 @@ impl Checker {
             _ => None,
         };
         match (expr, expected) {
+            (Expr::MacroInvocation { name, args }, _) if name.name.as_str() == "embed" => {
+                self.check_embed(args, span, expected)
+            }
             (Expr::ContextVariant(context), _) => {
                 if let Some(result) = self.dispatch_context_builtin_variant(
                     expected,
@@ -613,7 +616,9 @@ impl Checker {
                 } else {
                     Expr::Ident(Ident::new(&qualified_name))
                 };
-                self.check_against(&compatibility_expr, span, expected)
+                let actual = self.check_against(&compatibility_expr, span, expected);
+                self.record_context_variant_resolution(expected, context.name.name, span);
+                actual
             }
             // Lambda with expected function type — propagate param types!
             (
@@ -1077,8 +1082,15 @@ impl Checker {
                     return Ty::Error;
                 }
                 self.check_against(&count.0, &count.1, &Ty::I64);
-                let const_env = self.const_eval_env();
-                match crate::check::const_eval::eval_const_expr(count, &const_env) {
+                let count_value = crate::check::const_eval::eval_integer_const_expr_with_values(
+                    count,
+                    crate::check::const_eval::ConstIntegerTarget::machine_usize_compat(),
+                    |expr| self.constant_integer_value(expr),
+                );
+                match count_value.and_then(|value| {
+                    u64::try_from(value)
+                        .map_err(|_| crate::check::const_eval::ConstEvalError::Overflow)
+                }) {
                     Ok(actual_count) if actual_count != *size => {
                         self.report_error(
                             TypeErrorKind::ArityMismatch,
@@ -1110,7 +1122,7 @@ impl Checker {
             // Known compile-time numeric literal identifiers can coerce to
             // compatible numeric types using the same literal-kind rules.
             (Expr::Ident(name), ty) if ty.is_numeric() => {
-                if let Some(cv) = self.const_values.get(name.name.as_str()).cloned() {
+                if let Some(cv) = self.coercible_literal_value(*name).cloned() {
                     match (&cv, expected) {
                         (ConstValue::Integer(value), ty) if ty.is_integer() => {
                             if !expected.is_numeric_literal() {
@@ -1148,23 +1160,15 @@ impl Checker {
                             // `lookup_with_depth` which tracks the scope index
                             // and pushes `lambda_capture_facts` when the binding
                             // is from an outer scope — `env.lookup` would not.
-                            self.expect_inferable_literal_binding(
-                                name.name.as_str(),
-                                expected,
-                                span,
-                            );
-                            let _ = self.synthesize_identifier(name.name.as_str(), span);
+                            self.expect_inferable_literal_binding(*name, expected, span);
+                            let _ = self.synthesize_identifier(*name, span);
                             self.record_value_path_resolution(expr, span);
                             self.record_type(span, expected);
                             return expected.clone();
                         }
                         (ConstValue::Integer(_), ty) if ty.is_float() => {
-                            self.expect_inferable_literal_binding(
-                                name.name.as_str(),
-                                expected,
-                                span,
-                            );
-                            let _ = self.synthesize_identifier(name.name.as_str(), span);
+                            self.expect_inferable_literal_binding(*name, expected, span);
+                            let _ = self.synthesize_identifier(*name, span);
                             self.record_value_path_resolution(expr, span);
                             self.record_type(span, expected);
                             return expected.clone();
@@ -1182,12 +1186,8 @@ impl Checker {
                                 );
                                 return Ty::Error;
                             }
-                            self.expect_inferable_literal_binding(
-                                name.name.as_str(),
-                                expected,
-                                span,
-                            );
-                            let _ = self.synthesize_identifier(name.name.as_str(), span);
+                            self.expect_inferable_literal_binding(*name, expected, span);
+                            let _ = self.synthesize_identifier(*name, span);
                             self.record_value_path_resolution(expr, span);
                             self.record_type(span, expected);
                             return expected.clone();
@@ -1580,6 +1580,7 @@ impl Checker {
                         span,
                     )
                     .unwrap_or_else(|| self.synthesize(expr, span));
+                self.record_value_path_resolution(expr, span);
                 self.finish_named_arguments(
                     args,
                     || format!("method `{}`", method.0),

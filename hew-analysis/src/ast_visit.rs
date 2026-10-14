@@ -102,7 +102,11 @@ pub(crate) fn top_level_item_info(item: &Item) -> Option<TopLevelItemInfo<'_>> {
             name: r.name.name.as_str(),
             kind: TopLevelItemKind::Record,
         }),
-        Item::Import(_) | Item::Impl(_) | Item::ExternBlock(_) => None,
+        Item::Macro(_)
+        | Item::MacroCall(_)
+        | Item::Import(_)
+        | Item::Impl(_)
+        | Item::ExternBlock(_) => None,
     }
 }
 
@@ -143,8 +147,16 @@ pub(crate) fn walk_parse_result<'ast, V: AstVisitor<'ast>>(
     parse_result: &'ast ParseResult,
     visitor: &mut V,
 ) {
+    walk_program(source, &parse_result.program, visitor);
+}
+
+pub(crate) fn walk_program<'ast, V: AstVisitor<'ast>>(
+    source: Option<&str>,
+    program: &'ast hew_parser::ast::Program,
+    visitor: &mut V,
+) {
     let mut walker = AstWalker::new(source, visitor);
-    for (item, span) in &parse_result.program.items {
+    for (item, span) in &program.items {
         walker.walk_item(item, span, None);
     }
 }
@@ -376,7 +388,7 @@ impl<'src, 'ast, V: AstVisitor<'ast>> AstWalker<'src, 'ast, V> {
                     .leave_body(body_info, Self::context(Some(body_info)));
             }
             Item::Record(_) // records carry no callable bodies by design (fields only)
-            | Item::Import(_)
+            | Item::Macro(_) | Item::MacroCall(_) | Item::Import(_)
             | Item::ExternBlock(_)
             | Item::TypeAlias(_) => {}
         }
@@ -943,6 +955,7 @@ impl<'src, 'ast, V: AstVisitor<'ast>> AstWalker<'src, 'ast, V> {
             | Expr::Return(None)
             | Expr::RegexLiteral(_)
             | Expr::ByteStringLiteral(_)
+            | Expr::MacroCall(_)
             | Expr::MacroInvocation { .. }
             | Expr::ByteArrayLiteral(_) => {}
         }

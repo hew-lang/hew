@@ -196,6 +196,9 @@ pub(super) fn scan_item_for_call_shape(
     diagnostics: &mut Vec<HirDiagnostic>,
 ) {
     match item {
+        HirItem::Const(constant) => {
+            scan_expr_for_call_shape(&constant.value, callable, diagnostics);
+        }
         HirItem::Function(f) => scan_block_for_call_shape(&f.body, callable, diagnostics),
         HirItem::Actor(actor) => {
             if let Some(init) = &actor.init {
@@ -219,8 +222,7 @@ pub(super) fn scan_item_for_call_shape(
         | HirItem::Record(_)
         | HirItem::Supervisor(_)
         | HirItem::Impl(_)
-        | HirItem::ExternFn(_)
-        | HirItem::Const(_) => {}
+        | HirItem::ExternFn(_) => {}
     }
 }
 

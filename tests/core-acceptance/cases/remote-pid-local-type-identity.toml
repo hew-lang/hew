@@ -1,13 +1,11 @@
 [[case]]
 id = "remote-pid-local-type-identity"
-intent = "A local RemotePid obtained through a wrong actor type refuses owned requests without killing the target; correctly typed send and ask retain the local route."
+intent = "Wrongly typed same-node RemotePid asks and sends refuse incompatible owned layouts while correct plain, generic and stateful intercepted actors remain callable."
 source = "cases/remote-pid-local-type-identity.hew"
 suites = ["acceptance", "safety"]
 timeout_seconds = 30
-
-[case.env]
-HEW_ACTOR_LEAK_CHECK = "1"
+env = { HEW_ACTOR_LEAK_CHECK = "1" }
 
 [case.expected]
-stdout = "local remote pid type identity\n"
+stdout = "intercepted\nintercepted\nintercepted\nintercepted\nintercepted\nlocal remote pid type identity\n"
 exit = 0

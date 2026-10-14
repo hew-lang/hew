@@ -322,7 +322,7 @@ impl Checker {
     pub(super) fn is_coercible_numeric(&self, expr: &Expr) -> bool {
         is_integer_literal(expr)
             || is_float_literal(expr)
-            || matches!(expr, Expr::Ident(name) if self.const_values.contains_key(name.name.as_str()))
+            || matches!(expr, Expr::Ident(name) if self.coercible_literal_value(*name).is_some())
     }
 
     /// Unify two branch types (if/else, if-let/else).
@@ -470,15 +470,10 @@ impl Checker {
             // `Self`-returning methods).
             if let Ty::TraitObject { traits } = &expected_resolved {
                 let defaulted_concrete = actual_resolved.materialize_literal_defaults();
-                if let Some(type_name) = concrete_type_name_for_dyn(&defaulted_concrete) {
-                    if self.try_record_dyn_trait_coercion(
-                        traits,
-                        &type_name,
-                        &defaulted_concrete,
-                        span,
-                    ) {
-                        return;
-                    }
+                if concrete_type_name_for_dyn(&defaulted_concrete).is_some()
+                    && self.try_record_dyn_trait_coercion(traits, &defaulted_concrete, span)
+                {
+                    return;
                 }
             }
             // Actor-handle narrowing `C` → `T` when `C: T`.
@@ -655,7 +650,6 @@ impl Checker {
     fn validate_dyn_trait_bound(
         &mut self,
         bound: &crate::ty::TraitObjectBound,
-        concrete_type_name: &str,
         concrete_type: &Ty,
         span: &Span,
     ) -> Option<bool> {
@@ -695,10 +689,7 @@ impl Checker {
         // Prefer the nominal impl registries; fall back to the structural
         // match path so a bare `impl T { fn ... }` that structurally
         // satisfies a trait also fills the table.
-        let nominal_impl = self.type_implements_trait(concrete_type, trait_id)
-            || self
-                .primitive_trait_impls
-                .contains_key(&(concrete_type_name.to_string(), trait_id));
+        let nominal_impl = self.type_implements_trait(concrete_type, trait_id);
         let structural_ok =
             !nominal_impl && self.type_structurally_satisfies(concrete_type, trait_id);
         if !nominal_impl && !structural_ok {
@@ -724,12 +715,10 @@ impl Checker {
     fn try_record_dyn_trait_coercion(
         &mut self,
         traits: &[crate::ty::TraitObjectBound],
-        type_name: &str,
         concrete_type: &Ty,
         span: &Span,
     ) -> bool {
-        let Some(coercion) = self.build_dyn_trait_coercion(traits, type_name, concrete_type, span)
-        else {
+        let Some(coercion) = self.build_dyn_trait_coercion(traits, concrete_type, span) else {
             return false;
         };
         self.dyn_trait_coercions
@@ -742,7 +731,6 @@ impl Checker {
     fn build_dyn_trait_coercion(
         &mut self,
         traits: &[crate::ty::TraitObjectBound],
-        type_name: &str,
         concrete_type: &Ty,
         span: &Span,
     ) -> Option<DynCoercion> {
@@ -750,8 +738,7 @@ impl Checker {
         // unsatisfied or not object-safe.
         let mut structural_by_bound = Vec::with_capacity(traits.len());
         for bound in traits {
-            let structural =
-                self.validate_dyn_trait_bound(bound, type_name, concrete_type, span)?;
+            let structural = self.validate_dyn_trait_bound(bound, concrete_type, span)?;
             structural_by_bound.push(structural);
         }
 
@@ -883,7 +870,7 @@ impl Checker {
             if let Ty::TraitObject { traits } = &target {
                 let concrete = source.materialize_literal_defaults();
                 concrete_type_name_for_dyn(&concrete)
-                    .and_then(|name| self.build_dyn_trait_coercion(traits, &name, &concrete, span))
+                    .and_then(|_| self.build_dyn_trait_coercion(traits, &concrete, span))
                     .map(|coercion| ErrorConversion::Erase(Box::new(coercion)))
             } else {
                 self.declared_from_impl(&target, &source)

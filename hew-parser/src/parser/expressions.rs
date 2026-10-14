@@ -310,7 +310,9 @@ impl Parser<'_> {
         }
 
         // Prefix operators
-        let mut lhs = if self.peek_is_value_prefix("clone") {
+        let mut lhs = if let Some(fragment) = self.take_expression_fragment().ok()? {
+            fragment
+        } else if self.peek_is_value_prefix("clone") {
             // Contextual `clone <operand>` duplication prefix. `clone` is not a
             // reserved word — it is also a method/free-fn name — so it only acts
             // as the prefix when it sits in operator position immediately
@@ -685,6 +687,9 @@ impl Parser<'_> {
         reason = "expression parser with many branches"
     )]
     pub(crate) fn parse_primary(&mut self) -> Option<Spanned<Expr>> {
+        if let Some(fragment) = self.take_expression_fragment().ok()? {
+            return Some(fragment);
+        }
         let start = self.peek_span().start;
 
         let expr = match self.peek()? {
@@ -790,7 +795,7 @@ impl Parser<'_> {
             Token::InterpolatedString(s) => {
                 let s = s.to_string();
                 self.advance();
-                let parts = parse_string_parts(&s, 2, 1, "{", start, &mut self.errors);
+                let parts = self.parse_string_parts(&s, start);
                 Expr::InterpolatedString(parts)
             }
             Token::RegexLiteral(s) => {
@@ -810,7 +815,7 @@ impl Parser<'_> {
                 Expr::Literal(Literal::Bool(false))
             }
             Token::Label(label) => {
-                let name = Ident::new(label);
+                let name = self.ident_at(label, &self.peek_span());
                 self.advance();
                 Expr::Ident(name)
             }
@@ -901,21 +906,41 @@ impl Parser<'_> {
                 }
             }
             Token::Identifier(name) => {
-                let name = Ident::new(name);
+                if self.is_macro_call()
+                    && !(crate::macro_syntax::is_builtin_macro(name)
+                        && self.peek_at(self.pos + 1) == Some(&Token::Bang))
+                {
+                    let call = self.parse_macro_call()?;
+                    if self.expander.is_some() {
+                        return self.expand_macro_expression(&call);
+                    }
+                    let end = call.input.span().end;
+                    return Some((Expr::MacroCall(Box::new(call)), start..end));
+                }
+                let name = self.ident_at(name, &self.peek_span());
                 let name_span = self.peek_span();
                 self.advance();
 
                 if self.peek() == Some(&Token::Bang) {
                     self.advance();
                     self.expect(&Token::LeftParen)?;
-                    let mut args = Vec::new();
-                    while self.peek() != Some(&Token::RightParen) {
-                        args.push(self.parse_expr()?);
-                        if !self.eat(&Token::Comma) {
-                            break;
+                    let suspended =
+                        (name.name.as_str() == "stringify").then(|| self.expander.take());
+                    let args = (|| {
+                        let mut args = Vec::new();
+                        while self.peek() != Some(&Token::RightParen) {
+                            args.push(self.parse_expr()?);
+                            if !self.eat(&Token::Comma) {
+                                break;
+                            }
                         }
+                        self.expect(&Token::RightParen)?;
+                        Some(args)
+                    })();
+                    if let Some(expander) = suspended {
+                        self.expander = expander;
                     }
-                    self.expect(&Token::RightParen)?;
+                    let args = args?;
                     return Some((
                         Expr::MacroInvocation { name, args },
                         start..self.peek_span().start,
@@ -1614,8 +1639,9 @@ impl Parser<'_> {
             // Contextual keywords that can be used as identifiers in expressions
             tok if Self::contextual_keyword_name(tok).is_some() => {
                 let name = Self::contextual_keyword_name(tok).unwrap();
+                let ident = self.ident_at(name, &self.peek_span());
                 self.advance();
-                Expr::Ident(Ident::new(name))
+                Expr::Ident(ident)
             }
             _ => {
                 let found = match self.peek() {
@@ -1860,7 +1886,7 @@ impl Parser<'_> {
 
         // Handle tuple index: t.0, t.1, etc.
         if let Some(Token::Integer(n)) = self.peek() {
-            let field = (Ident::new(n), self.peek_span());
+            let field = (self.ident_at(n, &self.peek_span()), self.peek_span());
             self.advance();
             let end = self.peek_span().start;
             return Some((

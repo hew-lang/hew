@@ -34,8 +34,44 @@ pub type ChildRef<T> {
 pub type NodeId {
 }
 
+/// Identity of one live actor incarnation. This value grants no actor access.
+pub type ActorId {
+    value: u64;
+}
+
+impl Display for ActorId {
+    fn fmt(self) -> string {
+        to_string(self.value)
+    }
+}
+
+/// The authenticated origin of a received handler call.
+pub enum Caller {
+    Actor(ActorId);
+    Task;
+    Timer;
+    Node(NodeId);
+}
+
+/// One handler delivery, consumed by exactly one of `proceed` or `refuse`.
+#[linear]
+pub type Call<A> {
+}
+
+/// A completed handler delivery, returned by its interceptor.
+#[linear]
+pub type Outcome<A> {
+}
+
 /// Complete remote actor location.
 pub type Location {
+}
+
+/// Source position of a compile-time invocation.
+pub type SourceLocation {
+    file: string;
+    line: i64;
+    column: i64;
 }
 
 pub enum NodeTransport {
@@ -310,6 +346,8 @@ pub enum ActorError<E, Req> {
     Rejected(SendFailure<Req>);
     /// The handler ran and returned its declared error.
     Failed(E);
+    /// An interceptor refused the delivery before the handler ran.
+    Refused;
     /// The handler faulted; its actor retains ownership of the fault.
     Trapped;
     /// The destination actor is gone and will not come back.
@@ -336,6 +374,7 @@ impl<E: Display, Req> Display for ActorError<E, Req> {
         match self {
             ActorError.Rejected(failure) => f"Rejected: {failure.reason}",
             ActorError.Failed(e) => f"Failed: {e}",
+            ActorError.Refused => "Refused: an interceptor declined the delivery",
             ActorError.Trapped => "Trapped: the handler faulted before replying",
             ActorError.Dead => "Dead: the destination actor is gone and will not come back",
             ActorError.TimedOut => "TimedOut: the deadline elapsed before a reply arrived",

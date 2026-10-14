@@ -12,6 +12,7 @@
 
 use crate::bytes::BytesTriple;
 use crate::file_io::{clear_file_io_error, file_path, set_file_io_errno, set_file_io_error_or};
+use crate::generator::Access;
 use hew_cabi::string::HewString;
 use std::fs::{File, OpenOptions};
 use std::io::{self, Read};
@@ -155,7 +156,7 @@ unsafe fn metadata_entry(
     read: fn(&Path) -> io::Result<std::fs::Metadata>,
 ) -> HewFsMetadata {
     // SAFETY: path is a borrowed managed handle per the caller's contract.
-    let Some(target) = (unsafe { file_path(path, operation) }) else {
+    let Some(target) = (unsafe { file_path(path, operation, Access::Read) }) else {
         return FAILED_METADATA;
     };
     match read(Path::new(&target)) {
@@ -299,7 +300,7 @@ pub unsafe extern "C" fn hew_fs_create_new(
     mode: i64,
 ) -> i32 {
     // SAFETY: path is a borrowed managed handle.
-    let Some(target) = (unsafe { file_path(path, "hew_fs_create_new") }) else {
+    let Some(target) = (unsafe { file_path(path, "hew_fs_create_new", Access::Write) }) else {
         return FAILED;
     };
     // SAFETY: data is a valid borrowed triple per the contract.
@@ -348,7 +349,7 @@ fn mkdir_mode(_target: &Path, _mode: i64) -> io::Result<()> {
 #[no_mangle]
 pub unsafe extern "C" fn hew_fs_mkdir_mode(path: *const HewString, mode: i64) -> i32 {
     // SAFETY: path is a borrowed managed handle.
-    let Some(target) = (unsafe { file_path(path, "hew_fs_mkdir_mode") }) else {
+    let Some(target) = (unsafe { file_path(path, "hew_fs_mkdir_mode", Access::Write) }) else {
         return FAILED;
     };
     match mkdir_mode(Path::new(&target), mode) {
@@ -460,7 +461,7 @@ unsafe fn read_entry(
     operation: &str,
 ) -> BytesTriple {
     // SAFETY: path is a borrowed managed handle per the caller's contract.
-    let Some(target) = (unsafe { file_path(path, operation) }) else {
+    let Some(target) = (unsafe { file_path(path, operation, Access::Read) }) else {
         return EMPTY;
     };
     match read_nofollow(Path::new(&target), limit, private) {
@@ -554,7 +555,7 @@ pub struct HewFileLock {
 #[no_mangle]
 pub unsafe extern "C" fn hew_fs_try_lock(path: *const HewString) -> *mut HewFileLock {
     // SAFETY: path is a borrowed managed handle.
-    let Some(target) = (unsafe { file_path(path, "hew_fs_try_lock") }) else {
+    let Some(target) = (unsafe { file_path(path, "hew_fs_try_lock", Access::Write) }) else {
         return std::ptr::null_mut();
     };
     match try_lock(Path::new(&target)) {
@@ -595,8 +596,10 @@ pub unsafe extern "C" fn hew_fs_unlock(lock: *mut HewFileLock) {
 }
 
 #[cfg(unix)]
-fn space(target: &str) -> io::Result<HewFsSpace> {
-    let path = std::ffi::CString::new(target).map_err(|_| invalid_argument("path contains NUL"))?;
+fn space(target: &Path) -> io::Result<HewFsSpace> {
+    use std::os::unix::ffi::OsStrExt;
+    let path = std::ffi::CString::new(target.as_os_str().as_bytes())
+        .map_err(|_| invalid_argument("path contains NUL"))?;
     // SAFETY: statvfs is plain data; an all-zero value is valid storage.
     let mut info: libc::statvfs = unsafe { std::mem::zeroed() };
     // SAFETY: path is NUL-terminated and info is writable storage.
@@ -617,12 +620,11 @@ fn space(target: &str) -> io::Result<HewFsSpace> {
 }
 
 #[cfg(windows)]
-fn space(target: &str) -> io::Result<HewFsSpace> {
+fn space(target: &Path) -> io::Result<HewFsSpace> {
     use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
     // GetDiskFreeSpaceExW takes a directory; a file reports the volume of
     // the directory that holds it, as statvfs does on Unix.
-    let target = Path::new(target);
     let directory = if std::fs::metadata(target)?.is_dir() {
         target
     } else {
@@ -672,7 +674,7 @@ pub unsafe extern "C" fn hew_fs_space(path: *const HewString) -> HewFsSpace {
         available: 0,
     };
     // SAFETY: path is a borrowed managed handle.
-    let Some(target) = (unsafe { file_path(path, "hew_fs_space") }) else {
+    let Some(target) = (unsafe { file_path(path, "hew_fs_space", Access::Read) }) else {
         return FAILED_SPACE;
     };
     match space(&target) {

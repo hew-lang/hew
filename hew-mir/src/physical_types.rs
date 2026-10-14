@@ -303,6 +303,8 @@ pub struct PhysicalCallable {
     pub params: Vec<PhysicalParam>,
     pub return_ty: ResolvedTy,
     pub return_layout: Option<PhysicalLayout>,
+    /// Ownership recipe for a result retained by an invocation adapter.
+    pub return_recipe: Option<PhysicalValueRecipe>,
     /// The private body uses the resumable status/result/fault convention.
     /// Derived from verified suspension and call edges, then checked again
     /// against the physical CFG before emission.
@@ -1183,6 +1185,7 @@ pub enum PhysicalTerminator {
         cleanup: PhysicalEdge,
     },
     IndirectCall {
+        targets: hew_sir::CallableTargets,
         callee: ArgumentTransfer,
         signature: PhysicalCallSignature,
         args: Vec<ArgumentTransfer>,
@@ -1313,8 +1316,6 @@ pub struct PhysicalFunction {
     pub entry: BlockId,
     pub parameters: Vec<StorageId>,
     pub storage: Vec<PhysicalStorage>,
-    /// Storage conservatively retained across suspension; initialization stays CFG-owned.
-    pub frame_storage: BTreeSet<StorageId>,
     /// Verified root partitions and their target-realized projection paths.
     pub place_storage: BTreeMap<StorageId, PhysicalPlaceStorage>,
     pub blocks: Vec<PhysicalBlock>,

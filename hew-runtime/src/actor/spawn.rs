@@ -898,9 +898,19 @@ pub(crate) unsafe fn try_submit_native_envelope(
     token: crate::lifetime::local_handles::HewLocalPidId,
     message: i32,
     envelope: *mut crate::mailbox::HewMsgEnvelope,
+    caller: crate::actor_caller::HewCallerStamp,
 ) -> crate::mailbox::SendOutcome {
     // SAFETY: sends have no reply reference; the envelope transfers on admission.
-    unsafe { try_submit_native_request(token, message, envelope, std::ptr::null_mut(), false) }
+    unsafe {
+        try_submit_native_request(
+            token,
+            message,
+            envelope,
+            std::ptr::null_mut(),
+            false,
+            caller,
+        )
+    }
 }
 
 /// Register native capacity readiness while the exact destination is pinned.
@@ -927,9 +937,10 @@ pub(crate) unsafe fn try_submit_native_request(
     envelope: *mut crate::mailbox::HewMsgEnvelope,
     reply: *mut c_void,
     obligated: bool,
+    caller: crate::actor_caller::HewCallerStamp,
 ) -> crate::mailbox::SendOutcome {
     // SAFETY: forwards the uniquely owned request and its optional reply.
-    unsafe { submit_native_request(token, message, envelope, reply, obligated, false) }
+    unsafe { submit_native_request(token, message, envelope, reply, obligated, false, caller) }
 }
 
 pub(crate) unsafe fn submit_native_terminal(
@@ -938,7 +949,17 @@ pub(crate) unsafe fn submit_native_terminal(
     envelope: *mut crate::mailbox::HewMsgEnvelope,
 ) -> crate::mailbox::SendOutcome {
     // SAFETY: the caller uniquely owns this terminal event envelope.
-    unsafe { submit_native_request(token, message, envelope, std::ptr::null_mut(), true, true) }
+    unsafe {
+        submit_native_request(
+            token,
+            message,
+            envelope,
+            std::ptr::null_mut(),
+            true,
+            true,
+            crate::actor_caller::local_sender(),
+        )
+    }
 }
 
 unsafe fn submit_native_request(
@@ -948,6 +969,7 @@ unsafe fn submit_native_request(
     reply: *mut c_void,
     obligated: bool,
     terminal: bool,
+    caller: crate::actor_caller::HewCallerStamp,
 ) -> crate::mailbox::SendOutcome {
     // Attachment termination is completion of work already admitted by its
     // owner. Ordinary root/external sends must finish publication before drain.
@@ -997,6 +1019,7 @@ unsafe fn submit_native_request(
                     envelope,
                     reply,
                     obligated,
+                    caller,
                 )
             }
         };

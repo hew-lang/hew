@@ -1876,6 +1876,7 @@ mod tests {
             dev_dependencies: BTreeMap::new(),
             features: BTreeMap::new(),
             native: None,
+            generate: Vec::new(),
         }
     }
 
@@ -2579,6 +2580,7 @@ mod tests {
             dev_dependencies: BTreeMap::new(),
             features: BTreeMap::new(),
             native: None,
+            generate: Vec::new(),
         };
 
         let internal = "https://registry.internal.example/api/v1".to_string();

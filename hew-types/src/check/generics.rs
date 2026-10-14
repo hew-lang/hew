@@ -622,7 +622,7 @@ impl Checker {
     ) -> Option<crate::DefId> {
         self.trait_closure(trait_id).into_iter().find(|candidate| {
             self.trait_info(*candidate)
-                .is_some_and(|info| info.methods.iter().any(|m| m.name == Ident::new(method)))
+                .is_some_and(|info| info.methods.iter().any(|m| m.name.name.as_str() == method))
         })
     }
 
@@ -1309,7 +1309,7 @@ impl Checker {
             .into_iter()
             .filter(|candidate| {
                 self.trait_info(*candidate)
-                    .is_some_and(|info| info.methods.iter().any(|m| m.name == Ident::new(method)))
+                    .is_some_and(|info| info.methods.iter().any(|m| m.name.name.as_str() == method))
             })
             .collect();
         out.sort();
@@ -1327,7 +1327,7 @@ impl Checker {
         let found_method = self.trait_info(trait_id).and_then(|info| {
             info.methods
                 .iter()
-                .find(|m| m.name == Ident::new(method))
+                .find(|m| m.name.name.as_str() == method)
                 .cloned()
         });
         if let Some(m) = found_method {

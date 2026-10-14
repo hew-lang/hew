@@ -275,6 +275,7 @@ fn esc_visit_expr(
         | Expr::ChainValue
         | Expr::RegexLiteral(_)
         | Expr::ByteStringLiteral(_)
+        | Expr::MacroCall(_)
         | Expr::MacroInvocation { .. }
         | Expr::ByteArrayLiteral(_) => {}
         Expr::ContextVariant(context) => {

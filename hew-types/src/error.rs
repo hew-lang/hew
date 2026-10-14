@@ -134,9 +134,8 @@ pub struct TypeError {
     pub notes: Vec<TypeErrorNote>,
     /// "Did you mean?" suggestions
     pub suggestions: Vec<String>,
-    /// Dotted module path of the non-root module this diagnostic originates from
-    /// (e.g. `"net.http"`).  `None` means the root compilation unit.
-    /// Used by the CLI to route the error to the correct source file for display.
+    /// Source identity: a dotted module path or a consumed input's canonical path.
+    /// `None` means the root compilation unit.
     pub source_module: Option<String>,
 }
 
@@ -164,6 +163,13 @@ impl TypeError {
     #[must_use]
     pub fn with_source_module(mut self, module: impl Into<String>) -> Self {
         self.source_module = Some(module.into());
+        self
+    }
+
+    /// Attribute this diagnostic to a file consumed by the shared input provider.
+    #[must_use]
+    pub fn with_source_input(mut self, path: &std::path::Path) -> Self {
+        self.source_module = Some(path.to_string_lossy().into_owned());
         self
     }
 
@@ -796,6 +802,8 @@ pub enum TypeErrorKind {
     UseAfterConsume,
     /// A consuming operation requires ownership of a borrowed parameter.
     OwnConsumeBorrowed,
+    /// A delivery token escaped its owning interceptor protocol.
+    InterceptEscape,
     /// Mutation of borrowed storage requires an independent clone or owner.
     OwnMutateBorrowed,
     /// A projection's enclosing value cannot be split into independent owners.
@@ -1003,50 +1011,6 @@ pub enum TypeErrorKind {
         trait_name: String,
         /// Associated type name that failed to project.
         assoc_name: String,
-    },
-    /// Two `receive fn`s in the same actor hash to the same `msg_id`.
-    ///
-    /// Emitted by [`crate::actor_protocol::ActorProtocolDescriptor::from_handlers`]
-    /// when the default `SipHash-1-3` → low-32-bits derivation produces the
-    /// same `msg_id` for two distinct fully-qualified handler names. The
-    /// checker refuses to publish a descriptor for the offending actor,
-    /// MIR/codegen never see a collided protocol, and the user is told to
-    /// rename one of the handlers. `#[msg_id(N)]` pinning is mentioned in
-    /// the hint but is not yet parseable surface — the later Q87 slice
-    /// introduces the attribute.
-    ActorProtocolCollision {
-        /// Actor whose protocol could not be published.
-        actor_name: String,
-        /// One of the colliding handler names.
-        handler_a: String,
-        /// The other colliding handler name.
-        handler_b: String,
-        /// The 32-bit `msg_id` both handlers hashed to.
-        msg_id: u32,
-    },
-    /// Two `receive fn`s in DISTINCT actors hash to the same `msg_id`.
-    ///
-    /// `msg_id` is the 32-bit transport discriminant carried on every
-    /// cross-node frame. Two distinct actor types whose handlers collide on it
-    /// share a wire discriminant; while the runtime codec registry keys by
-    /// `(actor-type, msg_id)` and so routes each correctly within one process,
-    /// the collision leaves the wire protocol itself ambiguous — a future
-    /// relay, a peer on an older binary, or any path that keys on `msg_id`
-    /// alone could re-weaponize it into cross-node type-confusion. Refused at
-    /// compile time (defense-in-depth) so the source of truth stays
-    /// unambiguous. The user renames one handler; `#[msg_id(N)]` pinning is
-    /// reserved for a later release.
-    CrossActorProtocolCollision {
-        /// First actor in the colliding pair.
-        actor_a: String,
-        /// First actor's colliding handler name.
-        handler_a: String,
-        /// Second actor in the colliding pair.
-        actor_b: String,
-        /// Second actor's colliding handler name.
-        handler_b: String,
-        /// The 32-bit `msg_id` both handlers hashed to.
-        msg_id: u32,
     },
     /// An `extern "rt"` function declaration names a symbol that is not in
     /// the `stable` section of `scripts/runtime-export-classification.toml`.
@@ -1545,6 +1509,7 @@ impl TypeErrorKind {
             Self::UseAfterMove => "UseAfterMove",
             Self::UseAfterConsume => "UseAfterConsume",
             Self::OwnConsumeBorrowed => "E_OWN_CONSUME_BORROWED",
+            Self::InterceptEscape => "E_INTERCEPT_ESCAPE",
             Self::OwnMutateBorrowed => "E_OWN_MUTATE_BORROWED",
             Self::OwnPartialConsume => "E_OWN_PARTIAL_CONSUME",
             Self::ResourceCloseMustConsume => "E_RESOURCE_CLOSE_MUST_CONSUME",
@@ -1588,8 +1553,6 @@ impl TypeErrorKind {
             Self::RecursiveClosureUnsupported { .. } => "RecursiveClosureUnsupported",
             Self::ClosureCapturesDuplexHandle { .. } => "ClosureCapturesDuplexHandle",
             Self::AssocTypeProjectionFailed { .. } => "AssocTypeProjectionFailed",
-            Self::ActorProtocolCollision { .. } => "ActorProtocolCollision",
-            Self::CrossActorProtocolCollision { .. } => "CrossActorProtocolCollision",
             Self::ExternRtSymbolUnclassified { .. } => "ExternRtSymbolUnclassified",
             Self::ConflictingExternDeclaration { .. } => "ConflictingExternDeclaration",
             Self::GenBlockInActorReceive => "GenBlockInActorReceive",

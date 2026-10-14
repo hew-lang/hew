@@ -6,10 +6,119 @@ use hew_parser::ast::{ImplDecl, Span};
 
 use super::super::types::{SourceImplDeclaration, SourceImplOrigin, TraitImplArgs};
 use super::super::Checker;
+use crate::def_table::PackageOrigin;
 use crate::error::{TypeError, TypeErrorKind};
+use crate::module_registry::ModuleAnchor;
 use crate::{DeclarationKind, DeclarationOccurrence, DefId};
 
 impl Checker {
+    pub(in crate::check) fn assign_module_packages(&mut self) {
+        let provider = self.input_provider.clone();
+        let sources: Vec<_> = self
+            .defs
+            .modules()
+            .filter_map(|(module, _)| {
+                self.defs
+                    .module_source(module)
+                    .map(|source| (module, source.to_path_buf()))
+            })
+            .collect();
+        for (module, source) in sources {
+            let Some(provider) = &provider else {
+                let package = if self
+                    .module_registry
+                    .source_has_stdlib_authority(&source, self.defs.module_path(module))
+                {
+                    PackageOrigin::StandardLibrary
+                } else {
+                    PackageOrigin::Compilation
+                };
+                self.defs.set_module_package(module, package);
+                continue;
+            };
+            match provider.package_anchor(&source) {
+                Ok(anchor) => {
+                    let package = match anchor {
+                        ModuleAnchor::Std { .. } => PackageOrigin::StandardLibrary,
+                        ModuleAnchor::Package { dir, .. } => PackageOrigin::Manifest(dir),
+                        ModuleAnchor::Loose => PackageOrigin::Compilation,
+                    };
+                    self.defs.set_module_package(module, package);
+                }
+                Err(cause) => {
+                    let mut error =
+                        TypeError::new(TypeErrorKind::InvalidOperation, 0..0, cause.message);
+                    error.source_module = Some(source.display().to_string());
+                    self.errors.push(error);
+                }
+            }
+        }
+    }
+
+    fn declaration_package(&self, declaration: DefId) -> PackageOrigin {
+        self.defs
+            .module(declaration)
+            .map_or(PackageOrigin::StandardLibrary, |module| {
+                self.defs.module_package(module).clone()
+            })
+    }
+
+    fn impl_target_display(&self, target: &crate::Ty) -> String {
+        fn surface(checker: &Checker, ty: &crate::Ty) -> crate::Ty {
+            let mut ty = ty.map_children_pub(&|child| surface(checker, child));
+            if let crate::Ty::Named {
+                head: crate::TypeHead::Nominal(head) | crate::TypeHead::Actor(head),
+                ..
+            } = &mut ty
+            {
+                head.spelling =
+                    hew_parser::ast::Symbol::intern(checker.defs.display(head.id.declaration()));
+            }
+            ty
+        }
+        surface(self, target).user_facing().to_string()
+    }
+
+    fn orphan_impl_error(
+        &self,
+        declaration: DefId,
+        trait_id: DefId,
+        target: &crate::Ty,
+        span: &Span,
+    ) -> Option<TypeError> {
+        let package = self.declaration_package(declaration);
+        let receiver = match target.head() {
+            Some(crate::TypeHead::Nominal(head) | crate::TypeHead::Actor(head)) => {
+                Some(head.id.declaration())
+            }
+            _ => None,
+        };
+        let receiver_package = receiver.map_or(PackageOrigin::StandardLibrary, |owner| {
+            self.declaration_package(owner)
+        });
+        if package == self.declaration_package(trait_id) || package == receiver_package {
+            return None;
+        }
+        let trait_name = self.defs.display(trait_id);
+        let mut error = TypeError::new(
+            TypeErrorKind::OrphanImpl,
+            span.clone(),
+            format!("cannot implement trait `{trait_name}` for `{}`: this package owns neither the trait nor the outer receiver type", self.impl_target_display(target)),
+        ).with_suggestion("move the impl to the package defining the trait or receiver, or define a local wrapper type");
+        for (owner, label) in std::iter::once((trait_id, "trait defined here"))
+            .chain(receiver.map(|owner| (owner, "outer receiver type defined here")))
+        {
+            if let Some(site) = self.defs.site(owner) {
+                let source = site
+                    .module()
+                    .and_then(|module| self.defs.module_source(module))
+                    .map(|source| source.display().to_string());
+                error = error.with_note_source(site.span(), label, source);
+            }
+        }
+        Some(error)
+    }
+
     fn source_impl_declaration(&self, span: &Span) -> Option<DefId> {
         self.defs
             .declaration(DeclarationOccurrence::new_with_synthetic_ordinal(
@@ -52,7 +161,7 @@ impl Checker {
     ) -> TypeError {
         if let Some(trait_id) = owner {
             let trait_name = self.defs.display(trait_id).to_string();
-            let type_name = head.target.user_facing().to_string();
+            let type_name = self.impl_target_display(&head.target);
             let first = self
                 .defs
                 .site(previous.declaration)
@@ -63,7 +172,7 @@ impl Checker {
                     type_name: type_name.clone(),
                 },
                 span.clone(),
-                format!("conflicting implementation of trait `{trait_name}` for `{type_name}`: this impl head is already implemented"),
+                format!("conflicting implementation of trait `{trait_name}` for `{type_name}`: the impl heads overlap"),
             ).with_note_source(first.span(), "previous implementation here", previous.source_module)
         } else {
             let method = id
@@ -84,11 +193,13 @@ impl Checker {
         }
     }
 
-    /// Re-registration is identified by the block declaration, never by its
-    /// spelling or receiver shape. Distinct heads retain the current dispatch
-    /// policy, including user-record concrete specialisations.
+    /// Re-registration is identified by the block declaration.
     /// Bootstrap rows keep their prelude provenance on import revisits: an
     /// explicit source impl may override them, but not another source impl.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "validates and publishes one implementation admission transaction"
+    )]
     pub(in crate::check) fn admit_source_impl(
         &mut self,
         id: &ImplDecl,
@@ -155,16 +266,33 @@ impl Checker {
             }),
             params,
         };
+        let replaces_prelude = self.source_impl_declarations.get(&key).is_some_and(|rows| {
+            rows.iter()
+                .any(|row| row.origin == SourceImplOrigin::Prelude && head.same_head(&row.head))
+        });
+        if origin == SourceImplOrigin::Source && !replaces_prelude {
+            if let Some(error) = owner.and_then(|trait_id| {
+                self.orphan_impl_error(declaration, trait_id, &head.target, span)
+            }) {
+                return self.reject_source_impl(declaration, error);
+            }
+        }
         let previous = self
             .source_impl_declarations
-            .get(&key)
-            .and_then(|rows| {
-                rows.iter().find(|row| {
-                    row.origin == origin
-                        && head.same_head(&row.head)
-                        && (owner.is_some()
-                            || methods.keys().any(|name| row.methods.contains_key(name)))
-                })
+            .iter()
+            .filter(|((receiver, trait_id), _)| {
+                *trait_id == owner && (owner.is_some() || receiver == &key.0)
+            })
+            .flat_map(|(_, rows)| rows)
+            .find(|row| {
+                row.origin == origin
+                    && (if owner.is_some() {
+                        head.overlaps(&row.head)
+                    } else {
+                        head.same_head(&row.head)
+                    })
+                    && (owner.is_some()
+                        || methods.keys().any(|name| row.methods.contains_key(name)))
             })
             .cloned();
         if let Some(previous) = previous {

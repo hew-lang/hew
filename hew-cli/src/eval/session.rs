@@ -319,6 +319,14 @@ fn slice_source(source: &str, span: &Range<usize>) -> String {
 
 fn summarize_item(item: &Item) -> String {
     match item {
+        Item::Macro(declaration) => format!("macro {}", declaration.name),
+        Item::MacroCall(call) => format!(
+            "macro call {}",
+            call.path
+                .segments
+                .last()
+                .map_or("", |(ident, _)| ident.name.as_str())
+        ),
         Item::Import(import) => summarize_import(import),
         Item::Const(decl) => format!("const {}", decl.name),
         Item::TypeDecl(decl) => format!(

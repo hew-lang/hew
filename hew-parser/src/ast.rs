@@ -276,6 +276,11 @@ pub struct Program {
     pub module_doc: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub module_graph: Option<crate::module::ModuleGraph>,
+    #[serde(
+        default,
+        skip_serializing_if = "crate::macro_syntax::ExpansionMap::is_empty"
+    )]
+    pub expansions: crate::macro_syntax::ExpansionMap,
 }
 
 // ── Attributes ───────────────────────────────────────────────────────
@@ -283,6 +288,8 @@ pub struct Program {
 /// A single attribute argument — either positional or key-value.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum AttributeArg {
+    /// Unresolved macro attribute arguments, retaining syntax contexts.
+    Tokens(crate::macro_syntax::MacroCall),
     /// Positional argument, e.g. `camelCase` in `#[json(camelCase)]`.
     Positional(String),
     /// Key-value argument, e.g. `since = 1` in `#[wire(since = 1)]`.
@@ -299,7 +306,7 @@ impl AttributeArg {
         match self {
             AttributeArg::Positional(s) => s,
             AttributeArg::KeyValue { value, .. } => value,
-            AttributeArg::Duration(_) => "",
+            AttributeArg::Duration(_) | AttributeArg::Tokens(_) => "",
         }
     }
 
@@ -328,6 +335,8 @@ pub struct Attribute {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Item {
+    Macro(crate::macro_syntax::MacroDecl),
+    MacroCall(crate::macro_syntax::MacroCall),
     Import(ImportDecl),
     Const(ConstDecl),
     TypeDecl(TypeDecl),
@@ -425,6 +434,7 @@ pub enum Expr {
         name: Ident,
         args: Vec<Spanned<Expr>>,
     },
+    MacroCall(Box<crate::macro_syntax::MacroCall>),
     /// Expected-type contextual variant spelling, `.Variant`.
     ///
     /// This is deliberately not represented as a bare identifier: the
@@ -1890,6 +1900,8 @@ pub struct SupervisorDecl {
     /// declaration omits the clause — runtime defaults apply at codegen.
     pub intensity: Option<Intensity>,
     pub children: Vec<ChildSpec>,
+    #[serde(default)]
+    pub methods: Vec<FnDecl>,
 }
 
 /// A supervisor restart-budget contract: at most `restarts` restarts are
@@ -1984,6 +1996,8 @@ pub struct MachineDecl {
     #[serde(default)]
     pub visibility: Visibility,
     pub name: Ident,
+    /// Context of the implicit `state` and `event` bindings inside the body.
+    pub body_context: SyntaxContext,
     /// Optional generic type parameters declared as `machine Name<T, U> { ... }`
     /// or `machine Name<T: Trait> { ... }`.
     ///

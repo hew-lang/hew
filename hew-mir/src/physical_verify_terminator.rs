@@ -1400,13 +1400,17 @@ pub(crate) fn verify_terminator(
         }
         PhysicalTerminator::IndirectCall {
             callee,
+            targets,
             signature,
             args,
             result,
             normal,
             unwind,
+            ..
         } => {
-            callable::verify_indirect_call(module, function, *callee, signature, args, *result)?;
+            callable::verify_indirect_call(
+                module, function, *callee, targets, signature, args, *result,
+            )?;
             if normal.is_none() != (signature.return_ty == ResolvedTy::Never) {
                 return Err(PhysicalError::new(
                     "call normal edge differs from its return type",

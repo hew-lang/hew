@@ -231,9 +231,7 @@ pub fn compile_tests_to_sandbox_bytecode(
         hew_compile::FrontendOptions {
             project_dir: Some(project_dir.to_path_buf()),
             test_entry_selections: selections.to_vec(),
-            deterministic_admission: hew_compile::DeterministicAdmission::Tests(
-                selections.to_vec(),
-            ),
+            host_admission: hew_compile::HostAdmission::Tests(selections.to_vec()),
             companion: companion.map(std::path::Path::to_path_buf),
             ..Default::default()
         },
@@ -469,16 +467,37 @@ fn compile_from_semantics(
         .as_ref()
         .and_then(|result| result.tco.as_ref())
     else {
-        diagnostics.push(Diagnostic::profile_error(
-            0..0,
-            "frontend_stopped",
-            state
-                .stopped
-                .as_ref()
-                .map_or("type checking did not run", |failure| {
-                    failure.message.as_str()
-                }),
-        ));
+        if let Some(failure) = &state.stopped {
+            for diagnostic in &failure.diagnostics {
+                let mut converted = match &diagnostic.kind {
+                    hew_compile::FrontendDiagnosticKind::Parse(error) => {
+                        parse_error_to_diagnostic(error)
+                    }
+                    hew_compile::FrontendDiagnosticKind::Message(message) => {
+                        Diagnostic::profile_error(
+                            message.span.clone().unwrap_or(0..0),
+                            &message.code,
+                            &message.message,
+                        )
+                    }
+                    _ => continue,
+                };
+                converted.source_module.clone_from(&diagnostic.filename);
+                diagnostics.push(converted);
+            }
+        }
+        if !has_error_diagnostics(&diagnostics) {
+            diagnostics.push(Diagnostic::profile_error(
+                0..0,
+                "frontend_stopped",
+                state
+                    .stopped
+                    .as_ref()
+                    .map_or("type checking did not run", |failure| {
+                        failure.message.as_str()
+                    }),
+            ));
+        }
         return Ok(CompileOutput {
             diagnostics,
             bytecode: None,

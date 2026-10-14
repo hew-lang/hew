@@ -68,6 +68,8 @@ fn descriptor() -> HewCallableDescriptor {
         environment: &CAPTURE,
         invoke_borrow: None,
         invoke_once: complete,
+        invoke_borrow_sync: None,
+        invoke_once_sync: None,
     }
 }
 

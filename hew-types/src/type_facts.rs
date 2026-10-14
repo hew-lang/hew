@@ -552,6 +552,9 @@ impl TypeFactService {
                 ty.user_facing()
             )
         })?;
+        if let Some(fields) = crate::actor_protocol::interceptor_fields(&self.context.defs, ty) {
+            return Ok((instance, fields));
+        }
         let definition = self
             .context
             .type_defs
@@ -707,6 +710,17 @@ impl TypeFactService {
         binders
             .arguments(&self.context.defs, method, value)
             .map(|args| Some((method, args)))
+    }
+
+    /// Whether rendering selects an explicit implementation outside the stdlib.
+    #[must_use]
+    pub fn has_explicit_display_impl(&self, source: &ResolvedTy) -> bool {
+        self.selected_display_method(source)
+            .and_then(|method| self.context.defs.module(method))
+            .is_some_and(|module| {
+                self.context.defs.module_package(module)
+                    != &crate::def_table::PackageOrigin::StandardLibrary
+            })
     }
 
     fn selected_display_method(&self, source: &ResolvedTy) -> Option<crate::DefId> {

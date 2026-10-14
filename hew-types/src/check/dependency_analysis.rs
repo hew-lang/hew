@@ -572,7 +572,11 @@ fn item_has_inferred_declaration(item: &Item) -> bool {
         // These declaration families require additional preparation/normalizing
         // contracts; even an automatic dependency conservatively uses the full
         // checker rather than treating an unvisited signature as explicit.
-        Item::Actor(_) | Item::Supervisor(_) | Item::Machine(_) => true,
+        Item::Macro(_)
+        | Item::MacroCall(_)
+        | Item::Actor(_)
+        | Item::Supervisor(_)
+        | Item::Machine(_) => true,
     }
 }
 

@@ -1,0 +1,10 @@
+[[case]]
+id = "typed-embed"
+source = "cases/typed-embed.hew"
+intent = "Typed JSON, YAML and TOML inputs become ordinary records, variants and collections with matching native and sandbox values."
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "api\ntrue\n5\nlocalhost:8080\nblue\n3\n8\ntrue\n4\n2\né\napi\ntrue\n5\nlocalhost:8080\nblue\n3\n8\ntrue\n4\n2\né\napi\ntrue\n5\nlocalhost:8080\nblue\n3\n8\ntrue\n4\n2\né\n2\n3\ngreen\n"
+exit = 0

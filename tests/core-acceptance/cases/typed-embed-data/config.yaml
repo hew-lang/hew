@@ -1,0 +1,17 @@
+serviceName: api
+enabled: true
+workers:
+  first: 2
+  second: 3
+transport:
+  Tcp:
+    host: localhost
+    port: 8080
+labels: [green, blue]
+retryLimit: 3
+weights:
+  cpu: 8
+flags: [fast, portable]
+origin: [4, 0.5, true]
+blob: AP8=
+grade: é

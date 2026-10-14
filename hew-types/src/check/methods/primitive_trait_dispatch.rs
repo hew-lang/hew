@@ -78,12 +78,6 @@ impl Checker {
     /// the dispatch metadata for codegen, or `None` when no impl matches and
     /// the caller should emit its own "no method on X" diagnostic so existing
     /// "no method on Vec" / "no method on string" wording survives.
-    ///
-    /// Limitation: if two distinct traits each define a method of the same
-    /// name on the same receiver kind, this returns the first match the
-    /// table iteration encounters.  Acceptable today (only `Display` is in
-    /// scope per Phase 1 of #1565), but Phase 2 (`Debug`) must add a
-    /// disambiguation rule before introducing same-name conflicts.
     pub(super) fn try_dispatch_primitive_trait_method(
         &mut self,
         resolved_receiver: &Ty,
@@ -103,7 +97,18 @@ impl Checker {
         // otherwise diagnose, never eagerly upstream.
         let defaulted_receiver = resolved_receiver.materialize_literal_defaults();
         let canonical = Checker::canonical_primitive_or_builtin_key(&defaulted_receiver)?;
-        let (trait_id, sig) = self.lookup_primitive_trait_method(&defaulted_receiver, method)?;
+        let (trait_id, sig) = match self.lookup_primitive_trait_method(&defaulted_receiver, method)
+        {
+            Ok(selection) => selection?,
+            Err(traits) => {
+                for arg in args {
+                    let (expr, span) = arg.expr();
+                    self.synthesize(expr, span);
+                }
+                self.report_ambiguous_method(&defaulted_receiver, method, &traits, span);
+                return Some(Ty::Error);
+            }
+        };
         // Bind the impl's type parameters from the concrete receiver's type
         // arguments BEFORE applying the signature, and PROVE the impl's `Self`
         // structurally matches the receiver. Without the binding a generic
@@ -117,12 +122,6 @@ impl Checker {
         // non-match `instantiate_*` returns `None` and we fall through to the
         // "no method" path below, failing closed. User `Ty::Named` receivers
         // already do both via `lookup_named_method_sig`.
-        let sig = self.instantiate_primitive_trait_method_sig(
-            sig,
-            &canonical,
-            trait_id,
-            &defaulted_receiver,
-        )?;
         let applied_sig = self.apply_instantiated_call_signature_with_assoc(
             &sig,
             None,
@@ -217,52 +216,20 @@ impl Checker {
         Some(self.project_assoc_types(&applied_sig.return_type))
     }
 
-    /// Instantiate a primitive/builtin-generic trait-impl method signature
-    /// against a concrete receiver — **fallibly**.
-    ///
-    /// Dispatch reaches here keyed only on the canonical builtin kind
-    /// (`Vec`/`HashMap`/…), so the registered impl's `Self` type must still be
-    /// *proven* to structurally match the concrete receiver before its return
-    /// type is treated as authoritative. Returns `None` when the impl does not
-    /// apply (constrained/concrete/nested `Self` that the receiver does not
-    /// satisfy), so the caller falls through to the normal "no matching
-    /// method/impl" path and fails **closed** — never projecting an authoritative
-    /// return type for a receiver that does not implement the impl.
-    ///
-    /// On a match, binds the impl's type parameters by structurally unifying the
-    /// impl's recorded `Self` type arguments
-    /// ([`Checker::primitive_trait_impl_self_args`]) against the receiver's
-    /// concrete type arguments, then substitutes both `Self` (→ the receiver)
-    /// and the bound parameters through the signature's params and return type.
-    /// Substituted parameters are dropped from `type_params` so
-    /// `apply_instantiated_call_signature` does not re-instantiate them as fresh
-    /// inference vars. Mirrors `instantiate_named_method_sig` (the user
-    /// `Ty::Named` path) for builtin receivers, which have no `type_defs` entry.
-    ///
-    /// Hew rejects overlapping impls (the associated-type binding table is keyed
-    /// by type *name*, so a second impl for the same `(kind, trait)` collides and
-    /// is diagnosed at registration for builtins and user records alike). There
-    /// is therefore at most one usable impl per `(canonical, trait)`, and the
-    /// stored `Self` args identify exactly that impl — no per-impl table needed.
-    ///
-    /// Non-generic primitive impls (`impl Display for i64`) have empty stored
-    /// `Self` args and an argument-less receiver, so the arity check passes
-    /// trivially, no parameters bind, and only the `Self` → receiver substitution
-    /// applies — leaving existing dispatch behaviour unchanged.
-    pub(super) fn instantiate_primitive_trait_method_sig(
+    /// Instantiate an admitted impl only when its full receiver pattern matches.
+    pub(in crate::check) fn instantiate_primitive_trait_method_sig(
         &mut self,
         mut sig: FnSig,
-        canonical: &str,
+        receiver_pattern: &Ty,
         trait_id: crate::DefId,
         receiver_ty: &Ty,
     ) -> Option<FnSig> {
         let mut subst: HashMap<crate::ParamHead, Ty> = HashMap::new();
         // Clone out of the side table so the structural match can take `&mut
         // self` (it unifies unbound receiver vars against concrete `Self` args).
-        if let Some(self_args) = self
-            .primitive_trait_impl_self_args
-            .get(&(canonical.to_string(), trait_id))
-            .cloned()
+        if let Ty::Named {
+            args: self_args, ..
+        } = receiver_pattern
         {
             let receiver_args: Vec<Ty> = match receiver_ty {
                 Ty::Named { args, .. } => args.clone(),
@@ -469,11 +436,13 @@ impl Checker {
         // method.  We call into the table directly (not the
         // walk-every-trait helper) because the trait name is known at
         // this call site and there is no ambiguity to resolve.
-        let sig = self
+        let mut candidates = self
             .primitive_trait_impls
             .get(&(canonical.clone(), trait_id))
             .and_then(|methods| methods.get(method_name))
             .cloned()?;
+        candidates
+            .sort_by_key(|entry| entry.origin == super::super::types::SourceImplOrigin::Prelude);
         // Bind the impl's type params from the concrete receiver before
         // applying the signature, and prove `Self` matches (mirroring the
         // method-form path) so a UFCS call (`Index::get(v, i)`) on a generic
@@ -481,12 +450,14 @@ impl Checker {
         // unresolved inference var — and a constrained/concrete impl is not
         // over-applied. On a non-match, fall through to the trait-qualified
         // path, which fails closed.
-        let sig = self.instantiate_primitive_trait_method_sig(
-            sig,
-            &canonical,
-            trait_id,
-            &resolved_receiver,
-        )?;
+        let sig = candidates.into_iter().find_map(|entry| {
+            self.instantiate_primitive_trait_method_sig(
+                entry.signature,
+                &entry.receiver,
+                trait_id,
+                &resolved_receiver,
+            )
+        })?;
         // Do not add an outer check_arity here.  apply_instantiated_call_signature
         // already calls check_arity on trailing_args via PositionalOnly, matching
         // the receiver-form path at try_dispatch_primitive_trait_method.  An
@@ -511,6 +482,13 @@ impl Checker {
                 owner_type_args: &[],
             }),
         );
+        let target = sig.impl_method.as_ref().map_or_else(
+            || CallTarget::Unsupported {
+                reason: "primitive trait method has no registered declaration identity".into(),
+            },
+            |method| CallTarget::impl_method(method.declaration),
+        );
+        self.record_direct_call_target(span, target);
         self.record_method_call_receiver_kind(
             span,
             MethodCallReceiverKind::PrimitiveTraitImpl {

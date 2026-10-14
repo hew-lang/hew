@@ -38,6 +38,32 @@ pub use codec::execute_codec;
 
 use wasm_bindgen::prelude::*;
 
+/// Render the macro expansion at a byte offset using the shared frontend.
+///
+/// # Errors
+///
+/// Returns an error when loading or expansion fails, or no expansion covers the offset.
+#[wasm_bindgen]
+pub fn expand_macro(source: &str, offset: usize) -> Result<String, JsValue> {
+    let mut options = hew_compile::FrontendOptions {
+        documents: hew_compile::SourceSet::in_memory(),
+        project_dir: Some(".".into()),
+        no_typecheck: true,
+        ..Default::default()
+    };
+    sandbox::add_embedded_standard_library(&mut options);
+    let state = hew_compile::run_source_frontend(source, "playground.hew", &options);
+    if let Some(failure) = state.stopped {
+        return Err(JsValue::from_str(&failure.message));
+    }
+    hew_analysis::expansion::render(
+        &state.program,
+        std::path::Path::new("playground.hew"),
+        Some(offset),
+    )
+    .ok_or_else(|| JsValue::from_str("no macro expansion at this position"))
+}
+
 // ── Diagnostics API ──────────────────────────────────────────────────────
 
 /// Analyze Hew source code and return diagnostics, tokens, and symbols as JSON.
@@ -616,6 +642,18 @@ fn parse_and_type_check_with_inputs(
         .diagnostics
         .into_iter()
         .filter_map(|diagnostic| {
+            if let hew_compile::FrontendDiagnosticKind::Parse(error) = diagnostic.kind {
+                if parse_result
+                    .errors
+                    .iter()
+                    .any(|parsed| parsed.span == error.span && parsed.message == error.message)
+                {
+                    return None;
+                }
+                let mut converted = parse_error_to_wasm(error);
+                converted.source_module = diagnostic.filename;
+                return Some(converted);
+            }
             let hew_compile::FrontendDiagnosticKind::Message(message) = diagnostic.kind else {
                 return None;
             };
@@ -734,6 +772,7 @@ fn hir_kind_str(kind: &hew_hir::HirDiagnosticKind) -> &'static str {
     match kind {
         K::NotYetImplemented { .. } => "NotYetImplemented",
         K::ConstIntegerEvaluation { .. } => "ConstIntegerEvaluation",
+        K::ConstDependencyCycle { .. } => "ConstDependencyCycle",
         K::UnresolvedSymbol { .. } => "UnresolvedSymbol",
         K::ImportMissing { .. } => "ImportMissing",
         K::UnresolvedBuiltinOverload { .. } => "UnresolvedBuiltinOverload",

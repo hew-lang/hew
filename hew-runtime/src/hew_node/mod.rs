@@ -28,6 +28,7 @@ use crate::transport::{self, HewTransport, HewTransportOps};
 mod api;
 mod dist_probes;
 mod inbound;
+mod inbound_call;
 mod monitor_link;
 mod remote_call;
 #[cfg(test)]
@@ -35,7 +36,13 @@ mod tests;
 
 pub use self::api::*;
 pub use self::dist_probes::*;
-pub(crate) use self::inbound::*;
+#[cfg(test)]
+use self::inbound::NODE_STOP_BEFORE_CONNMGR_FREE_HOOK;
+use self::inbound::{
+    accept_loop, actor_id_to_registry_ptr, drain_inbound_requests, node_inbound_router,
+    stop_node_accept_thread,
+};
+pub(crate) use self::inbound_call::InboundAsks;
 pub use self::monitor_link::*;
 pub use self::remote_call::*;
 
@@ -858,6 +865,7 @@ fn ask_error_from_code(code: i32) -> Option<AskError> {
         x if x == AskError::Backpressure as i32 => Some(AskError::Backpressure),
         x if x == AskError::MonitorLost as i32 => Some(AskError::MonitorLost),
         x if x == AskError::HandlerTrapped as i32 => Some(AskError::HandlerTrapped),
+        x if x == AskError::Refused as i32 => Some(AskError::Refused),
         _ => None,
     }
 }
@@ -865,12 +873,18 @@ fn ask_error_from_code(code: i32) -> Option<AskError> {
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum AskRejectionReasonCode {
+    EncodeFailed = AskError::EncodeFailed as u8,
+    SendFailed = AskError::SendFailed as u8,
+    PayloadSizeMismatch = AskError::PayloadSizeMismatch as u8,
     WorkerAtCapacity = AskError::WorkerAtCapacity as u8,
     ActorStopped = AskError::ActorStopped as u8,
     MailboxFull = AskError::MailboxFull as u8,
     OrphanedAsk = AskError::OrphanedAsk as u8,
     NoRunnableWork = AskError::NoRunnableWork as u8,
     DecodeFailure = AskError::DecodeFailure as u8,
+    LocalShutdown = AskError::LocalShutdown as u8,
+    HandlerTrapped = AskError::HandlerTrapped as u8,
+    Refused = AskError::Refused as u8,
 }
 
 /// Errors returned by [`AskRejectionReasonCode::decode`].
@@ -884,12 +898,18 @@ enum AskRejectionDecodeError {
 impl AskRejectionReasonCode {
     fn encode(reason: AskError) -> Option<u8> {
         let code = match reason {
+            AskError::EncodeFailed => Self::EncodeFailed,
+            AskError::SendFailed => Self::SendFailed,
+            AskError::PayloadSizeMismatch => Self::PayloadSizeMismatch,
             AskError::WorkerAtCapacity => Self::WorkerAtCapacity,
             AskError::ActorStopped => Self::ActorStopped,
             AskError::MailboxFull => Self::MailboxFull,
             AskError::OrphanedAsk => Self::OrphanedAsk,
             AskError::NoRunnableWork => Self::NoRunnableWork,
             AskError::DecodeFailure => Self::DecodeFailure,
+            AskError::LocalShutdown => Self::LocalShutdown,
+            AskError::HandlerTrapped => Self::HandlerTrapped,
+            AskError::Refused => Self::Refused,
             _ => return None,
         };
         Some(code as u8)
@@ -898,12 +918,18 @@ impl AskRejectionReasonCode {
     fn decode(reason_payload: &[u8]) -> Result<AskError, AskRejectionDecodeError> {
         match reason_payload.first().copied() {
             None => Ok(AskError::WorkerAtCapacity), // empty payload: legacy peer
+            Some(x) if x == Self::EncodeFailed as u8 => Ok(AskError::EncodeFailed),
+            Some(x) if x == Self::SendFailed as u8 => Ok(AskError::SendFailed),
+            Some(x) if x == Self::PayloadSizeMismatch as u8 => Ok(AskError::PayloadSizeMismatch),
             Some(x) if x == Self::WorkerAtCapacity as u8 => Ok(AskError::WorkerAtCapacity),
             Some(x) if x == Self::ActorStopped as u8 => Ok(AskError::ActorStopped),
             Some(x) if x == Self::MailboxFull as u8 => Ok(AskError::MailboxFull),
             Some(x) if x == Self::OrphanedAsk as u8 => Ok(AskError::OrphanedAsk),
             Some(x) if x == Self::NoRunnableWork as u8 => Ok(AskError::NoRunnableWork),
             Some(x) if x == Self::DecodeFailure as u8 => Ok(AskError::DecodeFailure),
+            Some(x) if x == Self::LocalShutdown as u8 => Ok(AskError::LocalShutdown),
+            Some(x) if x == Self::HandlerTrapped as u8 => Ok(AskError::HandlerTrapped),
+            Some(x) if x == Self::Refused as u8 => Ok(AskError::Refused),
             Some(code) => Err(AskRejectionDecodeError::UnknownAskRejectionReason { code }),
         }
     }
@@ -916,7 +942,7 @@ fn decode_rejection_reason(reason_payload: &[u8]) -> Result<AskError, AskRejecti
 /// Fail a pending remote ask identified by `request_id` with the remote rejection reason.
 ///
 /// Called by the reader thread when a **rejection** reply envelope arrives
-/// (one with [`HEW_REPLY_REJECT_MSG_TYPE`] in the `msg_type` field).
+/// (one with explicit [`crate::envelope::EnvelopeMessage::Rejected`] status).
 /// Empty payloads from older peers still default to `WorkerAtCapacity`.
 /// The rejection resolves the ask only when it arrives on the same
 /// `(conn_mgr, conn_id)` the ask was issued on (issue #2652, D12).
@@ -1616,34 +1642,8 @@ pub unsafe extern "C" fn hew_node_stop(node: *mut HewNode) -> c_int {
             rt.monitors.drain_remote_observations_for_shutdown();
         }
 
-        // ── Phase 1: close the inbound-ask spawn gate, then DRAIN in-flight
-        // reply sends BEFORE the CURRENT_NODE teardown barrier ───────────────
-        //
-        // `hew_connmgr_close_inbound_spawn` flips a flag that
-        // `node_inbound_router` checks before spawning: no NEW inbound-ask
-        // worker starts once it is set. Workers ALREADY past that gate are
-        // mid-`handle_inbound_ask` — they have computed (or are computing) a
-        // reply and are about to write it to the wire in `send_reply_envelope`.
-        //
-        // We drain those existing workers to zero HERE — while `CURRENT_NODE`
-        // still points at this node and `reconnect_shutdown` is still false —
-        // so their already-earned replies flush to the asking node instead of
-        // being abandoned. The drain MUST run before the barrier below, which
-        // sets `mark_stopping` (→ `reconnect_shutdown`) and zeroes
-        // `CURRENT_NODE`; either of those makes `send_reply_envelope` bail.
-        //
-        // Previously the barrier ran first, so a worker that reached
-        // `send_reply_envelope` after it saw `CURRENT_NODE == 0` (or the
-        // shutdown flag) and silently dropped its computed reply, surfacing a
-        // spurious `ConnectionDropped` to the caller as the connection then
-        // closed under the in-flight ask.
-        //
-        // Draining before the barrier is safe: the spawn gate guarantees the
-        // counter only decreases, so the wait terminates; and `conn_mgr` is not
-        // freed until well below. The 5-second ceiling bounds a misbehaving
-        // dispatch — a worker still in flight after the ceiling hits the
-        // `CURRENT_NODE == 0` / `reconnect_shutdown` guard below and bails
-        // (fail-closed), exactly as before.
+        // Close admission before draining completed replies. Pending calls retain
+        // their observations until completion or the existing drain ceiling.
         let inbound_active_arc = if node.conn_mgr.is_null() {
             None
         } else {
@@ -1652,19 +1652,17 @@ pub unsafe extern "C" fn hew_node_stop(node: *mut HewNode) -> c_int {
             // SAFETY: conn_mgr is valid here and remains live until after the drain.
             unsafe { connection::hew_connmgr_inbound_ask_active(node.conn_mgr) }
         };
-        drain_inbound_ask_workers(inbound_active_arc.as_ref());
+        drain_inbound_requests(inbound_active_arc.as_ref());
+        if !node.conn_mgr.is_null() {
+            // SAFETY: the node still owns its manager. Admission is closed, and
+            // cancellation drops pending request/reply owners without a worker.
+            unsafe { (*node.conn_mgr).inbound_asks.cancel_all() };
+        }
 
         {
-            // Setting CURRENT_NODE to zero acts as a lifetime barrier for any
-            // ask-handler thread that slipped past the drain ceiling above.
-            // Those threads acquire the CURRENT_NODE read lock in
-            // `send_reply_envelope` and bail out immediately if the value is 0.
-            // The write lock here blocks until every concurrent read-lock-holder
-            // (i.e. every in-flight reply send) has completed, so `conn_mgr`
-            // cannot be freed while any such thread is still running for the
-            // current node. `mark_stopping` (→ `reconnect_shutdown`) is set here
-            // too, completing the teardown signal for reconnect workers and the
-            // straggler bail.
+            // A router still preparing a rejection may outlive the drain
+            // ceiling. This barrier finishes publication before freeing its
+            // manager; later replies observe shutdown without dereferencing it.
             with_current_node(|guard| {
                 if !node.conn_mgr.is_null() {
                     // SAFETY: node owns this connection manager until teardown completes.
@@ -2062,88 +2060,64 @@ impl InboundRequest {
         .flatten()
     }
 
-    /// Submit a one-way message, keeping the fields when admission refuses.
+    /// Submit an owned one-way message, releasing its fields if admission refuses.
     /// Returns the native submission status, or `None` when no live actor
     /// holds the id.
-    fn submit(self, actor_id: u64, msg_type: i32) -> Option<i32> {
+    fn submit(
+        self,
+        actor_id: u64,
+        msg_type: i32,
+        caller: crate::actor_caller::HewCallerStamp,
+    ) -> Option<i32> {
         use crate::actor_native::HewSubmitStatus;
         let (_runtime, token) = Self::target(actor_id)?;
-        // The runtime frees a refused wrapper's bytes and leaves its fields
-        // with the sender, so it takes a shallow copy of this one.
-        let copy = crate::mem::buf_try_alloc(self.size);
-        if copy.is_null() {
+        // This request owns its fields on every outcome, so its existing
+        // wrapper can become the envelope payload without a shallow copy.
+        // SAFETY: the request owns this allocated wrapper and its typed fields.
+        let envelope = unsafe {
+            crate::mailbox::hew_msg_envelope_new(self.wrapper, self.size, Some(self.drop))
+        };
+        if envelope.is_null() {
             return Some(HewSubmitStatus::Oom as i32);
         }
-        // SAFETY: both buffers hold the decoded wrapper's size.
-        unsafe {
-            ptr::copy_nonoverlapping(self.wrapper.cast::<u8>(), copy.cast::<u8>(), self.size);
-        };
-        // SAFETY: the copy is an unpublished wrapper with the member's fields.
-        let status = unsafe {
-            crate::actor_native::hew_actor_submit_native(
-                token,
-                msg_type,
-                copy,
-                self.size,
-                self.drop,
-                0,
-                None,
-                ptr::null_mut(),
-            )
-        };
-        if submission_delivered(status) {
-            // The destination owns the fields; only the shell remains.
-            // SAFETY: the shell came from the decode allocation.
-            unsafe { crate::mem::buf_free(self.wrapper) };
-            std::mem::forget(self);
+        std::mem::forget(self);
+        // SAFETY: admission consumes the uniquely owned envelope only on delivery.
+        let outcome =
+            unsafe { crate::actor::try_submit_native_envelope(token, msg_type, envelope, caller) };
+        let status = crate::actor_native::submission_status(outcome) as i32;
+        if !submission_delivered(status) {
+            // SAFETY: refusal left the envelope and its fields with this caller.
+            unsafe { crate::mailbox::hew_msg_envelope_release(envelope) };
         }
         Some(status)
     }
 
-    /// Complete an ask against the local actor and encode its reply. The
-    /// reply's fields are released once encoded.
-    fn ask(
+    /// Start an owned request through the same non-blocking admission as local calls.
+    fn ask_start(
         self,
-        actor_id: u64,
+        token: crate::lifetime::local_handles::HewLocalPidId,
         msg_type: i32,
         reply: crate::xnode_serial::ThunkPair,
-    ) -> Result<Vec<u8>, AskError> {
-        let Some((_runtime, token)) = Self::target(actor_id) else {
-            return Err(AskError::ActorStopped);
-        };
-        let (readiness, waker) = crate::wake::blocking::Readiness::new();
+        caller: crate::actor_caller::HewCallerStamp,
+        waker: &crate::wake::HewWaker,
+    ) -> *mut crate::actor_call_native::HewActorCall {
         let (wrapper, size, drop) = (self.wrapper, self.size, self.drop);
         std::mem::forget(self);
-        // SAFETY: the operation owns the wrapper and its fields on every
-        // outcome, and the waker descriptor is live for the call.
-        let operation = unsafe {
-            crate::actor_call_native::hew_actor_call_new(
-                token,
-                msg_type,
-                wrapper,
-                size,
-                drop,
-                reply.size,
-                reply.drop,
-                waker.descriptor(),
-                0,
-                0,
-                // A full mailbox refuses the request rather than parking this
-                // worker, and the peer learns `MailboxFull`.
-                1,
-                None,
-                None,
+        // SAFETY: the operation owns the fields on every outcome and retains the waker.
+        unsafe {
+            crate::actor_call_native::actor_call_new(
+                token, msg_type, wrapper, size, drop, reply.size, reply.drop, waker, 0, 0, 1, None,
+                None, caller,
             )
-        };
-        // SAFETY: this thread exclusively drives the live operation.
-        let status = loop {
-            // SAFETY: this thread exclusively drives the live operation.
-            let status = unsafe { crate::actor_call_native::hew_actor_call_poll(operation) };
-            if status != -1 {
-                break status;
-            }
-            readiness.wait();
-        };
+        }
+    }
+
+    /// Take and encode a ready reply, consuming the operation and its owned fields.
+    unsafe fn ask_take(
+        operation: *mut crate::actor_call_native::HewActorCall,
+        reply: crate::xnode_serial::ThunkPair,
+        status: i32,
+    ) -> Result<Vec<u8>, AskError> {
         let mut value = vec![0_u8; reply.size];
         let mut rejected = ptr::null_mut();
         let status = if status < 0 {
@@ -2200,6 +2174,17 @@ impl Drop for InboundRequest {
     }
 }
 
+/// A local request can move without encoding only when both dispatch variants
+/// share the concrete actor's codec. Handler names alone omit generic arguments.
+fn local_request_matches(caller: *const c_void, target: *const c_void, msg_type: i32) -> bool {
+    if caller == target {
+        return true;
+    }
+    crate::xnode_serial::lookup_request(caller, msg_type)
+        .zip(crate::xnode_serial::lookup_request(target, msg_type))
+        .is_some_and(|(caller, target)| caller.same_codec(target))
+}
+
 /// Route one send; `moved` reports that a local target took the fields.
 #[allow(
     clippy::too_many_lines,
@@ -2239,8 +2224,9 @@ unsafe fn send_location(
                 set_last_error("remote send refused: target actor slot is stale");
                 return HEW_ERR_STALE_REF;
             };
-            // A name lookup does not prove the concrete actor payload layout.
-            if dispatch != target_dispatch {
+            // Handler indices and payload layouts belong to this concrete
+            // dispatch type, not the name used to look up the target.
+            if !local_request_matches(dispatch, target_dispatch, msg_type) {
                 set_last_error("remote send refused: target actor type does not match the caller");
                 return -1;
             }
@@ -2256,7 +2242,7 @@ unsafe fn send_location(
                 return 0;
             };
             *moved = true;
-            return match request.submit(actor_id, msg_type) {
+            return match request.submit(actor_id, msg_type, crate::actor_caller::local_sender()) {
                 Some(status) if submission_delivered(status) => 0,
                 // A target that is gone or closing reports its stale
                 // address, as this node's own send path always has.
@@ -2355,6 +2341,14 @@ unsafe fn send_location(
         Some((bytes, len)) => (bytes, len),
         None => (std::ptr::null_mut(), 0),
     };
+    let Some(codec) = crate::xnode_serial::lookup_request(dispatch, msg_type) else {
+        if let Some((bytes, _)) = serialized {
+            // SAFETY: bytes came from the request encoder.
+            unsafe { crate::xnode_serial::hew_ser_free_bytes(bytes) };
+        }
+        return -1;
+    };
+    let identity = std::ffi::CString::new(codec.identity).expect("wire declaration excludes NUL");
     let abi_target = HewLocation::from(target);
     // SAFETY: conn_mgr and conn_id were validated above; send_ptr/send_len are the
     // serialized bytes (or null/0 for an empty payload).
@@ -2363,7 +2357,7 @@ unsafe fn send_location(
             node.conn_mgr,
             conn_id,
             &raw const abi_target,
-            msg_type,
+            identity.as_ptr(),
             send_ptr,
             send_len,
         )

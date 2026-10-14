@@ -1,0 +1,23 @@
+#[resource]
+type Ticket { id: i64; }
+
+impl Ticket {
+    fn close(consume self) {
+        sleep(1ms);
+        println(f"closed {self.id}");
+    }
+}
+
+fn release_at_exit(id: i64) {
+    let ticket = Ticket { id: id };
+}
+
+fn main() {
+    let release: fn[suspends](i64) -> () = release_at_exit;
+    release(1);
+    let ticket = Ticket { id: 2 };
+    let callback: fn[once,suspends]() -> Ticket = move || ticket;
+    let result = callback();
+    result.close();
+    println("done");
+}

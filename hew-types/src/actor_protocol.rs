@@ -1,39 +1,4 @@
-//! Actor protocol descriptor — the stable, centralized authority for
-//! actor-handler message identifiers (`msg_id`s).
-//!
-//! A handler's `msg_id` is a deterministic hash over its fully-qualified name.
-//! Source-order changes therefore do not alter the wire protocol.
-//!
-//! ## Hash determinism contract
-//!
-//! `compute_default_msg_id` is the canonical algorithm. Future contributors
-//! (and external tooling that wants to decode actor wire frames by hand) can
-//! reproduce a handler's `msg_id` with these inputs:
-//!
-//! - Algorithm: `siphasher::sip::SipHasher13`.
-//! - Keys: `new_with_keys(0, 0)` — both key halves are explicitly zero so
-//!   the digest is reproducible across processes and rebuilds. Default
-//!   `SipHasher::new()` would seed with `RandomState`, which is not stable.
-//! - Input: the UTF-8 bytes of the fully-qualified handler name produced by
-//!   `qualified_handler_name(actor, handler)` — i.e. `"Counter::increment"`.
-//!   No length prefix, no separator other than the literal `::`.
-//! - Output truncation: the `SipHash` digest is a `u64`; the descriptor
-//!   uses the low 32 bits (`(digest & 0xFFFF_FFFF) as u32`). Endianness is
-//!   irrelevant here because the truncation is a numeric mask, not a byte
-//!   reinterpretation.
-//!
-//! Explicit `#[msg_id(N)]` opt-in pinning is reserved for a later slice
-//! (Q87 sub-task) and is not parsed yet. When two handlers hash to the same
-//! 32-bit `msg_id` within one actor, the checker emits an
-//! [`crate::error::TypeErrorKind::ActorProtocolCollision`] diagnostic and
-//! refuses to publish the descriptor — codegen never sees a collided
-//! protocol. The diagnostic suggests `#[msg_id(N)]` even though the parser
-//! does not accept the attribute yet so the hint stays accurate when the
-//! later slice lands.
-
-use std::hash::Hasher;
-
-use siphasher::sip::SipHasher13;
+//! Checked actor protocols: receiver-local dispatch indices and canonical wire identities.
 
 use crate::ResolvedTy;
 
@@ -90,15 +55,16 @@ pub enum CoalesceFallback {
 /// HIR into the semantic actor layout. Downstream stages consume these facts.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ActorProtocolDescriptor {
+    /// The actor-owned interceptor entered around each receive handler.
+    pub interceptor: Option<crate::DefId>,
     pub mailbox: MailboxContract,
     /// Canonical owner-qualified actor name.
     pub actor_name: String,
-    /// One entry per `receive fn`. Order matches source order, but order is
-    /// no longer load-bearing for the protocol — `msg_id`s are name-derived.
+    /// One entry per `receive fn`, with a local index in source order.
     pub handlers: Vec<ActorHandlerDescriptor>,
 }
 
-/// One handler's descriptor: stable `msg_id` plus the signature/symbol
+/// One handler's descriptor: local dispatch index plus the signature/symbol
 /// shape consumers need to issue a call.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ActorHandlerDescriptor {
@@ -108,13 +74,17 @@ pub struct ActorHandlerDescriptor {
     pub declaration: crate::DefId,
     /// Surface name (`"increment"`).
     pub name: String,
-    /// Deterministic 32-bit `msg_id`; see module-level docs for the algorithm.
+    /// Canonical dotted declaration identity, independent of surface aliases.
+    pub wire_identity: String,
+    /// Receiver-local dispatch index.
     pub msg_id: u32,
     /// Parameter types declared by the handler, in source order.
     pub param_tys: Vec<ResolvedTy>,
     /// Return type. Unit-returning handlers are still recorded explicitly so
     /// `Fire` vs `Ask` decisions stay in one place.
     pub return_ty: ResolvedTy,
+    /// This handler declares `fails`, rather than returning an ordinary Result value.
+    pub declared_failure: bool,
     /// Mangled callee symbol used by codegen (e.g. `Counter__increment` —
     /// the actual mangling is owned by the MIR layer; this field stores
     /// whatever string the producer chose so a single descriptor row tells a
@@ -128,10 +98,28 @@ pub struct ActorHandlerDescriptor {
     /// `fails` clause, and for an error type whose rendering the checker
     /// cannot name — those handlers stay refused through a view.
     pub failure_display: Option<ReceiveFailureDisplay>,
-    /// This is the member a `RemotePid` addresses through the actor's
-    /// `ActorMsg` impl, and every payload it carries has a `#[wire]` schema.
-    /// Native code registers its request and reply codecs at startup.
-    pub remote_codec: bool,
+    /// Checked `ActorMsg` impl receivers that select this member. Concrete
+    /// instances match these patterns before admitting their wire payloads.
+    pub remote_receivers: Vec<ActorRemoteReceiver>,
+}
+
+/// The receiver arguments of a checked `ActorMsg` implementation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActorRemoteReceiver {
+    pub parameters: Vec<crate::ParamHead>,
+    pub args: Vec<ResolvedTy>,
+}
+
+impl ActorRemoteReceiver {
+    #[must_use]
+    pub fn matches(&self, arguments: &[ResolvedTy]) -> bool {
+        crate::method_resolution::impl_receiver_substitution(
+            &self.parameters,
+            &self.args.iter().map(ResolvedTy::to_ty).collect::<Vec<_>>(),
+            &arguments.iter().map(ResolvedTy::to_ty).collect::<Vec<_>>(),
+        )
+        .is_some()
+    }
 }
 
 /// How one `fails` handler's declared error becomes fault text.
@@ -146,54 +134,11 @@ pub enum ReceiveFailureDisplay {
     },
 }
 
-/// Build the fully-qualified name fed into the `msg_id` hash.
-///
-/// Kept as a free function so external tooling that wants to reproduce a
-/// `msg_id` by hand can call the same code path the checker uses.
-#[must_use]
-pub fn qualified_handler_name(actor_name: &str, handler_name: &str) -> String {
-    format!("{actor_name}::{handler_name}")
-}
-
-/// Compute the default `msg_id` for a `receive fn` from its fully-qualified
-/// name. See the module-level docs for the determinism contract.
-///
-/// External tools that decode actor wire frames can reproduce this digest
-/// without linking the compiler: feed the UTF-8 bytes of
-/// `qualified_handler_name(actor, handler)` into a `SipHash-1-3` with both
-/// keys set to zero, then mask to the low 32 bits.
-#[must_use]
-pub fn compute_default_msg_id(qualified_name: &str) -> u32 {
-    let mut hasher = SipHasher13::new_with_keys(0, 0);
-    hasher.write(qualified_name.as_bytes());
-    let digest = hasher.finish();
-    #[allow(
-        clippy::cast_possible_truncation,
-        reason = "Documented contract: msg_id is the low 32 bits of the SipHash-1-3 digest."
-    )]
-    let truncated = (digest & 0xFFFF_FFFF) as u32;
-    truncated
-}
-
-/// A collision detected while building an actor protocol descriptor.
-///
-/// The checker converts this into a `TypeErrorKind::ActorProtocolCollision`
-/// diagnostic; tests use it directly when exercising the collision-handling
-/// path via [`ActorProtocolDescriptor::from_handlers_with_ids`].
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ActorProtocolCollision {
-    pub actor_name: String,
-    pub handler_a: String,
-    pub handler_b: String,
-    pub msg_id: u32,
-}
-
-/// Description of a handler at descriptor-build time — everything the
-/// builder needs that is not derived from the handler name itself.
+/// Inputs selected from the declaration table and checked handler signature.
 #[derive(Debug, Clone)]
 pub struct ActorHandlerSpec {
-    /// The handler's `receive fn` declaration.
     pub declaration: crate::DefId,
+    pub wire_identity: String,
     pub name: String,
     pub param_tys: Vec<ResolvedTy>,
     pub return_ty: ResolvedTy,
@@ -201,220 +146,43 @@ pub struct ActorHandlerSpec {
 }
 
 impl ActorProtocolDescriptor {
-    /// Build a descriptor by hashing each handler's qualified name.
+    /// Assign local dispatch indices. Only `wire_identity` crosses a node boundary.
     ///
-    /// Callers (currently only the type checker) translate the error into a
-    /// `TypeErrorKind::ActorProtocolCollision` diagnostic and refuse to
-    /// publish a descriptor for that actor.
-    ///
-    /// # Errors
-    ///
-    /// Returns an [`ActorProtocolCollision`] on the first pair of handlers
-    /// whose fully-qualified names hash to the same 32-bit `msg_id`.
-    pub fn from_handlers(
-        actor_name: impl Into<String>,
-        handlers: &[ActorHandlerSpec],
-    ) -> Result<Self, ActorProtocolCollision> {
-        let actor_name = actor_name.into();
-        let mut built = Vec::with_capacity(handlers.len());
-        // First-occurrence index per `msg_id` so the collision diagnostic
-        // can name both colliding handlers.
-        let mut seen: Vec<(u32, usize)> = Vec::with_capacity(handlers.len());
-        for spec in handlers {
-            let qualified = qualified_handler_name(&actor_name, &spec.name);
-            let msg_id = compute_default_msg_id(&qualified);
-            if let Some((_, prev_idx)) = seen.iter().find(|(id, _)| *id == msg_id) {
-                return Err(ActorProtocolCollision {
-                    actor_name,
-                    handler_a: handlers[*prev_idx].name.clone(),
-                    handler_b: spec.name.clone(),
-                    msg_id,
-                });
-            }
-            seen.push((msg_id, built.len()));
-            built.push(ActorHandlerDescriptor {
-                coalesce_key: None,
-                declaration: spec.declaration,
-                name: spec.name.clone(),
-                msg_id,
-                param_tys: spec.param_tys.clone(),
-                return_ty: spec.return_ty.clone(),
-                symbol: spec.symbol.clone(),
-                failure_display: None,
-                remote_codec: false,
-            });
-        }
-        Ok(Self {
+    /// # Panics
+    /// Panics if a handler index exceeds `u32::MAX`.
+    #[must_use]
+    pub fn from_handlers(actor_name: impl Into<String>, handlers: &[ActorHandlerSpec]) -> Self {
+        Self {
+            interceptor: None,
             mailbox: MailboxContract::Unbounded,
-            actor_name,
-            handlers: built,
-        })
+            actor_name: actor_name.into(),
+            handlers: handlers
+                .iter()
+                .enumerate()
+                .map(|(index, spec)| ActorHandlerDescriptor {
+                    coalesce_key: None,
+                    declaration: spec.declaration,
+                    wire_identity: spec.wire_identity.clone(),
+                    name: spec.name.clone(),
+                    msg_id: u32::try_from(index)
+                        .expect("actor handler count fits a dispatch index"),
+                    param_tys: spec.param_tys.clone(),
+                    return_ty: spec.return_ty.clone(),
+                    declared_failure: false,
+                    symbol: spec.symbol.clone(),
+                    failure_display: None,
+                    remote_receivers: Vec::new(),
+                })
+                .collect(),
+        }
     }
 
-    /// Test-only constructor that lets callers pin the `msg_id` of every
-    /// handler explicitly. This is the seam the collision test uses:
-    /// pinning two handlers to the same `msg_id` is the only practical way
-    /// to exercise the collision path because finding a real 32-bit
-    /// `SipHash-1-3` preimage collision in a unit test is impractical.
-    ///
-    /// Production code paths must use [`Self::from_handlers`].
-    ///
-    /// # Errors
-    ///
-    /// Returns an [`ActorProtocolCollision`] when two of the pinned
-    /// `(spec, msg_id)` entries share the same `msg_id`.
-    pub fn from_handlers_with_ids(
-        actor_name: impl Into<String>,
-        handlers: &[(ActorHandlerSpec, u32)],
-    ) -> Result<Self, ActorProtocolCollision> {
-        let actor_name = actor_name.into();
-        let mut built = Vec::with_capacity(handlers.len());
-        let mut seen: Vec<(u32, usize)> = Vec::with_capacity(handlers.len());
-        for (spec, msg_id) in handlers {
-            if let Some((_, prev_idx)) = seen.iter().find(|(id, _)| *id == *msg_id) {
-                return Err(ActorProtocolCollision {
-                    actor_name,
-                    handler_a: handlers[*prev_idx].0.name.clone(),
-                    handler_b: spec.name.clone(),
-                    msg_id: *msg_id,
-                });
-            }
-            seen.push((*msg_id, built.len()));
-            built.push(ActorHandlerDescriptor {
-                coalesce_key: None,
-                declaration: spec.declaration,
-                name: spec.name.clone(),
-                msg_id: *msg_id,
-                param_tys: spec.param_tys.clone(),
-                return_ty: spec.return_ty.clone(),
-                symbol: spec.symbol.clone(),
-                failure_display: None,
-                remote_codec: false,
-            });
-        }
-        Ok(Self {
-            mailbox: MailboxContract::Unbounded,
-            actor_name,
-            handlers: built,
-        })
-    }
-
-    /// Convenience lookup for downstream consumers: name → `msg_id`.
     #[must_use]
     pub fn msg_id_for(&self, handler_name: &str) -> Option<u32> {
         self.handlers
             .iter()
-            .find(|h| h.name == handler_name)
-            .map(|h| h.msg_id)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn unit_spec(name: &str) -> ActorHandlerSpec {
-        ActorHandlerSpec {
-            declaration: crate::DefId::for_test(format!("Test::{name}")),
-            name: name.to_string(),
-            param_tys: vec![],
-            return_ty: ResolvedTy::Unit,
-            symbol: format!("Test__{name}"),
-        }
-    }
-
-    #[test]
-    fn distinct_handler_names_get_distinct_msg_ids() {
-        let descriptor = ActorProtocolDescriptor::from_handlers(
-            "Counter",
-            &[unit_spec("increment"), unit_spec("total")],
-        )
-        .expect("two distinct handler names must not collide under SipHash-1-3");
-        assert_eq!(descriptor.handlers.len(), 2);
-        assert_ne!(descriptor.handlers[0].msg_id, descriptor.handlers[1].msg_id);
-    }
-
-    #[test]
-    fn same_handler_name_in_different_actors_gets_distinct_msg_ids() {
-        // The hash input is the fully-qualified name, so `increment` on two
-        // different actors must produce two different msg_ids — proves the
-        // qualified-name input choice carries the actor discriminator.
-        let counter = ActorProtocolDescriptor::from_handlers("Counter", &[unit_spec("increment")])
-            .expect("Counter::increment must build");
-        let gauge = ActorProtocolDescriptor::from_handlers("Gauge", &[unit_spec("increment")])
-            .expect("Gauge::increment must build");
-        assert_ne!(counter.handlers[0].msg_id, gauge.handlers[0].msg_id);
-    }
-
-    #[test]
-    fn msg_id_is_deterministic_across_invocations() {
-        // Hash determinism is the substrate contract; the test pins the
-        // concrete value so an accidental crate upgrade that changes the
-        // SipHasher13 implementation lights up here, not in a downstream
-        // ABI break.
-        let a = compute_default_msg_id("Counter::increment");
-        let b = compute_default_msg_id("Counter::increment");
-        assert_eq!(a, b);
-    }
-
-    #[test]
-    fn collision_via_explicit_ids_returns_diagnostic() {
-        // Use the test-only constructor to force two handlers onto the same
-        // msg_id. This exercises the collision path without depending on
-        // hash-preimage gymnastics.
-        let err = ActorProtocolDescriptor::from_handlers_with_ids(
-            "Counter",
-            &[(unit_spec("inc"), 42), (unit_spec("dec"), 42)],
-        )
-        .expect_err("two handlers pinned to the same msg_id must be rejected");
-        assert_eq!(err.actor_name, "Counter");
-        assert_eq!(err.handler_a, "inc");
-        assert_eq!(err.handler_b, "dec");
-        assert_eq!(err.msg_id, 42);
-    }
-
-    #[test]
-    fn cross_actor_colliding_handler_names_share_msg_id() {
-        // `Alpha::h69862` and `Beta::h103299` are a real SipHash-1-3 low-32-bit
-        // collision (found by brute-force search; see the cross-actor checker
-        // test in `check::mod`). Pin the pair here so an accidental hash-impl
-        // change lights up at this anchor, not in a downstream wire break.
-        let a = compute_default_msg_id("Alpha::h69862");
-        let b = compute_default_msg_id("Beta::h103299");
-        assert_eq!(
-            a, b,
-            "the pinned cross-actor collision pair must still collide"
-        );
-        assert_eq!(a, 0xc0f6_cc98);
-    }
-
-    #[test]
-    fn module_qualified_cross_actor_handler_names_share_msg_id() {
-        // `b.Alpha::h804959` and `d.Beta::h3600` are a SipHash-1-3 low-32-bit
-        // collision under the module-short-qualified identity form used for
-        // module-graph actors (module path `["a","b"]` → short `"b"`).
-        // Found by brute-force search over 2M candidates; pinned here so a hash-impl
-        // change is caught at this anchor before it silently breaks the nested-module
-        // cross-actor collision test in `check::mod`.
-        let a = compute_default_msg_id("b.Alpha::h804959");
-        let b = compute_default_msg_id("d.Beta::h3600");
-        assert_eq!(
-            a, b,
-            "the pinned module-qualified cross-actor collision pair must still collide"
-        );
-        assert_eq!(a, 0x3e59_ee08);
-    }
-
-    #[test]
-    fn msg_id_for_returns_descriptor_id() {
-        let descriptor = ActorProtocolDescriptor::from_handlers(
-            "Counter",
-            &[unit_spec("increment"), unit_spec("total")],
-        )
-        .unwrap();
-        let id = descriptor.msg_id_for("increment").expect("present");
-        assert_eq!(id, descriptor.handlers[0].msg_id);
-        assert!(descriptor.msg_id_for("missing").is_none());
+            .find(|handler| handler.name == handler_name)
+            .map(|handler| handler.msg_id)
     }
 }
 
@@ -443,4 +211,109 @@ pub struct LambdaActorIdentity {
     /// The declaration path the actor is registered under, which is also the
     /// name its synthesized declaration carries.
     pub path: String,
+}
+
+/// Concrete backing fields of a delivery's linear call token. The actor-owned
+/// request declaration is selected by identity, with the actor's arguments.
+#[must_use]
+pub fn interceptor_fields(
+    defs: &crate::DefTable,
+    ty: &ResolvedTy,
+) -> Option<Vec<(String, ResolvedTy)>> {
+    let ResolvedTy::Named { head, args, .. } = ty else {
+        return None;
+    };
+    let call = *head == crate::KnownDecl::Call.head();
+    if !call && *head != crate::KnownDecl::Outcome.head() {
+        return None;
+    }
+    let [ResolvedTy::Named {
+        head: actor, args, ..
+    }] = args.as_slice()
+    else {
+        return None;
+    };
+    let owner = actor.nominal()?.declaration();
+    if defs.kind(owner) != crate::DeclarationKind::Actor {
+        return None;
+    }
+    let (name, kind) = if call {
+        ("Request", crate::DeclarationKind::ActorRequestType)
+    } else {
+        ("Response", crate::DeclarationKind::ActorResponseType)
+    };
+    let request = defs.member_of_kind(owner, hew_parser::ast::Symbol::intern(name), kind)?;
+    let member = ResolvedTy::named_user(
+        crate::NominalHead::new(
+            crate::NominalId::from_minted_declaration(request),
+            defs.path(request),
+        ),
+        args.clone(),
+    );
+    let stream = defs.member_of_kind(
+        owner,
+        hew_parser::ast::Symbol::intern("<Stream>"),
+        crate::DeclarationKind::ActorStreamType,
+    )?;
+    let stream_ty = ResolvedTy::named_user(
+        crate::NominalHead::new(
+            crate::NominalId::from_minted_declaration(stream),
+            defs.path(stream),
+        ),
+        args.clone(),
+    );
+    if !call {
+        return Some(vec![
+            (
+                "response".to_string(),
+                ResolvedTy::named_builtin(crate::BuiltinType::Option, vec![member]),
+            ),
+            ("failed".to_string(), ResolvedTy::Bool),
+            ("refused".to_string(), ResolvedTy::Bool),
+            ("<stream>".to_string(), stream_ty),
+        ]);
+    }
+    Some(vec![
+        (
+            "request".to_string(),
+            ResolvedTy::named_user(
+                crate::NominalHead::new(
+                    crate::NominalId::from_minted_declaration(request),
+                    defs.path(request),
+                ),
+                args.clone(),
+            ),
+        ),
+        (
+            "caller".to_string(),
+            ResolvedTy::Named {
+                head: crate::KnownDecl::Caller.head(),
+                args: Vec::new(),
+                is_opaque: false,
+            },
+        ),
+        ("handler".to_string(), ResolvedTy::String),
+        ("message".to_string(), ResolvedTy::U32),
+        ("<stream>".to_string(), stream_ty),
+    ])
+}
+
+/// These projections lend the delivery-owned value instead of copying it.
+#[must_use]
+pub fn is_interceptor_view(ty: &ResolvedTy, field: &str) -> bool {
+    matches!(ty, ResolvedTy::Named { head, .. }
+        if (*head == crate::KnownDecl::Call.head() && field == "request")
+            || (*head == crate::KnownDecl::Outcome.head() && field == "response"))
+}
+
+/// Generated actor members are selected through their actor or expected type,
+/// never through the global bare-variant fallback.
+#[must_use]
+pub fn is_interceptor_member(defs: &crate::DefTable, declaration: crate::DefId) -> bool {
+    matches!(
+        defs.kind(declaration),
+        crate::DeclarationKind::ActorRequestType
+            | crate::DeclarationKind::ActorResponseType
+            | crate::DeclarationKind::ActorStreamType
+    )
 }

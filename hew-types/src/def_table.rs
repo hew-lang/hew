@@ -14,7 +14,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use crate::NominalInstance;
-use hew_parser::ast::Symbol;
+use hew_parser::ast::{Ident, Symbol, SyntaxContext};
 
 /// Closed classification of source declarations and source-owned child bodies.
 ///
@@ -40,8 +40,12 @@ pub enum DeclarationKind {
     ActorInit,
     ActorReceive,
     ActorMethod,
+    ActorRequestType,
+    ActorResponseType,
+    ActorStreamType,
     Supervisor,
     SupervisorBootstrap,
+    SupervisorMethod,
     Machine,
     MachineEventType,
     MachineState,
@@ -403,10 +407,15 @@ pub enum KnownDecl {
     HashMapIter,
     NodeConfig,
     PartitionPolicy,
+    SourceLocation,
+    ActorId,
+    Caller,
+    Call,
+    Outcome,
 }
 
 impl KnownDecl {
-    pub const ALL: [Self; 18] = [
+    pub const ALL: [Self; 23] = [
         Self::ActorError,
         Self::Never,
         Self::ActorMailbox,
@@ -425,12 +434,18 @@ impl KnownDecl {
         Self::HashMapIter,
         Self::NodeConfig,
         Self::PartitionPolicy,
+        Self::SourceLocation,
+        Self::ActorId,
+        Self::Caller,
+        Self::Call,
+        Self::Outcome,
     ];
 
     /// The declaration's canonical path in `std.builtins`.
     #[must_use]
     pub const fn path(self) -> &'static str {
         match self {
+            Self::SourceLocation => "std.builtins.SourceLocation",
             Self::ActorError => "std.builtins.ActorError",
             Self::Never => "std.builtins.Never",
             Self::ActorMailbox => "std.builtins.ActorMailbox",
@@ -449,11 +464,16 @@ impl KnownDecl {
             Self::HashMapIter => "std.builtins.HashMapIter",
             Self::NodeConfig => "std.builtins.NodeConfig",
             Self::PartitionPolicy => "std.link_monitor.PartitionPolicy",
+            Self::ActorId => "std.builtins.ActorId",
+            Self::Caller => "std.builtins.Caller",
+            Self::Call => "std.builtins.Call",
+            Self::Outcome => "std.builtins.Outcome",
         }
     }
 
     const fn leaf(self) -> &'static str {
         match self {
+            Self::SourceLocation => "SourceLocation",
             Self::ActorError => "ActorError",
             Self::Never => "Never",
             Self::ActorMailbox => "ActorMailbox",
@@ -472,6 +492,10 @@ impl KnownDecl {
             Self::HashMapIter => "HashMapIter",
             Self::NodeConfig => "NodeConfig",
             Self::PartitionPolicy => "PartitionPolicy",
+            Self::ActorId => "ActorId",
+            Self::Caller => "Caller",
+            Self::Call => "Call",
+            Self::Outcome => "Outcome",
         }
     }
 
@@ -643,7 +667,16 @@ impl BuiltinAnchor {
 pub struct ModuleId(u32);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum PackageOrigin {
+    Compilation,
+    StandardLibrary,
+    Manifest(PathBuf),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct ModuleEntry {
+    /// Whether this path was established by module ownership, rather than a private root identity.
+    portable: bool,
     /// Canonical dotted render (`std.process`, `mymod`). For every graph
     /// module this is its canonical dotted path; for the root unit it is the
     /// identity the same file would carry when imported (its file stem), so
@@ -653,6 +686,7 @@ struct ModuleEntry {
     /// Diagnostics that must name the actual FILE — a directory module's peer
     /// files share one assembled render — read it back here.
     canonical_source: Option<PathBuf>,
+    package: PackageOrigin,
 }
 
 const SYNTHETIC_ROOT_PATH: &str = "#synthetic-root";
@@ -660,8 +694,10 @@ const SYNTHETIC_ROOT_PATH: &str = "#synthetic-root";
 /// One declaration row.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct DefRow {
+    /// Unmarked source render; members inherit their owner's contextual linker render.
+    display_path: Option<String>,
     /// Display leaf: the declared spelling.
-    name: Symbol,
+    name: Ident,
     kind: DeclarationKind,
     /// The source module the declaration occurs in; `None` for sourceless
     /// rows (builtin anchors, materialized trait defaults).
@@ -748,7 +784,8 @@ impl DefTable {
         };
         for anchor in BuiltinAnchor::ALL {
             table.push_row(DefRow {
-                name: Symbol::intern(anchor.spelling()),
+                display_path: None,
+                name: Ident::new(anchor.spelling()),
                 kind: DeclarationKind::BuiltinType,
                 module: None,
                 owner: None,
@@ -758,7 +795,8 @@ impl DefTable {
         }
         for predicate in Predicate::ALL {
             table.push_row(DefRow {
-                name: Symbol::intern(predicate.spelling()),
+                display_path: None,
+                name: Ident::new(predicate.spelling()),
                 kind: DeclarationKind::Trait,
                 module: None,
                 owner: None,
@@ -768,7 +806,8 @@ impl DefTable {
         }
         for known in KnownDecl::ALL {
             let id = table.push_row(DefRow {
-                name: Symbol::intern(known.leaf()),
+                display_path: None,
+                name: Ident::new(known.leaf()),
                 kind: DeclarationKind::Type,
                 module: None,
                 owner: None,
@@ -818,7 +857,8 @@ impl DefTable {
             return *id;
         }
         let id = self.push_row(DefRow {
-            name: Symbol::intern(name),
+            display_path: None,
+            name: Ident::new(name),
             kind: DeclarationKind::Function,
             module: None,
             owner: None,
@@ -875,7 +915,10 @@ impl DefTable {
             u32::try_from(self.defs.len()).expect("more than u32::MAX declarations in one compile"),
         );
         if let Some(owner) = row.owner {
-            self.members.entry((owner, row.name)).or_default().push(id);
+            self.members
+                .entry((owner, row.name.name))
+                .or_default()
+                .push(id);
         }
         self.defs.push(row);
         id
@@ -902,7 +945,8 @@ impl DefTable {
         }
         let name = Symbol::intern(path.rsplit_once('.').map_or(path, |(_, leaf)| leaf));
         let id = self.push_row(DefRow {
-            name,
+            display_path: None,
+            name: Ident::from_symbol(name),
             kind,
             module: None,
             owner: None,
@@ -963,21 +1007,24 @@ impl DefTable {
             .unwrap_or(hew_parser::ast::Visibility::Pub)
     }
 
-    /// Whether two modules are in one package: the modules of one directory.
+    /// Whether two modules share the frontend's canonical package anchor.
     #[must_use]
     pub fn same_package(&self, a: ModuleId, b: ModuleId) -> bool {
-        let package = |module: ModuleId| {
-            self.module_path(module)
-                .rsplit_once('.')
-                .map_or("", |(package, _)| package)
-        };
-        package(a) == package(b)
+        self.module_package(a) == self.module_package(b)
+    }
+
+    pub(crate) fn module_package(&self, module: ModuleId) -> &PackageOrigin {
+        &self.modules[module.0 as usize].package
+    }
+
+    pub(crate) fn set_module_package(&mut self, module: ModuleId, package: PackageOrigin) {
+        self.modules[module.0 as usize].package = package;
     }
 
     /// The declared spelling of a definition, for display.
     #[must_use]
     pub fn name(&self, id: DefId) -> Symbol {
-        self.row(id).name
+        self.row(id).name.name
     }
 
     /// The canonical declaration path (`ma.T::m`). Linker symbols derive from
@@ -987,6 +1034,20 @@ impl DefTable {
         &self.row(id).path
     }
 
+    /// Render portable declaration ownership using module and member facts.
+    #[must_use]
+    pub fn dotted_declaration_path(&self, id: DefId) -> String {
+        if let Some(owner) = self.owner(id) {
+            return format!("{}.{}", self.dotted_declaration_path(owner), self.name(id));
+        }
+        match self.module(id) {
+            Some(module) if self.modules[module.0 as usize].portable => {
+                format!("{}.{}", self.module_path(module), self.name(id))
+            }
+            _ => self.name(id).to_string(),
+        }
+    }
+
     /// The diagnostic render of a definition: its path without the module
     /// qualification (`T::m`, `Shape`).
     ///
@@ -994,7 +1055,8 @@ impl DefTable {
     /// the owner chain.
     #[must_use]
     pub fn display(&self, id: DefId) -> &str {
-        crate::short_name(self.path(id))
+        let row = self.row(id);
+        crate::short_name(row.display_path.as_deref().unwrap_or(&row.path))
     }
 
     #[must_use]
@@ -1133,7 +1195,7 @@ impl DefTable {
             if let Some(existing) = self.module_by_path.get(canonical_path) {
                 return *existing;
             }
-            return self.insert_module(canonical_path.to_string(), None);
+            return self.insert_module(canonical_path.to_string(), None, true);
         };
         if let Some(existing) = self.module_by_source.get(&key) {
             return *existing;
@@ -1153,7 +1215,7 @@ impl DefTable {
             }
             render.push_str("#mod");
         }
-        self.insert_module(render, Some(key))
+        self.insert_module(render, Some(key), true)
     }
 
     /// Mint the ROOT compilation unit's identity from its canonical source.
@@ -1200,7 +1262,7 @@ impl DefTable {
         } else {
             render
         };
-        let id = self.insert_module(render, Some(source_key));
+        let id = self.insert_module(render, Some(source_key), false);
         self.root = Some(id);
         self.root
     }
@@ -1212,7 +1274,7 @@ impl DefTable {
         if let Some(root) = self.root {
             return root;
         }
-        let id = self.insert_module(SYNTHETIC_ROOT_PATH.to_string(), None);
+        let id = self.insert_module(SYNTHETIC_ROOT_PATH.to_string(), None, false);
         self.root = Some(id);
         id
     }
@@ -1221,6 +1283,7 @@ impl DefTable {
         &mut self,
         canonical_path: String,
         canonical_source: Option<PathBuf>,
+        portable: bool,
     ) -> ModuleId {
         let id = ModuleId(
             u32::try_from(self.modules.len()).expect("more than u32::MAX modules in one compile"),
@@ -1230,8 +1293,10 @@ impl DefTable {
         }
         self.module_by_path.insert(canonical_path.clone(), id);
         self.modules.push(ModuleEntry {
+            portable,
             canonical_path,
             canonical_source,
+            package: PackageOrigin::Compilation,
         });
         id
     }
@@ -1271,7 +1336,7 @@ impl DefTable {
         while self.module_by_path.contains_key(&render) {
             render.push_str("#file");
         }
-        self.insert_module(render, Some(source_key))
+        self.insert_module(render, Some(source_key), true)
     }
 
     /// The minted module identity of a canonical source file, when any mint
@@ -1336,6 +1401,26 @@ impl DefTable {
         self.modules[id.0 as usize].canonical_source.as_deref()
     }
 
+    /// The canonical render of a declaration in a syntax context.
+    pub(crate) fn contextual_path(path: String, context: SyntaxContext) -> String {
+        if context == SyntaxContext::ROOT {
+            path
+        } else {
+            format!("{path}#{}", context.row())
+        }
+    }
+
+    /// Render a chosen linkage namespace with the declaration's hygiene identity.
+    #[must_use]
+    pub fn linkage_name(&self, id: DefId, symbol: &str) -> String {
+        Self::contextual_path(symbol.to_string(), self.row(id).name.ctx)
+    }
+
+    #[must_use]
+    pub fn ident(&self, id: DefId) -> Ident {
+        self.row(id).name
+    }
+
     /// Establish exactly one identity for a source declaration.
     ///
     /// `name` is the declared spelling, `owner` the declaration it is a
@@ -1348,11 +1433,31 @@ impl DefTable {
     pub(crate) fn declare(
         &mut self,
         occurrence: DeclarationOccurrence,
-        name: Symbol,
+        name: impl crate::env::LexicalName,
         owner: Option<DefId>,
         path: impl Into<String>,
     ) -> Result<DefId, DeclarationIdentityError> {
-        let path = path.into();
+        let name = name.lexical_key();
+        let source_path = path.into();
+        let (path, display_path) = if let Some(owner) = owner {
+            let parent = self.row(owner);
+            let display = parent.display_path.as_deref().unwrap_or(&parent.path);
+            if let Some(suffix) = source_path.strip_prefix(&parent.path) {
+                (source_path.clone(), format!("{display}{suffix}"))
+            } else if let Some(suffix) = source_path.strip_prefix(display) {
+                (format!("{}{suffix}", parent.path), source_path.clone())
+            } else {
+                (
+                    Self::contextual_path(source_path.clone(), name.ctx),
+                    source_path.clone(),
+                )
+            }
+        } else {
+            (
+                Self::contextual_path(source_path.clone(), name.ctx),
+                source_path,
+            )
+        };
         if let Some(&established) = self.by_occurrence.get(&occurrence) {
             if self.path(established) == path {
                 return Ok(established);
@@ -1373,7 +1478,7 @@ impl DefTable {
                 row.site = Some(occurrence);
                 if let Some(owner) = owner {
                     self.members
-                        .entry((owner, name))
+                        .entry((owner, name.name))
                         .or_default()
                         .push(established);
                 }
@@ -1389,6 +1494,7 @@ impl DefTable {
             });
         }
         let id = self.push_row(DefRow {
+            display_path: Some(display_path),
             name,
             kind: occurrence.kind(),
             module: occurrence.module(),
@@ -1490,7 +1596,8 @@ impl DefTable {
             self.path(declaring_trait),
         );
         let id = self.push_row(DefRow {
-            name: method,
+            display_path: None,
+            name: Ident::from_symbol(method),
             kind: DeclarationKind::DefaultImplMethod,
             module: None,
             owner: Some(receiver.nominal.declaration()),
@@ -1508,7 +1615,8 @@ impl DefTable {
         }
         let path = crate::actor_protocol::LAMBDA_ACTOR_PROTOCOL_PATH;
         let id = self.push_row(DefRow {
-            name: Symbol::intern(path),
+            display_path: None,
+            name: Ident::new(path),
             kind: DeclarationKind::RequestProtocol,
             module: None,
             owner: None,
@@ -1655,7 +1763,8 @@ impl DefTable {
             return established;
         }
         let id = self.push_row(DefRow {
-            name: Symbol::intern(path),
+            display_path: None,
+            name: Ident::new(path),
             kind: DeclarationKind::Function,
             module: None,
             owner: None,

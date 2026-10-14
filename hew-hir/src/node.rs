@@ -18,6 +18,8 @@ use crate::IntentKind;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct HirModule {
+    /// Original checker identities for lowered source expressions.
+    pub checked_sites: HashMap<SiteId, hew_types::SpanKey>,
     /// Checker-selected read/replacement contracts for indexed writable paths.
     pub indexed_place_operations:
         HashMap<SiteId, (hew_types::RuntimeCallFamily, hew_types::RuntimeCallFamily)>,
@@ -206,40 +208,9 @@ pub enum HirItem {
     ExternFn(HirExternFn),
     /// Lowered module-level `const NAME: T = <expr>;` declaration.
     ///
-    /// The initializer expression is constant-folded during HIR lowering into
-    /// a concrete [`HirConstValue`] (integer or string). A reference to the
-    /// const elsewhere in the module lowers to
-    /// `HirExprKind::BindingRef { resolved: ResolvedRef::Const(id), .. }`,
-    /// where `id` matches this item's [`HirConst::id`]; MIR/codegen resolve
-    /// that id back to the descriptor.
-    ///
-    /// WHY fold in HIR: there is no checker-authored const-value table on
-    /// `TypeCheckOutput` and the checker's `ConstValue` is `pub(super)` to
-    /// hew-types and only recognises bare literals. The fold here is a
-    /// self-contained, fail-closed evaluator over the parser AST (integer
-    /// arithmetic + string literals). Any non-foldable initializer emits a
-    /// `HirDiagnosticKind::NotYetImplemented` rather than producing a silent
-    /// or fabricated value (LESSONS: fail-closed producers).
+    /// Folded source and checker-provided constants share the same value tree.
+    /// References retain this item's identity and materialize their value in SIR.
     Const(HirConst),
-}
-
-/// Constant-folded value carried by a [`HirConst`]. v0.5 admits integer,
-/// float, and string constants; booleans and aggregate consts are out of
-/// scope and fail closed at fold time.
-#[derive(Debug, Clone, PartialEq)]
-pub enum HirConstValue {
-    /// Folded integer value. The declared width lives in [`HirConst::ty`];
-    /// this carries the exact mathematical value in the `i128` literal
-    /// carrier (D421) and physical lowering derives the destination-width
-    /// bit pattern.
-    Integer(i128),
-    /// Folded string literal value (UTF-8, as written in source).
-    String(String),
-    Bytes(Vec<u8>),
-    /// Folded float literal value. The declared width lives in [`HirConst::ty`]
-    /// (`F32`/`F64`); this carries the parser value as `f64`, and downstream
-    /// codegen rounds to `f32` when the declared type is `f32`.
-    Float(f64),
 }
 
 /// Lowered module-level constant declaration — see [`HirItem::Const`].
@@ -252,7 +223,7 @@ pub struct HirConst {
     /// Declared, checker-resolved type of the const (`i64`, `String`, ...).
     pub ty: ResolvedTy,
     /// Constant-folded initializer value.
-    pub value: HirConstValue,
+    pub value: HirExpr,
     pub span: Span,
 }
 
@@ -723,6 +694,8 @@ impl HirRecordDecl {
 /// treats `HirItem::Supervisor` as a no-op tier alongside `Record`/`Actor`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct HirSupervisorDecl {
+    /// Stateless interceptor instantiated inside each declared child turn.
+    pub interceptor: Option<HirFn>,
     pub id: ItemId,
     pub node: HirNodeId,
     /// Exact checker-owned supervisor declaration identity.

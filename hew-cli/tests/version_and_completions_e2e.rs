@@ -10,7 +10,7 @@ use support::hew_binary;
     dead_code,
     reason = "the included build script exposes helpers that this test does not call"
 )]
-#[path = "../build.rs"]
+#[path = "../../hew-compile/build.rs"]
 mod build_script;
 
 fn run_hew(args: &[&str]) -> Output {
@@ -22,14 +22,14 @@ fn assert_version_shape(stdout: &str) {
     assert!(line.starts_with("hew "), "stdout: {stdout}");
     assert_eq!(
         line,
-        format!("hew {}", env!("HEW_VERSION")),
+        format!("hew {}", hew_compile::VERSION),
         "stdout: {stdout}"
     );
 }
 
 #[test]
 fn version_shape_matches_build_identity() {
-    assert_version_shape(&format!("hew {}\n", env!("HEW_VERSION")));
+    assert_version_shape(&format!("hew {}\n", hew_compile::VERSION));
 }
 
 #[test]

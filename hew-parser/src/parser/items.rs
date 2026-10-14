@@ -32,6 +32,10 @@ const FOREIGN_KEYWORD_IDENTS: &[&str] = &[
 impl Parser<'_> {
     // ── Program and Items ──
     pub fn parse_program(&mut self) -> Program {
+        self.parse_program_with_attributes(true)
+    }
+
+    pub(crate) fn parse_program_with_attributes(&mut self, expand_attributes: bool) -> Program {
         let mut items = Vec::new();
 
         // Collect inner doc comments (`//!`) at the start of the file
@@ -46,7 +50,34 @@ impl Parser<'_> {
                 break;
             }
             if let Some(item) = self.parse_item() {
-                items.push(item);
+                match item {
+                    (Item::Macro(declaration), span) if self.expander.is_some() => {
+                        let expander =
+                            Rc::clone(self.expander.as_ref().expect("expander is present"));
+                        if let Err(message) = expander.borrow_mut().declare(
+                            &declaration,
+                            span.clone(),
+                            &self.macro_source,
+                        ) {
+                            self.error_at(message, span);
+                        };
+                    }
+                    (Item::MacroCall(call), _) if self.expander.is_some() => {
+                        if let Some(expanded) = self.expand_macro_items(&call) {
+                            items.extend(expanded);
+                        }
+                    }
+                    (Item::Function(function), _)
+                        if expand_attributes
+                            && self.expander.is_some()
+                            && function.attributes.iter().any(|attr| {
+                                !super::attributes::is_builtin_attribute(&attr.name)
+                            }) =>
+                    {
+                        items.extend(self.expand_function_attributes(function));
+                    }
+                    item => items.push(item),
+                }
             } else {
                 // Skip past the failed item to the next top-level boundary so
                 // a single bad declaration (e.g. a reserved keyword used as a
@@ -56,6 +87,7 @@ impl Parser<'_> {
         }
 
         Program {
+            expansions: crate::macro_syntax::ExpansionMap::default(),
             items,
             module_doc,
             module_graph: None,
@@ -72,9 +104,50 @@ impl Parser<'_> {
         while self.peek() == Some(&Token::HashBracket) {
             let start = self.peek_span().start;
             self.advance(); // consume `#[`
-            let Some(name) = self.expect_ident().map(|ident| ident.to_string()) else {
+            let Some(first) = self.expect_ident_spanned() else {
                 break;
             };
+            let mut segments = vec![first];
+            while self.eat(&Token::Dot) {
+                let Some(segment) = self.expect_ident_spanned() else {
+                    break;
+                };
+                segments.push(segment);
+            }
+            let name = segments
+                .iter()
+                .map(|(ident, _)| ident.to_string())
+                .collect::<Vec<_>>()
+                .join(".");
+            if !super::attributes::is_builtin_attribute(&name) {
+                use crate::macro_syntax::{Delimiter, MacroCall, TokenTree};
+                let input = if self.peek() == Some(&Token::LeftParen) {
+                    let Some(input) = self.parse_token_tree(Delimiter::Parenthesis) else {
+                        break;
+                    };
+                    input
+                } else {
+                    TokenTree::Group {
+                        delimiter: Delimiter::Parenthesis,
+                        span: self.peek_span(),
+                        children: Vec::new(),
+                        leading: String::new(),
+                        closing: String::new(),
+                    }
+                };
+                let Some(end) = self.expect(&Token::RightBracket) else {
+                    break;
+                };
+                attrs.push(Attribute {
+                    name,
+                    args: vec![AttributeArg::Tokens(MacroCall {
+                        path: Path { segments },
+                        input,
+                    })],
+                    span: start..end.end,
+                });
+                continue;
+            }
             let mut args = Vec::new();
             let mut argument_count = 0;
             let mut quoted_arguments = true;
@@ -408,6 +481,10 @@ impl Parser<'_> {
         let max_heap_attr = attrs.iter().find(|a| a.name == "max_heap").cloned();
 
         let item = match self.peek() {
+            Some(Token::Macro) => Item::Macro(self.parse_macro_decl(Visibility::Private)?),
+            Some(Token::Identifier(_)) if self.is_macro_call() => {
+                Item::MacroCall(self.parse_macro_call()?)
+            }
             Some(Token::Import) => {
                 self.advance();
                 Item::Import(self.parse_import()?)
@@ -419,6 +496,7 @@ impl Parser<'_> {
             Some(Token::Pub | Token::Package) => {
                 let vis = self.parse_visibility();
                 match self.peek() {
+                    Some(Token::Macro) => Item::Macro(self.parse_macro_decl(vis)?),
                     Some(Token::Fn | Token::Gen) => {
                         self.parse_fn_with_modifiers(vis, attrs, &doc_comment)?
                     }
@@ -672,6 +750,12 @@ impl Parser<'_> {
             .and_then(|a| a.args.first().map(|arg| arg.as_str().to_string()));
 
         let (body, fn_end) = if intrinsic.is_some() && self.peek() == Some(&Token::Semicolon) {
+            let unresolved: Vec<_> = attributes
+                .iter()
+                .filter(|attr| !super::attributes::is_builtin_attribute(&attr.name))
+                .cloned()
+                .collect();
+            self.validate_attributes_for(&unresolved, AttrPosition::Unsupported);
             // `#[intrinsic("key")] pub fn name(...) -> T;` — bodyless form.
             // Produce an empty block so the rest of the pipeline sees a well-formed FnDecl.
             let semi_end = self.peek_span().end;
@@ -1186,7 +1270,15 @@ impl Parser<'_> {
         let mut items = Vec::new();
         while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
             if let Some(item) = self.parse_trait_item() {
-                items.push(item);
+                if let TraitItem::Method(method) = item {
+                    items.extend(
+                        self.expand_trait_attributes(method)
+                            .into_iter()
+                            .map(TraitItem::Method),
+                    );
+                } else {
+                    items.push(item);
+                }
             } else {
                 self.error(format!(
                     "expected trait item (fn or type), found {:?}",
@@ -1249,6 +1341,14 @@ impl Parser<'_> {
                     None
                 };
                 let fn_end = self.peek_span().start;
+                if body.is_none() && self.expander.is_some() {
+                    let unresolved: Vec<_> = attrs
+                        .iter()
+                        .filter(|attr| !super::attributes::is_builtin_attribute(&attr.name))
+                        .cloned()
+                        .collect();
+                    self.validate_attributes_for(&unresolved, AttrPosition::Unsupported);
+                }
 
                 let lang_item = attrs
                     .iter()
@@ -1439,7 +1539,7 @@ impl Parser<'_> {
                         if let Some(doc) = doc_comment {
                             method.doc_comment = Some(doc);
                         }
-                        methods.push(method);
+                        methods.extend(self.expand_member_attributes(method));
                     }
                 }
                 other => {

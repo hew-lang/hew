@@ -37,7 +37,8 @@ pub use analysis::{
 };
 pub use callable::{
     callable_parts, callable_value_signature, generator_parts, verify_callable_coercion,
-    verify_generator_coercion, ClosureId, ClosureInstanceKey, SemCaptureField, SemClosure,
+    verify_generator_coercion, CallableTargets, ClosureId, ClosureInstanceKey, SemCaptureField,
+    SemClosure,
 };
 pub use capability::{derived_capability_components, is_identity_carrier, SemValueMethodPlan};
 pub use coverage::{CoverageCounter, CoveragePlan};

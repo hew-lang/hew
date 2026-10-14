@@ -10,23 +10,19 @@ use crate::coro_state::{
 use crate::execution_context::{current_context, set_current_context, HewExecutionContext};
 use crate::fault::HewFault;
 use crate::util::MutexExt;
+use crate::wake::scheduled::{enqueue, ReadyState, ReadyWork};
 use crate::wake::HewWaker;
 use std::cell::UnsafeCell;
 use std::ffi::c_void;
 use std::ptr;
-use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
-const IDLE: u8 = 0;
-const QUEUED: u8 = 1;
-const RUNNING: u8 = 2;
-const NOTIFIED: u8 = 3;
-const COMPLETE: u8 = 4;
 static LIVE_TASKS: AtomicUsize = AtomicUsize::new(0);
 
 /// Readiness owns this allocation independently of the generated frame.
 pub(crate) struct TaskExecution {
-    phase: AtomicU8,
+    phase: ReadyState,
     driver: UnsafeCell<Driver>,
 }
 
@@ -54,7 +50,7 @@ impl TaskExecution {
     pub(super) unsafe fn spawn(task: *mut HewTask) {
         LIVE_TASKS.fetch_add(1, Ordering::Release);
         let execution = Arc::new(Self {
-            phase: AtomicU8::new(QUEUED),
+            phase: ReadyState::queued(),
             driver: UnsafeCell::new(Driver {
                 task,
                 state: ptr::null_mut(),
@@ -68,31 +64,15 @@ impl TaskExecution {
     }
 
     fn notify(self: &Arc<Self>) {
-        let mut phase = self.phase.load(Ordering::Acquire);
-        loop {
-            let next = match phase {
-                IDLE => QUEUED,
-                RUNNING => NOTIFIED,
-                QUEUED | NOTIFIED | COMPLETE => return,
-                _ => std::process::abort(),
-            };
-            match self
-                .phase
-                .compare_exchange_weak(phase, next, Ordering::AcqRel, Ordering::Acquire)
-            {
-                Ok(_) => {
-                    if next == QUEUED {
-                        enqueue(Arc::clone(self));
-                    }
-                    return;
-                }
-                Err(observed) => phase = observed,
-            }
+        if self.phase.notify() {
+            enqueue(self.clone());
         }
     }
+}
 
-    pub(crate) fn poll(self: Arc<Self>) {
-        assert_eq!(self.phase.swap(RUNNING, Ordering::AcqRel), QUEUED);
+impl ReadyWork for TaskExecution {
+    fn poll(self: Arc<Self>) {
+        self.phase.begin();
         // SAFETY: taking the sole queue entry grants exclusive driver access.
         let driver = unsafe { &mut *self.driver.get() };
         let previous = current_context();
@@ -110,17 +90,11 @@ impl TaskExecution {
             unsafe { driver.poll(&self) }
         });
         let _ = set_current_context(previous);
+        let requeue = self.phase.finish(finished);
         if finished {
-            self.phase.store(COMPLETE, Ordering::Release);
             LIVE_TASKS.fetch_sub(1, Ordering::Release);
-        } else if self
-            .phase
-            .compare_exchange(RUNNING, IDLE, Ordering::AcqRel, Ordering::Acquire)
-            .is_err()
-        {
-            // A wake during ramp/resume is consumed only after the frame parks.
-            assert_eq!(self.phase.swap(QUEUED, Ordering::AcqRel), NOTIFIED);
-            enqueue(Arc::clone(&self));
+        } else if requeue {
+            enqueue(self.clone());
         }
     }
 }
@@ -199,14 +173,6 @@ impl Driver {
             self.task = ptr::null_mut();
             true
         }
-    }
-}
-
-fn enqueue(execution: Arc<TaskExecution>) {
-    if crate::driver::active() {
-        crate::driver::publish_task(execution);
-    } else {
-        crate::scheduler::enqueue_task(execution);
     }
 }
 

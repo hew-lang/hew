@@ -724,6 +724,8 @@ impl RuntimeCallFamily {
             | F::LinkRemote
             | F::ActorMonitor
             | F::ActorSelf
+            | F::ActorCaller
+            | F::ActorRefusalLog
             | F::ActorSendById
             | F::ActorSpawn
             | F::ActorUnlink

@@ -350,9 +350,8 @@ pub(crate) struct Scheduler {
     worker_join_state: AtomicU8,
     shutdown_finalized: AtomicBool,
     global_queue: GlobalQueue,
-    task_queue: Mutex<
-        std::collections::VecDeque<std::sync::Arc<crate::task_scope::checked::TaskExecution>>,
-    >,
+    task_queue:
+        Mutex<std::collections::VecDeque<std::sync::Arc<dyn crate::wake::scheduled::ReadyWork>>>,
     stealers: Vec<WorkStealer>,
     shutdown: AtomicBool,
     /// Number of workers that published their parker state before the final
@@ -1134,8 +1133,8 @@ pub(crate) fn publish_queue_entry(entry: SchedulerQueueEntry) {
     sched_enqueue_owned_inner(sched, entry);
 }
 
-/// Publish a ready task on the same worker pool as actor activations.
-pub(crate) fn enqueue_task(task: std::sync::Arc<crate::task_scope::checked::TaskExecution>) {
+/// Publish ready work on the same worker pool as actor activations.
+pub(crate) fn enqueue_work(task: std::sync::Arc<dyn crate::wake::scheduled::ReadyWork>) {
     let sched = get_scheduler().expect("scheduler not initialized");
     sched.task_queue.lock_or_recover().push_back(task);
     sched_try_wake();

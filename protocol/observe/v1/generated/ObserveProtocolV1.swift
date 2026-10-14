@@ -92,6 +92,7 @@ private func encodeTraceStreamMismatchLiteral<Key: CodingKey>(_ value: String, t
 
 public let observeSchemaVersion = "v1"
 public let actionableTraceEventTypes: Set<String> = [
+    "actor.delivery_refused",
     "send",
     "spawn",
     "crash",
@@ -834,6 +835,7 @@ public struct TraceEvent: Codable, Sendable {
     public let msgType: Int32
     public let timestampNs: UInt64
     public let handlerName: String?
+    public let reason: String?
 
     enum CodingKeys: String, CodingKey {
         case sequence
@@ -849,6 +851,7 @@ public struct TraceEvent: Codable, Sendable {
         case msgType = "msg_type"
         case timestampNs = "timestamp_ns"
         case handlerName = "handler_name"
+        case reason
     }
 
     public init(
@@ -864,7 +867,8 @@ public struct TraceEvent: Codable, Sendable {
         eventType: String = "",
         msgType: Int32 = 0,
         timestampNs: UInt64 = 0,
-        handlerName: String? = nil
+        handlerName: String? = nil,
+        reason: String? = nil
     ) {
         self.sequence = sequence
         self.traceId = traceId
@@ -879,6 +883,7 @@ public struct TraceEvent: Codable, Sendable {
         self.msgType = msgType
         self.timestampNs = timestampNs
         self.handlerName = handlerName
+        self.reason = reason
     }
 
     public init(from decoder: Decoder) throws {
@@ -896,6 +901,11 @@ public struct TraceEvent: Codable, Sendable {
         msgType = try values.decode(Int32.self, forKey: .msgType)
         timestampNs = try decodeUInt64Decimal(from: values, forKey: .timestampNs)
         handlerName = try values.decode(String?.self, forKey: .handlerName)
+        if values.contains(.reason) {
+            reason = try values.decode(String?.self, forKey: .reason)
+        } else {
+            reason = nil
+        }
         if let message = actorAttributionError(endpoint: "source", attribution: sourceAttribution, actorPresent: sourceActor != nil) {
             throw DecodingError.dataCorrupted(DecodingError.Context(codingPath: decoder.codingPath, debugDescription: message))
         }
@@ -925,6 +935,7 @@ public struct TraceEvent: Codable, Sendable {
         try values.encode(msgType, forKey: .msgType)
         try values.encode(String(timestampNs), forKey: .timestampNs)
         try values.encode(handlerName, forKey: .handlerName)
+        try values.encode(reason, forKey: .reason)
     }
 }
 

@@ -734,6 +734,71 @@ fn assert_case(case: &ParityCase, stdin: &str) {
 
 #[cfg(unix)]
 #[test]
+fn contextual_macros_native_and_vm() {
+    let source = "macro add { ($x:expr) => expr { $x + 1 } } fn main() { println(add!(2)); }";
+    let expanded = hew_wasm::expand_macro(source, source.find("add!(2)").unwrap())
+        .expect("browser macro expansion");
+    assert!(expanded.contains("2 + 1"), "{expanded}");
+    set_test_hewpath();
+    ensure_native_toolchain();
+    ensure_parity_runner_built();
+    let mut inputs = hew_compile::SourceSet::in_memory();
+    inputs.insert(
+        "contextual_macros_support.hew",
+        include_str!("../../tests/core-acceptance/cases/contextual_macros_support.hew"),
+    );
+    inputs.insert(
+        "contextual_macros_library.hew",
+        include_str!("../../tests/core-acceptance/cases/contextual_macros_library.hew"),
+    );
+    assert_case_with_inputs(
+        &ParityCase {
+            test_name: "contextual_macros",
+            source_rel: "tests/core-acceptance/cases/contextual-macros.hew",
+        },
+        "",
+        inputs,
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn attribute_macros_native_and_vm() {
+    set_test_hewpath();
+    ensure_native_toolchain();
+    ensure_parity_runner_built();
+    let mut inputs = hew_compile::SourceSet::in_memory();
+    inputs.insert(
+        "attribute_macros_library.hew",
+        include_str!("../../tests/core-acceptance/cases/attribute_macros_library.hew"),
+    );
+    assert_case_with_inputs(
+        &ParityCase {
+            test_name: "attribute_macros",
+            source_rel: "tests/core-acceptance/cases/attribute-macros.hew",
+        },
+        "",
+        inputs,
+    );
+    for (source, expected) in [
+        ("#[missing(1 + call(2), [3, 4])] fn f() {} fn main() {}", "E_UNKNOWN_ATTRIBUTE"),
+        ("#[missing] type T {} fn main() {}", "E_UNKNOWN_ATTRIBUTE"),
+        ("macro m { #[()] $f:fn => expr { 1 } } fn main() {}", "E_MACRO_BAD_CATEGORY"),
+        ("macro m { #[()] $f:fn => items { fn other() {} } } fn main() {}", "E_MACRO_NAME_CARRIER"),
+        ("macro m { #[()] $f:fn => items { fn $f.name() { loop { $f.body; break; } } } } fn main() {}", "E_MACRO_BODY_PLACEMENT"),
+        ("macro m { #[()] $f:fn fails => items { $f } } #[m] fn f() {} fn main() {}", "expected a fallible function"),
+        ("macro test { () => expr { 1 } } fn main() {}", "E_MACRO_RESERVED_NAME"),
+        ("macro m { #[()] $f:fn => items { $f } } actor A { #[m] receive fn f() {} } fn main() {}", "E_ATTRIBUTE_MACRO_POSITION"),
+    ] {
+        let analysis = hew_wasm::analyze(source).expect("browser diagnostic output");
+        assert!(analysis.contains(expected), "{expected}: {analysis}");
+        let result = compile_to_sandbox_bytecode_with_inputs(source, Some(SANDBOX_PROFILE), hew_compile::SourceSet::in_memory()).expect("frontend diagnostic output");
+        assert!(result.diagnostics.iter().any(|diagnostic| diagnostic.message.contains(expected)), "{expected}: {:?}", result.diagnostics);
+    }
+}
+
+#[cfg(unix)]
+#[test]
 fn compile_time_inputs_native_and_vm() {
     set_test_hewpath();
     ensure_native_toolchain();
@@ -750,6 +815,13 @@ fn compile_time_inputs_native_and_vm() {
         },
         "",
         inputs,
+    );
+    assert_case(
+        &ParityCase {
+            test_name: "source_location",
+            source_rel: "tests/core-acceptance/cases/source-location.hew",
+        },
+        "",
     );
     let mut inputs = hew_compile::SourceSet::in_memory();
     inputs.insert(
@@ -783,6 +855,119 @@ fn compile_time_inputs_native_and_vm() {
         "{:?}",
         escaped.diagnostics
     );
+}
+
+#[cfg(unix)]
+#[test]
+fn typed_embedding_native_and_vm() {
+    set_test_hewpath();
+    ensure_native_toolchain();
+    ensure_parity_runner_built();
+    let mut inputs = hew_compile::SourceSet::in_memory();
+    for (name, text) in [
+        (
+            "config.json",
+            include_str!("../../tests/core-acceptance/cases/typed-embed-data/config.json"),
+        ),
+        (
+            "config.yaml",
+            include_str!("../../tests/core-acceptance/cases/typed-embed-data/config.yaml"),
+        ),
+        (
+            "config.toml",
+            include_str!("../../tests/core-acceptance/cases/typed-embed-data/config.toml"),
+        ),
+    ] {
+        inputs.insert(format!("typed-embed-data/{name}"), text);
+    }
+    assert_case_with_inputs(
+        &ParityCase {
+            test_name: "typed_embed",
+            source_rel: "tests/core-acceptance/cases/typed-embed.hew",
+        },
+        "",
+        inputs,
+    );
+    let mut inputs = hew_compile::SourceSet::in_memory();
+    inputs.insert_bytes("broken.json", vec![0xff]);
+    let invalid_data = compile_to_sandbox_bytecode_with_inputs(
+        "fn main() { let text: string = embed!(\"broken.json\"); println(text); }",
+        Some(SANDBOX_PROFILE),
+        inputs,
+    )
+    .expect("frontend diagnostic output");
+    assert!(
+        invalid_data.diagnostics.iter().any(|diagnostic| {
+            diagnostic.message.contains("E_EMBED_DECODE")
+                && diagnostic
+                    .source_module
+                    .as_deref()
+                    .is_some_and(|source| source.ends_with("broken.json"))
+        }),
+        "{:?}",
+        invalid_data.diagnostics
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn aggregate_constants_native_and_vm() {
+    set_test_hewpath();
+    ensure_native_toolchain();
+    ensure_parity_runner_built();
+    assert_case_with_inputs(
+        &ParityCase {
+            test_name: "aggregate_constants",
+            source_rel: "tests/core-acceptance/cases/aggregate-constants.hew",
+        },
+        "",
+        hew_compile::SourceSet::in_memory(),
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn package_coherence_native_and_vm() {
+    set_test_hewpath();
+    ensure_native_toolchain();
+    ensure_parity_runner_built();
+    let root = repo_root().join("tests/core-acceptance/cases/package-coherence");
+    let mut inputs = hew_compile::SourceSet::in_memory();
+    for path in [
+        "hew.toml",
+        "protocol/hew.toml",
+        "protocol/traits.hew",
+        "data/hew.toml",
+        "data/model.hew",
+        "data/roles/format.hew",
+    ] {
+        inputs.insert(
+            path,
+            std::fs::read_to_string(root.join(path)).expect("read package fixture"),
+        );
+    }
+    assert_case_with_inputs(
+        &ParityCase {
+            test_name: "package_coherence",
+            source_rel: "tests/core-acceptance/cases/package-coherence/main.hew",
+        },
+        "",
+        inputs.clone(),
+    );
+    let orphan = compile_to_sandbox_bytecode_with_inputs(
+        "import \"protocol/traits.hew\"; import \"data/model.hew\"; impl Render for Widget { fn render(self) -> string { \"foreign\" } } fn main() {}",
+        Some(SANDBOX_PROFILE),
+        inputs,
+    ).expect("compile virtual orphan fixture");
+    assert!(
+        orphan
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.kind == "OrphanImpl"),
+        "{:?}",
+        orphan.diagnostics
+    );
+    assert!(orphan.bytecode.is_none());
 }
 
 #[cfg(unix)]
@@ -842,6 +1027,7 @@ fn assert_stderr_parity(case: &ParityCase, native: &Output, sandbox: &Output) {
 #[cfg(unix)]
 fn assert_exact_stdout(case: &ParityCase, native: &Output) {
     let expected = match case.test_name {
+        "package_coherence" => Some("blue\nwidget: blue\nnumbers: 2\nwords: 1\n1\none\ninteger: 42\ntext: hello\nyes\nno\nflag: yes\n"),
         "trap_residual" => Some(
             "repeat-value\nrepeat-count\n3\n7\n7\n7\n65535\n18446744073709551615\n-1\n255\n1\ntrue\n65\n42\nboom\n6\nnone\n",
         ),

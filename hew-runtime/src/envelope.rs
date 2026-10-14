@@ -28,7 +28,7 @@ use crate::node_identity::{Location, NodeId};
 /// Current wire protocol version.
 ///
 /// Frames carrying any other version value MUST be rejected by the decoder.
-pub const WIRE_VERSION: u8 = 2;
+pub const WIRE_VERSION: u8 = 3;
 
 /// Discriminant for a control frame (`frame_type` field value 0).
 pub const FRAME_TYPE_CONTROL: u8 = 0;
@@ -175,6 +175,39 @@ pub struct ControlFrame {
     pub payload: Vec<u8>,
 }
 
+/// A request names a declaration; replies carry status outside that namespace.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EnvelopeMessage {
+    Handler(String),
+    Reply,
+    Rejected,
+}
+
+impl EnvelopeMessage {
+    fn to_value(&self) -> Value {
+        match self {
+            Self::Handler(identity) => Value::Text(identity.clone()),
+            Self::Reply => Value::Integer(0.into()),
+            Self::Rejected => Value::Integer(1.into()),
+        }
+    }
+
+    fn from_value(value: &Value) -> Result<Self, DecodeError> {
+        match value {
+            Value::Text(identity)
+                if !identity.is_empty() && identity.len() <= 4096 && !identity.contains('\0') =>
+            {
+                Ok(Self::Handler(identity.clone()))
+            }
+            Value::Integer(status) if *status == Integer::from(0) => Ok(Self::Reply),
+            Value::Integer(status) if *status == Integer::from(1) => Ok(Self::Rejected),
+            _ => Err(DecodeError::MalformedFrame {
+                reason: "invalid handler declaration or reply status",
+            }),
+        }
+    }
+}
+
 /// An envelope frame: a single actor-to-actor message.
 ///
 /// CDDL: `envelope-frame` rule in `schemas/envelope.cddl`.
@@ -198,12 +231,8 @@ pub struct EnvelopeFrame {
     /// CDDL key 4.
     pub source: Option<Location>,
 
-    /// Message type tag.
-    ///
-    /// Signed; valid range `0..=2^30-1`.
-    ///
-    /// CDDL key 5.
-    pub msg_type: i32,
+    /// Handler declaration or explicit reply status (CDDL key 5).
+    pub message: EnvelopeMessage,
 
     /// Serialised message body. May be empty for zero-payload messages.
     ///
@@ -437,7 +466,7 @@ impl Serialize for EnvelopeFrame {
         map.serialize_entry(&2u64, &FRAME_TYPE_ENVELOPE)?;
         map.serialize_entry(&3u64, &location_option_to_value(self.target))?;
         map.serialize_entry(&4u64, &location_option_to_value(self.source))?;
-        map.serialize_entry(&5u64, &self.msg_type)?;
+        map.serialize_entry(&5u64, &self.message.to_value())?;
         map.serialize_entry(&6u64, &PayloadBytes(&self.payload))?;
         map.serialize_entry(&7u64, &self.request_id)?;
         map.end()
@@ -469,9 +498,8 @@ impl<'de> Deserialize<'de> for EnvelopeFrame {
 pub enum EncodeError {
     /// A caller supplied a non-zero payload length with a null payload pointer.
     NullPayload { payload_len: usize },
-    /// The message type is outside the range supported by the legacy runtime
-    /// message dispatch surface.
-    InvalidMsgType { msg_type: i32 },
+    /// Handler identity or reply routing violates the envelope contract.
+    InvalidEnvelope { reason: &'static str },
     /// The underlying CBOR writer failed.
     Cbor(ciborium::ser::Error<std::io::Error>),
 }
@@ -485,9 +513,7 @@ impl std::fmt::Display for EncodeError {
                     "payload pointer is null for non-zero payload_len {payload_len}"
                 )
             }
-            Self::InvalidMsgType { msg_type } => {
-                write!(f, "msg_type {msg_type} out of valid range")
-            }
+            Self::InvalidEnvelope { reason } => write!(f, "invalid envelope: {reason}"),
             Self::Cbor(e) => write!(f, "CBOR encode failed: {e}"),
         }
     }
@@ -497,7 +523,7 @@ impl std::error::Error for EncodeError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Cbor(e) => Some(e),
-            Self::NullPayload { .. } | Self::InvalidMsgType { .. } => None,
+            Self::NullPayload { .. } | Self::InvalidEnvelope { .. } => None,
         }
     }
 }
@@ -786,6 +812,26 @@ impl From<DecodeError> for MonitorPayloadError {
 }
 
 impl EnvelopeFrame {
+    fn validate(&self) -> Result<(), &'static str> {
+        match &self.message {
+            EnvelopeMessage::Handler(identity) => {
+                if self.target.is_none()
+                    || identity.is_empty()
+                    || identity.len() > 4096
+                    || identity.contains('\0')
+                {
+                    return Err("request requires a target and bounded declaration identity");
+                }
+            }
+            EnvelopeMessage::Reply | EnvelopeMessage::Rejected => {
+                if self.target.is_some() || self.source.is_some() || self.request_id == 0 {
+                    return Err("reply status requires reply routing");
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Construct a fire-and-forget envelope with no reply routing.
     ///
     /// Convenience constructor for the common case: `request_id = 0`.
@@ -793,14 +839,14 @@ impl EnvelopeFrame {
     pub fn fire_and_forget(
         target: Location,
         source: Option<Location>,
-        msg_type: i32,
+        message: EnvelopeMessage,
         payload: Vec<u8>,
     ) -> Self {
         Self {
             version: WIRE_VERSION,
             target: Some(target),
             source,
-            msg_type,
+            message,
             payload,
             request_id: 0,
         }
@@ -824,10 +870,9 @@ pub fn encode_control_frame(frame: &ControlFrame) -> Result<Vec<u8>, EncodeError
 ///
 /// Returns [`EncodeError::Cbor`] when ciborium fails to serialise the frame.
 pub fn encode_envelope_frame(frame: &EnvelopeFrame) -> Result<Vec<u8>, EncodeError> {
-    // msg_type is the full i32 range — the Hew codegen uses hashed i32 discriminants
-    // that may be negative. The CBOR Integer type covers this range on both encode and
-    // decode sides. The original 0..=65535 guard was narrower than the field type and
-    // blocked cross-node sends from compiled Hew programs.
+    frame
+        .validate()
+        .map_err(|reason| EncodeError::InvalidEnvelope { reason })?;
     let mut bytes = Vec::new();
     ciborium::ser::into_writer(frame, &mut bytes)?;
     Ok(bytes)
@@ -843,7 +888,7 @@ pub fn encode_envelope_frame(frame: &EnvelopeFrame) -> Result<Vec<u8>, EncodeErr
 pub(crate) unsafe fn encode_envelope_frame_from_raw_parts(
     target: Option<Location>,
     source: Option<Location>,
-    msg_type: i32,
+    message: EnvelopeMessage,
     payload: *const u8,
     payload_len: usize,
     request_id: u64,
@@ -860,7 +905,7 @@ pub(crate) unsafe fn encode_envelope_frame_from_raw_parts(
         version: WIRE_VERSION,
         target,
         source,
-        msg_type,
+        message,
         payload,
         request_id,
     })
@@ -1540,14 +1585,18 @@ fn control_frame_from_map(map: &BTreeMap<u64, &Value>) -> Result<ControlFrame, D
 fn envelope_frame_from_map(map: &BTreeMap<u64, &Value>) -> Result<EnvelopeFrame, DecodeError> {
     ensure_frame_type(map, FRAME_TYPE_ENVELOPE)?;
     ensure_exact_keys(map, &[1, 2, 3, 4, 5, 6, 7])?;
-    Ok(EnvelopeFrame {
+    let frame = EnvelopeFrame {
         version: value_to_u8(required(map, 1)?, 1)?,
         target: value_to_location_option(required(map, 3)?, 3)?,
         source: value_to_location_option(required(map, 4)?, 4)?,
-        msg_type: value_to_i32(required(map, 5)?, 5)?,
+        message: EnvelopeMessage::from_value(required(map, 5)?)?,
         payload: value_to_bytes(required(map, 6)?, 6)?,
         request_id: value_to_u64(required(map, 7)?, 7)?,
-    })
+    };
+    frame
+        .validate()
+        .map_err(|reason| DecodeError::MalformedFrame { reason })?;
+    Ok(frame)
 }
 
 fn collect_map(value: &Value) -> Result<BTreeMap<u64, &Value>, DecodeError> {

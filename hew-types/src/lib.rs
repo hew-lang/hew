@@ -12,6 +12,7 @@ pub mod builtin_type;
 pub mod check;
 pub mod compile_time;
 pub mod cycle;
+pub mod data_plan;
 pub mod data_shape;
 pub mod def_table;
 pub mod dump;
@@ -52,8 +53,7 @@ pub use callable::{
 pub use hew_parser::ast::{CallableCallMode, CallableCapabilities};
 
 pub use actor_protocol::{
-    compute_default_msg_id, qualified_handler_name, ActorHandlerDescriptor, ActorHandlerSpec,
-    ActorProtocolCollision, ActorProtocolDescriptor, ReceiveFailureDisplay,
+    ActorHandlerDescriptor, ActorHandlerSpec, ActorProtocolDescriptor, ReceiveFailureDisplay,
 };
 pub use builtin_type::{
     builtin_types, canonical_source_owned_lifecycle_name, has_builtin_associated_item_identity,
@@ -124,9 +124,10 @@ pub use type_facts::{
 pub use value_class::{ClassContext, ClassError, DeclarationMarker, DeclaredType, ValueClass};
 pub use vec_authority::VecElementToken;
 pub use wasm_capabilities_generated::{
-    wasm_capability_ids, DeterministicOperation, WasmCapabilityId, WasmFeatureDisposition,
+    wasm_capability_ids, HostOperation, WasmCapabilityId, WasmFeatureDisposition,
     WasmFunctionRejection, WasmModuleRejection, WasmUnsupportedFeature,
     DETERMINISTIC_ENDPOINT_REJECTIONS, DETERMINISTIC_FUNCTION_REJECTIONS,
+    GENERATE_ENDPOINT_REJECTIONS, GENERATE_FUNCTION_REJECTIONS,
     NATIVE_ONLY_WASM_FUNCTION_REJECTIONS, NATIVE_ONLY_WASM_MODULES,
     NATIVE_ONLY_WASM_MODULE_REJECTIONS,
 };

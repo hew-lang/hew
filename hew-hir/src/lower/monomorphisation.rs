@@ -6,19 +6,18 @@ impl LowerCtx {
     pub(super) fn record_var_self_direct_monomorphisation(
         &mut self,
         callee: &str,
+        target: &CallTarget,
         receiver_ty: &ResolvedTy,
         call_span: &std::ops::Range<usize>,
         call_site: SiteId,
     ) {
-        let declaration = self.impl_method_declaration_ids.get(callee).copied();
-        let Some((origin, type_param_count, linkage, declaration)) = self
+        let CallTarget::ImplMethod(declaration) = target else {
+            return;
+        };
+        let Some((origin, type_param_count, linkage)) = self
             .fn_registry
             .get(callee)
             .map(|entry| (entry.id, entry.type_params.len(), entry.linkage))
-            .zip(declaration)
-            .map(|((origin, type_param_count, linkage), declaration)| {
-                (origin, type_param_count, linkage, declaration)
-            })
         else {
             return;
         };
@@ -74,7 +73,7 @@ impl LowerCtx {
         }
         let mono_key = MonoKey {
             origin,
-            declaration,
+            declaration: *declaration,
             linker_symbol: callee.to_string(),
             type_args,
         };

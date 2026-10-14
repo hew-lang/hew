@@ -1,0 +1,61 @@
+actor Audit {
+    var released: i64 = 0;
+
+    #[intercept]
+    fn caller(call: Call<Self>) -> Outcome<Self> {
+        if call.handler_name() == "closed" {
+            match call.caller() {
+                .Actor(_) => {}
+                _ => panic("cleanup must retain its actor identity"),
+            }
+        }
+        call.proceed()
+    }
+
+    receive fn closed() { released = released + 1; }
+    receive fn count() -> i64 { released }
+}
+
+#[resource]
+type Ticket {
+    audit: Audit;
+}
+
+impl Ticket {
+    fn close(consume self) {
+        self.audit.closed().expect("audit close");
+    }
+}
+
+actor Worker {
+    var handled: i64 = 0;
+
+    #[intercept]
+    fn guard(call: Call<Self>) -> Outcome<Self> {
+        if call.handler_name() == "work" {
+            call.refuse("not available for this delivery")
+        } else {
+            call.proceed()
+        }
+    }
+
+    receive fn work(ticket: Ticket) { handled = handled + 1; }
+    receive fn count() -> i64 { handled }
+}
+
+#[test]
+fn interceptor_refusal_preserves_admission_and_closes_the_payload() {
+    let audit = spawn Audit;
+    let worker = spawn Worker;
+    let inbox = mailbox(worker);
+    match inbox.work(Ticket { audit: audit }).expect("admitted") {
+        .Accepted => {}
+        .Discarded => panic("a refusal is not an admission discard"),
+    }
+    assert(worker.count().expect("worker survives") == 0);
+    assert(audit.count().expect("owned payload released") == 1);
+    stop(worker);
+    stopped(worker);
+    stop(audit);
+    stopped(audit);
+}

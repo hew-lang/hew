@@ -1,0 +1,3 @@
+import contextual_macros_library as lib;
+pub const BASE: i64 = 40;
+pub macro answer { () => expr { BASE + lib.value() } }

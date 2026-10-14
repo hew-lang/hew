@@ -2,6 +2,7 @@
 
 mod analysis;
 mod convert;
+mod generation;
 mod handlers;
 mod hierarchy;
 mod navigation;
@@ -141,6 +142,7 @@ const TOKEN_MODIFIERS: &[SemanticTokenModifier] = &[
     SemanticTokenModifier::READONLY,    // bit 1
 ];
 const RUN_TEST_COMMAND: &str = "hew.runTest";
+const GENERATE_COMMAND: &str = "hew.generate";
 const REMOVE_UNUSED_IMPORTS_KIND: &str = "source.removeUnusedImports";
 
 fn modifier_bit(m: &SemanticTokenModifier) -> u32 {
@@ -154,6 +156,7 @@ fn modifier_bit(m: &SemanticTokenModifier) -> u32 {
 
 #[derive(Debug)]
 struct DocumentState {
+    expanded_program: Option<Box<hew_parser::ast::Program>>,
     source: String,
     /// Byte offsets of each line start, computed once per edit.
     line_offsets: Vec<usize>,
@@ -242,7 +245,7 @@ fn build_server_capabilities() -> ServerCapabilities {
             resolve_provider: Some(false),
         }),
         execute_command_provider: Some(ExecuteCommandOptions {
-            commands: vec![RUN_TEST_COMMAND.to_string()],
+            commands: vec![RUN_TEST_COMMAND.to_string(), GENERATE_COMMAND.to_string()],
             work_done_progress_options: WorkDoneProgressOptions::default(),
         }),
         workspace_symbol_provider: Some(OneOf::Left(true)),
@@ -487,6 +490,37 @@ impl HewLanguageServer {
                 .to_checked_file_path()
                 .and_then(|path| path.parent().map(Path::to_path_buf))
         })
+    }
+
+    /// Show the innermost macro expansion at the requested source position.
+    ///
+    /// # Errors
+    ///
+    /// The protocol requires a result; absent documents and expansions return null.
+    #[expect(
+        clippy::unused_async,
+        reason = "custom_method requires an async handler"
+    )]
+    pub async fn expand_macro(
+        &self,
+        params: tower_lsp_server::ls_types::TextDocumentPositionParams,
+    ) -> Result<Option<String>> {
+        let Some(doc) = self.documents.get(&params.text_document.uri) else {
+            return Ok(None);
+        };
+        let Some(program) = doc.expanded_program.as_deref() else {
+            return Ok(None);
+        };
+        let Some(path) = params.text_document.uri.to_checked_file_path() else {
+            return Ok(None);
+        };
+        let path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+        let offset = position_to_offset(&doc.source, &doc.line_offsets, params.position);
+        Ok(hew_analysis::expansion::render(
+            program,
+            &path,
+            Some(offset),
+        ))
     }
 
     /// Return stable identities and ranges from the same discovery used by
@@ -764,24 +798,26 @@ impl LanguageServer for HewLanguageServer {
         &self,
         params: tower_lsp_server::ls_types::DidChangeWatchedFilesParams,
     ) {
-        let changed: HashSet<_> = params
-            .changes
-            .into_iter()
-            .map(|event| source_file_key(&event.uri))
-            .collect();
+        let changed: HashSet<_> = params.changes.into_iter().map(|event| event.uri).collect();
+        let changed_paths = changed
+            .iter()
+            .filter_map(uri::FileUriExt::to_checked_file_path)
+            .map(|path| workspace::normalize_workspace_path(&path))
+            .collect::<HashSet<_>>();
+        let changed_keys: HashSet<_> = changed.iter().map(source_file_key).collect();
         let dependents: Vec<_> = self
             .documents
             .iter()
             .filter_map(|document| {
-                document
-                    .dependency_uris
-                    .as_ref()
-                    .is_some_and(|inputs| {
-                        inputs
-                            .iter()
-                            .any(|uri| changed.contains(&source_file_key(uri)))
-                    })
-                    .then(|| (document.key().clone(), document.source.clone()))
+                (document.dependency_uris.as_ref().is_some_and(|inputs| {
+                    inputs
+                        .iter()
+                        .any(|uri| changed_keys.contains(&source_file_key(uri)))
+                }) || document
+                    .key()
+                    .to_checked_file_path()
+                    .is_some_and(|path| generation::affected_by(&path, &changed_paths)))
+                .then(|| (document.key().clone(), document.source.clone()))
             })
             .collect();
         for (uri, source) in dependents {
@@ -1123,6 +1159,7 @@ mod tests {
     fn completions_include_keywords() {
         let parse_result = hew_parser::parse("");
         let doc = DocumentState {
+            expanded_program: None,
             source: String::new(),
             line_offsets: compute_line_offsets(""),
             parse_result,
@@ -1332,6 +1369,7 @@ mod tests {
         let type_output = checker.check_program(&parse_result.program);
 
         let doc = DocumentState {
+            expanded_program: None,
             source: source.to_string(),
             line_offsets: compute_line_offsets(source),
             parse_result,
@@ -1377,6 +1415,7 @@ mod tests {
         );
 
         let doc = DocumentState {
+            expanded_program: None,
             source: source.to_string(),
             line_offsets: compute_line_offsets(source),
             parse_result,
@@ -1462,6 +1501,7 @@ mod tests {
         let mut checker = Checker::new(registry);
         let type_output = checker.check_program(&parse_result.program);
         let doc = DocumentState {
+            expanded_program: None,
             source: source.to_string(),
             line_offsets: compute_line_offsets(source),
             parse_result,
@@ -1517,6 +1557,7 @@ mod tests {
         );
 
         let doc = DocumentState {
+            expanded_program: None,
             source: source.to_string(),
             line_offsets: compute_line_offsets(source),
             parse_result,
@@ -1548,6 +1589,7 @@ mod tests {
         let source = "actor Foo {}\nactor Bar {}\nfn baz() {}\nfn main() { let h = spawn  }";
         let parse_result = hew_parser::parse(source);
         let doc = DocumentState {
+            expanded_program: None,
             source: source.to_string(),
             line_offsets: compute_line_offsets(source),
             parse_result,
@@ -1593,6 +1635,7 @@ mod tests {
         let mut checker = Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
         let type_output = checker.check_program(&parse_result.program);
         let doc = DocumentState {
+            expanded_program: None,
             source: source.to_string(),
             line_offsets: compute_line_offsets(source),
             parse_result,
@@ -1635,6 +1678,7 @@ mod tests {
         let mut checker = Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
         let type_output = checker.check_program(&parse_result.program);
         let doc = DocumentState {
+            expanded_program: None,
             source: source.to_string(),
             line_offsets: compute_line_offsets(source),
             parse_result,
@@ -1676,6 +1720,7 @@ mod tests {
             parse_result.errors
         );
         let doc = DocumentState {
+            expanded_program: None,
             source: source.to_string(),
             line_offsets: compute_line_offsets(source),
             parse_result,
@@ -1747,6 +1792,7 @@ impl Worker {
             parse_result.errors
         );
         let doc = DocumentState {
+            expanded_program: None,
             source: source.to_string(),
             line_offsets: compute_line_offsets(source),
             parse_result,
@@ -3010,6 +3056,7 @@ impl Worker {
             source,
             &doc.line_offsets,
             &doc.parse_result,
+            doc.expanded_program.as_deref(),
             &file.display().to_string(),
             Some(&seeds),
         );
@@ -3079,7 +3126,10 @@ impl Worker {
             .execute_command_provider
             .expect("execute command support should be advertised")
             .commands;
-        assert_eq!(commands, vec![RUN_TEST_COMMAND.to_string()]);
+        assert_eq!(
+            commands,
+            vec![RUN_TEST_COMMAND.to_string(), GENERATE_COMMAND.to_string()]
+        );
     }
 
     #[test]
@@ -4205,6 +4255,7 @@ fn label(colour: Colour) -> string {
         let parse_result = hew_parser::parse(source);
         let lo = compute_line_offsets(source);
         DocumentState {
+            expanded_program: None,
             source: source.to_string(),
             line_offsets: lo,
             parse_result,
@@ -4227,6 +4278,7 @@ fn label(colour: Colour) -> string {
         let mut checker = Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
         let type_output = checker.check_program(&parse_result.program);
         DocumentState {
+            expanded_program: None,
             source: source.to_string(),
             line_offsets: lo,
             parse_result,

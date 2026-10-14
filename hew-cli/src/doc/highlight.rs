@@ -39,6 +39,7 @@ fn token_color(tok: &Token<'_>) -> &'static str {
         | Token::Const
         | Token::Mut
         | Token::Fn
+        | Token::Macro
         | Token::If
         | Token::Else
         | Token::Match
@@ -162,6 +163,7 @@ fn token_color(tok: &Token<'_>) -> &'static str {
         | Token::LessLessEqual
         | Token::GreaterGreaterEqual
         | Token::At
+        | Token::Dollar
         | Token::Dot
         | Token::AmpPlus
         | Token::AmpMinus

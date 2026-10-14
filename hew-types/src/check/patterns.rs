@@ -356,7 +356,7 @@ impl Checker {
             if let Some((pat, ps)) = &pf.pattern {
                 self.bind_pattern(pat, ty, is_mutable, ps);
             } else {
-                self.check_shadowing(pf.name.name.as_str(), span);
+                self.check_shadowing(pf.name, span);
                 self.env.define_with_span(
                     pf.name.to_string(),
                     ty.clone(),
@@ -600,10 +600,7 @@ impl Checker {
             .map(|(decl_idx, (name, field_ty))| {
                 let (sub, field_span) = if let Some(field) = listed.get(name.as_str()) {
                     match &field.pattern {
-                        None => (
-                            PlanSub::Binding(field.name.to_string()),
-                            field.name_span.clone(),
-                        ),
+                        None => (PlanSub::Binding(field.name), field.name_span.clone()),
                         Some((Pattern::Wildcard, sub_span)) => {
                             (PlanSub::Wildcard, sub_span.clone())
                         }
@@ -626,7 +623,7 @@ impl Checker {
                                     sub_span.clone(),
                                 )
                             } else {
-                                (PlanSub::Binding(binding.to_string()), sub_span.clone())
+                                (PlanSub::Binding(*binding), sub_span.clone())
                             }
                         }
                         Some((_, sub_span)) => (
@@ -662,13 +659,13 @@ impl Checker {
 
     /// One field of the place a pattern destructures.
     fn place_field(
-        place: Option<&(String, crate::env::PlacePath)>,
+        place: Option<&(Ident, crate::env::PlacePath)>,
         field: &str,
-    ) -> Option<(String, crate::env::PlacePath)> {
+    ) -> Option<(Ident, crate::env::PlacePath)> {
         place.map(|(root, path)| {
             let mut path = path.clone();
             path.push(field.to_string());
-            (root.clone(), path)
+            (*root, path)
         })
     }
 
@@ -698,16 +695,16 @@ impl Checker {
                     if let Some((root, path)) =
                         Self::place_field(scrutinee_place.as_ref(), &field.name)
                     {
-                        self.record_pattern_place_transfer(&root, path, &field.ty, &field.span);
+                        self.record_pattern_place_transfer(root, path, &field.ty, &field.span);
                     }
                     self.check_shadowing(name, &field.span);
                     self.env.define_with_span(
-                        name.clone(),
+                        *name,
                         field.ty.clone(),
                         is_mutable,
                         field.span.clone(),
                     );
-                    self.record_local_resolution(Ident::new(name), &field.span);
+                    self.record_local_resolution(*name, &field.span);
                 }
                 // A wildcard field names nothing, so it takes nothing: the
                 // field stays owned by the place the pattern destructures.
@@ -723,7 +720,7 @@ impl Checker {
                 PlanSub::Nested(_) => {
                     if let Some((subpattern, sub_span)) = source_fields
                         .iter()
-                        .find(|source| source.name == Ident::new(&field.name))
+                        .find(|source| source.name.name.as_str() == field.name)
                         .and_then(|source| source.pattern.as_ref())
                     {
                         self.pattern_place =
@@ -1084,9 +1081,9 @@ impl Checker {
                     return;
                 }
                 if let Some((root, path)) = scrutinee_place {
-                    self.record_pattern_place_transfer(&root, path, ty, span);
+                    self.record_pattern_place_transfer(root, path, ty, span);
                 }
-                self.check_shadowing(name.name.as_str(), span);
+                self.check_shadowing(*name, span);
                 self.env.define_with_span(
                     *name,
                     literal_var.unwrap_or_else(|| ty.clone()),
@@ -1260,7 +1257,7 @@ impl Checker {
                                     if let Some((pat, ps)) = &pf.pattern {
                                         self.bind_pattern(pat, &field_ty, is_mutable, ps);
                                     } else {
-                                        self.check_shadowing(pf.name.name.as_str(), span);
+                                        self.check_shadowing(pf.name, span);
                                         self.env.define_with_span(
                                             pf.name.to_string(),
                                             field_ty,
@@ -1298,7 +1295,7 @@ impl Checker {
                                     if let Some((pat, ps)) = &pf.pattern {
                                         self.bind_pattern(pat, &field_ty, is_mutable, ps);
                                     } else {
-                                        self.check_shadowing(pf.name.name.as_str(), span);
+                                        self.check_shadowing(pf.name, span);
                                         self.env.define_with_span(
                                             pf.name.to_string(),
                                             field_ty,
@@ -1376,7 +1373,7 @@ impl Checker {
                                 if let Some((pat, ps)) = &pf.pattern {
                                     self.bind_pattern(pat, &field_ty, is_mutable, ps);
                                 } else {
-                                    self.check_shadowing(pf.name.name.as_str(), span);
+                                    self.check_shadowing(pf.name, span);
                                     self.env.define_with_span(
                                         pf.name.to_string(),
                                         field_ty,
@@ -2264,7 +2261,7 @@ impl Checker {
                                     };
                                     Some(PayloadBinding {
                                         field_idx: field.decl_idx as usize,
-                                        binding_name: binding_name.clone(),
+                                        binding_name: binding_name.to_string(),
                                         def_span: self
                                             .env
                                             .lookup_ref(binding_name)
@@ -2374,7 +2371,7 @@ impl Checker {
                                             };
                                             Some(PayloadBinding {
                                                 field_idx: field.decl_idx as usize,
-                                                binding_name: binding_name.clone(),
+                                                binding_name: binding_name.to_string(),
                                                 def_span: self
                                                     .env
                                                     .lookup_ref(binding_name)
@@ -2618,9 +2615,9 @@ impl Checker {
                     field_idx,
                     def_span: self
                         .env
-                        .lookup_ref(&binding_name)
+                        .lookup_ref(binding_name)
                         .and_then(|binding| binding.def_span.clone()),
-                    binding_name,
+                    binding_name: binding_name.to_string(),
                     ty,
                 }),
                 PlanSub::Wildcard => {}

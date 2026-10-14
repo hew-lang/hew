@@ -71,6 +71,8 @@ pub struct SemSupervisor {
     pub id: SupervisorId,
     pub declaration: DefId,
     pub handle_ty: ResolvedTy,
+    /// Outer-to-inner supervisor interceptors specialized into this instance.
+    pub interceptor_chain: Vec<ResolvedTy>,
     /// Construction-time config parameters in declaration order; the spawn
     /// callables borrow them.
     pub config: Vec<ResolvedTy>,

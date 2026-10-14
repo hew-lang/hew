@@ -1,8 +1,12 @@
-type Readings<T> = Vec<T>;
+type Measurements<T> {
+    values: Vec<T>;
+}
+
+type Readings<T> = Measurements<T>;
 
 impl<T> Display for Readings<T> {
     fn fmt(self) -> string {
-        f"readings({self.len()})"
+        f"readings({self.values.len()})"
     }
 }
 
@@ -16,7 +20,7 @@ type Report<T> {
 }
 
 enum Event {
-    Update { readings: Readings<i64>;  }
+    Update { readings: Readings<i64>; }
     History(Archived<i64>);
 }
 
@@ -29,8 +33,8 @@ fn show<T>(report: Report<T>) -> string {
 }
 
 fn main() {
-    let readings: Readings<i64> = [3, 5];
-    let report = Report { readings: readings, archived: Option.Some(readings), plain: readings, pair: (readings, "west") };
+    let readings: Readings<i64> = Measurements { values: [3, 5] };
+    let report = Report { readings: readings, archived: Option.Some(readings), plain: readings.values, pair: (readings, "west") };
     println(show(report));
     let events = [Event.Update { readings: readings }, Event.History(Option.Some(readings))];
     println(f"{events:?}");

@@ -134,6 +134,8 @@ const DESCRIPTOR: HewCallableDescriptor = HewCallableDescriptor {
     environment: &raw const ENVIRONMENT,
     invoke_borrow: None,
     invoke_once: invoke,
+    invoke_borrow_sync: None,
+    invoke_once_sync: None,
 };
 
 struct CloseResult {

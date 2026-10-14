@@ -1,3 +1,45 @@
+fn first() -> i64 {
+    11
+}
+
+fn second() -> i64 {
+    sleep(1ms);
+    22
+}
+
+fn missing() -> Option<i64> {
+    .None
+}
+
+fn changing(initial: fn[clone, suspends]() -> i64) -> fn[var, clone, suspends]() -> i64 {
+    capture(var initial) || {
+        let value = initial();
+        initial = second;
+        value
+    }
+}
+
+type Holder {
+    action: fn[clone, suspends]() -> i64;
+}
+
+impl Holder {
+    fn replace(var self) {
+        self.action = second;
+    }
+
+    fn replace_through_helper(var self) {
+        self.replace();
+    }
+
+    fn replace_then_try(var self) -> Option<i64> {
+        self.action = second;
+        let _ = missing()?;
+        self.action = first;
+        .Some(0)
+    }
+}
+
 fn main() -> i64 {
     var label = "original".to_upper();
     let snapshot: fn[clone]() -> string = || label;
@@ -18,5 +60,25 @@ fn main() -> i64 {
     };
     println(shadowed());
     println(count);
+    var action: fn[clone, suspends]() -> i64 = first;
+    for _index in 0..2 {
+        println(action());
+        action = second;
+    }
+    var captured = changing(first);
+    println(captured());
+    println(captured());
+    var holder = Holder { action: first };
+    println(holder.action());
+    holder.replace();
+    println(holder.action());
+    var delegated = Holder { action: first };
+    for _index in 0..2 {
+        println(delegated.action());
+        delegated.replace_through_helper();
+    }
+    var failed = Holder { action: first };
+    let _ = failed.replace_then_try();
+    println(failed.action());
     0
 }

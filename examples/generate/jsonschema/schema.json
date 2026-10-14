@@ -1,0 +1,10 @@
+{
+  "title": "Service",
+  "type": "object",
+  "properties": {
+    "name": { "type": "string" },
+    "port": { "type": "integer" },
+    "description": { "type": "string" }
+  },
+  "required": ["name", "port"]
+}

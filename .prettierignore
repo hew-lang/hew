@@ -65,3 +65,6 @@ docs/syntax-data.json
 hew-sandbox-vm/fixtures/
 
 protocol/observe/v1/generated/observe-protocol-v1.ts
+
+# Deliberately malformed input for compiler format diagnostics.
+tests/core-acceptance/cases/typed-embed-data/syntax.json

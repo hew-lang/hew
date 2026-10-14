@@ -10,6 +10,7 @@
     reason = "FFI entry-point module; SAFETY documented at fn signature."
 )]
 
+use crate::generator::Access;
 use crate::stream_error::{
     io_error_kind_tag, set_last_error_with_errno, set_last_error_with_errno_and_kind,
     take_last_error,
@@ -47,10 +48,14 @@ pub(crate) fn set_file_io_errno(operation: &str, message: impl std::fmt::Display
     set_last_error_with_errno(message, errno);
 }
 
-// Convert explicitly at the OS boundary. CString rejects interior NUL; its
-// Rust allocation becomes the owned String used by std::fs and is dropped
-// normally, never through a managed-string or libc release function.
-pub(crate) unsafe fn file_path(path: *const HewString, operation: &str) -> Option<String> {
+// Convert explicitly at the OS boundary. CString rejects interior NUL; the
+// owned OS path is dropped normally, never through a managed-string or libc
+// release function.
+pub(crate) unsafe fn file_path(
+    path: *const HewString,
+    operation: &str,
+    access: Access,
+) -> Option<std::path::PathBuf> {
     // SAFETY: the caller supplies a borrowed managed handle.
     let foreign = match unsafe { string_to_cstring(path) } {
         Ok(path) if !path.as_bytes().is_empty() => path,
@@ -64,7 +69,14 @@ pub(crate) unsafe fn file_path(path: *const HewString, operation: &str) -> Optio
         }
     };
     // Managed strings are valid UTF-8, preserved by the copying adapter.
-    Some(foreign.into_string().expect("managed path is UTF-8"))
+    let path = foreign.into_string().expect("managed path is UTF-8");
+    match crate::generator::checked_path(std::path::Path::new(&path), access) {
+        Ok(path) => Some(path),
+        Err(error) => {
+            set_file_io_error(operation, &error);
+            None
+        }
+    }
 }
 
 /// Read an entire file and return an owned managed UTF-8 string.
@@ -82,7 +94,7 @@ pub(crate) unsafe fn file_path(path: *const HewString, operation: &str) -> Optio
 #[no_mangle]
 pub unsafe extern "C" fn hew_file_read(path: *const HewString) -> *mut HewString {
     // SAFETY: path is a borrowed managed handle.
-    let Some(rust_path) = (unsafe { file_path(path, "hew_file_read") }) else {
+    let Some(rust_path) = (unsafe { file_path(path, "hew_file_read", Access::Read) }) else {
         return std::ptr::null_mut();
     };
     let contents = match std::fs::read_to_string(rust_path) {
@@ -106,7 +118,7 @@ pub unsafe extern "C" fn hew_file_read(path: *const HewString) -> *mut HewString
 #[no_mangle]
 pub unsafe extern "C" fn hew_file_write(path: *const HewString, content: *const HewString) -> i32 {
     // SAFETY: path is a borrowed managed handle.
-    let Some(rust_path) = (unsafe { file_path(path, "hew_file_write") }) else {
+    let Some(rust_path) = (unsafe { file_path(path, "hew_file_write", Access::Write) }) else {
         return -1;
     };
     // SAFETY: content is a borrowed managed handle; null spells empty.
@@ -133,7 +145,7 @@ pub unsafe extern "C" fn hew_file_write(path: *const HewString, content: *const 
 #[no_mangle]
 pub unsafe extern "C" fn hew_file_append(path: *const HewString, content: *const HewString) -> i32 {
     // SAFETY: path is a borrowed managed handle.
-    let Some(rust_path) = (unsafe { file_path(path, "hew_file_append") }) else {
+    let Some(rust_path) = (unsafe { file_path(path, "hew_file_append", Access::Write) }) else {
         return -1;
     };
     // SAFETY: content is a borrowed managed handle; null spells empty.
@@ -171,7 +183,7 @@ pub unsafe extern "C" fn hew_file_append(path: *const HewString, content: *const
 #[no_mangle]
 pub unsafe extern "C" fn hew_file_exists(path: *const HewString) -> i32 {
     // SAFETY: path is a borrowed managed handle.
-    let Some(rust_path) = (unsafe { file_path(path, "hew_file_exists") }) else {
+    let Some(rust_path) = (unsafe { file_path(path, "hew_file_exists", Access::Read) }) else {
         return 0;
     };
     i32::from(std::path::Path::new(&rust_path).exists())
@@ -200,7 +212,7 @@ pub unsafe extern "C" fn hew_path_exists(path: *const HewString) -> i32 {
 #[no_mangle]
 pub unsafe extern "C" fn hew_file_delete(path: *const HewString) -> i32 {
     // SAFETY: path is a borrowed managed handle.
-    let Some(rust_path) = (unsafe { file_path(path, "hew_file_delete") }) else {
+    let Some(rust_path) = (unsafe { file_path(path, "hew_file_delete", Access::Write) }) else {
         return -1;
     };
     match std::fs::remove_file(rust_path) {
@@ -225,7 +237,7 @@ pub unsafe extern "C" fn hew_file_delete(path: *const HewString) -> i32 {
 #[no_mangle]
 pub unsafe extern "C" fn hew_file_size(path: *const HewString) -> i64 {
     // SAFETY: path is a borrowed managed handle.
-    let Some(rust_path) = (unsafe { file_path(path, "hew_file_size") }) else {
+    let Some(rust_path) = (unsafe { file_path(path, "hew_file_size", Access::Read) }) else {
         return -1;
     };
     match std::fs::metadata(rust_path) {
@@ -250,7 +262,7 @@ pub unsafe extern "C" fn hew_file_size(path: *const HewString) -> i64 {
 #[no_mangle]
 pub unsafe extern "C" fn hew_file_read_bytes(path: *const HewString) -> crate::bytes::BytesTriple {
     // SAFETY: path is a borrowed managed handle.
-    let Some(rust_path) = (unsafe { file_path(path, "hew_file_read_bytes") }) else {
+    let Some(rust_path) = (unsafe { file_path(path, "hew_file_read_bytes", Access::Read) }) else {
         return crate::bytes::BytesTriple {
             ptr: std::ptr::null_mut(),
             offset: 0,
@@ -307,7 +319,8 @@ pub unsafe extern "C" fn hew_file_write_bytes(
     data: *const crate::bytes::BytesTriple,
 ) -> i32 {
     // SAFETY: path is a borrowed managed handle.
-    let Some(rust_path) = (unsafe { file_path(path, "hew_file_write_bytes") }) else {
+    let Some(rust_path) = (unsafe { file_path(path, "hew_file_write_bytes", Access::Write) })
+    else {
         return -1;
     };
     if data.is_null() {
@@ -487,7 +500,8 @@ pub unsafe extern "C" fn hew_file_write_atomic(
     data: *const crate::bytes::BytesTriple,
 ) -> i32 {
     // SAFETY: path is a borrowed managed handle.
-    let Some(rust_path) = (unsafe { file_path(path, "hew_file_write_atomic") }) else {
+    let Some(rust_path) = (unsafe { file_path(path, "hew_file_write_atomic", Access::Write) })
+    else {
         return NOT_COMMITTED;
     };
     if data.is_null() {
@@ -534,7 +548,7 @@ pub unsafe extern "C" fn hew_file_write_atomic(
 #[no_mangle]
 pub unsafe extern "C" fn hew_fs_mkdir(path: *const HewString) -> i32 {
     // SAFETY: path is a borrowed managed handle.
-    let Some(rust_path) = (unsafe { file_path(path, "hew_fs_mkdir") }) else {
+    let Some(rust_path) = (unsafe { file_path(path, "hew_fs_mkdir", Access::Write) }) else {
         return -1;
     };
     match std::fs::create_dir(rust_path) {
@@ -559,7 +573,7 @@ pub unsafe extern "C" fn hew_fs_mkdir(path: *const HewString) -> i32 {
 #[no_mangle]
 pub unsafe extern "C" fn hew_fs_mkdir_all(path: *const HewString) -> i32 {
     // SAFETY: path is a borrowed managed handle.
-    let Some(rust_path) = (unsafe { file_path(path, "hew_fs_mkdir_all") }) else {
+    let Some(rust_path) = (unsafe { file_path(path, "hew_fs_mkdir_all", Access::Write) }) else {
         return -1;
     };
     match std::fs::create_dir_all(rust_path) {
@@ -588,10 +602,10 @@ pub unsafe extern "C" fn hew_fs_list_dir(path: *const HewString) -> *mut crate::
     // SAFETY: allocate an empty string vector for the result.
     let v = unsafe { crate::vec::hew_vec_new_str() };
     // SAFETY: path is a borrowed managed handle.
-    let Some(rust_path) = (unsafe { file_path(path, "hew_fs_list_dir") }) else {
+    let Some(rust_path) = (unsafe { file_path(path, "hew_fs_list_dir", Access::Read) }) else {
         return v;
     };
-    let entries = match std::fs::read_dir(rust_path) {
+    let entries = match std::fs::read_dir(&rust_path) {
         Ok(entries) => entries,
         Err(error) => {
             set_file_io_error("hew_fs_list_dir", &error);
@@ -618,6 +632,10 @@ pub unsafe extern "C" fn hew_fs_list_dir(path: *const HewString) -> *mut crate::
         };
         names.push(name_str);
     }
+    if let Err(error) = crate::generator::directory_names(&rust_path, &mut names) {
+        set_file_io_error("hew_fs_list_dir", &error);
+        return v;
+    }
     for name in names {
         let managed_name = hew_cabi::string::string_from_str(&name);
         // SAFETY: the vec retains one owner; release the local owner afterwards.
@@ -640,11 +658,11 @@ pub unsafe extern "C" fn hew_fs_list_dir(path: *const HewString) -> *mut crate::
 #[no_mangle]
 pub unsafe extern "C" fn hew_fs_rename(from: *const HewString, to: *const HewString) -> i32 {
     // SAFETY: from is a borrowed managed handle.
-    let Some(from_str) = (unsafe { file_path(from, "hew_fs_rename") }) else {
+    let Some(from_str) = (unsafe { file_path(from, "hew_fs_rename", Access::Write) }) else {
         return -1;
     };
     // SAFETY: to is a borrowed managed handle.
-    let Some(to_str) = (unsafe { file_path(to, "hew_fs_rename") }) else {
+    let Some(to_str) = (unsafe { file_path(to, "hew_fs_rename", Access::Write) }) else {
         return -1;
     };
     match std::fs::rename(from_str, to_str) {
@@ -669,11 +687,11 @@ pub unsafe extern "C" fn hew_fs_rename(from: *const HewString, to: *const HewStr
 #[no_mangle]
 pub unsafe extern "C" fn hew_fs_copy(from: *const HewString, to: *const HewString) -> i32 {
     // SAFETY: from is a borrowed managed handle.
-    let Some(from_str) = (unsafe { file_path(from, "hew_fs_copy") }) else {
+    let Some(from_str) = (unsafe { file_path(from, "hew_fs_copy", Access::Read) }) else {
         return -1;
     };
     // SAFETY: to is a borrowed managed handle.
-    let Some(to_str) = (unsafe { file_path(to, "hew_fs_copy") }) else {
+    let Some(to_str) = (unsafe { file_path(to, "hew_fs_copy", Access::Write) }) else {
         return -1;
     };
     match std::fs::copy(from_str, to_str) {
@@ -698,7 +716,7 @@ pub unsafe extern "C" fn hew_fs_copy(from: *const HewString, to: *const HewStrin
 #[no_mangle]
 pub unsafe extern "C" fn hew_fs_is_dir(path: *const HewString) -> i32 {
     // SAFETY: path is a borrowed managed handle.
-    let Some(rust_path) = (unsafe { file_path(path, "hew_fs_is_dir") }) else {
+    let Some(rust_path) = (unsafe { file_path(path, "hew_fs_is_dir", Access::Read) }) else {
         return 0;
     };
     i32::from(std::path::Path::new(&rust_path).is_dir())

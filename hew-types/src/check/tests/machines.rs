@@ -256,6 +256,7 @@ fn normalize_walks_a_shared_import_dag_once() {
     mg.add_module(root_module).unwrap();
     mg.topo_order = vec![root_id];
     let program = Program {
+        expansions: hew_parser::macro_syntax::ExpansionMap::default(),
         module_graph: Some(mg),
         items: root_items,
         module_doc: None,

@@ -1,0 +1,65 @@
+fn handler_name<A>(call: Call<A>) -> string { call.handler_name() }
+
+actor Worker {
+    var delivered: i64 = 0;
+
+    #[intercept]
+    fn guard(call: Call<Self>) -> Outcome<Self> {
+        match call.caller() {
+            .Task => println("task"),
+            _ => println("other"),
+        }
+        match call.request {
+            .echo { text } => assert(text == "hello"),
+            .blocked { text } => assert(text == "unused owned payload"),
+            _ => {}
+        }
+        let name = handler_name(call);
+        println(name);
+        if name == "blocked" {
+            let denied = call.refuse("blocked by guard");
+            assert(denied.refused());
+            assert(!denied.failed());
+            if let .Some(_) = denied.response {
+                panic("refusal has no response");
+            }
+            denied
+        } else {
+            println("before");
+            let result = call.proceed();
+            assert(!result.failed());
+            assert(!result.refused());
+            match result.response {
+                .Some(.echo(text)) => assert(text == "hello"),
+                .Some(.count(value)) => assert(value == 1),
+                _ => panic("wrong response variant"),
+            }
+            println("after");
+            result
+        }
+    }
+
+    receive fn echo(text: string) -> string {
+        delivered = delivered + 1;
+        text
+    }
+
+    receive fn blocked(text: string) -> string {
+        delivered = delivered + 100;
+        text
+    }
+
+    receive fn count() -> i64 { delivered }
+}
+
+fn main() {
+    let worker = spawn Worker;
+    println(worker.echo("hello").expect("echo"));
+    match worker.blocked("unused owned payload") {
+        .Err(.Refused) => println("refused"),
+        _ => assert(false),
+    }
+    assert(worker.count().expect("same actor survives") == 1);
+    stop(worker);
+    stopped(worker);
+}

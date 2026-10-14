@@ -335,12 +335,17 @@ pub(super) fn semantic_callables(checked: &hew_sir::CheckedModule<'_>) -> BTreeS
                     kind: hew_sir::SuspendKind::StreamNext { park: false },
                     ..
                 } => {}
-                hew_sir::SemTerminator::RecoverFault { .. }
-                | hew_sir::SemTerminator::Suspend { .. }
-                | hew_sir::SemTerminator::IndirectCall { .. } => {
-                    // Callable values have no source-level non-suspension
-                    // guarantee, so their invocation must admit suspension.
-                    resumable.insert(function.callable);
+                hew_sir::SemTerminator::IndirectCall {
+                    targets, callee, ..
+                } => {
+                    if targets.may_be_unknown || callee.decision == hew_sir::BoundaryDecision::Move
+                    {
+                        resumable.insert(function.callable);
+                    }
+                    calls
+                        .entry(function.callable)
+                        .or_default()
+                        .extend(&targets.known);
                 }
                 hew_sir::SemTerminator::ActorCall {
                     operation: hew_sir::ActorOperation::Submit { policy, .. },
@@ -348,7 +353,9 @@ pub(super) fn semantic_callables(checked: &hew_sir::CheckedModule<'_>) -> BTreeS
                 } if policy.may_suspend() => {
                     resumable.insert(function.callable);
                 }
-                hew_sir::SemTerminator::ActorCall {
+                hew_sir::SemTerminator::RecoverFault { .. }
+                | hew_sir::SemTerminator::Suspend { .. }
+                | hew_sir::SemTerminator::ActorCall {
                     operation:
                         hew_sir::ActorOperation::AwaitStopped(_)
                         | hew_sir::ActorOperation::AwaitRestarted(_)
@@ -507,7 +514,6 @@ pub(super) fn verify_callables(module: &PhysicalModule) -> Result<(), PhysicalEr
                 | PhysicalTerminator::GeneratorNext { .. }
                 | PhysicalTerminator::StreamNext { park: true, .. }
                 | PhysicalTerminator::StreamSend { park: true, .. }
-                | PhysicalTerminator::IndirectCall { .. }
                 | PhysicalTerminator::TaskAwait { .. }
                 | PhysicalTerminator::ActorAsk { .. }
                 | PhysicalTerminator::RemoteAsk { .. }
@@ -521,6 +527,18 @@ pub(super) fn verify_callables(module: &PhysicalModule) -> Result<(), PhysicalEr
                     ..
                 } => {
                     resumable.insert(function.callable);
+                }
+                PhysicalTerminator::IndirectCall {
+                    targets, callee, ..
+                } => {
+                    if targets.may_be_unknown || matches!(callee, super::ArgumentTransfer::Move(_))
+                    {
+                        resumable.insert(function.callable);
+                    }
+                    calls
+                        .entry(function.callable)
+                        .or_default()
+                        .extend(&targets.known);
                 }
                 PhysicalTerminator::ActorCall {
                     operation: hew_sir::ActorOperation::Submit { policy, .. },

@@ -1,21 +1,23 @@
-//! Plain continuation frames; semantic cleanup edges come from physical MIR.
+//! LLVM switched-resume coroutines; physical MIR owns semantic cleanup edges.
 
+use super::suspend::call_value;
 use super::*;
-use inkwell::attributes::AttributeLoc;
-use inkwell::values::{AsValueRef, BasicValue, InstructionValue};
-use std::cell::{Cell, RefCell};
+use inkwell::attributes::{Attribute, AttributeLoc};
+use inkwell::context::AsContextRef;
+use inkwell::intrinsics::Intrinsic;
+use inkwell::llvm_sys::{core::LLVMBuildCall2, prelude::LLVMValueRef};
+use inkwell::types::AsTypeRef;
+use inkwell::values::{AsValueRef, CallSiteValue};
+use std::cell::Cell;
 
 pub(super) struct Frame<'ctx> {
     pub state: PointerValue<'ctx>,
-    pub destroying: PointerValue<'ctx>,
+    destroying: PointerValue<'ctx>,
     pub finish: BasicBlock<'ctx>,
-    pub allocations: BasicBlock<'ctx>,
-    index: PointerValue<'ctx>,
-    dispatch: InstructionValue<'ctx>,
-    next_state: Cell<u32>,
+    entry: BasicBlock<'ctx>,
+    suspend: FunctionValue<'ctx>,
     exit: BasicBlock<'ctx>,
     invalid_destroy: BasicBlock<'ctx>,
-    carried: RefCell<BTreeSet<usize>>,
     child: Cell<Option<(PointerValue<'ctx>, PointerValue<'ctx>)>>,
 }
 
@@ -27,6 +29,54 @@ const _: () = {
     );
 };
 
+fn intrinsic<'ctx>(
+    module: &Module<'ctx>,
+    name: &str,
+    overload: &[BasicTypeEnum<'ctx>],
+) -> CodegenResult<FunctionValue<'ctx>> {
+    Intrinsic::find(name)
+        .and_then(|intrinsic| intrinsic.get_declaration(module, overload))
+        .ok_or_else(|| CodegenError::FailClosed(format!("missing LLVM intrinsic {name}")))
+}
+
+// Inkwell's basic values exclude tokens. Confine the raw API to calls carrying
+// coroutine identity and suspension tokens.
+fn token_call<'ctx>(
+    builder: &Builder<'ctx>,
+    function: FunctionValue<'ctx>,
+    args: &mut [LLVMValueRef],
+) -> CallSiteValue<'ctx> {
+    // SAFETY: callers supply live values with the intrinsic's declared types;
+    // the builder is positioned in the function being emitted.
+    unsafe {
+        CallSiteValue::new(LLVMBuildCall2(
+            builder.as_mut_ptr(),
+            function.get_type().as_type_ref(),
+            function.as_value_ref(),
+            args.as_mut_ptr(),
+            u32::try_from(args.len()).expect("coroutine intrinsic argument count fits u32"),
+            c"".as_ptr(),
+        ))
+    }
+}
+
+pub(super) fn entry_storage<'ctx>(
+    ctx: &'ctx Context,
+    entry: BasicBlock<'ctx>,
+    ty: BasicTypeEnum<'ctx>,
+    name: &str,
+) -> CodegenResult<PointerValue<'ctx>> {
+    let builder = ctx.create_builder();
+    if let Some(first) = entry.get_first_instruction() {
+        builder.position_before(&first);
+    } else {
+        builder.position_at_end(entry);
+    }
+    builder
+        .build_alloca(ty, name)
+        .llvm_ctx("allocate local storage")
+}
+
 pub(super) fn begin<'ctx>(
     ctx: &'ctx Context,
     module: &Module<'ctx>,
@@ -36,54 +86,90 @@ pub(super) fn begin<'ctx>(
 ) -> CodegenResult<Frame<'ctx>> {
     function.add_attribute(
         AttributeLoc::Function,
-        ctx.create_string_attribute("hew.resumable", ""),
+        ctx.create_enum_attribute(Attribute::get_named_enum_kind_id("presplitcoroutine"), 0),
     );
-    let initial = function.get_first_basic_block().ok_or_else(|| {
-        CodegenError::FailClosed("resumable function lacks its initial block".into())
-    })?;
-    let insertion = builder.get_insert_block().ok_or_else(|| {
-        CodegenError::FailClosed("resumable function lacks an insertion point".into())
-    })?;
-    let handle = builder
-        .build_alloca(ctx.i8_type(), "frame.base")
-        .llvm_ctx("reserve continuation base")?;
-    mark(ctx, handle, "hew.frame.base")?;
-    let index = builder
-        .build_alloca(ctx.i32_type(), "frame.index")
-        .llvm_ctx("reserve continuation state")?;
-    mark(ctx, index, "hew.frame.index")?;
-    let destroying = builder
-        .build_alloca(ctx.bool_type(), "frame.destroying")
-        .llvm_ctx("reserve destruction entry")?;
-    mark(ctx, destroying, "hew.frame.destroying")?;
-    builder
-        .build_store(index, ctx.i32_type().const_zero())
-        .llvm_ctx("initialize continuation state")?;
+    let entry = function
+        .get_first_basic_block()
+        .ok_or_else(|| CodegenError::FailClosed("coroutine lacks an entry block".into()))?;
+    let pointer = ctx.ptr_type(AddressSpace::default());
+    let null = pointer.const_null();
+    let destroying = entry_storage(ctx, entry, ctx.bool_type().into(), "frame.destroying")?;
     builder
         .build_store(destroying, ctx.bool_type().const_zero())
         .llvm_ctx("initialize destruction entry")?;
-    let allocations = ctx.append_basic_block(function, "frame.dispatch");
-    let invalid = ctx.append_basic_block(function, "frame.invalid");
-    let finish = ctx.append_basic_block(function, "frame.finish");
-    let final_block = ctx.append_basic_block(function, "frame.final");
-    let cleanup = ctx.append_basic_block(function, "frame.cleanup");
-    let exit = ctx.append_basic_block(function, "frame.exit");
-    let invalid_destroy = ctx.append_basic_block(function, "frame.invalid.destroy");
-    builder.position_at_end(allocations);
-    let selected = builder
-        .build_load(ctx.i32_type(), index, "frame.resume.index")
-        .llvm_ctx("read continuation state")?
-        .into_int_value();
-    let dispatch = builder
-        .build_switch(
-            selected,
-            invalid,
-            &[
-                (ctx.i32_type().const_zero(), initial),
-                (ctx.i32_type().const_int(1, false), cleanup),
-            ],
-        )
-        .llvm_ctx("dispatch continuation entry")?;
+    let id = token_call(
+        builder,
+        intrinsic(module, "llvm.coro.id", &[])?,
+        &mut [
+            ctx.i32_type().const_int(16, false).as_value_ref(),
+            null.as_value_ref(),
+            null.as_value_ref(),
+            null.as_value_ref(),
+        ],
+    );
+    let alloc = token_call(
+        builder,
+        intrinsic(module, "llvm.coro.alloc", &[])?,
+        &mut [id.as_value_ref()],
+    )
+    .try_as_basic_value()
+    .basic()
+    .unwrap()
+    .into_int_value();
+    let initial = builder.get_insert_block().unwrap();
+    let allocate = ctx.append_basic_block(function, "coro.allocate");
+    let start = ctx.append_basic_block(function, "coro.begin");
+    builder
+        .build_conditional_branch(alloc, allocate, start)
+        .llvm_ctx("select coroutine allocation")?;
+    builder.position_at_end(allocate);
+    let size = call_value(
+        builder,
+        intrinsic(module, "llvm.coro.size", &[ctx.i64_type().into()])?,
+        &[],
+        "frame.size",
+    )?;
+    let allocator = get_or_declare_external(
+        module,
+        "hew_cont_frame_alloc",
+        pointer.fn_type(&[ctx.i64_type().into()], false),
+    )?;
+    let memory =
+        call_value(builder, allocator, &[size.into()], "frame.memory")?.into_pointer_value();
+    builder
+        .build_unconditional_branch(start)
+        .llvm_ctx("initialize coroutine")?;
+    builder.position_at_end(start);
+    let storage = builder
+        .build_phi(pointer, "frame.storage")
+        .llvm_ctx("select coroutine storage")?;
+    storage.add_incoming(&[(&null, initial), (&memory, allocate)]);
+    let handle = token_call(
+        builder,
+        intrinsic(module, "llvm.coro.begin", &[])?,
+        &mut [id.as_value_ref(), storage.as_basic_value().as_value_ref()],
+    )
+    .try_as_basic_value()
+    .basic()
+    .unwrap()
+    .into_pointer_value();
+    let body = ctx.append_basic_block(function, "coro.body");
+    builder
+        .build_unconditional_branch(body)
+        .llvm_ctx("enter coroutine body")?;
+    let finish = ctx.append_basic_block(function, "coro.finish");
+    let final_block = ctx.append_basic_block(function, "coro.final");
+    let cleanup = ctx.append_basic_block(function, "coro.cleanup");
+    let free_block = ctx.append_basic_block(function, "coro.free");
+    let exit = ctx.append_basic_block(function, "coro.exit");
+    let invalid_destroy = ctx.append_basic_block(function, "coro.invalid.destroy");
+    let suspend = intrinsic(module, "llvm.coro.suspend", &[])?;
+    // SAFETY: the token constant belongs to this context.
+    let none = unsafe {
+        inkwell::llvm_sys::core::LLVMConstNull(inkwell::llvm_sys::core::LLVMTokenTypeInContext(
+            ctx.as_ctx_ref(),
+        ))
+    };
     builder.position_at_end(finish);
     let is_destroying = builder
         .build_load(ctx.bool_type(), destroying, "frame.is.destroying")
@@ -91,67 +177,87 @@ pub(super) fn begin<'ctx>(
         .into_int_value();
     builder
         .build_conditional_branch(is_destroying, cleanup, final_block)
-        .llvm_ctx("settle continuation")?;
+        .llvm_ctx("settle coroutine")?;
     builder.position_at_end(final_block);
+    let outcome = token_call(
+        builder,
+        suspend,
+        &mut [none, ctx.bool_type().const_int(1, false).as_value_ref()],
+    )
+    .try_as_basic_value()
+    .basic()
+    .unwrap()
+    .into_int_value();
     builder
-        .build_store(handle, ctx.ptr_type(AddressSpace::default()).const_null())
-        .llvm_ctx("publish continuation completion")?;
-    builder
-        .build_store(index, ctx.i32_type().const_int(1, false))
-        .llvm_ctx("retain terminal continuation state")?;
-    builder
-        .build_unconditional_branch(exit)
-        .llvm_ctx("return completed continuation")?;
+        .build_switch(
+            outcome,
+            exit,
+            &[
+                (ctx.i8_type().const_zero(), invalid_destroy),
+                (ctx.i8_type().const_int(1, false), cleanup),
+            ],
+        )
+        .llvm_ctx("finish coroutine")?;
     builder.position_at_end(cleanup);
+    let memory = token_call(
+        builder,
+        intrinsic(module, "llvm.coro.free", &[])?,
+        &mut [id.as_value_ref(), handle.as_value_ref()],
+    )
+    .try_as_basic_value()
+    .basic()
+    .unwrap()
+    .into_pointer_value();
+    let allocated = builder
+        .build_is_not_null(memory, "frame.allocated")
+        .llvm_ctx("test heap frame")?;
+    builder
+        .build_conditional_branch(allocated, free_block, exit)
+        .llvm_ctx("release only heap storage")?;
+    builder.position_at_end(free_block);
     let free = get_or_declare_external(
         module,
         "hew_cont_frame_free",
-        ctx.void_type()
-            .fn_type(&[ctx.ptr_type(AddressSpace::default()).into()], false),
+        ctx.void_type().fn_type(&[pointer.into()], false),
     )?;
     builder
-        .build_call(free, &[handle.into()], "")
-        .llvm_ctx("release completed continuation frame")?;
+        .build_call(free, &[memory.into()], "")
+        .llvm_ctx("free coroutine storage")?;
     builder
         .build_unconditional_branch(exit)
-        .llvm_ctx("finish continuation destruction")?;
+        .llvm_ctx("finish destruction")?;
     builder.position_at_end(exit);
+    token_call(
+        builder,
+        intrinsic(module, "llvm.coro.end", &[])?,
+        &mut [
+            handle.as_value_ref(),
+            ctx.bool_type().const_zero().as_value_ref(),
+            none,
+        ],
+    );
     builder
         .build_return(Some(&handle))
-        .llvm_ctx("return continuation to owner")?;
+        .llvm_ctx("return coroutine handle")?;
+    builder.position_at_end(invalid_destroy);
     let abort = get_or_declare_external(module, "abort", ctx.void_type().fn_type(&[], false))?;
-    for block in [invalid, invalid_destroy] {
-        builder.position_at_end(block);
-        builder
-            .build_call(abort, &[], "")
-            .llvm_ctx("refuse invalid continuation entry")?;
-        builder
-            .build_unreachable()
-            .llvm_ctx("terminate invalid continuation entry")?;
-    }
-    builder.position_at_end(insertion);
-    let frame = Frame {
+    builder
+        .build_call(abort, &[], "")
+        .llvm_ctx("refuse invalid coroutine entry")?;
+    builder
+        .build_unreachable()
+        .llvm_ctx("terminate invalid coroutine entry")?;
+    builder.position_at_end(body);
+    Ok(Frame {
         state,
         destroying,
         finish,
-        allocations,
-        index,
-        dispatch,
-        next_state: Cell::new(2),
+        entry,
+        suspend,
         exit,
         invalid_destroy,
-        carried: RefCell::new(BTreeSet::new()),
         child: Cell::new(None),
-    };
-    frame.carry(ctx, builder, state, "invocation.state.slot")?;
-    Ok(frame)
-}
-
-fn mark(ctx: &Context, slot: PointerValue<'_>, name: &str) -> CodegenResult<()> {
-    slot.as_instruction()
-        .ok_or_else(|| CodegenError::FailClosed("frame field lacks its instruction".into()))?
-        .set_metadata(ctx.metadata_node(&[]), ctx.get_kind_id(name))
-        .map_err(|error| CodegenError::FailClosed(error.to_string()))
+    })
 }
 
 impl<'ctx> Frame<'ctx> {
@@ -171,56 +277,13 @@ impl<'ctx> Frame<'ctx> {
         Ok(slots)
     }
 
-    pub fn carry<T: inkwell::values::BasicValue<'ctx> + Copy>(
-        &self,
-        ctx: &'ctx Context,
-        builder: &Builder<'ctx>,
-        value: T,
-        name: &str,
-    ) -> CodegenResult<T> {
-        let basic = value.as_basic_value_enum();
-        if basic.as_instruction_value().is_none()
-            || !self
-                .carried
-                .borrow_mut()
-                .insert(value.as_value_ref() as usize)
-        {
-            return Ok(value);
-        }
-        let slot = self.storage(ctx, basic.get_type(), name)?;
-        builder
-            .build_store(slot, value)
-            .llvm_ctx("retain emitter suspension carrier")?
-            .set_metadata(ctx.metadata_node(&[]), ctx.get_kind_id("hew.carry"))
-            .map_err(|error| CodegenError::FailClosed(error.to_string()))?;
-        Ok(value)
-    }
-
     pub fn storage(
         &self,
         ctx: &'ctx Context,
         ty: BasicTypeEnum<'ctx>,
         name: &str,
     ) -> CodegenResult<PointerValue<'ctx>> {
-        let builder = ctx.create_builder();
-        let mut first = self.allocations.get_first_instruction();
-        while first.is_some_and(|instruction| {
-            instruction.get_opcode() == inkwell::values::InstructionOpcode::Phi
-        }) {
-            first = first.and_then(inkwell::values::InstructionValue::get_next_instruction);
-        }
-        if let Some(first) = first {
-            builder.position_before(&first);
-        } else {
-            builder.position_at_end(self.allocations);
-        }
-        builder
-            .build_alloca(ty, name)
-            .llvm_ctx("allocate frame carrier")
-    }
-
-    pub fn stack(&self, ctx: &Context, slot: PointerValue<'ctx>) -> CodegenResult<()> {
-        mark(ctx, slot, "hew.stack")
+        entry_storage(ctx, self.entry, ty, name)
     }
 
     pub fn suspend(
@@ -230,63 +293,79 @@ impl<'ctx> Frame<'ctx> {
         resumed: BasicBlock<'ctx>,
         destroyed: BasicBlock<'ctx>,
     ) -> CodegenResult<()> {
-        let next = self.next_state.get();
-        self.next_state
-            .set(next.checked_add(1).ok_or_else(|| {
-                CodegenError::FailClosed("continuation state exceeds u32".into())
-            })?);
-        let function = self.allocations.get_parent().ok_or_else(|| {
-            CodegenError::FailClosed("continuation dispatch has no function".into())
-        })?;
-        let arm = ctx.append_basic_block(function, "frame.resume");
-        let entry_builder = ctx.create_builder();
-        entry_builder.position_at_end(arm);
-        let destroying = entry_builder
-            .build_load(ctx.bool_type(), self.destroying, "frame.via.destroy")
-            .llvm_ctx("inspect continuation entry kind")?
-            .into_int_value();
-        entry_builder
-            .build_conditional_branch(destroying, destroyed, resumed)
-            .llvm_ctx("select continuation entry kind")?;
-        // SAFETY: dispatch is a live i32 switch and arm belongs to its function.
-        unsafe {
-            inkwell::llvm_sys::core::LLVMAddCase(
-                self.dispatch.as_value_ref(),
-                ctx.i32_type()
-                    .const_int(u64::from(next), false)
-                    .as_value_ref(),
-                arm.as_mut_ptr(),
-            );
-        }
-        builder
-            .build_store(self.index, ctx.i32_type().const_int(u64::from(next), false))
-            .llvm_ctx("retain continuation resume point")?;
+        let function = self.entry.get_parent().unwrap();
+        let suspend = ctx.append_basic_block(function, "coro.suspend");
+        let destroy = ctx.append_basic_block(function, "coro.destroy");
         let destroying = builder
             .build_load(ctx.bool_type(), self.destroying, "frame.suspend.destroying")
             .llvm_ctx("guard synchronous destruction")?
             .into_int_value();
         builder
-            .build_conditional_branch(destroying, self.invalid_destroy, self.exit)
-            .llvm_ctx("return only a resumable continuation")?;
+            .build_conditional_branch(destroying, self.invalid_destroy, suspend)
+            .llvm_ctx("permit suspension only during resume")?;
+        builder.position_at_end(suspend);
+        // SAFETY: the token constant belongs to this context.
+        let none = unsafe {
+            inkwell::llvm_sys::core::LLVMConstNull(inkwell::llvm_sys::core::LLVMTokenTypeInContext(
+                ctx.as_ctx_ref(),
+            ))
+        };
+        let outcome = token_call(
+            builder,
+            self.suspend,
+            &mut [none, ctx.bool_type().const_zero().as_value_ref()],
+        )
+        .try_as_basic_value()
+        .basic()
+        .unwrap()
+        .into_int_value();
+        builder
+            .build_switch(
+                outcome,
+                self.exit,
+                &[
+                    (ctx.i8_type().const_zero(), resumed),
+                    (ctx.i8_type().const_int(1, false), destroy),
+                ],
+            )
+            .llvm_ctx("dispatch coroutine suspension")?;
+        builder.position_at_end(destroy);
+        builder
+            .build_store(self.destroying, ctx.bool_type().const_int(1, false))
+            .llvm_ctx("enter synchronous destruction")?;
+        builder
+            .build_unconditional_branch(destroyed)
+            .llvm_ctx("enter semantic cleanup")?;
         Ok(())
     }
 }
 
-pub(super) fn lower<'ctx>(
+pub(super) fn handle_operation<'ctx>(
     ctx: &'ctx Context,
     module: &Module<'ctx>,
-    machine: &TargetMachine,
+    builder: &Builder<'ctx>,
+    handle: PointerValue<'ctx>,
+    name: &str,
 ) -> CodegenResult<()> {
-    let functions: Vec<_> = module
-        .get_functions()
-        .filter(|function| {
-            function
-                .get_string_attribute(AttributeLoc::Function, "hew.resumable")
-                .is_some()
-        })
-        .collect();
-    for function in functions {
-        super::frames::lower(ctx, module, &machine.get_target_data(), function)?;
-    }
+    let function = builder
+        .get_insert_block()
+        .and_then(|block| block.get_parent())
+        .unwrap();
+    let invoke = ctx.append_basic_block(function, "coro.handle.invoke");
+    let done = ctx.append_basic_block(function, "coro.handle.done");
+    let present = builder
+        .build_is_not_null(handle, "coro.handle.present")
+        .llvm_ctx("test optional coroutine handle")?;
+    builder
+        .build_conditional_branch(present, invoke, done)
+        .llvm_ctx("select coroutine operation")?;
+    builder.position_at_end(invoke);
+    builder
+        .build_call(intrinsic(module, name, &[])?, &[handle.into()], "")
+        .llvm_ctx("operate on coroutine")?;
+    builder
+        .build_unconditional_branch(done)
+        .llvm_ctx("finish coroutine operation")?;
+    builder.position_at_end(done);
     Ok(())
 }

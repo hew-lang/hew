@@ -47,7 +47,7 @@ use hew_parser::ast::{BinaryOp, Expr, Literal, Spanned, UnaryOp};
 /// contract unchanged.
 #[derive(Debug, Default, Clone)]
 pub struct ConstEnv {
-    values: HashMap<String, i128>,
+    values: HashMap<hew_parser::ast::Ident, i128>,
 }
 
 #[allow(
@@ -64,13 +64,13 @@ impl ConstEnv {
         }
     }
 
-    pub fn insert(&mut self, name: impl Into<String>, value: i128) {
-        self.values.insert(name.into(), value);
+    pub fn insert(&mut self, name: impl crate::env::LexicalName, value: i128) {
+        self.values.insert(name.lexical_key(), value);
     }
 
     #[must_use]
-    pub fn get(&self, name: &str) -> Option<i128> {
-        self.values.get(name).copied()
+    pub fn get(&self, name: impl crate::env::LexicalName) -> Option<i128> {
+        self.values.get(&name.lexical_key()).copied()
     }
 }
 
@@ -137,7 +137,7 @@ impl ConstIntegerTarget {
         Some(Self { min, max })
     }
 
-    const fn machine_usize_compat() -> Self {
+    pub(super) const fn machine_usize_compat() -> Self {
         Self {
             min: 0,
             max: u64::MAX as i128,
@@ -177,9 +177,7 @@ fn machine_const_error(error: ConstEvalError) -> ConstEvalError {
 /// Evaluate a module-constant expression for its declared integer target.
 ///
 /// The result carrier is `i128` so callers can range-check values without
-/// reinterpreting signed bits. Parser literals are currently `i64`, making
-/// `i128` sufficient for every supported operation plus an exact target range
-/// comparison.
+/// reinterpreting signed bits. It holds every Hew integer type exactly.
 ///
 /// # Errors
 ///
@@ -190,7 +188,22 @@ pub fn eval_integer_const_expr(
     env: &ConstEnv,
     target: ConstIntegerTarget,
 ) -> Result<i128, ConstEvalError> {
-    let value = eval_inner(&expr.0, env, target)?;
+    eval_integer_const_expr_with_values(expr, target, |expr| match &expr.0 {
+        Expr::Ident(name) => env.get(*name),
+        _ => None,
+    })
+}
+
+/// Evaluate an integer expression using already-checked values at source spans.
+///
+/// # Errors
+/// Returns the same arithmetic and expression errors as [`eval_integer_const_expr`].
+pub fn eval_integer_const_expr_with_values(
+    expr: &Spanned<Expr>,
+    target: ConstIntegerTarget,
+    mut values: impl FnMut(&Spanned<Expr>) -> Option<i128>,
+) -> Result<i128, ConstEvalError> {
+    let value = eval_inner(expr, &mut values, target)?;
     if target.contains(value) {
         Ok(value)
     } else {
@@ -202,15 +215,18 @@ pub fn eval_integer_const_expr(
 /// Target range checks happen after every arithmetic operation and once at the
 /// outer expression boundary; there is no panic path for well-formed inputs.
 fn eval_inner(
-    expr: &Expr,
-    env: &ConstEnv,
+    expr: &Spanned<Expr>,
+    values: &mut impl FnMut(&Spanned<Expr>) -> Option<i128>,
     target: ConstIntegerTarget,
 ) -> Result<i128, ConstEvalError> {
+    if let Some(value) = values(expr) {
+        return Ok(value);
+    }
     #[allow(
         clippy::match_same_arms,
         reason = "explicit variants preserve exhaustive-traversal posture (LESSONS)"
     )]
-    match expr {
+    match &expr.0 {
         Expr::Literal(Literal::Integer { value, .. }) => Ok(*value),
         Expr::Unary {
             op: UnaryOp::Negate,
@@ -220,7 +236,7 @@ fn eval_inner(
             // in the target domain immediately: this still admits the signed
             // minimum spelling `-128: i8`, while rejecting `-(-128)` before an
             // enclosing operation can mask the overflow.
-            let inner = eval_inner(&operand.0, env, target)?;
+            let inner = eval_inner(operand, values, target)?;
             let value = inner
                 .checked_neg()
                 .ok_or(ConstEvalError::ArithmeticOverflow)?;
@@ -230,12 +246,10 @@ fn eval_inner(
                 Err(ConstEvalError::ArithmeticOverflow)
             }
         }
-        Expr::Ident(name) => env
-            .get(name.name.as_str())
-            .ok_or_else(|| ConstEvalError::UnknownConst(name.to_string())),
+        Expr::Ident(name) => Err(ConstEvalError::UnknownConst(name.to_string())),
         Expr::Binary { left, op, right } => {
-            let l = eval_inner(&left.0, env, target)?;
-            let r = eval_inner(&right.0, env, target)?;
+            let l = eval_inner(left, values, target)?;
+            let r = eval_inner(right, values, target)?;
             eval_binary(*op, l, r, target)
         }
         // Every other Expr shape is rejected. The match is intentionally
@@ -285,6 +299,7 @@ fn eval_inner(
         | Expr::Await(_)
         | Expr::RegexLiteral(_)
         | Expr::ByteStringLiteral(_)
+        | Expr::MacroCall(_)
         | Expr::MacroInvocation { .. }
         | Expr::ByteArrayLiteral(_)
         | Expr::Is { .. }

@@ -1,0 +1,23 @@
+#[resource]
+type Ticket { id: i64; }
+
+impl Ticket {
+    fn close(consume self) {
+        sleep(1ms);
+        println(self.id);
+    }
+}
+
+fn plain() -> i64 { 0 }
+
+fn replace_callback() {
+    let ticket = Ticket { id: 5 };
+    var callback: fn() -> i64 = move || ticket.id;
+    callback = plain;
+    println(callback());
+}
+
+fn main() {
+    let callback: fn() -> () = replace_callback;
+    callback();
+}

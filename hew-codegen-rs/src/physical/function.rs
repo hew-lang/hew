@@ -53,8 +53,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
         } else {
             None
         };
-        let slots =
-            partial::allocate_storage(module, function, callable, value, &builder, frame.as_ref())?;
+        let slots = partial::allocate_storage(module, function, callable, value, &builder)?;
         if let Some((emitter, function_debug, attribution)) = &mut debug {
             debug::declare_locals(
                 ctx,
@@ -68,14 +67,15 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 frame.as_ref(),
             )?;
         }
-        let place_flags =
-            partial::allocate_flags(module, function, &builder, &slots, frame.as_ref())?;
-        let active_fault = builder
-            .build_alloca(ctx.ptr_type(AddressSpace::default()), "active.fault")
-            .llvm_ctx("allocate active fault")?;
-        let active_status = builder
-            .build_alloca(ctx.i32_type(), "active.status")
-            .llvm_ctx("allocate active status")?;
+        let place_flags = partial::allocate_flags(module, function, &builder, &slots)?;
+        let active_fault = coro::entry_storage(
+            ctx,
+            prologue,
+            ctx.ptr_type(AddressSpace::default()).into(),
+            "active.fault",
+        )?;
+        let active_status =
+            coro::entry_storage(ctx, prologue, ctx.i32_type().into(), "active.status")?;
         builder
             .build_store(
                 active_fault,
@@ -90,15 +90,18 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
         for block in &function.blocks {
             if let PhysicalTerminator::EnterDefer { park, .. } = block.terminator {
                 if let std::collections::btree_map::Entry::Vacant(entry) = fault_parks.entry(park) {
-                    let pointer = builder
-                        .build_alloca(
-                            ctx.ptr_type(AddressSpace::default()),
-                            &format!("park.{}.fault", park.0),
-                        )
-                        .llvm_ctx("allocate defer fault park")?;
-                    let status = builder
-                        .build_alloca(ctx.i32_type(), &format!("park.{}.status", park.0))
-                        .llvm_ctx("allocate defer status park")?;
+                    let pointer = coro::entry_storage(
+                        ctx,
+                        prologue,
+                        ctx.ptr_type(AddressSpace::default()).into(),
+                        &format!("park.{}.fault", park.0),
+                    )?;
+                    let status = coro::entry_storage(
+                        ctx,
+                        prologue,
+                        ctx.i32_type().into(),
+                        &format!("park.{}.status", park.0),
+                    )?;
                     builder
                         .build_store(pointer, ctx.ptr_type(AddressSpace::default()).const_null())
                         .llvm_ctx("initialize defer fault park")?;
@@ -112,12 +115,12 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
         let mut task_scopes = BTreeMap::new();
         for op in function.blocks.iter().flat_map(|block| &block.ops) {
             if let PhysicalOp::TaskScopeEnter { scope, .. } = op {
-                let slot = builder
-                    .build_alloca(
-                        ctx.ptr_type(AddressSpace::default()),
-                        &format!("task.scope.{}", scope.0),
-                    )
-                    .llvm_ctx("allocate task scope slot")?;
+                let slot = coro::entry_storage(
+                    ctx,
+                    prologue,
+                    ctx.ptr_type(AddressSpace::default()).into(),
+                    &format!("task.scope.{}", scope.0),
+                )?;
                 task_scopes.insert(*scope, slot);
             }
         }
@@ -146,7 +149,15 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 .build_store(slots[storage_id.0 as usize], loaded)
                 .llvm_ctx("store physical parameter")?;
             if let Some((emitter, function_debug, _)) = &debug {
-                emitter.local_value(function_debug, *storage_id, loaded, prologue)?;
+                // Resumable parameter stores execute after coroutine initialization.
+                emitter.local_value(
+                    function_debug,
+                    *storage_id,
+                    loaded,
+                    builder
+                        .get_insert_block()
+                        .expect("parameter store has a block"),
+                )?;
             }
             param_index += 1;
         }

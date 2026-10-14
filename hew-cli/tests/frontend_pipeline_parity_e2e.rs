@@ -111,7 +111,7 @@ fn manifest_undeclared_import_rejected_identically() {
 
     fs::write(
         workspace.path().join("hew.toml"),
-        "[package]\nname = \"testpkg\"\n",
+        "[package]\nname = \"testpkg\"\nversion = \"0.1.0\"\n",
     )
     .expect("write hew.toml");
 
@@ -261,7 +261,7 @@ fn type_error_in_imported_module_reported_identically() {
 
     fs::write(
         workspace.path().join("hew.toml"),
-        "[package]\nname = \"siblingpkg\"\n",
+        "[package]\nname = \"siblingpkg\"\nversion = \"0.1.0\"\n",
     )
     .expect("write hew.toml");
 

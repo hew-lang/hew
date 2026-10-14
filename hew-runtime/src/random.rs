@@ -68,6 +68,10 @@ impl MtState {
             gauss_spare: 0.0,
             gauss_has_spare: false,
         };
+        if crate::generator::enabled() {
+            s.init_by_array(&[0]);
+            return s;
+        }
         // Auto-seed from OS entropy via rand (already a dependency).
         // WASM doesn't have reliable OS entropy, so use fixed seed there.
         #[cfg(not(target_arch = "wasm32"))]

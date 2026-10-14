@@ -12,7 +12,7 @@ use hew_runtime::envelope::{
     encode_envelope_frame, encode_link_down_payload, encode_link_req_payload,
     encode_monitor_down_payload, encode_monitor_req_payload, encode_registry_gossip_payload,
     encode_setup_result_payload, encode_swim_payload, ControlFrame, DecodeError, EnvelopeFrame,
-    LinkReqPayload, MonitorDownPayload, MonitorPayloadError, MonitorReqPayload,
+    EnvelopeMessage, LinkReqPayload, MonitorDownPayload, MonitorPayloadError, MonitorReqPayload,
     NodeSessionIdentity, RegistryGossipPayload, RegistryGossipPayloadError, SetupResultPayload,
     SwimControlPayload, SwimGossipEntry, SwimPayloadError, WireFrame, CTRL_DEMONITOR,
     CTRL_LINK_DOWN, CTRL_LINK_REQ, CTRL_LINK_SETUP_RESULT, CTRL_MONITOR_DOWN, CTRL_MONITOR_REQ,
@@ -188,17 +188,21 @@ fn assert_node_session_value(value: &Value, expected: NodeSessionIdentity) {
     );
 }
 
+fn handler() -> EnvelopeMessage {
+    EnvelopeMessage::Handler("tests.Actor.handle".into())
+}
+
 fn envelope_frame(
     target: Option<Location>,
     source: Option<Location>,
-    msg_type: i32,
+    message: EnvelopeMessage,
     payload: Vec<u8>,
 ) -> EnvelopeFrame {
     EnvelopeFrame {
         version: WIRE_VERSION,
         target,
         source,
-        msg_type,
+        message,
         payload,
         request_id: 0,
     }
@@ -226,18 +230,15 @@ fn cddl_envelope_shape(frame: &EnvelopeFrame) {
     assert_integer_value(find_field(entries, 2), i128::from(FRAME_TYPE_ENVELOPE));
     assert_optional_location_value(find_field(entries, 3), frame.target);
     assert_optional_location_value(find_field(entries, 4), frame.source);
-    assert_integer_value(find_field(entries, 5), i128::from(frame.msg_type));
+    match &frame.message {
+        EnvelopeMessage::Handler(identity) => {
+            assert_eq!(find_field(entries, 5), &Value::Text(identity.clone()));
+        }
+        EnvelopeMessage::Reply => assert_integer_value(find_field(entries, 5), 0),
+        EnvelopeMessage::Rejected => assert_integer_value(find_field(entries, 5), 1),
+    }
     assert_bytes_value(find_field(entries, 6), &frame.payload);
     assert_integer_value(find_field(entries, 7), i128::from(frame.request_id));
-}
-
-fn cddl_envelope_shape_raw_serialize(frame: &EnvelopeFrame) {
-    let bytes = to_cbor(frame);
-    let value = decode_value(&bytes);
-    let entries = map_entries(&value);
-    assert_eq!(entries.len(), 7);
-    assert_integer_keys_and_order(entries, &[1, 2, 3, 4, 5, 6, 7]);
-    assert_bytes_value(find_field(entries, 6), &frame.payload);
 }
 
 fn payload(size: usize) -> Vec<u8> {
@@ -253,7 +254,7 @@ fn minimal_control() -> ControlFrame {
 }
 
 fn minimal_envelope() -> EnvelopeFrame {
-    envelope_frame(Some(location(1, 1, 1)), None, 0, vec![])
+    envelope_frame(Some(location(1, 1, 1)), None, handler(), vec![])
 }
 
 fn registry_payload(op: u8, name: &str, location: Location) -> RegistryGossipPayload {
@@ -270,7 +271,7 @@ fn well_formed_envelope_value_with_frame_type(frame_type: Value) -> Value {
         (int(2u64), frame_type),
         (int(3u64), location_value(location(1, 1, 1))),
         (int(4u64), Value::Null),
-        (int(5u64), int(0i32)),
+        (int(5u64), Value::Text("tests.Actor.handle".into())),
         (int(6u64), Value::Bytes(vec![])),
         (int(7u64), int(0u64)),
     ])
@@ -307,14 +308,6 @@ fn legacy_text_keyed_control_value() -> Value {
 // -- Schema constant tests --------------------------------------------------
 
 #[test]
-fn wire_version_is_two() {
-    assert_eq!(
-        WIRE_VERSION, 2,
-        "WIRE_VERSION must match schemas/envelope.cddl wire-version = 2"
-    );
-}
-
-#[test]
 fn frame_type_discriminants_match_cddl() {
     assert_eq!(
         FRAME_TYPE_CONTROL, 0,
@@ -333,7 +326,7 @@ fn envelope_frame_fire_and_forget_round_trips() {
     let original = EnvelopeFrame::fire_and_forget(
         location(1, 42, 7),
         Some(location(2, 7, 11)),
-        3,
+        handler(),
         vec![1, 2, 3],
     );
     let bytes = to_cbor(&original);
@@ -347,7 +340,7 @@ fn envelope_frame_with_request_id_round_trips() {
         version: WIRE_VERSION,
         target: Some(location(3, 100, 13)),
         source: Some(location(4, 200, 17)),
-        msg_type: 0,
+        message: handler(),
         payload: b"hello".to_vec(),
         request_id: 99,
     };
@@ -359,7 +352,7 @@ fn envelope_frame_with_request_id_round_trips() {
 
 #[test]
 fn envelope_frame_empty_payload_round_trips() {
-    let original = EnvelopeFrame::fire_and_forget(location(5, 1, 19), None, 0, vec![]);
+    let original = EnvelopeFrame::fire_and_forget(location(5, 1, 19), None, handler(), vec![]);
     let bytes = to_cbor(&original);
     let decoded: EnvelopeFrame = from_cbor(&bytes);
     assert_eq!(original, decoded);
@@ -370,7 +363,7 @@ fn envelope_frame_large_payload_round_trips() {
     let original = EnvelopeFrame::fire_and_forget(
         location(6, 1000, 23),
         Some(location(7, 2000, 29)),
-        7,
+        handler(),
         payload(4096),
     );
     let bytes = to_cbor(&original);
@@ -384,7 +377,7 @@ fn envelope_frame_max_field_values_round_trips() {
         version: WIRE_VERSION,
         target: Some(location(8, u64::MAX, u32::MAX)),
         source: Some(location(9, u64::MAX - 1, u32::MAX - 1)),
-        msg_type: i32::MAX,
+        message: handler(),
         payload: vec![0xFF; 16],
         request_id: u64::MAX,
     };
@@ -558,7 +551,7 @@ fn envelope_frame_serialises_to_cddl_shape() {
         version: WIRE_VERSION,
         target: Some(location(12, 10, 41)),
         source: Some(location(13, 20, 43)),
-        msg_type: 7,
+        message: handler(),
         payload: vec![0xaa, 0xbb],
         request_id: 30,
     });
@@ -570,7 +563,7 @@ fn boundary_payload_sizes_encode_as_bstr_and_round_trip() {
         let envelope = envelope_frame(
             Some(location(14, 1, 47)),
             Some(location(15, 2, 53)),
-            0,
+            handler(),
             payload(size),
         );
         let envelope_bytes = encode_envelope_frame(&envelope).expect("envelope should encode");
@@ -594,13 +587,13 @@ fn boundary_payload_sizes_encode_as_bstr_and_round_trip() {
 }
 
 #[test]
-fn public_encoder_preserves_integer_width_boundaries_and_msg_type_gate() {
+fn public_encoder_preserves_integer_width_boundaries() {
     for request_id in [0u64, 1, u64::MAX] {
         let frame = EnvelopeFrame {
             version: WIRE_VERSION,
             target: Some(location(16, 1, 1)),
             source: Some(location(17, u64::MAX, u32::MAX)),
-            msg_type: 0,
+            message: handler(),
             payload: vec![],
             request_id,
         };
@@ -619,23 +612,6 @@ fn public_encoder_preserves_integer_width_boundaries_and_msg_type_gate() {
         cddl_envelope_shape(&frame);
     }
 
-    for (target, source) in [
-        (Some(location(19, 1, 59)), None),
-        (None, Some(location(20, 2, 61))),
-        (None, None),
-    ] {
-        let frame = EnvelopeFrame {
-            target,
-            source,
-            ..minimal_envelope()
-        };
-        cddl_envelope_shape(&frame);
-        assert_eq!(
-            decode_envelope_frame(&encode_envelope_frame(&frame).unwrap()).unwrap(),
-            frame
-        );
-    }
-
     for ctrl_kind in [0u64, u64::MAX] {
         let control = ControlFrame {
             version: WIRE_VERSION,
@@ -645,38 +621,23 @@ fn public_encoder_preserves_integer_width_boundaries_and_msg_type_gate() {
         cddl_control_shape(&control);
         assert_eq!(from_cbor::<ControlFrame>(&to_cbor(&control)), control);
     }
-
-    // The encoder accepts the full i32 range — Hew codegen uses hashed i32
-    // discriminants that may be negative. CBOR Integer covers this range on
-    // both the encode and decode paths.
-    for msg_type in [0, 1, 65_535, -1, i32::MIN, i32::MAX, 65_536] {
-        let frame = EnvelopeFrame {
-            msg_type,
-            ..minimal_envelope()
-        };
-        let encoded = encode_envelope_frame(&frame);
-        assert!(
-            encoded.is_ok(),
-            "msg_type {msg_type} must be accepted by the public encoder"
-        );
-        assert_eq!(
-            decode_envelope_frame(&encoded.unwrap()).unwrap().msg_type,
-            msg_type,
-            "msg_type {msg_type} must round-trip through encode/decode"
-        );
-    }
 }
 
 #[test]
-fn raw_serialize_preserves_signed_msg_type_wire_shape() {
-    for msg_type in [-1, i32::MIN, i32::MAX] {
+fn reply_status_round_trips_outside_handler_namespace() {
+    for message in [EnvelopeMessage::Reply, EnvelopeMessage::Rejected] {
         let frame = EnvelopeFrame {
-            msg_type,
+            target: None,
+            source: None,
+            request_id: 1,
+            message,
             ..minimal_envelope()
         };
-        cddl_envelope_shape_raw_serialize(&frame);
-        let value = decode_value(&to_cbor(&frame));
-        assert_integer_value(find_field(map_entries(&value), 5), i128::from(msg_type));
+        cddl_envelope_shape(&frame);
+        assert_eq!(
+            decode_envelope_frame(&encode_envelope_frame(&frame).unwrap()).unwrap(),
+            frame
+        );
     }
 }
 
@@ -693,7 +654,7 @@ fn encoded_frames_match_cddl_structural_rules() {
         version: WIRE_VERSION,
         target: Some(location(21, u64::MAX, u32::MAX)),
         source: Some(location(22, 1, 1)),
-        msg_type: 65_535,
+        message: handler(),
         payload: payload(256),
         request_id: u64::MAX,
     });
@@ -703,8 +664,12 @@ fn encoded_frames_match_cddl_structural_rules() {
 
 #[test]
 fn envelope_frame_serialises_to_nonempty_bytes() {
-    let frame =
-        EnvelopeFrame::fire_and_forget(location(23, 1, 67), Some(location(24, 2, 71)), 0, vec![]);
+    let frame = EnvelopeFrame::fire_and_forget(
+        location(23, 1, 67),
+        Some(location(24, 2, 71)),
+        handler(),
+        vec![],
+    );
     let bytes = to_cbor(&frame);
     assert!(!bytes.is_empty(), "CBOR output must not be empty");
 }
@@ -714,7 +679,7 @@ fn same_envelope_produces_same_bytes() {
     let frame = EnvelopeFrame::fire_and_forget(
         location(25, 1, 73),
         Some(location(26, 2, 79)),
-        0,
+        handler(),
         vec![10, 20],
     );
     let bytes1 = to_cbor(&frame);
@@ -725,18 +690,19 @@ fn same_envelope_produces_same_bytes() {
     // 3=>ctrl_kind, 4=>empty bstr.
     assert_eq!(
         to_cbor(&minimal_control()),
-        vec![0xa4, 0x01, 0x02, 0x02, 0x00, 0x03, 0x00, 0x04, 0x40]
+        vec![0xa4, 0x01, 0x03, 0x02, 0x00, 0x03, 0x00, 0x04, 0x40]
     );
 
     // a7 map(7), then k/v pairs: 1=>version, 2=>frame_type,
-    // 3=>target location, 4=>nil source, 5=>msg_type, 6=>empty bstr,
+    // 3=>target location, 4=>nil source, 5=>handler identity, 6=>empty bstr,
     // 7=>request_id.
     assert_eq!(
         encode_envelope_frame(&minimal_envelope()).unwrap(),
         vec![
-            0xa7, 0x01, 0x02, 0x02, 0x01, 0x03, 0xa3, 0x01, 0x50, 0x01, 0x01, 0x01, 0x01, 0x01,
+            0xa7, 0x01, 0x03, 0x02, 0x01, 0x03, 0xa3, 0x01, 0x50, 0x01, 0x01, 0x01, 0x01, 0x01,
             0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x02, 0x01, 0x03,
-            0x01, 0x04, 0xf6, 0x05, 0x00, 0x06, 0x40, 0x07, 0x00
+            0x01, 0x04, 0xf6, 0x05, 0x72, 0x74, 0x65, 0x73, 0x74, 0x73, 0x2e, 0x41, 0x63, 0x74,
+            0x6f, 0x72, 0x2e, 0x68, 0x61, 0x6e, 0x64, 0x6c, 0x65, 0x06, 0x40, 0x07, 0x00
         ]
     );
 }
@@ -749,7 +715,7 @@ fn wrong_version_frame_is_rejected() {
         version: WIRE_VERSION + 1,
         target: Some(location(27, 1, 83)),
         source: Some(location(28, 2, 89)),
-        msg_type: 0,
+        message: handler(),
         payload: vec![],
         request_id: 0,
     };
@@ -784,7 +750,7 @@ fn truncated_cbor_returns_error() {
     let frame = EnvelopeFrame::fire_and_forget(
         location(29, 42, 97),
         Some(location(30, 7, 101)),
-        3,
+        handler(),
         vec![1, 2, 3, 4, 5],
     );
     let bytes = to_cbor(&frame);
@@ -812,8 +778,12 @@ fn mismatched_frame_type_is_rejected() {
         Err(DecodeError::FrameTypeUnsupported { found: 0 })
     ));
 
-    let env =
-        EnvelopeFrame::fire_and_forget(location(31, 1, 103), Some(location(32, 2, 107)), 0, vec![]);
+    let env = EnvelopeFrame::fire_and_forget(
+        location(31, 1, 103),
+        Some(location(32, 2, 107)),
+        handler(),
+        vec![],
+    );
     let env_bytes = to_cbor(&env);
     assert!(matches!(
         decode_control_frame(&env_bytes),
@@ -836,7 +806,7 @@ fn decode_wire_frame_dispatches_by_frame_type() {
     let envelope = EnvelopeFrame::fire_and_forget(
         location(33, 1, 109),
         Some(location(34, 2, 113)),
-        0,
+        handler(),
         vec![4, 5, 6],
     );
     assert_eq!(
@@ -878,7 +848,7 @@ fn decode_wire_frame_rejects_missing_and_duplicate_frame_type() {
         (int(1u64), int(WIRE_VERSION)),
         (int(3u64), location_value(location(35, 1, 127))),
         (int(4u64), Value::Null),
-        (int(5u64), int(0i32)),
+        (int(5u64), Value::Text("tests.Actor.handle".into())),
         (int(6u64), Value::Bytes(vec![])),
         (int(7u64), int(0u64)),
     ]);
@@ -956,7 +926,7 @@ fn array_payload_with_integer_keys_is_rejected() {
         (int(2u64), int(FRAME_TYPE_ENVELOPE)),
         (int(3u64), location_value(location(36, 1, 131))),
         (int(4u64), Value::Null),
-        (int(5u64), int(0i32)),
+        (int(5u64), Value::Text("tests.Actor.handle".into())),
         (int(6u64), Value::Array(vec![int(0xaau8), int(0xbbu8)])),
         (int(7u64), int(0u64)),
     ]);
@@ -985,7 +955,7 @@ fn envelope_location_fields_reject_malformed_shapes() {
             (int(2u64), int(FRAME_TYPE_ENVELOPE)),
             (int(3u64), malformed_target),
             (int(4u64), Value::Null),
-            (int(5u64), int(0i32)),
+            (int(5u64), Value::Text("tests.Actor.handle".into())),
             (int(6u64), Value::Bytes(vec![])),
             (int(7u64), int(0u64)),
         ]);
@@ -1000,7 +970,7 @@ fn envelope_location_fields_reject_malformed_shapes() {
         (int(2u64), int(FRAME_TYPE_ENVELOPE)),
         (int(3u64), location_value(location(67, 1, 269))),
         (int(4u64), int(2u64)),
-        (int(5u64), int(0i32)),
+        (int(5u64), Value::Text("tests.Actor.handle".into())),
         (int(6u64), Value::Bytes(vec![])),
         (int(7u64), int(0u64)),
     ]);

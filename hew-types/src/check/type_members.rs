@@ -105,13 +105,15 @@ impl Checker {
 
         let (canonical_type, builtin) = match &target.0 {
             Expr::Ident(surface) => {
-                if self.env.lookup_ref(surface.name.as_str()).is_some()
-                    || self.module_binding_in_current_file(surface.name.as_str())
+                if self.env.lookup_ref(surface).is_some()
+                    || self.module_binding_in_current_file(surface)
                 {
                     return None;
                 }
                 let canonical = self
-                    .source_nominal_declaration(surface.name.as_str())
+                    .named_item_declaration(*surface)
+                    .map(|id| self.defs.path(id).to_string())
+                    .or_else(|| self.source_nominal_declaration(surface.name.as_str()))
                     .or_else(|| {
                         self.resolve_nominal_declaration(
                             NominalOrigin::Lexical,
@@ -147,14 +149,14 @@ impl Checker {
                 let Expr::Ident(module_short) = &object.0 else {
                     return None;
                 };
-                if self.env.lookup_ref(module_short.name.as_str()).is_some() {
+                if self.env.lookup_ref(module_short).is_some() {
                     return None;
                 }
                 self.resolve_module_type(module_short.name.as_str(), field.0.name.as_str())?;
                 self.note_import_use(module_short.name.as_str());
                 let canonical = format!(
                     "{}.{}",
-                    self.canonical_module_import_owner(module_short.name.as_str()),
+                    self.canonical_module_import_owner(module_short),
                     field.0
                 );
                 let builtin = self.resolved_builtin_type(&canonical);
@@ -176,8 +178,10 @@ impl Checker {
     /// machine follows the same nominal authority as other type heads.
     fn machine_event_type_head(&mut self, object: &Spanned<Expr>) -> Option<String> {
         let machine = match &object.0 {
-            Expr::Ident(name) if self.env.lookup_ref(name.name.as_str()).is_none() => self
-                .source_nominal_declaration(name.name.as_str())
+            Expr::Ident(name) if self.env.lookup_ref(name).is_none() => self
+                .named_item_declaration(*name)
+                .map(|id| self.defs.path(id).to_string())
+                .or_else(|| self.source_nominal_declaration(name.name.as_str()))
                 .or_else(|| {
                     self.resolve_nominal_declaration(NominalOrigin::Lexical, name.name.as_str())
                 }),
@@ -188,14 +192,14 @@ impl Checker {
                 let Expr::Ident(module) = &object.0 else {
                     return None;
                 };
-                if self.env.lookup_ref(module.name.as_str()).is_some() {
+                if self.env.lookup_ref(module).is_some() {
                     return None;
                 }
                 self.resolve_module_type(module.name.as_str(), machine.0.name.as_str())?;
                 self.note_import_use(module.name.as_str());
                 Some(format!(
                     "{}.{}",
-                    self.canonical_module_import_owner(module.name.as_str()),
+                    self.canonical_module_import_owner(module),
                     machine.0
                 ))
             }
@@ -324,6 +328,26 @@ impl Checker {
     ) -> Option<Ty> {
         let builtin = head.builtin?;
         let variant = builtin.enum_variant(member)?;
+        let index = builtin
+            .generic_enum()?
+            .variants
+            .iter()
+            .position(|candidate| std::ptr::eq(candidate, variant))?;
+        let span = match usage {
+            DottedTypeMemberUse::Reference { span } | DottedTypeMemberUse::Call { span, .. } => {
+                *span
+            }
+        };
+        if let Some(site) = self.scope_site() {
+            self.scopes.record_resolution(
+                site,
+                span,
+                super::scope::Resolution::Variant(
+                    crate::TypeHead::Builtin(builtin),
+                    u32::try_from(index).expect("builtin variant index fits u32"),
+                ),
+            );
+        }
         let constructor = variant.name;
         let expected_arity = builtin.arity();
 

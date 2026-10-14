@@ -976,11 +976,37 @@ fn remote_ask_round_trip_returns_exact_values() {
         stdout.contains("PASS remote_ask get-count=42"),
         "expected exact get('count')=='42' from remote ask; client stdout:\n{stdout}"
     );
+    assert!(
+        stdout.contains("PASS remote_ask generic-identity"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("PASS remote_ask generic-point=3,4"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("PASS remote_ask specialized-echo"),
+        "{stdout}"
+    );
     // Negative guard: no FAIL line may appear on a successful round-trip.
     assert!(
         !stdout.contains("FAIL "),
         "client reported a FAIL on the remote-ask round-trip; client stdout:\n{stdout}"
     );
+}
+
+#[test]
+fn pending_inbound_asks_preserve_other_services_and_retire_on_shutdown() {
+    let stdout = run_two_process_scenario("inbound_isolation");
+    for expected in [
+        "PASS inbound_isolation healthy-with-64-pending",
+        "PASS inbound_isolation 64-completed-1-refused",
+        "PASS inbound_isolation trapped",
+        "PASS inbound_isolation shutdown-retired-64",
+    ] {
+        assert!(stdout.contains(expected), "{stdout}");
+    }
+    assert!(!stdout.contains("FAIL "), "{stdout}");
 }
 
 /// A `RemotePid` of the client's own actor routes locally beside a live peer:

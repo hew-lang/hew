@@ -130,6 +130,7 @@ mod cross_module_same_name {
         mg.topo_order = vec![alpha_id, beta_id, root_id];
 
         let output = Checker::new(ModuleRegistry::new(vec![])).check_program(&Program {
+            expansions: hew_parser::macro_syntax::ExpansionMap::default(),
             module_graph: Some(mg),
             items: vec![],
             module_doc: None,
@@ -187,6 +188,7 @@ mod cross_module_same_name {
         mg.topo_order = vec![beta_id, alpha_id, root_id];
 
         let output = Checker::new(ModuleRegistry::new(vec![])).check_program(&Program {
+            expansions: hew_parser::macro_syntax::ExpansionMap::default(),
             module_graph: Some(mg),
             items: vec![],
             module_doc: None,
@@ -1605,6 +1607,7 @@ fn main() {}
         let extern_item = make_extern_rt_block(&["hew_sleep_ns"]);
         let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         let output = checker.check_program(&Program {
+            expansions: hew_parser::macro_syntax::ExpansionMap::default(),
             items: vec![(extern_item, 0..30)],
             module_doc: None,
             module_graph: None,
@@ -1627,6 +1630,7 @@ fn main() {}
         let extern_item = make_extern_rt_block(&["fake_unclassified_symbol"]);
         let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         let output = checker.check_program(&Program {
+            expansions: hew_parser::macro_syntax::ExpansionMap::default(),
             items: vec![(extern_item, 0..40)],
             module_doc: None,
             module_graph: None,
@@ -1649,6 +1653,7 @@ fn main() {}
         let extern_item = make_extern_rt_block(&["hew_actor_cooperate"]);
         let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         let output = checker.check_program(&Program {
+            expansions: hew_parser::macro_syntax::ExpansionMap::default(),
             items: vec![(extern_item, 0..40)],
             module_doc: None,
             module_graph: None,
@@ -1676,6 +1681,7 @@ fn main() {}
             let extern_item = make_extern_rt_block(&[sym]);
             let mut checker = Checker::new(ModuleRegistry::new(vec![]));
             let output = checker.check_program(&Program {
+                expansions: hew_parser::macro_syntax::ExpansionMap::default(),
                 items: vec![(extern_item, 0..40)],
                 module_doc: None,
                 module_graph: None,
@@ -1712,6 +1718,7 @@ fn main() {}
             let extern_item = make_extern_rt_block(&[sym]);
             let mut checker = Checker::new(ModuleRegistry::new(vec![]));
             let output = checker.check_program(&Program {
+                expansions: hew_parser::macro_syntax::ExpansionMap::default(),
                 items: vec![(extern_item, 0..40)],
                 module_doc: None,
                 module_graph: None,
@@ -1743,6 +1750,7 @@ fn main() {}
             let extern_item = make_extern_rt_block(&[sym]);
             let mut checker = Checker::new(ModuleRegistry::new(vec![]));
             let output = checker.check_program(&Program {
+                expansions: hew_parser::macro_syntax::ExpansionMap::default(),
                 items: vec![(extern_item, 0..60)],
                 module_doc: None,
                 module_graph: None,
@@ -1874,6 +1882,7 @@ fn main() {}
             let extern_item = make_extern_rt_block(&[sym]);
             let mut checker = Checker::new(ModuleRegistry::new(vec![]));
             let output = checker.check_program(&Program {
+                expansions: hew_parser::macro_syntax::ExpansionMap::default(),
                 items: vec![(extern_item, 0..60)],
                 module_doc: None,
                 module_graph: None,
@@ -1902,6 +1911,7 @@ fn main() {}
         let extern_item = make_extern_rt_block(&[sym]);
         let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         let output = checker.check_program(&Program {
+            expansions: hew_parser::macro_syntax::ExpansionMap::default(),
             items: vec![(extern_item, 0..60)],
             module_doc: None,
             module_graph: None,
@@ -1932,6 +1942,7 @@ fn main() {}
             let extern_item = make_extern_rt_block(&[setter]);
             let mut checker = Checker::new(ModuleRegistry::new(vec![]));
             let output = checker.check_program(&Program {
+                expansions: hew_parser::macro_syntax::ExpansionMap::default(),
                 items: vec![(extern_item, 0..60)],
                 module_doc: None,
                 module_graph: None,
@@ -1951,6 +1962,7 @@ fn main() {}
             let extern_item = make_extern_rt_block(&[getter]);
             let mut checker = Checker::new(ModuleRegistry::new(vec![]));
             let output = checker.check_program(&Program {
+                expansions: hew_parser::macro_syntax::ExpansionMap::default(),
                 items: vec![(extern_item, 0..40)],
                 module_doc: None,
                 module_graph: None,
@@ -1990,6 +2002,7 @@ fn main() {}
         });
         let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         let output = checker.check_program(&Program {
+            expansions: hew_parser::macro_syntax::ExpansionMap::default(),
             items: vec![(extern_item, 0..50)],
             module_doc: None,
             module_graph: None,
@@ -2430,6 +2443,7 @@ fn main() {}
         let extern_item = make_extern_rt_block(&["my_custom_symbol"]);
         let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         let output = checker.check_program(&Program {
+            expansions: hew_parser::macro_syntax::ExpansionMap::default(),
             items: vec![(extern_item, 0..30)],
             module_doc: None,
             module_graph: None,

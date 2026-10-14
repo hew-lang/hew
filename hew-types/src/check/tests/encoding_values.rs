@@ -106,12 +106,15 @@ fn encoding_values_select_only_explicit_eq_methods() {
         let module: Vec<String> = ["std", "encoding", format].map(str::to_string).into();
         let output = check_source_in_canonical_std_module(&source, &module);
         assert!(output.errors.is_empty(), "{:?}", output.errors);
-        let expected = output
+        let module = output
             .defs
-            .lookup_path(&format!(
-                "std.encoding.{format}.Value::<impl Eq for std.encoding.{format}.Value>::eq"
-            ))
-            .unwrap();
+            .module_for_path(&format!("std.encoding.{format}"));
+        let expected = output
+            .impl_method_declaration_ids
+            .values()
+            .copied()
+            .find(|id| output.defs.module(*id) == module && output.defs.name(*id).as_str() == "eq")
+            .expect("the source Eq method keeps its declaration");
         let mut service = TypeFactService::new(output.type_fact_context, output.type_facts);
         for opaque in [false, true] {
             let mut resolved = ResolvedTy::from_ty(&encoding_ty(kind)).unwrap();
@@ -358,6 +361,7 @@ fn encoding_value_reexported_signature_preserves_original_owner() {
         .unwrap();
     graph.topo_order = vec![json, relay_id, root];
     let output = Checker::default().check_program(&Program {
+        expansions: hew_parser::macro_syntax::ExpansionMap::default(),
         items,
         module_graph: Some(graph),
         module_doc: None,
@@ -498,6 +502,10 @@ fn user_extern_with_canonical_value_arguments_never_gains_encoding_authority() {
 }
 
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one cross-module fixture and its identity assertions"
+)]
 fn selected_encoding_import_preserves_result_and_option_try_payload_identity() {
     for (format, kind) in [
         ("json", BuiltinType::JsonValue),
@@ -571,6 +579,7 @@ fn selected_encoding_import_preserves_result_and_option_try_payload_identity() {
         }
         graph.topo_order = vec![module, root];
         let output = Checker::default().check_program(&Program {
+            expansions: hew_parser::macro_syntax::ExpansionMap::default(),
             items,
             module_graph: Some(graph),
             module_doc: None,

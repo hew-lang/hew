@@ -1,0 +1,13 @@
+[[case]]
+id = "package-coherence-cross-package-overlap"
+source = "cases/package-coherence/reject/package-overlap.hew"
+intent = "Individually owned impls in two packages still conflict when their generic heads unify."
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "ConflictingTraitImpl"
+line = 5
+column = 1
+message = "conflicting implementation of trait `Blanket` for `Widget`: the impl heads overlap"

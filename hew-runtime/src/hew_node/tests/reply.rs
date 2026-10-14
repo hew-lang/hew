@@ -557,6 +557,13 @@ fn remote_reply_payload_length_mismatch_fails_closed_not_overread() {
 #[test]
 fn rejection_reason_codes_round_trip_supported_remote_failures() {
     for ask_error in [
+        AskError::EncodeFailed,
+        AskError::SendFailed,
+        AskError::PayloadSizeMismatch,
+        AskError::LocalShutdown,
+        AskError::HandlerTrapped,
+        AskError::Refused,
+        AskError::DecodeFailure,
         AskError::WorkerAtCapacity,
         AskError::ActorStopped,
         AskError::MailboxFull,
@@ -579,11 +586,8 @@ fn rejection_reason_codes_reject_non_remote_failures() {
         AskError::None,
         AskError::NodeNotRunning,
         AskError::RoutingFailed,
-        AskError::EncodeFailed,
-        AskError::SendFailed,
         AskError::Timeout,
         AskError::ConnectionDropped,
-        AskError::PayloadSizeMismatch,
     ] {
         assert!(
             AskRejectionReasonCode::encode(ask_error).is_none(),

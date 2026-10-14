@@ -7,7 +7,7 @@ use crate::traits::TraitRegistry;
 use crate::ty::{Substitution, Ty, TypeVar};
 use crate::type_facts::{TypeFactContext, TypeFacts, TypeInstanceKey};
 use crate::{BuiltinType, WasmUnsupportedFeature};
-use hew_parser::ast::Symbol;
+use hew_parser::ast::{Ident, Symbol};
 use hew_parser::ast::{ImportSpec, Literal, Span, Spanned, TraitMethod, TypeExpr, Visibility};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
@@ -25,8 +25,6 @@ pub(super) struct ReportableImport {
 /// files are assembled into the same directory module.
 pub type ImportBindingKey = (Option<String>, u32, String);
 
-/// Trait method identity exposed through one file-local import binding.
-pub type TraitImportBindingKey = (Option<String>, u32, String, String);
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -728,22 +726,18 @@ pub struct TypeCheckOutput {
     pub callable_formals: HashMap<super::effects::EffectBody, Vec<TypeBindingId>>,
     /// Exact field writes of an authored aggregate constructor.
     pub aggregate_field_candidates: HashMap<SpanKey, Vec<CallableFieldFlow>>,
+    /// Entry and backedge origins for checker-bound loop inputs.
+    pub loop_value_candidates: HashMap<(SpanKey, TypeBindingId), IndirectCallCandidates>,
     /// Symbolic return origins of checker-owned function bodies.
     pub callable_return_candidates: HashMap<super::effects::EffectBody, IndirectCallCandidates>,
+    /// Mutable receiver origins at every checked return or failure edge.
+    pub callable_receiver_outputs: HashMap<super::effects::EffectBody, IndirectCallCandidates>,
     /// Canonical trait and trait-method declaration identities, keyed by the
-    /// owner-qualified source spelling `Trait::method`. This is the sole
-    /// checker-to-HIR authority for static-trait implementation indexing.
+    /// owner-qualified canonical path `Trait::method`. Impl methods publish
+    /// their resolved pair separately through `ImplMethodProvenance`.
     pub trait_method_ids: HashMap<String, (crate::DefId, crate::DefId)>,
-    /// Trait declarations selected by exact lexical bindings.
-    pub trait_bindings: HashMap<ImportBindingKey, crate::DefId>,
     /// Default bodies retain declaration identity and their checked source scope.
     pub trait_defaults: HashMap<crate::DefId, Vec<ResolvedTraitDefault>>,
-    /// Canonical trait/method identities published through each exact source
-    /// binding. The key is `(module, binding spelling, method)`; HIR uses it
-    /// when an impl names an imported trait bare or through an alias, rather
-    /// than inferring an owner from a leaf name. This also records a bare trait
-    /// reference resolved unambiguously through a module import.
-    pub trait_method_ids_by_binding: HashMap<TraitImportBindingKey, (crate::DefId, crate::DefId)>,
     /// Checker-allocated impl-method declaration identities keyed by their
     /// linker presentation.  The key is a compatibility projection only;
     /// HIR uses the stored ID directly and never constructs one from it.
@@ -1125,8 +1119,15 @@ pub enum CallableCandidate {
     },
     /// A checker-bound formal supplied by a caller at the selected call site.
     Formal(TypeBindingId),
+    /// Value reaching a loop head from entry or a checked back edge.
+    LoopInput {
+        site: SpanKey,
+        binding: TypeBindingId,
+    },
     /// Intermediate value origin: an authored aggregate constructor.
     Aggregate(SpanKey),
+    /// Receiver value handed back by a checked mutable method call.
+    CallWriteback(SpanKey),
     /// Intermediate value origin: the result of a selected call.
     CallResult(SpanKey),
     /// Intermediate value origin: a checker-selected field of a receiver.
@@ -1409,7 +1410,7 @@ pub enum PatternKind {
 /// Canonical checker classification of one record-pattern field.
 #[derive(Debug, Clone, PartialEq)]
 pub enum PlanSub {
-    Binding(String),
+    Binding(Ident),
     Wildcard,
     Literal(Literal),
     Nested(SpanKey),
@@ -1786,7 +1787,7 @@ pub enum SpawnSlot {
 #[derive(Debug, Clone)]
 pub(in crate::check) struct ChainValueContext {
     pub(in crate::check) ty: Ty,
-    pub(in crate::check) place: Option<(String, crate::env::PlacePath)>,
+    pub(in crate::check) place: Option<(hew_parser::ast::Ident, crate::env::PlacePath)>,
     pub(in crate::check) consumed: bool,
 }
 
@@ -2805,6 +2806,8 @@ pub enum ReceiverUpdate {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ImplMethodProvenance {
     pub declaration: crate::DefId,
+    /// The exact trait declaration and method implemented by this body.
+    pub trait_method: Option<(crate::DefId, crate::DefId)>,
     /// Nominal declaration, absent for primitive receiver types.
     pub receiver: Option<crate::DefId>,
     /// Resolved impl receiver arguments and the binders they instantiate.
@@ -2954,6 +2957,40 @@ pub(super) struct TraitImplArgs {
 }
 
 impl TraitImplArgs {
+    pub(super) fn matches_receiver(&self, receiver: &Ty) -> bool {
+        let parameters = self
+            .params
+            .iter()
+            .copied()
+            .map(|parameter| (parameter, Ty::Var(TypeVar::fresh())))
+            .collect();
+        let pattern = self.target.substitute_type_params_parallel(&parameters);
+        crate::unify::unify_exact(&mut Substitution::new(), &pattern, receiver).is_ok()
+    }
+
+    pub(super) fn overlaps(&self, other: &Self) -> bool {
+        if self.args.len() != other.args.len() {
+            return false;
+        }
+        let fresh = |head: &Self| {
+            let parameters = head
+                .params
+                .iter()
+                .copied()
+                .map(|parameter| (parameter, Ty::Var(TypeVar::fresh())))
+                .collect();
+            std::iter::once(&head.target)
+                .chain(&head.args)
+                .map(|ty| ty.substitute_type_params_parallel(&parameters))
+                .collect::<Vec<_>>()
+        };
+        let mut inference = Substitution::new();
+        fresh(self)
+            .iter()
+            .zip(fresh(other))
+            .all(|(left, right)| crate::unify::unify_exact(&mut inference, left, &right).is_ok())
+    }
+
     pub(super) fn same_head(&self, other: &Self) -> bool {
         if self.params.len() != other.params.len() {
             return false;
@@ -2988,6 +3025,13 @@ pub(super) struct SourceImplDeclaration {
     pub(super) head: TraitImplArgs,
     pub(super) methods: HashMap<Symbol, Span>,
     pub(super) source_module: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct PrimitiveTraitMethod {
+    pub(super) receiver: Ty,
+    pub(super) signature: FnSig,
+    pub(super) origin: SourceImplOrigin,
 }
 
 /// A trait a generic binder is bounded by, resolved once where the bound is
@@ -3182,6 +3226,7 @@ pub(super) enum BareActorResolution {
     reason = "checker state flags are independent booleans"
 )]
 pub struct Checker {
+    pub(super) expansions: std::sync::Arc<hew_parser::macro_syntax::ExpansionMap>,
     pub(super) input_references: HashMap<SpanKey, crate::compile_time::InputReference>,
     pub(super) input_provider: Option<std::sync::Arc<dyn crate::compile_time::InputProvider>>,
     pub(super) compile_time_values: HashMap<SpanKey, crate::compile_time::ConstantValue>,
@@ -3446,18 +3491,14 @@ pub struct Checker {
     pub(super) generic_trait_call_arguments: HashMap<SpanKey, Vec<CallableDispatchActual>>,
     pub(super) pending_callable_arguments: HashMap<SpanKey, PendingCallableArguments>,
     pub(super) aggregate_field_candidates: HashMap<SpanKey, Vec<CallableFieldFlow>>,
+    pub(super) loop_value_candidates: HashMap<(SpanKey, TypeBindingId), IndirectCallCandidates>,
     pub(super) callable_return_candidates:
+        HashMap<super::effects::EffectBody, IndirectCallCandidates>,
+    pub(super) callable_receiver_outputs:
         HashMap<super::effects::EffectBody, IndirectCallCandidates>,
     /// Checker-owned canonical declaration ids for trait methods. Keys are
     /// owner-qualified source spellings, never linker symbols.
     pub(super) trait_method_ids: HashMap<String, (crate::DefId, crate::DefId)>,
-    pub(super) trait_bindings: HashMap<ImportBindingKey, crate::DefId>,
-    /// Source-owned trait method IDs as exposed through an exact source
-    /// binding. Lookup registries may retain short compatibility keys, but
-    /// call targets use this full-path table and never mint identities from
-    /// those keys.
-    pub(super) trait_method_ids_by_binding:
-        HashMap<TraitImportBindingKey, (crate::DefId, crate::DefId)>,
     /// Declaration identities for impl methods, keyed by the checker-selected
     /// dispatch symbol. These are allocated while registering the source impl
     /// and selected at the call site; receiver monomorphisations must not mint
@@ -3545,7 +3586,7 @@ pub struct Checker {
     /// `duplicate_definition` error. `None` is the root/flat-file namespace (the
     /// user's own program and flat file imports share one module). Builtins are
     /// registered without going through this gate and stay globally visible.
-    pub(super) type_namespace_owners: HashMap<(Option<String>, String), Span>,
+    pub(super) type_namespace_owners: HashMap<(Option<String>, hew_parser::ast::Ident), Span>,
     /// Tracks public top-level names introduced by prior flat file imports into
     /// one importing file, so a later flat import there rejects the collision
     /// instead of silently overwriting it.
@@ -3643,11 +3684,6 @@ pub struct Checker {
     pub(super) rejected_impl_declarations: HashSet<crate::DefId>,
     /// Bound sites already reported as naming no trait or misapplying one.
     pub(super) reported_unknown_bounds: HashSet<SpanKey>,
-    /// Dedup guard so a rejected overlapping primitive/builtin trait impl emits
-    /// only one `ConflictingTraitImpl` diagnostic even though
-    /// `record_primitive_trait_impl_self_args` runs once per impl method. Keyed
-    /// by (`canonical_constructor`, `trait_name`, `span.start`, `span.end`).
-    pub(super) conflicting_trait_impl_reported: HashSet<(String, crate::DefId, usize, usize)>,
     /// Method names provided by each trait impl block, keyed like
     /// `trait_impls`. This preserves provenance that is lost when impl
     /// methods are flattened onto the type's receiver-method table.
@@ -3666,23 +3702,8 @@ pub struct Checker {
     ///
     /// Outer key: (`canonical_primitive_or_builtin_name`, `trait_name`).
     /// Inner: method name → resolved `FnSig` (receiver already filtered).
-    pub(super) primitive_trait_impls: HashMap<(String, crate::DefId), HashMap<String, FnSig>>,
-    /// The impl's `Self` type arguments for each `impl <Trait> for
-    /// <PrimitiveOrBuiltinGeneric>`, captured at registration so dispatch can
-    /// bind the impl's type parameters from a concrete receiver's type
-    /// arguments before applying the signature.
-    ///
-    /// For `impl<E> Index for Vec<E>` the entry is `[Ty::Named { name: "E" }]`;
-    /// at a `v: Vec<i64>` call site, structurally unifying these stored args
-    /// against the receiver's `[i64]` yields the substitution `E → i64`, so the
-    /// method's `Option<E>` / `Self::Output` return projects to a concrete type
-    /// instead of leaking an unresolved inference var past the checker output
-    /// boundary. Non-generic primitive impls (`impl Display for i64`) store an
-    /// empty vec and are a no-op on dispatch.
-    ///
-    /// Key: (`canonical_primitive_or_builtin_name`, `trait_name`) — same as
-    /// [`Self::primitive_trait_impls`].
-    pub(super) primitive_trait_impl_self_args: HashMap<(String, crate::DefId), Vec<Ty>>,
+    pub(super) primitive_trait_impls:
+        HashMap<(String, crate::DefId), HashMap<String, Vec<PrimitiveTraitMethod>>>,
     /// Maps supervisor name to its partitioned child lists.
     ///
     /// Static children (declared with `child name: Type`) are in `statics`,
@@ -4030,8 +4051,6 @@ pub struct Checker {
     pub(super) local_type_defs: HashSet<String>,
     /// Tracks source-authored type definitions that can shadow builtin names.
     pub(super) source_type_defs: HashSet<String>,
-    /// Tracks which traits are defined locally (in the current compilation unit).
-    pub(super) local_trait_defs: HashSet<String>,
     /// The current impl block's target: its registry spelling and the type
     /// its written target resolves to through `Scope` (`Self`).
     pub(super) current_self_type: Option<(String, Ty)>,
@@ -4085,7 +4104,7 @@ pub struct Checker {
     /// pattern node it describes: an aggregate subpattern re-sets it for its
     /// own fields, and every other pattern shape drops it, because a variant
     /// payload or a temporary scrutinee is not a field of a caller's place.
-    pub(super) pattern_place: Option<(String, crate::env::PlacePath)>,
+    pub(super) pattern_place: Option<(hew_parser::ast::Ident, crate::env::PlacePath)>,
     /// Actor protocol descriptors (`receive fn` → stable hash-derived `msg_id`),
     /// built once before body checking so the active-mode
     /// `Actor`'s own actor-handle type → `TlsHandler`'s coercion can confirm an
@@ -4113,7 +4132,7 @@ pub struct Checker {
     /// Distinct from `ImplAliasScope.entries`, which is the per-impl scope
     /// stack used for `Self::Bar` lookup during impl-body checking.
     pub(super) impl_assoc_type_bindings:
-        HashMap<(ResolvedTy, crate::DefId, Symbol), ImplAssociatedType>,
+        HashMap<(ResolvedTy, crate::DefId, Symbol), Vec<ImplAssociatedType>>,
     pub(super) associated_schema_parameters: super::AssociatedTypeSchemas,
     /// Whether warnings for WASM-only builds should be emitted.
     pub(super) wasm_target: bool,
@@ -4159,14 +4178,9 @@ pub struct Checker {
     /// Tracks slice annotation spans we've already rejected so repeated
     /// resolution passes don't emit duplicate diagnostics.
     /// Compile-time known numeric literal values used by later coercion sites.
-    pub(super) const_values: HashMap<String, ConstValue>,
-    /// Lexical bindings in `const_values` that originate from a real `const`
-    /// declaration (or other declared constexpr authority), as opposed to the
-    /// literal-coercion entries `check_let` inserts for every unannotated
-    /// immutable integer/float literal binding. The binding identity prevents a
-    /// local or parameter with the same name from inheriting a module constant's
-    /// value during constexpr length/count evaluation (e.g. fixed-array repeats).
-    pub(super) declared_const_bindings: HashMap<String, TypeBindingId>,
+    pub(super) const_values: HashMap<hew_parser::ast::Ident, ConstValue>,
+    /// Source constants are owned by their declarations, independently of lexical aliases.
+    pub(super) source_constants: HashMap<crate::DefId, SourceConstant>,
     /// Inferred type arguments for generic function calls that omit explicit
     /// type annotations.  Populated in `check_call` after argument unification.
     pub(super) call_type_args: HashMap<SpanKey, Vec<Ty>>,
@@ -4332,6 +4346,12 @@ pub(super) struct IntegerTypeInfo {
     pub(super) signed: bool,
 }
 
+#[derive(Debug, Clone)]
+pub(super) struct SourceConstant {
+    pub ty: Ty,
+    pub value: Option<ConstValue>,
+}
+
 /// Known compile-time numeric literal value (for later coercion checks).
 #[derive(Debug, Clone)]
 pub(super) enum ConstValue {
@@ -4389,6 +4409,7 @@ impl Checker {
     )]
     pub fn new(module_registry: ModuleRegistry) -> Self {
         Self {
+            expansions: std::sync::Arc::default(),
             input_provider: None,
             input_references: HashMap::new(),
             compile_time_values: HashMap::new(),
@@ -4492,10 +4513,10 @@ impl Checker {
             generic_trait_call_arguments: HashMap::new(),
             pending_callable_arguments: HashMap::new(),
             aggregate_field_candidates: HashMap::new(),
+            loop_value_candidates: HashMap::new(),
             callable_return_candidates: HashMap::new(),
+            callable_receiver_outputs: HashMap::new(),
             trait_method_ids: HashMap::new(),
-            trait_bindings: HashMap::new(),
-            trait_method_ids_by_binding: HashMap::new(),
             impl_method_declaration_ids: HashMap::new(),
             consuming_inherent_methods: HashSet::new(),
             root_value_bindings: HashSet::new(),
@@ -4551,12 +4572,10 @@ impl Checker {
             source_impl_declarations: HashMap::new(),
             rejected_impl_declarations: HashSet::new(),
             reported_unknown_bounds: HashSet::new(),
-            conflicting_trait_impl_reported: HashSet::new(),
             trait_impl_method_names: HashMap::new(),
             trait_impl_method_declaration_ids: HashMap::new(),
             trait_impl_method_binders: HashMap::new(),
             primitive_trait_impls: HashMap::new(),
-            primitive_trait_impl_self_args: HashMap::new(),
             supervisor_children: HashMap::new(),
             supervisor_child_slots: HashMap::new(),
             pool_accessor_sites: HashMap::new(),
@@ -4623,7 +4642,6 @@ impl Checker {
             current_module_idx: 0,
             local_type_defs: HashSet::new(),
             source_type_defs: HashSet::new(),
-            local_trait_defs: HashSet::new(),
             current_self_type: None,
             current_impl_surface_target: None,
             current_actor_type: None,
@@ -4650,7 +4668,7 @@ impl Checker {
             wasm_warning_spans: HashSet::new(),
             wasm_reject_spans: HashSet::new(),
             const_values: HashMap::new(),
-            declared_const_bindings: HashMap::new(),
+            source_constants: HashMap::new(),
             call_type_args: HashMap::new(),
             record_init_type_args: HashMap::new(),
             builtin_result_output_type_args: HashMap::new(),

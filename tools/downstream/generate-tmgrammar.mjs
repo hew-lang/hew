@@ -273,6 +273,21 @@ for (const [scope, keywords] of Object.entries(allGroups)) {
   handled.add(scope);
 }
 
+// Macro tokens precede ordinary paths and calls; comments and strings keep priority.
+grammar.repository.macros = {
+  patterns: [
+    { name: 'meta.definition.macro.hew', match: '\\b(macro)\\s+([a-zA-Z_][a-zA-Z0-9_]*)',
+      captures: { 1: { name: 'keyword.declaration.hew' }, 2: { name: 'entity.name.function.macro.hew' } } },
+    { name: 'variable.parameter.macro.hew', match: '\\$[a-zA-Z_][a-zA-Z0-9_]*' },
+    { name: 'support.function.macro.hew', match: '\\b[a-zA-Z_][a-zA-Z0-9_]*(?=!\\s*\\()' },
+    { name: 'keyword.operator.macro.hew', match: '\\$(?=\\()' },
+  ],
+};
+if (!grammar.patterns.some(pattern => pattern.include === '#macros')) {
+  const position = grammar.patterns.findIndex(pattern => pattern.include === '#paths');
+  grammar.patterns.splice(position < 0 ? grammar.patterns.length : position, 0, { include: '#macros' });
+}
+
 // -- Write output ----------------------------------------------------------
 
 mkdirSync(dirname(outputPath), { recursive: true });

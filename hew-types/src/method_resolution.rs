@@ -21,7 +21,11 @@ pub(crate) fn instantiate_named_method_sig(
     type_args: &[Ty],
 ) -> FnSig {
     let subst_map: HashMap<crate::ParamHead, Ty> = if let Some(method) = &sig.impl_method {
-        let Some(substitution) = impl_receiver_substitution(method, type_args) else {
+        let Some(substitution) = impl_receiver_substitution(
+            &method.receiver_parameters,
+            &method.receiver_args,
+            type_args,
+        ) else {
             sig.return_type = Ty::Error;
             return sig;
         };
@@ -63,20 +67,20 @@ pub(crate) fn instantiate_named_method_sig(
 }
 
 pub(crate) fn impl_receiver_substitution(
-    method: &crate::check::ImplMethodProvenance,
+    parameters: &[crate::ParamHead],
+    receiver_args: &[Ty],
     type_args: &[Ty],
 ) -> Option<HashMap<crate::ParamHead, Ty>> {
-    if method.receiver_args.len() != type_args.len() {
+    if receiver_args.len() != type_args.len() {
         return None;
     }
-    let variables: HashMap<_, _> = method
-        .receiver_parameters
+    let variables: HashMap<_, _> = parameters
         .iter()
         .copied()
         .map(|parameter| (parameter, Ty::Var(crate::ty::TypeVar::fresh())))
         .collect();
     let mut inference = crate::ty::Substitution::new();
-    for (pattern, argument) in method.receiver_args.iter().zip(type_args) {
+    for (pattern, argument) in receiver_args.iter().zip(type_args) {
         let pattern = pattern.substitute_type_params_parallel(&variables);
         if crate::unify::unify_exact(&mut inference, &pattern, argument).is_err() {
             return None;

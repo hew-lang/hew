@@ -2873,6 +2873,36 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
+        "native": "fn hew_call_caller( *mut HewCallerStamp)",
+        "wasm32-wasip1": "fn hew_call_caller( *mut HewCallerStamp)"
+      },
+      "symbol": "hew_call_caller"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "non-declarable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_call_refusal_log( u32, *const hew_cabi::string::HewString, *const hew_cabi::string::HewString, )",
+        "wasm32-wasip1": "fn hew_call_refusal_log( u32, *const hew_cabi::string::HewString, *const hew_cabi::string::HewString, )"
+      },
+      "symbol": "hew_call_refusal_log"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "non-declarable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
         "native": "fn hew_callable_clone( *const HewCallableValue, *mut HewCallableValue, ) -> i32",
         "wasm32-wasip1": "fn hew_callable_clone( *const HewCallableValue, *mut HewCallableValue, ) -> i32"
       },
@@ -3949,10 +3979,10 @@
       ],
       "classification": "stable",
       "extent": "length-or-count",
-      "nul": "not-applicable",
+      "nul": "nul-terminated",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_connmgr_broadcast( *mut HewConnMgr, *const HewLocation, i32, *mut u8, usize, ) -> c_int"
+        "native": "fn hew_connmgr_broadcast( *mut HewConnMgr, *const HewLocation, *const c_char, *mut u8, usize, ) -> c_int"
       },
       "symbol": "hew_connmgr_broadcast"
     },
@@ -4053,10 +4083,10 @@
       ],
       "classification": "stable",
       "extent": "length-or-count",
-      "nul": "not-applicable",
+      "nul": "nul-terminated",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_connmgr_send( *mut HewConnMgr, c_int, *const HewLocation, i32, *mut u8, usize, ) -> c_int"
+        "native": "fn hew_connmgr_send( *mut HewConnMgr, c_int, *const HewLocation, *const c_char, *mut u8, usize, ) -> c_int"
       },
       "symbol": "hew_connmgr_send"
     },
@@ -4208,21 +4238,6 @@
         "wasm32-wasip1"
       ],
       "classification": "non-declarable",
-      "extent": "length-or-count",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_cont_frame_alloc_tracked( u64) -> *mut c_void",
-        "wasm32-wasip1": "fn hew_cont_frame_alloc_tracked( u64) -> *mut c_void"
-      },
-      "symbol": "hew_cont_frame_alloc_tracked"
-    },
-    {
-      "availability": [
-        "native",
-        "wasm32-wasip1"
-      ],
-      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -4231,21 +4246,6 @@
         "wasm32-wasip1": "fn hew_cont_frame_free( *mut c_void)"
       },
       "symbol": "hew_cont_frame_free"
-    },
-    {
-      "availability": [
-        "native",
-        "wasm32-wasip1"
-      ],
-      "classification": "non-declarable",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_cont_frame_handoff( *mut c_void)",
-        "wasm32-wasip1": "fn hew_cont_frame_handoff( *mut c_void)"
-      },
-      "symbol": "hew_cont_frame_handoff"
     },
     {
       "availability": [
@@ -22354,11 +22354,11 @@
       ],
       "classification": "non-declarable",
       "extent": "length-or-count",
-      "nul": "not-applicable",
+      "nul": "nul-terminated",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_xnode_register_codec( *const c_void, i32, SerializeThunk, DeserializeThunk, Option<DropThunk>, usize, )",
-        "wasm32-wasip1": "fn hew_xnode_register_codec( *const c_void, i32, SerializeThunk, DeserializeThunk, Option<DropThunk>, usize, )"
+        "native": "fn hew_xnode_register_codec( *const c_void, i32, *const c_char, SerializeThunk, DeserializeThunk, Option<DropThunk>, usize, )",
+        "wasm32-wasip1": "fn hew_xnode_register_codec( *const c_void, i32, *const c_char, SerializeThunk, DeserializeThunk, Option<DropThunk>, usize, )"
       },
       "symbol": "hew_xnode_register_codec"
     },
@@ -22369,11 +22369,11 @@
       ],
       "classification": "non-declarable",
       "extent": "length-or-count",
-      "nul": "not-applicable",
+      "nul": "nul-terminated",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_xnode_register_reply_codec( *const c_void, i32, SerializeThunk, DeserializeThunk, Option<DropThunk>, usize, )",
-        "wasm32-wasip1": "fn hew_xnode_register_reply_codec( *const c_void, i32, SerializeThunk, DeserializeThunk, Option<DropThunk>, usize, )"
+        "native": "fn hew_xnode_register_reply_codec( *const c_void, i32, *const c_char, SerializeThunk, DeserializeThunk, Option<DropThunk>, usize, )",
+        "wasm32-wasip1": "fn hew_xnode_register_reply_codec( *const c_void, i32, *const c_char, SerializeThunk, DeserializeThunk, Option<DropThunk>, usize, )"
       },
       "symbol": "hew_xnode_register_reply_codec"
     },

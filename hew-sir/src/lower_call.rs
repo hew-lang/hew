@@ -832,7 +832,14 @@ impl Builder<'_, '_> {
                     SemCallableKind::HewActor(actor) => Some(actor),
                     SemCallableKind::HewDirect | SemCallableKind::HewClosure => None,
                 };
-                (PreparedCallee::Direct(target.id), target.signature, actor)
+                (
+                    PreparedCallee::Direct {
+                        target: target.id,
+                        site: Some(expr.site),
+                    },
+                    target.signature,
+                    actor,
+                )
             }
             CallTarget::IndirectFunctionValue => {
                 let ty = self.ty(&callee.ty);
@@ -851,10 +858,13 @@ impl Builder<'_, '_> {
                     hew_types::CallableCallMode::Once => crate::BoundaryDecision::Move,
                 };
                 (
-                    PreparedCallee::Indirect(crate::BoundaryOperand {
-                        operand: Operand { value },
-                        decision,
-                    }),
+                    PreparedCallee::Indirect {
+                        receiver: crate::BoundaryOperand {
+                            operand: Operand { value },
+                            decision,
+                        },
+                        site: expr.site,
+                    },
                     signature,
                     None,
                 )
@@ -1032,7 +1042,10 @@ impl Builder<'_, '_> {
             &mut loans,
         )?;
         self.finish_user_call(
-            PreparedCallee::Direct(callee.id),
+            PreparedCallee::Direct {
+                target: callee.id,
+                site: Some(expr.site),
+            },
             signature,
             lowered_args,
             &loans,
@@ -1137,7 +1150,9 @@ impl Builder<'_, '_> {
                 self.owned_live.remove(&argument.operand.value);
             }
         }
-        if let PreparedCallee::Indirect(receiver) | PreparedCallee::Dyn { receiver, .. } = &callee {
+        if let PreparedCallee::Indirect { receiver, .. } | PreparedCallee::Dyn { receiver, .. } =
+            &callee
+        {
             if receiver.decision == crate::BoundaryDecision::Move {
                 self.owned_live.remove(&receiver.operand.value);
             }
@@ -1200,6 +1215,22 @@ impl Builder<'_, '_> {
         let unwind = self.new_block(returned_receiver.iter().cloned().collect());
         let id = OpId(self.ops);
         self.ops += 1;
+        if let PreparedCallee::Direct { target, site } = &callee {
+            if let Some(site) = site {
+                self.service
+                    .record_checked_call(self.callable.id, *site, *target);
+            } else {
+                self.service.callable_facts.opaque_entries.insert(*target);
+            }
+        }
+        if let PreparedCallee::Indirect { site, .. } = &callee {
+            if let Some(key) = self.service.module.checked_sites.get(site) {
+                self.service
+                    .callable_facts
+                    .indirect_sites
+                    .insert((self.callable.id, id), key.clone());
+            }
+        }
         self.set_terminator(
             callee.invoke(
                 id,

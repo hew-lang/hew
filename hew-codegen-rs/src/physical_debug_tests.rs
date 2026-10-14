@@ -35,12 +35,13 @@ fn main() {
 ";
 
 fn verified(source: &str) -> hew_mir::VerifiedPhysicalModule {
-    let parsed = hew_parser::parse(source);
+    let mut parsed = hew_parser::parse(source);
     assert!(
         parsed.errors.is_empty(),
         "parse errors: {:#?}",
         parsed.errors
     );
+    hew_compile::attach_prelude_std_modules(&mut parsed.program);
     let mut checker = Checker::new(ModuleRegistry::new(Vec::new()));
     let facts = checker.check_program(&parsed.program);
     assert!(facts.errors.is_empty(), "type errors: {:#?}", facts.errors);

@@ -9,7 +9,10 @@ impl LowerCtx {
         func: &FnDecl,
         span: std::ops::Range<usize>,
     ) -> Option<HirFn> {
-        self.lower_fn_with_name(func, func.name.name.as_str(), span)
+        let declaration =
+            self.source_declaration(&span, hew_types::DeclarationKind::Function, 0)?;
+        let name = self.source_fn_entries.get(&declaration)?.0.clone();
+        self.lower_fn_with_name(func, &name, span)
     }
 
     /// V0b: lower a top-level `impl [<TypeParams>] [Trait for] TargetType { ... }`
@@ -474,12 +477,12 @@ impl LowerCtx {
             method_item_ids.push(hir_method.id);
             items.push(HirItem::Function(hir_method));
             method_names.push(method.name.to_string());
-            let declaring_trait = decl
-                .trait_bound
-                .as_ref()
-                .map_or(String::new(), |tb| tb.path.to_string()); // TRANSITION(P1): deleted by A1 commit 2
-            let ids = self.trait_method_identity(&declaring_trait, method.name.name.as_str());
-            let declaring_trait = ids.as_ref().map_or(declaring_trait, |(trait_id, _)| {
+            let ids = self
+                .fn_sigs
+                .get(&declaration)
+                .and_then(|signature| signature.impl_method.as_ref())
+                .and_then(|origin| origin.trait_method);
+            let declaring_trait = ids.as_ref().map_or_else(String::new, |(trait_id, _)| {
                 self.defs.path(*trait_id).to_string()
             });
             method_declaring_traits.push(declaring_trait);
@@ -496,8 +499,7 @@ impl LowerCtx {
         if let Some(tb) = &decl.trait_bound {
             let overridden: HashSet<&str> =
                 decl.methods.iter().map(|m| m.name.name.as_str()).collect();
-            if let Some(default_owner_key) = self.trait_declaration(&tb.path.to_string()) {
-                // TRANSITION(P1): deleted by A1 commit 2
+            if let Some(default_owner_key) = self.trait_declaration(&tb.path) {
                 if let Some(defaults) = self.trait_defaults.get(&default_owner_key).cloned() {
                     let saved_module_idx = self.current_module_idx;
                     let saved_module = self.current_module_name.clone();

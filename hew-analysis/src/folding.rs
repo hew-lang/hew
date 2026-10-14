@@ -103,7 +103,9 @@ fn collect_item_folding(
             add_region(source, lo, span, r);
             collect_actor_folding(source, lo, a, r);
         }
-        Item::Function(_)
+        Item::Macro(_)
+        | Item::MacroCall(_)
+        | Item::Function(_)
         | Item::TypeDecl(_)
         | Item::Trait(_)
         | Item::Impl(_)

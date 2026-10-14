@@ -37,8 +37,9 @@ fn physical(source: &str) -> PhysicalModule {
 /// admitted with no caller, which is how a program carries glue for a type no
 /// body of its own constructs.
 fn physical_with_roots(source: &str, roots: &[&str]) -> PhysicalModule {
-    let parsed = hew_parser::parse(source);
+    let mut parsed = hew_parser::parse(source);
     assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+    hew_compile::attach_prelude_std_modules(&mut parsed.program);
     let checked = Checker::new(ModuleRegistry::new(vec![])).check_program(&parsed.program);
     assert!(checked.errors.is_empty(), "{:?}", checked.errors);
     let hir = lower_program_host_target(&parsed.program, &checked, &ResolutionCtx);
@@ -72,8 +73,9 @@ fn physical_with_roots(source: &str, roots: &[&str]) -> PhysicalModule {
 }
 
 fn physical_for_triple(source: &str, triple: &str) -> PhysicalModule {
-    let parsed = hew_parser::parse(source);
+    let mut parsed = hew_parser::parse(source);
     assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+    hew_compile::attach_prelude_std_modules(&mut parsed.program);
     let checked = Checker::new(ModuleRegistry::new(vec![])).check_program(&parsed.program);
     assert!(checked.errors.is_empty(), "{:?}", checked.errors);
     let hir = lower_program_host_target(&parsed.program, &checked, &ResolutionCtx);
@@ -189,18 +191,16 @@ fn engine<'ctx>(llvm: &Module<'ctx>, optimized: bool) -> ExecutionEngine<'ctx> {
                 function.set_linkage(Linkage::External);
             }
         }
-        let triple = native_emission_triple();
-        let machine =
-            crate::llvm::target_machine_for_triple_with_opt_level(&triple, OptLevel::O2).unwrap();
-        llvm.set_triple(&machine.get_triple());
-        llvm.run_passes(
-            "default<O2>",
-            &machine,
-            inkwell::passes::PassBuilderOptions::create(),
-        )
-        .unwrap();
-        llvm.verify().unwrap();
     }
+    let level = if optimized {
+        OptLevel::O2
+    } else {
+        OptLevel::O0
+    };
+    let triple = native_emission_triple();
+    let machine = crate::llvm::target_machine_for_triple_with_opt_level(&triple, level).unwrap();
+    llvm.set_triple(&machine.get_triple());
+    crate::llvm::run_module_pipeline(llvm, &machine, level).unwrap();
     let engine = llvm
         .create_jit_execution_engine(inkwell::OptimizationLevel::None)
         .unwrap();

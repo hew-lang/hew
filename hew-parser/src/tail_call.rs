@@ -166,6 +166,7 @@ fn expr_contains_defer(expr: &Expr) -> bool {
         | Expr::ChainValue
         | Expr::RegexLiteral(_)
         | Expr::ByteStringLiteral(_)
+        | Expr::MacroCall(_)
         | Expr::MacroInvocation { .. }
         | Expr::ByteArrayLiteral(_)
         | Expr::Lambda { .. }
@@ -408,6 +409,7 @@ fn mark_expr(expr: &mut Expr, is_tail_position: bool) {
         | Expr::ChainValue
         | Expr::RegexLiteral(_)
         | Expr::ByteStringLiteral(_)
+        | Expr::MacroCall(_)
         | Expr::MacroInvocation { .. }
         | Expr::ByteArrayLiteral(_)
         | Expr::Lambda { .. }

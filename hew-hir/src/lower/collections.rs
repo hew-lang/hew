@@ -212,22 +212,6 @@ impl LowerCtx {
         self.make_expr(kind, hashmap_ty, IntentKind::Read, span)
     }
 
-    pub(super) fn make_hashmap_insert_expr(
-        &mut self,
-        map_ref: HirExpr,
-        key: HirExpr,
-        value: HirExpr,
-        span: Span,
-    ) -> HirExpr {
-        let kind = self.collection_call_kind(
-            hew_types::RuntimeCallFamily::Map(hew_types::runtime_call::MapValueOp::Insert),
-            vec![map_ref, key, value],
-            &ResolvedTy::Unit,
-            &span,
-        );
-        self.make_expr(kind, ResolvedTy::Unit, IntentKind::Read, span)
-    }
-
     pub(super) fn make_vec_push_expr(
         &mut self,
         vec_ref: HirExpr,
@@ -271,6 +255,114 @@ impl LowerCtx {
             &span,
         );
         self.make_expr(kind, ResolvedTy::Unit, IntentKind::Read, span)
+    }
+
+    pub(super) fn make_sequence_literal(
+        &mut self,
+        elements: Vec<HirExpr>,
+        ty: &ResolvedTy,
+        span: &Span,
+    ) -> HirExprKind {
+        let init = self.make_sequence_new_expr(ty.clone(), span.clone());
+        let family = if *ty == ResolvedTy::Bytes {
+            hew_types::RuntimeCallFamily::BytesPush
+        } else {
+            hew_types::RuntimeCallFamily::Vector(hew_types::VecValueOp::Push)
+        };
+        self.make_collection_literal(
+            init,
+            elements.into_iter().map(|element| vec![element]).collect(),
+            &(family, ResolvedTy::Unit),
+            span,
+        )
+    }
+
+    pub(super) fn make_set_literal(
+        &mut self,
+        elements: Vec<HirExpr>,
+        ty: &ResolvedTy,
+        span: &Span,
+    ) -> HirExprKind {
+        use hew_types::runtime_call::SetValueOp;
+        let kind = self.collection_call_kind(
+            hew_types::RuntimeCallFamily::Set(SetValueOp::New),
+            Vec::new(),
+            ty,
+            span,
+        );
+        let init = self.make_expr(kind, ty.clone(), IntentKind::Read, span.clone());
+        self.make_collection_literal(
+            init,
+            elements.into_iter().map(|element| vec![element]).collect(),
+            &(
+                hew_types::RuntimeCallFamily::Set(SetValueOp::Insert),
+                ResolvedTy::Bool,
+            ),
+            span,
+        )
+    }
+
+    pub(super) fn make_map_literal(
+        &mut self,
+        entries: Vec<(HirExpr, HirExpr)>,
+        ty: &ResolvedTy,
+        span: &Span,
+    ) -> HirExprKind {
+        let init = self.make_hashmap_new_expr(ty.clone(), span.clone());
+        self.make_collection_literal(
+            init,
+            entries
+                .into_iter()
+                .map(|(key, value)| vec![key, value])
+                .collect(),
+            &(
+                hew_types::RuntimeCallFamily::Map(hew_types::runtime_call::MapValueOp::Insert),
+                ResolvedTy::Unit,
+            ),
+            span,
+        )
+    }
+
+    fn make_collection_literal(
+        &mut self,
+        init: HirExpr,
+        entries: Vec<Vec<HirExpr>>,
+        insert: &(hew_types::RuntimeCallFamily, ResolvedTy),
+        span: &Span,
+    ) -> HirExprKind {
+        let ty = init.ty.clone();
+        let scope = self.ids.scope();
+        self.push_scope();
+        let name = format!("__hew_literal_{}", self.ids.binding().0);
+        let binding = self.bind(name.clone(), ty.clone(), true, span.clone());
+        let id = binding.id;
+        let mut statements = vec![HirStmt {
+            node: self.ids.node(),
+            kind: HirStmtKind::Let(binding, Some(init)),
+            span: span.clone(),
+        }];
+        for entry in entries {
+            let receiver =
+                self.make_binding_ref(name.clone(), id, ty.clone(), IntentKind::Read, span.clone());
+            let args = std::iter::once(receiver).chain(entry).collect();
+            let kind = self.collection_call_kind(insert.0, args, &insert.1, span);
+            let value = self.make_expr(kind, insert.1.clone(), IntentKind::Read, span.clone());
+            statements.push(HirStmt {
+                node: self.ids.node(),
+                kind: HirStmtKind::Expr(value),
+                span: span.clone(),
+            });
+        }
+        let tail = self.make_binding_ref(name, id, ty.clone(), IntentKind::Consume, span.clone());
+        self.pop_scope();
+        HirExprKind::Block(HirBlock {
+            node: self.ids.node(),
+            scope,
+            statements,
+            tail: Some(Box::new(tail)),
+            ty,
+            span: span.clone(),
+        })
     }
 
     /// HIR retains semantic method identity and exact types, never an element ABI.
@@ -407,6 +499,17 @@ impl LowerCtx {
                 .map(|element| self.lower_expr(element.expr(), IntentKind::Read))
                 .collect();
             return (HirExprKind::ArrayLiteral { elements }, vec_ty);
+        }
+
+        if elements
+            .iter()
+            .all(|element| matches!(element, ArrayElement::Value(_)))
+        {
+            let values = elements
+                .iter()
+                .map(|element| self.lower_expr(element.expr(), IntentKind::Read))
+                .collect();
+            return (self.make_sequence_literal(values, &vec_ty, span), vec_ty);
         }
 
         let block_scope = self.ids.scope();
@@ -822,54 +925,8 @@ impl LowerCtx {
                 )
             })
             .collect();
-        let block_scope = self.ids.scope();
-        self.push_scope();
-        let temp_name = format!("__hew_map_{}", self.ids.binding().0);
-        let temp_binding = self.bind(temp_name.clone(), map_ty.clone(), true, span.clone());
-        let temp_binding_id = temp_binding.id;
-        let init_stmt = HirStmt {
-            node: self.ids.node(),
-            kind: HirStmtKind::Let(
-                temp_binding,
-                Some(self.make_hashmap_new_expr(map_ty.clone(), span.clone())),
-            ),
-            span: span.clone(),
-        };
-        let mut statements = Vec::with_capacity(lowered_entries.len() + 1);
-        statements.push(init_stmt);
-        for (key, value) in lowered_entries {
-            let map_ref = self.make_binding_ref(
-                temp_name.clone(),
-                temp_binding_id,
-                map_ty.clone(),
-                IntentKind::Read,
-                key.span.clone(),
-            );
-            let insert_expr = self.make_hashmap_insert_expr(map_ref, key, value, span.clone());
-            statements.push(HirStmt {
-                node: self.ids.node(),
-                kind: HirStmtKind::Expr(insert_expr),
-                span: span.clone(),
-            });
-        }
-        let tail = self.make_binding_ref(
-            temp_name,
-            temp_binding_id,
-            map_ty.clone(),
-            IntentKind::Consume,
-            span.clone(),
-        );
-        self.pop_scope();
-
         (
-            HirExprKind::Block(HirBlock {
-                node: self.ids.node(),
-                scope: block_scope,
-                statements,
-                tail: Some(Box::new(tail)),
-                ty: map_ty.clone(),
-                span: span.clone(),
-            }),
+            self.make_map_literal(lowered_entries, &map_ty, span),
             map_ty,
         )
     }

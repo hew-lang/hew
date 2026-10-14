@@ -152,10 +152,8 @@ fn module_qualified_record_initialiser_refuses_a_private_type() {
     let output = typecheck_with_module(root_source, "type Packet {\n    code: i64;\n}\n");
     assert!(
         output.errors.iter().any(|error| {
-            error.kind == TypeErrorKind::UndefinedType
-                && error
-                    .message
-                    .contains("module `m` has no exported type `Packet`")
+            matches!(error.kind, TypeErrorKind::VisibilityViolationPrivate { .. })
+                && error.message.contains("Packet")
         }),
         "expected the private record to stay outside the module export surface; got: {:?}",
         output.errors

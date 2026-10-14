@@ -141,21 +141,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 normal.as_ref(),
                 unwind.as_ref(),
             ),
-            PhysicalTerminator::IndirectCall {
-                callee,
-                signature,
-                args,
-                result,
-                normal,
-                unwind,
-            } => self.emit_indirect_call(
-                *callee,
-                signature,
-                args,
-                *result,
-                normal.as_ref(),
-                unwind.as_ref(),
-            ),
+            call @ PhysicalTerminator::IndirectCall { .. } => self.emit_indirect_call(call),
 
             PhysicalTerminator::Return { value } => self.emit_return(*value),
             PhysicalTerminator::Goto(edge) => self.emit_edge(edge),

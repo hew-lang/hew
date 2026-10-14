@@ -1,0 +1,9 @@
+type Endpoint {
+    port: u16;
+}
+
+const CONFIG: Endpoint = embed!("typed-embed-data/mismatch.json");
+
+fn main() {
+    println(CONFIG.port);
+}

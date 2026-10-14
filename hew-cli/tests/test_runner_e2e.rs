@@ -31,6 +31,25 @@ fn run_suite(files: &[(&str, &str)], extra_args: &[&str]) -> std::process::Outpu
 }
 
 #[test]
+fn macro_generated_test_is_discovered_and_selected() {
+    require_codegen();
+    let output = run_suite(
+        &[(
+            "generated_test.hew",
+            "macro case { ($name:ident, $expected:expr) => items { #[test] fn $name() { assert($expected == 42); } } }\ncase!(generated_test, 40 + 2)\n",
+        )],
+        &["--jobs", "1"],
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "{stdout}\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(has_test_line(&stdout, "generated_test", "ok"), "{stdout}");
+}
+
+#[test]
 fn doc_output_mismatch_names_the_fence() {
     require_codegen();
     let dir = support::tempdir();

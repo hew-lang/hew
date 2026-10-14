@@ -180,6 +180,8 @@ pub enum Token<'src> {
     Mut,
     #[token("fn")]
     Fn,
+    #[token("macro")]
+    Macro,
     #[token("if")]
     If,
     #[token("else")]
@@ -383,6 +385,8 @@ pub enum Token<'src> {
     Equal,
     #[token("!")]
     Bang,
+    #[token("$")]
+    Dollar,
     #[token("<")]
     Less,
     #[token(">")]
@@ -535,6 +539,7 @@ impl std::fmt::Display for Token<'_> {
             Token::LessEqual => f.write_str("`<=`"),
             Token::GreaterEqual => f.write_str("`>=`"),
             Token::Bang => f.write_str("`!`"),
+            Token::Dollar => f.write_str("`$`"),
             Token::AmpAmp => f.write_str("`&&`"),
             Token::PipePipe => f.write_str("`||`"),
             Token::Pipe => f.write_str("`|`"),
@@ -627,6 +632,7 @@ define_keywords! {
     Const      => "const",
     Mut        => "mut",
     Fn         => "fn",
+    Macro      => "macro",
     If         => "if",
     Else       => "else",
     Match      => "match",

@@ -330,13 +330,13 @@ impl Checker {
             let sibling = Self::sibling_type(&second_ty);
             let first_checked = self.checked_branch(first, sibling.as_ref().or(expected));
             if first_scoped {
-                self.env.pop_scope();
+                self.pop_scope_with_cleanup();
             }
             return [first_checked, (second_ty, second_exit)];
         }
         let (first_ty, first_exit) = self.checked_branch(first, expected);
         if first_scoped {
-            self.env.pop_scope();
+            self.pop_scope_with_cleanup();
         }
         self.env.restore_ownership(entry);
         let sibling = (open && second.needs_context())

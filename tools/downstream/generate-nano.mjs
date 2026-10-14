@@ -240,6 +240,12 @@ emit('# Function definitions');
 emit('color brightcyan "\\<fn +[a-zA-Z_][a-zA-Z0-9_]*"');
 blank();
 
+// Macros
+emit('# Macro declarations, invocations and captures');
+emit('color brightcyan "\\<macro +[a-zA-Z_][a-zA-Z0-9_]*|[a-zA-Z_][a-zA-Z0-9_]*!"');
+emit('color brightmagenta "\\$[a-zA-Z_][a-zA-Z0-9_]*"');
+blank();
+
 // Operators
 emit('# Operators');
 emit('color white "->|=>|\\.\\.[ =]?"');

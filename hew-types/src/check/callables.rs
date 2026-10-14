@@ -113,8 +113,7 @@ impl Checker {
         let Some((root, path)) = self.expr_place(expr) else {
             return;
         };
-        if self.is_current_closure_capture(&root) || !self.env.place_borrows_parameter(&root, &path)
-        {
+        if self.is_current_closure_capture(root) || !self.env.place_borrows_parameter(root, &path) {
             return;
         }
         let parameters = self
@@ -124,7 +123,9 @@ impl Checker {
             .map_or_else(Vec::new, |signature| signature.type_params.clone());
         if Self::ty_mentions_type_params(&ty, &parameters) {
             self.record_generic_requirement(
-                super::types::GenericRequirementKind::BorrowedTransfer { root },
+                super::types::GenericRequirementKind::BorrowedTransfer {
+                    root: root.to_string(),
+                },
                 &ty,
                 span,
             );
@@ -144,8 +145,16 @@ impl Checker {
         {
             return Some(span.clone());
         }
-        let (root, _) = self.expr_place(expr)?;
-        self.env.lookup_ref(&root)?.collection_borrow.clone()
+        let (root, path) = self.expr_place(expr)?;
+        let binding = self.env.lookup_ref(root)?;
+        if let Some(field) = path.first() {
+            if crate::ResolvedTy::from_ty(&self.subst.resolve(&binding.ty))
+                .is_ok_and(|ty| crate::actor_protocol::is_interceptor_view(&ty, field))
+            {
+                return Some(span.clone());
+            }
+        }
+        binding.collection_borrow.clone()
     }
 
     /// Bind a pattern against its scrutinee. A scrutinee that is a collection
@@ -158,7 +167,7 @@ impl Checker {
         pattern: &Spanned<hew_parser::ast::Pattern>,
         ty: &Ty,
         is_mutable: bool,
-        place: Option<(String, crate::env::PlacePath)>,
+        place: Option<(hew_parser::ast::Ident, crate::env::PlacePath)>,
         loan: Option<Span>,
     ) {
         self.pattern_place = if loan.is_some() { None } else { place };
@@ -189,11 +198,12 @@ impl Checker {
     /// is still owned after the pattern binds.
     pub(super) fn record_pattern_place_transfer(
         &mut self,
-        root: &str,
+        root: impl crate::env::LexicalName,
         path: crate::env::PlacePath,
         ty: &Ty,
         span: &Span,
     ) {
+        let root = root.lexical_key();
         if !self.place_read_transfers_ownership(ty)
             || self.reject_borrowed_place_consumption(root, &path, span)
             || self.reject_partial_place_consumption(root, &path, span)
@@ -327,7 +337,7 @@ impl Checker {
     ) -> HashSet<TypeBindingId> {
         let mut bindings = HashSet::new();
         for (name, span) in captures {
-            if let Some(binding) = self.env.lookup_ref(name.name.as_str()) {
+            if let Some(binding) = self.env.lookup_ref(name) {
                 let id = binding.id;
                 if binding.init_state == crate::env::InitState::Unassigned {
                     self.report_error(TypeErrorKind::LocalUninitialized, span,
@@ -385,6 +395,7 @@ impl Checker {
             } else {
                 ClosureCaptureAccess::Read
             };
+            fact.value_candidates.may_be_unknown |= fact.access == ClosureCaptureAccess::Var;
             fact.consumption = if body.binding_by_id(fact.binding_id).is_some_and(|binding| {
                 binding.capture_consumption == ClosureCaptureConsumption::Consumed
             }) {
@@ -478,10 +489,11 @@ impl Checker {
     /// copy. An unresolved generic type does not prove absence of Clone.
     pub(super) fn reject_borrowed_parameter_mutation(
         &mut self,
-        root: &str,
+        root: impl crate::env::LexicalName,
         path: &[String],
         span: &Span,
     ) {
+        let root = root.lexical_key();
         if self.reject_prepared_task_access(root, path, span, TypeErrorKind::OwnMutateBorrowed) {
             return;
         }
@@ -516,7 +528,12 @@ impl Checker {
     /// A generic generator instantiated with a non-copyable argument still
     /// reaches the SIR verifier; that instance-level refusal is #3377's
     /// remaining half and needs the `T: Clone` decision (spec §3.8.1).
-    pub(super) fn reject_borrowed_generator_capture(&mut self, root: &str, span: &Span) {
+    pub(super) fn reject_borrowed_generator_capture(
+        &mut self,
+        root: impl crate::env::LexicalName,
+        span: &Span,
+    ) {
+        let root = root.lexical_key();
         if self.is_current_closure_capture(root) {
             return;
         }
@@ -624,9 +641,10 @@ impl Checker {
 
     pub(super) fn private_capture_mutation_error(
         &self,
-        name: &str,
+        name: impl crate::env::LexicalName,
         span: &Span,
     ) -> Option<TypeError> {
+        let name = name.lexical_key();
         let depth = self.lambda_capture_depth?;
         let (binding_depth, binding) = self.env.lookup_ref_with_depth(name)?;
         if binding_depth >= depth || binding.is_mutable || self.in_lambda_actor_body {
@@ -681,8 +699,8 @@ impl Checker {
                         }
                     }
                     if let Some((root, _)) = place {
-                        self.env.discount_mutation_receiver_read(&root);
-                        self.env.mark_written(&root);
+                        self.env.discount_mutation_receiver_read(root);
+                        self.env.mark_written(root);
                     }
                 } else {
                     let error = place.as_ref().and_then(|(root, _)| self.private_capture_mutation_error(root, &callee.1))
@@ -705,12 +723,24 @@ impl Checker {
         if sig.param_ownership.get(index) != Some(&crate::env::ParameterOwnership::Consume) {
             return;
         }
+        if self
+            .expr_types
+            .get(&super::SpanKey::in_module(span, self.current_module_idx))
+            .is_some_and(|ty| self.normalize_for_use(ty).contains_interceptor_token())
+        {
+            self.report_error(
+                super::TypeErrorKind::InterceptEscape,
+                span,
+                "Call and Outcome cannot be consumed by another source callable".to_string(),
+            );
+        }
         if !self.reject_borrowed_consumption(expr, span) {
             self.mark_expr_moved(expr, span);
         }
     }
 
-    fn is_current_closure_capture(&self, root: &str) -> bool {
+    fn is_current_closure_capture(&self, root: impl crate::env::LexicalName) -> bool {
+        let root = root.lexical_key();
         self.lambda_capture_depth.is_some_and(|capture_depth| {
             self.env
                 .lookup_ref_with_depth(root)
@@ -719,12 +749,13 @@ impl Checker {
     }
 
     pub(super) fn reject_borrowed_consumption(&mut self, expr: &Expr, span: &Span) -> bool {
-        if matches!(expr, Expr::Index { .. }) && self.collection_borrow_origin(expr, span).is_some()
+        if matches!(expr, Expr::Index { .. } | Expr::FieldAccess { .. })
+            && self.collection_borrow_origin(expr, span).is_some()
         {
             self.report_error(
                 TypeErrorKind::OwnConsumeBorrowed,
                 span,
-                "E_OWN_CONSUME_BORROWED: cannot consume an indexed collection borrow".to_string(),
+                "E_OWN_CONSUME_BORROWED: cannot consume a borrowed projection".to_string(),
             );
             return true;
         }
@@ -749,7 +780,7 @@ impl Checker {
         let Some((root, path)) = self.expr_place(expr) else {
             return false;
         };
-        self.reject_borrowed_place_consumption(&root, &path, span)
+        self.reject_borrowed_place_consumption(root, &path, span)
     }
 
     /// The same refusal keyed by the place itself, for consuming uses that
@@ -757,10 +788,11 @@ impl Checker {
     /// out of the place it destructures.
     pub(super) fn reject_borrowed_place_consumption(
         &mut self,
-        root: &str,
+        root: impl crate::env::LexicalName,
         path: &[String],
         span: &Span,
     ) -> bool {
+        let root = root.lexical_key();
         if self.reject_prepared_task_access(root, path, span, TypeErrorKind::OwnConsumeBorrowed) {
             return true;
         }
@@ -797,11 +829,12 @@ impl Checker {
 
     pub(super) fn reject_prepared_task_access(
         &mut self,
-        root: &str,
+        root: impl crate::env::LexicalName,
         path: &[String],
         span: &Span,
         kind: TypeErrorKind,
     ) -> bool {
+        let root = root.lexical_key();
         let Some(binding) = self.env.lookup_ref(root) else {
             return false;
         };
@@ -888,21 +921,28 @@ impl Checker {
         if let Some(super::MethodCallRewrite::RecordFnFieldCall { field_ty }) =
             self.method_call_rewrites.get(&key).cloned()
         {
+            let field = (Ident::new(method), span.clone());
+            self.record_field_resolution(receiver, &field);
+            let callable_ty = field_ty.to_ty();
+            if matches!(&callable_ty, Ty::Function { .. } | Ty::Closure { .. }) {
+                let candidates = self.callable_field_candidates(receiver, &field);
+                self.indirect_call_candidates.insert(key, candidates);
+            }
             let callee = (
                 Expr::FieldAccess {
                     object: Box::new(receiver.clone()),
-                    field: (Ident::new(method), span.clone()),
+                    field,
                 },
                 span.clone(),
             );
-            self.check_callable_receiver(&field_ty.to_ty(), &callee);
+            self.check_callable_receiver(&callable_ty, &callee);
         } else if let Some((root, path)) = self.expr_place(&receiver.0) {
             if self
                 .env
-                .place_move_conflict(&root, &path)
+                .place_move_conflict(root, &path)
                 .is_some_and(|(kind, _, _)| kind == crate::env::PlaceConflict::WholeOfPartial)
             {
-                self.report_place_use_after_move(&root, &path, &receiver.1);
+                self.report_place_use_after_move(root, &path, &receiver.1);
             }
         }
     }

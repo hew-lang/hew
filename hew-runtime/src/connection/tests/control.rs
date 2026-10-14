@@ -20,6 +20,7 @@ fn link_controls_from_wrong_authenticated_peer_are_rejected() {
         reconnect_shutdown: Arc::new(AtomicBool::new(false)),
         inbound_spawn_closed: Arc::new(AtomicBool::new(false)),
         inbound_ask_active: Arc::new(AtomicUsize::new(0)),
+        inbound_asks: Arc::default(),
         reconnect_workers: PoisonSafe::new(Vec::new()),
         reverse_link_workers: PoisonSafe::new(Vec::new()),
         reader_lifecycle: Arc::new(ReaderLifecycle::default()),
@@ -88,22 +89,6 @@ fn link_controls_from_wrong_authenticated_peer_are_rejected() {
     assert_eq!(watchers[0].watcher.node(), test_node_id(2));
     assert_eq!(watchers[0].ref_id, payload.ref_id);
     assert!(watchers[0].is_link);
-}
-
-#[test]
-fn ask_rejection_reply_requires_negotiated_feature_flag() {
-    assert!(is_ask_rejection_reply(
-        crate::hew_node::HEW_REPLY_REJECT_MSG_TYPE,
-        HEW_FEATURE_SUPPORTS_ASK_REJECTION
-    ));
-    assert!(
-        !is_ask_rejection_reply(crate::hew_node::HEW_REPLY_REJECT_MSG_TYPE, 0),
-        "sentinel replies from peers without the feature bit must stay on the normal reply path"
-    );
-    assert!(
-        !is_ask_rejection_reply(0, HEW_FEATURE_SUPPORTS_ASK_REJECTION),
-        "normal replies must not be reclassified as rejections"
-    );
 }
 
 #[test]

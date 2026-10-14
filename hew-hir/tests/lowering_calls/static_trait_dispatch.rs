@@ -102,6 +102,7 @@ fn multi_module_program(root_src: &str, modules: &[(&str, &str)]) -> Program {
         })
         .expect("root module");
     Program {
+        expansions: hew_parser::macro_syntax::ExpansionMap::default(),
         items: root_items,
         module_graph: Some(graph),
         ..root.program
@@ -153,7 +154,7 @@ fn walk_block_calls(block: &hew_hir::HirBlock, calls: &mut Vec<CallTarget>) {
     clippy::too_many_lines,
     reason = "the cross-module identity regression keeps setup, lowering, and every same-leaf assertion together"
 )]
-fn e2e_multi_module_same_leaf_generic_and_specialized_dispatch_stays_canonical() {
+fn e2e_multi_module_same_leaf_generic_and_concrete_dispatch_stays_canonical() {
     let program = multi_module_program(
         r"
 import left.render.{Render as LeftRender, Box as LeftBox, identity as left_identity};
@@ -185,12 +186,6 @@ pub fn identity() -> string {
     "left-direct"
 }
 
-impl<T> Render for Box<T> {
-    fn render(self) -> string {
-        "left-generic"
-    }
-}
-
 impl Render for Box<i64> {
     fn render(self) -> string {
         "left-i64"
@@ -217,12 +212,6 @@ impl<T> Render for Box<T> {
         "right-generic"
     }
 }
-
-impl Render for Box<string> {
-    fn render(self) -> string {
-        "right-string"
-    }
-}
 "#,
             ),
         ],
@@ -233,7 +222,7 @@ impl Render for Box<string> {
     assert!(
         tco.impl_method_declaration_ids
             .contains_key("left.render.Box$$i64::render"),
-        "checker must publish the exact emitted specialized impl symbol; keys: {:#?}",
+        "checker must publish the exact emitted concrete impl symbol; keys: {:#?}",
         tco.impl_method_declaration_ids.keys().collect::<Vec<_>>()
     );
     let output = lower_program_host_target(&program, &tco, &ResolutionCtx);
@@ -314,14 +303,14 @@ impl Render for Box<string> {
         &output.module.items,
         &output.module.structural_witnesses,
     );
-    let left_specialized = index
+    let left_concrete = index
         .iter()
         .find(|(key, _)| {
             output.module.defs.path(key.declaring_trait) == "left.render.Render"
                 && output.module.defs.path(key.self_type.nominal.declaration()) == "left.render.Box"
                 && key.self_type.args == vec![hew_types::ResolvedTy::I64]
         })
-        .expect("left.render's i64 specialization must be indexed structurally");
+        .expect("left.render's i64 concrete impl must be indexed structurally");
     let right_generic = index
         .iter()
         .find(|(key, _)| {
@@ -331,31 +320,31 @@ impl Render for Box<string> {
         })
         .expect("right.paint's generic impl must be indexed structurally");
     assert_ne!(
-        left_specialized.0.declaring_trait, right_generic.0.declaring_trait,
+        left_concrete.0.declaring_trait, right_generic.0.declaring_trait,
         "same leaf trait names from different modules must not collide"
     );
     assert_ne!(
-        left_specialized.0.method, right_generic.0.method,
+        left_concrete.0.method, right_generic.0.method,
         "same leaf method names from different modules must not collide"
     );
     assert_ne!(
-        left_specialized.0.self_type.nominal, right_generic.0.self_type.nominal,
+        left_concrete.0.self_type.nominal, right_generic.0.self_type.nominal,
         "same leaf nominal names from different modules must not collide"
     );
 
     let left_selected = hew_hir::dispatch::lookup_trait_impl_entry_by_id(
         &index,
-        &left_specialized.0.declaring_trait,
+        &left_concrete.0.declaring_trait,
         &hew_types::NominalInstance {
-            nominal: left_specialized.0.self_type.nominal,
+            nominal: left_concrete.0.self_type.nominal,
             args: vec![hew_types::ResolvedTy::I64],
         },
         &[],
-        &left_specialized.0.method,
+        &left_concrete.0.method,
     )
-    .expect("left i64 dispatch must resolve its specialization");
+    .expect("left i64 dispatch must resolve its concrete impl");
     assert_eq!(
-        output.module.defs.path(left_specialized.0.method),
+        output.module.defs.path(left_concrete.0.method),
         "left.render.Render::render",
         "the static registry key must use the checker-selected trait declaration identity"
     );
@@ -365,16 +354,16 @@ impl Render for Box<string> {
         "the emitted body keeps its distinct checker implementation declaration identity: {left_selected:?}"
     );
     assert_ne!(
-        left_specialized.0.method, left_selected.method,
+        left_concrete.0.method, left_selected.method,
         "static lookup must not conflate a trait method declaration with an implementation declaration"
     );
     assert_eq!(
         left_selected.method_symbol,
-        left_specialized.1[0].method_symbol
+        left_concrete.1[0].method_symbol
     );
     assert!(
         left_selected.impl_type_params.is_empty(),
-        "left i64 dispatch must select the specialized impl: {left_selected:?}"
+        "left i64 dispatch must select the concrete impl: {left_selected:?}"
     );
 
     let right_selected = hew_hir::dispatch::lookup_trait_impl_entry_by_id(
@@ -387,7 +376,7 @@ impl Render for Box<string> {
         &[],
         &right_generic.0.method,
     )
-    .expect("right bool dispatch must fall back to its generic impl");
+    .expect("right bool dispatch must resolve its generic impl");
     assert_eq!(
         right_selected.method_symbol,
         right_generic.1[0].method_symbol
@@ -990,11 +979,11 @@ fn example() -> string {
     assert_eq!(display_mono.key.type_args, expected_args);
     assert_eq!(display_mono.mangled_name, "display$$Wrapper$li64$g");
     assert!(
-        output
+        output.module.monomorphisations.iter().all(|mono| output
             .module
-            .monomorphisations
-            .iter()
-            .all(|mono| output.module.defs.path(mono.key.declaration) != "Wrapper::show"),
+            .defs
+            .path(mono.key.declaration)
+            != "Wrapper::show"),
         "static dispatch must retain the checker implementation declaration rather than a leaf-derived `Wrapper::show` identity: {:#?}",
         output.module.monomorphisations
     );

@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use hew_types::{BuiltinType, Codec, ResolvedTy};
+use hew_types::{Codec, ResolvedTy};
 
 use super::{Builder, InstanceService};
 use crate::{
@@ -20,23 +20,28 @@ impl InstanceService<'_> {
         if let Some(plans) = self.wire_plans.get(root) {
             return Ok(Arc::clone(plans));
         }
+        let plans = Arc::new(self.data_storage_plans(root, false)?);
+        self.wire_plans.insert(root.clone(), Arc::clone(&plans));
+        Ok(plans)
+    }
+
+    fn data_storage_plans(
+        &mut self,
+        root: &ResolvedTy,
+        property: bool,
+    ) -> Result<SemWirePlans, String> {
+        let data = self.checked_facts.data_plans(root, property)?;
         let mut plans = BTreeMap::new();
-        let mut work = vec![root.clone()];
-        while let Some(ty) = work.pop() {
-            if plans.contains_key(&ty) {
-                continue;
-            }
-            let plan = self.wire_plan(&ty)?;
-            work.extend(plan.children().into_iter().cloned());
-            plans.insert(ty, plan);
+        for (ty, plan) in data.plans {
+            self.require_type_facts(&ty)?;
+            let kind = self.bind_data_storage(&ty, plan.kind)?;
+            plans.insert(ty.clone(), SemWirePlan { ty, kind });
         }
-        let plans = Arc::new(SemWirePlans {
+        Ok(SemWirePlans {
             property_input: false,
             root: root.clone(),
             plans,
-        });
-        self.wire_plans.insert(root.clone(), Arc::clone(&plans));
-        Ok(plans)
+        })
     }
 
     /// Generation uses the same layouts, retaining fields and every Option state.
@@ -44,7 +49,7 @@ impl InstanceService<'_> {
         &mut self,
         root: &ResolvedTy,
     ) -> Result<Arc<SemWirePlans>, String> {
-        let mut plans = (*self.wire_plans(root)?).clone();
+        let mut plans = self.data_storage_plans(root, true)?;
         plans.property_input = true;
         let preserve_fields = |table: &mut SemWireTable| {
             for member in &mut table.members {
@@ -105,210 +110,55 @@ impl InstanceService<'_> {
         Ok(Arc::new(plans))
     }
 
-    fn serial_table(
-        &self,
+    fn bind_data_storage(
+        &mut self,
         ty: &ResolvedTy,
-    ) -> Result<&hew_types::data_shape::SerialLayout, String> {
-        ty.nominal_instance(&self.module.defs)
-            .and_then(|instance| self.checked_facts.context().serial_layout(instance.nominal))
-            .ok_or_else(|| format!("`{}` has no checked serial layout", ty.user_facing()))
-    }
-
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one exhaustive match keeps every planned shape together"
-    )]
-    fn wire_plan(&mut self, ty: &ResolvedTy) -> Result<SemWirePlan, String> {
-        self.require_type_facts(ty)?;
-        let kind = match ty {
-            ResolvedTy::I8
-            | ResolvedTy::I16
-            | ResolvedTy::I32
-            | ResolvedTy::I64
-            | ResolvedTy::U8
-            | ResolvedTy::U16
-            | ResolvedTy::U32
-            | ResolvedTy::U64
-            | ResolvedTy::Isize
-            | ResolvedTy::Usize
-            | ResolvedTy::F32
-            | ResolvedTy::F64
-            | ResolvedTy::Bool
-            | ResolvedTy::Char
-            | ResolvedTy::Duration
-            | ResolvedTy::String
-            | ResolvedTy::Bytes => SemWireKind::Scalar,
-            ResolvedTy::Unit => SemWireKind::Unit,
-            ResolvedTy::Tuple(elements) => {
+        kind: hew_types::data_plan::DataKind<(), ()>,
+    ) -> Result<SemWireKind, String> {
+        use hew_types::data_plan::DataKind;
+        Ok(match kind {
+            DataKind::Scalar => SemWireKind::Scalar,
+            DataKind::Unit => SemWireKind::Unit,
+            DataKind::Tuple(fields) => {
                 self.require_aggregate_shape(ty)?;
-                SemWireKind::Tuple(elements.clone())
+                SemWireKind::Tuple(fields)
             }
-            ResolvedTy::Array(element, len) => SemWireKind::Array {
-                element: (**element).clone(),
-                len: *len,
+            DataKind::Array { element, len } => SemWireKind::Array { element, len },
+            DataKind::Vector(element) => SemWireKind::Vector(element),
+            DataKind::Set(element) => {
+                self.require_key_capabilities(&element)?;
+                SemWireKind::Set(element)
+            }
+            DataKind::Map { key, value } => {
+                self.require_key_capabilities(&key)?;
+                SemWireKind::Map { key, value }
+            }
+            DataKind::Option {
+                none, some, value, ..
+            } => SemWireKind::Option {
+                shape: self.require_variant_shape(ty)?,
+                none,
+                some,
+                value,
             },
-            ResolvedTy::Named {
-                head: hew_types::TypeHead::Builtin(builtin),
-                args,
-                ..
-            } => match (builtin, args.as_slice()) {
-                (BuiltinType::Vec, [element]) => SemWireKind::Vector(element.clone()),
-                (BuiltinType::HashSet, [element]) => {
-                    self.require_key_capabilities(element)?;
-                    SemWireKind::Set(element.clone())
+            DataKind::Record { table, fields, .. } => {
+                let AggregateShapeRef::Record(shape) = self.require_aggregate_shape(ty)? else {
+                    return Err("checked data record has no record storage".into());
+                };
+                SemWireKind::Record {
+                    shape,
+                    table,
+                    fields,
                 }
-                (BuiltinType::HashMap, [key, value]) => {
-                    self.require_key_capabilities(key)?;
-                    SemWireKind::Map {
-                        key: key.clone(),
-                        value: value.clone(),
-                    }
-                }
-                (BuiltinType::Option, [value]) => {
-                    let shape = self.require_variant_shape(ty)?;
-                    let variants = &self.variant_shapes[shape.0 as usize].variants;
-                    let none = variants
-                        .iter()
-                        .position(|v| v.fields.is_empty())
-                        .ok_or("codec Option has no empty case")?;
-                    let some = variants
-                        .iter()
-                        .position(|v| v.fields.len() == 1 && v.fields[0].ty == *value)
-                        .ok_or("codec Option has no exact payload case")?;
-                    SemWireKind::Option {
-                        shape,
-                        none: u32::try_from(none).map_err(|_| "Option index exceeds u32")?,
-                        some: u32::try_from(some).map_err(|_| "Option index exceeds u32")?,
-                        value: value.clone(),
-                    }
-                }
-                (BuiltinType::Result, [_, _]) => {
-                    let shape = self.require_variant_shape(ty)?;
-                    let variants = self.variant_shapes[shape.0 as usize].variants.clone();
-                    let table = SemWireTable {
-                        tagged: false,
-                        members: variants
-                            .iter()
-                            .map(|variant| SemWireMember {
-                                key: variant.name.clone(),
-                                tag: 0,
-                                flags: hew_codec::Member::PAYLOAD,
-                            })
-                            .collect(),
-                    };
-                    SemWireKind::Enum {
-                        shape,
-                        table,
-                        variants: variants
-                            .iter()
-                            .map(|variant| payload(variant, None))
-                            .collect(),
-                    }
-                }
-                _ => {
-                    return Err(format!(
-                        "`{}` is outside the checked data shape",
-                        ty.user_facing()
-                    ))
-                }
+            }
+            DataKind::Enum {
+                table, variants, ..
+            } => SemWireKind::Enum {
+                shape: self.require_variant_shape(ty)?,
+                table,
+                variants,
             },
-            ResolvedTy::Named {
-                head:
-                    hew_types::TypeHead::Nominal(_)
-                    | hew_types::TypeHead::Param(_)
-                    | hew_types::TypeHead::Unresolved(_),
-                is_opaque: false,
-                ..
-            } => {
-                let layout = self.serial_table(ty)?.clone();
-                if let Ok(AggregateShapeRef::Record(shape)) = self.require_aggregate_shape(ty) {
-                    let fields = self.aggregate_shapes[shape.0 as usize]
-                        .fields
-                        .iter()
-                        .map(|field| field.ty.clone())
-                        .collect::<Vec<_>>();
-                    let table = (!layout.positional).then(|| table(layout.tagged, &layout.members));
-                    if table
-                        .as_ref()
-                        .is_some_and(|table| table.members.len() != fields.len())
-                    {
-                        return Err("record fields and serial layout disagree".into());
-                    }
-                    SemWireKind::Record {
-                        shape,
-                        table,
-                        fields,
-                    }
-                } else {
-                    let shape = self.require_variant_shape(ty)?;
-                    let variants = self.variant_shapes[shape.0 as usize].variants.clone();
-                    if variants.len() != layout.members.len() {
-                        return Err("enum variants and serial layout disagree".into());
-                    }
-                    SemWireKind::Enum {
-                        shape,
-                        table: table(layout.tagged, &layout.members),
-                        variants: variants
-                            .iter()
-                            .zip(&layout.members)
-                            .map(|(variant, member)| payload(variant, Some(member)))
-                            .collect(),
-                    }
-                }
-            }
-            _ => {
-                return Err(format!(
-                    "`{}` is outside the checked data shape",
-                    ty.user_facing()
-                ))
-            }
-        };
-        Ok(SemWirePlan {
-            ty: ty.clone(),
-            kind,
         })
-    }
-}
-
-fn table(tagged: bool, members: &[hew_types::data_shape::SerialMember]) -> SemWireTable {
-    SemWireTable {
-        tagged,
-        members: members
-            .iter()
-            .map(|member| SemWireMember {
-                key: member.key.clone(),
-                tag: member.tag,
-                flags: member.flags,
-            })
-            .collect(),
-    }
-}
-
-/// A variant's payload: one value directly, several as a sequence, named
-/// fields as a record keyed by their text keys.
-fn payload(
-    variant: &crate::SemVariant,
-    member: Option<&hew_types::data_shape::SerialMember>,
-) -> SemWirePayload {
-    let types = variant
-        .fields
-        .iter()
-        .map(|field| field.ty.clone())
-        .collect::<Vec<_>>();
-    match (variant.kind, types.as_slice()) {
-        (_, []) => SemWirePayload::Unit,
-        (crate::SemVariantKind::Struct, _) => SemWirePayload::Record {
-            table: member.map_or_else(
-                || SemWireTable {
-                    tagged: false,
-                    members: Vec::new(),
-                },
-                |member| table(false, &member.fields),
-            ),
-            fields: types,
-        },
-        (_, [single]) => SemWirePayload::Single(single.clone()),
-        _ => SemWirePayload::Tuple(types),
     }
 }
 

@@ -1140,6 +1140,18 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1619] = {
      "*const BytesTriple, *const BytesTriple, ) -> bool\"}",
      "native,wasm32-wasip1", "stable", "not-applicable",
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_call_caller",
+     "{\"native\": \"fn hew_call_caller( *mut HewCallerStamp)\", "
+     "\"wasm32-wasip1\": \"fn hew_call_caller( *mut HewCallerStamp)\"}",
+     "native,wasm32-wasip1", "non-declarable", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_call_refusal_log",
+     "{\"native\": \"fn hew_call_refusal_log( u32, *const "
+     "hew_cabi::string::HewString, *const hew_cabi::string::HewString, )\", "
+     "\"wasm32-wasip1\": \"fn hew_call_refusal_log( u32, *const "
+     "hew_cabi::string::HewString, *const hew_cabi::string::HewString, )\"}",
+     "native,wasm32-wasip1", "non-declarable", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_callable_clone",
      "{\"native\": \"fn hew_callable_clone( *const HewCallableValue, *mut "
      "HewCallableValue, ) -> i32\", \"wasm32-wasip1\": \"fn "
@@ -1571,8 +1583,8 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1619] = {
      HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_connmgr_broadcast",
      "{\"native\": \"fn hew_connmgr_broadcast( *mut HewConnMgr, *const "
-     "HewLocation, i32, *mut u8, usize, ) -> c_int\"}",
-     "native", "stable", "not-applicable", "length-or-count",
+     "HewLocation, *const c_char, *mut u8, usize, ) -> c_int\"}",
+     "native", "stable", "nul-terminated", "length-or-count",
      HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_connmgr_configure_reconnect",
      "{\"native\": \"fn hew_connmgr_configure_reconnect( *mut HewConnMgr, "
@@ -1610,8 +1622,8 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1619] = {
      HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_connmgr_send",
      "{\"native\": \"fn hew_connmgr_send( *mut HewConnMgr, c_int, *const "
-     "HewLocation, i32, *mut u8, usize, ) -> c_int\"}",
-     "native", "stable", "not-applicable", "length-or-count",
+     "HewLocation, *const c_char, *mut u8, usize, ) -> c_int\"}",
+     "native", "stable", "nul-terminated", "length-or-count",
      HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_connmgr_set_outbound_capacity",
      "{\"native\": \"fn hew_connmgr_set_outbound_capacity( *mut HewConnMgr, "
@@ -1666,20 +1678,9 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1619] = {
      "\"wasm32-wasip1\": \"fn hew_cont_frame_alloc( u64) -> *mut c_void\"}",
      "native,wasm32-wasip1", "non-declarable", "not-applicable",
      "length-or-count", HEW_CABI_OWNERSHIP_UNMEASURED},
-    {"hew_cont_frame_alloc_tracked",
-     "{\"native\": \"fn hew_cont_frame_alloc_tracked( u64) -> *mut c_void\", "
-     "\"wasm32-wasip1\": \"fn hew_cont_frame_alloc_tracked( u64) -> *mut "
-     "c_void\"}",
-     "native,wasm32-wasip1", "non-declarable", "not-applicable",
-     "length-or-count", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_cont_frame_free",
      "{\"native\": \"fn hew_cont_frame_free( *mut c_void)\", "
      "\"wasm32-wasip1\": \"fn hew_cont_frame_free( *mut c_void)\"}",
-     "native,wasm32-wasip1", "non-declarable", "not-applicable",
-     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
-    {"hew_cont_frame_handoff",
-     "{\"native\": \"fn hew_cont_frame_handoff( *mut c_void)\", "
-     "\"wasm32-wasip1\": \"fn hew_cont_frame_handoff( *mut c_void)\"}",
      "native,wasm32-wasip1", "non-declarable", "not-applicable",
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_cont_poll",
@@ -8252,18 +8253,20 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1619] = {
      "native", "stable-stdlib", "not-applicable", "no-in-signature-extent",
      HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_xnode_register_codec",
-     "{\"native\": \"fn hew_xnode_register_codec( *const c_void, i32, "
-     "SerializeThunk, DeserializeThunk, Option<DropThunk>, usize, )\", "
+     "{\"native\": \"fn hew_xnode_register_codec( *const c_void, i32, *const "
+     "c_char, SerializeThunk, DeserializeThunk, Option<DropThunk>, usize, )\", "
      "\"wasm32-wasip1\": \"fn hew_xnode_register_codec( *const c_void, i32, "
-     "SerializeThunk, DeserializeThunk, Option<DropThunk>, usize, )\"}",
-     "native,wasm32-wasip1", "non-declarable", "not-applicable",
+     "*const c_char, SerializeThunk, DeserializeThunk, Option<DropThunk>, "
+     "usize, )\"}",
+     "native,wasm32-wasip1", "non-declarable", "nul-terminated",
      "length-or-count", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_xnode_register_reply_codec",
      "{\"native\": \"fn hew_xnode_register_reply_codec( *const c_void, i32, "
-     "SerializeThunk, DeserializeThunk, Option<DropThunk>, usize, )\", "
-     "\"wasm32-wasip1\": \"fn hew_xnode_register_reply_codec( *const c_void, "
-     "i32, SerializeThunk, DeserializeThunk, Option<DropThunk>, usize, )\"}",
-     "native,wasm32-wasip1", "non-declarable", "not-applicable",
+     "*const c_char, SerializeThunk, DeserializeThunk, Option<DropThunk>, "
+     "usize, )\", \"wasm32-wasip1\": \"fn hew_xnode_register_reply_codec( "
+     "*const c_void, i32, *const c_char, SerializeThunk, DeserializeThunk, "
+     "Option<DropThunk>, usize, )\"}",
+     "native,wasm32-wasip1", "non-declarable", "nul-terminated",
      "length-or-count", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_yaml_array_get",
      "{\"native\": \"fn hew_yaml_array_get( *const HewYamlValue, i32, ) -> "

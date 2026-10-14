@@ -41,7 +41,7 @@ fixtures=(
     # Two nested module paths (`left::render`, `right::render`) share their final
     # component and export the same type/trait/method/free-function leaves. Named
     # aliases must carry distinct canonical owners through native codegen. The
-    # output covers direct free calls, generic + specialized static dispatch, and
+    # output covers direct free calls, generic + concrete static dispatch, and
     # inherited imported trait defaults from both owners.
     canonical_same_leaf_nested
     # Same nested module paths and same generic enum leaf (`Parcel<T>`), with

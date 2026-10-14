@@ -326,13 +326,12 @@ pub struct DeadLocalTransferReport {
 ///
 /// A local place read as a copy hands the consumer an independent owner and
 /// leaves the place holding its own. When nothing reads the place again before
-/// it is overwritten or its lifetime ends, that copy is a structural
-/// allocation whose only remaining consumer is the release that follows, so the
-/// read transfers the contents instead and the place is left uninitialized.
+/// it is overwritten or its lifetime ends, the copy's remaining consumer is
+/// the release that follows, so the read transfers the contents instead and
+/// the place is left uninitialized.
 ///
-/// Only whole local roots with a structural copy recipe are considered:
-/// retained and bit-copied contents cost nothing to read twice, and their
-/// elision is a separate concern.
+/// Whole local roots with structural copies or immutable value retains can
+/// transfer. Affine retains keep their observable count and close contracts.
 ///
 /// # Errors
 ///
@@ -375,8 +374,11 @@ fn transfer_dead_local_reads(
     if roots.is_empty() {
         return Vec::new();
     }
+    let Ok(defers) = crate::defer::plan(function) else {
+        return Vec::new();
+    };
     let flow = PlaceFlow::new(function, &plan, &roots);
-    let live = flow.live_out_sets(function);
+    let live = flow.live_out_sets(function, &defers);
 
     let mut transferred = Vec::new();
     for block in &mut function.blocks {
@@ -398,7 +400,7 @@ fn transfer_dead_local_reads(
     transferred
 }
 
-/// Whole local roots whose contents cost a structural copy to read.
+/// Whole local roots whose value copies or immutable retains can transfer.
 fn transferable_roots(
     function: &SemFunction,
     plan: &crate::PlacePlan,
@@ -446,12 +448,15 @@ fn transferable_roots(
             !open_borrows.contains(&place.id) || closed.contains(&place.id)
         })
         .filter(|place| {
-            matches!(
-                facts
-                    .get(&hew_types::TypeInstanceKey(place.ty.clone()))
-                    .map(|row| row.clone),
-                Some(hew_types::CloneKind::DeepCopy | hew_types::CloneKind::FieldWise)
-            )
+            facts
+                .get(&hew_types::TypeInstanceKey(place.ty.clone()))
+                .is_some_and(|row| {
+                    matches!(
+                        row.clone,
+                        hew_types::CloneKind::DeepCopy | hew_types::CloneKind::FieldWise
+                    ) || (row.class == hew_types::ValueClass::CowValue
+                        && row.clone == hew_types::CloneKind::Retain)
+                })
         })
         .map(|place| place.id)
         .collect()
@@ -528,7 +533,11 @@ impl<'a> PlaceFlow<'a> {
     }
 
     /// Live-out sets per reachable block, to a fixed point over the CFG.
-    fn live_out_sets(&self, function: &SemFunction) -> BTreeMap<BlockId, BTreeSet<crate::PlaceId>> {
+    fn live_out_sets(
+        &self,
+        function: &SemFunction,
+        defers: &crate::defer::Plan,
+    ) -> BTreeMap<BlockId, BTreeSet<crate::PlaceId>> {
         let cfg = build_cfg_index(function);
         let order: Vec<BlockId> = cfg.rpo().iter().rev().copied().collect();
         let mut live_in: BTreeMap<BlockId, BTreeSet<crate::PlaceId>> = BTreeMap::new();
@@ -551,6 +560,17 @@ impl<'a> PlaceFlow<'a> {
                         if let Some(entry) = live_in.get(&target) {
                             out.extend(entry.iter().copied());
                         }
+                    }
+                }
+                if let SemTerminator::EnterDefer { defer, .. } = block.terminator {
+                    if let Some(registration) = defers.registrations.get(&defer) {
+                        out.extend(
+                            registration
+                                .dependencies
+                                .iter()
+                                .filter_map(|place| self.root_of.get(place))
+                                .copied(),
+                        );
                     }
                 }
                 let mut state = out.clone();

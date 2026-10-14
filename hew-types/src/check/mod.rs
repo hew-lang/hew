@@ -66,6 +66,7 @@ mod race;
 mod task_lifetimes;
 pub use self::lints::{directive_suppresses, LintId, LintLevel, LintLevels, LintSources};
 mod machine_effects;
+mod machine_hierarchy;
 mod machine_normalize;
 pub use machine_normalize::NormalizedProgram;
 mod methods;

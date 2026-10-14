@@ -1,0 +1,129 @@
+// Nested handshake rules use nearest-ancestor fallback and retain shared hooks.
+machine Session {
+    events {
+        Open;
+        Advance;
+        Probe { allow: bool; }
+        Bounce;
+        Finish;
+        Restart;
+        Reset;
+        Recompute { verify: bool; }
+        Cancel;
+    }
+    emits {
+        Trace { text: string; }
+    }
+    state Idle;
+    state Connection {
+        attempt: i64;
+        entry { emit Trace { text: "connection+" }; state.attempt = state.attempt + 1; }
+        exit { emit Trace { text: "connection-" }; }
+        initial state Handshake {
+            token: string;
+            entry { emit Trace { text: "handshake+" + state.token }; }
+            exit { emit Trace { text: "handshake-" + state.token }; }
+            initial state Challenge {
+                entry { emit Trace { text: "challenge+" }; }
+                exit { emit Trace { text: "challenge-" }; }
+                initial state Waiting {
+                    entry { emit Trace { text: "waiting+" }; }
+                    exit { emit Trace { text: "waiting-" }; }
+                }
+                state Verifying {
+                    entry { emit Trace { text: "verifying+" }; }
+                    exit { emit Trace { text: "verifying-" }; }
+                }
+            }
+            on Probe: _ => Idle {
+                emit Trace { text: "nearest" };
+                Idle
+            }
+        }
+        state Live {
+            entry { emit Trace { text: "live+" }; }
+            exit { emit Trace { text: "live-" }; }
+        }
+        on Cancel: _ => Idle {
+            emit Trace { text: "ancestor" };
+            Idle
+        }
+        on Probe: _ => Idle {
+            emit Trace { text: "wrong-fallback" };
+            Idle
+        }
+    }
+    on Open: Idle => Connection { attempt: 7, token: "owned" }
+    on Cancel: Connection.Handshake.Challenge.Waiting => Waiting {
+        emit Trace { text: "child" };
+        state
+    }
+    on Advance: Waiting => Connection.Handshake.Challenge.Verifying { attempt: state.attempt, token: state.token }
+    on Probe: Waiting => Verifying when event.allow {
+        emit Trace { text: "guarded" };
+        Verifying { attempt: state.attempt, token: state.token }
+    }
+    on Bounce: Verifying => Verifying reenter {
+        emit Trace { text: "bounce" };
+        Verifying { attempt: state.attempt, token: state.token }
+    }
+    on Recompute: Waiting => _ {
+        emit Trace { text: "computed" };
+        if event.verify {
+            Verifying { attempt: state.attempt, token: state.token }
+        } else {
+            state
+        }
+    }
+    on Reset: Verifying => Handshake { attempt: state.attempt, token: state.token }
+    on Reset: Waiting => Handshake { attempt: state.attempt, token: state.token }
+    on Restart: Verifying => Handshake reenter { attempt: state.attempt, token: state.token }
+    on Finish: Verifying => Live {
+        assert(state.attempt == 8);
+        Live { attempt: state.attempt }
+    }
+    default { state }
+}
+fn expect(report: SessionStep, expected: string) {
+    var actual = "";
+    for output in report.outputs {
+        match output {
+            .Trace { text } => { actual = actual + text + "|"; }
+        }
+    }
+    assert(actual == expected);
+}
+fn main() {
+    var session: Session = .Idle;
+    expect(session.step(.Open), "connection+|handshake+owned|challenge+|waiting+|");
+    assert(session.state_name() == "Waiting");
+    expect(session.step(.Cancel), "child|");
+    expect(session.step(.Probe { allow: true }), "waiting-|guarded|verifying+|");
+    expect(session.step(.Bounce), "verifying-|bounce|verifying+|");
+    expect(session.step(.Finish), "verifying-|challenge-|handshake-owned|live+|");
+    expect(session.step(.Cancel), "live-|connection-|ancestor|");
+    assert(session.state_name() == "Idle");
+    expect(session.step(.Open), "connection+|handshake+owned|challenge+|waiting+|");
+    expect(session.step(.Probe { allow: false }), "waiting-|challenge-|handshake-owned|connection-|nearest|");
+    expect(session.step(.Open), "connection+|handshake+owned|challenge+|waiting+|");
+    expect(session.step(.Advance), "waiting-|verifying+|");
+    expect(session.step(.Reset), "verifying-|challenge-|challenge+|waiting+|");
+    expect(session.step(.Reset), "waiting-|challenge-|challenge+|waiting+|");
+    expect(session.step(.Advance), "waiting-|verifying+|");
+    expect(session.step(.Restart), "verifying-|challenge-|handshake-owned|handshake+owned|challenge+|waiting+|");
+    expect(session.step(.Advance), "waiting-|verifying+|");
+    expect(session.step(.Cancel), "verifying-|challenge-|handshake-owned|connection-|ancestor|");
+    assert(session.state_name() == "Idle");
+    expect(session.step(.Open), "connection+|handshake+owned|challenge+|waiting+|");
+    expect(session.step(.Recompute { verify: false }), "waiting-|challenge-|handshake-owned|connection-|computed|connection+|handshake+owned|challenge+|waiting+|");
+    match session {
+        .Waiting { attempt, token } => { assert(attempt == 9); assert(token == "owned"); }
+        _ => panic("computed same-leaf target changed state"),
+    }
+    expect(session.step(.Recompute { verify: true }), "waiting-|challenge-|handshake-owned|connection-|computed|connection+|handshake+owned|challenge+|verifying+|");
+    match session {
+        .Verifying { attempt, token } => { assert(attempt == 10); assert(token == "owned"); }
+        _ => panic("computed sibling target changed state"),
+    }
+    println("deep handshake ok");
+}

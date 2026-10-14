@@ -4751,7 +4751,7 @@ payload is refused at the transition that takes it, naming the machine, state,
 field and type; `Rc<T>` shares it across the staged copy.
 
 The native evaluator admits ordinary concrete machines, const parameters and
-depth-1 composite state blocks (§3.11.9). An unclassified generic payload
+nested composite state blocks (§3.11.9). An unclassified generic payload
 parses but is not admitted by this execution path; parser or diagram support
 for a form is not evidence of executable support.
 
@@ -5109,22 +5109,34 @@ machine Retry<const MAX: usize = 3> {
 ```
 
 **Composite states.** A `state` block that declares substates is a composite
-state: a grouping name, not a live state. It nests exactly one level; a
-substate that declares substates of its own is refused. Exactly one substate
-is marked `initial`.
+state: a grouping name, not a live state. Its direct children may be leaves or
+further composites. Exactly one direct child is marked `initial`. A target
+naming a composite follows initial children recursively until it reaches a
+leaf. State names remain unique within the machine; qualified source and
+target heads must follow the declared ancestry.
 
-A composite flattens before checking. Every substate becomes a state of the
-machine, and the composite's own fields are stamped onto each of them.
+A compound's fields are inherited by every descendant leaf. Redeclaring an
+inherited field is refused. Parentage and transition domains are checked before
+the machine generates ordinary enums and methods.
 
-- A transition targeting the composite by name enters its `initial` substate.
-- A parent-level rule written inside the block applies from every substate. A
-  substate's own unguarded rule for the same event replaces it, wherever in
-  the machine that rule is written; a guarded one keeps the parent rule as its
-  fallback.
-- Entering the composite runs the composite's `entry` hook before the
-  substate's; leaving it runs the substate's `exit` hook before the
-  composite's. A move between two substates of the same composite runs neither
-  composite hook.
+- The active leaf's rules have priority, followed by its nearest ancestor's
+  rules, successively broader ancestors and machine-wide wildcard rules. A
+  guarded rule retains broader rules as fallback; an unconditional rule ends
+  fallback. Source order decides priority among rules at the same level.
+- A named transition retains the nearest common ancestor of source and target.
+  It exits descendants from the leaf outwards, evaluates the body once, then
+  enters the target branch from outside in. Shared ancestors run neither hook.
+- Targeting an active ancestor descends through its initial children, exiting
+  and entering its descendants even when the initial leaf is already active.
+  The target compound itself runs hooks only for `reenter`. A fixed
+  leaf self-transition runs no hooks unless marked `reenter`. Reentry of an
+  active composite exits and enters that composite as well as its descendants.
+
+A computed `_` target exits the full active branch before the body runs, then
+enters the full branch returned by its single evaluation. Even same-leaf and
+sibling returns exit and re-enter shared compounds. This differs from named
+sibling targets, which retain common ancestors. Existing intra-compound `_`
+transitions that depend on skipping compound hooks should use a named target.
 
 ```hew
 machine Session {
@@ -5162,9 +5174,10 @@ machine Session {
 }
 ```
 
-`hew machine diagram` draws the flattened machine; its JSON form keeps the
-grouping in a `composites` array naming each composite, its members and its
-initial substate.
+`hew machine diagram` draws nested groups. Its JSON form retains each state's
+qualified `path` and `parent`, and a `composites` array naming each compound,
+its direct members and its initial child. Parallel regions and history states
+are not admitted.
 
 ---
 

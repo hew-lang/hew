@@ -183,18 +183,39 @@ fn cmd_list(path: &str) {
         std::process::exit(1);
     }
     for machine in &machines {
+        let paths = machine
+            .states
+            .iter()
+            .map(|state| machine.state_path(state.name))
+            .collect::<Vec<_>>();
+        let state_names = paths
+            .iter()
+            .map(|path| {
+                path.iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(".")
+            })
+            .collect::<Vec<_>>();
         let states = machine
             .states
             .iter()
-            .map(|state| {
-                (
-                    state.name.name.as_str(),
-                    state
-                        .fields
-                        .iter()
-                        .map(|(name, _)| name.name.as_str())
-                        .collect(),
-                )
+            .zip(&paths)
+            .zip(&state_names)
+            .map(|((state, path), name)| {
+                let fields = path
+                    .iter()
+                    .filter_map(|name| {
+                        machine
+                            .composite_groups
+                            .iter()
+                            .find(|group| group.name == *name)
+                    })
+                    .flat_map(|group| &group.fields)
+                    .chain(&state.fields)
+                    .map(|(name, _)| name.name.as_str())
+                    .collect();
+                (name.as_str(), fields)
             })
             .collect::<Vec<_>>();
         let events = machine
@@ -215,7 +236,7 @@ fn cmd_list(path: &str) {
             machine.name.name.as_str(),
             &states,
             &events,
-            machine.transitions.len(),
+            machine.authored_transitions().count(),
             machine.has_default,
             &machine.emits,
         );
@@ -278,22 +299,90 @@ fn print_mermaid_title(name: &str, type_params: &[String]) {
     println!("---");
 }
 
+fn parent(machine: &MachineDecl, name: Ident) -> Option<&hew_parser::ast::CompositeGroup> {
+    machine
+        .composite_groups
+        .iter()
+        .find(|group| group.members.contains(&name))
+}
+
+fn print_mermaid_group(
+    machine: &MachineDecl,
+    group: &hew_parser::ast::CompositeGroup,
+    depth: usize,
+) {
+    let indent = "    ".repeat(depth);
+    println!("{indent}state {} {{", group.name);
+    println!("{indent}    [*] --> {}", group.initial);
+    for member in &group.members {
+        if let Some(child) = machine
+            .composite_groups
+            .iter()
+            .find(|child| child.name == *member)
+        {
+            print_mermaid_group(machine, child, depth + 1);
+        } else {
+            println!("{indent}    {member}");
+        }
+    }
+    println!("{indent}}}");
+}
+
+fn print_dot_group(machine: &MachineDecl, group: &hew_parser::ast::CompositeGroup, depth: usize) {
+    let indent = "    ".repeat(depth);
+    println!("{indent}subgraph cluster_{} {{", group.name);
+    println!("{indent}    label=\"{}\";", group.name);
+    println!(
+        "{indent}    __start_{} [shape=point, width=0.2];",
+        group.name
+    );
+    println!("{indent}    __start_{} -> {};", group.name, group.initial);
+    for member in &group.members {
+        if let Some(child) = machine
+            .composite_groups
+            .iter()
+            .find(|child| child.name == *member)
+        {
+            print_dot_group(machine, child, depth + 1);
+        } else {
+            println!("{indent}    {member};");
+        }
+    }
+    println!("{indent}}}");
+}
+
+fn first_state(machine: &MachineDecl) -> Option<Ident> {
+    machine
+        .states
+        .iter()
+        .filter(|state| parent(machine, state.name).is_none())
+        .map(|state| (state.span.start, state.name))
+        .chain(
+            machine
+                .composite_groups
+                .iter()
+                .filter(|group| parent(machine, group.name).is_none())
+                .map(|group| (group.span.start, group.name)),
+        )
+        .min_by_key(|(start, _)| *start)
+        .map(|(_, name)| name)
+}
+
 fn print_mermaid(md: &MachineDecl) {
     let type_param_names: Vec<String> = md.type_params.iter().map(|p| p.name.to_string()).collect();
     print_mermaid_title(md.name.name.as_str(), &type_param_names);
     println!("stateDiagram-v2");
 
-    if let Some(first) = md.states.first() {
-        println!("    [*] --> {}", first.name);
+    if let Some(first) = first_state(md) {
+        println!("    [*] --> {first}");
     }
 
-    for group in &md.composite_groups {
-        println!("    state {} {{", group.name);
-        println!("        [*] --> {}", group.initial);
-        for member in &group.members {
-            println!("        {member}");
-        }
-        println!("    }}");
+    for group in md
+        .composite_groups
+        .iter()
+        .filter(|group| parent(md, group.name).is_none())
+    {
+        print_mermaid_group(md, group, 1);
     }
 
     // fix 1: has_default — note signals stay-on-unhandled semantics.
@@ -347,15 +436,12 @@ fn print_dot(md: &MachineDecl) {
     println!("    rankdir=LR;");
     println!("    node [shape=circle];");
 
-    for group in &md.composite_groups {
-        println!("    subgraph cluster_{} {{", group.name);
-        println!("        label=\"{}\";", group.name);
-        println!("        __start_{} [shape=point, width=0.2];", group.name);
-        println!("        __start_{} -> {};", group.name, group.initial);
-        for member in &group.members {
-            println!("        {member};");
-        }
-        println!("    }}");
+    for group in md
+        .composite_groups
+        .iter()
+        .filter(|group| parent(md, group.name).is_none())
+    {
+        print_dot_group(md, group, 1);
     }
 
     // fix 1: has_default — graph label signals stay-on-unhandled semantics.
@@ -379,9 +465,9 @@ fn print_dot(md: &MachineDecl) {
         );
     }
 
-    if let Some(first) = md.states.first() {
+    if let Some(first) = first_state(md) {
         println!("    __start [shape=point, width=0.2];");
-        println!("    __start -> {};", first.name);
+        println!("    __start -> {first};");
     }
 
     for state in &md.states {
@@ -425,17 +511,43 @@ fn visible_rules(machine: &MachineDecl) -> Vec<(&str, &hew_parser::ast::MachineT
     for rule in &machine.transitions {
         if rule.source_state.name == sym::UNDERSCORE {
             for state in &machine.states {
-                let covered = machine.transitions.iter().any(|specific| {
-                    specific.source_state == state.name
-                        && specific.event_name == rule.event_name
+                let path = machine.state_path(state.name);
+                let covers = |specific: &hew_parser::ast::MachineTransition,
+                              scope: Option<Ident>| {
+                    specific.event_name == rule.event_name
                         && specific.guard.is_none()
-                });
+                        && if specific.source_state.name == sym::UNDERSCORE {
+                            scope.is_some_and(|scope| path.contains(&scope))
+                        } else {
+                            path.contains(&specific.source_state)
+                        }
+                };
+                let covered = machine
+                    .transitions
+                    .iter()
+                    .any(|specific| covers(specific, None))
+                    || machine.composite_groups.iter().any(|group| {
+                        group
+                            .parent_transitions
+                            .iter()
+                            .any(|specific| covers(specific, Some(group.name)))
+                    });
                 if !covered {
                     rules.push((state.name.name.as_str(), rule));
                 }
             }
         } else {
             rules.push((rule.source_state.name.as_str(), rule));
+        }
+    }
+    for group in &machine.composite_groups {
+        for rule in &group.parent_transitions {
+            let source = if rule.source_state.name == sym::UNDERSCORE {
+                group.name.name.as_str()
+            } else {
+                rule.source_state.name.as_str()
+            };
+            rules.push((source, rule));
         }
     }
     rules
@@ -467,15 +579,17 @@ fn print_json_ast(machine: &MachineDecl) {
         "emits": machine.emits.iter().map(|output| output.name.to_string()).collect::<Vec<_>>(),
         "outputs": machine.emits.iter().map(|output| serde_json::json!({"name": output.name.to_string(), "fields": fields(&output.fields)})).collect::<Vec<_>>(),
         "typeParams": machine.type_params.iter().map(|param| param.name.to_string()).collect::<Vec<_>>(),
-        "states": machine.states.iter().map(|state| serde_json::json!({"name": state.name.to_string(), "fields": fields(&state.fields), "hasEntry": state.entry.is_some(), "hasExit": state.exit.is_some()})).collect::<Vec<_>>(),
+        "states": machine.states.iter().map(|state| serde_json::json!({"name": state.name.to_string(), "path": machine.state_path(state.name).iter().map(ToString::to_string).collect::<Vec<_>>(), "fields": fields(&state.fields), "hasEntry": state.entry.is_some(), "hasExit": state.exit.is_some(), "parent": parent(machine, state.name).map(|group| group.name.to_string())})).collect::<Vec<_>>(),
         "events": machine.events.iter().map(|event| serde_json::json!({"name": event.name.to_string(), "fields": fields(&event.fields)})).collect::<Vec<_>>(),
         "transitions": visible_rules(machine).into_iter().map(|(source, rule)| serde_json::json!({
             "event": rule.event_name.to_string(), "from": source, "to": rule.target_state.to_string(),
+            "fromPath": rule.source_path.iter().map(ToString::to_string).collect::<Vec<_>>(),
+            "toPath": rule.target_path.iter().map(ToString::to_string).collect::<Vec<_>>(),
             "selfTransition": source == rule.target_state.name.as_str(),
             "guarded": rule.guard.is_some(), "reenter": rule.reenter,
             "external": rule.reenter || rule.target_state != Ident::new(source),
         })).collect::<Vec<_>>(),
-        "composites": machine.composite_groups.iter().map(|group| serde_json::json!({"name": group.name.to_string(), "initial": group.initial.to_string(), "members": group.members.iter().map(ToString::to_string).collect::<Vec<_>>()})).collect::<Vec<_>>(),
+        "composites": machine.composite_groups.iter().map(|group| serde_json::json!({"name": group.name.to_string(), "path": machine.state_path(group.name).iter().map(ToString::to_string).collect::<Vec<_>>(), "parent": parent(machine, group.name).map(|owner| owner.name.to_string()), "initial": group.initial.to_string(), "members": group.members.iter().map(ToString::to_string).collect::<Vec<_>>()})).collect::<Vec<_>>(),
     });
     println!("{value}");
 }

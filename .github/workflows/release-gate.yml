@@ -880,9 +880,10 @@ jobs:
             # native-link input required by the smoke test.
             gmake release-cli
 
-            # `hew build` resolves its in-tree native library from the debug
-            # target directory. Build the canonical consolidated archive.
-            gmake stdlib
+            # Build only the native archive needed by the release CLI's smoke.
+            # `gmake stdlib` also builds a debug compiler, repeating the full
+            # compiler dependency graph under emulation after release-cli.
+            cargo build -p hew-lib
 
             target/release/hew --version
 

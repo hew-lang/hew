@@ -190,6 +190,7 @@ Edition 2026 ships a deliberately small trait surface:
 - User-defined traits with associated types and named receivers.
 - Trait `impl` blocks for concrete and generic types.
 - Bounds on type parameters (`T: Display`).
+- Associated-type bounds in where-clauses (`where T.Item: Display`).
 
 Out of scope for edition 2026:
 
@@ -197,9 +198,6 @@ Out of scope for edition 2026:
   `examples/types_and_traits.hew`). Remaining partial: object-safety
   enforcement, associated-type bounds in `dyn` position, and higher-ranked
   trait bounds.
-- Associated-type bounds in where-clauses (`where T.Item: Display`). Writing
-  one today is an error, `E_ASSOC_BOUND_UNSUPPORTED` (HEW-SPEC-2026 §3.8.3),
-  rather than a bound that parses and never resolves a method.
 - Trait coherence (orphan rule) across crates — the current single-crate
   coherence rule stays; multi-crate coherence depends on the package
   system maturing.

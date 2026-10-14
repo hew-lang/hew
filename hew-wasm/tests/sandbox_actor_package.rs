@@ -100,9 +100,21 @@ fn execute_expected(source: &str, status: &str) -> serde_json::Value {
 }
 
 fn execute_options(source: &str, status: &str, options: &str) -> serde_json::Value {
-    let compiled =
-        hew_wasm::sandbox::compile_to_sandbox_bytecode(source, Some("sandbox-vm-export"))
-            .expect("compile through the public browser entry point");
+    execute_inputs(source, status, options, hew_compile::SourceSet::in_memory())
+}
+
+fn execute_inputs(
+    source: &str,
+    status: &str,
+    options: &str,
+    inputs: hew_compile::SourceSet,
+) -> serde_json::Value {
+    let compiled = hew_wasm::sandbox::compile_to_sandbox_bytecode_with_inputs(
+        source,
+        Some("sandbox-vm-export"),
+        inputs,
+    )
+    .expect("compile through the public browser entry point");
     assert!(
         compiled
             .diagnostics
@@ -931,6 +943,20 @@ fn shared_native_manifests_execute_with_matching_results() {
 }
 
 fn assert_native_manifest(name: &str) {
+    assert_native_manifest_with_inputs(name, hew_compile::SourceSet::in_memory());
+}
+
+#[test]
+fn imported_associated_projection_bounds_execute() {
+    let mut inputs = hew_compile::SourceSet::in_memory();
+    inputs.insert(
+        "projection_bound_support/labels.hew",
+        include_str!("../../tests/core-acceptance/cases/projection_bound_support/labels.hew"),
+    );
+    assert_native_manifest_with_inputs("associated-projection-bounds", inputs);
+}
+
+fn assert_native_manifest_with_inputs(name: &str, inputs: hew_compile::SourceSet) {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../tests/core-acceptance");
     let manifest = std::fs::read_to_string(root.join(format!("cases/{name}.toml")))
         .expect("shared native manifest");
@@ -938,7 +964,7 @@ fn assert_native_manifest(name: &str) {
     let case = &manifest["case"][0];
     let source = std::fs::read_to_string(root.join(case["source"].as_str().unwrap()))
         .expect("shared native source");
-    let trace = execute(&source);
+    let trace = execute_inputs(&source, "ok", "{}", inputs);
     assert_eq!(
         stdout(&trace),
         case["expected"]["stdout"].as_str().unwrap(),

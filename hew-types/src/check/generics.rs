@@ -301,15 +301,29 @@ impl Checker {
         span: &Span,
         required_by: Option<&str>,
     ) {
-        for (idx, param) in type_params.iter().enumerate() {
+        for param in self.associated_schema_parameters.binders(type_params) {
             let param_bounds: Vec<TraitRef> = bounds.of(param.id).cloned().collect();
             if param_bounds.is_empty() {
                 continue;
             }
-            let Some(type_arg) = type_args.get(idx) else {
+            let argument_of = |parameter| {
+                type_params
+                    .iter()
+                    .position(|known| *known == parameter)
+                    .and_then(|index| type_args.get(index))
+            };
+            let type_arg = if let Some((base, trait_id, associated)) =
+                self.associated_schema_parameters.projection_of(param)
+            {
+                argument_of(base)
+                    .map(|argument| self.project_associated_type(argument, trait_id, associated))
+            } else {
+                argument_of(param).cloned()
+            };
+            let Some(type_arg) = type_arg else {
                 continue;
             };
-            let resolved_arg = self.subst.resolve(type_arg);
+            let resolved_arg = self.normalize_for_use(&type_arg);
             // Skip bound enforcement for unresolved inference variables: the type
             // is not yet known, so we cannot evaluate the bound.  The parallel
             // output-boundary prune in `validate_call_type_args_output_contract`
@@ -325,7 +339,7 @@ impl Checker {
                         .any(|bound| self.trait_marker(bound.trait_id) == Some(MarkerTrait::Eq)))
             {
                 self.deferred_bound_checks.push(DeferredBoundCheck {
-                    type_param: *param,
+                    type_param: param,
                     bounds: param_bounds,
                     type_arg: type_arg.clone(),
                     span: span.clone(),
@@ -343,13 +357,13 @@ impl Checker {
             // monomorphisation registry can mint a key for it.
             self.pin_projection_only_assoc_bindings(&param_bounds, &resolved_arg);
             self.report_unsatisfied_type_param_bounds(
-                *param,
+                param,
                 &param_bounds,
                 &resolved_arg,
                 span,
                 required_by,
             );
-            self.report_unsatisfied_assoc_type_bindings(*param, &param_bounds, &resolved_arg, span);
+            self.report_unsatisfied_assoc_type_bindings(param, &param_bounds, &resolved_arg, span);
         }
     }
 

@@ -42,6 +42,7 @@ struct Task {
     arg: *mut c_void,
     /// Stop may leave this job running instead of waiting for it.
     abandonable: bool,
+    inline_in_driver: bool,
 }
 
 // SAFETY: The `arg` pointer is passed to the function by the submitter and is
@@ -255,6 +256,29 @@ pub unsafe extern "C" fn hew_blocking_pool_submit(
             func,
             arg,
             abandonable: false,
+            inline_in_driver: true,
+        },
+    )
+}
+
+/// Submit work that must run on a pool thread even under the deterministic
+/// driver. A live network send can wait for another sender or peer indefinitely;
+/// running it inline would prevent the driver from observing cancellation.
+///
+/// # Safety
+/// The pool, function and argument follow [`hew_blocking_pool_submit`].
+pub(crate) unsafe fn submit_on_worker(
+    pool: *mut HewBlockingPool,
+    func: HewBlockingFn,
+    arg: *mut c_void,
+) -> i32 {
+    submit(
+        pool,
+        Task {
+            func,
+            arg,
+            abandonable: false,
+            inline_in_driver: false,
         },
     )
 }
@@ -280,6 +304,7 @@ pub(crate) unsafe fn submit_abandonable(
             func,
             arg,
             abandonable: true,
+            inline_in_driver: true,
         },
     )
 }
@@ -296,7 +321,7 @@ unsafe fn submit(pool: *mut HewBlockingPool, task: Task) -> i32 {
     }
     // The single-thread driver runs offloaded work inline at submission, so
     // its completion enters the ready list in program order.
-    if crate::driver::active() {
+    if task.inline_in_driver && crate::driver::active() {
         drop(queue);
         // SAFETY: the caller keeps `arg` valid until `func` completes, which
         // is before this call returns.

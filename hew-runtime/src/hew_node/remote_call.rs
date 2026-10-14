@@ -124,18 +124,21 @@ fn setup_remote_ask(
         } else {
             None
         };
-        let (req_ptr, req_len) = match serialized_req {
-            Some((bytes, len)) => (bytes.cast_const(), len),
-            None => (std::ptr::null(), 0),
+        let request = match serialized_req {
+            Some((bytes, len)) => {
+                // SAFETY: the encoder returned this live sized-block allocation.
+                let request = unsafe { std::slice::from_raw_parts(bytes, len) }.to_vec();
+                // SAFETY: the pool now owns the copied bytes, not the sized block.
+                unsafe { crate::xnode_serial::hew_ser_free_bytes(bytes) };
+                request
+            }
+            None => Vec::new(),
         };
 
         let connection = ConnectionKey::new(node.conn_mgr.cast_const(), conn_id);
         let (request_id, pending) =
             reply_table().register_with_waker(connection, Some(waker), PendingReplyKind::Ask);
 
-        // Encode the ask envelope with request_id and source_node_id over the
-        // SERIALIZED request bytes.
-        // SAFETY: req_ptr is valid for req_len bytes (or null when req_len == 0).
         // SAFETY: the running node owns a live connection manager.
         let manager = unsafe { &*node.conn_mgr };
         let source = {
@@ -147,52 +150,56 @@ fn setup_remote_ask(
                 connection::local_location_for_actor(manager, unsafe { (*actor).id })
             }
         };
-        let mut preparation_error = None;
-        let send_ok = send_claim.send_prepared(|| {
-            let remaining = deadline.remaining();
-            if remaining.is_some_and(|budget| budget <= 0) {
-                preparation_error = Some(AskError::Timeout);
-                return None;
-            }
-            // SAFETY: the serialized request remains live throughout preparation.
-            match unsafe {
-                encode_envelope_frame_from_raw_parts(
-                    Some(target),
-                    source,
-                    crate::envelope::EnvelopeMessage::Handler(codec.identity.to_owned()),
-                    req_ptr,
-                    req_len,
-                    request_id,
-                    remaining.map(i64::cast_unsigned),
-                )
-            } {
-                Ok(bytes) => Some(bytes),
-                Err(error) => {
-                    set_last_error(format!("hew_node_api_ask: {error}"));
-                    preparation_error = Some(AskError::EncodeFailed);
-                    None
+        let table = Arc::clone(&crate::runtime::rt_current().node.reply_table);
+        let completion_table = Arc::clone(&table);
+        let publication = send_claim.publication_token;
+        let submitted = send_claim.submit(
+            move || {
+                // A cancelled or expired call must not start after waiting for
+                // the pool or another sender to release the channel.
+                if !table
+                    .pending
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .contains_key(&request_id)
+                {
+                    return None;
                 }
-            }
-        }) == 0;
-        if let Some((bytes, _)) = serialized_req {
-            // SAFETY: bytes came from encode_payload's sized-block allocation.
-            unsafe { crate::xnode_serial::hew_ser_free_bytes(bytes) };
+                let remaining = deadline.remaining();
+                if remaining.is_some_and(|budget| budget <= 0) {
+                    table.fail(request_id, AskError::Timeout);
+                    return None;
+                }
+                // SAFETY: the job owns the serialized request through preparation.
+                match unsafe {
+                    encode_envelope_frame_from_raw_parts(
+                        Some(target),
+                        source,
+                        crate::envelope::EnvelopeMessage::Handler(codec.identity.to_owned()),
+                        request.as_ptr(),
+                        request.len(),
+                        request_id,
+                        remaining.map(i64::cast_unsigned),
+                    )
+                } {
+                    Ok(bytes) => Some(bytes),
+                    Err(error) => {
+                        set_last_error(format!("hew_node_api_ask: {error}"));
+                        table.fail(request_id, AskError::EncodeFailed);
+                        None
+                    }
+                }
+            },
+            move |result| {
+                if result.is_err_and(|error| error != connection::ChannelError::Preparation) {
+                    completion_table.fail_connection(connection);
+                }
+            },
+        );
+        if !submitted {
+            reply_table().fail(request_id, AskError::SendFailed);
         }
-        if let Some(error) = preparation_error {
-            reply_table().remove(request_id);
-            return RemoteAskSetupResult::Error(error);
-        }
-
-        if !send_ok {
-            // The ask is already bound to an authenticated, active connection.
-            // A transport failure from this point is a connection drop, and it
-            // must resolve through the same table authority as reader cleanup.
-            // Returning the registered slot also preserves the coroutine
-            // call's wake protocol when the drop wins before the caller parks.
-            reply_table().fail_connection(connection);
-        }
-
-        RemoteAskSetupResult::Ok((pending, target, send_claim.publication_token))
+        RemoteAskSetupResult::Ok((pending, target, publication))
     })
 }
 
@@ -332,9 +339,17 @@ fn withdraw_remote(route: &RemoteCallRoute) {
         {
             return;
         }
-        // SAFETY: CURRENT_NODE pins this manager; the withdrawal has no payload.
-        unsafe {
-            if let Ok(bytes) = encode_envelope_frame_from_raw_parts(
+        // SAFETY: CURRENT_NODE pins the manager until its owned claim is acquired.
+        let Some(claim) = connection::claim_send(
+            unsafe { &*node.conn_mgr },
+            pending.connection.conn_id,
+            Some(*publication),
+        ) else {
+            return;
+        };
+        // SAFETY: the withdrawal has no payload.
+        if let Ok(bytes) = unsafe {
+            encode_envelope_frame_from_raw_parts(
                 Some(*target),
                 None,
                 crate::envelope::EnvelopeMessage::Withdraw,
@@ -342,15 +357,9 @@ fn withdraw_remote(route: &RemoteCallRoute) {
                 0,
                 pending.request_id,
                 None,
-            ) {
-                connection::hew_connmgr_send_preencoded_claimed(
-                    node.conn_mgr,
-                    pending.connection.conn_id,
-                    *publication,
-                    bytes.as_ptr(),
-                    bytes.len(),
-                );
-            }
+            )
+        } {
+            let _ = claim.submit(move || Some(bytes), |_| {});
         }
     });
 }

@@ -695,3 +695,121 @@ fn reply_table_fail_connection_only_wakes_matching_waiters() {
         "non-matching waiter must remain pending"
     );
 }
+
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one authenticated connection exercises setup, expiry and cancellation before releasing the held sender"
+)]
+fn remote_call_setup_expiry_and_cancel_do_not_wait_for_a_blocked_sender() {
+    let _guard = crate::runtime_test_guard();
+    let _real_sched;
+    let (node_a, _, node_b, port_b) = start_authorized_tcp_pair(740, 741);
+    _real_sched = init_real_scheduler();
+    let address = CString::new(format!("741@127.0.0.1:{port_b}")).unwrap();
+    // SAFETY: both nodes remain live through the scoped senders and calls.
+    unsafe {
+        connect_with_retry(node_a.as_ptr(), &address);
+        wait_for_handshake(node_a.as_ptr(), node_b.as_ptr());
+    }
+    let saved = with_current_node(|current| std::mem::replace(current, node_a.as_ptr() as usize));
+    let _reset = ResetCurrentNode(saved);
+    // SAFETY: the test owns both running nodes.
+    let (manager, target, conn_id) = unsafe {
+        let peer = &*node_b.as_ptr();
+        let manager = (*node_a.as_ptr()).conn_mgr;
+        (
+            manager as usize,
+            Location::new(
+                peer.auth.node_identity().unwrap(),
+                99,
+                peer.auth.session_incarnation().unwrap(),
+            )
+            .unwrap(),
+            connection::hew_connmgr_conn_id_for_node(manager, 741),
+        )
+    };
+    register_test_u32_codec(test_dispatch(), 7, c"tests.Backpressure.request");
+    let mut completed = Vec::new();
+    for action in ["setup", "expiry", "cancel"] {
+        let (entered, held) = std::sync::mpsc::channel();
+        let (release, released) = std::sync::mpsc::channel();
+        let (done, finished) = std::sync::mpsc::channel();
+        thread::scope(|scope| {
+            scope.spawn(move || {
+                // SAFETY: both nodes outlive the scoped sender and its lease.
+                let claim = connection::claim_send_to_location(
+                    unsafe { &*(manager as *const connection::HewConnMgr) },
+                    conn_id,
+                    target,
+                )
+                .expect("authenticated send claim");
+                let publication = claim.publication_token;
+                let _ = claim.send_prepared(|| {
+                    entered.send(publication).unwrap();
+                    let _ = released.recv_timeout(Duration::from_secs(5));
+                    None::<Vec<u8>>
+                });
+            });
+            let publication = held.recv_timeout(Duration::from_secs(5)).unwrap();
+            scope.spawn(move || {
+                let (readiness, waker) = crate::wake::blocking::Readiness::new();
+                let key = ConnectionKey::new(manager as *const connection::HewConnMgr, conn_id);
+                let call = if action == "setup" {
+                    let target = HewRemotePid::from(target);
+                    // SAFETY: empty request, registered codec and live waker.
+                    unsafe {
+                        hew_remote_call_new(
+                            &raw const target,
+                            test_dispatch(),
+                            7,
+                            ptr::null_mut(),
+                            0,
+                            0,
+                            TEST_REMOTE_ASK_TIMEOUT_MS,
+                            -1,
+                            waker.descriptor(),
+                        )
+                    }
+                } else {
+                    let (_, _, call) = remote_call_for_test(key);
+                    // SAFETY: this thread exclusively owns the fresh call.
+                    unsafe {
+                        if let RemoteCallRoute::Wire(_, location, token) = &mut (*call).route {
+                            *location = target;
+                            *token = publication;
+                        }
+                        (*call).deadline = crate::request_deadline::RequestDeadline::from_raw(0);
+                    }
+                    call
+                };
+                // SAFETY: this thread exclusively drives and frees the call.
+                unsafe {
+                    if action != "cancel" {
+                        while hew_remote_call_poll(call) == -1 {
+                            readiness.wait();
+                        }
+                        assert_eq!(
+                            hew_remote_call_take(call, ptr::null_mut()),
+                            AskError::Timeout as i32
+                        );
+                    }
+                    hew_remote_call_free(call);
+                }
+                done.send(()).unwrap();
+            });
+            let outcome = finished.recv_timeout(Duration::from_secs(1));
+            release.send(()).unwrap();
+            completed.push((action, outcome.is_ok()));
+        });
+    }
+    // SAFETY: no scoped caller or sender can still use the nodes.
+    unsafe {
+        assert_eq!(hew_node_stop(node_a.as_ptr()), 0);
+        assert_eq!(hew_node_stop(node_b.as_ptr()), 0);
+    }
+    assert!(
+        completed.iter().all(|(_, ready)| *ready),
+        "caller completion must precede releasing the blocked sender: {completed:?}"
+    );
+}

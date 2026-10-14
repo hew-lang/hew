@@ -227,7 +227,7 @@ pub(crate) struct NodeSlot {
     known_nodes: PoisonSafe<Vec<KnownNodePtr>>,
     /// Reply routing table correlating this runtime's outbound remote asks with
     /// their replies.
-    reply_table: ReplyRoutingTable,
+    reply_table: Arc<ReplyRoutingTable>,
     /// Quarantine set: peers the failure detector has declared DEAD, keyed
     /// `node_id -> the incarnation the peer was quarantined at`. A
     /// `Quarantine`-policy send/ask to a peer present here fails closed until the
@@ -247,7 +247,7 @@ impl NodeSlot {
         Self {
             current: PoisonSafeRw::new(0),
             known_nodes: PoisonSafe::new(Vec::new()),
-            reply_table: ReplyRoutingTable::new(),
+            reply_table: Arc::new(ReplyRoutingTable::new()),
             quarantine: PoisonSafe::new(HashMap::new()),
             local_route_slot: AtomicU16::new(0),
         }
@@ -341,7 +341,7 @@ fn reply_table() -> &'static ReplyRoutingTable {
 }
 
 fn reply_table_opt() -> Option<&'static ReplyRoutingTable> {
-    crate::runtime::rt_current_opt().map(|rt| &rt.node.reply_table)
+    crate::runtime::rt_current_opt().map(|rt| rt.node.reply_table.as_ref())
 }
 
 /// Quarantine a peer at the incarnation it was declared DEAD at.
@@ -668,9 +668,8 @@ impl ReplyRoutingTable {
     }
 
     /// Fail a single pending reply by request ID. Returns `true` if the
-    /// request was found. Test-only: production failures arrive through the
-    /// connection-validated paths.
-    #[cfg(test)]
+    /// request was found. Used by the owning submission job; peer failures
+    /// arrive through the connection-validated paths.
     fn fail(&self, request_id: u64, ask_error: AskError) -> bool {
         let entry = {
             let mut map = self

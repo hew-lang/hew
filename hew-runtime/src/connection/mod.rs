@@ -50,6 +50,7 @@ use crate::routing::HewRoutingTable;
 use crate::transport::HewTransport;
 use crate::util::{CondvarExt, MutexExt};
 
+pub(crate) use channel::ChannelError;
 use channel::ChannelProtection;
 
 mod admission;

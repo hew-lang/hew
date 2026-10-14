@@ -312,6 +312,12 @@ before payload decoding and actor admission. Absolute clocks are never sent
 or compared. Transit and a blocked transport write cannot be measured across
 independent clocks, so this is a relative budget, not a shared-clock deadline.
 
+A caller's expiry or cancellation MUST NOT wait for another sender or for the
+peer to accept bytes. Request submission rechecks its remaining budget after
+acquiring the send channel. Withdrawal is submitted without waiting for network
+completion; a frame already being written finishes in order or faults the
+channel.
+
 An expired request MUST NOT start a handler. On caller abandonment or expiry,
 the sender also attempts one authenticated withdrawal on the original
 connection publication. The receiver matches the exact local target, request

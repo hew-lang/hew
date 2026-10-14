@@ -5,7 +5,7 @@
 //! is observed by every descendant. The tree carries no thread state, so it is
 //! the same authority on every target.
 
-use std::sync::atomic::{AtomicI32, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicI32, AtomicI64, AtomicUsize, Ordering};
 use std::sync::Mutex;
 
 use crate::util::MutexExt as _;
@@ -55,6 +55,7 @@ pub struct HewCancellationToken {
     state: AtomicI32,
     reason: AtomicI32,
     parent: *mut HewCancellationToken,
+    pub(crate) deadline_ns: AtomicI64,
     /// Readiness subscribers; token state remains the cancellation authority.
     observers: Mutex<Vec<std::sync::Weak<HewCancelObserver>>>,
     children_total: AtomicI32,
@@ -152,10 +153,26 @@ pub unsafe extern "C" fn hew_cancel_token_new_child(
         state: AtomicI32::new(HewCancellationState::Active as i32),
         reason: AtomicI32::new(0),
         parent,
+        deadline_ns: AtomicI64::new(-1),
         observers: Mutex::new(Vec::new()),
         children_total: AtomicI32::new(0),
     });
     Box::into_raw(token)
+}
+
+/// Read the minimum explicit scope deadline in this retained ancestry.
+pub(crate) unsafe fn token_deadline(
+    mut token: *mut HewCancellationToken,
+) -> crate::request_deadline::RequestDeadline {
+    let mut deadline = crate::request_deadline::RequestDeadline::default();
+    // SAFETY: each live token retains its parent until this borrow ends.
+    while let Some(current) = unsafe { token.as_ref() } {
+        deadline = deadline.earlier(crate::request_deadline::RequestDeadline::from_raw(
+            current.deadline_ns.load(Ordering::Acquire),
+        ));
+        token = current.parent;
+    }
+    deadline
 }
 
 /// Request cancellation on `token`.

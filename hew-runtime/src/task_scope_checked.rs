@@ -256,6 +256,10 @@ pub unsafe extern "C" fn hew_checked_scope_deadline(scope: *mut HewTaskScope, du
         if !scope.checked_deadline.is_null() {
             std::process::abort();
         }
+        let deadline = crate::request_deadline::RequestDeadline::after(duration_ns);
+        (*scope.cancel_token)
+            .deadline_ns
+            .store(deadline.raw(), Ordering::Release);
         let waker = HewWaker {
             context: scope.cancel_token.cast(),
             wake: deadline_wake,
@@ -263,7 +267,7 @@ pub unsafe extern "C" fn hew_checked_scope_deadline(scope: *mut HewTaskScope, du
             release: deadline_release,
         };
         scope.checked_deadline =
-            crate::coro_sleep::hew_coro_sleep_new(duration_ns, &raw const waker);
+            crate::coro_sleep::hew_coro_sleep_until_new(deadline.raw(), &raw const waker);
         if crate::coro_sleep::hew_coro_sleep_status(scope.checked_deadline)
             != crate::coro_state::CoroStatus::Pending as i32
         {

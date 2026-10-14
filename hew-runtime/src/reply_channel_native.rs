@@ -78,6 +78,10 @@ pub unsafe extern "C" fn hew_reply_channel_status_native(
     // SAFETY: the caller owns the receiver reference. The ready acquire publishes
     // the sender's payload and classification before either is inspected.
     unsafe {
+        if hew_reply_channel_failure_kind(channel) == crate::internal::types::HEW_REPLY_FAIL_TIMEOUT
+        {
+            return AskError::Timeout as i32;
+        }
         if !hew_reply_channel_is_ready(channel) {
             return -1;
         }
@@ -103,6 +107,43 @@ pub unsafe extern "C" fn hew_reply_channel_status_native(
             return AskError::PayloadSizeMismatch as i32;
         }
         AskError::None as i32
+    }
+}
+
+/// Settle expiry against reply publication using the reply owner's lock.
+/// A published reply wins even when its observer resumes after the deadline.
+/// # Safety
+/// The optional channel remains retained through this call.
+pub(crate) unsafe fn expire_native_request(channel: *mut HewReplyChannel) {
+    // SAFETY: the caller retains the optional reply owner.
+    let Some(channel_ref) = (unsafe { channel.as_ref() }) else {
+        return;
+    };
+    let mut guard = channel_ref.native_waker.lock_or_recover();
+    if channel_ref.ready.load(Ordering::Acquire)
+        || channel_ref.fail_reason.load(Ordering::Acquire) != HEW_REPLY_FAIL_NONE
+    {
+        return;
+    }
+    if channel_ref
+        .fail_reason
+        .compare_exchange(
+            HEW_REPLY_FAIL_NONE,
+            crate::internal::types::HEW_REPLY_FAIL_TIMEOUT,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        )
+        .is_err()
+    {
+        return;
+    }
+    // SAFETY: this retained channel is still awaiting terminal publication.
+    unsafe { super::withdraw_native_request(channel) };
+    channel_ref.cancelled.store(true, Ordering::Release);
+    let waker = guard.take();
+    drop(guard);
+    if let Some(waker) = waker {
+        waker.wake();
     }
 }
 

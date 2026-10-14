@@ -116,6 +116,7 @@ pub struct HewReplyChannel {
     /// 1 is withdrawable, 2 is dispatched, and 3 is withdrawn. The scheduler
     /// and the request owner race one CAS, so a queued loser cannot execute.
     native_dispatch: AtomicU8,
+    native_deadline: crate::request_deadline::RequestDeadline,
 }
 
 // SAFETY: `HewReplyChannel` is designed for cross-thread use. The atomic
@@ -163,6 +164,7 @@ pub extern "C" fn hew_reply_channel_new() -> *mut HewReplyChannel {
         await_cancel: AtomicPtr::new(ptr::null_mut()),
         native_waker: Mutex::new(None),
         native_dispatch: AtomicU8::new(0),
+        native_deadline: crate::request_deadline::RequestDeadline::default(),
     }))
 }
 
@@ -194,6 +196,10 @@ pub(crate) unsafe fn withdraw_native_request(channel: *mut HewReplyChannel) {
 /// # Safety
 /// The channel is null or retained by the scheduler's current request node.
 pub(crate) unsafe fn claim_native_request_dispatch(channel: *mut HewReplyChannel) -> bool {
+    // SAFETY: the node retains its channel while deadline expiry competes with claim.
+    if unsafe { native_request_deadline(channel) }.expired() {
+        unsafe { native::expire_native_request(channel) };
+    }
     // SAFETY: a non-null channel is retained by the owned message node.
     let Some(channel) = (unsafe { channel.as_ref() }) else {
         return true;
@@ -202,6 +208,26 @@ pub(crate) unsafe fn claim_native_request_dispatch(channel: *mut HewReplyChannel
         .native_dispatch
         .compare_exchange(1, 2, Ordering::AcqRel, Ordering::Acquire)
         != Err(3)
+}
+
+/// Read immutable request metadata from its retained reply owner.
+pub(crate) unsafe fn native_request_deadline(
+    channel: *const HewReplyChannel,
+) -> crate::request_deadline::RequestDeadline {
+    // SAFETY: a non-null channel remains retained through this read.
+    unsafe { channel.as_ref() }.map_or_else(
+        crate::request_deadline::RequestDeadline::default,
+        |channel| channel.native_deadline,
+    )
+}
+
+/// Set the request expiry before either the request or channel is published.
+pub(crate) unsafe fn set_native_request_deadline(
+    channel: *mut HewReplyChannel,
+    deadline: crate::request_deadline::RequestDeadline,
+) {
+    // SAFETY: construction exclusively owns the unpublished channel.
+    unsafe { (*channel).native_deadline = deadline };
 }
 
 /// Record that the waiter on this reply channel is a PARKED CONTINUATION

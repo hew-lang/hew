@@ -2106,7 +2106,7 @@ impl InboundRequest {
         // SAFETY: the operation owns the fields on every outcome and retains the waker.
         unsafe {
             crate::actor_call_native::actor_call_new(
-                token, msg_type, wrapper, size, drop, reply.size, reply.drop, waker, 0, 0, 1, None,
+                token, msg_type, wrapper, size, drop, reply.size, reply.drop, waker, -1, 1, None,
                 None, caller,
             )
         }

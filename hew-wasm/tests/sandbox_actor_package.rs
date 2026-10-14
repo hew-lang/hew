@@ -922,6 +922,7 @@ fn shared_native_manifests_execute_with_matching_results() {
         "actor-reference-identity",
         "generator-callable-view",
         "generic-closure-composition",
+        "float-sort-values",
     ] {
         assert_native_manifest(name);
     }
@@ -1597,4 +1598,25 @@ fn actor_interceptor_refusal_retains_the_actual_cleanup_fault() {
     let details: serde_json::Value =
         serde_json::from_str(crashes[0]["text"].as_str().unwrap()).unwrap();
     assert_eq!(details["message"], "refused request cleanup failed");
+}
+
+#[test]
+fn inline_actor_arguments_transfer_owned_fields_once() {
+    // Node registration and links/monitors are native capabilities. Keep the
+    // shared constructors, stream transfers and ordinary calls unchanged.
+    let mut source =
+        include_str!("../../tests/core-acceptance/cases/actor-inline-owned-argument.hew")
+            .replace("    native_registration();\n", "")
+            .replace(
+                "    harness.native_observations().expect(\"native observations\");\n",
+                "",
+            );
+    let native_start = source.find("fn native_registration()").unwrap();
+    let native_end = source.find("actor Harness").unwrap();
+    source.replace_range(native_start..native_end, "");
+    let native_start = source.find("    receive fn native_observations()").unwrap();
+    let native_end = source.find("    receive fn run()").unwrap();
+    source.replace_range(native_start..native_end, "");
+    let trace = execute(&source);
+    assert_eq!(stdout(&trace), "actor arguments evaluated once\n");
 }

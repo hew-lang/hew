@@ -1,0 +1,103 @@
+import std.stream;
+
+actor PipeOwner {
+    var input: Stream<i64>;
+    var started: Sink<i64>;
+
+    #[on(start)]
+    fn announce() {
+        let value = input.recv().expect("owned stream value");
+        started.send(value).expect("published value");
+    }
+}
+
+fn channels() -> (Stream<i64>, Sink<i64>, Stream<i64>) {
+    let (writer, input): (Sink<i64>, Stream<i64>) = stream.pipe(1).expect("value pipe");
+    writer.send(42).expect("buffered value");
+    let (started, ready): (Sink<i64>, Stream<i64>) = stream.pipe(1).expect("receipt pipe");
+    (input, started, ready)
+}
+
+fn verify(ready: Stream<i64>) {
+    assert(ready.recv().expect("actor started once") == 42);
+}
+
+fn ordinary(owner: PipeOwner) -> PipeOwner {
+    owner
+}
+
+fn native_registration() {
+    {
+        let (input, started, ready) = channels();
+        let owner = spawn PipeOwner { input: input, started: started };
+        let _ = Node.register("inline-owner", owner);
+        verify(ready);
+    }
+    {
+        let (input, started, ready) = channels();
+        let _ = Node.register("inline-owner", spawn PipeOwner { input: input, started: started });
+        verify(ready);
+    }
+}
+
+actor Harness {
+    receive fn native_observations() {
+        {
+            let (input, started, ready) = channels();
+            let owner = spawn PipeOwner { input: input, started: started };
+            monitor(owner).expect("monitor").close();
+            verify(ready);
+        }
+        {
+            let (input, started, ready) = channels();
+            monitor(spawn PipeOwner { input: input, started: started }).expect("monitor").close();
+            verify(ready);
+        }
+        {
+            let (input, started, ready) = channels();
+            let owner = spawn PipeOwner { input: input, started: started };
+            let _ = link(owner);
+            verify(ready);
+        }
+        {
+            let (input, started, ready) = channels();
+            let _ = link(spawn PipeOwner { input: input, started: started });
+            verify(ready);
+        }
+        {
+            let (input, started, ready) = channels();
+            let owner = spawn PipeOwner { input: input, started: started };
+            unlink(owner);
+            verify(ready);
+        }
+        {
+            let (input, started, ready) = channels();
+            unlink(spawn PipeOwner { input: input, started: started });
+            verify(ready);
+        }
+    }
+
+    receive fn run() {
+        {
+            let (input, started, ready) = channels();
+            let owner = spawn PipeOwner { input: input, started: started };
+            let _ = ordinary(owner);
+            verify(ready);
+        }
+        {
+            let (input, started, ready) = channels();
+            let _ = ordinary(spawn PipeOwner { input: input, started: started });
+            verify(ready);
+        }
+    }
+}
+
+fn main() {
+    let harness = spawn Harness;
+    harness.run().expect("shared actor calls");
+    harness.native_observations().expect("native observations");
+    stop(harness);
+    stopped(harness);
+    native_registration();
+    println("actor arguments evaluated once");
+}

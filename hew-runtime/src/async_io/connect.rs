@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use hew_cabi::string::{string_as_str, HewString};
 
 use super::{HewAsyncIo, IoFailure, IoProducer, IoValue};
-use crate::blocking_pool::{shared_blocking_pool_opt, submit_abandonable, HewBlockingPool};
+use crate::blocking_pool::{shared_blocking_pool_opt, submit_abandonable_owned, HewBlockingPool};
 use crate::wake::HewWaker;
 
 enum Address {
@@ -110,17 +110,16 @@ unsafe fn submit(
                 operation.set_deadline(timeout, connect_timed_out);
             }
             if operation.is_pending() {
-                let job = Box::into_raw(Box::new(ConnectJob {
+                let job = Box::new(ConnectJob {
                     address,
                     deadline,
                     operation: IoProducer::new(Arc::clone(&operation)),
-                }));
+                });
                 // SAFETY: the admitted job owns its address and any socket. A
                 // caller that gives up detaches it; adoption into the runtime
                 // handle table happens only when a live consumer takes success.
-                if unsafe { submit_abandonable(pool, run_connect_job, job.cast()) } != 0 {
-                    // SAFETY: failed admission did not transfer ownership.
-                    drop(unsafe { Box::from_raw(job) });
+                if let Err(job) = unsafe { submit_abandonable_owned(pool, run_connect_job, job) } {
+                    drop(job);
                     operation.complete(Err(IoFailure::invalid(
                         "TCP connection pool could not accept work",
                     )));

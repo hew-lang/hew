@@ -299,6 +299,8 @@ pub struct HewExecutionContext {
     pub checked_fault: crate::actor_native::CheckedActorFault,
     /// Identity of the sender of this turn's delivery.
     pub caller: crate::actor_caller::HewCallerStamp,
+    /// Incoming completion budget; expiry does not cancel this actor turn.
+    pub request_deadline: crate::request_deadline::RequestDeadline,
 }
 
 thread_local! {

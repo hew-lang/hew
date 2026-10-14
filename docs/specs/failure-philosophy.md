@@ -18,6 +18,21 @@ hold the substrate to three commitments:
    peer X alive?" is local-state; the wire protocol does not learn
    detector-level details.
 
+## Request expiry and uncertain outcomes
+
+Actor-call deadlines bound admission and queued execution. A request whose
+budget expires before dispatch never starts; a handler already claimed belongs
+to its actor and can finish after the caller stops waiting. Its nested calls
+still inherit the exhausted request budget and return `ActorError.TimedOut`.
+Caller expiry does not roll back the handler's mutations.
+
+A timeout or partition therefore cannot tell an application whether a remote
+effect happened. Use an application idempotency key, query durable state to
+reconcile, or expose a job identifier with explicit status and cancellation
+messages for work that must survive a request. Ordinary calls wait in order;
+`fork` changes concurrency, not delivery certainty. Hew does not automatically
+retry a timed-out request or supply exactly-once business effects.
+
 ## Failure detector
 
 ### Trigger: phi-accrual (Hayashibara et al., 2004)

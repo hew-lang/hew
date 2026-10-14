@@ -181,15 +181,15 @@ connection; there is no plaintext retry and no nonce reuse. One sealed TCP frame
 carries at most 65 519 bytes. A dial that is refused returns
 `Err(NodeError.Config)` from `Node.connect`.
 
-## 4. Protocol-version 3 handshake
+## 4. Protocol-version 4 handshake
 
 Every connection exchanges exactly 72 bytes before actor traffic. The layout
-magic remains `HEW\x02`; the independently checked protocol version is `3`:
+magic remains `HEW\x02`; the independently checked protocol version is `4`:
 
 | Offset | Size | Field |
 |---:|---:|---|
 | `0` | 4 | magic `HEW\x02` |
-| `4` | 2 | protocol version, big-endian, value `3` |
+| `4` | 2 | protocol version, big-endian, value `4` |
 | `6` | 2 | reserved, zero |
 | `8` | 4 | schema hash, big-endian |
 | `12` | 4 | feature flags, big-endian |
@@ -201,7 +201,7 @@ magic remains `HEW\x02`; the independently checked protocol version is `3`:
 The receiver MUST reject:
 
 - any length other than 72 bytes;
-- magic other than `HEW\x02` or protocol version other than `3`;
+- magic other than `HEW\x02` or protocol version other than `4`;
 - non-zero reserved bytes;
 - an all-zero `NodeId`;
 - session incarnation `0`;
@@ -218,13 +218,18 @@ buried member.
 ## 5. Wire framing and schema
 
 Transport framing carries CBOR wire frames defined by
-`hew-runtime/schemas/envelope.cddl`. The wire schema version is `3`.
+`hew-runtime/schemas/envelope.cddl`. The wire schema version is `4`.
 
 Envelope key `5` names the canonical dotted handler declaration for a request,
-or carries reply status `0` (success) / `1` (rejection). Local dispatch indices
+or carries reply status `0` (success) / `1` (rejection), or withdrawal tag `2`. Local dispatch indices
 do not cross the wire. A receiver resolves the handler within the target actor
 type before decoding the payload. Root declarations have no portable module
 prefix; shared protocols use their declared module/package path.
+
+Envelope key `8` is a remaining request budget in nanoseconds in
+`0..=i64::MAX`, or `nil` for an untimed request. One-way frames and replies
+MUST carry `nil`. A withdrawal has an exact target, positive request id, nil
+source and budget, and an empty payload. Other combinations are rejected.
 
 A wire `location` is a CBOR map containing:
 
@@ -280,7 +285,7 @@ performs the same comparison.
 
 The current registry records and compares declaration identity on the
 registering node. Cluster-wide lookup type comparison remains deferred.
-Wire version 3 resolves handler declarations when a message is dispatched.
+Wire version 4 resolves handler declarations when a message is dispatched.
 
 Names are discovery aliases, not identity:
 
@@ -298,6 +303,36 @@ connection MUST be rejected.
 `RemotePid<T>.send(message)` is fire-and-forget delivery. `RemotePid<T>.ask`
 creates a request identifier, sends the typed request, suspends the caller, and
 resumes with the completion-call `Result` and its `ActorError` envelope.
+
+An ask's effective expiry is the earliest incoming request budget, active
+scope expiry and explicit timeout. Setup, payload encoding and transport send
+admission consume the budget. The sender stamps the remaining budget after
+send admission; the receiver establishes a local monotonic expiry on receipt,
+before payload decoding and actor admission. Absolute clocks are never sent
+or compared. Transit and a blocked transport write cannot be measured across
+independent clocks, so this is a relative budget, not a shared-clock deadline.
+
+A caller's expiry or cancellation MUST NOT wait for another sender or for the
+peer to accept bytes. Request submission rechecks its remaining budget after
+acquiring the send channel. Withdrawal is submitted without waiting for network
+completion; a frame already being written finishes in order or faults the
+channel.
+
+An expired request MUST NOT start a handler. On caller abandonment or expiry,
+the sender also attempts one authenticated withdrawal on the original
+connection publication. The receiver matches the exact local target, request
+id and authenticated connection publication in its existing inbound owner.
+A different peer, node session or replacement connection cannot withdraw that
+request. Withdrawal is idempotent and best-effort; receiver-side expiry still
+applies if it is lost. It removes queued ownership, while a claimed handler
+remains actor-owned and any late reply is released. No retry is automatic.
+
+A claimed handler carries the remaining expiry through suspension, ordinary
+calls and child tasks. Nested local, local-Node and remote calls cannot extend
+it and report ordinary `ActorError.TimedOut` once exhausted. Required payload
+and late-reply cleanup is shielded from the abandoned request expiry; cleanup
+may establish its own explicit deadline. Timeout and
+partition leave the remote outcome uncertain; neither undoes a mutation.
 
 Inbound asks use the actor-call readiness protocol without retaining an OS
 thread while waiting. A node admits at most 64 pending inbound asks for one

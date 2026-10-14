@@ -609,6 +609,7 @@ fn two_node_remote_call_wakes_on_wire_reply() {
             std::mem::size_of::<u32>(),
             std::mem::size_of::<u32>(),
             NO_ASK_DEADLINE_MS,
+            -1,
             waker.descriptor(),
         )
     };

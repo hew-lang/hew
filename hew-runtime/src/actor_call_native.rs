@@ -3,7 +3,7 @@
 //! this same operation; a borrowed task observation is a different lifetime.
 
 use crate::coro_sleep::{
-    hew_coro_sleep_free, hew_coro_sleep_new, hew_coro_sleep_status, HewCoroSleep,
+    hew_coro_sleep_free, hew_coro_sleep_status, hew_coro_sleep_until_new, HewCoroSleep,
 };
 use crate::internal::types::AskError;
 #[cfg(not(target_arch = "wasm32"))]
@@ -75,13 +75,17 @@ impl HewActorCall {
         !self.timer.is_null()
     }
 
-    /// Observe admission, reply and deadline in that order. A ready outcome is
-    /// latched: later observations cannot submit twice or change the winner.
+    /// Expiry prevents fresh admission; an already published reply retains its
+    /// terminal outcome even when the caller resumes after the deadline.
     unsafe fn poll(&mut self) -> i32 {
         match self.state {
             CallState::Ready(status) => return status,
             CallState::Taken => return -2,
             CallState::Admitting => {
+                let deadline = self.poll_deadline();
+                if deadline != -1 {
+                    return deadline;
+                }
                 // SAFETY: this operation exclusively owns the admission.
                 let status = unsafe { hew_actor_ask_wait_poll(self.admission) };
                 if status == -1 {
@@ -118,12 +122,24 @@ impl HewActorCall {
         }
         // SAFETY: the operation uniquely owns its optional timer.
         let status = unsafe { hew_coro_sleep_status(self.timer) };
-        let result = match status {
-            0 => return -1,
-            1 => AskError::Timeout as i32,
-            _ => -2,
-        };
-        self.state = CallState::Ready(result);
+        // SAFETY: this operation retains the immutable channel metadata.
+        let expired =
+            unsafe { crate::reply_channel::native_request_deadline(self.channel) }.expired();
+        if status == 0 && !expired {
+            return -1;
+        }
+        if status > 1 {
+            self.state = CallState::Ready(-2);
+            return -2;
+        }
+        // SAFETY: expiry shares the reply publication lock, preserving a reply
+        // that already won and withdrawing only an unclaimed request.
+        unsafe { crate::reply_channel::native::expire_native_request(self.channel) };
+        // SAFETY: the operation still owns its receiver and exact reply layout.
+        let result = unsafe { hew_reply_channel_status_native(self.channel, self.expected_size) };
+        if result != -1 {
+            self.state = CallState::Ready(result);
+        }
         result
     }
 }
@@ -143,8 +159,8 @@ impl Drop for HewActorCall {
 }
 
 /// Transfer fresh request fields and start admission without parking the caller.
-/// `policy` is zero for Wait and one for Reject. `has_deadline` distinguishes
-/// no deadline from every signed duration, including an already expired one.
+/// `policy` is zero for Wait and one for Reject. `deadline_ns` is a local
+/// monotonic expiry, or -1 for no request deadline.
 ///
 /// # Safety
 /// `payload` is null or an owned malloc wrapper with matching size/destructor.
@@ -163,8 +179,7 @@ pub unsafe extern "C" fn hew_actor_call_new(
     reply_size: usize,
     drop_reply: Option<HewReplyDropFn>,
     waker: *const HewWaker,
-    duration_ns: i64,
-    has_deadline: i32,
+    deadline_ns: i64,
     policy: i32,
     payload_release: Option<HewValueReleaseStart>,
     reply_release: Option<HewValueReleaseStart>,
@@ -180,8 +195,7 @@ pub unsafe extern "C" fn hew_actor_call_new(
             reply_size,
             drop_reply,
             waker,
-            duration_ns,
-            has_deadline,
+            deadline_ns,
             policy,
             payload_release,
             reply_release,
@@ -203,8 +217,7 @@ pub(crate) unsafe fn actor_call_new(
     reply_size: usize,
     drop_reply: Option<HewReplyDropFn>,
     waker: *const HewWaker,
-    duration_ns: i64,
-    has_deadline: i32,
+    deadline_ns: i64,
     policy: i32,
     payload_release: Option<HewValueReleaseStart>,
     reply_release: Option<HewValueReleaseStart>,
@@ -242,8 +255,7 @@ pub(crate) unsafe fn actor_call_new(
             reply_size,
             drop_reply,
             waker,
-            duration_ns,
-            has_deadline,
+            deadline_ns,
             policy,
             reply_release,
             caller,
@@ -270,8 +282,7 @@ pub unsafe extern "C" fn hew_actor_call_resume(
     reply_size: usize,
     drop_reply: Option<HewReplyDropFn>,
     waker: *const HewWaker,
-    duration_ns: i64,
-    has_deadline: i32,
+    deadline_ns: i64,
     policy: i32,
     reply_release: Option<HewValueReleaseStart>,
 ) -> *mut HewActorCall {
@@ -284,8 +295,7 @@ pub unsafe extern "C" fn hew_actor_call_resume(
             reply_size,
             drop_reply,
             waker,
-            duration_ns,
-            has_deadline,
+            deadline_ns,
             policy,
             reply_release,
             crate::actor_caller::local_sender(),
@@ -304,23 +314,24 @@ pub(crate) unsafe fn actor_call_resume(
     reply_size: usize,
     drop_reply: Option<HewReplyDropFn>,
     waker: *const HewWaker,
-    duration_ns: i64,
-    has_deadline: i32,
+    deadline_ns: i64,
     policy: i32,
     reply_release: Option<HewValueReleaseStart>,
     caller: crate::actor_caller::HewCallerStamp,
 ) -> *mut HewActorCall {
     // SAFETY: registration precedes any request publication.
     let channel = unsafe { hew_reply_channel_new_native(waker, drop_reply, reply_release) };
-    let timer = if has_deadline != 0 {
+    let deadline = crate::request_deadline::RequestDeadline::from_raw(deadline_ns);
+    let timer = if deadline_ns >= 0 {
         // SAFETY: the descriptor remains live for construction and is retained.
-        unsafe { hew_coro_sleep_new(duration_ns, waker) }
+        unsafe { hew_coro_sleep_until_new(deadline_ns, waker) }
     } else {
         ptr::null_mut()
     };
     // SAFETY: channel and request are still unpublished, and this call owns both.
     let admission = unsafe {
         crate::reply_channel::enable_native_withdrawal(channel);
+        crate::reply_channel::set_native_request_deadline(channel, deadline);
         ask_wait_resume(token, message, envelope, channel.cast(), waker, caller)
     };
     let mut operation = Box::new(HewActorCall {
@@ -489,7 +500,7 @@ mod tests {
     fn queued_loser_never_dispatches_and_dispatched_loser_drops_its_late_reply() {
         let _guard = crate::runtime_test_guard();
         let _scheduler = crate::scheduler::NoWorkerSchedulerForTest::install();
-        for dispatched in [false, true] {
+        for (dispatched, expired) in [(false, false), (true, false), (false, true)] {
             let (ready, waker) = Readiness::new();
             let request_drops = Arc::new(AtomicUsize::new(0));
             let reply_drops = Arc::new(AtomicUsize::new(0));
@@ -499,6 +510,12 @@ mod tests {
                 let channel =
                     hew_reply_channel_new_native(waker.descriptor(), Some(drop_counted), None);
                 crate::reply_channel::enable_native_withdrawal(channel);
+                if expired {
+                    crate::reply_channel::set_native_request_deadline(
+                        channel,
+                        crate::request_deadline::RequestDeadline::from_raw(0),
+                    );
+                }
                 let operation = Box::into_raw(Box::new(HewActorCall {
                     admission: ptr::null_mut(),
                     channel,
@@ -545,12 +562,18 @@ mod tests {
                 actor.dispatch = Some(dispatch_late_reply);
                 actor.dispatch_ownership = crate::actor::HewDispatchOwnership::UniqueEnvelope;
                 drop(waker);
-                if !dispatched {
+                if !dispatched && !expired {
                     hew_actor_call_free(operation);
                     state.operation = ptr::null_mut();
                     assert_eq!(Arc::strong_count(&ready), 1);
                 }
                 crate::scheduler::activate_actor_for_test(&raw mut actor);
+                if expired {
+                    assert_eq!(hew_actor_call_poll(operation), AskError::Timeout as i32);
+                    hew_actor_call_free(operation);
+                    state.operation = ptr::null_mut();
+                    assert!(ready.take_ready());
+                }
                 assert!(state.operation.is_null());
                 assert_eq!(state.calls, usize::from(dispatched));
                 assert_eq!(request_drops.load(Ordering::SeqCst), 1);
@@ -592,6 +615,7 @@ mod tests {
                 size_of_val(&reply)
             ));
             assert!(ready.take_ready());
+            crate::reply_channel::native::expire_native_request(channel);
             assert_eq!(hew_actor_call_poll(operation), 0);
             assert_eq!(hew_actor_call_poll(operation), 0);
             assert_eq!(drops.load(Ordering::SeqCst), 0);

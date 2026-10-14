@@ -41,17 +41,11 @@ unsafe extern "C" fn fail_once_then_record_send(
     }
 }
 
-/// A transiently failed connection-establish gossip flush must not lose the
-/// cluster's registered names (the third lookup-unresolved mechanism): the
-/// failed frames are PARKED, a stale admission token cannot consume them,
-/// and the connection's next inbound-frame retry delivers them.
-// Retrying on the same connection needs a channel without nonce state: a
-// failed send on a Noise channel faults it (see
-// `channel::tests::noise_send_failure_faults_the_channel_without_reusing_a_nonce`),
-// so the retry tests run over the quic-mesh channel.
+/// A failed frame faults its stream. Parked gossip remains owned by the
+/// connection, but a retry must not reuse that stream.
 #[cfg(feature = "quic")]
 #[test]
-fn failed_gossip_flush_parks_frames_and_retry_delivers() {
+fn failed_gossip_flush_does_not_retry_a_faulted_stream() {
     let state = Box::into_raw(Box::new(FailingOnceSends {
         fail_remaining: AtomicUsize::new(1),
         sends: Mutex::new(Vec::new()),
@@ -108,38 +102,19 @@ fn failed_gossip_flush_parks_frames_and_retry_delivers() {
             "the failed flush must park its frames"
         );
 
-        // A stale admission token (a reused conn_id's old reader) must not
-        // consume the parked frames.
-        retry_pending_registry_flush(&*mgr, 10, token + 1);
+        retry_pending_registry_flush(&*mgr, 10, token);
+        assert!(
+            (*state)
+                .sends
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .is_empty(),
+            "a retry must not write after a possibly partial frame"
+        );
         assert_eq!(
             (*mgr).pending_registry_flush_count.load(Ordering::Acquire),
             1,
-            "a stale token must not consume the parked flush"
-        );
-
-        // The connection's own retry (next inbound frame) delivers.
-        retry_pending_registry_flush(&*mgr, 10, token);
-        {
-            let sends = (*state)
-                .sends
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            assert_eq!(sends.len(), 1, "the retry must deliver the parked frame");
-            assert_eq!(sends[0].0, 10);
-            let WireFrame::Control(ctrl) =
-                decode_wire_frame(&sends[0].1).expect("delivered frame decodes")
-            else {
-                panic!("delivered frame must be a control frame");
-            };
-            assert_eq!(ctrl.ctrl_kind, CTRL_REGISTRY_GOSSIP);
-            let payload = decode_registry_gossip_payload(&ctrl.payload).expect("gossip payload");
-            assert_eq!(payload.name, "svc");
-            assert_eq!(payload.op, REGISTRY_GOSSIP_OP_ADD);
-        }
-        assert_eq!(
-            (*mgr).pending_registry_flush_count.load(Ordering::Acquire),
-            0,
-            "a delivered retry must clear the parked entry"
+            "undelivered frames must not be reported as a completed flush"
         );
 
         hew_connmgr_free(mgr);
@@ -150,15 +125,15 @@ fn failed_gossip_flush_parks_frames_and_retry_delivers() {
     drop(ops);
 }
 
-/// Ordering safety across a failed flush (the stale-replay hazard): a
+/// Ordering safety across a pending flush (the stale-replay hazard): a
 /// broadcast REMOVE for a name whose ADD is still parked must queue BEHIND
 /// the parked ADD, and the retry must deliver both in original order — the
 /// receiver's final state is the REMOVE, never a replayed stale ADD.
 #[cfg(feature = "quic")]
 #[test]
-fn broadcast_parks_behind_undelivered_flush_preserving_order() {
+fn broadcast_parks_behind_pending_flush_preserving_order() {
     let state = Box::into_raw(Box::new(FailingOnceSends {
-        fail_remaining: AtomicUsize::new(1),
+        fail_remaining: AtomicUsize::new(0),
         sends: Mutex::new(Vec::new()),
     }));
     let ops = Box::new(crate::transport::HewTransportOps {
@@ -196,14 +171,22 @@ fn broadcast_parks_behind_undelivered_flush_preserving_order() {
         let token = test_publish_claim(&*mgr, 2, 10);
 
         let location = test_location(1, 0x88);
-        (&*cluster).emit_registry_add("svc", location);
-        // The ADD flush fails and parks.
-        flush_registry_gossip_to_connection(&*mgr, 10, token, HEW_FEATURE_SUPPORTS_GOSSIP);
-        assert_eq!(
-            (*mgr).pending_registry_flush_count.load(Ordering::Acquire),
-            1,
-            "the failed ADD must park"
-        );
+        // Start with an unsent ADD owned by this connection's retry queue.
+        let add = super::super::control::encode_registry_gossip_control("svc", location, true)
+            .expect("ADD frame");
+        (*mgr).pending_registry_flush.access(|pending| {
+            pending.insert(
+                10,
+                PendingRegistryFlush {
+                    token,
+                    frames: vec![add],
+                    attempts: 0,
+                },
+            );
+        });
+        (*mgr)
+            .pending_registry_flush_count
+            .store(1, Ordering::Release);
 
         // A later REMOVE broadcast must park BEHIND it, not overtake it.
         assert_eq!(
@@ -211,6 +194,8 @@ fn broadcast_parks_behind_undelivered_flush_preserving_order() {
             0,
             "the REMOVE must not report a direct send while the ADD is parked"
         );
+        // A stale reader must leave these frames for the current publication.
+        retry_pending_registry_flush(&*mgr, 10, token + 1);
         assert!(
             (*state)
                 .sends

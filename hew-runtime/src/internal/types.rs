@@ -718,6 +718,8 @@ pub const HEW_REPLY_FAIL_HANDLER_TRAPPED: i32 = 3;
 pub const HEW_REPLY_FAIL_PAYLOAD_ALLOC_FAILED: i32 = 4;
 /// The receiving interceptor declined the delivery.
 pub const HEW_REPLY_FAIL_REFUSED: i32 = 5;
+/// The completion budget expired before reply publication.
+pub const HEW_REPLY_FAIL_TIMEOUT: i32 = 6;
 
 /// Name a reply-failure discriminant for diagnostics. Fail-closed: an
 /// unrecognized discriminant names itself rather than borrowing a real
@@ -731,6 +733,7 @@ pub const fn reply_fail_kind_name(kind: i32) -> &'static str {
         HEW_REPLY_FAIL_HANDLER_TRAPPED => "handler trapped during dispatch",
         HEW_REPLY_FAIL_PAYLOAD_ALLOC_FAILED => "reply payload allocation failed",
         HEW_REPLY_FAIL_REFUSED => "delivery refused by interceptor",
+        HEW_REPLY_FAIL_TIMEOUT => "completion deadline elapsed",
         _ => "(unrecognized reply-failure discriminant)",
     }
 }

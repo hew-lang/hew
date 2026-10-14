@@ -122,6 +122,8 @@ fn inbound_router_no_spawn_after_shutdown_started() {
             1,
             (*node.as_ptr()).conn_mgr,
             crate::node_identity::HewNodeId::default(),
+            0,
+            -1,
         );
     }
 
@@ -243,6 +245,8 @@ fn node_stop_waits_to_free_connmgr_until_inbound_ask_error_worker_drains() {
                 353,
                 manager as *mut connection::HewConnMgr,
                 crate::node_identity::HewNodeId::default(),
+                0,
+                -1,
             );
         }
     });
@@ -359,6 +363,8 @@ fn node_stop_drain_waits_for_router_wedged_after_counter_increment() {
                 1,
                 conn_mgr_addr as *mut connection::HewConnMgr,
                 crate::node_identity::HewNodeId::default(),
+                0,
+                -1,
             );
         }
     });
@@ -518,6 +524,8 @@ fn handle_inbound_ask_capture_safe_for_secondary_node_freed_connmgr() {
             SendConnMgr(conn_mgr_addr as *mut connection::HewConnMgr),
             shutdown_started,
             crate::actor_caller::HewCallerStamp::default(),
+            0,
+            crate::request_deadline::RequestDeadline::default(),
         );
     });
 
@@ -544,4 +552,46 @@ fn handle_inbound_ask_capture_safe_for_secondary_node_freed_connmgr() {
         .expect("straggler worker panicked after secondary-node teardown");
 
     crate::registry::hew_registry_clear();
+}
+
+#[test]
+fn queued_withdrawal_requires_the_exact_request_and_connection_publication() {
+    let _guard = crate::runtime_test_guard();
+    let (node, _port) = start_tcp_test_listener_node(365);
+    let actor = spawn_remote_test_actor(noop_dispatch);
+    inbound_test_codec(noop_dispatch, 0);
+    // SAFETY: this test retains the node and actor through every admission.
+    let (actor_id, manager) = unsafe { ((*actor).id, &*(*node.as_ptr()).conn_mgr) };
+    for publication in [11, 12] {
+        handle_inbound_ask(
+            actor_id,
+            "tests.Counter.handle",
+            &[7],
+            42,
+            366,
+            SendConnMgr(ptr::from_ref(manager).cast_mut()),
+            Arc::new(AtomicBool::new(false)),
+            crate::actor_caller::HewCallerStamp::default(),
+            publication,
+            crate::request_deadline::RequestDeadline::default(),
+        );
+        assert_eq!(manager.inbound_ask_active.load(Ordering::Acquire), 1);
+        for (target, connection, request) in [
+            (actor_id + 1, publication, 42),
+            (actor_id, publication - 1, 42),
+            (actor_id, publication, 43),
+        ] {
+            manager.inbound_asks.withdraw(target, connection, request);
+            assert_eq!(manager.inbound_ask_active.load(Ordering::Acquire), 1);
+        }
+        manager.inbound_asks.withdraw(actor_id, publication, 42);
+        assert_eq!(manager.inbound_ask_active.load(Ordering::Acquire), 0);
+        manager.inbound_asks.withdraw(actor_id, publication, 42);
+        assert_eq!(manager.inbound_ask_active.load(Ordering::Acquire), 0);
+    }
+    // SAFETY: the queued requests have released their ownership above.
+    unsafe {
+        crate::actor::hew_actor_free(actor);
+        assert_eq!(hew_node_stop(node.as_ptr()), 0);
+    }
 }

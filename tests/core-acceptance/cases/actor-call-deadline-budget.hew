@@ -1,0 +1,100 @@
+import std.stream;
+
+actor Leaf {
+    var calls: i64 = 0;
+
+    receive fn touch() -> i64 {
+        calls += 1;
+        calls
+    }
+
+    receive fn count() -> i64 {
+        calls
+    }
+}
+
+fn nested_call(leaf: Leaf) -> bool {
+    match leaf.touch() {
+        .Err(ActorError.TimedOut) => true,
+        _ => false,
+    }
+}
+
+actor Worker {
+    let leaf: Leaf;
+    var calls: i64 = 0;
+
+    receive fn hold(started: Sink<i64>, gate: Stream<i64>) -> string {
+        started.send(1).expect("holding actor turn");
+        gate.recv().expect("release held turn");
+        "held reply".to_upper()
+    }
+
+    receive fn touch() -> i64 {
+        calls += 1;
+        calls
+    }
+
+    receive fn nested(started: Sink<i64>, gate: Stream<i64>) -> string {
+        started.send(1).expect("started handler");
+        gate.recv().expect("caller has abandoned its reply");
+        let expired = scope within 1s {
+            let child = fork nested_call(leaf);
+            await child
+        } handle failure {
+            panic("request expiry must not cancel the handler's own scope");
+        };
+        assert(expired);
+        calls += 1;
+        "owned late reply".to_upper()
+    }
+
+    receive fn count() -> i64 {
+        calls
+    }
+}
+
+fn main() {
+    let leaf = spawn Leaf;
+    let worker = spawn Worker { leaf: leaf };
+    let (started, begins): (Sink<i64>, Stream<i64>) = stream.pipe(1).expect("started pipe");
+    let (release, gate): (Sink<i64>, Stream<i64>) = stream.pipe(1).expect("gate pipe");
+    scope {
+        let held = fork worker.hold(started, gate);
+        begins.recv().expect("held turn began");
+        scope within 50ms {
+            worker.touch().expect("queued request must expire");
+            panic("expired request completed");
+        } handle failure {
+            match failure {
+                .Deadline { message } => println("queued caller expired"),
+                .Fault { message } => panic(message),
+            }
+        };
+        release.send(1).expect("release held turn");
+        assert((await held).expect("held result") == "HELD REPLY");
+    };
+    assert(worker.count().expect("queued request did not run") == 0);
+    let (started2, begins2): (Sink<i64>, Stream<i64>) = stream.pipe(1).expect("started pipe");
+    let (release2, gate2): (Sink<i64>, Stream<i64>) = stream.pipe(1).expect("gate pipe");
+    scope within 50ms {
+        let task = fork worker.nested(started2, gate2);
+        begins2.recv().expect("handler claimed request");
+        let _ = await task;
+        panic("started caller must expire");
+    } handle failure {
+        match failure {
+            .Deadline { message } => println("started caller expired"),
+            .Fault { message } => panic(message),
+        }
+    };
+    release2.send(1).expect("started handler stays alive");
+    assert(worker.count().expect("handler continued after nested timeout") == 1);
+    assert(leaf.count().expect("expired nested call did not run") == 0);
+    assert(worker.touch().expect("later call has its own budget") == 2);
+    stop(worker);
+    stopped(worker);
+    stop(leaf);
+    stopped(leaf);
+    println("deadline budget complete");
+}

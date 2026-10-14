@@ -1704,6 +1704,15 @@ fn main() {
 
 `fork g.greet()` is the forked call: keep the task and `await` it later, or leave it unawaited as a bare statement (`fork g.greet();`) and it joins at the enclosing scope's exit like every fork, which is how a one-shot send is written. Binding the task and dropping it (`let _ = fork g.greet();`) cancels it instead. A discarded `Result` from a waiting call is still `E_RESULT_DROPPED`.
 
+A completion call automatically inherits the earliest `scope within` expiry
+and incoming request expiry. Admission and queue time use that budget. If it
+expires before dispatch, the handler never starts. Once the actor claims the
+request, it owns the handler: abandoning the reply does not undo its effects
+or cancel its work. Nested calls made by that handler, including through
+forked ordinary functions, still return `ActorError.TimedOut` after expiry.
+A longer inner scope cannot reset the budget, and this ordinary error does not
+cancel the handler's own scope.
+
 ### Calling a handler that returns nothing
 
 ```hew
@@ -4969,6 +4978,13 @@ lowers to the cross-node suspending remote-ask path and returns
 reply. A same-node lookup returns a handle to the local actor: its send, ask,
 link and monitor reach that actor directly, with the results a peer would give,
 and a handle from an earlier node session is stale.
+
+The explicit ask timeout can shorten an inherited request budget. Setup,
+encoding and queue time consume it. Nodes exchange a remaining duration and
+use their own monotonic clocks; they never compare absolute timestamps.
+A timeout or partition leaves the remote effect uncertain. Use idempotency
+keys, reconciliation or explicit job/status messages when the caller needs
+to determine whether work happened; retry is an application decision.
 
 A remote call addresses the one receive fn whose parameter is the actor's
 `ActorMsg.Msg` and whose result is its `ActorMsg.Reply`. Both cross the node

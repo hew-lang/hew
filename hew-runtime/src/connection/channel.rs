@@ -28,9 +28,10 @@ const NOISE_TAG_LEN: usize = 16;
 pub(super) enum ChannelProtection {
     /// TCP: a Noise-XX channel.
     TcpNoise(NoiseChannel),
-    /// quic-mesh: the transport's mutually pinned TLS 1.3 protects every byte.
+    /// quic-mesh: TLS protects the bytes. The gate serializes preparation and
+    /// whole-frame sending; its flag prevents reuse after a partial failure.
     #[cfg(feature = "quic")]
-    QuicMeshTls,
+    QuicMeshTls(Mutex<bool>),
 }
 
 /// A Noise-XX transport channel with independent send and receive nonces, so
@@ -121,11 +122,13 @@ impl std::error::Error for ChannelRefusal {}
 /// Why one frame could not pass through the channel.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ChannelError {
+    /// The caller declined to prepare a frame after transport admission.
+    Preparation,
     /// The frame does not fit one Noise transport message.
     FrameTooLarge { len: usize },
     /// Noise refused to encrypt the frame.
     Seal,
-    /// An earlier send failed after spending its nonce; the channel is dead.
+    /// An earlier frame send failed; the channel is dead.
     Faulted,
     /// The transport did not accept the whole sealed frame.
     Transport,
@@ -141,6 +144,7 @@ impl fmt::Display for ChannelError {
                 "frame of {len} bytes exceeds the {} byte channel limit",
                 NOISE_MAX_MSG_SIZE - NOISE_TAG_LEN
             ),
+            Self::Preparation => f.write_str("frame preparation declined"),
             Self::Seal => f.write_str("channel encryption failed"),
             Self::Faulted => f.write_str("channel faulted after a failed send"),
             Self::Transport => f.write_str("transport did not accept the sealed frame"),
@@ -158,20 +162,37 @@ impl ChannelProtection {
     ///
     /// `transport` must be valid and `conn_id` must name the connection this
     /// channel protects.
+    #[cfg(test)]
     pub(super) unsafe fn send(
         &self,
         transport: *mut HewTransport,
         conn_id: c_int,
         frame: &[u8],
     ) -> Result<(), ChannelError> {
+        // SAFETY: forwards the channel and transport contract.
+        unsafe { self.send_prepared(transport, conn_id, || Some(frame)) }
+    }
+
+    /// Prepare the frame after send serialization, charging admission to its budget.
+    ///
+    /// # Safety
+    /// `transport` is live and `conn_id` names the connection protected by this channel.
+    pub(super) unsafe fn send_prepared<B: AsRef<[u8]>>(
+        &self,
+        transport: *mut HewTransport,
+        conn_id: c_int,
+        prepare: impl FnOnce() -> Option<B>,
+    ) -> Result<(), ChannelError> {
         match self {
             Self::TcpNoise(noise) => {
-                if frame.len() + NOISE_TAG_LEN > NOISE_MAX_MSG_SIZE {
-                    return Err(ChannelError::FrameTooLarge { len: frame.len() });
-                }
                 let mut send = noise.send.lock_or_recover();
                 if send.faulted {
                     return Err(ChannelError::Faulted);
+                }
+                let prepared = prepare().ok_or(ChannelError::Preparation)?;
+                let frame = prepared.as_ref();
+                if frame.len() + NOISE_TAG_LEN > NOISE_MAX_MSG_SIZE {
+                    return Err(ChannelError::FrameTooLarge { len: frame.len() });
                 }
                 let mut sealed = vec![0u8; frame.len() + NOISE_TAG_LEN];
                 let n = noise
@@ -188,11 +209,18 @@ impl ChannelProtection {
                 }
             }
             #[cfg(feature = "quic")]
-            Self::QuicMeshTls => {
+            Self::QuicMeshTls(faulted) => {
+                let mut faulted = faulted.lock_or_recover();
+                if *faulted {
+                    return Err(ChannelError::Faulted);
+                }
+                let prepared = prepare().ok_or(ChannelError::Preparation)?;
+                let frame = prepared.as_ref();
                 // SAFETY: forwarded caller contract.
                 if unsafe { send_frame(transport, conn_id, frame) } {
                     Ok(())
                 } else {
+                    *faulted = true;
                     Err(ChannelError::Transport)
                 }
             }
@@ -214,7 +242,7 @@ impl ChannelProtection {
                 Ok(n)
             }
             #[cfg(feature = "quic")]
-            Self::QuicMeshTls => Ok(message.len()),
+            Self::QuicMeshTls(_) => Ok(message.len()),
         }
     }
 
@@ -356,7 +384,10 @@ pub(super) unsafe fn establish(
             let spki =
                 unsafe { crate::quic_mesh::hew_transport_quic_mesh_peer_spki(transport, conn_id) }
                     .ok_or(ChannelRefusal::MeshCredentialUnavailable)?;
-            Ok((ChannelProtection::QuicMeshTls, PeerCredential::Spki(spki)))
+            Ok((
+                ChannelProtection::QuicMeshTls(Mutex::new(false)),
+                PeerCredential::Spki(spki),
+            ))
         }
     }
 }
@@ -464,28 +495,34 @@ mod tests {
     }
 
     #[test]
-    fn noise_send_failure_faults_the_channel_without_reusing_a_nonce() {
-        let (local, _peer) = ChannelProtection::test_noise_pair();
-        let (state, mut transport) = recording_transport();
-        state.fail.store(true, std::sync::atomic::Ordering::Release);
-        // SAFETY: the recording transport is live for every call.
-        unsafe {
-            assert_eq!(
-                local.send(&raw mut transport, 1, b"first"),
-                Err(ChannelError::Transport)
-            );
-            state
-                .fail
-                .store(false, std::sync::atomic::Ordering::Release);
-            assert_eq!(
-                local.send(&raw mut transport, 1, b"second"),
-                Err(ChannelError::Faulted)
+    fn failed_frame_send_faults_the_channel() {
+        let channels = [
+            ChannelProtection::test_noise_pair().0,
+            #[cfg(feature = "quic")]
+            ChannelProtection::QuicMeshTls(Mutex::new(false)),
+        ];
+        for local in channels {
+            let (state, mut transport) = recording_transport();
+            state.fail.store(true, std::sync::atomic::Ordering::Release);
+            // SAFETY: the recording transport is live for every call.
+            unsafe {
+                assert_eq!(
+                    local.send(&raw mut transport, 1, b"first"),
+                    Err(ChannelError::Transport)
+                );
+                state
+                    .fail
+                    .store(false, std::sync::atomic::Ordering::Release);
+                assert_eq!(
+                    local.send(&raw mut transport, 1, b"second"),
+                    Err(ChannelError::Faulted)
+                );
+            }
+            assert!(
+                state.sent.lock_or_recover().is_empty(),
+                "a faulted channel sends nothing"
             );
         }
-        assert!(
-            state.sent.lock_or_recover().is_empty(),
-            "a faulted channel sends nothing"
-        );
     }
 
     #[test]

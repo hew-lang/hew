@@ -57,7 +57,10 @@ fn test_actor_with_peer(conn_id: c_int) -> (ConnectionActor, snow::TransportStat
 /// unchanged because the transport's TLS protects them.
 #[cfg(feature = "quic")]
 fn test_mesh_actor(conn_id: c_int) -> ConnectionActor {
-    ConnectionActor::new(conn_id, Arc::new(ChannelProtection::QuicMeshTls))
+    ConnectionActor::new(
+        conn_id,
+        Arc::new(ChannelProtection::QuicMeshTls(Mutex::new(false))),
+    )
 }
 
 /// Open one recorded sealed frame with the peer's half of the channel.

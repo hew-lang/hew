@@ -290,6 +290,26 @@ fault and its supervision policy; the caller may handle the error and continue.
 Calling an actor does not join its lifetime to the caller's task scope. Caller
 cancellation still follows the caller's own cancellation and cleanup edges.
 
+**Request deadlines.** A completion call inherits the earliest active scope
+expiry and incoming request expiry, together with any explicit call timeout.
+An untimed call remains untimed. Setup, encoding, mailbox admission and queue
+waiting consume that budget; entering a handler or making a nested call never
+restarts it. Expired work MUST NOT begin a handler. Before dispatch, abandoning
+a call withdraws its queued request and releases its fields.
+
+Once dispatch claims a request, the actor owns the handler and its effects.
+Caller cancellation or expiry abandons the reply and does not cancel that
+handler. Its ordinary and forked nested calls still inherit the incoming
+expiry; an exhausted budget returns `ActorError.TimedOut` through the ordinary
+completion `Result`. It does not cancel the handler's own scope. A reply that
+already won completion remains selected; an unclaimed late reply is released
+with its typed ownership. Required ownership cleanup does not inherit the
+deadline being discharged; an explicit deadline established by cleanup itself
+still applies. Later unrelated calls receive their own budgets.
+A timeout or partition does not establish whether a remote effect happened;
+applications use idempotency, reconciliation or an explicit job protocol when
+that distinction matters. See HEW-DIST-SPEC §8 for relative wire budgets.
+
 ```hew
 actor Counter {
     var count: i64 = 0;
@@ -5270,6 +5290,10 @@ from a parent continues outward; an inner handler cannot clear it. It does not i
 To handle that Result, first bind the scope's result and apply ordinary
 Result `handle` to the binding (§2.2.1).
 
+A `within` expiry also bounds actor requests made in that scope (§2.1.1).
+The request budget can outlive the caller as metadata of a claimed handler;
+it does not extend the caller's task lifetime.
+
 ### 4.3 Spawning Child Tasks
 
 ```ebnf
@@ -5351,6 +5375,10 @@ and task waits. It is not preemption of an arbitrary instruction. The scope
 waits for cancelled children to drain before returning or running its attached
 failure handler. Nested lifetimes receive the cancellation; unrelated actors
 do not become children of that scope.
+
+Cancelling an actor call withdraws unclaimed work or abandons a claimed
+handler's reply (§2.1.1). It never makes the receiving actor a child of the
+caller's cancellation scope.
 
 Cleanup follows explicit ownership edges. Deferred actions and resource closes
 run according to their contracts; Hew has no user-defined `Drop` implementation
@@ -5461,6 +5489,8 @@ actor Counter {
 
 A call from that child to another actor still crosses an actor boundary. Its
 completion envelope follows §2.1.1; submission still requires a mailbox view.
+Incoming request expiry follows ordinary calls, suspension and forked task
+frames. A longer nested `scope within` cannot extend that request budget.
 
 ### 4.9 Summary: Tasks vs Actors
 
@@ -5471,6 +5501,7 @@ completion envelope follows §2.1.1; submission still requires a mailbox view.
 | Application error | an ordinary Result value | declared `fails` error reaches the completion envelope |
 | Fault | propagates through the owning scope | belongs to the actor and its supervisor |
 | Lifetime | bounded by its parent | independent actor lifetime |
+| Request expiry | bounds outgoing calls | prevents queued dispatch; claimed handlers retain ownership |
 | Termination wait | task join | `stopped(actor)` |
 
 **Historical note.** Earlier drafts exposed a scope handle with separate task
@@ -5490,6 +5521,9 @@ actor's entire lifetime. `fork pid.method(args)` runs it concurrently; `await`
 then joins that task. `for item in pid.stream()` waits per item using ordinary
 iteration (§4.12).
 
+Request expiry does not request `stop` or `terminate`. A claimed handler
+finishes under the actor's own lifetime even if its caller stops waiting.
+
 A supervisor uses the same three verbs. `stop(sup)` requests graceful
 shutdown of its children in reverse declaration order, and `stopped(sup)`
 waits for their cleanup; see §2.1.1 and §5.6.
@@ -5501,6 +5535,10 @@ multiple asynchronous operations. They are expressions — they produce
 values — and integrate with structured concurrency and the actor model.
 The all-of counterpart is not a third construct: waiting for every operand
 is batch `fork` (§4.4).
+
+A losing actor-call operand withdraws queued work or abandons its reply after
+dispatch, using the same ownership boundary as caller cancellation (§2.1.1).
+A timer arm does not create a new public cancellation token.
 
 #### 4.11.1 `select` Expression
 
@@ -6257,6 +6295,10 @@ refused call never reports `Dead`. A bare or `.Wait` completion call reports
 `policy(target, on_full: .Reject)` call reports `ActorError.Rejected` and a
 `mailbox(target)` submission reports its `SendFailure`, both with
 `reason == SendError.LocalShutdown` and the unaccepted request returned.
+
+Request deadlines retain the same queued/claimed boundary during shutdown.
+An expired queued ask does not begin merely because the runtime is draining;
+a claimed handler stays subject to the actor and shutdown lifetimes.
 
 **Termination signals.** SIGTERM and SIGINT on Unix, and Ctrl-C, Ctrl-Break
 and console close on Windows, are termination requests. By default a request

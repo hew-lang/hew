@@ -681,6 +681,7 @@ pub mod duplex;
 pub mod execution_context;
 pub mod read_slot;
 pub mod reply_channel;
+pub mod request_deadline;
 /// Where a runnable actor goes, per target.
 pub(crate) mod resume;
 #[cfg(not(target_arch = "wasm32"))]

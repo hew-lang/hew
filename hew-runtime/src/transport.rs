@@ -164,17 +164,17 @@ fn report_conn_table_poison(
     set_last_error(message);
 }
 
-/// Internal state for the TCP transport.
-struct TcpTransport {
-    listen_sock: Option<Socket>,
+/// Fixed-size socket slots shared by TCP and Unix transports.
+struct SocketSlots {
+    transport: &'static str,
     conns: PoisonSafeRw<Vec<Option<Socket>>>,
     conn_poison_reported: AtomicBool,
 }
 
-impl TcpTransport {
-    fn new() -> Self {
+impl SocketSlots {
+    fn new(transport: &'static str) -> Self {
         Self {
-            listen_sock: None,
+            transport,
             conns: PoisonSafeRw::new((0..MAX_CONNS).map(|_| None).collect()),
             conn_poison_reported: AtomicBool::new(false),
         }
@@ -201,7 +201,12 @@ impl TcpTransport {
         }) {
             conn
         } else {
-            report_conn_table_poison("tcp", &self.conn_poison_reported, "storing conn", None);
+            report_conn_table_poison(
+                self.transport,
+                &self.conn_poison_reported,
+                "storing conn",
+                None,
+            );
             HEW_CONN_INVALID
         }
     }
@@ -220,8 +225,15 @@ impl TcpTransport {
                     .and_then(|sock| sock.try_clone().ok())
             })
             .map_err(|_| {
-                report_conn_table_poison("tcp", &self.conn_poison_reported, "looking up", Some(id));
-                ConnLookupError::Poisoned { transport: "tcp" }
+                report_conn_table_poison(
+                    self.transport,
+                    &self.conn_poison_reported,
+                    "looking up",
+                    Some(id),
+                );
+                ConnLookupError::Poisoned {
+                    transport: self.transport,
+                }
             })
     }
 
@@ -247,12 +259,27 @@ impl TcpTransport {
                     .is_err()
             {
                 report_conn_table_poison(
-                    "tcp",
+                    self.transport,
                     &self.conn_poison_reported,
                     "removing conn",
                     Some(id),
                 );
             }
+        }
+    }
+}
+
+/// Internal state for the TCP transport.
+struct TcpTransport {
+    listen_sock: Option<Socket>,
+    slots: SocketSlots,
+}
+
+impl TcpTransport {
+    fn new() -> Self {
+        Self {
+            listen_sock: None,
+            slots: SocketSlots::new("tcp"),
         }
     }
 }
@@ -481,7 +508,7 @@ unsafe extern "C" fn tcp_connect(impl_ptr: *mut c_void, address: *const c_char) 
 
     // SAFETY: impl_ptr points to a valid TcpTransport.
     let tcp = unsafe { &*impl_ptr.cast::<TcpTransport>() };
-    tcp.store_conn(socket)
+    tcp.slots.store_conn(socket)
 }
 
 unsafe extern "C" fn tcp_listen(impl_ptr: *mut c_void, address: *const c_char) -> c_int {
@@ -526,7 +553,7 @@ unsafe extern "C" fn tcp_accept(impl_ptr: *mut c_void, timeout_ms: c_int) -> c_i
     if used_timeout {
         let _ = conn.set_nonblocking(false);
     }
-    tcp.store_conn(conn)
+    tcp.slots.store_conn(conn)
 }
 
 unsafe extern "C" fn tcp_send(
@@ -538,7 +565,7 @@ unsafe extern "C" fn tcp_send(
     cabi_guard!(impl_ptr.is_null() || data.is_null(), -1);
     // SAFETY: impl_ptr points to a valid TcpTransport.
     let tcp = unsafe { &*impl_ptr.cast::<TcpTransport>() };
-    let sock = match tcp.get_conn(conn) {
+    let sock = match tcp.slots.get_conn(conn) {
         Ok(Some(sock)) => sock,
         Ok(None) | Err(ConnLookupError::Poisoned { .. }) => return -1,
     };
@@ -556,7 +583,7 @@ unsafe extern "C" fn tcp_recv(
     cabi_guard!(impl_ptr.is_null() || buf.is_null(), -1);
     // SAFETY: impl_ptr points to a valid TcpTransport.
     let tcp = unsafe { &*impl_ptr.cast::<TcpTransport>() };
-    let sock = match tcp.get_conn(conn) {
+    let sock = match tcp.slots.get_conn(conn) {
         Ok(Some(sock)) => sock,
         Ok(None) | Err(ConnLookupError::Poisoned { .. }) => return -1,
     };
@@ -569,7 +596,7 @@ unsafe extern "C" fn tcp_close_conn(impl_ptr: *mut c_void, conn: c_int) {
     cabi_guard!(impl_ptr.is_null());
     // SAFETY: impl_ptr points to a valid TcpTransport.
     let tcp = unsafe { &*impl_ptr.cast::<TcpTransport>() };
-    tcp.remove_conn(conn);
+    tcp.slots.remove_conn(conn);
 }
 
 unsafe extern "C" fn tcp_destroy(impl_ptr: *mut c_void) {
@@ -652,7 +679,7 @@ pub(crate) unsafe fn hew_transport_conn_remote_ip_class(
     if std::ptr::eq(t.ops, &raw const TCP_OPS) && !t.r#impl.is_null() {
         // SAFETY: the TCP ops check guarantees the impl pointer is a TcpTransport.
         let tcp = unsafe { &*t.r#impl.cast::<TcpTransport>() };
-        return match tcp.get_conn(conn_id) {
+        return match tcp.slots.get_conn(conn_id) {
             Ok(Some(sock)) => sock
                 .peer_addr()
                 .ok()
@@ -1885,16 +1912,102 @@ mod tests {
         remove_stream(handle);
     }
 
+    fn unconnected_test_socket() -> Socket {
+        Socket::new(Domain::IPV4, Type::STREAM, Some(Protocol::TCP)).unwrap()
+    }
+
+    #[test]
+    fn socket_slots_preserve_capacity_invalid_ids_and_reuse() {
+        for transport in ["tcp", "unix"] {
+            let slots = SocketSlots::new(transport);
+            for id in [-1, c_int::MAX] {
+                assert!(slots.get_conn(id).unwrap().is_none());
+                slots.remove_conn(id);
+            }
+            for index in 0..MAX_CONNS {
+                assert_eq!(
+                    slots.store_conn(unconnected_test_socket()),
+                    c_int::try_from(index).unwrap()
+                );
+            }
+            assert_eq!(
+                slots.store_conn(unconnected_test_socket()),
+                HEW_CONN_INVALID
+            );
+            slots.remove_conn(7);
+            assert!(slots.get_conn(7).unwrap().is_none());
+            assert_eq!(slots.store_conn(unconnected_test_socket()), 7);
+            assert!(slots
+                .get_conn(c_int::try_from(MAX_CONNS).unwrap())
+                .unwrap()
+                .is_none());
+        }
+    }
+
+    #[test]
+    fn socket_slots_refuse_reads_and_writes_after_poison() {
+        for transport in ["tcp", "unix"] {
+            let slots = SocketSlots::new(transport);
+            assert_eq!(slots.store_conn(unconnected_test_socket()), 0);
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                slots.conns.access(|_| panic!("intentional poison"));
+            }));
+            assert!(matches!(
+                slots.get_conn(0),
+                Err(ConnLookupError::Poisoned { transport: label }) if label == transport
+            ));
+            assert_eq!(
+                slots.store_conn(unconnected_test_socket()),
+                HEW_CONN_INVALID
+            );
+            slots.remove_conn(0);
+            assert!(slots.conns.read_access(|conns| {
+                conns[0].is_some() && conns[1..].iter().all(Option::is_none)
+            }));
+        }
+        crate::hew_clear_error();
+    }
+
+    #[cfg(unix)]
+    fn assert_slot_removal_shuts_down_clones(
+        transport: &'static str,
+        socket: Socket,
+        _peer: Socket,
+    ) {
+        let slots = SocketSlots::new(transport);
+        let id = slots.store_conn(socket);
+        assert_eq!(id, 0);
+        let clone = slots.get_conn(id).unwrap().unwrap();
+        clone
+            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .unwrap();
+        slots.remove_conn(id);
+        assert!(slots.get_conn(id).unwrap().is_none());
+        // The peer remains open and the clone retains its descriptor. Removal
+        // must shut it down; dropping only the table's socket would time out.
+        let mut buf = [std::mem::MaybeUninit::<u8>::uninit()];
+        assert_eq!(clone.recv(&mut buf).unwrap(), 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn tcp_and_unix_slot_removal_shuts_down_retained_clones() {
+        let (server, peer) = connected_streams();
+        assert_slot_removal_shuts_down_clones("tcp", server.into(), peer.into());
+        let (server, peer) = std::os::unix::net::UnixStream::pair().unwrap();
+        assert_slot_removal_shuts_down_clones("unix", server.into(), peer.into());
+    }
+
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn tcp_get_conn_reports_poison_instead_of_missing_conn() {
         let _guard = crate::runtime_test_guard();
         crate::hew_clear_error();
         let tcp = TcpTransport::new();
-        assert!(matches!(tcp.get_conn(0), Ok(None)));
+        assert!(matches!(tcp.slots.get_conn(0), Ok(None)));
 
         let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            tcp.conns.access(|conns| {
+            tcp.slots.conns.access(|conns| {
                 conns[0] = None;
                 panic!("intentional poison");
             });
@@ -1910,11 +2023,11 @@ mod tests {
 
         tracing::subscriber::with_default(subscriber, || {
             assert!(matches!(
-                tcp.get_conn(0),
+                tcp.slots.get_conn(0),
                 Err(ConnLookupError::Poisoned { transport: "tcp" })
             ));
             assert!(matches!(
-                tcp.get_conn(0),
+                tcp.slots.get_conn(0),
                 Err(ConnLookupError::Poisoned { transport: "tcp" })
             ));
         });
@@ -2879,19 +2992,16 @@ pub extern "C" fn hew_connection_is_valid(handle: c_int) -> bool {
 #[cfg(unix)]
 mod unix_transport {
     use super::{
-        accept_with_optional_timeout, c_char, c_int, c_void, framed_recv, framed_send,
-        report_conn_table_poison, suppress_sigpipe, CStr, ConnLookupError, Domain, HewTransport,
-        HewTransportOps, PoisonSafeRw, SockAddr, Socket, Type, HEW_CONN_INVALID, MAX_CONNS,
+        accept_with_optional_timeout, c_char, c_int, c_void, framed_recv, framed_send, CStr,
+        ConnLookupError, Domain, HewTransport, HewTransportOps, SockAddr, Socket, SocketSlots,
+        Type, HEW_CONN_INVALID,
     };
-    use std::net::Shutdown;
-    use std::sync::atomic::AtomicBool;
 
     /// Internal state for the Unix domain socket transport.
     struct UnixTransport {
         listen_sock: Option<Socket>,
         path: Option<String>,
-        conns: PoisonSafeRw<Vec<Option<Socket>>>,
-        conn_poison_reported: AtomicBool,
+        slots: SocketSlots,
     }
 
     impl UnixTransport {
@@ -2899,83 +3009,7 @@ mod unix_transport {
             Self {
                 listen_sock: None,
                 path: None,
-                conns: PoisonSafeRw::new((0..MAX_CONNS).map(|_| None).collect()),
-                conn_poison_reported: AtomicBool::new(false),
-            }
-        }
-
-        fn store_conn(&self, sock: Socket) -> c_int {
-            // macOS parity: see the TCP `store_conn` note — SO_NOSIGPIPE so a
-            // broken-pipe write fails closed with EPIPE instead of SIGPIPE.
-            suppress_sigpipe(&sock);
-            if let Ok(conn) = self.conns.write(|conns| {
-                for (i, slot) in conns.iter_mut().enumerate() {
-                    if slot.is_none() {
-                        *slot = Some(sock);
-                        #[expect(
-                            clippy::cast_possible_truncation,
-                            reason = "MAX_CONNS fits in c_int"
-                        )]
-                        #[expect(clippy::cast_possible_wrap, reason = "MAX_CONNS fits in c_int")]
-                        return i as c_int;
-                    }
-                }
-                HEW_CONN_INVALID
-            }) {
-                conn
-            } else {
-                report_conn_table_poison("unix", &self.conn_poison_reported, "storing conn", None);
-                HEW_CONN_INVALID
-            }
-        }
-
-        fn get_conn(&self, id: c_int) -> Result<Option<Socket>, ConnLookupError> {
-            if id < 0 {
-                return Ok(None);
-            }
-            #[expect(clippy::cast_sign_loss, reason = "guarded by id >= 0")]
-            let idx = id as usize;
-            self.conns
-                .read(|conns| {
-                    conns
-                        .get(idx)
-                        .and_then(Option::as_ref)
-                        .and_then(|sock| sock.try_clone().ok())
-                })
-                .map_err(|_| {
-                    report_conn_table_poison(
-                        "unix",
-                        &self.conn_poison_reported,
-                        "looking up",
-                        Some(id),
-                    );
-                    ConnLookupError::Poisoned { transport: "unix" }
-                })
-        }
-
-        fn remove_conn(&self, id: c_int) {
-            if id >= 0 {
-                #[expect(clippy::cast_sign_loss, reason = "guarded by id >= 0")]
-                let idx = id as usize;
-                if idx < MAX_CONNS
-                    && self
-                        .conns
-                        .write(|conns| {
-                            // Shutdown before dropping — see TcpTransport::remove_conn.
-                            if let Some(ref sock) = conns[idx] {
-                                let _ = sock.shutdown(Shutdown::Both);
-                            }
-                            conns[idx] = None;
-                        })
-                        .is_err()
-                {
-                    report_conn_table_poison(
-                        "unix",
-                        &self.conn_poison_reported,
-                        "removing conn",
-                        Some(id),
-                    );
-                }
+                slots: SocketSlots::new("unix"),
             }
         }
     }
@@ -3010,7 +3044,7 @@ mod unix_transport {
 
         // SAFETY: impl_ptr points to a valid UnixTransport.
         let ut = unsafe { &*impl_ptr.cast::<UnixTransport>() };
-        ut.store_conn(socket)
+        ut.slots.store_conn(socket)
     }
 
     unsafe extern "C" fn unix_listen(impl_ptr: *mut c_void, address: *const c_char) -> c_int {
@@ -3054,9 +3088,9 @@ mod unix_transport {
         match accept_with_optional_timeout(listen_sock, timeout_ms) {
             Some((conn, true)) => {
                 let _ = conn.set_nonblocking(false);
-                ut.store_conn(conn)
+                ut.slots.store_conn(conn)
             }
-            Some((conn, false)) => ut.store_conn(conn),
+            Some((conn, false)) => ut.slots.store_conn(conn),
             None => HEW_CONN_INVALID,
         }
     }
@@ -3070,7 +3104,7 @@ mod unix_transport {
         cabi_guard!(impl_ptr.is_null() || data.is_null(), -1);
         // SAFETY: impl_ptr points to a valid UnixTransport.
         let ut = unsafe { &*impl_ptr.cast::<UnixTransport>() };
-        let sock = match ut.get_conn(conn) {
+        let sock = match ut.slots.get_conn(conn) {
             Ok(Some(sock)) => sock,
             Ok(None) | Err(ConnLookupError::Poisoned { .. }) => return -1,
         };
@@ -3088,7 +3122,7 @@ mod unix_transport {
         cabi_guard!(impl_ptr.is_null() || buf.is_null(), -1);
         // SAFETY: impl_ptr points to a valid UnixTransport.
         let ut = unsafe { &*impl_ptr.cast::<UnixTransport>() };
-        let sock = match ut.get_conn(conn) {
+        let sock = match ut.slots.get_conn(conn) {
             Ok(Some(sock)) => sock,
             Ok(None) | Err(ConnLookupError::Poisoned { .. }) => return -1,
         };
@@ -3101,7 +3135,7 @@ mod unix_transport {
         cabi_guard!(impl_ptr.is_null());
         // SAFETY: impl_ptr points to a valid UnixTransport.
         let ut = unsafe { &*impl_ptr.cast::<UnixTransport>() };
-        ut.remove_conn(conn);
+        ut.slots.remove_conn(conn);
     }
 
     unsafe extern "C" fn unix_destroy(impl_ptr: *mut c_void) {

@@ -34,10 +34,10 @@ impl RequestDeadline {
     }
 
     pub(crate) fn remaining(self) -> Option<i64> {
-        // SAFETY: the monotonic clock has no preconditions.
         (self.0 >= 0).then(|| {
-            self.0
-                .saturating_sub(unsafe { crate::clock::hew_instant_now() })
+            // SAFETY: the monotonic clock has no preconditions.
+            let now = unsafe { crate::clock::hew_instant_now() };
+            self.0.saturating_sub(now)
         })
     }
 

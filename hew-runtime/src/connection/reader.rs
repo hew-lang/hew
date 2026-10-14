@@ -137,6 +137,10 @@ pub(super) fn reader_loop(
                 handle_control_frame(mgr, peer_feature_flags, conn_id, claim_token, &control);
             }
             WireFrame::Envelope(mut envelope) => {
+                let deadline = envelope.budget_ns.map_or_else(
+                    crate::request_deadline::RequestDeadline::default,
+                    |budget| crate::request_deadline::RequestDeadline::after(budget.cast_signed()),
+                );
                 let Some(router_fn) = router else {
                     continue;
                 };
@@ -180,6 +184,14 @@ pub(super) fn reader_loop(
                         set_last_error("connection reader envelope source Location mismatch");
                         continue;
                     }
+                    if envelope.message == crate::envelope::EnvelopeMessage::Withdraw {
+                        mgr_ref.inbound_asks.withdraw(
+                            crate::pid::hew_pid_make(mgr_ref.local_node_id, target.slot()),
+                            claim_token,
+                            envelope.request_id,
+                        );
+                        continue;
+                    }
                     let crate::envelope::EnvelopeMessage::Handler(identity) = &envelope.message
                     else {
                         set_last_error("request envelope has reply status");
@@ -211,6 +223,8 @@ pub(super) fn reader_loop(
                             authenticated,
                             mgr,
                             peer_identity.node_id.into(),
+                            claim_token,
+                            deadline.raw(),
                         );
                     }
                     if let Some(saved) = saved_ctx {

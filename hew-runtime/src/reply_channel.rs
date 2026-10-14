@@ -198,6 +198,7 @@ pub(crate) unsafe fn withdraw_native_request(channel: *mut HewReplyChannel) {
 pub(crate) unsafe fn claim_native_request_dispatch(channel: *mut HewReplyChannel) -> bool {
     // SAFETY: the node retains its channel while deadline expiry competes with claim.
     if unsafe { native_request_deadline(channel) }.expired() {
+        // SAFETY: the same request node retains the reply owner during expiry.
         unsafe { native::expire_native_request(channel) };
     }
     // SAFETY: a non-null channel is retained by the owned message node.

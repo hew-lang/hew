@@ -5308,8 +5308,8 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1620] = {
      HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_remote_call_new",
      "{\"native\": \"fn hew_remote_call_new( *const HewRemotePid, *const "
-     "c_void, i32, *mut c_void, usize, usize, u64, *const HewWaker, ) -> *mut "
-     "HewRemoteCall\"}",
+     "c_void, i32, *mut c_void, usize, usize, u64, i64, *const HewWaker, ) -> "
+     "*mut HewRemoteCall\"}",
      "native", "non-declarable", "not-applicable", "no-in-signature-extent",
      HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_remote_call_poll",

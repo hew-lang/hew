@@ -33,7 +33,7 @@ fn mgr_null_transport_rejected() {
 #[test]
 fn handshake_round_trip() {
     let hs = HewHandshake {
-        protocol_version: HEW_PROTOCOL_VERSION,
+        protocol_version: u16::from(crate::envelope::WIRE_VERSION),
         schema_hash: 0x1234_5678,
         feature_flags: HEW_FEATURE_SUPPORTS_GOSSIP,
         node_id: test_node_identity(42),
@@ -122,5 +122,5 @@ fn handshake_rejects_zero_node_id() {
 
 #[test]
 fn local_schema_hash_covers_acknowledged_setup_controls() {
-    assert_eq!(local_schema_hash(), 0x0dcc_98a1);
+    assert_eq!(local_schema_hash(), 0x8c2c_2f54);
 }

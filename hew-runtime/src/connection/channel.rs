@@ -121,6 +121,8 @@ impl std::error::Error for ChannelRefusal {}
 /// Why one frame could not pass through the channel.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ChannelError {
+    /// The caller declined to prepare a frame after transport admission.
+    Preparation,
     /// The frame does not fit one Noise transport message.
     FrameTooLarge { len: usize },
     /// Noise refused to encrypt the frame.
@@ -141,6 +143,7 @@ impl fmt::Display for ChannelError {
                 "frame of {len} bytes exceeds the {} byte channel limit",
                 NOISE_MAX_MSG_SIZE - NOISE_TAG_LEN
             ),
+            Self::Preparation => f.write_str("frame preparation declined"),
             Self::Seal => f.write_str("channel encryption failed"),
             Self::Faulted => f.write_str("channel faulted after a failed send"),
             Self::Transport => f.write_str("transport did not accept the sealed frame"),
@@ -158,20 +161,37 @@ impl ChannelProtection {
     ///
     /// `transport` must be valid and `conn_id` must name the connection this
     /// channel protects.
+    #[cfg(test)]
     pub(super) unsafe fn send(
         &self,
         transport: *mut HewTransport,
         conn_id: c_int,
         frame: &[u8],
     ) -> Result<(), ChannelError> {
+        // SAFETY: forwards the channel and transport contract.
+        unsafe { self.send_prepared(transport, conn_id, || Some(frame)) }
+    }
+
+    /// Prepare the frame after send serialization, charging admission to its budget.
+    ///
+    /// # Safety
+    /// `transport` is live and `conn_id` names the connection protected by this channel.
+    pub(super) unsafe fn send_prepared<B: AsRef<[u8]>>(
+        &self,
+        transport: *mut HewTransport,
+        conn_id: c_int,
+        prepare: impl FnOnce() -> Option<B>,
+    ) -> Result<(), ChannelError> {
         match self {
             Self::TcpNoise(noise) => {
-                if frame.len() + NOISE_TAG_LEN > NOISE_MAX_MSG_SIZE {
-                    return Err(ChannelError::FrameTooLarge { len: frame.len() });
-                }
                 let mut send = noise.send.lock_or_recover();
                 if send.faulted {
                     return Err(ChannelError::Faulted);
+                }
+                let prepared = prepare().ok_or(ChannelError::Preparation)?;
+                let frame = prepared.as_ref();
+                if frame.len() + NOISE_TAG_LEN > NOISE_MAX_MSG_SIZE {
+                    return Err(ChannelError::FrameTooLarge { len: frame.len() });
                 }
                 let mut sealed = vec![0u8; frame.len() + NOISE_TAG_LEN];
                 let n = noise
@@ -189,6 +209,8 @@ impl ChannelProtection {
             }
             #[cfg(feature = "quic")]
             Self::QuicMeshTls => {
+                let prepared = prepare().ok_or(ChannelError::Preparation)?;
+                let frame = prepared.as_ref();
                 // SAFETY: forwarded caller contract.
                 if unsafe { send_frame(transport, conn_id, frame) } {
                     Ok(())

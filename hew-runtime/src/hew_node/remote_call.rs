@@ -8,6 +8,7 @@ use super::{
 use crate::connection;
 use crate::envelope::encode_envelope_frame_from_raw_parts;
 use crate::node_identity::{HewRemotePid, Location};
+use crate::request_deadline::RequestDeadline;
 use crate::routing;
 use crate::set_last_error;
 use std::ffi::c_void;
@@ -16,7 +17,7 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 enum RemoteAskSetupResult {
-    Ok((u64, Arc<PendingReply>)),
+    Ok((Arc<PendingReply>, Location, u64)),
     /// This node owns the target actor.
     Local(u64),
     Error(AskError),
@@ -24,7 +25,7 @@ enum RemoteAskSetupResult {
 
 /// Set up an outbound remote ask: serialize the request, register a pending
 /// reply slot woken through `waker` and send the ask envelope over the mesh.
-/// Returns the `(request_id, pending)` pair on a successful submit, or a typed
+/// Returns the pending reply and exact route on successful submission, or a typed
 /// [`AskError`] on any setup failure.
 ///
 /// # Safety
@@ -43,7 +44,11 @@ fn setup_remote_ask(
     data: *mut c_void,
     size: usize,
     waker: crate::wake::OwnedWaker,
+    deadline: RequestDeadline,
 ) -> RemoteAskSetupResult {
+    if deadline.expired() {
+        return RemoteAskSetupResult::Error(AskError::Timeout);
+    }
     with_current_node_read(|guard| {
         let node_ptr = *guard as *mut HewNode;
         if node_ptr.is_null() {
@@ -142,36 +147,41 @@ fn setup_remote_ask(
                 connection::local_location_for_actor(manager, unsafe { (*actor).id })
             }
         };
-        // SAFETY: encode_envelope_frame_from_raw_parts requirements are
-        // met by the enclosing unsafe fn's documented preconditions.
-        let bytes = match unsafe {
-            encode_envelope_frame_from_raw_parts(
-                Some(target),
-                source,
-                crate::envelope::EnvelopeMessage::Handler(codec.identity.to_owned()),
-                req_ptr,
-                req_len,
-                request_id,
-            )
-        } {
-            Ok(bytes) => bytes,
-            Err(err) => {
-                set_last_error(format!("hew_node_api_ask: {err}"));
-                reply_table().remove(request_id);
-                if let Some((b, _)) = serialized_req {
-                    // SAFETY: b came from encode_payload's sized-block allocation.
-                    unsafe { crate::xnode_serial::hew_ser_free_bytes(b) };
-                }
-                return RemoteAskSetupResult::Error(AskError::EncodeFailed);
+        let mut preparation_error = None;
+        let send_ok = send_claim.send_prepared(|| {
+            let remaining = deadline.remaining();
+            if remaining.is_some_and(|budget| budget <= 0) {
+                preparation_error = Some(AskError::Timeout);
+                return None;
             }
-        };
-        // The envelope copied the request bytes; free our serialized copy.
-        if let Some((b, _)) = serialized_req {
-            // SAFETY: b came from encode_payload's sized-block allocation.
-            unsafe { crate::xnode_serial::hew_ser_free_bytes(b) };
+            // SAFETY: the serialized request remains live throughout preparation.
+            match unsafe {
+                encode_envelope_frame_from_raw_parts(
+                    Some(target),
+                    source,
+                    crate::envelope::EnvelopeMessage::Handler(codec.identity.to_owned()),
+                    req_ptr,
+                    req_len,
+                    request_id,
+                    remaining.map(i64::cast_unsigned),
+                )
+            } {
+                Ok(bytes) => Some(bytes),
+                Err(error) => {
+                    set_last_error(format!("hew_node_api_ask: {error}"));
+                    preparation_error = Some(AskError::EncodeFailed);
+                    None
+                }
+            }
+        }) == 0;
+        if let Some((bytes, _)) = serialized_req {
+            // SAFETY: bytes came from encode_payload's sized-block allocation.
+            unsafe { crate::xnode_serial::hew_ser_free_bytes(bytes) };
         }
-
-        let send_ok = send_claim.send(&bytes) == 0;
+        if let Some(error) = preparation_error {
+            reply_table().remove(request_id);
+            return RemoteAskSetupResult::Error(error);
+        }
 
         if !send_ok {
             // The ask is already bound to an authenticated, active connection.
@@ -182,7 +192,7 @@ fn setup_remote_ask(
             reply_table().fail_connection(connection);
         }
 
-        RemoteAskSetupResult::Ok((request_id, pending))
+        RemoteAskSetupResult::Ok((pending, target, send_claim.publication_token))
     })
 }
 
@@ -230,7 +240,7 @@ fn remote_reply_value(
 /// Where a remote call's reply comes from.
 pub(super) enum RemoteCallRoute {
     /// A peer owns the target: the pending registration of the encoded ask.
-    Wire(Arc<PendingReply>),
+    Wire(Arc<PendingReply>, Location, u64),
     /// This node owns the target: the local actor call carrying the request.
     Local(*mut crate::actor_call_native::HewActorCall),
     Failed(AskError),
@@ -246,6 +256,7 @@ pub struct HewRemoteCall {
     pub(super) route: RemoteCallRoute,
     pub(super) timer: *mut crate::coro_sleep::HewCoroSleep,
     pub(super) timed_out: bool,
+    pub(super) deadline: RequestDeadline,
     pub(super) dispatch: *const c_void,
     pub(super) msg_type: i32,
     pub(super) reply_size: usize,
@@ -254,7 +265,7 @@ pub struct HewRemoteCall {
 impl HewRemoteCall {
     fn ready(&mut self) -> bool {
         let pending = match &self.route {
-            RemoteCallRoute::Wire(pending) => pending,
+            RemoteCallRoute::Wire(pending, _, _) => pending,
             RemoteCallRoute::Local(call) => {
                 // SAFETY: the operation exclusively drives its live local call.
                 return unsafe { crate::actor_call_native::hew_actor_call_poll(*call) } != -1;
@@ -270,13 +281,18 @@ impl HewRemoteCall {
         {
             return true;
         }
-        // SAFETY: the operation uniquely owns its live timer.
-        if unsafe { crate::coro_sleep::hew_coro_sleep_status(self.timer) } == 0 {
+        // SAFETY: this wire call uniquely owns its timer. A failed timer must
+        // retain the existing fail-closed outcome instead of parking forever.
+        let timer_status = unsafe { crate::coro_sleep::hew_coro_sleep_status(self.timer) };
+        if !self.deadline.expired() && timer_status == 0 {
             return false;
         }
         // Withdrawing the registration settles the race: a completion that
         // already removed it deposits its outcome and wakes this call again.
         self.timed_out = reply_table().remove(pending.request_id).is_some();
+        if self.timed_out {
+            withdraw_remote(&self.route);
+        }
         self.timed_out
     }
 }
@@ -285,8 +301,10 @@ impl Drop for HewRemoteCall {
     fn drop(&mut self) {
         match &self.route {
             // A late reply finds no registration and is dropped.
-            RemoteCallRoute::Wire(pending) => {
-                reply_table().remove(pending.request_id);
+            RemoteCallRoute::Wire(pending, _, _) => {
+                if reply_table().remove(pending.request_id).is_some() {
+                    withdraw_remote(&self.route);
+                }
             }
             // SAFETY: generated code drained the call's cleanup before freeing.
             RemoteCallRoute::Local(call) => unsafe {
@@ -297,6 +315,44 @@ impl Drop for HewRemoteCall {
         // SAFETY: the operation uniquely owns its timer, released once here.
         unsafe { crate::coro_sleep::hew_coro_sleep_free(self.timer) };
     }
+}
+
+/// Best-effort withdrawal is bound to the same authenticated connection publication.
+fn withdraw_remote(route: &RemoteCallRoute) {
+    let RemoteCallRoute::Wire(pending, target, publication) = route else {
+        return;
+    };
+    with_current_node_read(|guard| {
+        // SAFETY: the read guard pins the optional current node for this closure.
+        let Some(node) = (unsafe { (*guard as *const HewNode).as_ref() }) else {
+            return;
+        };
+        if node.conn_mgr as usize != pending.connection.conn_mgr
+            || node.state.load(Ordering::Acquire) != NODE_STATE_RUNNING
+        {
+            return;
+        }
+        // SAFETY: CURRENT_NODE pins this manager; the withdrawal has no payload.
+        unsafe {
+            if let Ok(bytes) = encode_envelope_frame_from_raw_parts(
+                Some(*target),
+                None,
+                crate::envelope::EnvelopeMessage::Withdraw,
+                ptr::null(),
+                0,
+                pending.request_id,
+                None,
+            ) {
+                connection::hew_connmgr_send_preencoded_claimed(
+                    node.conn_mgr,
+                    pending.connection.conn_id,
+                    *publication,
+                    bytes.as_ptr(),
+                    bytes.len(),
+                );
+            }
+        }
+    });
 }
 
 /// Submit `request` to the actor at `target`, consuming its fields. A peer
@@ -320,20 +376,31 @@ pub unsafe extern "C" fn hew_remote_call_new(
     request_size: usize,
     reply_size: usize,
     timeout_ms: u64,
+    inherited_deadline_ns: i64,
     waker: *const crate::wake::HewWaker,
 ) -> *mut HewRemoteCall {
     // SAFETY: the caller supplies a live descriptor.
     let owned = unsafe { crate::wake::OwnedWaker::retain(&*waker) };
-    let deadline_ns = i64::try_from(u128::from(timeout_ms) * 1_000_000).unwrap_or(i64::MAX);
+    let duration_ns = i64::try_from(u128::from(timeout_ms) * 1_000_000).unwrap_or(i64::MAX);
+    let deadline = RequestDeadline::after(duration_ns)
+        .earlier(RequestDeadline::from_raw(inherited_deadline_ns));
     // SAFETY: caller guarantees `target` is null or readable.
     let setup = match unsafe { target.as_ref() }.map(|target| Location::try_from(*target)) {
-        Some(Ok(target)) => {
-            setup_remote_ask(target, dispatch, msg_type, request, request_size, owned)
-        }
+        Some(Ok(target)) => setup_remote_ask(
+            target,
+            dispatch,
+            msg_type,
+            request,
+            request_size,
+            owned,
+            deadline,
+        ),
         _ => RemoteAskSetupResult::Error(AskError::StaleRef),
     };
     let route = match setup {
-        RemoteAskSetupResult::Ok((_, pending)) => RemoteCallRoute::Wire(pending),
+        RemoteAskSetupResult::Ok((pending, target, publication)) => {
+            RemoteCallRoute::Wire(pending, target, publication)
+        }
         RemoteAskSetupResult::Error(error) => RemoteCallRoute::Failed(error),
         RemoteAskSetupResult::Local(actor_id) => {
             // SAFETY: forwards the request and waker contracts.
@@ -345,7 +412,7 @@ pub unsafe extern "C" fn hew_remote_call_new(
                     request,
                     request_size,
                     reply_size,
-                    deadline_ns,
+                    deadline.raw(),
                     waker,
                 )
             };
@@ -357,8 +424,9 @@ pub unsafe extern "C" fn hew_remote_call_new(
     Box::into_raw(Box::new(HewRemoteCall {
         route,
         // SAFETY: the descriptor is live; the timer retains its own reference.
-        timer: unsafe { crate::coro_sleep::hew_coro_sleep_new(deadline_ns, waker) },
+        timer: unsafe { crate::coro_sleep::hew_coro_sleep_until_new(deadline.raw(), waker) },
         timed_out: false,
+        deadline,
         dispatch,
         msg_type,
         reply_size,
@@ -390,6 +458,7 @@ unsafe fn start_local_call(
             route,
             timer: ptr::null_mut(),
             timed_out: false,
+            deadline: RequestDeadline::from_raw(deadline_ns),
             dispatch,
             msg_type,
             reply_size,
@@ -439,7 +508,7 @@ unsafe fn start_local_call(
             reply_size,
             reply_drop,
             waker,
-            crate::request_deadline::RequestDeadline::after(deadline_ns).raw(),
+            deadline_ns,
             1,
             None,
             None,
@@ -476,8 +545,8 @@ pub unsafe extern "C" fn hew_remote_call_take(
     // SAFETY: the caller exclusively drives this live operation.
     let operation = unsafe { &mut *operation };
     let pending = match &operation.route {
-        RemoteCallRoute::Wire(_) if operation.timed_out => return AskError::Timeout as i32,
-        RemoteCallRoute::Wire(pending) => pending,
+        RemoteCallRoute::Wire(..) if operation.timed_out => return AskError::Timeout as i32,
+        RemoteCallRoute::Wire(pending, _, _) => pending,
         // SAFETY: the local call is ready and `output` holds its reply.
         RemoteCallRoute::Local(call) => return unsafe { take_local_call(*call, output) },
         RemoteCallRoute::Failed(error) => return *error as i32,
@@ -561,7 +630,7 @@ pub unsafe extern "C" fn hew_remote_call_cleanup_poll(
         RemoteCallRoute::Local(call) => unsafe {
             crate::actor_call_native::hew_actor_call_cleanup_poll(*call, parent)
         },
-        RemoteCallRoute::Wire(_) | RemoteCallRoute::Failed(_) => 1,
+        RemoteCallRoute::Wire(..) | RemoteCallRoute::Failed(_) => 1,
     }
 }
 
@@ -579,7 +648,7 @@ pub unsafe extern "C" fn hew_remote_call_cleanup_fault(
         RemoteCallRoute::Local(call) => unsafe {
             crate::actor_call_native::hew_actor_call_cleanup_fault(*call)
         },
-        RemoteCallRoute::Wire(_) | RemoteCallRoute::Failed(_) => ptr::null_mut(),
+        RemoteCallRoute::Wire(..) | RemoteCallRoute::Failed(_) => ptr::null_mut(),
     }
 }
 

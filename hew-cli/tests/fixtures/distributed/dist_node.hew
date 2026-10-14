@@ -121,6 +121,155 @@ impl ActorMsg for SpecializedEcho<string> {
     type Reply = string;
 }
 
+actor DeadlineLeaf {
+    var calls: i64 = 0;
+    receive fn handle(command: i64) -> i64 {
+        if command == 1 {
+            calls += 1;
+        }
+        calls
+    }
+}
+
+impl ActorMsg for DeadlineLeaf {
+    type Msg = i64;
+    type Reply = i64;
+}
+
+fn deadline_nested(leaf: DeadlineLeaf) -> bool {
+    let local_expired = match leaf.handle(1) {
+        .Err(ActorError.TimedOut) => true,
+        _ => false,
+    };
+    let remote: RemotePid<DeadlineLeaf> = Node.lookup("deadline-client-leaf").expect("client leaf");
+    let remote_expired = match remote.ask(1, 5000) {
+        .Err(ActorError.TimedOut) => true,
+        _ => false,
+    };
+    let local_route: RemotePid<DeadlineLeaf> = Node.lookup("deadline-server-leaf").expect("server leaf");
+    let route_expired = match local_route.ask(1, 5000) {
+        .Err(ActorError.TimedOut) => true,
+        _ => false,
+    };
+    local_expired && remote_expired && route_expired
+}
+
+actor DeadlineWorker {
+    let leaf: DeadlineLeaf;
+    var gate: Stream<i64>;
+    var started: Sink<i64>;
+    var calls: i64 = 0;
+    receive fn handle(command: i64) -> string {
+        if command == 0 {
+            started.send(1).expect("held turn began");
+            gate.recv().expect("release held turn");
+            return "held reply".to_upper();
+        }
+        if command == 1 {
+            calls += 1;
+        }
+        if command == 2 {
+            calls += 1;
+            started.send(1).expect("mutation began");
+            gate.recv().expect("caller abandoned reply");
+            let expired = scope within 1s {
+                let child = fork deadline_nested(leaf);
+                await child
+            } handle failure {
+                panic("request expiry cancelled a claimed handler");
+            };
+            assert(expired);
+            calls += 1;
+            return "owned late reply".to_upper();
+        }
+        f"{calls}"
+    }
+}
+
+impl ActorMsg for DeadlineWorker {
+    type Msg = i64;
+    type Reply = string;
+}
+
+actor DeadlineGate {
+    var release: Sink<i64>;
+    var started: Stream<i64>;
+    receive fn handle(command: i64) -> i64 {
+        if command == 0 {
+            started.recv().expect("worker claimed request");
+        } else {
+            release.send(1).expect("release worker");
+        }
+        command
+    }
+}
+
+impl ActorMsg for DeadlineGate {
+    type Msg = i64;
+    type Reply = i64;
+}
+
+fn register_deadline_actors() {
+    let (release, gate): (Sink<i64>, Stream<i64>) = stream.pipe(1).expect("deadline gate");
+    let (started, begins): (Sink<i64>, Stream<i64>) = stream.pipe(1).expect("deadline began");
+    let leaf = spawn DeadlineLeaf;
+    Node.register("deadline-server-leaf", leaf);
+    let worker = spawn DeadlineWorker { leaf: leaf, gate: gate, started: started };
+    let control = spawn DeadlineGate { release: release, started: begins };
+    Node.register("deadline-worker", worker);
+    Node.register("deadline-gate", control);
+}
+
+fn scenario_deadline_budget() -> i64 {
+    let leaf = spawn DeadlineLeaf;
+    Node.register("deadline-client-leaf", leaf);
+    let worker: RemotePid<DeadlineWorker> = lookup_generic_with_retry("deadline-worker").expect("deadline worker");
+    let gate: RemotePid<DeadlineGate> = lookup_generic_with_retry("deadline-gate").expect("deadline gate");
+    scope {
+        let held = fork worker.ask(0, 5000);
+        gate.ask(0, 5000).expect("held turn claimed");
+        match worker.ask(1, 50) {
+            .Err(ActorError.TimedOut) => {}
+            _ => panic("queued request must time out"),
+        }
+        gate.ask(1, 5000).expect("release held turn");
+        assert((await held).expect("held reply") == "HELD REPLY");
+    };
+    assert(worker.ask(3, 5000).expect("queued mutation absent") == "0");
+    println("PASS deadline_budget queued-not-started");
+    scope {
+        let held = fork worker.ask(0, 5000);
+        gate.ask(0, 5000).expect("relay waits behind a claimed turn");
+        scope within 1s {
+            let started = fork worker.ask(2, 5000);
+            sleep(250ms);
+            gate.ask(1, 5000).expect("release turn ahead of relay");
+            gate.ask(0, 5000).expect("mutation claimed");
+            let _ = await started;
+            panic("claimed caller must expire");
+        } handle failure {
+            match failure {
+                .Deadline { message } => {}
+                .Fault { message } => panic(message),
+            }
+        };
+        assert((await held).expect("held relay reply") == "HELD REPLY");
+    };
+    // A relative wire budget starts on receipt. This margin is shorter than
+    // the relay's queue wait, so resetting its budget at dispatch fails below.
+    sleep(50ms);
+    gate.ask(1, 5000).expect("claimed handler stays alive");
+    assert(worker.ask(3, 5000).expect("claimed mutation completed once") == "2");
+    assert(leaf.handle(0).expect("remote nested work absent") == 0);
+    let server_leaf: RemotePid<DeadlineLeaf> = lookup_generic_with_retry("deadline-server-leaf").expect("server leaf");
+    assert(server_leaf.ask(0, 5000).expect("local nested work absent") == 0);
+    assert(worker.ask(1, 5000).expect("later independent budget") == "3");
+    println("PASS deadline_budget claimed-finishes-nested-times-out");
+    stop(leaf);
+    stopped(leaf);
+    0
+}
+
 actor HeldEcho {
     var gate: stream.Stream<i64>;
     receive fn handle(value: string) -> string {
@@ -1099,6 +1248,9 @@ fn run_server(scenario: string) {
         Node.register("generic-number", spawn GenericEcho<u64>);
         Node.register("generic-point", spawn GenericEcho<WirePoint>);
         Node.register("specialized", spawn SpecializedEcho<string>);
+    }
+    if scenario == "deadline_budget" {
+        register_deadline_actors();
     }
     if scenario == "inbound_isolation" {
         scenario_server_inbound_isolation(kx);
@@ -2418,7 +2570,9 @@ fn run_client(scenario: string) -> i64 {
     let port = wait_for_server_listening(kx);
     let remote_addr = f"1@127.0.0.1:{port}";
     let _ = Node.connect(remote_addr);
-    let status = if scenario == "handshake_reject" {
+    let status = if scenario == "deadline_budget" {
+        scenario_deadline_budget()
+    } else if scenario == "handshake_reject" {
         scenario_handshake_reject()
     } else if scenario == "quarantine_rejoin" {
         scenario_quarantine_rejoin()

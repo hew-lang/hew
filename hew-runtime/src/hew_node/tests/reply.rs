@@ -268,9 +268,7 @@ fn remote_call_deadline_withdraws_and_takes_timeout() {
     let (id, _readiness, call) = remote_call_for_test(key);
     // SAFETY: `call` is live; replace its deadline with one already due.
     unsafe {
-        crate::coro_sleep::hew_coro_sleep_free((*call).timer);
-        let (_latch, waker) = crate::wake::blocking::Readiness::new();
-        (*call).timer = crate::coro_sleep::hew_coro_sleep_new(0, waker.descriptor());
+        (*call).deadline = crate::request_deadline::RequestDeadline::from_raw(0);
         assert_eq!(
             hew_remote_call_poll(call),
             0,
@@ -557,6 +555,7 @@ fn remote_reply_payload_length_mismatch_fails_closed_not_overread() {
 #[test]
 fn rejection_reason_codes_round_trip_supported_remote_failures() {
     for ask_error in [
+        AskError::Timeout,
         AskError::EncodeFailed,
         AskError::SendFailed,
         AskError::PayloadSizeMismatch,
@@ -586,7 +585,7 @@ fn rejection_reason_codes_reject_non_remote_failures() {
         AskError::None,
         AskError::NodeNotRunning,
         AskError::RoutingFailed,
-        AskError::Timeout,
+        AskError::Cancelled,
         AskError::ConnectionDropped,
     ] {
         assert!(
@@ -595,9 +594,9 @@ fn rejection_reason_codes_reject_non_remote_failures() {
         );
     }
     assert_eq!(
-        decode_rejection_reason(&[AskError::Timeout as u8]),
+        decode_rejection_reason(&[AskError::Cancelled as u8]),
         Err(AskRejectionDecodeError::UnknownAskRejectionReason {
-            code: AskError::Timeout as u8
+            code: AskError::Cancelled as u8
         }),
         "unknown rejection-reason bytes must produce Err, not a fabricated AskError"
     );

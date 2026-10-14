@@ -11,7 +11,7 @@ use crate::transport::HewTransport;
 
 use super::{
     HewHandshake, FNV1A32_OFFSET_BASIS, FNV1A32_PRIME, HEW_FEATURE_SUPPORTS_GOSSIP,
-    HEW_HANDSHAKE_SIZE, HEW_PROTOCOL_VERSION, NOISE_STATIC_PUBKEY_LEN,
+    HEW_HANDSHAKE_SIZE, NOISE_STATIC_PUBKEY_LEN,
 };
 use super::{HEW_FEATURE_SUPPORTS_ENCRYPTION, NOISE_MAX_MSG_SIZE, NOISE_PATTERN};
 
@@ -45,7 +45,7 @@ pub(super) fn local_handshake(
     static_noise_pubkey: [u8; NOISE_STATIC_PUBKEY_LEN],
 ) -> HewHandshake {
     HewHandshake {
-        protocol_version: HEW_PROTOCOL_VERSION,
+        protocol_version: u16::from(WIRE_VERSION),
         schema_hash: local_schema_hash(),
         feature_flags: local_feature_flags(),
         node_id: local_node_id,

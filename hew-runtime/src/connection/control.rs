@@ -46,6 +46,7 @@ pub(super) unsafe fn encode_envelope(
             payload.cast_const(),
             payload_len,
             0,
+            None,
         )
     } {
         Ok(bytes) => Some(bytes),

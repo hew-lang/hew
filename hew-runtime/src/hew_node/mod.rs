@@ -873,6 +873,7 @@ fn ask_error_from_code(code: i32) -> Option<AskError> {
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum AskRejectionReasonCode {
+    Timeout = AskError::Timeout as u8,
     EncodeFailed = AskError::EncodeFailed as u8,
     SendFailed = AskError::SendFailed as u8,
     PayloadSizeMismatch = AskError::PayloadSizeMismatch as u8,
@@ -898,6 +899,7 @@ enum AskRejectionDecodeError {
 impl AskRejectionReasonCode {
     fn encode(reason: AskError) -> Option<u8> {
         let code = match reason {
+            AskError::Timeout => Self::Timeout,
             AskError::EncodeFailed => Self::EncodeFailed,
             AskError::SendFailed => Self::SendFailed,
             AskError::PayloadSizeMismatch => Self::PayloadSizeMismatch,
@@ -918,6 +920,7 @@ impl AskRejectionReasonCode {
     fn decode(reason_payload: &[u8]) -> Result<AskError, AskRejectionDecodeError> {
         match reason_payload.first().copied() {
             None => Ok(AskError::WorkerAtCapacity), // empty payload: legacy peer
+            Some(x) if x == Self::Timeout as u8 => Ok(AskError::Timeout),
             Some(x) if x == Self::EncodeFailed as u8 => Ok(AskError::EncodeFailed),
             Some(x) if x == Self::SendFailed as u8 => Ok(AskError::SendFailed),
             Some(x) if x == Self::PayloadSizeMismatch as u8 => Ok(AskError::PayloadSizeMismatch),
@@ -2100,14 +2103,26 @@ impl InboundRequest {
         reply: crate::xnode_serial::ThunkPair,
         caller: crate::actor_caller::HewCallerStamp,
         waker: &crate::wake::HewWaker,
+        deadline: crate::request_deadline::RequestDeadline,
     ) -> *mut crate::actor_call_native::HewActorCall {
         let (wrapper, size, drop) = (self.wrapper, self.size, self.drop);
         std::mem::forget(self);
         // SAFETY: the operation owns the fields on every outcome and retains the waker.
         unsafe {
             crate::actor_call_native::actor_call_new(
-                token, msg_type, wrapper, size, drop, reply.size, reply.drop, waker, -1, 1, None,
-                None, caller,
+                token,
+                msg_type,
+                wrapper,
+                size,
+                drop,
+                reply.size,
+                reply.drop,
+                waker,
+                deadline.raw(),
+                1,
+                None,
+                None,
+                caller,
             )
         }
     }

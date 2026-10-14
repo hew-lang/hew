@@ -996,6 +996,20 @@ fn remote_ask_round_trip_returns_exact_values() {
 }
 
 #[test]
+fn remote_deadlines_withdraw_queued_work_and_preserve_claimed_handlers() {
+    let stdout = run_two_process_scenario("deadline_budget");
+    assert!(
+        stdout.contains("PASS deadline_budget queued-not-started"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("PASS deadline_budget claimed-finishes-nested-times-out"),
+        "{stdout}"
+    );
+    assert!(!stdout.contains("FAIL "), "{stdout}");
+}
+
+#[test]
 fn pending_inbound_asks_preserve_other_services_and_retire_on_shutdown() {
     let stdout = run_two_process_scenario("inbound_isolation");
     for expected in [

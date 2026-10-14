@@ -135,6 +135,7 @@ impl HewActorCall {
         // SAFETY: expiry shares the reply publication lock, preserving a reply
         // that already won and withdrawing only an unclaimed request.
         unsafe { crate::reply_channel::native::expire_native_request(self.channel) };
+        // SAFETY: the operation still owns its receiver and exact reply layout.
         let result = unsafe { hew_reply_channel_status_native(self.channel, self.expected_size) };
         if result != -1 {
             self.state = CallState::Ready(result);

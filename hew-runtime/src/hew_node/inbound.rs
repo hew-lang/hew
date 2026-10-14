@@ -150,6 +150,8 @@ pub(super) unsafe extern "C" fn node_inbound_router(
     source_node_id: u16,
     conn_mgr: *mut connection::HewConnMgr,
     peer: crate::node_identity::HewNodeId,
+    publication: u64,
+    deadline_ns: i64,
 ) {
     // SAFETY: the reader supplies a NUL-terminated UTF-8 declaration for this call.
     let identity = unsafe { std::ffi::CStr::from_ptr(identity) }
@@ -177,6 +179,8 @@ pub(super) unsafe extern "C" fn node_inbound_router(
             SendConnMgr(conn_mgr),
             shutdown,
             caller,
+            publication,
+            crate::request_deadline::RequestDeadline::from_raw(deadline_ns),
         );
     } else {
         // Fire-and-forget message — reconstruct the value into THIS node's
@@ -259,6 +263,8 @@ pub(super) fn handle_inbound_ask(
     conn_mgr: SendConnMgr,
     shutdown_started: Arc<AtomicBool>,
     caller: crate::actor_caller::HewCallerStamp,
+    publication: u64,
+    deadline: crate::request_deadline::RequestDeadline,
 ) {
     // Hold a router before it acquires the manager's publication barrier.
     #[cfg(test)]
@@ -299,6 +305,10 @@ pub(super) fn handle_inbound_ask(
             shutdown_started.as_ref(),
         );
     };
+    if deadline.expired() {
+        reject(AskError::Timeout);
+        return;
+    }
     // A dead target (never spawned, or already freed) has no dispatch pointer
     // tracked at all: that is an ActorStopped fact (folds to the public
     // `ActorError.Dead`, matching the local ask route, D526), never a decode
@@ -347,6 +357,8 @@ pub(super) fn handle_inbound_ask(
         conn_mgr,
         Arc::clone(&shutdown_started),
         guard,
+        publication,
+        deadline,
     );
     if let Err(reason) = pending.admit(target, call, gate.as_ref()) {
         if reason != AskError::LocalShutdown {
@@ -407,6 +419,7 @@ pub(super) fn send_rejection_reply(
                 reason_payload.as_ptr(),
                 reason_payload.len(),
                 request_id,
+                None,
             )
         } {
             Ok(bytes) => bytes,
@@ -478,6 +491,7 @@ pub(super) fn send_reply_envelope(
                 reply_data.as_ptr(),
                 reply_data.len(),
                 request_id,
+                None,
             )
         } {
             Ok(bytes) => bytes,

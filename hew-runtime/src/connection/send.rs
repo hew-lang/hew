@@ -24,12 +24,20 @@ pub(crate) struct SendClaim<'a> {
     route_slot: u16,
     session_incarnation: u32,
     _guard: ReaderLifecycleGuard,
+    pub(crate) publication_token: u64,
     publication_removed: Arc<std::sync::atomic::AtomicBool>,
     channel: Arc<ChannelProtection>,
 }
 
 impl SendClaim<'_> {
     pub(crate) fn send(&self, frame: &[u8]) -> c_int {
+        self.send_prepared(|| Some(frame))
+    }
+
+    pub(crate) fn send_prepared<B: AsRef<[u8]>>(
+        &self,
+        prepare: impl FnOnce() -> Option<B>,
+    ) -> c_int {
         if self.publication_removed.load(Ordering::Acquire) {
             return -1;
         }
@@ -37,7 +45,7 @@ impl SendClaim<'_> {
         // prevents this exact connection slot from being removed or reused.
         match unsafe {
             self.channel
-                .send(self.manager.transport, self.conn_id, frame)
+                .send_prepared(self.manager.transport, self.conn_id, prepare)
         } {
             Ok(()) => 0,
             Err(error) => {
@@ -70,6 +78,7 @@ fn claim_send(
                 route_slot: connection.peer_node_id,
                 session_incarnation: connection.peer_session_incarnation,
                 _guard: connection.claimed_send_lifecycle.register(),
+                publication_token: connection.publication_token,
                 publication_removed: Arc::clone(&connection.publication_removed),
                 channel: Arc::clone(&connection.channel),
             },

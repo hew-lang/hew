@@ -90,14 +90,13 @@ pub const CONN_STATE_CLOSED: i32 = 3;
 
 const HEW_HANDSHAKE_SIZE: usize = 72;
 const HEW_HANDSHAKE_MAGIC: [u8; 4] = *b"HEW\x02";
-const HEW_PROTOCOL_VERSION: u16 = 3;
 // Every node advertises Noise; a TCP peer whose record lacks this bit is a
 // plaintext peer and is refused (`ChannelRefusal::PlaintextPeer`).
 const HEW_FEATURE_SUPPORTS_ENCRYPTION: u32 = 1 << 0;
 const HEW_FEATURE_SUPPORTS_GOSSIP: u32 = 1 << 1;
 // Bit 2 (HEW_FEATURE_SUPPORTS_REMOTE_SPAWN) is reserved; not advertised until a
 // bootstrap-based remote-spawn path is implemented.
-// Bit 3 was the v2 ask-rejection capability; v3 replies always carry status.
+// Bit 3 was the v2 ask-rejection capability; replies now always carry status.
 const MAX_REGISTRY_GOSSIP_FLUSH_EVENTS: usize = 64;
 
 /// Ceiling on retry ATTEMPTS for a parked registry-gossip flush (finding:
@@ -508,6 +507,8 @@ type InboundRouter = unsafe extern "C" fn(
     u16,
     *mut HewConnMgr,
     crate::node_identity::HewNodeId,
+    u64, // authenticated connection publication
+    i64, // absolute local request deadline, -1 when absent
 );
 
 // SAFETY: HewConnMgr is only accessed through C ABI functions that

@@ -14037,7 +14037,7 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_remote_call_new( *const HewRemotePid, *const c_void, i32, *mut c_void, usize, usize, u64, *const HewWaker, ) -> *mut HewRemoteCall"
+        "native": "fn hew_remote_call_new( *const HewRemotePid, *const c_void, i32, *mut c_void, usize, usize, u64, i64, *const HewWaker, ) -> *mut HewRemoteCall"
       },
       "symbol": "hew_remote_call_new"
     },

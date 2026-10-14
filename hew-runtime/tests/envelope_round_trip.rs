@@ -205,6 +205,7 @@ fn envelope_frame(
         message,
         payload,
         request_id: 0,
+        budget_ns: None,
     }
 }
 
@@ -224,8 +225,8 @@ fn cddl_envelope_shape(frame: &EnvelopeFrame) {
     let bytes = encode_envelope_frame(frame).expect("envelope should encode");
     let value = decode_value(&bytes);
     let entries = map_entries(&value);
-    assert_eq!(entries.len(), 7);
-    assert_integer_keys_and_order(entries, &[1, 2, 3, 4, 5, 6, 7]);
+    assert_eq!(entries.len(), 8);
+    assert_integer_keys_and_order(entries, &[1, 2, 3, 4, 5, 6, 7, 8]);
     assert_integer_value(find_field(entries, 1), i128::from(WIRE_VERSION));
     assert_integer_value(find_field(entries, 2), i128::from(FRAME_TYPE_ENVELOPE));
     assert_optional_location_value(find_field(entries, 3), frame.target);
@@ -236,9 +237,14 @@ fn cddl_envelope_shape(frame: &EnvelopeFrame) {
         }
         EnvelopeMessage::Reply => assert_integer_value(find_field(entries, 5), 0),
         EnvelopeMessage::Rejected => assert_integer_value(find_field(entries, 5), 1),
+        EnvelopeMessage::Withdraw => assert_integer_value(find_field(entries, 5), 2),
     }
     assert_bytes_value(find_field(entries, 6), &frame.payload);
     assert_integer_value(find_field(entries, 7), i128::from(frame.request_id));
+    match frame.budget_ns {
+        Some(budget) => assert_integer_value(find_field(entries, 8), i128::from(budget)),
+        None => assert_eq!(find_field(entries, 8), &Value::Null),
+    }
 }
 
 fn payload(size: usize) -> Vec<u8> {
@@ -274,6 +280,7 @@ fn well_formed_envelope_value_with_frame_type(frame_type: Value) -> Value {
         (int(5u64), Value::Text("tests.Actor.handle".into())),
         (int(6u64), Value::Bytes(vec![])),
         (int(7u64), int(0u64)),
+        (int(8u64), Value::Null),
     ])
 }
 
@@ -343,6 +350,7 @@ fn envelope_frame_with_request_id_round_trips() {
         message: handler(),
         payload: b"hello".to_vec(),
         request_id: 99,
+        budget_ns: None,
     };
 
     let bytes = to_cbor(&original);
@@ -380,6 +388,7 @@ fn envelope_frame_max_field_values_round_trips() {
         message: handler(),
         payload: vec![0xFF; 16],
         request_id: u64::MAX,
+        budget_ns: None,
     };
 
     let bytes = to_cbor(&original);
@@ -554,6 +563,7 @@ fn envelope_frame_serialises_to_cddl_shape() {
         message: handler(),
         payload: vec![0xaa, 0xbb],
         request_id: 30,
+        budget_ns: None,
     });
 }
 
@@ -596,6 +606,7 @@ fn public_encoder_preserves_integer_width_boundaries() {
             message: handler(),
             payload: vec![],
             request_id,
+            budget_ns: None,
         };
         cddl_envelope_shape(&frame);
         assert_eq!(
@@ -624,12 +635,87 @@ fn public_encoder_preserves_integer_width_boundaries() {
 }
 
 #[test]
+fn request_budgets_and_withdrawals_are_bounded_and_kind_checked() {
+    let request = EnvelopeFrame {
+        request_id: 42,
+        ..minimal_envelope()
+    };
+    for budget_ns in [None, Some(0), Some(1), Some(i64::MAX.cast_unsigned())] {
+        let frame = EnvelopeFrame {
+            budget_ns,
+            ..request.clone()
+        };
+        cddl_envelope_shape(&frame);
+        assert_eq!(
+            decode_envelope_frame(&encode_envelope_frame(&frame).unwrap()).unwrap(),
+            frame
+        );
+    }
+    let withdrawal = EnvelopeFrame {
+        message: EnvelopeMessage::Withdraw,
+        ..request.clone()
+    };
+    cddl_envelope_shape(&withdrawal);
+    assert_eq!(
+        decode_envelope_frame(&encode_envelope_frame(&withdrawal).unwrap()).unwrap(),
+        withdrawal
+    );
+    for invalid in [
+        EnvelopeFrame {
+            budget_ns: Some(u64::MAX),
+            ..request.clone()
+        },
+        EnvelopeFrame {
+            budget_ns: Some(1),
+            request_id: 0,
+            ..request.clone()
+        },
+        EnvelopeFrame {
+            budget_ns: Some(1),
+            ..withdrawal.clone()
+        },
+        EnvelopeFrame {
+            payload: vec![1],
+            ..withdrawal.clone()
+        },
+        EnvelopeFrame {
+            source: request.target,
+            ..withdrawal.clone()
+        },
+        EnvelopeFrame {
+            target: None,
+            ..withdrawal.clone()
+        },
+        EnvelopeFrame {
+            request_id: 0,
+            ..withdrawal
+        },
+    ] {
+        assert!(encode_envelope_frame(&invalid).is_err());
+        assert!(decode_envelope_frame(&to_cbor(&invalid)).is_err());
+    }
+    for budget in [Value::Text("1".into()), int(-1i64), Value::Bool(false)] {
+        let mut value = decode_value(&to_cbor(&request));
+        let Value::Map(fields) = &mut value else {
+            unreachable!()
+        };
+        fields
+            .iter_mut()
+            .find(|(key, _)| *key == int(8u64))
+            .unwrap()
+            .1 = budget;
+        assert!(decode_envelope_frame(&value_to_cbor(&value)).is_err());
+    }
+}
+
+#[test]
 fn reply_status_round_trips_outside_handler_namespace() {
     for message in [EnvelopeMessage::Reply, EnvelopeMessage::Rejected] {
         let frame = EnvelopeFrame {
             target: None,
             source: None,
             request_id: 1,
+            budget_ns: None,
             message,
             ..minimal_envelope()
         };
@@ -657,6 +743,7 @@ fn encoded_frames_match_cddl_structural_rules() {
         message: handler(),
         payload: payload(256),
         request_id: u64::MAX,
+        budget_ns: None,
     });
 }
 
@@ -690,19 +777,20 @@ fn same_envelope_produces_same_bytes() {
     // 3=>ctrl_kind, 4=>empty bstr.
     assert_eq!(
         to_cbor(&minimal_control()),
-        vec![0xa4, 0x01, 0x03, 0x02, 0x00, 0x03, 0x00, 0x04, 0x40]
+        vec![0xa4, 0x01, 0x04, 0x02, 0x00, 0x03, 0x00, 0x04, 0x40]
     );
 
-    // a7 map(7), then k/v pairs: 1=>version, 2=>frame_type,
+    // a8 map(8), then k/v pairs: 1=>version, 2=>frame_type,
     // 3=>target location, 4=>nil source, 5=>handler identity, 6=>empty bstr,
-    // 7=>request_id.
+    // 7=>request_id, 8=>nil budget.
     assert_eq!(
         encode_envelope_frame(&minimal_envelope()).unwrap(),
         vec![
-            0xa7, 0x01, 0x03, 0x02, 0x01, 0x03, 0xa3, 0x01, 0x50, 0x01, 0x01, 0x01, 0x01, 0x01,
+            0xa8, 0x01, 0x04, 0x02, 0x01, 0x03, 0xa3, 0x01, 0x50, 0x01, 0x01, 0x01, 0x01, 0x01,
             0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x02, 0x01, 0x03,
             0x01, 0x04, 0xf6, 0x05, 0x72, 0x74, 0x65, 0x73, 0x74, 0x73, 0x2e, 0x41, 0x63, 0x74,
-            0x6f, 0x72, 0x2e, 0x68, 0x61, 0x6e, 0x64, 0x6c, 0x65, 0x06, 0x40, 0x07, 0x00
+            0x6f, 0x72, 0x2e, 0x68, 0x61, 0x6e, 0x64, 0x6c, 0x65, 0x06, 0x40, 0x07, 0x00, 0x08,
+            0xf6
         ]
     );
 }
@@ -718,6 +806,7 @@ fn wrong_version_frame_is_rejected() {
         message: handler(),
         payload: vec![],
         request_id: 0,
+        budget_ns: None,
     };
     let bytes = to_cbor(&bogus);
 
@@ -851,6 +940,7 @@ fn decode_wire_frame_rejects_missing_and_duplicate_frame_type() {
         (int(5u64), Value::Text("tests.Actor.handle".into())),
         (int(6u64), Value::Bytes(vec![])),
         (int(7u64), int(0u64)),
+        (int(8u64), Value::Null),
     ]);
     assert!(matches!(
         decode_wire_frame(&value_to_cbor(&missing)),
@@ -929,6 +1019,7 @@ fn array_payload_with_integer_keys_is_rejected() {
         (int(5u64), Value::Text("tests.Actor.handle".into())),
         (int(6u64), Value::Array(vec![int(0xaau8), int(0xbbu8)])),
         (int(7u64), int(0u64)),
+        (int(8u64), Value::Null),
     ]);
     assert!(matches!(
         decode_envelope_frame(&value_to_cbor(&array_payload)),
@@ -958,6 +1049,7 @@ fn envelope_location_fields_reject_malformed_shapes() {
             (int(5u64), Value::Text("tests.Actor.handle".into())),
             (int(6u64), Value::Bytes(vec![])),
             (int(7u64), int(0u64)),
+            (int(8u64), Value::Null),
         ]);
         assert!(matches!(
             decode_envelope_frame(&value_to_cbor(&malformed)),
@@ -973,6 +1065,7 @@ fn envelope_location_fields_reject_malformed_shapes() {
         (int(5u64), Value::Text("tests.Actor.handle".into())),
         (int(6u64), Value::Bytes(vec![])),
         (int(7u64), int(0u64)),
+        (int(8u64), Value::Null),
     ]);
     assert!(matches!(
         decode_envelope_frame(&value_to_cbor(&malformed_source)),

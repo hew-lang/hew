@@ -920,6 +920,7 @@ fn shared_native_manifests_execute_with_matching_results() {
         "resource-close-actor-generator",
         "resource-receiver-fallible-argument",
         "actor-reference-identity",
+        "actor-call-deadline-budget",
         "generator-callable-view",
     ] {
         assert_native_manifest(name);

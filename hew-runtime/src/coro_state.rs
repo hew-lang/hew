@@ -294,10 +294,9 @@ pub unsafe extern "C" fn hew_coro_state_token(
 pub unsafe extern "C" fn hew_coro_state_request_deadline(state: *const HewCoroState) -> i64 {
     // SAFETY: the caller retains the state and its token ancestry.
     let state = unsafe { &*state };
-    state
-        .request_deadline
-        .earlier(unsafe { crate::cancel_token::token_deadline(state.token) })
-        .raw()
+    // SAFETY: the invocation retains the active lexical token and its ancestry.
+    let lexical = unsafe { crate::cancel_token::token_deadline(state.token) };
+    state.request_deadline.earlier(lexical).raw()
 }
 
 /// Enter a lexical cancellation boundary for this invocation's operations.

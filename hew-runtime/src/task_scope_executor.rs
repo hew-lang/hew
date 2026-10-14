@@ -120,7 +120,9 @@ impl Driver {
                 };
                 match invocation {
                     CheckedTaskInvocation::Callable(callable) => {
-                        self.frame = ((*callable.descriptor).invoke_once)(
+                        self.frame = ((*callable.descriptor)
+                            .invoke_once
+                            .unwrap_or_else(|| std::process::abort()))(
                             callable.environment,
                             ptr::null(),
                             result,

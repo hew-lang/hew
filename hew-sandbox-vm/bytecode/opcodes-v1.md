@@ -134,12 +134,16 @@ extension and saturation semantics apply.
 
 ## Callables
 
-| Opcode            | `dst`                | Fields              |
-| ----------------- | -------------------- | ------------------- |
-| `function.make`   | the function value   | `callable`          |
-| `closure.make`    | the closure          | `closure`, `fields` |
-| `callable.coerce` | the coerced callable | `source`            |
-| `dyn.make`        | the trait object     | `vtable`, `value`   |
+| Opcode            | `dst`                | Fields                     |
+| ----------------- | -------------------- | -------------------------- |
+| `function.make`   | the function value   | `callable`                 |
+| `closure.make`    | the closure          | `closure`, `fields`        |
+| `callable.coerce` | the coerced callable | `source`, `specialization` |
+| `dyn.make`        | the trait object     | `vtable`, `value`          |
+
+`specialization` is `null` for an ordinary callable or a package-local entry
+id for a generic callable. A coercion selects that entry on the existing
+owned environment; an indirect call uses the selected entry's signature.
 
 ## Defer
 
@@ -183,7 +187,7 @@ unwind successor.
 | Opcode          | Fields                                                                                       |
 | --------------- | -------------------------------------------------------------------------------------------- |
 | `call`          | `callee` (function id), `args`, `result`, `normal`, `unwind`                                 |
-| `indirect.call` | `callee` (boundary operand), `args`, `result`, `normal`, `unwind`                            |
+| `indirect.call` | `callee` (boundary operand), `specialization`, `args`, `result`, `normal`, `unwind`          |
 | `dyn.call`      | `receiver`, `slot`, `args`, `result`, `normal`, `unwind`                                     |
 | `value.call`    | `capability`, `args`, `result`, `normal`, `unwind`                                           |
 | `runtime.call`  | `family` (index into `runtime_families`), `args`, `result`, `normal`, `unwind`               |

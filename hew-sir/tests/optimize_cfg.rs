@@ -84,6 +84,7 @@ fn module(function: SemFunction) -> SemModule {
         supervisors: Vec::new(),
         resources: BTreeMap::new(),
         closures: Vec::new(),
+        callable_specializations: Vec::new(),
         vtables: Vec::new(),
         value_capabilities: BTreeMap::new(),
         structural_display: BTreeMap::new(),

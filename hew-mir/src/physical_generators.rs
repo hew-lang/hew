@@ -154,7 +154,12 @@ pub(super) fn verify_suspend(
             let producer = module
                 .closures
                 .iter()
-                .find(|producer| producer.body == function.callable)
+                .find(|producer| {
+                    producer
+                        .entries
+                        .iter()
+                        .any(|entry| entry.body == function.callable)
+                })
                 .ok_or_else(|| PhysicalError::new("yield has no producer body"))?;
             if producer.generator_yield.as_ref() != Some(&storage(function, *value)?.ty) {
                 return Err(PhysicalError::new("yield changes its producer output type"));

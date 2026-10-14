@@ -3459,9 +3459,41 @@ fn main() {
 }
 ```
 
-**Generic lambda constraints:**
+**Generic closures:**
 
-> **Not yet implemented.** Type-parameterized closures (`<T: Bound>(params) => body`) are rejected by the compiler: `E_CLOSURE_PIPE_SYNTAX: '<T>(params) => body' has been removed; type-parameterized closures are not supported`. Lambdas infer their parameter types from calling context; explicit generic parameters on a lambda literal are not available in this edition.
+A closure declares type parameters immediately after its opening pipe. Bounds
+use the same syntax as named functions. A quantified function type places the
+same binders after any callable qualifiers and before its parameter list:
+
+```hew
+fn make_identity() -> fn<T>(T) -> T {
+    |<T> value: T| -> T { value }
+}
+
+fn main() {
+    let identity = make_identity();
+    assert(identity(41) == 41);
+    assert(identity<string>("hello") == "hello");
+    let equal = |<T: Eq> left: T, right: T| -> bool { left == right };
+    assert(equal(7, 7));
+    let pair: fn[clone]<T, U>(T, U) -> (T, U) =
+        |<T, U> first: T, second: U| -> (T, U) { (first, second) };
+    assert(pair(1, "one") == (1, "one"));
+}
+```
+
+Each call chooses concrete type arguments, either from its arguments or from
+an explicit list such as `identity<string>(...)`. A quantified value can be
+stored, passed and returned without fixing those arguments in advance. Its
+body must be valid under the declared bounds.
+
+Capture prefixes stay before the opening pipe:
+`move capture(var count) |<T> value: T| -> T { ... }`. Type instantiation
+preserves the closure's captured state and invocation capabilities: calling a
+mutable generic closure requires a mutable callable place, and calling a
+`fn[once]<T>(T) -> T` consumes that value across all type instantiations.
+Ordinary closures continue to infer parameter types from context. The retired
+`<T>(params) => body` spelling remains invalid.
 
 **Ambiguous cases require annotations:**
 
@@ -7496,7 +7528,7 @@ The `events { ... }`, `emits { ... }` and `default { ... }` blocks take no
 extra terminator. Supervisor child clauses such as `restart:` and
 `stop:` remain parts of one child member, which ends with `;`.
 
-**Implementation note:** pipe closures lower through `Expr::Lambda`; captured closure environment records are the current substrate direction. Generic `<T>(...) => ...` is not a valid source syntax; type-parameterized lambdas are not supported in this edition (see §3.8.6).
+Type-parameterized closures use `|<T: Bound> value: T| -> R { body }`, and quantified function types use `fn[qualifiers]<T: Bound>(T) -> R` (see §3.8.6). The retired `<T>(params) => body` spelling remains invalid.
 
 ### Keywords
 

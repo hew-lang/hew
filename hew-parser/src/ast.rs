@@ -830,6 +830,8 @@ pub enum TypeExpr {
     Slice(Box<Spanned<TypeExpr>>),
     Function {
         capabilities: CallableCapabilities,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        type_params: Option<Vec<TypeParam>>,
         params: Vec<Spanned<TypeExpr>>,
         return_type: Box<Spanned<TypeExpr>>,
     },

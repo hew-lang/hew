@@ -537,6 +537,9 @@ pub(super) fn collect_call_sites_in_expr(
         HirExprKind::CancellationTokenIsCancelled { receiver }
         | HirExprKind::GeneratorNext { receiver, .. }
         | HirExprKind::RecordCloneCall { src: receiver, .. }
+        | HirExprKind::CallableSpecialize {
+            source: receiver, ..
+        }
         | HirExprKind::SubsumedValue {
             source: receiver, ..
         } => {

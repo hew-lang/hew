@@ -79,6 +79,7 @@ impl Checker {
             | Ty::Unit
             | Ty::Never
             | Ty::Var(_)
+            | Ty::GenericCallable { .. }
             | Ty::Function { .. }
             | Ty::Closure { .. }
             | Ty::Pointer { .. }

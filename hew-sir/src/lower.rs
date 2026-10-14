@@ -559,6 +559,9 @@ struct InstanceService<'a> {
     synthetic_sources: HashMap<CallableId, (HirFn, TypeSubstitution)>,
     closures_by_instance: HashMap<crate::ClosureInstanceKey, crate::ClosureId>,
     closure_sources: Vec<(Box<HirExpr>, TypeSubstitution)>,
+    callable_specializations: Vec<Vec<ResolvedTy>>,
+    callable_demands: BTreeMap<ResolvedTy, BTreeSet<crate::CallableSpecializationId>>,
+    callable_coercions: BTreeSet<(ResolvedTy, ResolvedTy)>,
     /// Dispatch tables demanded by the erasure sites this module lowered.
     vtables: Vec<crate::SemVtable>,
     vtables_by_erasure: HashMap<(ResolvedTy, ResolvedTy), crate::SemVtableId>,
@@ -1522,6 +1525,7 @@ fn is_initial_call_value(ty: &ResolvedTy) -> bool {
                 | ResolvedTy::Task(_)
                 | ResolvedTy::Bytes
                 | ResolvedTy::Array(_, _)
+                | ResolvedTy::GenericCallable { .. }
                 | ResolvedTy::Function { .. }
                 | ResolvedTy::Closure { .. }
                 | ResolvedTy::TraitObject { .. }
@@ -1809,6 +1813,7 @@ enum PreparedCallee {
     },
     Indirect {
         receiver: crate::BoundaryOperand,
+        specialization: Option<crate::CallableSpecializationId>,
         site: hew_hir::SiteId,
     },
     Dyn {
@@ -1854,10 +1859,13 @@ impl PreparedCallee {
                 handback,
             },
             Self::Indirect {
-                receiver: callee, ..
+                receiver: callee,
+                specialization,
+                ..
             } => SemTerminator::IndirectCall {
                 id,
                 targets: crate::CallableTargets::default(),
+                specialization,
                 callee,
                 signature,
                 args,

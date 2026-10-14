@@ -476,7 +476,9 @@ fn unmarshallable_extern_ty(ty: &Ty) -> Option<&'static str> {
     match ty {
         Ty::Tuple(_) => Some("is a tuple"),
         Ty::Array(..) | Ty::Slice(_) => Some("is an array or slice"),
-        Ty::Function { .. } | Ty::Closure { .. } => Some("is a callable value"),
+        Ty::GenericCallable { .. } | Ty::Function { .. } | Ty::Closure { .. } => {
+            Some("is a callable value")
+        }
         Ty::TraitObject { .. } => Some("is a trait object"),
         _ => None,
     }

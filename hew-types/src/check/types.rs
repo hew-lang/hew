@@ -762,6 +762,8 @@ pub struct TypeCheckOutput {
     /// Inferred type arguments for generic function calls that lack explicit
     /// type annotations.  Keyed by the call expression's span.
     pub call_type_args: HashMap<SpanKey, Vec<Ty>>,
+    /// Concrete invocation views selected when quantified values meet monomorphic types.
+    pub callable_value_specializations: HashMap<SpanKey, Vec<ResolvedTy>>,
     /// Per-concrete-element `Vec<T>` runtime-ABI verdict for the
     /// monomorphisation re-resolution of element-typed methods under a type
     /// parameter (#1929 Stage 1).
@@ -2917,12 +2919,6 @@ pub struct ReceiverObligation {
     pub bound: TraitRef,
 }
 
-#[derive(Debug, Clone)]
-pub(super) struct GenericLambdaSig {
-    pub(super) call_sig: FnSig,
-    pub(super) type_vars: Vec<TypeVar>,
-}
-
 impl Default for FnSig {
     fn default() -> Self {
         Self {
@@ -4184,6 +4180,7 @@ pub struct Checker {
     /// Inferred type arguments for generic function calls that omit explicit
     /// type annotations.  Populated in `check_call` after argument unification.
     pub(super) call_type_args: HashMap<SpanKey, Vec<Ty>>,
+    pub(super) callable_value_specializations: HashMap<SpanKey, Vec<Ty>>,
     /// Inferred or explicit type arguments for record / enum-struct-variant
     /// initialiser sites on user-defined generic types. Populated by
     /// `record_concrete_record_init_type_args` at each emission site.
@@ -4201,14 +4198,6 @@ pub struct Checker {
     pub(super) deferred_bound_checks: Vec<DeferredBoundCheck>,
     /// Wire facade calls awaiting a settled value type.
     pub(super) deferred_wire_codecs: Vec<DeferredWireCodec>,
-    /// Maps a let-binding's definition span to the generic lambda call
-    /// signature captured when that binding was type-checked. Used to freshen
-    /// type variables per call site and populate `call_type_args`.
-    pub(super) lambda_poly_sig_map: HashMap<SpanKey, GenericLambdaSig>,
-    /// Scratch field: set by `check_lambda` when it processes a generic lambda
-    /// (one with non-empty `type_params`). Consumed immediately in the
-    /// enclosing `Stmt::Let` handler to populate `lambda_poly_sig_map`.
-    pub(super) last_lambda_generic_sig: Option<GenericLambdaSig>,
     /// Range bounds whose element type is deferred until surrounding inference
     /// settles. Each entry is:
     ///   (outer-span, element-TypeVar, literal-value-if-any, inner-operand-span-if-negated,
@@ -4670,12 +4659,11 @@ impl Checker {
             const_values: HashMap::new(),
             source_constants: HashMap::new(),
             call_type_args: HashMap::new(),
+            callable_value_specializations: HashMap::new(),
             record_init_type_args: HashMap::new(),
             builtin_result_output_type_args: HashMap::new(),
             deferred_bound_checks: Vec::new(),
             deferred_wire_codecs: Vec::new(),
-            lambda_poly_sig_map: HashMap::new(),
-            last_lambda_generic_sig: None,
             deferred_range_bounds: Vec::new(),
             literal_binding_value_spans: HashMap::new(),
             intrinsic_declarations: HashMap::new(),

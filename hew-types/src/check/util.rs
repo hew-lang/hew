@@ -6,6 +6,23 @@ use super::*;
 
 pub(super) fn collect_unresolved_inference_vars(ty: &Ty, vars: &mut HashSet<TypeVar>) {
     match ty {
+        Ty::GenericCallable {
+            parameters,
+            callable,
+        } => {
+            collect_unresolved_inference_vars(callable, vars);
+            for parameter in parameters {
+                for bound in &parameter.bounds {
+                    for ty in bound
+                        .args
+                        .iter()
+                        .chain(bound.assoc_bindings.iter().map(|(_, ty)| ty))
+                    {
+                        collect_unresolved_inference_vars(ty, vars);
+                    }
+                }
+            }
+        }
         Ty::Var(var) => {
             vars.insert(*var);
         }

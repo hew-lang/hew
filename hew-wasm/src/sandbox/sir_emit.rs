@@ -148,8 +148,14 @@ pub struct VariantCase {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Closure {
     pub id: u32,
-    pub body: u32,
+    pub entries: Vec<ClosureEntry>,
     pub fields: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ClosureEntry {
+    pub body: u32,
+    pub specialization: Option<u32>,
 }
 
 /// One demanded actor: its state seats, its lifecycle callables and the
@@ -740,7 +746,16 @@ impl<'m> Walker<'m> {
                 .map(|closure| {
                     Ok(Closure {
                         id: closure.id.0,
-                        body: self.function_id(closure.body)?,
+                        entries: closure
+                            .entries
+                            .iter()
+                            .map(|entry| {
+                                Ok(ClosureEntry {
+                                    body: self.function_id(entry.body)?,
+                                    specialization: entry.specialization.map(|id| id.0),
+                                })
+                            })
+                            .collect::<Result<Vec<_>, EmitError>>()?,
                         fields: table_index(closure.fields.len()),
                     })
                 })
@@ -1427,9 +1442,13 @@ impl<'m> Walker<'m> {
                 "op": "move",
                 "source": operand(source),
             }),
-            SemOpKind::CallableCoerce { source } => serde_json::json!({
+            SemOpKind::CallableCoerce {
+                source,
+                specialization,
+            } => serde_json::json!({
                 "op": "callable.coerce",
                 "source": operand(source),
+                "specialization": specialization.map(|id| id.0),
             }),
             SemOpKind::DynMake { vtable, value } => serde_json::json!({
                 "op": "dyn.make",
@@ -1584,6 +1603,7 @@ impl<'m> Walker<'m> {
             }
             SemTerminator::IndirectCall {
                 callee,
+                specialization,
                 args,
                 result,
                 normal,
@@ -1592,6 +1612,7 @@ impl<'m> Walker<'m> {
             } => serde_json::json!({
                 "op": "indirect.call",
                 "callee": boundary(callee),
+                "specialization": specialization.map(|id| id.0),
                 "args": boundaries(args),
                 "result": call_result(result),
                 "normal": normal.as_ref().map(encode_edge),

@@ -85,7 +85,8 @@ fn visit_expr<'a>(expr: &'a HirExpr, out: &mut Vec<&'a HirExpr>) {
         HirExprKind::Unary { operand, .. } | HirExprKind::WireCodec { operand, .. } => {
             visit_expr(operand, out);
         }
-        HirExprKind::SubsumedValue { source, .. } => visit_expr(source, out),
+        HirExprKind::CallableSpecialize { source, .. }
+        | HirExprKind::SubsumedValue { source, .. } => visit_expr(source, out),
         HirExprKind::TaskRace {
             members: elements, ..
         }

@@ -119,6 +119,7 @@ impl LowerCtx {
             owning_take_vec_cursors: tc_output.owning_take_vec_cursors.clone(),
             borrowed_element_option_reads: tc_output.borrowed_element_option_reads.clone(),
             call_type_args: tc_output.call_type_args.clone(),
+            callable_value_specializations: tc_output.callable_value_specializations.clone(),
             assign_target_kinds: tc_output.assign_target_kinds.clone(),
             checked_indexed_place_operations: tc_output.indexed_place_operations.clone(),
             indexed_place_operations: HashMap::new(),
@@ -554,6 +555,7 @@ impl LowerCtx {
     pub(super) fn source_site(&mut self, span: &Span) -> SiteId {
         let site = self.ids.site();
         self.checked_sites.insert(site, self.mk_key(span));
+        self.record_call_type_args(span, site);
         site
     }
 

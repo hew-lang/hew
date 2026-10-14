@@ -61,12 +61,16 @@ pub struct HewCallableDescriptor {
     /// Borrowed adapter, if supported. Its presence does not grant permission:
     /// SIR decides whether each read or mutable invocation is legal.
     pub invoke_borrow: Option<HewCallableInvoke>,
-    /// Consuming adapter, always present, including for empty functions.
-    pub invoke_once: HewCallableInvoke,
+    /// Consuming adapter for a concrete invocation entry.
+    /// Quantified family descriptors select an entry before invocation.
+    pub invoke_once: Option<HewCallableInvoke>,
     /// Borrowed entry when physical body completion is synchronous.
     pub invoke_borrow_sync: Option<HewCallableInvokeSync>,
     /// Consuming entry when body and receiver cleanup are synchronous.
     pub invoke_once_sync: Option<HewCallableInvokeSync>,
+    /// Compiler-indexed concrete entries sharing this environment layout.
+    /// Null on a monomorphic entry; family table indices are checked by SIR.
+    pub specializations: *const *const HewCallableDescriptor,
 }
 
 /// One owning callable value, passed by address to the runtime helpers.
@@ -100,7 +104,8 @@ const _: () = {
     assert!(core::mem::offset_of!(HewCallableDescriptor, invoke_once) == 16);
     assert!(core::mem::offset_of!(HewCallableDescriptor, invoke_borrow_sync) == 24);
     assert!(core::mem::offset_of!(HewCallableDescriptor, invoke_once_sync) == 32);
-    assert!(size_of::<HewCallableDescriptor>() == 40);
+    assert!(core::mem::offset_of!(HewCallableDescriptor, specializations) == 40);
+    assert!(size_of::<HewCallableDescriptor>() == 48);
     assert!(align_of::<HewCallableDescriptor>() == 8);
 };
 
@@ -115,7 +120,8 @@ const _: () = {
     assert!(core::mem::offset_of!(HewCallableDescriptor, invoke_once) == 8);
     assert!(core::mem::offset_of!(HewCallableDescriptor, invoke_borrow_sync) == 12);
     assert!(core::mem::offset_of!(HewCallableDescriptor, invoke_once_sync) == 16);
-    assert!(size_of::<HewCallableDescriptor>() == 20);
+    assert!(core::mem::offset_of!(HewCallableDescriptor, specializations) == 20);
+    assert!(size_of::<HewCallableDescriptor>() == 24);
     assert!(align_of::<HewCallableDescriptor>() == 4);
 };
 

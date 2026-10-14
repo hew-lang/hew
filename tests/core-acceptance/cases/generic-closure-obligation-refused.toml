@@ -1,0 +1,14 @@
+[[case]]
+id = "generic-closure-obligation-refused"
+intent = "Returning a closure through a quantified function type preserves its body obligations at the eventual concrete application."
+source = "cases/generic-closure-obligation-refused.hew"
+kind = "check"
+timeout_seconds = 15
+suites = ["acceptance"]
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "InvalidOperation"
+line = 7
+column = 19
+message = "requires Eq for `T`"

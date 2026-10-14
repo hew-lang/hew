@@ -292,13 +292,22 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["id", "body", "fields"],
+        "required": ["id", "entries", "fields"],
         "properties": {
           "id": {
             "$ref": "#/$defs/id"
           },
-          "body": {
-            "$ref": "#/$defs/id"
+          "entries": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["body", "specialization"],
+              "properties": {
+                "body": { "$ref": "#/$defs/id" },
+                "specialization": { "$ref": "#/$defs/specialization" }
+              }
+            }
           },
           "fields": {
             "type": "integer",
@@ -357,6 +366,9 @@
     }
   },
   "$defs": {
+    "specialization": {
+      "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/id" }]
+    },
     "id": {
       "type": "integer",
       "minimum": 0
@@ -547,6 +559,28 @@
     "op": {
       "type": "object",
       "required": ["op"],
+      "allOf": [
+        {
+          "if": { "properties": { "op": { "const": "callable.coerce" } } },
+          "then": {
+            "properties": {
+              "specialization": { "$ref": "#/$defs/specialization" }
+            },
+            "required": ["specialization"]
+          }
+        }
+      ],
+      "allOf": [
+        {
+          "if": { "properties": { "op": { "const": "indirect.call" } } },
+          "then": {
+            "properties": {
+              "specialization": { "$ref": "#/$defs/specialization" }
+            },
+            "required": ["specialization"]
+          }
+        }
+      ],
       "properties": {
         "counter": { "type": "integer", "minimum": 0, "maximum": 4294967295 },
         "op": {

@@ -176,7 +176,8 @@ fn semantic_release_dependencies(
             continue;
         }
         match &ty {
-            ResolvedTy::Function { .. }
+            ResolvedTy::GenericCallable { .. }
+            | ResolvedTy::Function { .. }
             | ResolvedTy::Closure { .. }
             | ResolvedTy::TraitObject { .. } => intrinsic = true,
             ResolvedTy::Tuple(fields) => pending.extend(fields.iter().cloned()),

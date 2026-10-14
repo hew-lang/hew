@@ -30,6 +30,7 @@
 use std::collections::HashMap;
 use std::ops::Range;
 
+pub use hew_types::substitute_type_params;
 use hew_types::{DefId, ResolvedTy};
 
 use crate::ids::ItemId;
@@ -539,130 +540,6 @@ impl RecordLayoutRegistry {
 
     pub(crate) fn into_vec(self) -> Vec<RecordLayout> {
         self.order
-    }
-}
-
-/// Substitute generic type-parameter symbols inside `ty` with the
-/// concrete `args`. Parameters are matched by name against `params`; the
-/// resolved argument at the corresponding index replaces every
-/// `ResolvedTy::Named { name, args: [] }` whose name appears in
-/// `params`.
-///
-/// Recursion descends into compound types so nested occurrences are also
-/// substituted (e.g. `Box<T>`'s field type `Vec<T>` substitutes to
-/// `Vec<i64>` when `T = i64`).
-///
-/// The traversal is a pure rewrite — it does not touch the registry. The
-/// caller is responsible for detecting recursive polymorphic
-/// instantiations after substitution.
-#[must_use]
-pub fn substitute_type_params(
-    ty: &ResolvedTy,
-    params: &[hew_types::ParamHead],
-    args: &[ResolvedTy],
-) -> ResolvedTy {
-    debug_assert_eq!(
-        params.len(),
-        args.len(),
-        "param/arg arity mismatch — caller must validate before substituting"
-    );
-    match ty {
-        // Structural type-parameter reference (e.g. the `T` in `Option<T>`
-        // once `ResolvedTy::from_ty_with_type_params` has resolved it) —
-        // substitute directly. This is the modern encoding for a bare
-        // parameter reference; `Named { args: [] }` below is the legacy
-        // encoding some callers still produce and is handled separately so
-        // both are substituted.
-        ResolvedTy::TypeParam { name } => {
-            if let Some(idx) = params.iter().position(|p| p == name) {
-                args[idx].clone()
-            } else {
-                ty.clone()
-            }
-        }
-        ResolvedTy::Named {
-            head,
-            args: named_args,
-            is_opaque,
-            ..
-        } => {
-            if let hew_types::TypeHead::Param(parameter) = head {
-                if named_args.is_empty() {
-                    if let Some(index) = params.iter().position(|candidate| candidate == parameter)
-                    {
-                        return args[index].clone();
-                    }
-                }
-            }
-            // Otherwise descend into the args so `Vec<T>` becomes `Vec<i64>`.
-            ResolvedTy::Named {
-                head: *head,
-                args: named_args
-                    .iter()
-                    .map(|a| substitute_type_params(a, params, args))
-                    .collect(),
-                is_opaque: *is_opaque,
-            }
-        }
-        ResolvedTy::Tuple(items) => ResolvedTy::Tuple(
-            items
-                .iter()
-                .map(|t| substitute_type_params(t, params, args))
-                .collect(),
-        ),
-        ResolvedTy::Array(elem, n) => {
-            ResolvedTy::Array(Box::new(substitute_type_params(elem, params, args)), *n)
-        }
-        ResolvedTy::Slice(elem) => {
-            ResolvedTy::Slice(Box::new(substitute_type_params(elem, params, args)))
-        }
-        ResolvedTy::Function {
-            capabilities,
-            params: fn_params,
-            ret,
-        } => ResolvedTy::Function {
-            capabilities: *capabilities,
-            params: fn_params
-                .iter()
-                .map(|p| substitute_type_params(p, params, args))
-                .collect(),
-            ret: Box::new(substitute_type_params(ret, params, args)),
-        },
-        ResolvedTy::Closure {
-            capabilities,
-            params: fn_params,
-            ret,
-            captures,
-        } => ResolvedTy::Closure {
-            capabilities: *capabilities,
-            params: fn_params
-                .iter()
-                .map(|p| substitute_type_params(p, params, args))
-                .collect(),
-            ret: Box::new(substitute_type_params(ret, params, args)),
-            captures: captures
-                .iter()
-                .map(|c| substitute_type_params(c, params, args))
-                .collect(),
-        },
-        ResolvedTy::Pointer {
-            is_mutable,
-            pointee,
-        } => ResolvedTy::Pointer {
-            is_mutable: *is_mutable,
-            pointee: Box::new(substitute_type_params(pointee, params, args)),
-        },
-        ResolvedTy::Borrow { pointee } => ResolvedTy::Borrow {
-            pointee: Box::new(substitute_type_params(pointee, params, args)),
-        },
-        ResolvedTy::Task(inner) => {
-            ResolvedTy::Task(Box::new(substitute_type_params(inner, params, args)))
-        }
-        // Primitives and trait objects: nothing to substitute. Trait
-        // objects are not exercised by user generic records in v0.5 —
-        // leave their args verbatim; methods on generic records will
-        // revisit this if needed.
-        _ => ty.clone(),
     }
 }
 

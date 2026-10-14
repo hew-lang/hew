@@ -78,7 +78,11 @@ pub fn lower_physical_module(
             let return_layout = if callable.signature.return_ty == ResolvedTy::Never
                 || (callable.signature.return_ty == ResolvedTy::Unit
                     && !module.closures.iter().any(|closure| {
-                        closure.body == callable.id && closure.generator_yield.is_some()
+                        closure
+                            .entries
+                            .iter()
+                            .any(|entry| entry.body == callable.id)
+                            && closure.generator_yield.is_some()
                     })) {
                 None
             } else {
@@ -248,13 +252,14 @@ pub fn lower_physical_module(
         supervisors: module.supervisors.clone(),
         resources,
         value_capabilities: capability::build(module, &ids)?,
+        callable_specializations: module.callable_specializations.clone(),
         closures: module
             .closures
             .iter()
             .map(|closure| PhysicalClosure {
                 generator_yield: closure.generator_yield.clone(),
                 id: closure.id,
-                body: closure.body,
+                entries: closure.entries.clone(),
                 ty: closure.ty.clone(),
             })
             .collect(),
@@ -552,7 +557,7 @@ pub(crate) fn build_glue(module: &SemModule) -> Result<PhysicalGlue, PhysicalErr
     let environment_glue = inventory
         .types()
         .filter_map(|ty| {
-            let captures = match ty {
+            let captures = match ty.callable_body() {
                 ResolvedTy::Closure { captures, .. } => captures.as_slice(),
                 ResolvedTy::Function { .. } => &[],
                 _ => return None,
@@ -630,7 +635,10 @@ pub(crate) fn clone_action_for_type(
             CloneAction::Encoding(encoding_format(ty).expect("checked encoding receiver"))
         }
         CloneKind::DeepCopy | CloneKind::FieldWise
-            if matches!(ty, ResolvedTy::Function { .. } | ResolvedTy::Closure { .. }) =>
+            if matches!(
+                ty.callable_body(),
+                ResolvedTy::Function { .. } | ResolvedTy::Closure { .. }
+            ) =>
         {
             CloneAction::Callable
         }
@@ -676,7 +684,9 @@ pub(crate) fn destroy_action_for_type(
     match ty {
         _ if ids.resources.contains_key(ty) => Some(DestroyAction::Resource(ids.resources[ty])),
         _ if encoding_format(ty).is_some() => encoding_format(ty).map(DestroyAction::Encoding),
-        ResolvedTy::Function { .. } | ResolvedTy::Closure { .. } => Some(DestroyAction::Callable),
+        ResolvedTy::GenericCallable { .. }
+        | ResolvedTy::Function { .. }
+        | ResolvedTy::Closure { .. } => Some(DestroyAction::Callable),
         ResolvedTy::TraitObject { .. } => Some(DestroyAction::TraitObject),
         ResolvedTy::String => Some(DestroyAction::StringRelease),
         ResolvedTy::Bytes => Some(DestroyAction::BytesRelease),
@@ -827,7 +837,7 @@ pub(crate) fn collect_inventory_type(
             return;
         }
     }
-    if let ResolvedTy::Closure { captures, .. } = ty {
+    if let ResolvedTy::Closure { captures, .. } = ty.callable_body() {
         for capture in captures {
             collect_inventory_type(module, inventory, capture);
         }

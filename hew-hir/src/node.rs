@@ -1873,6 +1873,11 @@ pub enum HirExprKind {
         clone_fn_sym: String,
         record_name: String,
     },
+    /// A checker-selected concrete invocation view over one generic environment.
+    CallableSpecialize {
+        source: Box<HirExpr>,
+        type_args: Vec<ResolvedTy>,
+    },
     /// Transparent source-expression wrapper retained by lowering rewrites.
     SubsumedValue {
         source: Box<HirExpr>,

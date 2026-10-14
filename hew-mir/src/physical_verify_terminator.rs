@@ -1401,6 +1401,7 @@ pub(crate) fn verify_terminator(
         PhysicalTerminator::IndirectCall {
             callee,
             targets,
+            specialization,
             signature,
             args,
             result,
@@ -1409,7 +1410,14 @@ pub(crate) fn verify_terminator(
             ..
         } => {
             callable::verify_indirect_call(
-                module, function, *callee, targets, signature, args, *result,
+                module,
+                function,
+                *callee,
+                targets,
+                *specialization,
+                signature,
+                args,
+                *result,
             )?;
             if normal.is_none() != (signature.return_ty == ResolvedTy::Never) {
                 return Err(PhysicalError::new(

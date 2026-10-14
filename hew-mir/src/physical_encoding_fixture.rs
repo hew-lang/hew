@@ -104,6 +104,7 @@ pub fn skeleton(params: Vec<ResolvedTy>, return_ty: ResolvedTy) -> sir::SemModul
         supervisors: Vec::new(),
         resources: BTreeMap::new(),
         closures: vec![],
+        callable_specializations: Vec::new(),
         vtables: vec![],
         value_capabilities: BTreeMap::new(),
         callables: vec![callable],

@@ -12,7 +12,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::builtin_type::BuiltinType;
-use crate::resolved_ty::ResolvedTy;
+use crate::resolved_ty::{substitute_type_params as substitute, ResolvedTy};
 use crate::type_facts::CloneKind;
 
 /// Ownership class of a value, per `ir-ladder.md` §1.1.
@@ -311,6 +311,17 @@ fn mentions_type_param(ty: &ResolvedTy, params: &[crate::ParamHead]) -> bool {
         return true;
     }
     match ty {
+        ResolvedTy::GenericCallable {
+            parameters,
+            callable,
+        } => {
+            let free: Vec<_> = params
+                .iter()
+                .copied()
+                .filter(|parameter| !parameters.iter().any(|bound| bound.parameter == *parameter))
+                .collect();
+            mentions_type_param(callable, &free)
+        }
         ResolvedTy::Tuple(elements) => elements
             .iter()
             .any(|element| mentions_type_param(element, params)),
@@ -381,6 +392,7 @@ fn collect_mentions(
             }
         }
         ResolvedTy::Array(element, _) => collect_mentions(element, decls, out),
+        ResolvedTy::GenericCallable { callable, .. } => collect_mentions(callable, decls, out),
         ResolvedTy::Closure { captures, .. } => {
             for capture in captures {
                 collect_mentions(capture, decls, out);
@@ -536,100 +548,6 @@ fn classify_all(
     tys.iter().map(|ty| classify(ty, decls, walk)).collect()
 }
 
-/// Substitute a declaration's own type parameters out of a member type.
-pub(crate) fn substitute(
-    ty: &ResolvedTy,
-    params: &[crate::ParamHead],
-    args: &[ResolvedTy],
-) -> ResolvedTy {
-    // A declaration's own parameter reaches here spelled either as an abstract
-    // `TypeParam` or, when the declaration was resolved without a type-parameter
-    // scope, as a zero-argument user `Named`. Both are the same parameter.
-    let parameter_name = match ty {
-        ResolvedTy::TypeParam { name } => Some(name),
-        ResolvedTy::Named {
-            head: crate::TypeHead::Param(param),
-            args,
-            ..
-        } if args.is_empty() => Some(param),
-        _ => None,
-    };
-    if let Some(index) =
-        parameter_name.and_then(|name| params.iter().position(|param| param == name))
-    {
-        if let Some(argument) = args.get(index) {
-            return argument.clone();
-        }
-    }
-    match ty {
-        ResolvedTy::Tuple(elements) => ResolvedTy::Tuple(
-            elements
-                .iter()
-                .map(|element| substitute(element, params, args))
-                .collect(),
-        ),
-        ResolvedTy::Array(element, len) => {
-            ResolvedTy::Array(Box::new(substitute(element, params, args)), *len)
-        }
-        ResolvedTy::Slice(element) => {
-            ResolvedTy::Slice(Box::new(substitute(element, params, args)))
-        }
-        ResolvedTy::Named {
-            head,
-            args: named_args,
-            is_opaque,
-        } => ResolvedTy::Named {
-            head: *head,
-            args: named_args
-                .iter()
-                .map(|arg| substitute(arg, params, args))
-                .collect(),
-            is_opaque: *is_opaque,
-        },
-        ResolvedTy::Function {
-            capabilities,
-            params: callable_params,
-            ret,
-        } => ResolvedTy::Function {
-            capabilities: *capabilities,
-            params: callable_params
-                .iter()
-                .map(|param| substitute(param, params, args))
-                .collect(),
-            ret: Box::new(substitute(ret, params, args)),
-        },
-        ResolvedTy::Closure {
-            capabilities,
-            params: callable_params,
-            ret,
-            captures,
-        } => ResolvedTy::Closure {
-            capabilities: *capabilities,
-            params: callable_params
-                .iter()
-                .map(|param| substitute(param, params, args))
-                .collect(),
-            ret: Box::new(substitute(ret, params, args)),
-            captures: captures
-                .iter()
-                .map(|capture| substitute(capture, params, args))
-                .collect(),
-        },
-        ResolvedTy::Pointer {
-            is_mutable,
-            pointee,
-        } => ResolvedTy::Pointer {
-            is_mutable: *is_mutable,
-            pointee: Box::new(substitute(pointee, params, args)),
-        },
-        ResolvedTy::Borrow { pointee } => ResolvedTy::Borrow {
-            pointee: Box::new(substitute(pointee, params, args)),
-        },
-        ResolvedTy::Task(inner) => ResolvedTy::Task(Box::new(substitute(inner, params, args))),
-        other => other.clone(),
-    }
-}
-
 #[expect(
     clippy::too_many_lines,
     reason = "the §1.1 table is one closed match with a row per ResolvedTy arm and BuiltinType variant"
@@ -653,6 +571,7 @@ fn classify(
     let linear_none = (ValueClass::Linear, CloneKind::None);
 
     Ok(match ty {
+        ResolvedTy::GenericCallable { callable, .. } => classify(callable, decls, walk)?,
         // integers, floats, Bool, Char, Unit, Never, Duration; and an actor,
         // which is the type of its handle: a pid never owns the actor, so its
         // drop frees nothing.

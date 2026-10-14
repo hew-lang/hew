@@ -747,6 +747,28 @@ impl Checker {
                 return Some(call);
             }
         }
+        if let Some(sig) = Self::generic_callable_signature(&resolved_field) {
+            let owner = self.generic_callable_owner(&resolved_field);
+            self.record_direct_call_target(span, CallTarget::IndirectFunctionValue);
+            let applied = self.apply_instantiated_call_signature_with_assoc(
+                &sig,
+                None,
+                args,
+                span,
+                SignatureArgApplication::PositionalOnly {
+                    arity_context: format!("field `{method_name}` on `{name}`"),
+                },
+                true,
+                owner.as_deref().map(|key| GenericCallee::Function { key }),
+            );
+            if let Ok(field_ty) = crate::ResolvedTy::from_ty(&resolved_field) {
+                self.record_method_call_rewrite(
+                    span,
+                    MethodCallRewrite::RecordFnFieldCall { field_ty },
+                );
+            }
+            return Some(applied.return_type);
+        }
         let (params, ret) = match &resolved_field {
             Ty::Function { params, ret, .. } | Ty::Closure { params, ret, .. } => {
                 (params.clone(), (**ret).clone())

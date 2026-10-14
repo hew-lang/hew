@@ -265,7 +265,7 @@ pub(crate) fn verify_environment_glue(module: &PhysicalModule) -> Result<(), Phy
         if !environment_types.insert(&glue.ty) {
             return Err(PhysicalError::new("duplicate physical environment type"));
         }
-        let captures = match &glue.ty {
+        let captures = match glue.ty.callable_body() {
             ResolvedTy::Closure { captures, .. } => captures.as_slice(),
             ResolvedTy::Function { .. } => &[],
             _ => {
@@ -903,7 +903,7 @@ pub(crate) fn verify_clone_action(
             }
             CloneAction::Callable => {
                 own == OwnKind::Owned
-                    && matches!(ty,
+                    && matches!(ty.callable_body(),
                     ResolvedTy::Function { capabilities, .. } | ResolvedTy::Closure { capabilities, .. }
                     if capabilities.clone)
             }
@@ -981,7 +981,10 @@ pub(crate) fn verify_destroy_action(
             }
             DestroyAction::Callable => {
                 own == OwnKind::Owned
-                    && matches!(ty, ResolvedTy::Function { .. } | ResolvedTy::Closure { .. })
+                    && matches!(
+                        ty.callable_body(),
+                        ResolvedTy::Function { .. } | ResolvedTy::Closure { .. }
+                    )
             }
             DestroyAction::TraitObject => {
                 own == OwnKind::Owned && matches!(ty, ResolvedTy::TraitObject { .. })

@@ -453,128 +453,134 @@ impl Checker {
         let actual_projected = self.normalize_for_use(actual);
         let expected = &expected_projected;
         let actual = &actual_projected;
+        if self.specialize_callable_value(expected, actual, span) {
+            return;
+        }
         if self.reject_callable_erasure(expected, actual, span) {
             return;
         }
         // Snapshot substitution so partial bindings are rolled back on failure
         let snapshot = self.subst.snapshot();
-        if !self.coerce_with_obligations(expected, actual, span) {
-            // Restore substitution to avoid partial corruption
-            self.subst.restore(snapshot);
-            let expected_resolved = self.subst.resolve(expected);
-            let actual_resolved = self.subst.resolve(actual);
-            // Allow concrete type → dyn Trait coercion when the type implements all traits.
-            // Records a `DynCoercion` side-table entry for the downstream MIR and LLVM
-            // vtable emitters, and rejects non-object-safe traits at the coercion site
-            // with `E_TRAIT_NOT_OBJECT_SAFE` (v0.5 predicate: no generic methods, no
-            // `Self`-returning methods).
-            if let Ty::TraitObject { traits } = &expected_resolved {
-                let defaulted_concrete = actual_resolved.materialize_literal_defaults();
-                if concrete_type_name_for_dyn(&defaulted_concrete).is_some()
-                    && self.try_record_dyn_trait_coercion(traits, &defaulted_concrete, span)
-                {
-                    return;
-                }
+        if self.coerce_with_obligations(expected, actual, span) {
+            self.record_generic_callable_coercion(actual, expected, span);
+            return;
+        }
+        // Restore substitution to avoid partial corruption
+        self.subst.restore(snapshot);
+        let expected_resolved = self.subst.resolve(expected);
+        let actual_resolved = self.subst.resolve(actual);
+        // Allow concrete type → dyn Trait coercion when the type implements all traits.
+        // Records a `DynCoercion` side-table entry for the downstream MIR and LLVM
+        // vtable emitters, and rejects non-object-safe traits at the coercion site
+        // with `E_TRAIT_NOT_OBJECT_SAFE` (v0.5 predicate: no generic methods, no
+        // `Self`-returning methods).
+        if let Ty::TraitObject { traits } = &expected_resolved {
+            let defaulted_concrete = actual_resolved.materialize_literal_defaults();
+            if concrete_type_name_for_dyn(&defaulted_concrete).is_some()
+                && self.try_record_dyn_trait_coercion(traits, &defaulted_concrete, span)
+            {
+                return;
             }
-            // Actor-handle narrowing `C` → `T` when `C: T`.
-            //
-            // The active-mode `conn.attach(this)` surface needs a concrete
-            // actor handle (`EchoConn`) to satisfy an extern that takes the
-            // handler-trait handle (`TlsHandler`). An actor handle is an
-            // opaque actor-ref pointer (`*mut HewActor`); its nominal
-            // identity is purely a compile-time tag used for
-            // `.send`/`.ask` message typing and (for handler traits) for
-            // msg_id synthesis. Narrowing a concrete-actor pid to a
-            // handler-trait pid is therefore pointer-identical at runtime — no
-            // vtable, no side-table entry, no representation change. Accept it
-            // in the type system only. Unlike `dyn Trait`, dispatch into the
-            // handler does NOT go through a vtable: the reactor delivers
-            // `on_data`/`on_close` as ordinary mailbox messages keyed by the
-            // concrete actor's hash-derived `msg_id`s (synthesised at the
-            // `attach` call site), so the trait erasure carries no runtime
-            // payload here.
-            if let (Some(expected_inner), Some(actual_inner)) = (
-                expected_resolved.as_actor_handle(),
-                actual_resolved.as_actor_handle(),
-            ) {
-                if let (
-                    Ty::Named {
-                        head: trait_head, ..
-                    },
-                    Ty::Named {
-                        head: concrete_head,
-                        ..
-                    },
-                ) = (expected_inner, actual_inner)
-                {
-                    let trait_id = trait_head
-                        .nominal()
-                        .map(crate::NominalId::declaration)
-                        .filter(|id| self.trait_info(*id).is_some());
-                    let concrete_name = concrete_head.registry_key();
-                    // Only a true trait-implementation narrowing is admitted.
-                    // Identical inner names would have unified above; reaching
-                    // here with equal names means a generic-arg mismatch that
-                    // must not be silently coerced.
-                    //
-                    // Satisfaction depends on the KIND of trait:
-                    //  - Handler trait (active-mode: methods take no `self`
-                    //    receiver, satisfied structurally by an actor's
-                    //    `receive fn`s): the ONLY lowerable path is
-                    //    `actor_satisfies_handler_trait`. `attach` codegen
-                    //    synthesises the `on_data`/`on_close` `msg_id`s from the
-                    //    actor's receive-fn protocol descriptor; an explicit
-                    //    `impl TlsHandler for X {}` with no matching
-                    //    `receive fn`s carries nothing codegen can lower, so
-                    //    gating on `type_implements_trait` would admit a
-                    //    coercion that later fails closed with a late
-                    //    `E_CODEGEN`. Reject it here with an honest type error.
-                    //  - Ordinary (receiver-method) trait: an explicit or
-                    //    structural impl is the satisfaction authority.
-                    if let Some(trait_id) = trait_id {
-                        let satisfied = if self.trait_is_handler_style(trait_id) {
-                            self.actor_satisfies_handler_trait(concrete_name, trait_id)
-                        } else {
-                            self.type_implements_trait(actual_inner, trait_id)
-                                || self.actor_satisfies_handler_trait(concrete_name, trait_id)
-                        };
-                        if satisfied {
-                            return;
-                        }
+        }
+        // Actor-handle narrowing `C` → `T` when `C: T`.
+        //
+        // The active-mode `conn.attach(this)` surface needs a concrete
+        // actor handle (`EchoConn`) to satisfy an extern that takes the
+        // handler-trait handle (`TlsHandler`). An actor handle is an
+        // opaque actor-ref pointer (`*mut HewActor`); its nominal
+        // identity is purely a compile-time tag used for
+        // `.send`/`.ask` message typing and (for handler traits) for
+        // msg_id synthesis. Narrowing a concrete-actor pid to a
+        // handler-trait pid is therefore pointer-identical at runtime — no
+        // vtable, no side-table entry, no representation change. Accept it
+        // in the type system only. Unlike `dyn Trait`, dispatch into the
+        // handler does NOT go through a vtable: the reactor delivers
+        // `on_data`/`on_close` as ordinary mailbox messages keyed by the
+        // concrete actor's hash-derived `msg_id`s (synthesised at the
+        // `attach` call site), so the trait erasure carries no runtime
+        // payload here.
+        if let (Some(expected_inner), Some(actual_inner)) = (
+            expected_resolved.as_actor_handle(),
+            actual_resolved.as_actor_handle(),
+        ) {
+            if let (
+                Ty::Named {
+                    head: trait_head, ..
+                },
+                Ty::Named {
+                    head: concrete_head,
+                    ..
+                },
+            ) = (expected_inner, actual_inner)
+            {
+                let trait_id = trait_head
+                    .nominal()
+                    .map(crate::NominalId::declaration)
+                    .filter(|id| self.trait_info(*id).is_some());
+                let concrete_name = concrete_head.registry_key();
+                // Only a true trait-implementation narrowing is admitted.
+                // Identical inner names would have unified above; reaching
+                // here with equal names means a generic-arg mismatch that
+                // must not be silently coerced.
+                //
+                // Satisfaction depends on the KIND of trait:
+                //  - Handler trait (active-mode: methods take no `self`
+                //    receiver, satisfied structurally by an actor's
+                //    `receive fn`s): the ONLY lowerable path is
+                //    `actor_satisfies_handler_trait`. `attach` codegen
+                //    synthesises the `on_data`/`on_close` `msg_id`s from the
+                //    actor's receive-fn protocol descriptor; an explicit
+                //    `impl TlsHandler for X {}` with no matching
+                //    `receive fn`s carries nothing codegen can lower, so
+                //    gating on `type_implements_trait` would admit a
+                //    coercion that later fails closed with a late
+                //    `E_CODEGEN`. Reject it here with an honest type error.
+                //  - Ordinary (receiver-method) trait: an explicit or
+                //    structural impl is the satisfaction authority.
+                if let Some(trait_id) = trait_id {
+                    let satisfied = if self.trait_is_handler_style(trait_id) {
+                        self.actor_satisfies_handler_trait(concrete_name, trait_id)
+                    } else {
+                        self.type_implements_trait(actual_inner, trait_id)
+                            || self.actor_satisfies_handler_trait(concrete_name, trait_id)
+                    };
+                    if satisfied {
+                        return;
                     }
                 }
             }
-            // Integer width mismatch: emit a targeted diagnostic that names both
-            // widths and directs the user to an explicit `as` cast.  This covers
-            // same-sign widening (i32 → i64) and narrowing alike.  Neither is
-            // allowed implicitly; the LLVM IR verifier rejects the silent widen.
-            //
-            // Safety note: `Ty::is_integer()` returns true for `Ty::IntLiteral`
-            // as well as concrete integer types.  This guard is entered only
-            // from the `unify(...) == Err` arm above, and `unify` returns `Ok`
-            // for `IntLiteral` vs any concrete integer width (see unify.rs
-            // ~line 178-187).  Therefore untyped integer literals never reach
-            // this branch and are never spuriously rejected.  If a future
-            // refactor changes the `unify`-Ok path for literals, re-examine
-            // this guard before the `is_integer()` check becomes over-eager.
-            if actual_resolved.is_integer() && expected_resolved.is_integer() {
-                self.report_error(
-                    TypeErrorKind::Mismatch {
-                        expected: expected_resolved.user_facing().to_string(),
-                        actual: actual_resolved.user_facing().to_string(),
-                    },
-                    span,
-                    format!(
-                        "cannot implicitly convert `{}` to `{}`; use an explicit `as {}` cast",
-                        actual_resolved.user_facing(),
-                        expected_resolved.user_facing(),
-                        expected_resolved.user_facing(),
-                    ),
-                );
-                return;
-            }
-            if expected_resolved.is_numeric() && actual_resolved.is_numeric() {
-                self.report_error(
+        }
+        // Integer width mismatch: emit a targeted diagnostic that names both
+        // widths and directs the user to an explicit `as` cast.  This covers
+        // same-sign widening (i32 → i64) and narrowing alike.  Neither is
+        // allowed implicitly; the LLVM IR verifier rejects the silent widen.
+        //
+        // Safety note: `Ty::is_integer()` returns true for `Ty::IntLiteral`
+        // as well as concrete integer types.  This guard is entered only
+        // from the `unify(...) == Err` arm above, and `unify` returns `Ok`
+        // for `IntLiteral` vs any concrete integer width (see unify.rs
+        // ~line 178-187).  Therefore untyped integer literals never reach
+        // this branch and are never spuriously rejected.  If a future
+        // refactor changes the `unify`-Ok path for literals, re-examine
+        // this guard before the `is_integer()` check becomes over-eager.
+        if actual_resolved.is_integer() && expected_resolved.is_integer() {
+            self.report_error(
+                TypeErrorKind::Mismatch {
+                    expected: expected_resolved.user_facing().to_string(),
+                    actual: actual_resolved.user_facing().to_string(),
+                },
+                span,
+                format!(
+                    "cannot implicitly convert `{}` to `{}`; use an explicit `as {}` cast",
+                    actual_resolved.user_facing(),
+                    expected_resolved.user_facing(),
+                    expected_resolved.user_facing(),
+                ),
+            );
+            return;
+        }
+        if expected_resolved.is_numeric() && actual_resolved.is_numeric() {
+            self.report_error(
                     TypeErrorKind::Mismatch {
                         expected: expected_resolved.user_facing().to_string(),
                         actual: actual_resolved.user_facing().to_string(),
@@ -586,12 +592,11 @@ impl Checker {
                         expected_resolved.user_facing()
                     ),
                 );
-                return;
-            }
-            self.report_type_mismatch(&expected_resolved, &actual_resolved, span);
-            self.suggest_success_value_repair(&expected_resolved, &actual_resolved);
-            self.suggest_result_value_repair(&expected_resolved, &actual_resolved, span);
+            return;
         }
+        self.report_type_mismatch(&expected_resolved, &actual_resolved, span);
+        self.suggest_success_value_repair(&expected_resolved, &actual_resolved);
+        self.suggest_result_value_repair(&expected_resolved, &actual_resolved, span);
     }
 
     fn suggest_result_value_repair(&mut self, expected: &Ty, actual: &Ty, span: &Span) {

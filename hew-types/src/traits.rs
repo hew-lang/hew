@@ -393,6 +393,7 @@ impl TraitRegistry {
             return ty.is_numeric();
         }
         match ty {
+            Ty::GenericCallable { callable, .. } => self.implements_marker(callable, marker),
             // Primitives: always Send, Sync, Frozen, Copy, Clone, Eq, Ord, Hash, Debug.
             // NOT Resource: primitives own no OS/runtime resource and need no drop close.
             // Isize/Usize are platform-sized integers: same marker set as fixed-width ints.

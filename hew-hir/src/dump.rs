@@ -1028,6 +1028,10 @@ fn dump_expr(defs: &hew_types::DefTable, out: &mut String, expr: &HirExpr, inden
                 .expect("write to string");
             dump_expr(defs, out, src, indent + 4);
         }
+        HirExprKind::CallableSpecialize { source, type_args } => {
+            writeln!(out, "{pad}  callable-specialize {type_args:?}").expect("write to string");
+            dump_expr(defs, out, source, indent + 4);
+        }
         HirExprKind::SubsumedValue { source } => {
             writeln!(out, "{pad}  subsumed-value").expect("write to string");
             dump_expr(defs, out, source, indent + 4);

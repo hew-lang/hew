@@ -1232,6 +1232,7 @@ struct LowerCtx {
     /// (e.g. a builtin or runtime-symbol call) and skipped.
     /// (LESSONS: checker-authority P0, end-to-end-before-layer-thickening P1)
     call_type_args: HashMap<SpanKey, Vec<Ty>>,
+    callable_value_specializations: HashMap<SpanKey, Vec<ResolvedTy>>,
     /// Checker-resolved assignment target classification keyed by the target
     /// expression span.
     ///

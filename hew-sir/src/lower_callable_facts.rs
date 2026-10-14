@@ -309,7 +309,7 @@ impl InstanceService<'_> {
                             .get(&self.closure_sources[closure.id.0 as usize].0.site)
                             == Some(site)
                     })
-                    .map(|closure| closure.body)
+                    .flat_map(|closure| closure.entries.iter().map(|entry| entry.body))
                     .collect();
                 crate::CallableTargets {
                     may_be_unknown: known.is_empty(),

@@ -2328,6 +2328,13 @@ impl Checker {
     /// and relies on the helper to drop duplicates.
     fn enforce_type_def_bounds_recursive(&mut self, ty: &Ty, span: &Span) {
         match ty {
+            Ty::GenericCallable { callable, .. } => {
+                let signature = Self::generic_callable_signature(ty)
+                    .expect("checked quantified callable has its signature");
+                self.current_type_param_bounds.push(signature.bounds);
+                self.enforce_type_def_bounds_recursive(callable, span);
+                self.current_type_param_bounds.pop();
+            }
             Ty::Named { head, args } => {
                 if !args.is_empty() {
                     self.enforce_type_def_instantiation_bounds(head.registry_key(), args, span);
@@ -2487,6 +2494,23 @@ impl Checker {
     /// actor that satisfies the trait.
     pub(super) fn canonicalize_actor_handles(&self, ty: &mut Ty) {
         match ty {
+            Ty::GenericCallable {
+                parameters,
+                callable,
+            } => {
+                self.canonicalize_actor_handles(callable);
+                for parameter in parameters {
+                    for bound in &mut parameter.bounds {
+                        for ty in bound
+                            .args
+                            .iter_mut()
+                            .chain(bound.assoc_bindings.iter_mut().map(|(_, ty)| ty))
+                        {
+                            self.canonicalize_actor_handles(ty);
+                        }
+                    }
+                }
+            }
             Ty::Named { head, args } => {
                 for argument in args.iter_mut() {
                     self.canonicalize_actor_handles(argument);
@@ -2975,22 +2999,59 @@ impl Checker {
             ),
             TypeExpr::Function {
                 capabilities,
+                type_params,
                 params,
                 return_type,
-            } => Ty::Function {
-                capabilities: *capabilities,
-                params: params
-                    .iter()
-                    .map(|te| {
-                        self.resolve_type_expr_tracking_holes_with_context(te, hole_vars, context)
-                    })
-                    .collect(),
-                ret: Box::new(self.resolve_type_expr_tracking_holes_with_context(
-                    return_type,
-                    hole_vars,
-                    context,
-                )),
-            },
+            } => {
+                let parameters = self.declare_callable_parameters(
+                    type_params.as_deref().unwrap_or_default(),
+                    &te.1,
+                    crate::DeclarationKind::CallableType,
+                );
+                self.generic_ctx.push(
+                    parameters
+                        .iter()
+                        .map(|parameter| (parameter.spelling.to_string(), Ty::param(*parameter)))
+                        .collect(),
+                );
+                let bounds = self.collect_type_param_bounds(type_params.as_ref(), None, hole_vars);
+                self.current_type_param_bounds.push(bounds.clone());
+                let callable = Ty::Function {
+                    capabilities: *capabilities,
+                    params: params
+                        .iter()
+                        .map(|te| {
+                            self.resolve_type_expr_tracking_holes_with_context(
+                                te, hole_vars, context,
+                            )
+                        })
+                        .collect(),
+                    ret: Box::new(self.resolve_type_expr_tracking_holes_with_context(
+                        return_type,
+                        hole_vars,
+                        context,
+                    )),
+                };
+                self.current_type_param_bounds.pop();
+                self.generic_ctx.pop();
+                if parameters.is_empty() {
+                    callable
+                } else {
+                    let scheme = Ty::GenericCallable {
+                        parameters: self.callable_type_parameters(&parameters, &bounds),
+                        callable: Box::new(callable),
+                    };
+                    let owner = parameters[0].id.owner;
+                    let key = self.defs.path(owner).to_string();
+                    self.insert_fn_sig(
+                        &key,
+                        owner,
+                        Self::generic_callable_signature(&scheme)
+                            .expect("quantified callable signature"),
+                    );
+                    scheme
+                }
+            }
             TypeExpr::ActorFn {
                 params,
                 return_type,

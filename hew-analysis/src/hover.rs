@@ -1165,8 +1165,10 @@ fn format_type_expr_hover(type_expr: &TypeExpr) -> String {
             params,
             return_type,
             capabilities,
+            type_params,
         } => format!(
-            "fn{capabilities}({}) -> {}",
+            "fn{capabilities}{}({}) -> {}",
+            format_type_parameters_hover(type_params.as_deref().unwrap_or_default()),
             params
                 .iter()
                 .map(|(param, _)| format_type_expr_hover(param))
@@ -1201,6 +1203,33 @@ fn format_type_expr_hover(type_expr: &TypeExpr) -> String {
             .join(" + "),
         TypeExpr::Infer => "_".to_string(),
     }
+}
+
+fn format_type_parameters_hover(parameters: &[hew_parser::ast::TypeParam]) -> String {
+    if parameters.is_empty() {
+        return String::new();
+    }
+    let parameters = parameters
+        .iter()
+        .map(|parameter| {
+            if parameter.bounds.is_empty() {
+                parameter.name.to_string()
+            } else {
+                format!(
+                    "{}: {}",
+                    parameter.name,
+                    parameter
+                        .bounds
+                        .iter()
+                        .map(format_trait_bound_hover)
+                        .collect::<Vec<_>>()
+                        .join(" + ")
+                )
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("<{parameters}>")
 }
 
 fn format_trait_bound_hover(bound: &TraitBound) -> String {

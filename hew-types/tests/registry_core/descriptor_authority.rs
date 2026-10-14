@@ -93,6 +93,38 @@ fn canonical_string_function() {
         ret: Box::new(ResolvedTy::String),
     };
     assert_eq!(ty.canonical_string(), "fn(i32,bool)->string");
+    let quantified = |outer: &str, inner: &str, return_outer: bool| {
+        let outer = hew_types::ParamHead::for_test(outer);
+        let inner = hew_types::ParamHead::for_test(inner);
+        let bind = |parameter, params, ret| ResolvedTy::GenericCallable {
+            parameters: vec![hew_types::CallableTypeParameter {
+                parameter,
+                bounds: vec![],
+            }],
+            callable: Box::new(ResolvedTy::Function {
+                capabilities: hew_parser::ast::CallableCapabilities::default(),
+                params,
+                ret: Box::new(ret),
+            }),
+        };
+        bind(
+            outer,
+            vec![ResolvedTy::param(outer)],
+            bind(
+                inner,
+                vec![ResolvedTy::param(inner)],
+                ResolvedTy::param(if return_outer { outer } else { inner }),
+            ),
+        )
+    };
+    assert_eq!(
+        quantified("T", "U", true).canonical_string(),
+        quantified("A", "B", true).canonical_string()
+    );
+    assert_ne!(
+        quantified("T", "U", true).canonical_string(),
+        quantified("T", "U", false).canonical_string()
+    );
 }
 
 #[test]

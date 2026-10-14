@@ -428,8 +428,12 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 vtable,
                 source,
             } => self.emit_dyn_make(*dest, *vtable, *source),
-            PhysicalOp::CallableCoerce { dest, source }
-            | PhysicalOp::GeneratorCoerce { dest, source } => {
+            PhysicalOp::CallableCoerce {
+                dest,
+                source,
+                specialization,
+            } => self.emit_callable_coerce(*dest, *source, *specialization),
+            PhysicalOp::GeneratorCoerce { dest, source } => {
                 let value = self.load(*source, "callable.coerce")?;
                 self.store(*dest, value)?;
                 self.clear_owned(*source)

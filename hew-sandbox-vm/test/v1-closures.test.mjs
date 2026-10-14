@@ -41,7 +41,7 @@ function closurePackage(captureAt = 1) {
     externs: [],
     suspend_kinds: [],
     value_capabilities: [],
-    closures: [{ id: 0, body: 1, fields: 1 }],
+    closures: [{ id: 0, entries: [{ body: 1, specialization: null }], fields: 1 }],
     vtables: [],
     functions: [
       // main
@@ -77,7 +77,7 @@ function closurePackage(captureAt = 1) {
             params: [],
             ops: [
               { op: "load.take", dst: 5, place: 1, span: null },
-              { op: "callable.coerce", dst: 6, source: 5, span: null }
+              { op: "callable.coerce", specialization: null, dst: 6, source: 5, span: null }
             ],
             term: {
               op: "call",
@@ -124,6 +124,7 @@ function closurePackage(captureAt = 1) {
             ops: [],
             term: {
               op: "indirect.call",
+              specialization: null,
               callee: { value: 0, decision: "borrow" },
               args: [],
               result: { value: 1, own: "none" },

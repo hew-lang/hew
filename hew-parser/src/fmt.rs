@@ -3145,9 +3145,14 @@ impl<'a> Formatter<'a> {
             }
             TypeExpr::Function {
                 capabilities,
+                type_params,
                 params,
                 return_type,
-            } => self.format_callable_type(&format!("fn{capabilities}"), params, return_type),
+            } => {
+                self.write(&format!("fn{capabilities}"));
+                self.format_opt_type_params(type_params.as_ref());
+                self.format_callable_type("", params, return_type);
+            }
             TypeExpr::ActorFn {
                 params,
                 return_type,
@@ -4547,36 +4552,27 @@ impl<'a> Formatter<'a> {
                     });
                     self.write(") ");
                 }
-                if type_params.is_some() {
-                    self.format_opt_type_params(type_params.as_ref());
-                    self.write("(");
-                    self.format_lambda_params(params);
-                    self.write(")");
-                    if let Some(ret) = return_type {
-                        self.write(" -> ");
-                        self.format_type_expr(&ret.0);
-                    }
-                    self.write_token(" => ", |t| matches!(t, hew_lexer::Token::FatArrow));
-                    self.format_expr(body);
-                } else {
-                    self.write("|");
-                    self.format_lambda_params(params);
-                    self.write("|");
-                    if let Some(ret) = return_type {
-                        self.write(" -> ");
-                        self.format_type_expr(&ret.0);
-                        self.write(" ");
-                        if matches!(body.0, Expr::Block(_)) {
-                            self.format_expr(body);
-                        } else {
-                            self.write("{ ");
-                            self.format_expr(body);
-                            self.write(" }");
-                        }
-                    } else {
-                        self.write(" ");
+                self.write("|");
+                self.format_opt_type_params(type_params.as_ref());
+                if type_params.is_some() && !params.is_empty() {
+                    self.write(" ");
+                }
+                self.format_lambda_params(params);
+                self.write("|");
+                if let Some(ret) = return_type {
+                    self.write(" -> ");
+                    self.format_type_expr(&ret.0);
+                    self.write(" ");
+                    if matches!(body.0, Expr::Block(_)) {
                         self.format_expr(body);
+                    } else {
+                        self.write("{ ");
+                        self.format_expr(body);
+                        self.write(" }");
                     }
+                } else {
+                    self.write(" ");
+                    self.format_expr(body);
                 }
             }
             Expr::Spawn {

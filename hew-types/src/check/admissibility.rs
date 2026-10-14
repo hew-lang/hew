@@ -501,12 +501,6 @@ impl Checker {
             let resolved = self.subst.resolve(&admission.elem_ty);
             collect_unresolved_inference_vars(&resolved, &mut covered_inference_vars);
         }
-        for sig in self.lambda_poly_sig_map.values() {
-            for poly_var in &sig.type_vars {
-                let resolved_poly = self.subst.resolve(&Ty::Var(*poly_var));
-                collect_unresolved_inference_vars(&resolved_poly, &mut covered_inference_vars);
-            }
-        }
         covered_inference_vars
     }
 
@@ -1256,7 +1250,7 @@ impl Checker {
     /// boundary would disagree with the declared value type. Refuse the shape
     /// here rather than at that boundary.
     fn validate_hashmap_value_shape(&mut self, val_ty: &Ty, span: &Span) -> bool {
-        if !matches!(val_ty, Ty::Function { .. } | Ty::Closure { .. }) {
+        if val_ty.callable_signature().is_none() {
             return true;
         }
         let message = format!(
@@ -1389,7 +1383,7 @@ impl Checker {
     ) -> bool {
         let resolved = self.subst.resolve(ty);
         match &resolved {
-            Ty::Function { .. } | Ty::Closure { .. } => true,
+            Ty::GenericCallable { .. } | Ty::Function { .. } | Ty::Closure { .. } => true,
             Ty::Tuple(elems) => elems
                 .iter()
                 .any(|elem| self.vec_element_contains_fn_value(elem, visiting)),
@@ -1449,7 +1443,7 @@ impl Checker {
         // layout/owned element ABIs byte-copy the element, which would
         // shallow-copy the closure pair and alias its sole-owner environment.
         // A direct Vec<fn(...)> element is the supported boxed-pair class.
-        if !matches!(resolved, Ty::Function { .. } | Ty::Closure { .. }) {
+        if resolved.callable_signature().is_none() {
             let mut visiting = HashSet::new();
             if self.vec_element_contains_fn_value(resolved, &mut visiting) {
                 self.report_error(
@@ -1496,7 +1490,7 @@ impl Checker {
         collection: ConcreteCollectionKind,
     ) -> bool {
         let resolved = self.subst.resolve(ty);
-        match &resolved {
+        match resolved.callable_body() {
             Ty::Named { head, args } => {
                 if let Some(result) =
                     collection.validate_named_collection(self, head.builtin(), args, span)
@@ -1589,6 +1583,7 @@ impl Checker {
             Ty::Var(_)
             | Ty::AssocType { .. }
             | Ty::Slice(_)
+            | Ty::GenericCallable { .. }
             | Ty::Function { .. }
             | Ty::Closure { .. }
             | Ty::TraitObject { .. }

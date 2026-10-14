@@ -869,6 +869,7 @@ pub struct SemModule {
     pub resources: BTreeMap<ResolvedTy, crate::ResourceRelease>,
     /// Concrete environments in canonical module-local identity order.
     pub closures: Vec<SemClosure>,
+    pub callable_specializations: Vec<Vec<ResolvedTy>>,
     /// Checker-selected operations demanded by concrete collection keys.
     /// User methods retain their resolved declaration and specialization;
     /// derived operations compose the separately selected component plans.
@@ -1358,6 +1359,7 @@ pub enum SemOpKind {
     /// Transfer a callable while weakening only its proved capabilities.
     CallableCoerce {
         source: Operand,
+        specialization: Option<crate::CallableSpecializationId>,
     },
     /// Borrow a projected field, retaining its explicit owner dependency.
     /// Its sole dependency is the declared place; the place origin supplies
@@ -1643,7 +1645,7 @@ impl SemOpKind {
                 callable: value, ..
             }
             | Self::GeneratorCoerce { source: value }
-            | Self::CallableCoerce { source: value }
+            | Self::CallableCoerce { source: value, .. }
             | Self::DynMake { value, .. }
             | Self::CopyValue { source: value }
             | Self::Move { source: value }
@@ -1739,7 +1741,7 @@ impl SemOpKind {
                 callable: value, ..
             }
             | Self::GeneratorCoerce { source: value }
-            | Self::CallableCoerce { source: value }
+            | Self::CallableCoerce { source: value, .. }
             | Self::DynMake { value, .. }
             | Self::CopyValue { source: value }
             | Self::Move { source: value }
@@ -2030,6 +2032,7 @@ pub enum SemTerminator {
     IndirectCall {
         id: OpId,
         targets: crate::CallableTargets,
+        specialization: Option<crate::CallableSpecializationId>,
         callee: BoundaryOperand,
         signature: SemSignature,
         args: Vec<BoundaryOperand>,

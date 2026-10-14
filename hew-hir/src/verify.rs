@@ -993,6 +993,19 @@ impl Verifier {
             | HirExprKind::RecordCloneCall { src: receiver, .. } => {
                 self.expr(receiver);
             }
+            HirExprKind::CallableSpecialize { source, type_args } => {
+                if source.ty.instantiate_callable(type_args).as_ref() != Some(&expr.ty) {
+                    self.diagnostics.push(HirDiagnostic::new(
+                        HirDiagnosticKind::CheckerBoundaryViolation {
+                            name: "callable specialization".into(),
+                            reason: "specialized signature differs from checked arguments".into(),
+                        },
+                        expr.span.clone(),
+                        "invalid callable specialization",
+                    ));
+                }
+                self.expr(source);
+            }
             HirExprKind::SubsumedValue { source, .. } => self.expr(source),
             HirExprKind::MachineVariantCtor { payload, .. } => {
                 if let Some(fields) = payload {

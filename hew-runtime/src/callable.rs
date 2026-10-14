@@ -358,9 +358,10 @@ mod tests {
         HewCallableDescriptor {
             environment: &ENVIRONMENT_LAYOUT,
             invoke_borrow: Some(borrow_invoke),
-            invoke_once: once_invoke,
+            invoke_once: Some(once_invoke),
             invoke_borrow_sync: None,
             invoke_once_sync: None,
+            specializations: core::ptr::null(),
         }
     }
 
@@ -568,9 +569,10 @@ mod tests {
         let descriptor = HewCallableDescriptor {
             environment: &raw const layout,
             invoke_borrow: Some(invoke),
-            invoke_once: invoke,
+            invoke_once: Some(invoke),
             invoke_borrow_sync: None,
             invoke_once_sync: None,
+            specializations: core::ptr::null(),
         };
         // SAFETY: Empty-function descriptors own no environment storage.
         unsafe {
@@ -625,7 +627,7 @@ mod tests {
             // once adapter, which owns cleanup regardless of returned status.
             unsafe {
                 let status = crate::coro_root::hew_coro_run_callable(
-                    descriptor.invoke_once,
+                    descriptor.invoke_once.expect("concrete invocation entry"),
                     raw,
                     arguments.as_ptr(),
                     (&raw mut result).cast(),

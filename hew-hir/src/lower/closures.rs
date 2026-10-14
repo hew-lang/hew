@@ -25,7 +25,7 @@ impl LowerCtx {
     pub(super) fn closure_signature_from_ty(
         ty: &ResolvedTy,
     ) -> Option<(Vec<ResolvedTy>, ResolvedTy)> {
-        match ty {
+        match ty.callable_body() {
             ResolvedTy::Function { params, ret, .. } | ResolvedTy::Closure { params, ret, .. } => {
                 Some((params.clone(), ret.as_ref().clone()))
             }

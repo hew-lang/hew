@@ -63,8 +63,7 @@ impl LowerCtx {
             return;
         }
         self.call_site_type_args
-            .entry(call_site)
-            .or_insert_with(|| type_args.clone());
+            .insert(call_site, type_args.clone());
         if type_args
             .iter()
             .any(super::substitution::contains_abstract_symbol)

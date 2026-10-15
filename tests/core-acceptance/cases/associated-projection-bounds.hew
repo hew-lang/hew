@@ -1,0 +1,20 @@
+import "projection_bound_support/labels.hew";
+
+fn main() {
+    var numbers: Vec<i64> = Vec.new();
+    numbers.push(42);
+    assert(first_label(numbers.into_iter()) == "42");
+    var words: Vec<string> = Vec.new();
+    words.push("imported".to_upper());
+    assert(first_label(words.into_iter()) == "IMPORTED");
+    assert(equal_label([44].into_iter()) == "44");
+    assert(equal_label(["equality"].into_iter()) == "equality");
+    let render = |<T: Display> value: T| -> string {
+        var items: Vec<T> = Vec.new();
+        items.push(value);
+        first_label(items.into_iter())
+    };
+    assert(render(43) == "43");
+    assert(render<string>("closure".to_upper()) == "CLOSURE");
+    println("associated projection bounds");
+}

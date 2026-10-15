@@ -3855,6 +3855,23 @@ fn main() {
 
 Declare `type Item;` in the trait, bind it with `type Item = <concrete>;` in the impl, and write the concrete type in the impl method signature. At most one associated type per trait.
 
+A generic function can constrain an associated type in a where-clause:
+
+```hew
+fn first_label<I: Iterator>(var items: I) -> string
+where I.Item: Display {
+    match items.next() {
+        .Some(item) => item.fmt(),
+        .None => "empty",
+    }
+}
+```
+
+This accepts iterators of numbers or strings and rejects items without a
+`Display` implementation. The bound also works in imported helpers and calls
+from generic closures. An equality binding such as `I: Iterator<Item = T>`
+keeps its meaning: `where I.Item: Display` then constrains `T`.
+
 ### Trait impl for a builtin type (Vec)
 
 ```hew

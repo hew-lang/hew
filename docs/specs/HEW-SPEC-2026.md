@@ -3215,13 +3215,23 @@ where
 
 **Associated type bounds:**
 
-An associated-type bound in a `where` clause — `where T.Item: Bound` — is
-**refused**, with `E_ASSOC_BOUND_UNSUPPORTED` (Limitation channel, target
-v0.7.0). The bound parses and type-checks today but never participates in
-method resolution, so a program that writes one is admitted and then behaves
-as though the bound were absent. A surface that does not act is not a surface:
-until the bound reaches method resolution, writing it is an error rather than
-a promise kept by nothing. See HEW-FUTURE.md §2.2.
+An associated-type bound in a `where` clause constrains the projected type:
+
+```hew
+fn first_label<I: Iterator>(var items: I) -> string
+where I.Item: Display {
+    match items.next() {
+        .Some(item) => item.fmt(),
+        .None => "empty",
+    }
+}
+```
+
+The bound participates in method resolution within the generic body and is
+checked against the actual associated type at each call. It remains attached
+to the declaring type parameter across imports and specialization. Equality
+bindings such as `I: Iterator<Item = T>` compose with projection bounds: in
+that case `where I.Item: Display` requires `T: Display`.
 
 #### 3.8.4 Associated Types in Traits
 
@@ -3253,7 +3263,7 @@ impl Sequence for RangeIter {
 }
 ```
 
-Traits with associated types do not participate in structural trait satisfaction checks (the "E1 guard"). A type can only satisfy a trait with associated types through an explicit `impl` block that provides the required `type Item = ...` declaration. Multi-associated-type traits and the bound-projection surface (`where T: Iterator<Item = i64>` equality-binding works; projection form `where T::Item: Display` is deferred) land in the next edition. See HEW-FUTURE.md §2.2.
+Traits with associated types do not participate in structural trait satisfaction checks (the "E1 guard"). A type can only satisfy a trait with associated types through an explicit `impl` block that provides the required `type Item = ...` declaration. Equality bindings (`where T: Iterator<Item = i64>`) and projection bounds (`where T.Item: Display`) are supported. Multi-associated-type traits remain deferred. See HEW-FUTURE.md §2.2.
 
 #### 3.8.5 Send/Frozen Specialization for Actors
 

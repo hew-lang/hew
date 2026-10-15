@@ -103,7 +103,7 @@ impl Checker {
         // where-clause may declare a `Display` bound that satisfies the
         // obligation abstractly. The concrete `Display` impl is selected per
         // monomorphisation by HIR's static trait-dispatch lowering.
-        if let Some(param) = Self::bare_param(&resolved) {
+        if let Some(param) = self.bound_parameter(&resolved) {
             if self.param_carries_trait(param.id, display) {
                 return Some(resolved);
             }

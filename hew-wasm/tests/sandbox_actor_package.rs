@@ -950,6 +950,16 @@ fn shared_native_manifests_execute_with_matching_results() {
     assert_native_manifest("construction-capabilities-memory", inputs);
 }
 
+#[test]
+fn imported_associated_projection_bounds_execute() {
+    let mut inputs = hew_compile::SourceSet::in_memory();
+    inputs.insert(
+        "projection_bound_support/labels.hew",
+        include_str!("../../tests/core-acceptance/cases/projection_bound_support/labels.hew"),
+    );
+    assert_native_manifest("associated-projection-bounds", inputs);
+}
+
 fn assert_native_manifest(name: &str, inputs: hew_compile::SourceSet) {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../tests/core-acceptance");
     let manifest = std::fs::read_to_string(root.join(format!("cases/{name}.toml")))

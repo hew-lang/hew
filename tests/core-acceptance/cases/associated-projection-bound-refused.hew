@@ -1,0 +1,16 @@
+import "projection_bound_support/labels.hew";
+
+type Opaque {
+    value: i64;
+}
+
+fn main() {
+    var items: Vec<Opaque> = Vec.new();
+    items.push(Opaque { value: 1 });
+    first_label(items.into_iter());
+    fixed_items([Opaque { value: 2 }].into_iter());
+}
+
+fn fixed_items<I: Iterator<Item = Opaque>>(items: I) where I.Item: Display {
+    let _ = items;
+}

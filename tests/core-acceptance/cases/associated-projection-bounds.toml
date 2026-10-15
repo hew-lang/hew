@@ -1,0 +1,11 @@
+[[case]]
+id = "associated-projection-bounds"
+intent = "An imported iterator helper carries its item Display obligation through numeric, string and generic-closure applications."
+source = "cases/associated-projection-bounds.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "associated projection bounds\n"
+stderr = ""
+exit = 0

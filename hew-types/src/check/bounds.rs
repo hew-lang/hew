@@ -33,17 +33,24 @@ impl Checker {
                 }
             }
         }
+        let mut projections = Vec::new();
         for predicate in where_clause
             .into_iter()
             .flat_map(|clause| &clause.predicates)
         {
             let TypeExpr::Named { path, type_args } = &predicate.ty.0 else {
+                if matches!(predicate.ty.0, TypeExpr::QualifiedAssocPath(_)) {
+                    projections.push(predicate);
+                }
                 continue;
             };
             if type_args.as_ref().is_some_and(|args| !args.is_empty()) {
                 continue;
             }
             let Some(super::scope::Resolution::Param(id)) = self.resolve_type_path(path) else {
+                if path.segments.len() > 1 {
+                    projections.push(predicate);
+                }
                 continue;
             };
             let Some((name, _)) = path.segments.last() else {
@@ -64,12 +71,6 @@ impl Checker {
                 resolved.push((subject.id, trait_ref, bound));
             }
         }
-        if resolved
-            .iter()
-            .all(|(_, _, bound)| bound.assoc_type_bindings.is_empty())
-        {
-            return bounds;
-        }
         self.current_type_param_bounds.push(bounds);
         let mut with_assoc = ParamBounds::default();
         for (param, mut trait_ref, bound) in resolved {
@@ -84,6 +85,35 @@ impl Checker {
                 })
                 .collect();
             with_assoc.push(param, trait_ref);
+        }
+        self.current_type_param_bounds.pop();
+        self.current_type_param_bounds.push(with_assoc.clone());
+        for predicate in projections {
+            let subject = self.resolve_registered_annotation_ty(&predicate.ty, hole_vars);
+            let Some(parameter) = self.register_projection_bound_subject(&subject) else {
+                continue;
+            };
+            for bound in &predicate.bounds {
+                let Some(mut trait_ref) = self.resolve_written_bound(parameter.spelling, bound)
+                else {
+                    continue;
+                };
+                trait_ref.assoc = bound
+                    .assoc_type_bindings
+                    .iter()
+                    .map(|binding| {
+                        (
+                            binding.name.name,
+                            self.resolve_registered_annotation_ty(&binding.ty, hole_vars),
+                        )
+                    })
+                    .collect();
+                with_assoc.push(parameter.id, trait_ref);
+            }
+            *self
+                .current_type_param_bounds
+                .last_mut()
+                .expect("bound scope") = with_assoc.clone();
         }
         self.current_type_param_bounds.pop();
         with_assoc
@@ -217,13 +247,14 @@ impl Checker {
             })
     }
 
-    /// The bounds in force on `param` here: every enclosing declaration's
-    /// frame and the signature whose body is being checked.
+    /// The parameter's declaration-owned bounds, plus the enclosing frames
+    /// and the signature whose body is being checked.
     pub(in crate::check) fn active_bounds_of(&self, param: crate::TypeParamId) -> Vec<TraitRef> {
         let mut found: Vec<TraitRef> = Vec::new();
         let frames = self.current_type_param_bounds.iter();
         let signature = self.checking_signature().map(|sig| &sig.bounds);
-        for bounds in frames.chain(signature) {
+        let declaration = self.fn_sigs.get(&param.owner).map(|sig| &sig.bounds);
+        for bounds in frames.chain(signature).chain(declaration) {
             for bound in bounds.of(param) {
                 if !found.contains(bound) {
                     found.push(bound.clone());
@@ -573,6 +604,12 @@ impl Checker {
     /// rule, a declared trait by an impl (or a structural match for an
     /// argument-free trait), and a binder by its own bounds.
     pub(in crate::check) fn type_satisfies_bound(&mut self, ty: &Ty, bound: &TraitRef) -> bool {
+        if self
+            .bound_parameter(ty)
+            .is_some_and(|parameter| self.param_carries_bound(parameter.id, bound))
+        {
+            return true;
+        }
         let marker = self.trait_marker(bound.trait_id);
         // An unresolved or already-errored type says nothing about Display or
         // Clone; reporting it would cascade onto the first failure.

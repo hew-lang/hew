@@ -383,7 +383,7 @@ mod tests {
     fn direct_contract_requires_c_return_fact() {
         direct(
             r#"impl duration {
-            #[runtime(family = "DurationIsZero", lowering = "direct", target = "native", classification = "stable")]
+            #[runtime(family = "DurationIsZero", lowering = "direct", target = "native", classification = "stable", authority = "Value")]
             #[extern_symbol(hew_duration_is_zero)]
             fn is_zero(d: duration) -> bool { false }
         }"#,
@@ -395,7 +395,7 @@ mod tests {
     fn direct_bool_cannot_guess_its_c_width() {
         direct(
             r#"impl duration {
-            #[runtime(family = "DurationIsZero", lowering = "direct", target = "native", classification = "stable", c_return = "storage")]
+            #[runtime(family = "DurationIsZero", lowering = "direct", target = "native", classification = "stable", authority = "Value", c_return = "storage")]
             #[extern_symbol(hew_duration_is_zero)]
             fn is_zero(d: duration) -> bool { false }
         }"#,
@@ -407,7 +407,7 @@ mod tests {
     fn direct_contract_requires_declaration_symbol() {
         direct(
             r#"impl duration {
-            #[runtime(family = "DurationIsZero", lowering = "direct", target = "native", classification = "stable", c_return = "truth_i32")]
+            #[runtime(family = "DurationIsZero", lowering = "direct", target = "native", classification = "stable", authority = "Value", c_return = "truth_i32")]
             fn is_zero(d: duration) -> bool { false }
         }"#,
         );
@@ -418,7 +418,7 @@ mod tests {
     fn direct_scalar_rejects_managed_parameter() {
         direct(
             r#"impl duration {
-            #[runtime(family = "DurationIsZero", lowering = "direct", target = "native", classification = "stable", c_return = "truth_i32")]
+            #[runtime(family = "DurationIsZero", lowering = "direct", target = "native", classification = "stable", authority = "Value", c_return = "truth_i32")]
             #[extern_symbol(hew_duration_is_zero)]
             fn is_zero(d: string) -> bool { false }
         }"#,
@@ -430,7 +430,7 @@ mod tests {
     fn bytes_query_requires_receiver_ownership() {
         direct(
             r"impl bytes {
-            #[runtime(family = BytesLen, lowering = direct, target = native, classification = stable, c_return = storage)]
+            #[runtime(family = BytesLen, lowering = direct, target = native, classification = stable, authority = Value, c_return = storage)]
             #[extern_symbol(hew_bytes_len)]
             fn len(buf: bytes) -> i64 { 0 }
         }",
@@ -442,7 +442,7 @@ mod tests {
     fn bytes_query_cannot_mint_an_owner_from_borrow() {
         direct(
             r"impl bytes {
-            #[runtime(family = BytesLen, lowering = direct, target = native, classification = stable, c_return = storage, receiver = borrow)]
+            #[runtime(family = BytesLen, lowering = direct, target = native, classification = stable, authority = Value, c_return = storage, receiver = borrow)]
             #[extern_symbol(hew_bytes_len)]
             fn len(buf: bytes) -> bytes { buf }
         }",

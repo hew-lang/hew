@@ -356,7 +356,7 @@ impl super::TypeCheckOutput {
     }
 
     #[must_use]
-    pub fn callable_release_targets(
+    pub fn owned_release_targets(
         &self,
         ty: &Ty,
         substitutions: &HashMap<ParamHead, Ty>,

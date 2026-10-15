@@ -96,3 +96,24 @@ code = "E_CONFINED_AUTHORITY"
 line = 4
 column = 13
 message = "confined `through_to_string` reaches `fs.open_read`: ambient authority acquisition"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "E_CONFINED_AUTHORITY"
+line = 4
+column = 13
+message = "confined `through_iterator` reaches `fs.open_read`: ambient authority acquisition"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "E_CONFINED_AUTHORITY"
+line = 4
+column = 13
+message = "confined `through_into_iterator` reaches `fs.open_read`: ambient authority acquisition"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "E_CONFINED_AUTHORITY"
+line = 4
+column = 13
+message = "confined `through_iterator_cleanup` reaches `fs.open_read`: ambient authority acquisition"

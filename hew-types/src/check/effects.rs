@@ -48,6 +48,8 @@ pub struct SuspensionEffects {
     pub value_operations: HashMap<SpanKey, (Ty, crate::ValueCapability)>,
     /// Interpolated values whose selected rendering can invoke user bodies.
     pub rendering_operations: HashMap<SpanKey, Ty>,
+    /// Checked iterables whose `for` protocol invokes source methods.
+    pub iteration_operations: HashMap<SpanKey, Ty>,
     pub unresolved_calls: HashMap<SpanKey, EffectBody>,
     /// Boundaries whose transitive external effects must be confined.
     pub confined: HashSet<crate::DefId>,
@@ -174,6 +176,7 @@ pub(super) struct EffectGraph {
     receivers: HashMap<SpanKey, Ty>,
     value_operations: HashMap<SpanKey, (Ty, crate::ValueCapability)>,
     rendering_operations: HashMap<SpanKey, Ty>,
+    iteration_operations: HashMap<SpanKey, Ty>,
     pub constructed_bodies: HashMap<EffectBody, Vec<EffectBody>>,
     pub confined: HashSet<crate::DefId>,
     /// Bodies and whether a construct inside them suspends on its own.
@@ -196,6 +199,13 @@ pub(super) struct EffectGraph {
 }
 
 impl Checker {
+    pub(super) fn record_iteration_effect(&mut self, span: &Span, ty: &Ty) {
+        self.effect_graph.iteration_operations.insert(
+            SpanKey::in_module(span, self.current_module_idx),
+            ty.clone(),
+        );
+    }
+
     pub(super) fn record_rendering_effect(&mut self, span: &Span, ty: &Ty) {
         self.effect_graph.rendering_operations.insert(
             SpanKey::in_module(span, self.current_module_idx),
@@ -1283,6 +1293,11 @@ impl Checker {
                 .collect(),
             rendering_operations: graph
                 .rendering_operations
+                .iter()
+                .map(|(key, ty)| (key.clone(), self.subst.resolve(ty)))
+                .collect(),
+            iteration_operations: graph
+                .iteration_operations
                 .iter()
                 .map(|(key, ty)| (key.clone(), self.subst.resolve(ty)))
                 .collect(),

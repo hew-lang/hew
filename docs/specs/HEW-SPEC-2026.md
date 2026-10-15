@@ -5491,8 +5491,9 @@ Their ordinary consuming `close` methods also run through required cleanup.
 `#[confined]` on an actor or free function forbids transitive ambient authority
 acquisition and opaque raw escapes. It takes no arguments. The compiler follows
 checked calls, imported helpers, callable origins, selected trait
-implementations, constructed actors and required cleanup. Generic functions
-and actors are checked with their actual calling or construction types. An
+implementations, implicit iterator and value callbacks, constructed actors and
+required cleanup. Generic functions and actors are checked with their actual
+calling or construction types. An
 unknown callable, implementation or extern authority summary is refused rather
 than assumed safe.
 

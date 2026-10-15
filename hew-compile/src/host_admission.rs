@@ -29,6 +29,11 @@ struct CallEdge {
     target: CallTarget,
 }
 
+struct IterationCalls {
+    calls: Vec<(DefId, Vec<Ty>)>,
+    iterator: Ty,
+}
+
 type CallableNode = hew_types::check::effects::EffectBody;
 
 /// A value origin resolved under its calling context. Aggregate fields and
@@ -614,6 +619,61 @@ fn body_parameters(output: &TypeCheckOutput, body: &CallableNode) -> Vec<hew_typ
         },
         CallableNode::GeneratorBlock(_) => Vec::new(),
     }
+}
+
+/// Follow the ordinary `for` protocol using the checked dispatch table. The
+/// iterable is already checked: synthesizing it again would repeat moves.
+fn iteration_calls(output: &TypeCheckOutput, iterable: &Ty) -> Option<IterationCalls> {
+    use hew_types::check::dispatch_table::MethodSelection;
+
+    let select = |ty: &Ty, name: &str| {
+        let instance = ResolvedTy::from_ty(ty)
+            .map_err(|_| ())?
+            .impl_receiver_instance(&output.defs)
+            .ok_or(())?;
+        match output.dispatch.select(
+            instance.nominal,
+            Some(&instance),
+            hew_parser::ast::Symbol::intern(name),
+        ) {
+            MethodSelection::Unique(_, method) => Ok(Some((
+                method,
+                instance
+                    .args
+                    .iter()
+                    .map(ResolvedTy::to_ty)
+                    .collect::<Vec<_>>(),
+            ))),
+            MethodSelection::Ambiguous(_) => Err(()),
+            MethodSelection::Missing => Ok(None),
+        }
+    };
+    let mut calls = Vec::new();
+    let iterator = if let Some((method, args)) = select(iterable, "into_iter").ok()? {
+        let sig = output.fn_sigs.get(&method)?;
+        if sig.type_params.len() != args.len() {
+            return None;
+        }
+        let substitutions = sig
+            .type_params
+            .iter()
+            .copied()
+            .zip(args.iter().cloned())
+            .collect();
+        let iterator = sig
+            .return_type
+            .substitute_type_params_parallel(&substitutions);
+        calls.push((method, args));
+        iterator
+    } else {
+        iterable.clone()
+    };
+    // VecIter's next operation is the compiler's value-only kernel, rather
+    // than a source method. Every other iterator needs a checked declaration.
+    if iterator.named_builtin() != Some(hew_types::BuiltinType::VecIter) {
+        calls.push(select(&iterator, "next").ok()??);
+    }
+    Some(IterationCalls { calls, iterator })
 }
 
 fn nominal_actuals(
@@ -1665,11 +1725,39 @@ fn check_profile(
                 ));
             }
 
+            let mut implicit_releases = Vec::new();
             if confined && checking {
                 let facts = value_facts
                     .as_mut()
                     .expect("confinement owns its value-fact service");
                 let mut implicit = Vec::new();
+                for (span, ty) in &output.suspension_effects.iteration_operations {
+                    if output.suspension_effects.call_owners.get(span) != Some(&caller) {
+                        continue;
+                    }
+                    let ty = ty.substitute_type_params_parallel(&substitutions);
+                    if let Some(calls) = iteration_calls(output, &ty) {
+                        implicit_releases
+                            .extend(output.owned_release_targets(&calls.iterator, &HashMap::new()));
+                        implicit.extend(
+                            calls
+                                .calls
+                                .into_iter()
+                                .map(|(method, args)| (span.clone(), method, args)),
+                        );
+                    } else if let Some((site, source, filename)) =
+                        site_for_call(program, root_source, root_label, &options.documents, span)
+                    {
+                        diagnostics.push(confinement_diagnostic(
+                            output,
+                            diagnostic_root,
+                            site,
+                            &source,
+                            &filename,
+                            "an iterator protocol without a checked authority summary",
+                        ));
+                    }
+                }
                 for (span, ty) in &output.suspension_effects.rendering_operations {
                     if output.suspension_effects.call_owners.get(span) != Some(&caller) {
                         continue;
@@ -1799,6 +1887,7 @@ fn check_profile(
                     .filter(|effect| effect.owner == caller)
                     .flat_map(|effect| output.release_targets(effect, &substitutions))
                     .collect();
+                releases.extend(implicit_releases);
                 let mut released_callables = HashSet::new();
                 while let Some(release) = releases.pop_front() {
                     use hew_types::check::cleanup_effects::CleanupTarget;
@@ -1825,7 +1914,7 @@ fn check_profile(
                                             .insert((span.clone(), captures.clone()))
                                         {
                                             if let Some(ty) = output.expr_types.get(&span) {
-                                                releases.extend(output.callable_release_targets(
+                                                releases.extend(output.owned_release_targets(
                                                     ty,
                                                     &captures.types.iter().cloned().collect(),
                                                 ));

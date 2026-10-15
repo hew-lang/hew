@@ -2231,6 +2231,7 @@ impl Checker {
                     Ty::Never => Ty::Never,
                     _ => {
                         if let Some(item_ty) = self.iterator_trait_item_ty(&iter_ty, &iterable.1) {
+                            self.record_iteration_effect(&iterable.1, &iter_ty);
                             item_ty
                         } else {
                             self.report_error(

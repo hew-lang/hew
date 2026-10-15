@@ -55,3 +55,44 @@ pub fn describe_order(id: i64) -> string {
     let summary = Summary { id: OrderId { value: id } };
     f"{summary:?}"
 }
+
+
+type OrderNumbers {
+    end: i64;
+}
+
+type OrderNumberIter {
+    current: i64;
+    end: i64;
+}
+
+impl Iterator for OrderNumberIter {
+    type Item = i64;
+
+    fn next(var self) -> Option<i64> {
+        if self.current == self.end {
+            .None
+        } else {
+            self.current += 1;
+            .Some(self.current)
+        }
+    }
+}
+
+impl IntoIterator for OrderNumbers {
+    type Item = i64;
+    type IntoIter = OrderNumberIter;
+
+    fn into_iter(self) -> OrderNumberIter {
+        OrderNumberIter { current: 0, end: self.end }
+    }
+}
+
+#[confined]
+pub fn sum_order_numbers(end: i64) -> i64 {
+    var sum = 0;
+    for number in OrderNumbers { end: end } {
+        sum += number;
+    }
+    sum
+}

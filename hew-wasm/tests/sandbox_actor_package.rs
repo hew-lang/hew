@@ -945,7 +945,7 @@ fn shared_native_manifests_execute_with_matching_results() {
     let mut inputs = hew_compile::SourceSet::in_memory();
     inputs.insert(
         "worker.hew",
-        include_str!("../../tests/core-acceptance/cases/construction-capabilities/worker.hew"),
+        include_str!("../../tests/core-acceptance/fixtures/construction-capabilities/worker.hew"),
     );
     assert_native_manifest("construction-capabilities-memory", inputs);
 }

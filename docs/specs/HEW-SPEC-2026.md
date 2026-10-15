@@ -5492,10 +5492,13 @@ Their ordinary consuming `close` methods also run through required cleanup.
 acquisition and opaque raw escapes. It takes no arguments. The compiler follows
 checked calls, imported helpers, callable origins, selected trait
 implementations, implicit iterator and value callbacks, constructed actors and
-required cleanup. Generic functions and actors are checked with their actual
-calling or construction types. An
-unknown callable, implementation or extern authority summary is refused rather
-than assumed safe.
+required cleanup. A generic library can be checked without its clients:
+declaration-owned supplied parameters retain their authority obligations.
+Concrete calls and actor constructions discharge those obligations using the
+actual types and callable origins. Definite ambient acquisition and raw escapes
+are rejected even in unused annotated bodies. Unknown concrete callables,
+implementations or extern authority summaries are refused rather than assumed
+safe.
 
 Pending results, queued stream values and collection elements retain their own
 cleanup effects. Placing a resource inside a service or container does not hide

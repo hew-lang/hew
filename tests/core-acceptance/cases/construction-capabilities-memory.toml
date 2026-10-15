@@ -1,7 +1,7 @@
 [[case]]
 id = "construction-capabilities-memory"
 intent = "The same actor and ordinary domain interfaces accept an in-memory substitute and release its output at actor teardown."
-source = "cases/construction-capabilities/memory.hew"
+source = "fixtures/construction-capabilities/memory.hew"
 suites = ["acceptance", "safety"]
 timeout_seconds = 15
 

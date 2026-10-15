@@ -1,0 +1,20 @@
+import std.fs;
+import worker;
+
+type AmbientOrders {}
+
+impl worker.OrderInput for AmbientOrders {
+    fn load(self) -> Result<bytes, string> {
+        let file = fs.open_read("ungranted");
+        .Ok("order".to_bytes())
+    }
+}
+
+#[confined]
+fn unused<I: worker.OrderInput>(input: I) {
+    let file = fs.open_read("ungranted");
+}
+
+fn main() {
+    let order = worker.read_order(AmbientOrders {});
+}

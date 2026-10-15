@@ -53,6 +53,9 @@ enum ResolvedValue {
         candidates: IndirectCallCandidates,
         captures: ResolvedContext,
     },
+    /// A supplied declaration parameter during definition checking. Concrete
+    /// callers resolve its existing checker demand before entering the body.
+    Parameter(TypeBindingId),
     Unknown,
 }
 
@@ -222,6 +225,7 @@ fn project_values(
                         },
                     )
             }
+            ResolvedValue::Parameter(_) => vec![value.clone()],
             value if projections.is_empty() => vec![value.clone()],
             _ => vec![ResolvedValue::Unknown],
         };
@@ -345,6 +349,7 @@ fn resolve_candidate_at(
             let mut callees = selected_call_declaration(output, site)
                 .into_iter()
                 .collect::<Vec<_>>();
+            let mut symbolic_receiver = Vec::new();
             if callees.is_empty() {
                 if let Some(CallTarget::StaticTraitMethod {
                     declaring_trait,
@@ -364,6 +369,13 @@ fn resolve_candidate_at(
                             )
                         })
                         .unwrap_or_default();
+                    if !receiver.is_empty()
+                        && receiver
+                            .iter()
+                            .all(|value| matches!(value, ResolvedValue::Parameter(_)))
+                    {
+                        symbolic_receiver.clone_from(&receiver);
+                    }
                     for value in receiver {
                         if let ResolvedValue::Aggregate { span, .. } = value {
                             if let Some(nominal) = output
@@ -382,8 +394,8 @@ fn resolve_candidate_at(
                     }
                 }
             }
-            let mut values = Vec::new();
-            if callees.is_empty() {
+            let mut values = symbolic_receiver;
+            if callees.is_empty() && values.is_empty() {
                 values.push(ResolvedValue::Unknown);
             }
             for callee in callees {
@@ -618,6 +630,41 @@ fn body_parameters(output: &TypeCheckOutput, body: &CallableNode) -> Vec<hew_typ
             _ => Vec::new(),
         },
         CallableNode::GeneratorBlock(_) => Vec::new(),
+    }
+}
+
+/// Interpret an uninstantiated declaration with its own symbolic inputs. The
+/// checker tables retain the same demands for every concrete call/construction.
+fn definition_env(output: &TypeCheckOutput, root: DefId) -> CandidateEnv {
+    let body = CallableNode::Declaration(root);
+    let mut env = CandidateEnv::new();
+    for parameter in body_parameters(output, &body) {
+        env.types.push((parameter, Ty::param(parameter)));
+    }
+    for formal in output.callable_formals.get(&body).into_iter().flatten() {
+        env.insert(*formal, vec![ResolvedValue::Parameter(*formal)]);
+    }
+    for (binding, (owner, _)) in &output.suspension_effects.actor_fields {
+        if owner.declaration() == root {
+            env.insert(*binding, vec![ResolvedValue::Parameter(*binding)]);
+        }
+    }
+    env.types.sort_by_key(|(parameter, _)| parameter.id);
+    env
+}
+
+/// Only a declaration-owned, still unbound parameter is an obligation. Erased
+/// generators, opaque callables and other unknown concrete types remain errors.
+fn unbound_parameter(ty: &Ty, substitutions: &HashMap<hew_types::ParamHead, Ty>) -> bool {
+    match ty {
+        Ty::Named {
+            head: hew_types::TypeHead::Param(parameter),
+            args,
+        } if args.is_empty() => substitutions
+            .get(parameter)
+            .is_some_and(|ty| *ty == Ty::param(*parameter)),
+        Ty::AssocType { base, .. } => unbound_parameter(base, substitutions),
+        _ => false,
     }
 }
 
@@ -1574,7 +1621,11 @@ fn check_profile(
             CallableNode::Declaration(root),
             None::<(SourceSite, String, String)>,
             Vec::<Ty>::new(),
-            CandidateEnv::new(),
+            if confined {
+                definition_env(output, root)
+            } else {
+                CandidateEnv::new()
+            },
             Vec::<(CallableNode, Vec<Ty>)>::new(),
             None::<DefId>,
         )]);
@@ -1736,6 +1787,9 @@ fn check_profile(
                         continue;
                     }
                     let ty = ty.substitute_type_params_parallel(&substitutions);
+                    if unbound_parameter(&ty, &substitutions) {
+                        continue;
+                    }
                     if let Some(calls) = iteration_calls(output, &ty) {
                         implicit_releases
                             .extend(output.owned_release_targets(&calls.iterator, &HashMap::new()));
@@ -1765,6 +1819,9 @@ fn check_profile(
                     let ty = ty
                         .substitute_type_params_parallel(&substitutions)
                         .materialize_literal_defaults();
+                    if unbound_parameter(&ty, &substitutions) {
+                        continue;
+                    }
                     let calls = ResolvedTy::from_ty(&ty)
                         .ok()
                         .and_then(|ty| facts.rendering_calls(&ty).ok());
@@ -1840,6 +1897,9 @@ fn check_profile(
                     let ty = ty
                         .substitute_type_params_parallel(&substitutions)
                         .materialize_literal_defaults();
+                    if unbound_parameter(&ty, &substitutions) {
+                        continue;
+                    }
                     let selection = ResolvedTy::from_ty(&ty)
                         .ok()
                         .and_then(|ty| facts.capability_plan(&ty, capability).ok())
@@ -1908,7 +1968,8 @@ fn check_profile(
                         CleanupTarget::Callable(candidates) => {
                             for value in resolve_candidates(output, &candidates, &caller_env) {
                                 match value {
-                                    ResolvedValue::Declaration(_) => {}
+                                    ResolvedValue::Declaration(_) | ResolvedValue::Parameter(_) => {
+                                    }
                                     ResolvedValue::Closure { span, captures } => {
                                         if released_callables
                                             .insert((span.clone(), captures.clone()))
@@ -1954,6 +2015,9 @@ fn check_profile(
                             }
                         }
                         CleanupTarget::Unknown(ty) => {
+                            if unbound_parameter(&ty, &substitutions) {
+                                continue;
+                            }
                             if let Some((site, source, filename)) =
                                 user_site.clone().or_else(|| {
                                     body_site(
@@ -2207,7 +2271,8 @@ fn check_profile(
                                 }
                                 ResolvedValue::Aggregate { .. }
                                 | ResolvedValue::Source { .. }
-                                | ResolvedValue::Unknown => {}
+                                | ResolvedValue::Unknown
+                                | ResolvedValue::Parameter(_) => {}
                             }
                         }
                     }
@@ -2381,7 +2446,10 @@ fn check_profile(
                             }
                         }
                     }
-                    if checking && confined && !matched {
+                    let deferred_receiver = receiver_param
+                        .and_then(|parameter| substitutions.get(parameter))
+                        .is_some_and(|ty| unbound_parameter(ty, &substitutions));
+                    if checking && confined && !matched && !deferred_receiver {
                         if let Some((site, source, filename)) = selected_site.clone() {
                             diagnostics.push(confinement_diagnostic(output, diagnostic_root, site, &source, &filename, "a trait service implementation whose authority is not known in this construction"));
                         }

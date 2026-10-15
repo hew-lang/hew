@@ -1,0 +1,7 @@
+[[case]]
+id = "construction-capabilities-library"
+intent = "A reusable confined generic library retains supplied-service obligations without requiring clients in its checking root."
+source = "fixtures/construction-capabilities/worker.hew"
+kind = "check"
+suites = ["acceptance"]
+timeout_seconds = 15

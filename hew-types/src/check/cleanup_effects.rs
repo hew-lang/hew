@@ -468,14 +468,29 @@ fn cleanup_targets(
                     continue;
                 }
                 match head.builtin() {
+                    // A generator erases its producer and captured cleanup.
+                    // Suspension is known, but its source authority is not.
+                    Some(BuiltinType::Generator) if whole && unknown => {
+                        effects.push(CleanupTarget::Unknown(ty.clone()));
+                    }
+                    Some(BuiltinType::Generator) if whole => {
+                        effects.push(CleanupTarget::Suspends);
+                    }
                     Some(
-                        BuiltinType::Generator
+                        BuiltinType::Task
                         | BuiltinType::ActorCall
                         | BuiltinType::Stream
                         | BuiltinType::Sink,
-                    ) if whole => effects.push(CleanupTarget::Suspends),
+                    ) if whole => {
+                        effects.push(CleanupTarget::Suspends);
+                        for (index, ty) in args.iter().enumerate() {
+                            child(index.to_string(), ty.clone());
+                        }
+                    }
                     Some(
                         BuiltinType::Vec
+                        | BuiltinType::VecIter
+                        | BuiltinType::HashMapIter
                         | BuiltinType::HashMap
                         | BuiltinType::HashSet
                         | BuiltinType::Rc

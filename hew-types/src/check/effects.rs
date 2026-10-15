@@ -704,6 +704,12 @@ impl Checker {
             _ => None,
         };
         if let Some(receiver) = receiver.and_then(|receiver| self.callee_value_type(receiver)) {
+            if matches!(
+                self.method_call_rewrites.get(&key),
+                Some(MethodCallRewrite::GeneratorNext { .. })
+            ) {
+                self.record_iteration_effect(span, &receiver);
+            }
             self.effect_graph.receivers.insert(key.clone(), receiver);
         }
         if let Expr::Binary { left, op, .. } = expr {
@@ -745,6 +751,23 @@ impl Checker {
                 .insert(key.clone(), owner.clone());
         }
         self.record_value_operation_effects(expr, span);
+        let releases_receiver = self.call_target(&key).is_some_and(|target| {
+            let family = match target {
+                CallTarget::Runtime(family) | CallTarget::DeclaredRuntime { family, .. } => {
+                    Some(*family)
+                }
+                CallTarget::RuntimeCollection(method) => method.runtime_family(),
+                _ => None,
+            };
+            family.is_some_and(|family| {
+                family.consumes_receiver() || family.releases_receiver_contents()
+            })
+        });
+        if releases_receiver {
+            if let Some(receiver) = self.effect_graph.receivers.get(&key).cloned() {
+                self.record_owned_cleanup_effect(&receiver);
+            }
+        }
         if matches!(
             expr,
             Expr::Call { .. } | Expr::MethodCall { .. } | Expr::Spawn { .. }

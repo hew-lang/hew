@@ -1,4 +1,5 @@
 import std.fs;
+import std.stream;
 
 fn acquire() {
     let _ = fs.open_read("ungranted.txt");
@@ -63,6 +64,14 @@ fn main() {
     let _ = through_structural_display();
     through_structural_hash();
     let _ = through_structural_eq();
+    let pending = hidden_producer(HiddenCleanup { tag: 1 });
+    through_generator_cleanup(pending);
+    let borrowed = hidden_producer(HiddenCleanup { tag: 2 });
+    through_generator_next(borrowed);
+    let (output, input): (stream.Sink<HiddenCleanup>, stream.Stream<HiddenCleanup>) = stream.pipe(1).expect("pipe");
+    output.send(HiddenCleanup { tag: 3 }).expect("queued resource");
+    output.close();
+    through_stream_payload(input);
 }
 
 #[confined]
@@ -261,4 +270,27 @@ fn through_iterator_cleanup() {
     for value in CleanupIterable { end: 1 } {
         let _ = value;
     }
+}
+
+
+gen fn hidden_producer(consume held: HiddenCleanup) -> i64 {
+    yield held.tag;
+}
+
+#[confined]
+fn through_generator_cleanup(consume pending: Generator<i64, ()>) {}
+
+#[confined]
+fn through_generator_next(pending: Generator<i64, ()>) {
+    let _ = pending.next();
+}
+
+
+#[confined]
+fn through_stream_payload(consume pending: stream.Stream<HiddenCleanup>) {}
+
+
+#[confined]
+fn through_stream_close(consume pending: stream.Stream<HiddenCleanup>) {
+    pending.close();
 }

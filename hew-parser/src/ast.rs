@@ -1800,6 +1800,9 @@ pub struct ActorDecl {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mailbox_span: Option<Span>,
     pub is_isolated: bool,
+    /// Reject transitive ambient acquisition inside this actor.
+    #[serde(default)]
+    pub is_confined: bool,
     pub doc_comment: Option<String>,
     /// Maximum heap bytes this actor may allocate from its arena.
     ///

@@ -96,14 +96,10 @@ fn execute(source: &str) -> serde_json::Value {
 }
 
 fn execute_expected(source: &str, status: &str) -> serde_json::Value {
-    execute_options(source, status, "{}")
+    execute_options(source, status, "{}", hew_compile::SourceSet::in_memory())
 }
 
-fn execute_options(source: &str, status: &str, options: &str) -> serde_json::Value {
-    execute_inputs(source, status, options, hew_compile::SourceSet::in_memory())
-}
-
-fn execute_inputs(
+fn execute_options(
     source: &str,
     status: &str,
     options: &str,
@@ -503,7 +499,10 @@ fn main() {
 
 #[test]
 fn a_task_fault_reaches_scope_recovery_after_deferred_cleanup() {
-    assert_native_manifest("task-fault-cleanup-diagnostic");
+    assert_native_manifest(
+        "task-fault-cleanup-diagnostic",
+        hew_compile::SourceSet::in_memory(),
+    );
 }
 
 #[test]
@@ -842,11 +841,14 @@ fn main() {
     for seed in [0, 1, 7, 42] {
         let options =
             serde_json::json!({"schedulerPolicy": "chaos", "replay": {"seed": seed}}).to_string();
-        let trace = execute_options(source, "ok", &options);
+        let trace = execute_options(source, "ok", &options, hew_compile::SourceSet::in_memory());
         assert_eq!(stdout(&trace), "7\n7\n");
         assert_eq!(trace["final_state"]["exit_code"], 0, "{trace:#}");
         let replay = serde_json::json!({"replay": trace["replay"]}).to_string();
-        assert_eq!(execute_options(source, "ok", &replay), trace);
+        assert_eq!(
+            execute_options(source, "ok", &replay, hew_compile::SourceSet::in_memory()),
+            trace
+        );
     }
 }
 
@@ -938,12 +940,14 @@ fn shared_native_manifests_execute_with_matching_results() {
         "generic-closure-composition",
         "float-sort-values",
     ] {
-        assert_native_manifest(name);
+        assert_native_manifest(name, hew_compile::SourceSet::in_memory());
     }
-}
-
-fn assert_native_manifest(name: &str) {
-    assert_native_manifest_with_inputs(name, hew_compile::SourceSet::in_memory());
+    let mut inputs = hew_compile::SourceSet::in_memory();
+    inputs.insert(
+        "worker.hew",
+        include_str!("../../tests/core-acceptance/fixtures/construction-capabilities/worker.hew"),
+    );
+    assert_native_manifest("construction-capabilities-memory", inputs);
 }
 
 #[test]
@@ -953,10 +957,10 @@ fn imported_associated_projection_bounds_execute() {
         "projection_bound_support/labels.hew",
         include_str!("../../tests/core-acceptance/cases/projection_bound_support/labels.hew"),
     );
-    assert_native_manifest_with_inputs("associated-projection-bounds", inputs);
+    assert_native_manifest("associated-projection-bounds", inputs);
 }
 
-fn assert_native_manifest_with_inputs(name: &str, inputs: hew_compile::SourceSet) {
+fn assert_native_manifest(name: &str, inputs: hew_compile::SourceSet) {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../tests/core-acceptance");
     let manifest = std::fs::read_to_string(root.join(format!("cases/{name}.toml")))
         .expect("shared native manifest");
@@ -964,7 +968,7 @@ fn assert_native_manifest_with_inputs(name: &str, inputs: hew_compile::SourceSet
     let case = &manifest["case"][0];
     let source = std::fs::read_to_string(root.join(case["source"].as_str().unwrap()))
         .expect("shared native source");
-    let trace = execute_inputs(&source, "ok", "{}", inputs);
+    let trace = execute_options(&source, "ok", "{}", inputs);
     assert_eq!(
         stdout(&trace),
         case["expected"]["stdout"].as_str().unwrap(),
@@ -979,27 +983,36 @@ fn assert_native_manifest_with_inputs(name: &str, inputs: hew_compile::SourceSet
 
 #[test]
 fn a_nested_deadline_drains_descendants_before_recovery() {
-    assert_native_manifest("task-nested-deadline");
+    assert_native_manifest("task-nested-deadline", hew_compile::SourceSet::in_memory());
 }
 
 #[test]
 fn a_close_observer_recovers_complete_actor_cleanup_faults() {
-    assert_native_manifest("actor-close-retains-fault-message");
+    assert_native_manifest(
+        "actor-close-retains-fault-message",
+        hew_compile::SourceSet::in_memory(),
+    );
 }
 
 #[test]
 fn coalescing_preserves_obligations_and_closes_displaced_resources() {
-    assert_native_manifest("mailbox-coalesce-obligations");
+    assert_native_manifest(
+        "mailbox-coalesce-obligations",
+        hew_compile::SourceSet::in_memory(),
+    );
 }
 
 #[test]
 fn coalescing_accepts_replacement_and_reports_fallback_discard() {
-    assert_native_manifest("mailbox_declared_loss_visible");
+    assert_native_manifest(
+        "mailbox_declared_loss_visible",
+        hew_compile::SourceSet::in_memory(),
+    );
 }
 
 #[test]
 fn actor_stop_drains_accepted_work_and_refuses_new_work_in_both_runtimes() {
-    assert_native_manifest("actor-stop-drains");
+    assert_native_manifest("actor-stop-drains", hew_compile::SourceSet::in_memory());
 }
 
 #[test]

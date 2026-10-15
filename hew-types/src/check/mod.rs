@@ -31,7 +31,7 @@ mod bounds;
 mod branch_join;
 mod callables;
 mod calls;
-mod cleanup_effects;
+pub mod cleanup_effects;
 mod closure_inference;
 mod coerce;
 pub mod const_eval;

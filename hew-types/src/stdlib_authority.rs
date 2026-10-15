@@ -28,6 +28,7 @@ pub enum StdlibRoot {
     LinkMonitor,
     String,
     Io,
+    Fs,
     Metrics,
     Net,
     NetDns,
@@ -45,6 +46,7 @@ impl StdlibRoot {
             Self::LinkMonitor => "link_monitor",
             Self::String => "string",
             Self::Io => "io",
+            Self::Fs => "fs",
             Self::Metrics => "metrics",
             Self::Net => "net",
             Self::NetDns => "net::dns",
@@ -110,6 +112,11 @@ pub const SUBSTRATE_SOURCES: &[AuthoritySource<'static>] = &[
         StdlibRoot::String,
         "std/string.hew",
         include_str!("../../std/string.hew"),
+    ),
+    AuthoritySource::embedded(
+        StdlibRoot::Fs,
+        "std/fs.hew",
+        include_str!("../../std/fs.hew"),
     ),
     AuthoritySource::embedded(
         StdlibRoot::Io,
@@ -318,6 +325,9 @@ pub struct ExternRuntimeCapabilityEntry {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExternRuntimeCapability {
     Metrics,
+    Ambient,
+    ResourceOperation,
+    Value,
 }
 
 impl ExternRuntimeCapability {
@@ -325,6 +335,9 @@ impl ExternRuntimeCapability {
     pub const fn key(self) -> &'static str {
         match self {
             Self::Metrics => "metrics",
+            Self::Ambient => "ambient",
+            Self::ResourceOperation => "resource_operation",
+            Self::Value => "value",
         }
     }
 
@@ -332,6 +345,9 @@ impl ExternRuntimeCapability {
     pub fn from_key(key: &str) -> Option<Self> {
         match key {
             "metrics" => Some(Self::Metrics),
+            "ambient" => Some(Self::Ambient),
+            "resource_operation" => Some(Self::ResourceOperation),
+            "value" => Some(Self::Value),
             _ => None,
         }
     }

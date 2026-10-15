@@ -1,0 +1,21 @@
+[[case]]
+id = "construction-capabilities-library-refused"
+intent = "Concrete supplied implementations discharge library obligations and unused generic boundaries still reject definite ambient acquisition."
+source = "fixtures/construction-capabilities/ambient.hew"
+kind = "reject"
+suites = ["acceptance"]
+timeout_seconds = 15
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "E_CONFINED_AUTHORITY"
+line = 8
+column = 20
+message = "confined `read_order` reaches `fs.open_read`: ambient authority acquisition"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "E_CONFINED_AUTHORITY"
+line = 15
+column = 16
+message = "confined `unused` reaches `fs.open_read`: ambient authority acquisition"

@@ -1,0 +1,296 @@
+import std.fs;
+import std.stream;
+
+fn acquire() {
+    let _ = fs.open_read("ungranted.txt");
+}
+
+#[confined]
+fn through_helper() {
+    acquire();
+}
+
+#[confined]
+fn through_callback(callback: fn[suspends]()) {
+    callback();
+}
+
+#[confined]
+actor LateAcquisition {
+    #[on(stop)]
+    fn finish() {
+        acquire();
+    }
+}
+
+#[resource]
+type HiddenCleanup {
+    tag: i64;
+}
+
+impl HiddenCleanup {
+    fn close(consume self) {
+        let _ = self.tag;
+        acquire();
+    }
+}
+
+#[confined]
+fn through_cleanup() {
+    let resource = HiddenCleanup { tag: 1 };
+    let _ = resource.tag;
+}
+
+extern "C" {
+    fn raw_host();
+}
+
+#[confined]
+fn through_extern() {
+    unsafe {
+        raw_host();
+    };
+}
+
+fn main() {
+    through_helper();
+    through_callback(acquire);
+    let late = spawn LateAcquisition;
+    stop(late);
+    stopped(late);
+    through_cleanup();
+    through_extern();
+    let _ = through_display();
+    let _ = through_structural_display();
+    through_structural_hash();
+    let _ = through_structural_eq();
+    let pending = hidden_producer(HiddenCleanup { tag: 1 });
+    through_generator_cleanup(pending);
+    let borrowed = hidden_producer(HiddenCleanup { tag: 2 });
+    through_generator_next(borrowed);
+    let (output, input): (stream.Sink<HiddenCleanup>, stream.Stream<HiddenCleanup>) = stream.pipe(1).expect("pipe");
+    output.send(HiddenCleanup { tag: 3 }).expect("queued resource");
+    output.close();
+    through_stream_payload(input);
+}
+
+#[confined]
+actor Unconstructed {
+    #[on(stop)]
+    fn finish() {
+        acquire();
+    }
+}
+
+type HashKey {
+    id: i64;
+}
+
+impl Hash for HashKey {
+    fn hash(self) -> i64 {
+        acquire();
+        self.id
+    }
+}
+
+type HashWrapper {
+    key: HashKey;
+}
+
+#[confined]
+fn through_structural_hash() {
+    var values: HashMap<HashWrapper, i64> = HashMap.new();
+    values.insert(HashWrapper { key: HashKey { id: 1 } }, 1);
+}
+
+type EqKey {
+    id: i64;
+}
+
+impl Eq for EqKey {
+    fn eq(self, other: EqKey) -> bool {
+        acquire();
+        self.id == other.id
+    }
+}
+
+type EqWrapper {
+    key: EqKey;
+}
+
+#[confined]
+fn through_structural_eq() -> bool {
+    EqWrapper { key: EqKey { id: 1 } } == EqWrapper { key: EqKey { id: 2 } }
+}
+
+type DisplayKey {
+    id: i64;
+}
+
+impl Display for DisplayKey {
+    fn fmt(self) -> string {
+        acquire();
+        f"{self.id}"
+    }
+}
+
+type DisplayWrapper {
+    key: DisplayKey;
+}
+
+#[confined]
+fn through_display() -> string {
+    f"{DisplayKey { id: 1 }}"
+}
+
+#[confined]
+fn through_structural_display() -> string {
+    f"{DisplayWrapper { key: DisplayKey { id: 1 } }:?}"
+}
+
+#[confined]
+fn through_assert_display() {
+    assert(DisplayWrapper { key: DisplayKey { id: 1 } } == DisplayWrapper { key: DisplayKey { id: 2 } });
+}
+
+#[confined]
+fn through_lambda_actor() {
+    let service = actor || {
+        acquire();
+    };
+    stop(service);
+    stopped(service);
+}
+
+#[confined]
+fn through_to_string() -> string {
+    to_string(DisplayKey { id: 1 })
+}
+
+
+type HiddenIterator {
+    cursor: i64;
+}
+
+impl Iterator for HiddenIterator {
+    type Item = i64;
+
+    fn next(var self) -> Option<i64> {
+        acquire();
+        if self.cursor == 0 {
+            self.cursor = 1;
+            .Some(1)
+        } else {
+            .None
+        }
+    }
+}
+
+#[confined]
+fn through_iterator() {
+    for value in HiddenIterator { cursor: 0 } {
+        let _ = value;
+    }
+}
+
+type PureIterator {
+    cursor: i64;
+}
+
+impl Iterator for PureIterator {
+    type Item = i64;
+
+    fn next(var self) -> Option<i64> {
+        if self.cursor == 0 {
+            self.cursor = 1;
+            .Some(1)
+        } else {
+            .None
+        }
+    }
+}
+
+type HiddenIterable {
+    end: i64;
+}
+
+impl IntoIterator for HiddenIterable {
+    type Item = i64;
+    type IntoIter = PureIterator;
+
+    fn into_iter(self) -> PureIterator {
+        acquire();
+        PureIterator { cursor: self.end }
+    }
+}
+
+#[confined]
+fn through_into_iterator() {
+    for value in HiddenIterable { end: 1 } {
+        let _ = value;
+    }
+}
+
+
+#[resource]
+type CleanupIterator {
+    cursor: i64;
+}
+
+impl Iterator for CleanupIterator {
+    type Item = i64;
+
+    fn next(var self) -> Option<i64> {
+        .None
+    }
+}
+
+impl CleanupIterator {
+    fn close(consume self) {
+        let _ = self.cursor;
+        acquire();
+    }
+}
+
+type CleanupIterable {
+    end: i64;
+}
+
+impl IntoIterator for CleanupIterable {
+    type Item = i64;
+    type IntoIter = CleanupIterator;
+
+    fn into_iter(self) -> CleanupIterator {
+        CleanupIterator { cursor: self.end }
+    }
+}
+
+#[confined]
+fn through_iterator_cleanup() {
+    for value in CleanupIterable { end: 1 } {
+        let _ = value;
+    }
+}
+
+
+gen fn hidden_producer(consume held: HiddenCleanup) -> i64 {
+    yield held.tag;
+}
+
+#[confined]
+fn through_generator_cleanup(consume pending: Generator<i64, ()>) {}
+
+#[confined]
+fn through_generator_next(pending: Generator<i64, ()>) {
+    let _ = pending.next();
+}
+
+
+#[confined]
+fn through_stream_payload(consume pending: stream.Stream<HiddenCleanup>) {}
+
+
+#[confined]
+fn through_stream_close(consume pending: stream.Stream<HiddenCleanup>) {
+    pending.close();
+}

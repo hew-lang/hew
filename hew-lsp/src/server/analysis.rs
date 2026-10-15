@@ -1184,6 +1184,34 @@ pub(super) mod tests {
     }
 
     #[test]
+    fn analyze_document_checks_an_uninstantiated_confined_library() {
+        const WORKER: &str = include_str!(
+            "../../../tests/core-acceptance/fixtures/construction-capabilities/worker.hew"
+        );
+        let uri = Url::parse("file:///confined-worker.hew").unwrap();
+        let document = analyze_document(&uri, WORKER, &DashMap::new(), &[]);
+        let errors: Vec<_> = document
+            .diagnostics_by_uri
+            .values()
+            .flatten()
+            .filter(|diagnostic| diagnostic.severity == Some(DiagnosticSeverity::ERROR))
+            .collect();
+        assert!(errors.is_empty(), "confined library: {errors:?}");
+
+        let source = format!("{WORKER}\nimport std.fs;\n#[confined]\npub fn unused<I: OrderInput>(input: I) {{ let _ = fs.open_read(\"ungranted\"); }}\n");
+        let document = analyze_document(&uri, &source, &DashMap::new(), &[]);
+        assert!(
+            document
+                .diagnostics_by_uri
+                .values()
+                .flatten()
+                .any(|diagnostic| { diagnostic.message.contains("ambient authority acquisition") }),
+            "unused generic acquisition: {:?}",
+            document.diagnostics_by_uri
+        );
+    }
+
+    #[test]
     fn analyze_document_skips_hir_when_typecheck_fails() {
         let uri = Url::parse("file:///test.hew").unwrap();
         let document = analyze_document(&uri, "fn main() -> i32 { missing }", &DashMap::new(), &[]);

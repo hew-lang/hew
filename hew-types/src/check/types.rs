@@ -719,8 +719,8 @@ pub struct TypeCheckOutput {
     pub indirect_call_candidates: HashMap<SpanKey, IndirectCallCandidates>,
     /// Exact actual-to-formal callable flow at each checked direct call.
     pub callable_argument_flows: HashMap<SpanKey, Vec<CallableArgumentFlow>>,
-    /// Positional actual values at generic static-trait dispatch sites. The
-    /// selected concrete impl may depend on type substitution downstream.
+    /// Positional actual values at generic static-trait and indirect callable
+    /// dispatch sites, before the contextual target is selected.
     pub generic_trait_call_arguments: HashMap<SpanKey, Vec<CallableDispatchActual>>,
     /// Binder identities of each checked callable body, in parameter order.
     pub callable_formals: HashMap<super::effects::EffectBody, Vec<TypeBindingId>>,

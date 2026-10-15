@@ -14,6 +14,8 @@ pub enum IoHandleKind {
     Connection,
     Listener,
     TlsStream,
+    ReadFile,
+    WriteFile,
 }
 
 impl IoHandleKind {
@@ -23,6 +25,8 @@ impl IoHandleKind {
             Self::Connection => "std.net.Connection",
             Self::Listener => "std.net.Listener",
             Self::TlsStream => "std.net.tls.TlsStream",
+            Self::ReadFile => "std.fs.ReadFile",
+            Self::WriteFile => "std.fs.WriteFile",
         };
         matches!(ty, ResolvedTy::Named { head, args, .. }
             if head.registry_key() == expected && args.is_empty())
@@ -30,9 +34,15 @@ impl IoHandleKind {
 
     #[must_use]
     pub fn of_ty(ty: &ResolvedTy) -> Option<Self> {
-        [Self::Connection, Self::Listener, Self::TlsStream]
-            .into_iter()
-            .find(|kind| kind.matches(ty))
+        [
+            Self::Connection,
+            Self::Listener,
+            Self::TlsStream,
+            Self::ReadFile,
+            Self::WriteFile,
+        ]
+        .into_iter()
+        .find(|kind| kind.matches(ty))
     }
 }
 
@@ -89,9 +99,28 @@ pub enum AsyncIoOp {
     TlsConnect,
     TlsRead,
     TlsWrite,
+    FileRead,
+    FileWrite,
 }
 
 impl AsyncIoOp {
+    #[must_use]
+    pub const fn authority(self) -> crate::runtime_call::RuntimeAuthority {
+        match self {
+            Self::StdinReadLine | Self::TcpConnect | Self::TcpConnectTimeout | Self::TlsConnect => {
+                crate::runtime_call::RuntimeAuthority::Ambient
+            }
+            Self::TcpRead
+            | Self::TcpWrite
+            | Self::TcpAccept
+            | Self::SinkFinish
+            | Self::TlsRead
+            | Self::TlsWrite
+            | Self::FileRead
+            | Self::FileWrite => crate::runtime_call::RuntimeAuthority::Service,
+        }
+    }
+
     #[must_use]
     pub const fn argument_loan(self) -> AsyncIoLoan {
         match self {
@@ -101,9 +130,12 @@ impl AsyncIoOp {
             | Self::TlsConnect
             | Self::TlsRead
             | Self::TlsWrite => AsyncIoLoan::UntilSubmitReturns,
-            Self::TcpRead | Self::TcpWrite | Self::TcpAccept | Self::SinkFinish => {
-                AsyncIoLoan::UntilQuiescent
-            }
+            Self::TcpRead
+            | Self::TcpWrite
+            | Self::TcpAccept
+            | Self::SinkFinish
+            | Self::FileRead
+            | Self::FileWrite => AsyncIoLoan::UntilQuiescent,
         }
     }
     #[must_use]
@@ -112,6 +144,8 @@ impl AsyncIoOp {
             Self::TlsConnect => "hew_tls_connect",
             Self::TlsRead => "hew_tls_read_result",
             Self::TlsWrite => "hew_tls_write_result",
+            Self::FileRead => "hew_file_read_remaining",
+            Self::FileWrite => "hew_file_write_handle",
             Self::SinkFinish => "hew_sink_finish",
             Self::TcpRead => "hew_tcp_read",
             Self::TcpWrite => "hew_tcp_write",
@@ -130,6 +164,8 @@ impl AsyncIoOp {
             Self::TlsConnect => "hew_async_tls_connect",
             Self::TlsRead => "hew_async_tls_read",
             Self::TlsWrite => "hew_async_tls_write",
+            Self::FileRead => "hew_async_file_read",
+            Self::FileWrite => "hew_async_file_write",
             Self::SinkFinish => "hew_async_sink_finish",
             Self::TcpRead => "hew_async_tcp_read",
             Self::TcpWrite => "hew_async_tcp_write",
@@ -143,11 +179,11 @@ impl AsyncIoOp {
     #[must_use]
     pub const fn resume(self) -> AsyncIoResume {
         match self {
-            Self::TcpRead | Self::StdinReadLine => AsyncIoResume::Bytes,
+            Self::TcpRead | Self::StdinReadLine | Self::FileRead => AsyncIoResume::Bytes,
             Self::TcpAccept | Self::TcpConnect | Self::TcpConnectTimeout => {
                 AsyncIoResume::Connection
             }
-            Self::TcpWrite => AsyncIoResume::WriteCount,
+            Self::TcpWrite | Self::FileWrite => AsyncIoResume::WriteCount,
             Self::SinkFinish => AsyncIoResume::Unit,
             Self::TlsConnect => AsyncIoResume::TlsConnect,
             Self::TlsRead => AsyncIoResume::TlsRead,
@@ -188,6 +224,14 @@ impl AsyncIoOp {
             ty: IoHandle(IoHandleKind::TlsStream),
             effect: RuntimeArgumentEffect::Borrow,
         };
+        const READ_FILE: RuntimeArgumentContract = RuntimeArgumentContract {
+            ty: IoHandle(IoHandleKind::ReadFile),
+            effect: RuntimeArgumentEffect::Borrow,
+        };
+        const WRITE_FILE: RuntimeArgumentContract = RuntimeArgumentContract {
+            ty: IoHandle(IoHandleKind::WriteFile),
+            effect: RuntimeArgumentEffect::Borrow,
+        };
         const TIMEOUT: RuntimeArgumentContract = RuntimeArgumentContract {
             ty: RuntimeValueKind::I64,
             effect: RuntimeArgumentEffect::Borrow,
@@ -195,6 +239,8 @@ impl AsyncIoOp {
         // I/O errors belong to the source wrapper's Result/error channel,
         // not the logical-fault set on RuntimeSemanticContract.
         match self {
+            Self::FileRead => runtime_semantic_contract(&[READ_FILE], FreshOwned(Bytes), &[]),
+            Self::FileWrite => runtime_semantic_contract(&[WRITE_FILE, DATA], BitCopy(I32), &[]),
             Self::TlsConnect => runtime_semantic_contract(
                 &[PATH, INTEGER, INTEGER, DATA, TIMEOUT, TIMEOUT],
                 FreshOwned(TLS.ty),
@@ -269,6 +315,7 @@ impl RuntimeCallFamily {
             AsyncIoOp::StdinReadLine => "std.io",
             AsyncIoOp::SinkFinish => "std.stream",
             AsyncIoOp::TlsConnect | AsyncIoOp::TlsRead | AsyncIoOp::TlsWrite => "std.net.tls",
+            AsyncIoOp::FileRead | AsyncIoOp::FileWrite => "std.fs",
         };
         module == owner
             && symbol == op.c_symbol()

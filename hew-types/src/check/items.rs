@@ -1026,6 +1026,11 @@ impl Checker {
             .checking_declaration
             .or_else(|| self.lookup_declaration(fn_name))
             .or_else(|| self.impl_method_declaration_ids.get(fn_name).copied());
+        if fd.attributes.iter().any(|attr| attr.name == "confined") {
+            if let Some(id) = declaration {
+                self.effect_graph.confined.insert(id);
+            }
+        }
         let body = declaration.map(|id| {
             let creator = super::effects::EffectBody::Declaration(id);
             if fd.is_generator {
@@ -1348,6 +1353,11 @@ impl Checker {
         // pass authored, or a same-named actor from another module would be
         // consulted instead.
         let identity = self.declaration_identity(ad.name);
+        if ad.is_confined {
+            if let Some(id) = self.lookup_declaration(&identity) {
+                self.effect_graph.confined.insert(id);
+            }
+        }
         let parameters = self.declaration_parameter_heads(&identity);
         let actor_ty = self.named_ty_for_key(
             &identity,
@@ -1410,7 +1420,13 @@ impl Checker {
         }
 
         let previous_function = self.current_function.replace(format!("{identity}::init"));
+        let previous_effect_body = self.enter_named_effect_body(&identity);
         self.check_actor_field_defaults(ad);
+        for field in &ad.fields {
+            let ty = self.resolve_type_expr(&field.ty);
+            self.record_owned_cleanup_effect(&ty);
+        }
+        self.effect_graph.current_body = previous_effect_body;
         self.current_function = previous_function;
 
         // Type-check init body if present
@@ -1647,6 +1663,9 @@ impl Checker {
             u32::try_from(index).expect("more than u32::MAX actor fields"),
         );
         self.actor_field_binding_ids.insert(binding.id, identity);
+        if !field.is_mutable {
+            self.record_callable_formal_candidate(field.name);
+        }
         if let Some(site) = self.scope_site() {
             self.scopes.record_resolution(
                 site,
@@ -1952,7 +1971,8 @@ impl Checker {
 
         let qualified_name = format!("{actor_name}::init");
         let prev_function = self.current_function.take();
-        self.current_function = Some(qualified_name);
+        self.current_function = Some(qualified_name.clone());
+        let previous_effect_body = self.enter_named_effect_body(&qualified_name);
 
         // Bind actor fields directly in scope (bare field access, all
         // writable in the init body — init is where `let` fields receive
@@ -1987,6 +2007,7 @@ impl Checker {
         }
         self.current_return_type = None;
 
+        self.effect_graph.current_body = previous_effect_body;
         self.current_function = prev_function;
         self.env.pop_scope(); // params scope
         self.reject_unplugged_actor_state_fields(fields, Some("init"));
@@ -2080,7 +2101,8 @@ impl Checker {
 
         let qualified_name = format!("{actor_name}::{}", hook.name);
         let prev_function = self.current_function.take();
-        self.current_function = Some(qualified_name);
+        self.current_function = Some(qualified_name.clone());
+        let previous_effect_body = self.enter_named_effect_body(&qualified_name);
 
         // Bind actor fields directly in scope as bare names with their
         // declared mutability (`var` writable, `let` read-only).
@@ -2091,6 +2113,7 @@ impl Checker {
         self.current_return_type = None;
         self.in_actor_handler_context = prev_actor_handler_context;
 
+        self.effect_graph.current_body = previous_effect_body;
         self.current_function = prev_function;
         self.reject_unplugged_actor_state_fields(fields, Some(hook.name.name.as_str()));
         self.env.pop_scope();
@@ -2373,7 +2396,8 @@ impl Checker {
 
         let qualified_name = format!("{actor_name}::{}", hook.name);
         let prev_function = self.current_function.take();
-        self.current_function = Some(qualified_name);
+        self.current_function = Some(qualified_name.clone());
+        let previous_effect_body = self.enter_named_effect_body(&qualified_name);
 
         self.bind_actor_fields(fields);
         if let Some(p) = hook.params.first() {
@@ -2388,6 +2412,7 @@ impl Checker {
         self.current_return_type = None;
         self.in_actor_handler_context = prev_actor_handler_context;
 
+        self.effect_graph.current_body = previous_effect_body;
         self.current_function = prev_function;
         self.reject_unplugged_actor_state_fields(fields, Some(hook.name.name.as_str()));
         self.env.pop_scope();
@@ -2453,7 +2478,8 @@ impl Checker {
         self.env.push_scope();
         let qualified_name = format!("{actor_name}::{}", hook.name);
         let prev_function = self.current_function.take();
-        self.current_function = Some(qualified_name);
+        self.current_function = Some(qualified_name.clone());
+        let previous_effect_body = self.enter_named_effect_body(&qualified_name);
         self.bind_actor_fields(fields);
         if let Some(p) = hook.params.first() {
             let pty = self.resolve_type_expr(&p.ty);
@@ -2465,6 +2491,7 @@ impl Checker {
         let _body_ty = self.check_block(&hook.body, None);
         self.current_return_type = None;
         self.in_actor_handler_context = prev_actor_handler_context;
+        self.effect_graph.current_body = previous_effect_body;
         self.current_function = prev_function;
         self.reject_unplugged_actor_state_fields(fields, Some(hook.name.name.as_str()));
         self.env.pop_scope();

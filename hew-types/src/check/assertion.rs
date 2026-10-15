@@ -40,8 +40,12 @@ impl Checker {
         for operand in [left, right] {
             let key = SpanKey::in_module(&operand.1, self.current_module_idx);
             let ty = self.expr_types.get(&key).map(|ty| self.subst.resolve(ty));
-            if ty.is_some_and(|ty| !self.renders_through_fields(&ty, &mut Vec::new())) {
-                self.unrendered_assertion_operands.insert(key);
+            if let Some(ty) = ty {
+                if self.renders_through_fields(&ty, &mut Vec::new()) {
+                    self.record_rendering_effect(&operand.1, &ty);
+                } else {
+                    self.unrendered_assertion_operands.insert(key);
+                }
             }
         }
     }

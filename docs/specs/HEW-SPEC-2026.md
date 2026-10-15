@@ -5473,6 +5473,92 @@ message between tasks, appears in that order on either stream. A runtime fault
 report joins the same queue, and the queue is written out before the process
 exits or starts a child that inherits its output.
 
+#### 4.7.1 Resource construction and confinement
+
+A resource or service value carries its own authority. An application root
+acquires the resources it needs and supplies them when constructing an actor
+or component. Ordinary methods and helpers operate on those values; a separate
+permission key is not passed beside each call.
+
+`std.fs.open_read(path)` returns an owning `ReadFile`, and
+`std.fs.open_write(path)` returns an owning `WriteFile`. These native resources
+retain the opened file, not its path. `ReadFile.read()` reads the remaining
+bytes; `WriteFile.write(bytes)` advances the write cursor. Neither resource can
+open another path or perform the other direction's operation. Moving or
+replacing the original path does not redirect an already supplied resource.
+Their ordinary consuming `close` methods also run through required cleanup.
+
+`#[confined]` on an actor or free function forbids transitive ambient authority
+acquisition and opaque raw escapes. It takes no arguments. The compiler follows
+checked calls, imported helpers, callable origins, selected trait
+implementations, implicit iterator and value callbacks, constructed actors and
+required cleanup. A generic library can be checked without its clients:
+declaration-owned supplied parameters retain their authority obligations.
+Concrete calls and actor constructions discharge those obligations using the
+actual types and callable origins. Definite ambient acquisition and raw escapes
+are rejected even in unused annotated bodies. Unknown concrete callables,
+implementations or extern authority summaries are refused rather than assumed
+safe.
+
+Pending results, queued stream values and collection elements retain their own
+cleanup effects. Placing a resource inside a service or container does not hide
+its destructor, including during explicit close or destructive updates.
+
+Generator values erase their producer and captured cleanup authority. Advancing
+or owning the cleanup of such a value inside a confined boundary is currently
+refused when that authority cannot be proved.
+
+```hew,no_run
+import std.fs;
+
+#[confined]
+actor Reader {
+    let source: fs.ReadFile;
+    receive fn read() -> Result<bytes, fs.IoError> {
+        source.read()
+    }
+}
+
+fn main() {
+    let source = fs.open_read("orders.txt").expect("open orders");
+    let reader = spawn Reader { source: source };
+    let data = reader.read().expect("actor reply").expect("read orders");
+    println(data.len());
+    stop(reader);
+    stopped(reader);
+}
+```
+
+Supplied-service I/O is permitted inside the boundary. Acquiring a file from a
+path, using standard input/output directly, acquiring host or global-registry
+services, and calling an opaque user extern are refused. A dependency cannot
+hide acquisition behind another helper, a callback or a destructor. Actor
+confinement covers field defaults, initialization, receive handlers, ordinary
+methods, lifecycle hooks and terminal field cleanup. Calling a supplied actor
+service does not transfer the callee's private construction authority to its
+caller. Constructing another actor inside a confined body checks the new
+actor's construction and callbacks.
+
+Confinement is independent of suspension and deterministic execution. Existing
+`fn[suspends]` types retain their meaning; no public effect-row syntax is
+introduced. An in-memory implementation can satisfy the same ordinary domain
+trait as a native resource adapter. Native file resources remain native-only;
+the in-memory implementation is available to the shared browser VM.
+
+Application source roots and the configured standard library remain trusted.
+This is a checked source boundary, not an operating-system sandbox or a
+mechanism for treating arbitrary native code as untrusted. Unclassified native
+operations remain unavailable inside a confined boundary until their owning
+contract supplies an authority summary.
+
+Distributed delegation requires an authenticated narrowed service reference,
+not a serialized native handle, path or forgeable identifier. Its contract must
+bind issuer, recipient, incarnation and rights, and define whether and how
+rights may be delegated onward or discovered through a registry. Ordinary
+`Node.lookup` and a `RemotePid` location are not authorization. The current
+confinement slice refuses distributed ambient acquisition and remote calls;
+it does not yet implement that service-reference protocol.
+
 ### 4.8 Interaction with Actor Messages
 
 An actor processes one receive handler at a time. Forked work cannot mutate
@@ -8113,6 +8199,7 @@ refuses the name it does not know rather than dropping it.
 | `#[on(kind)]` | actor member `fn` | Lifecycle hook; `kind` is one of `start`, `stop`, `crash`, `exit`, `down` (§9.1.2). |
 | `#[every(<duration>)]` | actor `receive fn` | Periodic receive handler (§2.1.2). |
 | `#[intercept]` | actor or supervisor method | Typed receive interceptor (§2.1.4). |
+| `#[confined]` | actor declaration, free function | Rejects transitive ambient authority acquisition and opaque raw escapes; supplied-service operations remain permitted (§4.7.1). |
 | `#[max_heap(N)]` | actor declaration | Per-actor arena ceiling; a breach is an unrecoverable actor failure (§2.1). |
 | `#[extern_symbol(name)]` | `fn` inside an `extern "C"` block or an `impl` block | Binds the declaration to a named C-ABI symbol (§3.9.1). Not legal on an actor member. |
 | `#[offload]` | `fn` inside an `extern "C"` block | A call parks its task while the function runs on the blocking pool (§3.9.1, §4.7). Takes no arguments. |

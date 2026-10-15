@@ -24,6 +24,21 @@ pub enum TcpOp {
 
 impl TcpOp {
     #[must_use]
+    pub const fn authority(self) -> crate::runtime_call::RuntimeAuthority {
+        match self {
+            Self::Listen => crate::runtime_call::RuntimeAuthority::Ambient,
+            Self::ListenerValid
+            | Self::ConnectionValid
+            | Self::ListenerPort
+            | Self::ListenerClose
+            | Self::ConnectionClose
+            | Self::ReadTimeout
+            | Self::WriteTimeout
+            | Self::BroadcastExcept => crate::runtime_call::RuntimeAuthority::Service,
+        }
+    }
+
+    #[must_use]
     pub const fn c_symbol(self) -> &'static str {
         match self {
             Self::Listen => "hew_tcp_listen",

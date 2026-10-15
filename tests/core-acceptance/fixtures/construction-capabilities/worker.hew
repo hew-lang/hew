@@ -1,0 +1,98 @@
+pub trait OrderInput {
+    fn[suspends] load(self) -> Result<bytes, string>;
+}
+
+pub trait ReceiptOutput {
+    fn[suspends] save(self, receipt: bytes) -> Result<(), string>;
+}
+
+pub fn reader<I: OrderInput>(consume input: I) -> fn[suspends]() -> Result<bytes, string> {
+    move || input.load()
+}
+
+#[confined]
+pub fn read_order<I: OrderInput>(consume input: I) -> bytes fails string {
+    let load = reader(input);
+    load()?
+}
+
+#[confined]
+pub fn copy_order<I: OrderInput, O: ReceiptOutput>(input: I, output: O, format: fn[clone](bytes) -> bytes) -> i64 fails string {
+    let order = input.load()?;
+    let receipt = format(order);
+    let size = receipt.len();
+    output.save(receipt)?;
+    size
+}
+
+#[confined]
+pub actor OrderCopier<I: OrderInput, O: ReceiptOutput> {
+    let input: I;
+    let output: O;
+
+    receive fn copy() -> Result<i64, string> {
+        let prefix = "receipt:".to_bytes();
+        copy_order(input, output, |data| prefix + data)
+    }
+}
+
+type OrderId {
+    value: i64;
+}
+
+impl Display for OrderId {
+    fn fmt(self) -> string {
+        f"order-{self.value}"
+    }
+}
+
+type Summary {
+    id: OrderId;
+}
+
+#[confined]
+pub fn describe_order(id: i64) -> string {
+    let summary = Summary { id: OrderId { value: id } };
+    f"{summary:?}"
+}
+
+
+type OrderNumbers {
+    end: i64;
+}
+
+type OrderNumberIter {
+    current: i64;
+    end: i64;
+}
+
+impl Iterator for OrderNumberIter {
+    type Item = i64;
+
+    fn next(var self) -> Option<i64> {
+        if self.current == self.end {
+            .None
+        } else {
+            self.current += 1;
+            .Some(self.current)
+        }
+    }
+}
+
+impl IntoIterator for OrderNumbers {
+    type Item = i64;
+    type IntoIter = OrderNumberIter;
+
+    fn into_iter(self) -> OrderNumberIter {
+        OrderNumberIter { current: 0, end: self.end }
+    }
+}
+
+#[confined]
+pub fn sum_order_numbers(end: i64) -> i64 {
+    var sum = 0;
+    for number in OrderNumbers { end: end } {
+        sum += number;
+    }
+    sum
+}

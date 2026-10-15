@@ -40,6 +40,25 @@ pub struct SuspensionEffects {
     pub bodies: HashMap<EffectBody, SuspensionEffect>,
     pub calls: HashMap<SpanKey, SuspensionEffect>,
     pub fork_transfers: HashMap<SpanKey, ForkTransferFact>,
+    /// Exact checker body for each visited expression, including implicit calls.
+    pub call_owners: HashMap<SpanKey, EffectBody>,
+    /// Checked receiver types for explicit and indexed value operations.
+    pub receivers: HashMap<SpanKey, Ty>,
+    /// Selected value-operation demands, including structural comparisons.
+    pub value_operations: HashMap<SpanKey, (Ty, crate::ValueCapability)>,
+    /// Interpolated values whose selected rendering can invoke user bodies.
+    pub rendering_operations: HashMap<SpanKey, Ty>,
+    /// Checked iterables whose `for` protocol invokes source methods.
+    pub iteration_operations: HashMap<SpanKey, Ty>,
+    pub unresolved_calls: HashMap<SpanKey, EffectBody>,
+    /// Boundaries whose transitive external effects must be confined.
+    pub confined: HashSet<crate::DefId>,
+    /// Required source-visible release effects, including captured values.
+    pub releases: Vec<super::cleanup_effects::CleanupEffect>,
+    /// Existing actor-field binding identities, shared by every callback.
+    pub actor_fields: HashMap<TypeBindingId, (crate::NominalId, u32)>,
+    /// Deferred or forked bodies constructed by a checked body.
+    pub constructed_bodies: HashMap<EffectBody, Vec<EffectBody>>,
 }
 
 /// Proven capture capabilities and acquisition at a fork operand boundary.
@@ -153,6 +172,13 @@ struct CrashHook {
 pub(super) struct EffectGraph {
     pub builtin_suspensions: HashSet<CallTarget>,
     pub current_body: Option<EffectBody>,
+    expression_owners: HashMap<SpanKey, EffectBody>,
+    receivers: HashMap<SpanKey, Ty>,
+    value_operations: HashMap<SpanKey, (Ty, crate::ValueCapability)>,
+    rendering_operations: HashMap<SpanKey, Ty>,
+    iteration_operations: HashMap<SpanKey, Ty>,
+    pub constructed_bodies: HashMap<EffectBody, Vec<EffectBody>>,
+    pub confined: HashSet<crate::DefId>,
     /// Bodies and whether a construct inside them suspends on its own.
     pub bodies: HashMap<EffectBody, bool>,
     /// The construct or call that first made each body suspend.
@@ -173,6 +199,38 @@ pub(super) struct EffectGraph {
 }
 
 impl Checker {
+    pub(super) fn record_iteration_effect(&mut self, span: &Span, ty: &Ty) {
+        self.effect_graph.iteration_operations.insert(
+            SpanKey::in_module(span, self.current_module_idx),
+            ty.clone(),
+        );
+    }
+
+    pub(super) fn record_rendering_effect(&mut self, span: &Span, ty: &Ty) {
+        self.effect_graph.rendering_operations.insert(
+            SpanKey::in_module(span, self.current_module_idx),
+            ty.clone(),
+        );
+    }
+
+    pub(super) fn record_constructed_effect_body(&mut self, body: &EffectBody) {
+        if let Some(owner) = &self.effect_graph.current_body {
+            self.effect_graph
+                .constructed_bodies
+                .entry(owner.clone())
+                .or_default()
+                .push(body.clone());
+        }
+    }
+
+    pub(super) fn enter_named_effect_body(&mut self, name: &str) -> Option<EffectBody> {
+        let body = self.lookup_declaration(name).map(EffectBody::Declaration);
+        if let Some(body) = &body {
+            self.effect_graph.bodies.entry(body.clone()).or_default();
+        }
+        std::mem::replace(&mut self.effect_graph.current_body, body)
+    }
+
     /// Record owning task inputs after invocation checking has resolved their
     /// types and consumption. Rechecking expressions here would repeat moves.
     pub(super) fn record_fork_call_inputs(&mut self, branch: &Spanned<Expr>) {
@@ -638,12 +696,88 @@ impl Checker {
         }
     }
 
+    fn record_value_operation_effects(&mut self, expr: &Expr, span: &Span) {
+        let key = SpanKey::in_module(span, self.current_module_idx);
+        let receiver = match expr {
+            Expr::MethodCall { receiver, .. } => Some(receiver.as_ref()),
+            Expr::Index { object, .. } => Some(object.as_ref()),
+            _ => None,
+        };
+        if let Some(receiver) = receiver.and_then(|receiver| self.callee_value_type(receiver)) {
+            if matches!(
+                self.method_call_rewrites.get(&key),
+                Some(MethodCallRewrite::GeneratorNext { .. })
+            ) {
+                self.record_iteration_effect(span, &receiver);
+            }
+            self.effect_graph.receivers.insert(key.clone(), receiver);
+        }
+        if let Expr::Binary { left, op, .. } = expr {
+            use hew_parser::ast::BinaryOp;
+            let capability = match op {
+                BinaryOp::Equal | BinaryOp::NotEqual => Some(crate::ValueCapability::Eq),
+                BinaryOp::Less => Some(crate::ValueCapability::Less),
+                BinaryOp::LessEqual => Some(crate::ValueCapability::LessEqual),
+                BinaryOp::Greater => Some(crate::ValueCapability::Greater),
+                BinaryOp::GreaterEqual => Some(crate::ValueCapability::GreaterEqual),
+                _ => None,
+            };
+            if let Some(capability) = capability {
+                if let Some(ty) = self.callee_value_type(left) {
+                    self.effect_graph
+                        .value_operations
+                        .insert(key.clone(), (ty, capability));
+                }
+            }
+        }
+        if let Expr::InterpolatedString(parts) = expr {
+            for part in parts {
+                if let hew_parser::ast::StringPart::Expr(value)
+                | hew_parser::ast::StringPart::StructuralExpr(value) = part
+                {
+                    if let Some(ty) = self.callee_value_type(value) {
+                        self.record_rendering_effect(&value.1, &ty);
+                    }
+                }
+            }
+        }
+    }
+
     pub(super) fn record_expression_effect(&mut self, expr: &Expr, span: &Span) {
         let key = SpanKey::in_module(span, self.current_module_idx);
-        if matches!(expr, Expr::Call { .. } | Expr::MethodCall { .. }) {
+        if let Some(owner) = &self.effect_graph.current_body {
+            self.effect_graph
+                .expression_owners
+                .insert(key.clone(), owner.clone());
+        }
+        self.record_value_operation_effects(expr, span);
+        let releases_receiver = self.call_target(&key).is_some_and(|target| {
+            let family = match target {
+                CallTarget::Runtime(family) | CallTarget::DeclaredRuntime { family, .. } => {
+                    Some(*family)
+                }
+                CallTarget::RuntimeCollection(method) => method.runtime_family(),
+                _ => None,
+            };
+            family.is_some_and(|family| {
+                family.consumes_receiver() || family.releases_receiver_contents()
+            })
+        });
+        if releases_receiver {
+            if let Some(receiver) = self.effect_graph.receivers.get(&key).cloned() {
+                self.record_owned_cleanup_effect(&receiver);
+            }
+        }
+        if matches!(
+            expr,
+            Expr::Call { .. } | Expr::MethodCall { .. } | Expr::Spawn { .. }
+        ) {
             self.effect_graph
                 .seen_calls
                 .insert(key.clone(), self.effect_graph.current_body.clone());
+        }
+        if matches!(expr, Expr::Spawn { .. }) {
+            self.effect_graph.construct_calls.insert(key.clone());
         }
         let checked_invocation = self.direct_call_targets.contains_key(&key)
             || self.resolved_calls.contains_key(&key)
@@ -1173,7 +1307,42 @@ impl Checker {
                 break;
             }
         }
-        let mut output = SuspensionEffects::default();
+        let mut output = SuspensionEffects {
+            call_owners: graph.expression_owners.clone(),
+            value_operations: graph
+                .value_operations
+                .iter()
+                .map(|(key, (ty, capability))| (key.clone(), (self.subst.resolve(ty), *capability)))
+                .collect(),
+            rendering_operations: graph
+                .rendering_operations
+                .iter()
+                .map(|(key, ty)| (key.clone(), self.subst.resolve(ty)))
+                .collect(),
+            iteration_operations: graph
+                .iteration_operations
+                .iter()
+                .map(|(key, ty)| (key.clone(), self.subst.resolve(ty)))
+                .collect(),
+            receivers: graph
+                .receivers
+                .iter()
+                .map(|(key, ty)| (key.clone(), self.subst.resolve(ty)))
+                .collect(),
+            unresolved_calls: graph
+                .seen_calls
+                .iter()
+                .filter(|(key, _)| {
+                    !graph.calls.contains_key(*key) && !graph.construct_calls.contains(*key)
+                })
+                .filter_map(|(key, owner)| Some((key.clone(), owner.clone()?)))
+                .collect(),
+            confined: graph.confined.clone(),
+            releases: self.published_cleanup_effects(&graph),
+            actor_fields: self.actor_field_binding_ids.clone(),
+            constructed_bodies: graph.constructed_bodies.clone(),
+            ..SuspensionEffects::default()
+        };
         for (body, suspends) in &bodies {
             output.bodies.insert(
                 body.clone(),

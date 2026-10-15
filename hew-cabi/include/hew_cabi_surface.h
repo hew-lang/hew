@@ -16,10 +16,10 @@ struct hew_cabi_manifest_row {
   enum hew_cabi_manifest_ownership ownership;
 };
 
-#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1619u
+#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1629u
 #define HEW_CABI_MANIFEST_STATIC_COUNT 24u
 
-static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1619] = {
+static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1629] = {
     {"hew_actor_ask",
      "{\"native\": \"fn hew_actor_ask( *mut HewActor, i32, *mut c_void, usize, "
      ") -> *mut c_void\"}",
@@ -747,6 +747,16 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1619] = {
      "{\"native\": \"fn hew_assert( u8)\", \"wasm32-wasip1\": \"fn hew_assert( "
      "u8)\"}",
      "native,wasm32-wasip1", "stable", "not-applicable", "not-applicable",
+     HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_async_file_read",
+     "{\"native\": \"fn hew_async_file_read( *const HewReadFile, *const "
+     "HewWaker, ) -> *const HewAsyncIo\"}",
+     "native", "non-declarable", "not-applicable", "no-in-signature-extent",
+     HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_async_file_write",
+     "{\"native\": \"fn hew_async_file_write( *const HewWriteFile, *const "
+     "BytesTriple, *const HewWaker, ) -> *const HewAsyncIo\"}",
+     "native", "non-declarable", "not-applicable", "no-in-signature-extent",
      HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_async_io_cancel",
      "{\"native\": \"fn hew_async_io_cancel( *const HewAsyncIo) -> i32\", "
@@ -2571,12 +2581,35 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1619] = {
      "{\"native\": \"fn hew_file_exists( *const HewString) -> i32\"}", "native",
      "stable", "not-applicable", "no-in-signature-extent",
      HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_file_open_read",
+     "{\"native\": \"fn hew_file_open_read( *const HewString) -> *mut "
+     "HewReadFile\"}",
+     "native", "stable", "not-applicable", "no-in-signature-extent",
+     HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_file_open_write",
+     "{\"native\": \"fn hew_file_open_write( *const HewString) -> *mut "
+     "HewWriteFile\"}",
+     "native", "stable", "not-applicable", "no-in-signature-extent",
+     HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_file_read",
      "{\"native\": \"fn hew_file_read( *const HewString) -> *mut HewString\"}",
      "native", "stable", "not-applicable", "no-in-signature-extent",
      HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_file_read_bytes",
      "{\"native\": \"fn hew_file_read_bytes( *const HewString) -> "
+     "BytesTriple\"}",
+     "native", "stable", "not-applicable", "no-in-signature-extent",
+     HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_file_read_close",
+     "{\"native\": \"fn hew_file_read_close( *mut HewReadFile)\"}", "native",
+     "stable", "not-applicable", "no-in-signature-extent",
+     HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_file_read_is_valid",
+     "{\"native\": \"fn hew_file_read_is_valid( *const HewReadFile) -> bool\"}",
+     "native", "stable", "not-applicable", "no-in-signature-extent",
+     HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_file_read_remaining",
+     "{\"native\": \"fn hew_file_read_remaining( *const HewReadFile) -> "
      "BytesTriple\"}",
      "native", "stable", "not-applicable", "no-in-signature-extent",
      HEW_CABI_OWNERSHIP_UNMEASURED},
@@ -2621,6 +2654,20 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1619] = {
     {"hew_file_write_bytes",
      "{\"native\": \"fn hew_file_write_bytes( *const HewString, *const "
      "BytesTriple, ) -> i32\"}",
+     "native", "stable", "not-applicable", "no-in-signature-extent",
+     HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_file_write_close",
+     "{\"native\": \"fn hew_file_write_close( *mut HewWriteFile)\"}", "native",
+     "stable", "not-applicable", "no-in-signature-extent",
+     HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_file_write_handle",
+     "{\"native\": \"fn hew_file_write_handle( *const HewWriteFile, *const "
+     "BytesTriple, ) -> i32\"}",
+     "native", "stable", "not-applicable", "no-in-signature-extent",
+     HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_file_write_is_valid",
+     "{\"native\": \"fn hew_file_write_is_valid( *const HewWriteFile) -> "
+     "bool\"}",
      "native", "stable", "not-applicable", "no-in-signature-extent",
      HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_float_to_string",

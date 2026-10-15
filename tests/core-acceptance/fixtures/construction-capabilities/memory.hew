@@ -1,0 +1,42 @@
+import std.stream;
+
+import worker;
+
+type MemoryOrders {
+    data: bytes;
+}
+
+impl worker.OrderInput for MemoryOrders {
+    fn load(self) -> Result<bytes, string> {
+        .Ok(self.data)
+    }
+}
+
+type MemoryReceipts {
+    output: stream.Sink<bytes>;
+}
+
+impl worker.ReceiptOutput for MemoryReceipts {
+    fn save(self, receipt: bytes) -> Result<(), string> {
+        match self.output.send(receipt) {
+            .Ok(()) => .Ok(()),
+            .Err(_) => .Err("receipt reader closed"),
+        }
+    }
+}
+
+fn main() {
+    assert(worker.sum_order_numbers(4) == 10);
+    assert(worker.describe_order(41).contains("order-41"));
+    assert(worker.read_order(MemoryOrders { data: "order-41".to_bytes() }).expect("confined captured service") == "order-41".to_bytes());
+    let independent = worker.reader(MemoryOrders { data: "order-41".to_bytes() });
+    assert(independent().expect("captured memory service") == "order-41".to_bytes());
+    let (output, receipts): (stream.Sink<bytes>, stream.Stream<bytes>) = stream.pipe(1).expect("receipt pipe");
+    let copier = spawn worker.OrderCopier { input: MemoryOrders { data: "order-41".to_bytes() }, output: MemoryReceipts { output: output } };
+    assert(copier.copy().expect("actor reply").expect("copy order") == 16);
+    assert(receipts.recv().expect("receipt") == "receipt:order-41".to_bytes());
+    stop(copier);
+    stopped(copier);
+    assert(receipts.recv().is_none());
+    println("memory services copied the order");
+}

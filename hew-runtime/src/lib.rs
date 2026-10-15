@@ -608,6 +608,9 @@ mod trap_code;
 pub mod file_io;
 
 #[cfg(not(target_arch = "wasm32"))]
+pub mod file_resources;
+
+#[cfg(not(target_arch = "wasm32"))]
 pub mod file_secure;
 /// Filesystem authority and deterministic mode for build-time generators.
 pub mod generator;

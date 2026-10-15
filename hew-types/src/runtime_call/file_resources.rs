@@ -69,6 +69,22 @@ pub enum FileReadOp {
 
 impl FileReadOp {
     #[must_use]
+    pub const fn authority(self) -> crate::runtime_call::RuntimeAuthority {
+        match self {
+            Self::Open | Self::StreamOpen => crate::runtime_call::RuntimeAuthority::Ambient,
+            Self::IsValid
+            | Self::Collect
+            | Self::Close
+            | Self::StreamIsValid
+            | Self::StreamCollect
+            | Self::HasError
+            | Self::LastErrorKind
+            | Self::LastErrno
+            | Self::LastError => crate::runtime_call::RuntimeAuthority::Service,
+        }
+    }
+
+    #[must_use]
     pub const fn c_symbol(self) -> &'static str {
         match self {
             Self::Open => "hew_file_read_stream_open",

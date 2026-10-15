@@ -1711,6 +1711,7 @@ impl Checker {
                         // the target span ourselves — downstream HIR/MIR read the
                         // checker-authoritative type at this site.
                         self.record_type(&target.1, &ty);
+                        self.record_expression_effect(&target.0, &target.1);
                         ty
                     }
                     _ => self.synthesize(&target.0, &target.1),
@@ -2230,6 +2231,7 @@ impl Checker {
                     Ty::Never => Ty::Never,
                     _ => {
                         if let Some(item_ty) = self.iterator_trait_item_ty(&iter_ty, &iterable.1) {
+                            self.record_iteration_effect(&iterable.1, &iter_ty);
                             item_ty
                         } else {
                             self.report_error(

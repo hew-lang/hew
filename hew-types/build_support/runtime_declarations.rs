@@ -134,9 +134,16 @@ fn render_method(
         family.chars().all(|c| c.is_ascii_alphanumeric()),
         "invalid runtime family"
     );
+    let authority = take(&mut fields, "authority");
+    assert!(
+        matches!(authority, "Value" | "Service" | "Ambient"),
+        "unknown runtime authority"
+    );
     let lowering = take(&mut fields, "lowering");
     if lowering == "direct" {
-        return Some(render_direct(module, receiver, method, family, fields));
+        return Some(render_direct(
+            module, receiver, method, family, authority, fields,
+        ));
     }
     assert_eq!(lowering, "actor_ingress");
     let symbol = take(&mut fields, "symbol");
@@ -156,7 +163,7 @@ fn render_method(
     let consumes = method.consumes_self || method.params.first().is_some_and(|p| p.is_consume);
     let effect = if consumes { "Move" } else { "Borrow" };
     let declaration = format!("{module}.{receiver}::{}", method.name);
-    let row = format!("DeclaredRuntimeMethod {{ module: {module:?}, declaration: {declaration:?}, family: RuntimeCallFamily::{family}, data_handler: {data:?}, close_handler: {close:?}, consumes_receiver: {consumes}, row: RuntimeOpRow {{ symbol: {symbol:?}, contract: Some(RuntimeSemanticContract {{ arguments: &[A {{ ty: {receiver_kind}, effect: E::{effect} }}, A {{ ty: K::ActorHandle, effect: E::Borrow }}, A {{ ty: K::ConstBytePointer, effect: E::Copy }}, A {{ ty: K::ConstBytePointer, effect: E::Copy }}], result: R::BitCopy(K::I32), failures: &[] }}), staging: RuntimeStaging::Declared, abi_shape: RuntimeCallAbiShape::Other, physical: RuntimePhysicalForm::Direct, c_return: RuntimeCReturn::Storage }} }}");
+    let row = format!("DeclaredRuntimeMethod {{ module: {module:?}, declaration: {declaration:?}, family: RuntimeCallFamily::{family}, data_handler: {data:?}, close_handler: {close:?}, consumes_receiver: {consumes}, row: RuntimeOpRow {{ authority: super::RuntimeAuthority::{authority}, symbol: {symbol:?}, contract: Some(RuntimeSemanticContract {{ arguments: &[A {{ ty: {receiver_kind}, effect: E::{effect} }}, A {{ ty: K::ActorHandle, effect: E::Borrow }}, A {{ ty: K::ConstBytePointer, effect: E::Copy }}, A {{ ty: K::ConstBytePointer, effect: E::Copy }}], result: R::BitCopy(K::I32), failures: &[] }}), staging: RuntimeStaging::Declared, abi_shape: RuntimeCallAbiShape::Other, physical: RuntimePhysicalForm::Direct, c_return: RuntimeCReturn::Storage }} }}");
     let ownership_effect = if consumes { "consume" } else { "borrow" };
     let nominal = format!("{module}.{receiver}");
     let ownership = format!("[[ownership.contracts]]\nsymbol = {symbol:?}\nresult = \"none\"\nparams = [{ownership_effect:?}, \"borrow\", \"borrow\", \"borrow\"]\nresource-param-types = [{nominal:?}, \"\", \"\", \"\"]\nrelease-symbol = \"\"\ndischarge-depth = \"none\"\n\n");
@@ -249,6 +256,7 @@ fn render_direct(
     receiver: &str,
     method: &FnDecl,
     family: &str,
+    authority: &str,
     mut fields: BTreeMap<&str, &str>,
 ) -> (String, GeneratedMethod) {
     let classification = take(&mut fields, "classification");
@@ -339,7 +347,7 @@ fn render_direct(
         String::new()
     };
     let result_kind = if result == "Instant" { "I64" } else { result };
-    let rust = format!("DeclaredDirectRuntimeMethod {{ signature: super::CanonicalStdlibExternSignature {{ module: {module:?}, signature_key: {signature_key:?}, symbol: {symbol:?}, family: Some(RuntimeCallFamily::{family}), params: &[{logical}], result: super::CanonicalExternTy::{result} }}, params: &[{physical}], target: DeclaredRuntimeTarget::Native, row: RuntimeOpRow {{ symbol: {symbol:?}, contract: Some(RuntimeSemanticContract {{ arguments: &[{arguments}], result: R::BitCopy(K::{result_kind}), failures: &[] }}), staging: RuntimeStaging::Declared, abi_shape: RuntimeCallAbiShape::Other, physical: RuntimePhysicalForm::Direct, c_return: RuntimeCReturn::{c_return} }} }}");
+    let rust = format!("DeclaredDirectRuntimeMethod {{ signature: super::CanonicalStdlibExternSignature {{ module: {module:?}, signature_key: {signature_key:?}, symbol: {symbol:?}, family: Some(RuntimeCallFamily::{family}), params: &[{logical}], result: super::CanonicalExternTy::{result} }}, params: &[{physical}], target: DeclaredRuntimeTarget::Native, row: RuntimeOpRow {{ authority: super::RuntimeAuthority::{authority}, symbol: {symbol:?}, contract: Some(RuntimeSemanticContract {{ arguments: &[{arguments}], result: R::BitCopy(K::{result_kind}), failures: &[] }}), staging: RuntimeStaging::Declared, abi_shape: RuntimeCallAbiShape::Other, physical: RuntimePhysicalForm::Direct, c_return: RuntimeCReturn::{c_return} }} }}");
     (
         family.to_ascii_uppercase(),
         GeneratedMethod {
@@ -375,7 +383,7 @@ mod tests {
     fn direct_contract_requires_c_return_fact() {
         direct(
             r#"impl duration {
-            #[runtime(family = "DurationIsZero", lowering = "direct", target = "native", classification = "stable")]
+            #[runtime(family = "DurationIsZero", lowering = "direct", target = "native", classification = "stable", authority = "Value")]
             #[extern_symbol(hew_duration_is_zero)]
             fn is_zero(d: duration) -> bool { false }
         }"#,
@@ -387,7 +395,7 @@ mod tests {
     fn direct_bool_cannot_guess_its_c_width() {
         direct(
             r#"impl duration {
-            #[runtime(family = "DurationIsZero", lowering = "direct", target = "native", classification = "stable", c_return = "storage")]
+            #[runtime(family = "DurationIsZero", lowering = "direct", target = "native", classification = "stable", authority = "Value", c_return = "storage")]
             #[extern_symbol(hew_duration_is_zero)]
             fn is_zero(d: duration) -> bool { false }
         }"#,
@@ -399,7 +407,7 @@ mod tests {
     fn direct_contract_requires_declaration_symbol() {
         direct(
             r#"impl duration {
-            #[runtime(family = "DurationIsZero", lowering = "direct", target = "native", classification = "stable", c_return = "truth_i32")]
+            #[runtime(family = "DurationIsZero", lowering = "direct", target = "native", classification = "stable", authority = "Value", c_return = "truth_i32")]
             fn is_zero(d: duration) -> bool { false }
         }"#,
         );
@@ -410,7 +418,7 @@ mod tests {
     fn direct_scalar_rejects_managed_parameter() {
         direct(
             r#"impl duration {
-            #[runtime(family = "DurationIsZero", lowering = "direct", target = "native", classification = "stable", c_return = "truth_i32")]
+            #[runtime(family = "DurationIsZero", lowering = "direct", target = "native", classification = "stable", authority = "Value", c_return = "truth_i32")]
             #[extern_symbol(hew_duration_is_zero)]
             fn is_zero(d: string) -> bool { false }
         }"#,
@@ -422,7 +430,7 @@ mod tests {
     fn bytes_query_requires_receiver_ownership() {
         direct(
             r"impl bytes {
-            #[runtime(family = BytesLen, lowering = direct, target = native, classification = stable, c_return = storage)]
+            #[runtime(family = BytesLen, lowering = direct, target = native, classification = stable, authority = Value, c_return = storage)]
             #[extern_symbol(hew_bytes_len)]
             fn len(buf: bytes) -> i64 { 0 }
         }",
@@ -434,7 +442,7 @@ mod tests {
     fn bytes_query_cannot_mint_an_owner_from_borrow() {
         direct(
             r"impl bytes {
-            #[runtime(family = BytesLen, lowering = direct, target = native, classification = stable, c_return = storage, receiver = borrow)]
+            #[runtime(family = BytesLen, lowering = direct, target = native, classification = stable, authority = Value, c_return = storage, receiver = borrow)]
             #[extern_symbol(hew_bytes_len)]
             fn len(buf: bytes) -> bytes { buf }
         }",

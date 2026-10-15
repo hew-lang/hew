@@ -145,6 +145,7 @@ pub struct ValueMethodSelection {
     ty: ResolvedTy,
     capability: ValueCapability,
     plan: ValueMethodPlan,
+    calls: Vec<(crate::DefId, Vec<ResolvedTy>)>,
 }
 
 impl ValueMethodSelection {
@@ -164,6 +165,12 @@ impl ValueMethodSelection {
     #[must_use]
     pub fn plan(&self) -> &ValueMethodPlan {
         &self.plan
+    }
+
+    /// User bodies selected by this operation, including structural members.
+    #[must_use]
+    pub fn calls(&self) -> &[(crate::DefId, Vec<ResolvedTy>)] {
+        &self.calls
     }
 }
 
@@ -672,12 +679,14 @@ impl TypeFactService {
         ty: &ResolvedTy,
         capability: ValueCapability,
     ) -> Result<Option<ValueMethodSelection>, ClassError> {
+        let mut calls = Vec::new();
         Ok(self
-            .select_capability(ty, capability)?
+            .select_capability_inner(ty, capability, &mut HashSet::new(), &mut calls)?
             .map(|plan| ValueMethodSelection {
                 ty: ty.clone(),
                 capability,
                 plan,
+                calls,
             }))
     }
 
@@ -714,6 +723,54 @@ impl TypeFactService {
         binders
             .arguments(&self.context.defs, method, value)
             .map(|args| Some((method, args)))
+    }
+
+    /// Checked Display bodies reached while rendering this source value.
+    /// Structural members retain their declared source identities, including aliases.
+    ///
+    /// # Errors
+    /// Refuses unresolved types or absent structural declaration metadata.
+    pub fn rendering_calls(
+        &self,
+        source: &ResolvedTy,
+    ) -> Result<Vec<(crate::DefId, Vec<ResolvedTy>)>, String> {
+        let mut calls = Vec::new();
+        let mut pending = vec![source.clone()];
+        let mut seen = HashSet::new();
+        while let Some(source) = pending.pop() {
+            if !seen.insert(source.clone()) {
+                continue;
+            }
+            if let Some(call) = self
+                .display_method_for_type(&source, &source)
+                .map_err(|error| error.to_string())?
+            {
+                calls.push(call);
+                continue;
+            }
+            let source = self.rendering_source(&source)?;
+            if !source.to_ty().renders_structurally() {
+                return Err(format!(
+                    "`{}` has no checked rendering",
+                    source.user_facing()
+                ));
+            }
+            match source {
+                ResolvedTy::Tuple(members) => pending.extend(members),
+                ResolvedTy::Named {
+                    is_opaque: true, ..
+                } => {}
+                ResolvedTy::Named { head, args, .. } if head.builtin().is_some() => {
+                    pending.extend(args);
+                }
+                ResolvedTy::Named { .. } => pending.extend(
+                    self.declared_capability_members(&source)
+                        .map_err(|error| error.to_string())?,
+                ),
+                _ => {}
+            }
+        }
+        Ok(calls)
     }
 
     /// Whether rendering selects an explicit implementation outside the stdlib.
@@ -851,7 +908,7 @@ impl TypeFactService {
         ty: &ResolvedTy,
         capability: ValueCapability,
     ) -> Result<Option<ValueMethodPlan>, ClassError> {
-        self.select_capability_inner(ty, capability, &mut HashSet::new())
+        self.select_capability_inner(ty, capability, &mut HashSet::new(), &mut Vec::new())
     }
 
     fn select_capability_inner(
@@ -859,6 +916,7 @@ impl TypeFactService {
         ty: &ResolvedTy,
         capability: ValueCapability,
         visiting: &mut HashSet<(ResolvedTy, ValueCapability)>,
+        calls: &mut Vec<(crate::DefId, Vec<ResolvedTy>)>,
     ) -> Result<Option<ValueMethodPlan>, ClassError> {
         crate::value_class::classify_ty(ty, &ClassContext::new(&self.context.declarations))?;
         require_concrete_capability_type(ty)?;
@@ -910,6 +968,7 @@ impl TypeFactService {
                         && self.is_serializable(ty, &|_, _| false))
                 },
             )?;
+            calls.push((method, type_args.clone()));
             return Ok(Some(ValueMethodPlan::User { method, type_args }));
         }
         if !crate::check::declaration_walk_terminates(ty, self.context.types()) {
@@ -923,9 +982,9 @@ impl TypeFactService {
             return Ok(None);
         }
         let derived = match capability {
-            ValueCapability::Hash => self.derived_hash(ty, visiting),
-            ValueCapability::Eq => self.derived_eq(ty, visiting),
-            ordering => self.derived_ordering(ty, ordering, visiting),
+            ValueCapability::Hash => self.derived_hash(ty, visiting, calls),
+            ValueCapability::Eq => self.derived_eq(ty, visiting, calls),
+            ordering => self.derived_ordering(ty, ordering, visiting, calls),
         };
         visiting.remove(&key);
         derived.map(|allowed| allowed.then_some(ValueMethodPlan::Derived))
@@ -935,9 +994,12 @@ impl TypeFactService {
         &self,
         ty: &ResolvedTy,
         visiting: &mut HashSet<(ResolvedTy, ValueCapability)>,
+        calls: &mut Vec<(crate::DefId, Vec<ResolvedTy>)>,
     ) -> Result<bool, ClassError> {
         match self.derived_eq_members(ty)? {
-            Some(members) => self.members_have_capability(&members, ValueCapability::Eq, visiting),
+            Some(members) => {
+                self.members_have_capability(&members, ValueCapability::Eq, visiting, calls)
+            }
             None => Ok(false),
         }
     }
@@ -1092,13 +1154,16 @@ impl TypeFactService {
         members: &[ResolvedTy],
         capability: ValueCapability,
         visiting: &mut HashSet<(ResolvedTy, ValueCapability)>,
+        calls: &mut Vec<(crate::DefId, Vec<ResolvedTy>)>,
     ) -> Result<bool, ClassError> {
         for member in members {
-            if self
-                .select_capability_inner(member, capability, visiting)?
-                .is_none()
-            {
-                return Ok(false);
+            for capability in capability.component_capabilities() {
+                if self
+                    .select_capability_inner(member, *capability, visiting, calls)?
+                    .is_none()
+                {
+                    return Ok(false);
+                }
             }
         }
         Ok(true)
@@ -1197,10 +1262,11 @@ impl TypeFactService {
         &self,
         ty: &ResolvedTy,
         visiting: &mut HashSet<(ResolvedTy, ValueCapability)>,
+        calls: &mut Vec<(crate::DefId, Vec<ResolvedTy>)>,
     ) -> Result<bool, ClassError> {
         match ty {
             ResolvedTy::Tuple(members) => {
-                self.members_have_capability(members, ValueCapability::Hash, visiting)
+                self.members_have_capability(members, ValueCapability::Hash, visiting, calls)
             }
             ResolvedTy::Named {
                 head: crate::TypeHead::Builtin(builtin),
@@ -1216,7 +1282,7 @@ impl TypeFactService {
                             name: ty.user_facing().to_string(),
                         });
                     }
-                    self.members_have_capability(args, ValueCapability::Hash, visiting)
+                    self.members_have_capability(args, ValueCapability::Hash, visiting, calls)
                 }
                 _ => Ok(false),
             },
@@ -1258,6 +1324,7 @@ impl TypeFactService {
                     &self.declared_capability_members(ty)?,
                     ValueCapability::Hash,
                     visiting,
+                    calls,
                 )
             }
             _ => Ok(matches!(
@@ -1286,11 +1353,12 @@ impl TypeFactService {
         ty: &ResolvedTy,
         capability: ValueCapability,
         visiting: &mut HashSet<(ResolvedTy, ValueCapability)>,
+        calls: &mut Vec<(crate::DefId, Vec<ResolvedTy>)>,
     ) -> Result<bool, ClassError> {
         debug_assert!(capability.is_ordering());
         match ty {
             ResolvedTy::Tuple(members) => {
-                self.members_have_capability(members, capability, visiting)
+                self.members_have_capability(members, capability, visiting, calls)
             }
             ResolvedTy::Named {
                 head:
@@ -1308,7 +1376,7 @@ impl TypeFactService {
                         name: ty.user_facing().to_string(),
                     });
                 }
-                self.members_have_capability(args, capability, visiting)
+                self.members_have_capability(args, capability, visiting, calls)
             }
             ResolvedTy::Named { head, .. } => {
                 let Some(definition) = self.context.types().of(*head) else {
@@ -1328,6 +1396,7 @@ impl TypeFactService {
                     &self.declared_capability_members(ty)?,
                     capability,
                     visiting,
+                    calls,
                 )
             }
             _ => Ok(matches!(

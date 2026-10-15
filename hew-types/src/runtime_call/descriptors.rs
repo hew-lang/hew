@@ -70,6 +70,17 @@ pub enum RuntimeStaging {
     PreStaged,
 }
 
+/// External authority exercised by a selected primitive operation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RuntimeAuthority {
+    /// Operates only on ordinary values and their owned storage.
+    Value,
+    /// Uses authority carried by an existing resource or service value.
+    Service,
+    /// Acquires authority from the process, host or global runtime registry.
+    Ambient,
+}
+
 /// Everything the compiler knows about one runtime operation, in one place.
 ///
 /// The linker symbol and the reverse lookup from it, the semantic contract
@@ -82,6 +93,7 @@ pub struct RuntimeOpRow {
     /// The C linker symbol, or the catalog identity for a constructor whose
     /// ABI the backend materializes from the destination type.
     pub symbol: &'static str,
+    pub authority: RuntimeAuthority,
     /// The exact operation contract ownership SIR admits. `None` fails closed:
     /// the operation publishes no verified ownership surface.
     pub contract: Option<RuntimeSemanticContract>,

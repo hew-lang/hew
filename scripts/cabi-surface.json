@@ -1845,6 +1845,32 @@
     },
     {
       "availability": [
+        "native"
+      ],
+      "classification": "non-declarable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_async_file_read( *const HewReadFile, *const HewWaker, ) -> *const HewAsyncIo"
+      },
+      "symbol": "hew_async_file_read"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "non-declarable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_async_file_write( *const HewWriteFile, *const BytesTriple, *const HewWaker, ) -> *const HewAsyncIo"
+      },
+      "symbol": "hew_async_file_write"
+    },
+    {
+      "availability": [
         "native",
         "wasm32-wasip1"
       ],
@@ -6740,6 +6766,32 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
+        "native": "fn hew_file_open_read( *const HewString) -> *mut HewReadFile"
+      },
+      "symbol": "hew_file_open_read"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "stable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_file_open_write( *const HewString) -> *mut HewWriteFile"
+      },
+      "symbol": "hew_file_open_write"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "stable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
         "native": "fn hew_file_read( *const HewString) -> *mut HewString"
       },
       "symbol": "hew_file_read"
@@ -6756,6 +6808,45 @@
         "native": "fn hew_file_read_bytes( *const HewString) -> BytesTriple"
       },
       "symbol": "hew_file_read_bytes"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "stable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_file_read_close( *mut HewReadFile)"
+      },
+      "symbol": "hew_file_read_close"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "stable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_file_read_is_valid( *const HewReadFile) -> bool"
+      },
+      "symbol": "hew_file_read_is_valid"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "stable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_file_read_remaining( *const HewReadFile) -> BytesTriple"
+      },
+      "symbol": "hew_file_read_remaining"
     },
     {
       "availability": [
@@ -6868,6 +6959,45 @@
         "native": "fn hew_file_write_bytes( *const HewString, *const BytesTriple, ) -> i32"
       },
       "symbol": "hew_file_write_bytes"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "stable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_file_write_close( *mut HewWriteFile)"
+      },
+      "symbol": "hew_file_write_close"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "stable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_file_write_handle( *const HewWriteFile, *const BytesTriple, ) -> i32"
+      },
+      "symbol": "hew_file_write_handle"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "stable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_file_write_is_valid( *const HewWriteFile) -> bool"
+      },
+      "symbol": "hew_file_write_is_valid"
     },
     {
       "availability": [

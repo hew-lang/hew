@@ -64,7 +64,7 @@ quinn = "0.11"
 rcgen = "0.14.8"
 ring = "0.17"
 rmp-serde.workspace = true
-rustls = { version = "0.23", default-features = false, features = ["ring"] }
+rustls = { version = "0.23.46", default-features = false, features = ["ring"] }
 tiny_http = "0.12"
 tokio = { version = "1", default-features = false, features = [
   "rt",

@@ -267,6 +267,122 @@ pub fn open_write(path: string) -> Result<WriteFile, IoError> {
     }
 }
 
+/// Read authority rooted in one opened directory. Child paths stay beneath
+/// this object; a relative symlink may resolve only within that root.
+#[resource]
+#[opaque]
+pub type ReadDir {
+}
+
+impl ReadDir {
+    /// Read a whole child file through an independently owned read handle.
+    fn read(self, path: string) -> bytes fails IoError {
+        let file = self.open_read(path)?;
+        file.read()?
+    }
+
+    /// Open a read-only child file whose owner survives this directory's close.
+    fn open_read(self, path: string) -> Result<ReadFile, IoError> {
+        unsafe {
+            let file = hew_dir_read_open_file(self, path);
+            if hew_file_read_is_valid(file) {
+                .Ok(file)
+            } else {
+                .Err(last_io_error())
+            }
+        }
+    }
+
+    /// Narrow authority to an existing child directory. The returned resource
+    /// remains valid independently of this parent handle.
+    fn subdir(self, path: string) -> Result<ReadDir, IoError> {
+        unsafe {
+            let directory = hew_dir_read_subdir(self, path);
+            if hew_dir_read_is_valid(directory) {
+                .Ok(directory)
+            } else {
+                .Err(last_io_error())
+            }
+        }
+    }
+
+    /// Release this directory owner without closing independently opened children.
+    fn close(consume self) {
+        unsafe {
+            hew_dir_read_close(self)
+        };
+    }
+}
+
+/// Write authority beneath one opened directory, without file-read operations.
+#[resource]
+#[opaque]
+pub type WriteDir {
+}
+
+impl WriteDir {
+    /// Create or truncate a child file and write its complete contents.
+    fn write(self, path: string, data: bytes) fails IoError {
+        let file = self.open_write(path)?;
+        file.write(data)?;
+    }
+
+    /// Create or truncate a child file without acquiring read authority.
+    fn open_write(self, path: string) -> Result<WriteFile, IoError> {
+        unsafe {
+            let file = hew_dir_write_open_file(self, path);
+            if hew_file_write_is_valid(file) {
+                .Ok(file)
+            } else {
+                .Err(last_io_error())
+            }
+        }
+    }
+
+    /// Narrow to an independently owned existing child directory.
+    fn subdir(self, path: string) -> Result<WriteDir, IoError> {
+        unsafe {
+            let directory = hew_dir_write_subdir(self, path);
+            if hew_dir_write_is_valid(directory) {
+                .Ok(directory)
+            } else {
+                .Err(last_io_error())
+            }
+        }
+    }
+
+    /// Release this directory owner without closing independently opened children.
+    fn close(consume self) {
+        unsafe {
+            hew_dir_write_close(self)
+        };
+    }
+}
+
+/// Acquire read authority over an existing directory in the trusted launcher.
+pub fn open_read_dir(path: string) -> Result<ReadDir, IoError> {
+    unsafe {
+        let directory = hew_dir_open_read(path);
+        if hew_dir_read_is_valid(directory) {
+            .Ok(directory)
+        } else {
+            .Err(last_io_error())
+        }
+    }
+}
+
+/// Acquire write authority over an existing directory in the trusted launcher.
+pub fn open_write_dir(path: string) -> Result<WriteDir, IoError> {
+    unsafe {
+        let directory = hew_dir_open_write(path);
+        if hew_dir_write_is_valid(directory) {
+            .Ok(directory)
+        } else {
+            .Err(last_io_error())
+        }
+    }
+}
+
 /// Read the entire contents of a file as a UTF-8 string.
 ///
 /// Returns a structured error if the file does not exist or cannot be read.
@@ -837,6 +953,26 @@ extern "C" {
     fn hew_file_read_close(consume file: ReadFile);
     #[runtime_capability(resource_operation)]
     fn hew_file_write_close(consume file: WriteFile);
+    #[runtime_capability(ambient)]
+    fn hew_dir_open_read(path: string) -> ReadDir;
+    #[runtime_capability(ambient)]
+    fn hew_dir_open_write(path: string) -> WriteDir;
+    #[runtime_capability(resource_operation)]
+    fn hew_dir_read_is_valid(directory: ReadDir) -> bool;
+    #[runtime_capability(resource_operation)]
+    fn hew_dir_write_is_valid(directory: WriteDir) -> bool;
+    #[runtime_capability(resource_operation)]
+    fn hew_dir_read_open_file(directory: ReadDir, path: string) -> ReadFile;
+    #[runtime_capability(resource_operation)]
+    fn hew_dir_write_open_file(directory: WriteDir, path: string) -> WriteFile;
+    #[runtime_capability(resource_operation)]
+    fn hew_dir_read_subdir(directory: ReadDir, path: string) -> ReadDir;
+    #[runtime_capability(resource_operation)]
+    fn hew_dir_write_subdir(directory: WriteDir, path: string) -> WriteDir;
+    #[runtime_capability(resource_operation)]
+    fn hew_dir_read_close(consume directory: ReadDir);
+    #[runtime_capability(resource_operation)]
+    fn hew_dir_write_close(consume directory: WriteDir);
     #[offload]
     fn hew_file_read(path: string) -> string;
     #[offload]

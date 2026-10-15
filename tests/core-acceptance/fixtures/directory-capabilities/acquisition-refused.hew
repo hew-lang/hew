@@ -1,0 +1,16 @@
+import std.fs;
+
+fn acquire() {
+    let _ = fs.open_read_dir("ungranted");
+    let _ = fs.open_write_dir("ungranted");
+}
+
+#[confined]
+fn hidden_acquisition() {
+    let helper = acquire;
+    helper();
+}
+
+fn main() {
+    hidden_acquisition();
+}

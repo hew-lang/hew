@@ -1,0 +1,60 @@
+import std.fs;
+import std.os;
+import worker;
+
+type DirectoryOrders {
+    root: fs.ReadDir;
+}
+
+impl worker.OrderInput for DirectoryOrders {
+    fn load(self) -> Result<bytes, string> {
+        match self.root.read("orders.csv") {
+            .Ok(data) => .Ok(data),
+            .Err(error) => .Err(f"read orders: {error}"),
+        }
+    }
+}
+
+type DirectoryReceipts {
+    root: fs.WriteDir;
+}
+
+impl worker.ReceiptOutput for DirectoryReceipts {
+    fn save(self, receipt: bytes) -> Result<(), string> {
+        match self.root.write("receipt.csv", receipt) {
+            .Ok(()) => .Ok(()),
+            .Err(error) => .Err(f"write receipt: {error}"),
+        }
+    }
+}
+
+fn main() {
+    let base = os.temp_dir() + f"/hew-directory-capabilities-copy-{os.pid()}";
+    let source = base + "/input/orders";
+    let destination = base + "/output/receipts";
+    fs.mkdir_all(source).expect("input directory");
+    fs.mkdir_all(destination).expect("output directory");
+    fs.write(source + "/orders.csv", "order-41").expect("orders fixture");
+    let input = fs.open_read_dir(base + "/input").expect("read root");
+    let output = fs.open_write_dir(base + "/output").expect("write root");
+    let orders = input.subdir("orders").expect("narrow input");
+    let receipts = output.subdir("receipts").expect("narrow output");
+    assert(orders.read("../orders/orders.csv").is_err());
+    assert(orders.read(source + "/orders.csv").is_err());
+    assert(receipts.write("../outside", "no".to_bytes()).is_err());
+    assert(receipts.write(source + "/orders.csv", "no".to_bytes()).is_err());
+    input.close();
+    output.close();
+    assert(worker.read_order(DirectoryOrders { root: fs.open_read_dir(source).expect("captured service") }).expect("captured reader") == "order-41".to_bytes());
+    let copier = spawn worker.OrderCopier {
+        input: DirectoryOrders { root: orders },
+        output: DirectoryReceipts { root: receipts },
+    };
+    assert(copier.copy().expect("actor reply").expect("copy") == 16);
+    stop(copier);
+    stopped(copier);
+    assert(fs.read(destination + "/receipt.csv").expect("receipt") == "receipt:order-41");
+    fs.delete(source + "/orders.csv").expect("remove input");
+    fs.delete(destination + "/receipt.csv").expect("remove receipt");
+    println("rooted directories copied the order");
+}

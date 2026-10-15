@@ -3,9 +3,8 @@
 fn main() {
     let n = scope within 1ms {
         0
-    } handle failure {
-        1
-    };
-    println(n);
+    } handle failure { 1 };
+    assert(n == 0 || n == 1);
+    println("done");
     exit(3);
 }

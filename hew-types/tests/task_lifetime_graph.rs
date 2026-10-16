@@ -1,3 +1,5 @@
+use std::fmt::Write as _;
+
 mod common;
 
 fn assert_scope_escape(source: &str) {
@@ -15,10 +17,12 @@ fn assert_scope_escape(source: &str) {
 fn shared_nominal_member_graph_proves_task_absence_once() {
     let mut source = String::from("type T0 { value: i64; }\n");
     for level in 1..=28 {
-        source.push_str(&format!(
-            "type T{level} {{ left: T{previous}; right: T{previous}; }}\n",
+        writeln!(
+            source,
+            "type T{level} {{ left: T{previous}; right: T{previous}; }}",
             previous = level - 1
-        ));
+        )
+        .unwrap();
     }
     source.push_str("fn inspect(value: T28) { scope { let task = fork { 1 }; let _ = await task; }; } fn main() {}");
     let output = common::typecheck_isolated(&source);
@@ -29,10 +33,10 @@ fn shared_nominal_member_graph_proves_task_absence_once() {
 fn shared_callable_return_graph_keeps_all_origins() {
     let mut source = String::from("fn f0() -> fn() -> i64 { || 7 }\n");
     for level in 1..=28 {
-        source.push_str(&format!(
-            "fn f{level}() -> fn() -> i64 {{ if true {{ f{previous}() }} else {{ f{previous}() }} }}\n",
+        writeln!(source,
+            "fn f{level}() -> fn() -> i64 {{ if true {{ f{previous}() }} else {{ f{previous}() }} }}",
             previous = level - 1
-        ));
+        ).unwrap();
     }
     source.push_str("fn main() { let task = fork { 1 }; let callback = f28(); println(callback()); let _ = await task; }");
     let output = common::typecheck_isolated(&source);
@@ -44,14 +48,14 @@ fn shared_forwarding_graph_retains_a_captured_task() {
     let callback = "fn[once,suspends]() -> i64";
     let mut source = format!("fn f0(consume job: {callback}) -> {callback} {{ job }}\n");
     for level in 1..=24 {
-        source.push_str(&format!(
-            "fn f{level}(consume job: {callback}) -> {callback} {{ if true {{ f{previous}(job) }} else {{ f{previous}(job) }} }}\n",
+        writeln!(source,
+            "fn f{level}(consume job: {callback}) -> {callback} {{ if true {{ f{previous}(job) }} else {{ f{previous}(job) }} }}",
             previous = level - 1
-        ));
+        ).unwrap();
     }
-    source.push_str(&format!(
+    write!(source,
         "fn make() -> {callback} {{ let task = fork {{ 7 }}; f24(move || {{ await task }}) }} fn main() {{ let _ = make(); }}"
-    ));
+    ).unwrap();
     assert_scope_escape(&source);
 }
 

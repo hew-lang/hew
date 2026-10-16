@@ -1699,20 +1699,18 @@ impl Checker {
         // layout/owned element ABIs byte-copy the element, which would
         // shallow-copy the closure pair and alias its sole-owner environment.
         // A direct Vec<fn(...)> element is the supported boxed-pair class.
-        if resolved.callable_signature().is_none() {
-            if self.vec_element_contains_fn_value(resolved) {
-                self.report_error(
-                    TypeErrorKind::InvalidOperation,
-                    span,
-                    format!(
-                        "`Vec<{}>` is not supported: the element type contains a function \
+        if resolved.callable_signature().is_none() && self.vec_element_contains_fn_value(resolved) {
+            self.report_error(
+                TypeErrorKind::InvalidOperation,
+                span,
+                format!(
+                    "`Vec<{}>` is not supported: the element type contains a function \
                          value, and each closure environment has a sole owner — store \
                          the functions directly in a Vec<fn(...)> instead",
-                        resolved.user_facing()
-                    ),
-                );
-                return false;
-            }
+                    resolved.user_facing()
+                ),
+            );
+            return false;
         }
 
         true

@@ -82,10 +82,12 @@ struct OriginEnvironment {
     parent: Option<usize>,
 }
 
+type EnvironmentKey = (Option<usize>, Vec<(TypeBindingId, ActualSource)>);
+
 #[derive(Default)]
 struct OriginEnvironments {
     values: Vec<OriginEnvironment>,
-    identities: HashMap<(Option<usize>, Vec<(TypeBindingId, ActualSource)>), usize>,
+    identities: HashMap<EnvironmentKey, usize>,
     task_carriers: HashMap<crate::Ty, bool>,
     formal_sources: HashMap<TypeBindingId, Vec<IndirectCallCandidates>>,
     origins: OriginGraph,

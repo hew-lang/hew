@@ -60,16 +60,17 @@ fn cleanup_parameters(targets: impl IntoIterator<Item = CleanupTarget>) -> Param
     parameters
 }
 
+struct ParameterTransfer {
+    owner: EffectBody,
+    actuals: Actuals,
+    inherited: bool,
+}
+
 /// Demand flows backwards through checked substitutions. Cleanup-only
 /// parameters need their release effects; executable dispatch retains types.
 fn effect_parameters(checker: &Checker, graph: &EffectGraph) -> HashMap<EffectBody, Parameters> {
-    struct Transfer {
-        owner: EffectBody,
-        actuals: Actuals,
-        inherited: bool,
-    }
     let mut parameters: HashMap<EffectBody, Parameters> = HashMap::new();
-    let mut users: HashMap<EffectBody, Vec<Transfer>> = HashMap::new();
+    let mut users: HashMap<EffectBody, Vec<ParameterTransfer>> = HashMap::new();
     let empty = Actuals::new();
     for release in &graph.releases {
         for (parameter, demand) in
@@ -138,13 +139,23 @@ fn effect_parameters(checker: &Checker, graph: &EffectGraph) -> HashMap<EffectBo
             _ => None,
         };
         if let Some((body, actuals, inherited)) = target {
-            users.entry(body).or_default().push(Transfer {
+            users.entry(body).or_default().push(ParameterTransfer {
                 owner: owner.clone(),
                 actuals,
                 inherited,
             });
         }
     }
+    propagate_parameter_demands(checker, &mut parameters, &users);
+    parameters
+}
+
+fn propagate_parameter_demands(
+    checker: &Checker,
+    parameters: &mut HashMap<EffectBody, Parameters>,
+    users: &HashMap<EffectBody, Vec<ParameterTransfer>>,
+) {
+    let empty = Actuals::new();
     let mut pending: VecDeque<_> = parameters
         .iter()
         .flat_map(|(body, parameters)| {
@@ -180,7 +191,6 @@ fn effect_parameters(checker: &Checker, graph: &EffectGraph) -> HashMap<EffectBo
             }
         }
     }
-    parameters
 }
 
 fn cleanup_argument(checker: &Checker, ty: &Ty) -> Ty {
@@ -206,7 +216,7 @@ fn cleanup_argument(checker: &Checker, ty: &Ty) -> Ty {
                     )
                 ) =>
             {
-                pending.extend(args.iter().rev())
+                pending.extend(args.iter().rev());
             }
             Ty::Var(_) | Ty::AssocType { .. } => {
                 if seen.insert(ty.clone()) {
@@ -573,7 +583,7 @@ impl<'a> EffectSolver<'a> {
                 result.body(Self::instance(&body, &actuals, unknown, false), witness);
             }
             CleanupTarget::Callable(_) | CleanupTarget::Unknown(_) | CleanupTarget::Suspends => {
-                result.suspends(witness)
+                result.suspends(witness);
             }
         }
     }
@@ -634,10 +644,10 @@ impl<'a> EffectSolver<'a> {
         }
         match self.checker.call_target(key) {
             Some(target) if self.graph.builtin_suspensions.contains(target) => {
-                result.suspends(&invocation.name)
+                result.suspends(&invocation.name);
             }
             Some(CallTarget::IndirectFunctionValue) => {
-                self.callee_dependencies(invocation, actuals, unknown, result)
+                self.callee_dependencies(invocation, actuals, unknown, result);
             }
             Some(
                 CallTarget::User(id)

@@ -452,15 +452,6 @@ impl TraitRegistry {
         visiting.facts[&root]
     }
 
-    fn implements_marker_guarded(
-        &self,
-        ty: &Ty,
-        marker: MarkerTrait,
-        visiting: &mut MarkerDerivation<'_>,
-    ) -> bool {
-        visiting.query(ty, marker)
-    }
-
     /// Coinductive marker facts start true and settle monotonically. Completed
     /// failures invalidate their users, including earlier provisional cycle
     /// answers; shared instantiated members are evaluated once unless a
@@ -492,9 +483,7 @@ impl TraitRegistry {
             return ty.is_numeric();
         }
         match ty {
-            Ty::GenericCallable { callable, .. } => {
-                self.implements_marker_guarded(callable, marker, visiting)
-            }
+            Ty::GenericCallable { callable, .. } => visiting.query(callable, marker),
             // Primitives: always Send, Sync, Frozen, Copy, Clone, Eq, Ord, Hash, Debug.
             // NOT Resource: primitives own no OS/runtime resource and need no drop close.
             // Isize/Usize are platform-sized integers: same marker set as fixed-width ints.
@@ -619,7 +608,7 @@ impl TraitRegistry {
                 ..
             } if args.len() == 1 => match marker {
                 MarkerTrait::Send | MarkerTrait::Sync => {
-                    self.implements_marker_guarded(&args[0], MarkerTrait::Send, visiting)
+                    visiting.query(&args[0], MarkerTrait::Send)
                 }
                 MarkerTrait::Clone => *kind == BuiltinType::Sink,
                 MarkerTrait::Resource | MarkerTrait::Debug => true,
@@ -638,27 +627,25 @@ impl TraitRegistry {
                 ..
             } if args.len() == 2 => match marker {
                 MarkerTrait::Send | MarkerTrait::Sync => {
-                    self.implements_marker_guarded(&args[0], MarkerTrait::Send, visiting)
-                        && self.implements_marker_guarded(&args[1], MarkerTrait::Send, visiting)
+                    visiting.query(&args[0], MarkerTrait::Send)
+                        && visiting.query(&args[1], MarkerTrait::Send)
                 }
                 MarkerTrait::Resource => true,
                 _ => false,
             },
 
             // Tuple: marker holds if ALL elements have it
-            Ty::Tuple(elems) => elems
-                .iter()
-                .all(|e| self.implements_marker_guarded(e, marker, visiting)),
+            Ty::Tuple(elems) => elems.iter().all(|e| visiting.query(e, marker)),
 
             // Array: marker holds if element has it
-            Ty::Array(inner, _) => self.implements_marker_guarded(inner, marker, visiting),
+            Ty::Array(inner, _) => visiting.query(inner, marker),
 
             // Slice: like array but NOT Copy (unsized)
             Ty::Slice(elem) => {
                 if marker == MarkerTrait::Copy {
                     false
                 } else {
-                    self.implements_marker_guarded(elem, marker, visiting)
+                    visiting.query(elem, marker)
                 }
             }
 
@@ -735,9 +722,7 @@ impl TraitRegistry {
                         | MarkerTrait::Frozen
                         | MarkerTrait::Ord
                         | MarkerTrait::PartialOrd => false,
-                        _ => args
-                            .iter()
-                            .all(|a| self.implements_marker_guarded(a, marker, visiting)),
+                        _ => args.iter().all(|a| visiting.query(a, marker)),
                     };
                 }
                 // Option<T> and Result<T,E>: pure value-type generic builtins.
@@ -752,12 +737,8 @@ impl TraitRegistry {
                 // MIR/codegen and is tracked as a follow-on lane.
                 if matches!(builtin, Some(BuiltinType::Option | BuiltinType::Result)) {
                     return match marker {
-                        MarkerTrait::Resource => args
-                            .iter()
-                            .any(|a| self.implements_marker_guarded(a, marker, visiting)),
-                        _ => args
-                            .iter()
-                            .all(|a| self.implements_marker_guarded(a, marker, visiting)),
+                        MarkerTrait::Resource => args.iter().any(|a| visiting.query(a, marker)),
+                        _ => args.iter().all(|a| visiting.query(a, marker)),
                     };
                 }
                 // Rc<T>/Weak<T>: reference-counted, single-threaded — explicitly
@@ -816,16 +797,12 @@ impl TraitRegistry {
             } => match marker {
                 MarkerTrait::Send | MarkerTrait::Sync => captures
                     .iter()
-                    .all(|capture| self.implements_marker_guarded(capture, marker, visiting)),
+                    .all(|capture| visiting.query(capture, marker)),
                 MarkerTrait::Clone => {
                     capabilities.clone
                         && captures.iter().all(|capture| {
-                            self.implements_marker_guarded(capture, MarkerTrait::Copy, visiting)
-                                || self.implements_marker_guarded(
-                                    capture,
-                                    MarkerTrait::Clone,
-                                    visiting,
-                                )
+                            visiting.query(capture, MarkerTrait::Copy)
+                                || visiting.query(capture, MarkerTrait::Clone)
                         })
                 }
                 _ => false,
@@ -856,9 +833,7 @@ impl TraitRegistry {
             // the full marker set for Task<T> is revisited when task handles
             // become user-accessible (v0.6+).
             Ty::Task(inner) => match marker {
-                MarkerTrait::Send | MarkerTrait::Sync => {
-                    self.implements_marker_guarded(inner, MarkerTrait::Send, visiting)
-                }
+                MarkerTrait::Send | MarkerTrait::Sync => visiting.query(inner, MarkerTrait::Send),
                 _ => false,
             },
         }
@@ -901,14 +876,12 @@ impl TraitRegistry {
             .collect();
         fields.iter().all(|field| {
             if substitutions.is_empty() {
-                self.implements_marker_guarded(field, marker, visiting)
+                visiting.query(field, marker)
             } else {
                 let field = field.substitute_type_params_parallel(&substitutions);
-                self.implements_marker_guarded(&field, marker, visiting)
+                visiting.query(&field, marker)
             }
-        }) && args
-            .iter()
-            .all(|arg| self.implements_marker_guarded(arg, marker, visiting))
+        }) && args.iter().all(|arg| visiting.query(arg, marker))
     }
 }
 

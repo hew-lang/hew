@@ -269,6 +269,10 @@ impl ValueClass {
 /// # Errors
 ///
 /// See [`ValueClass::of_ty`].
+///
+/// # Panics
+///
+/// Panics if the internal classification graph does not produce its root fact.
 pub fn classify_ty(
     ty: &ResolvedTy,
     decls: &ClassContext<'_>,

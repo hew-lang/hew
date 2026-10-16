@@ -281,6 +281,7 @@ pub(crate) fn ty_eq_ineligibility(ty: &Ty, types: TypeDefView<'_>) -> Option<EqE
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fmt::Write as _;
 
     fn checked(source: &str) -> crate::check::TypeCheckOutput {
         let parsed = hew_parser::parse(source);
@@ -311,9 +312,11 @@ mod tests {
             let mut source = format!("type EqDag0 {{ value: {leaf}; }}\n");
             for level in 1..=26 {
                 let child = level - 1;
-                source.push_str(&format!(
-                    "type EqDag{level} {{ left: Vec<EqDag{child}>; right: Vec<EqDag{child}>; }}\n"
-                ));
+                writeln!(
+                    source,
+                    "type EqDag{level} {{ left: Vec<EqDag{child}>; right: Vec<EqDag{child}>; }}"
+                )
+                .unwrap();
             }
             source.push_str("fn main() {}\n");
             let output = checked(&source);

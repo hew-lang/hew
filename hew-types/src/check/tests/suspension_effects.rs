@@ -1,3 +1,5 @@
+use std::fmt::Write as _;
+
 use super::check_source;
 use crate::check::effects::SuspensionEffect;
 
@@ -687,9 +689,7 @@ fn effect_graph_shared_descendants_remain_synchronous() {
     let mut source = String::from("fn f0() -> i64 { 1 }\n");
     for level in 1..=26 {
         let child = level - 1;
-        source.push_str(&format!(
-            "fn f{level}() -> i64 {{ f{child}() + f{child}() }}\n"
-        ));
+        writeln!(source, "fn f{level}() -> i64 {{ f{child}() + f{child}() }}").unwrap();
     }
     source.push_str("fn main() { let _ = f26(); }\n");
     let output = check_source(&source);

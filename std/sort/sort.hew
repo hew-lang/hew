@@ -1,33 +1,9 @@
-//! Sorting utilities for vectors.
+//! Stable sorting and reversal for vectors.
 //!
-//! Provides type-specific sort and reverse functions. Each returns a
-//! new vector — the original is never modified. Sorting uses iterative merge
-//! passes with O(n log n) comparisons.
-//!
-//! # Examples
-//!
-//! ```
-//! import std.sort;
-//!
-//! fn main() {
-//!     var nums: Vec<i64> = Vec.new();
-//!     nums.push(3);
-//!     nums.push(1);
-//!     nums.push(2);
-//!     let sorted = sort.sort_ints(nums);
-//!     // sorted is [1, 2, 3]
-//! }
-//! ```
+//! Each function returns an independent vector and preserves its input.
+//! `sort` uses the element's ordering; `sort_by` accepts an explicit ordering.
 
-// ── Helpers ───────────────────────────────────────────────────────────
-// Iterative bottom-up merge sort driven by a caller-supplied `less`
-// predicate rather than the `<` operator, so it works for any `T` without
-// requiring an ordering trait (`std.builtins` declares none yet — see
-// `sort_by`'s doc comment). `less(a, b)` calls its closure by value on each
-// element, which the checker treats as a read borrow (matching
-// `std.iter.Filter`'s predicate calls), so `a`/`b` remain owned and reusable
-// by the merge afterward.
-fn sort_by_core<T>(var v: Vec<T>, less: fn(T, T) -> bool) -> Vec<T> {
+fn sort_by_core<T>(var v: Vec<T>, consume var less: fn[var](T, T) -> bool) -> Vec<T> {
     let n = v.len();
     if n < 2 {
         return v;
@@ -89,265 +65,23 @@ fn sort_by_core<T>(var v: Vec<T>, less: fn(T, T) -> bool) -> Vec<T> {
     v
 }
 
-// Iterative bottom-up merge sort. `v` arrives as this function's own copy of
-// the caller's vector (a parameter is a value, never a view of the caller's
-// binding), so the sorted vector travels back through the return value along
-// with the merge core's comparison count.
-fn sort_ints_core(var v: Vec<i64>) -> (Vec<i64>, i64) {
-    let n = v.len();
-    if n < 2 {
-        return (v, 0);
-    }
-    var scratch = v.clone();
-    var width = 1;
-    var comparisons = 0;
-    while width < n {
-        var start = 0;
-        while start < n {
-            // Derive every boundary from the remaining length. This avoids
-            // overflowing either `start + 2 * width` or the width doubling.
-            let left_len = if width < n - start {
-                width
-            } else {
-                n - start
-            };
-            let mid = start + left_len;
-            let right_len = if width < n - mid {
-                width
-            } else {
-                n - mid
-            };
-            let end = mid + right_len;
-            var left = start;
-            var right = mid;
-            var write = start;
-            while left < mid && right < end {
-                comparisons = comparisons + 1;
-                let left_value = v[left];
-                let right_value = v[right];
-                // Taking the left element on equality makes each merge left-biased.
-                if right_value < left_value {
-                    scratch.set(write, right_value);
-                    right = right + 1;
-                } else {
-                    scratch.set(write, left_value);
-                    left = left + 1;
-                }
-                write = write + 1;
-            }
-            while left < mid {
-                scratch.set(write, v[left]);
-                left = left + 1;
-                write = write + 1;
-            }
-            while right < end {
-                scratch.set(write, v[right]);
-                right = right + 1;
-                write = write + 1;
-            }
-            start = end;
-        }
-        for i in 0..n {
-            v.set(i, scratch[i]);
-        }
-        width = if width > n / 2 {
-            n
-        } else {
-            width * 2
-        };
-    }
-    (v, comparisons)
+/// Sort a vector in ascending order using its element ordering.
+/// Equal elements keep their relative order. The input is unchanged.
+pub fn sort<T: Ord>(v: Vec<T>) -> Vec<T> {
+    sort_by(v, |a: T, b: T| a < b)
 }
 
-fn sort_strings_core(var v: Vec<string>) -> (Vec<string>, i64) {
-    let n = v.len();
-    if n < 2 {
-        return (v, 0);
-    }
-    var scratch = v.clone();
-    var width = 1;
-    var comparisons = 0;
-    while width < n {
-        var start = 0;
-        while start < n {
-            let left_len = if width < n - start {
-                width
-            } else {
-                n - start
-            };
-            let mid = start + left_len;
-            let right_len = if width < n - mid {
-                width
-            } else {
-                n - mid
-            };
-            let end = mid + right_len;
-            var left = start;
-            var right = mid;
-            var write = start;
-            while left < mid && right < end {
-                comparisons = comparisons + 1;
-                let left_value = v[left];
-                let right_value = v[right];
-                // Taking the left element on equality makes each merge left-biased.
-                if right_value < left_value {
-                    scratch.set(write, right_value);
-                    right = right + 1;
-                } else {
-                    scratch.set(write, left_value);
-                    left = left + 1;
-                }
-                write = write + 1;
-            }
-            while left < mid {
-                scratch.set(write, v[left]);
-                left = left + 1;
-                write = write + 1;
-            }
-            while right < end {
-                scratch.set(write, v[right]);
-                right = right + 1;
-                write = write + 1;
-            }
-            start = end;
-        }
-        for i in 0..n {
-            v.set(i, scratch[i]);
-        }
-        width = if width > n / 2 {
-            n
-        } else {
-            width * 2
-        };
-    }
-    (v, comparisons)
-}
-
-// ── Module-level functions ────────────────────────────────────────────
-/// Sort any `Vec<T>` in the order `less` defines, where `less(a, b)` returns
-/// `true` when `a` belongs strictly before `b`. Stable: elements for which
-/// neither is `less` than the other keep their relative order.
-///
-/// Returns a new sorted vector; the original is unchanged.
-///
-/// There is no generic `sort()` alongside this: it would need an ordering
-/// trait bound (`T: Ord` or similar), and `std.builtins` does not declare
-/// one yet. `sort_ints`/`sort_strings`/`sort_floats` remain the built-in
-/// orderings for those concrete types.
-///
-/// There is also no `v.sort_by(less)` fluent method form: the checker
-/// reserves inherent `impl Vec<T> { ... }` blocks for `std/builtins.hew`
-/// (`E_HIR: impl-block shape not yet lowered`) and, even there, `Vec`'s
-/// method dispatch only forwards runtime-backed (`#[extern_symbol]`)
-/// methods, panicking on a pure-Hew one (`hew-types/src/check/methods.rs`,
-/// "Vec method signature was present immediately before dispatch"). Both are
-/// compiler gaps outside this module's reach; see the stdlib-packages lane
-/// report for hew-lang/hew#2933.
-///
-/// # Examples
-///
-/// ```
-/// import std.sort;
-///
-/// fn main() {
-///     var nums: Vec<i64> = Vec.new();
-///     nums.push(3);
-///     nums.push(1);
-///     nums.push(2);
-///     let sorted = sort.sort_by(nums, |a: i64, b: i64| a < b);
-///     println(sorted[0]);  // 1
-///     println(sorted[1]);  // 2
-///     println(sorted[2]);  // 3
-/// }
-/// ```
-pub fn sort_by<T>(v: Vec<T>, less: fn(T, T) -> bool) -> Vec<T> {
+/// Sort a vector using `less(a, b)` to place `a` strictly before `b`.
+/// Equal elements keep their relative order. The input is unchanged.
+/// A mutable comparator can maintain private state across comparisons.
+/// The call consumes its comparator.
+pub fn sort_by<T>(v: Vec<T>, consume var less: fn[var](T, T) -> bool) -> Vec<T> {
     sort_by_core(v, less)
 }
 
-/// Sort a vector of integers in ascending order.
-///
-/// Returns a new sorted vector; the original is unchanged.
-pub fn sort_ints(v: Vec<i64>) -> Vec<i64> {
-    let (out, _) = sort_ints_core(v);
-    out
-}
-
-/// Sort integers and return the production merge core's comparison count.
-///
-/// This diagnostic form exists for deterministic complexity regression tests.
-pub fn sort_ints_counted(v: Vec<i64>) -> (Vec<i64>, i64) {
-    sort_ints_core(v)
-}
-
-/// Sort a vector of strings in alphabetical order.
-///
-/// Returns a new sorted vector; the original is unchanged.
-pub fn sort_strings(v: Vec<string>) -> Vec<string> {
-    let (out, _) = sort_strings_core(v);
-    out
-}
-
-/// Sort strings and return the production merge core's comparison count.
-///
-/// This diagnostic form exists for deterministic complexity regression tests.
-pub fn sort_strings_counted(v: Vec<string>) -> (Vec<string>, i64) {
-    sort_strings_core(v)
-}
-
-fn float_total_less(a: f64, b: f64) -> bool {
-    let left = a.to_bits();
-    let right = b.to_bits();
-    let left_sign = left >> 63;
-    let right_sign = right >> 63;
-    if left_sign != right_sign {
-        left_sign > right_sign
-    } else if left_sign != 0 {
-        left > right
-    } else {
-        left < right
-    }
-}
-
-/// Sort a vector of floats in IEEE 754 total order.
-///
-/// Returns a new sorted vector; the original is unchanged.
-/// Negative zero sorts before positive zero. NaNs retain their sign and payload
-/// and sort before negative infinity or after positive infinity, respectively.
-pub fn sort_floats(v: Vec<f64>) -> Vec<f64> {
-    sort_by_core(v, float_total_less)
-}
-
-/// Reverse a vector of integers.
-///
-/// Returns a new reversed vector; the original is unchanged.
-pub fn reverse_ints(v: Vec<i64>) -> Vec<i64> {
-    var out: Vec<i64> = Vec.new();
-    var i = v.len();
-    while i > 0 {
-        i = i - 1;
-        out.push(v[i]);
-    }
-    out
-}
-
-/// Reverse a vector of strings.
-///
-/// Returns a new reversed vector; the original is unchanged.
-pub fn reverse_strings(v: Vec<string>) -> Vec<string> {
-    var out: Vec<string> = Vec.new();
-    var i = v.len();
-    while i > 0 {
-        i = i - 1;
-        out.push(v[i]);
-    }
-    out
-}
-
-/// Reverse a vector of floats.
-///
-/// Returns a new reversed vector; the original is unchanged.
-pub fn reverse_floats(v: Vec<f64>) -> Vec<f64> {
-    var out: Vec<f64> = Vec.new();
+/// Reverse a vector. The input is unchanged.
+pub fn reverse<T>(v: Vec<T>) -> Vec<T> {
+    var out: Vec<T> = Vec.new();
     var i = v.len();
     while i > 0 {
         i = i - 1;

@@ -4022,42 +4022,37 @@ distinct ownership obligations.
 
 ```hew
 import std.sort;
+import std.math;
+
 fn main() {
-    var nums: Vec<i64> = Vec.new();
-    nums.push(3); nums.push(1); nums.push(4); nums.push(1); nums.push(5);
-    let sorted   = sort.sort_ints(nums);            // returns new Vec — original unchanged
-    let reversed = sort.reverse_ints(sorted);
+    let nums: Vec<i64> = [3, 1, 4, 1, 5];
+    let sorted = sort.sort(nums);
+    let reversed = sort.reverse(sorted);
     println(sorted[0]);    // 1
     println(reversed[0]);  // 5
+    assert(nums[0] == 3);
 
-    var words: Vec<string> = Vec.new();
-    words.push("banana"); words.push("apple"); words.push("cherry");
-    let sw = sort.sort_strings(words);
-    println(sw[0]);        // apple
+    let words: Vec<string> = ["banana", "apple", "cherry"];
+    println(sort.sort(words)[0]); // apple
 
-    var floats: Vec<f64> = Vec.new();
-    floats.push(3.14); floats.push(1.41); floats.push(2.72);
-    let sf = sort.sort_floats(floats);
-    println(sf[0]);        // 1.41
+    let floats: Vec<f64> = [3.14, 1.41, 2.72];
+    let ordered = sort.sort_by(floats, |a, b| math.total_cmp(a, b) < 0);
+    println(ordered[0]); // 1.41
 }
 ```
 
-`sort_ints`, `sort_strings` and `sort_floats` each return a new sorted Vec (ascending); `reverse_ints`, `reverse_strings` and `reverse_floats` each return a new reversed one. The original Vec is never modified. There is no unconditional generic `sort<T>`/`reverse<T>` yet — [the v0.6.0 migration note](migrations/v0.6.0.md) names one as the eventual replacement for this monomorphic family, but it is not implemented on this build. Integer and string sorting use iterative merge passes, so their comparison count is O(n log n); float sorting retains its total-order runtime implementation.
+`sort.sort<T: Ord>(values)` sorts in ascending order, and
+`sort.reverse<T>(values)` reverses any vector. Both return an independent vector
+and preserve the input. Sorting is stable and uses O(n log n) comparisons.
 
-`sort.sort_by(v, less)` sorts any `Vec<T>` today, given an explicit `less(a, b)`
-predicate (no `Ord`/`PartialOrd` trait exists yet to bound a parameterless
-generic `sort`). It has no `v.sort_by(less)` fluent method form — `Vec<T>`'s
-inherent methods are reserved for `std/builtins.hew` on this build.
+`sort.sort_by(values, less)` consumes its comparator, which defines an explicit
+strict ordering and may keep private mutable state using `capture(var count)`.
+For descending integer order, use `sort.sort_by(values, |a, b| a > b)`.
 
-```hew
-import std.sort;
-fn main() {
-    var nums: Vec<i64> = Vec.new();
-    nums.push(3); nums.push(1); nums.push(2);
-    let sorted = sort.sort_by(nums, |a: i64, b: i64| a < b);
-    println(sorted[0]);  // 1
-}
-```
+Floats retain their ordinary partial ordering and do not satisfy `Ord`.
+`math.total_cmp(a, b)` returns -1, 0 or 1 in IEEE 754 total order: negative zero
+precedes positive zero, and NaN signs and payloads participate in the ordering.
+Use the explicit comparator above when sorting floats in this order.
 
 ### std.random — pseudo-random number generation
 

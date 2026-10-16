@@ -4535,10 +4535,12 @@ Important current details:
   The same adapters and terminals are methods on `VecIter<T>` and on each
   adapter, available without an import:
   `v.into_iter().filter(p).map(f).collect()`
-- `std.sort` generic helpers — one `sort<T: Ord>` and one
-  `reverse<T>` over `Vec<T>` are the intended surface, preserving an
-  independent input value. The current std source still contains specialized
-  helpers; generic consolidation is pending, not an implemented API claim
+- `std.sort` exposes `sort<T: Ord>` and `reverse<T>` over `Vec<T>`,
+  preserving an independent input value. `sort_by<T>` accepts an explicit strict
+  ordering and consumes its comparator, which may keep private mutable state.
+  Floats retain
+  their partial ordering and use `sort_by(values, |a, b| math.total_cmp(a, b) < 0)`
+  for IEEE 754 total order, preserving signed zeros and NaN payloads
 - Assertions are one prelude builtin, `assert(condition)` or
   `assert(condition, message)`, desugared once in HIR. A failure reports the
   condition's source text; a comparison condition (`==`, `!=`, `<`, `<=`, `>`,

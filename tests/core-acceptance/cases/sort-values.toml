@@ -1,6 +1,6 @@
 [[case]]
 id = "sort-values"
-intent = "Production integer and generic string merge sorts preserve copied inputs and owning elements."
+intent = "Generic sorting and reversal preserve numeric and owning string inputs; mutable comparators bound merge comparisons."
 timeout_seconds = 30
 suites = ["acceptance", "safety"]
 source = "cases/sort-values.hew"

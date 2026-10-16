@@ -671,6 +671,26 @@ fn playground_sources_match_native() {
     }
 }
 
+#[cfg(unix)]
+#[test]
+fn generic_sort_and_reverse_match_native() {
+    set_test_hewpath();
+    ensure_native_toolchain();
+    ensure_parity_runner_built();
+    for case in [
+        ParityCase {
+            test_name: "float_sort_values",
+            source_rel: "tests/core-acceptance/cases/float-sort-values.hew",
+        },
+        ParityCase {
+            test_name: "sort_values",
+            source_rel: "tests/core-acceptance/cases/sort-values.hew",
+        },
+    ] {
+        assert_case(&case, "");
+    }
+}
+
 /// Standard input reaches both engines as the same bytes: the VM serves the
 /// stdin line read that native suspends on, with line endings, an empty line
 /// and the unterminated tail intact.
@@ -1039,6 +1059,7 @@ fn assert_exact_stdout(case: &ParityCase, native: &Output) {
             "nan=false finite=true infinite=false\nnan=false finite=false infinite=true\nnan=false finite=false infinite=true\nnan=true finite=false infinite=false\n4609434218613702656\n13835058055282163712\nfalse\nfalse\ntrue\ntrue\n1.5\n-0.25\nrefused infinity: NonFinite\n",
         ),
         "pointer_width_native64" => Some("4294967296\n4294967296\n"),
+        "sort_values" | "float_sort_values" => Some("sort-authority=0\n"),
         "dyn_subtrait_display" => Some("point at 1\n(1, 2)\npoint at 3 / (3, 4)\n"),
         "dyn_multibound_dispatch" => {
             Some("alpha 3\nbeta 3\n300\nalpha 3\nbeta 5 alpha 5 500\nright\nleft\ntag 7\n")

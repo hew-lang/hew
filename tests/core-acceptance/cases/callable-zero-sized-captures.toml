@@ -1,0 +1,10 @@
+[[case]]
+id = "callable-zero-sized-captures"
+intent = "Invoked and discarded zero-sized resource captures retain their exact close effects without accessing an empty allocation slot."
+source = "cases/callable-zero-sized-captures.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "empty capture closed\nempty capture closed\nempty captures complete\n"
+exit = 0

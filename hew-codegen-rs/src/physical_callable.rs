@@ -170,13 +170,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                 let field_layout = self.module.target.layout(&field.ty).ok_or_else(|| {
                     CodegenError::FailClosed("capture drop lacks its value layout".into())
                 })?;
-                let value = builder
-                    .build_load(
-                        llvm_type(self.ctx, &field_layout.repr)?,
-                        slot,
-                        "capture.owner",
-                    )
-                    .llvm_ctx("load initialized capture")?;
+                let value = emitter.load_value(slot, field_layout, "capture.owner")?;
                 emitter.destroy_loaded_value(value, field_layout, action)?;
             }
             builder
@@ -1242,9 +1236,8 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             let source = self.load(*field, "capture.acquire")?;
             let destination =
                 environment_field(self.ctx, &self.builder, layout, environment, index)?;
-            self.builder
-                .build_store(destination, source)
-                .llvm_ctx("initialize owned capture")?;
+            self.value_emitter()
+                .store_value(destination, &self.storage(*field)?.layout, source)?;
             self.clear_owned(*field)?;
             set_environment_mask_bit(self.ctx, &self.builder, environment, index, true)?;
         }

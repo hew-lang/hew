@@ -27,13 +27,22 @@ enum Boundary {
     Return(TaskLifetime),
 }
 
+#[derive(Clone, Debug)]
+struct TaskEscape {
+    site: SpanKey,
+    candidates: IndirectCallCandidates,
+    binding_type: Option<crate::Ty>,
+    boundary: Boundary,
+    module: Option<String>,
+}
+
 #[derive(Clone, Debug, Default)]
 pub(super) struct TaskLifetimes {
     scopes: Vec<LifetimeScope>,
     producers: HashMap<SpanKey, (TaskLifetime, IndirectCallCandidates)>,
     pub(super) scope_results: HashSet<SpanKey>,
     pub(super) discarded_values: HashSet<SpanKey>,
-    escapes: Vec<(SpanKey, IndirectCallCandidates, Boundary, Option<String>)>,
+    escapes: Vec<TaskEscape>,
 }
 
 impl TaskLifetimes {
@@ -201,12 +210,13 @@ impl Checker {
                 &binding.value_candidates,
                 &binding.moved_places,
             );
-            self.task_lifetimes.escapes.push((
-                SpanKey::in_module(span, self.current_module_idx),
+            self.task_lifetimes.escapes.push(TaskEscape {
+                site: SpanKey::in_module(span, self.current_module_idx),
                 candidates,
-                Boundary::Return(scope.lifetime.clone()),
-                self.current_module.clone(),
-            ));
+                binding_type: Some(binding.ty.clone()),
+                boundary: Boundary::Return(scope.lifetime.clone()),
+                module: self.current_module.clone(),
+            });
         }
     }
 
@@ -305,12 +315,13 @@ impl Checker {
 
     fn record_task_escape(&mut self, value: &Spanned<Expr>, boundary: Boundary) {
         let candidates = self.callable_candidates_for_expr(&value.0, &value.1);
-        self.task_lifetimes.escapes.push((
-            SpanKey::in_module(&value.1, self.current_module_idx),
+        self.task_lifetimes.escapes.push(TaskEscape {
+            site: SpanKey::in_module(&value.1, self.current_module_idx),
             candidates,
+            binding_type: None,
             boundary,
-            self.current_module.clone(),
-        ));
+            module: self.current_module.clone(),
+        });
     }
 
     pub(super) fn finish_task_lifetimes(
@@ -319,13 +330,19 @@ impl Checker {
     ) {
         let mut environments = OriginEnvironments::default();
         let actuals = environments.intern(Actuals::new());
-        for (site, candidates, boundary, module) in std::mem::take(&mut self.task_lifetimes.escapes)
+        for TaskEscape {
+            site,
+            candidates,
+            binding_type,
+            boundary,
+            module,
+        } in std::mem::take(&mut self.task_lifetimes.escapes)
         {
             let structural =
                 matches!(&boundary, Boundary::Actor(ty) if self.subst.resolve(ty).contains_task());
-            let may_carry_task = self
-                .expr_types
-                .get(&site)
+            let may_carry_task = binding_type
+                .as_ref()
+                .or_else(|| self.expr_types.get(&site))
                 .is_none_or(|ty| self.task_carrier_type(ty, &mut environments.task_carriers));
             if !structural
                 && (!may_carry_task

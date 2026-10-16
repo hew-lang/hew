@@ -247,6 +247,19 @@ fails the release gate without a separate evidence parser.
 Rust workspace jobs use `make test-strict`; their green result means an
 all-pass result. Report known failures separately from passing tests.
 
+If Windows or Intel macOS needs a retry after a workflow correction, use the
+updated gate with the original candidate's full commit SHA:
+
+```bash
+gh workflow run release-gate.yml --ref main \
+  -f source_sha="$(git rev-parse HEAD)" \
+  -f platforms=windows-intel-macos
+```
+
+This runs identity checks and those two platforms. Combine the results with
+completed platform jobs for the same source SHA. Leaving both inputs at their
+defaults runs the full gate on the workflow commit.
+
 ## Release dependencies and notices
 
 `make release-checks` (cargo-deny 0.19.6, cargo-about 0.9.0) checks allowed
@@ -375,21 +388,19 @@ release blocker.
 
 ## Phase 5 — Candidate tag and publication order
 
-The candidate is tagged on `main`, after its release PR merges, so that the
-tag is reachable from `main` and `git describe` resolves for every later
-commit. Merge the release PR with a merge commit rather than a squash: the
-commit the cross-platform gate verified must remain an ancestor of the tag,
-which a squash does not preserve. This is what `v0.6.0-rc2` did.
+Tag the exact qualified release-branch commit after its release PR merges
+into `main`. Merge with a merge commit so the candidate remains reachable
+from `main`. Later development on `main` does not change the candidate.
 
-All identities below are derived from the checked-out candidate, on `main`
-after the merge:
+Run these commands from the clean, checked-out candidate after the merge:
 
 ```bash
 release_tag="$(scripts/release-identity.sh)"
 release_sha="$(git rev-parse HEAD)"
 test "$(git status --porcelain)" = ""
-test "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)"
-git merge-base --is-ancestor "origin/release/${release_tag}" HEAD
+git fetch origin main "release/${release_tag}"
+test "$release_sha" = "$(git rev-parse "origin/release/${release_tag}")"
+git merge-base --is-ancestor "$release_sha" origin/main
 ```
 
 1. Confirm every release bar and the final-candidate checklist are green on
@@ -398,7 +409,7 @@ git merge-base --is-ancestor "origin/release/${release_tag}" HEAD
 2. Create the signed tag and push it only after the preceding evidence is recorded:
 
    ```bash
-   git tag -s "$release_tag" -m "Hew $release_tag"
+   git tag -s "$release_tag" "$release_sha" -m "Hew $release_tag"
    git push origin "$release_tag"
    ```
 

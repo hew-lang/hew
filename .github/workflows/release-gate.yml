@@ -29,6 +29,16 @@ on:
       - "release/**"
       - "release-*"
   workflow_dispatch:
+    inputs:
+      source_sha:
+        description: "Full source commit SHA to qualify; defaults to the workflow commit."
+        type: string
+        default: ""
+      platforms:
+        description: "Run the full gate or resume Windows and Intel macOS qualification."
+        type: choice
+        options: [all, windows-intel-macos]
+        default: all
 
 # A push to a branch makes any run still going for that same ref obsolete:
 # its verdict can no longer gate anything, because a newer commit exists.
@@ -64,13 +74,22 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          ref: ${{ inputs.source_sha || github.sha }}
 
       - name: Check release identity
         shell: bash
         env:
           BRANCH: ${{ github.ref_name }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
         run: |
           set -euo pipefail
+          if [[ -n "${SOURCE_SHA}" ]]; then
+            [[ "${SOURCE_SHA}" =~ ^[0-9a-f]{40}$ ]] && [[ "$(git rev-parse HEAD)" == "${SOURCE_SHA}" ]] || {
+              echo "::error::source_sha must identify the checked-out full commit SHA"
+              exit 1
+            }
+          fi
           tag="$(scripts/release-identity.sh)"
           # A release/vX.Y.Z branch must carry the version it is named for.
           if [[ "${BRANCH}" == release/v* && "${BRANCH}" != "release/${tag}" ]]; then
@@ -87,11 +106,14 @@ jobs:
   # Sanitizers — executed ASan hard gate. No current TSan or Miri CI jobs.
   # ─────────────────────────────────────────────────────────────────────────
   gate-sanitizers:
+    if: inputs.platforms != 'windows-intel-macos'
     name: Release Gate — Sanitizers
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          ref: ${{ inputs.source_sha || github.sha }}
 
       - name: Set up Python 3.12
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
@@ -140,6 +162,7 @@ jobs:
   # Linux x86_64 — full build + codegen E2E + WASM (matches ci.yml)
   # ─────────────────────────────────────────────────────────────────────────
   gate-linux:
+    if: inputs.platforms != 'windows-intel-macos'
     name: Release Gate — Linux x86_64
     runs-on: ubuntu-24.04
     # The passed surrounding work measured 2,053 s (~34 min), while the final
@@ -149,6 +172,8 @@ jobs:
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          ref: ${{ inputs.source_sha || github.sha }}
 
       - name: Set up Python 3.12
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
@@ -294,6 +319,7 @@ jobs:
   # Linux aarch64 — full Rust build + workspace tests + WASM
   # ─────────────────────────────────────────────────────────────────────────
   gate-linux-aarch64:
+    if: inputs.platforms != 'windows-intel-macos'
     name: Release Gate — Linux aarch64
     runs-on: ubuntu-24.04-arm
     # Workspace tests plus native core acceptance take about 44 minutes on
@@ -301,6 +327,8 @@ jobs:
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          ref: ${{ inputs.source_sha || github.sha }}
 
       - name: Set up Python 3.12
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
@@ -415,20 +443,17 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          # macos-15 for the same reason as ci.yml's macOS job: macos-14's
-          # lldb predates `DW_TAG_variant_part` support.
-          - os: macos-15
-            arch: aarch64
-          - os: macos-15-intel
-            arch: x86_64
-    runs-on: ${{ matrix.os }}
+        # macos-14's lldb predates DW_TAG_variant_part support.
+        arch: ${{ fromJSON(inputs.platforms == 'windows-intel-macos' && '["x86_64"]' || '["aarch64", "x86_64"]') }}
+    runs-on: ${{ matrix.arch == 'x86_64' && 'macos-15-intel' || 'macos-15' }}
     # The Intel cold build and workspace tests took 93 minutes, then native
     # acceptance reached the three-hour job limit. Allow the remaining corpus
     # to finish while preserving the ARM runner's existing limit.
     timeout-minutes: ${{ matrix.arch == 'x86_64' && 240 || 180 }}
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          ref: ${{ inputs.source_sha || github.sha }}
 
       - name: Set up Python 3.12
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
@@ -536,6 +561,8 @@ jobs:
       AWS_LC_SYS_PREBUILT_NASM: "1"
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          ref: ${{ inputs.source_sha || github.sha }}
 
       - name: Set up Python 3.12
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
@@ -629,6 +656,7 @@ jobs:
   # FreeBSD x86_64 — full build + workspace tests
   # ─────────────────────────────────────────────────────────────────────────
   gate-freebsd-x86_64:
+    if: inputs.platforms != 'windows-intel-macos'
     name: Release Gate — FreeBSD x86_64
     runs-on: ubuntu-24.04
     # This separate QEMU-backed job runs the grown Hew-suite ratchet after its
@@ -638,6 +666,8 @@ jobs:
     timeout-minutes: 180
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          ref: ${{ inputs.source_sha || github.sha }}
 
       - name: Build and test on FreeBSD
         uses: vmactions/freebsd-vm@c46abacb49f09938ca4e1702d15d836285d694cc # v1.5.9
@@ -796,6 +826,7 @@ jobs:
   # budget available rather than leaving it idle during the emulated build.
   # ─────────────────────────────────────────────────────────────────────────
   gate-freebsd-aarch64:
+    if: inputs.platforms != 'windows-intel-macos'
     name: Release Gate — FreeBSD aarch64
     runs-on: ubuntu-24.04
     # This is an emulated QEMU leg; 300 minutes matches release.yml's
@@ -804,6 +835,8 @@ jobs:
     timeout-minutes: 300
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          ref: ${{ inputs.source_sha || github.sha }}
 
       - name: Build and test on FreeBSD aarch64
         uses: vmactions/freebsd-vm@c46abacb49f09938ca4e1702d15d836285d694cc # v1.5.9

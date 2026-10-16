@@ -535,6 +535,7 @@ impl RuntimeCallFamily {
                     | RuntimeValueKind::FileReadHandle(_)
                     | RuntimeValueKind::Named(_)
                     | RuntimeValueKind::NamedOpaque(_)
+                    | RuntimeValueKind::NominalArgument(_)
                     | RuntimeValueKind::MonomorphicBuiltin(_)
                     | RuntimeValueKind::StructuralOperand,
                 ) => RuntimeResultOwnership::Untracked,
@@ -759,6 +760,8 @@ impl RuntimeCallFamily {
             | F::CancelTokenIsRequested
             | F::CancelTokenRelease
             | F::CancelTokenRetain
+            | F::DequePopFront
+            | F::DequePopBack
             | F::DurationAbs
             | F::DurationHours
             | F::DurationIsZero

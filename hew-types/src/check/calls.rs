@@ -1766,6 +1766,14 @@ impl Checker {
             &params,
             &result,
             &contract.consuming_params,
+        ) || family.matches_deque_extern(
+            &self.defs,
+            module,
+            self.defs.path(declaration),
+            &extern_decl.symbol,
+            &params,
+            &result,
+            &contract.consuming_params,
         ) || family.matches_file_read_extern(
             &self.defs,
             module,

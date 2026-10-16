@@ -124,6 +124,8 @@ pub enum RuntimeValueKind {
     Named(&'static str),
     /// A concrete `#[opaque]` runtime-handle nominal with no type parameters.
     NamedOpaque(&'static str),
+    /// A canonical nominal argument, preserving the phase's checked type facts.
+    NominalArgument(&'static str),
     /// A monomorphic enum whose source declaration supplies its exact owner.
     MonomorphicBuiltin(BuiltinType),
     /// The signature's receiver, constrained by canonical builtin identity.
@@ -277,6 +279,20 @@ impl RuntimeValueKind {
             Self::StructuralOperand => receiver?.clone(),
             Self::Named(name) => ResolvedTy::named_user(contract(name)?, Vec::new()),
             Self::NamedOpaque(name) => ResolvedTy::named_opaque(contract(name)?, Vec::new()),
+            Self::NominalArgument(name) => {
+                let argument @ ResolvedTy::Named {
+                    head: crate::TypeHead::Nominal(head),
+                    args,
+                    ..
+                } = receiver?
+                else {
+                    return None;
+                };
+                if head.id != contract(name)?.id || !args.is_empty() {
+                    return None;
+                }
+                argument.clone()
+            }
             Self::BuiltinNominal(builtin) => ResolvedTy::named_builtin(builtin, Vec::new()),
             Self::MonomorphicBuiltin(builtin) => {
                 crate::builtin_enums::monomorphic_builtin_enum(builtin.canonical_name())?;
@@ -636,6 +652,7 @@ impl RuntimeSemanticContract {
                         expected.ty,
                         RuntimeValueKind::PipeHalf(_)
                             | RuntimeValueKind::ServiceHandle(_)
+                            | RuntimeValueKind::NominalArgument(_)
                             | RuntimeValueKind::BuiltinArgument(_)
                             | RuntimeValueKind::StructuralOperand
                     ) {

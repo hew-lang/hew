@@ -1114,37 +1114,21 @@
           "params": [],
           "term": {
             "args": [],
-            "error_shape": null,
+            "callee": 5,
             "normal": {
               "args": [
                 0
               ],
               "to": 6
             },
-            "op": "actor.call",
-            "operation": {
-              "actor": 0,
-              "op": "spawn"
-            },
-            "request_shapes": {
-              "failure": null,
-              "message": null,
-              "reason": null,
-              "request": null
-            },
+            "op": "call",
             "result": {
               "own": "none",
               "value": 0
             },
-            "result_shape": null,
             "span": {
               "end": 216,
               "start": 216
-            },
-            "submission_shapes": {
-              "failure": null,
-              "reason": null,
-              "success": null
             },
             "unwind": {
               "args": [],
@@ -1543,7 +1527,7 @@
                 "value": 6
               }
             ],
-            "callee": 5,
+            "callee": 6,
             "normal": {
               "args": [
                 11
@@ -1821,6 +1805,190 @@
       ]
     },
     {
+      "actor_construction": true,
+      "blocks": [
+        {
+          "id": 0,
+          "ops": [],
+          "params": [],
+          "term": {
+            "cancel": {
+              "args": [],
+              "to": 2
+            },
+            "detail": {
+              "budget": 4000
+            },
+            "error_shape": null,
+            "inputs": [],
+            "kind": "Safepoint",
+            "op": "suspend",
+            "request_shapes": null,
+            "result": null,
+            "result_shape": null,
+            "resumes": [
+              {
+                "args": [],
+                "to": 1
+              }
+            ],
+            "span": null,
+            "unwind": null
+          }
+        },
+        {
+          "id": 1,
+          "ops": [],
+          "params": [],
+          "term": {
+            "args": [],
+            "error_shape": null,
+            "normal": {
+              "args": [
+                0
+              ],
+              "to": 6
+            },
+            "op": "actor.call",
+            "operation": {
+              "actor": 0,
+              "op": "spawn"
+            },
+            "request_shapes": {
+              "failure": null,
+              "message": null,
+              "reason": null,
+              "request": null
+            },
+            "result": {
+              "own": "none",
+              "value": 0
+            },
+            "result_shape": null,
+            "span": {
+              "end": 216,
+              "start": 216
+            },
+            "submission_shapes": {
+              "failure": null,
+              "reason": null,
+              "success": null
+            },
+            "unwind": {
+              "args": [],
+              "to": 7
+            }
+          }
+        },
+        {
+          "id": 2,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 4
+            },
+            "op": "goto",
+            "span": null
+          }
+        },
+        {
+          "id": 3,
+          "ops": [],
+          "params": [],
+          "term": {
+            "op": "resume_unwind",
+            "span": null
+          }
+        },
+        {
+          "id": 4,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 5
+            },
+            "op": "goto",
+            "span": null
+          }
+        },
+        {
+          "id": 5,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 3
+            },
+            "op": "goto",
+            "span": null
+          }
+        },
+        {
+          "id": 6,
+          "ops": [],
+          "params": [
+            {
+              "own": "none",
+              "value": 1
+            }
+          ],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 8
+            },
+            "op": "goto",
+            "span": {
+              "end": 216,
+              "start": 216
+            }
+          }
+        },
+        {
+          "id": 7,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 4
+            },
+            "op": "goto",
+            "span": {
+              "end": 216,
+              "start": 216
+            }
+          }
+        },
+        {
+          "id": 8,
+          "ops": [],
+          "params": [],
+          "term": {
+            "op": "return",
+            "span": {
+              "end": 216,
+              "start": 216
+            },
+            "value": {
+              "decision": "move",
+              "value": 1
+            }
+          }
+        }
+      ],
+      "entry": 0,
+      "id": 5,
+      "name": "__hew_construction_5",
+      "params": [],
+      "places": []
+    },
+    {
       "blocks": [
         {
           "id": 0,
@@ -2047,7 +2215,7 @@
                 "value": 6
               }
             ],
-            "callee": 6,
+            "callee": 7,
             "normal": {
               "args": [
                 7
@@ -2090,7 +2258,7 @@
                 "value": 4
               }
             ],
-            "callee": 7,
+            "callee": 8,
             "normal": {
               "args": [
                 12
@@ -2615,7 +2783,7 @@
         }
       ],
       "entry": 0,
-      "id": 5,
+      "id": 6,
       "name": "__hew_fn_std.builtins.ActorError::fmt$$std$mbuiltins$mNever$std$mbuiltins$mNever",
       "params": [
         {
@@ -3224,7 +3392,7 @@
         }
       ],
       "entry": 0,
-      "id": 6,
+      "id": 7,
       "name": "__hew_fn_std.builtins.SendError::fmt",
       "params": [
         {
@@ -3285,7 +3453,7 @@
         }
       ],
       "entry": 0,
-      "id": 7,
+      "id": 8,
       "name": "__hew_fn_std.builtins.Never::fmt",
       "params": [
         {

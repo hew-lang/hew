@@ -1,12 +1,12 @@
 {
   "actors": [
     {
-      "crash": 1,
+      "crash": 2,
       "crash_action": 0,
       "crash_info": 0,
       "handlers": [
         {
-          "callable": 2,
+          "callable": 3,
           "fallible": false,
           "message_id": 0,
           "name": "explode",
@@ -85,37 +85,21 @@
           "params": [],
           "term": {
             "args": [],
-            "error_shape": null,
+            "callee": 1,
             "normal": {
               "args": [
                 0
               ],
               "to": 6
             },
-            "op": "actor.call",
-            "operation": {
-              "actor": 0,
-              "op": "spawn"
-            },
-            "request_shapes": {
-              "failure": null,
-              "message": null,
-              "reason": null,
-              "request": null
-            },
+            "op": "call",
             "result": {
               "own": "none",
               "value": 0
             },
-            "result_shape": null,
             "span": {
               "end": 213,
               "start": 213
-            },
-            "submission_shapes": {
-              "failure": null,
-              "reason": null,
-              "success": null
             },
             "unwind": {
               "args": [],
@@ -706,6 +690,190 @@
       "places": []
     },
     {
+      "actor_construction": true,
+      "blocks": [
+        {
+          "id": 0,
+          "ops": [],
+          "params": [],
+          "term": {
+            "cancel": {
+              "args": [],
+              "to": 2
+            },
+            "detail": {
+              "budget": 4000
+            },
+            "error_shape": null,
+            "inputs": [],
+            "kind": "Safepoint",
+            "op": "suspend",
+            "request_shapes": null,
+            "result": null,
+            "result_shape": null,
+            "resumes": [
+              {
+                "args": [],
+                "to": 1
+              }
+            ],
+            "span": null,
+            "unwind": null
+          }
+        },
+        {
+          "id": 1,
+          "ops": [],
+          "params": [],
+          "term": {
+            "args": [],
+            "error_shape": null,
+            "normal": {
+              "args": [
+                0
+              ],
+              "to": 6
+            },
+            "op": "actor.call",
+            "operation": {
+              "actor": 0,
+              "op": "spawn"
+            },
+            "request_shapes": {
+              "failure": null,
+              "message": null,
+              "reason": null,
+              "request": null
+            },
+            "result": {
+              "own": "none",
+              "value": 0
+            },
+            "result_shape": null,
+            "span": {
+              "end": 213,
+              "start": 213
+            },
+            "submission_shapes": {
+              "failure": null,
+              "reason": null,
+              "success": null
+            },
+            "unwind": {
+              "args": [],
+              "to": 7
+            }
+          }
+        },
+        {
+          "id": 2,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 4
+            },
+            "op": "goto",
+            "span": null
+          }
+        },
+        {
+          "id": 3,
+          "ops": [],
+          "params": [],
+          "term": {
+            "op": "resume_unwind",
+            "span": null
+          }
+        },
+        {
+          "id": 4,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 5
+            },
+            "op": "goto",
+            "span": null
+          }
+        },
+        {
+          "id": 5,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 3
+            },
+            "op": "goto",
+            "span": null
+          }
+        },
+        {
+          "id": 6,
+          "ops": [],
+          "params": [
+            {
+              "own": "none",
+              "value": 1
+            }
+          ],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 8
+            },
+            "op": "goto",
+            "span": {
+              "end": 213,
+              "start": 213
+            }
+          }
+        },
+        {
+          "id": 7,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 4
+            },
+            "op": "goto",
+            "span": {
+              "end": 213,
+              "start": 213
+            }
+          }
+        },
+        {
+          "id": 8,
+          "ops": [],
+          "params": [],
+          "term": {
+            "op": "return",
+            "span": {
+              "end": 213,
+              "start": 213
+            },
+            "value": {
+              "decision": "move",
+              "value": 1
+            }
+          }
+        }
+      ],
+      "entry": 0,
+      "id": 1,
+      "name": "__hew_construction_1",
+      "params": [],
+      "places": []
+    },
+    {
       "blocks": [
         {
           "id": 0,
@@ -919,7 +1087,7 @@
         }
       ],
       "entry": 0,
-      "id": 1,
+      "id": 2,
       "name": "__hew_actor_0_hook_crashed",
       "params": [
         {
@@ -1058,7 +1226,7 @@
         }
       ],
       "entry": 0,
-      "id": 2,
+      "id": 3,
       "name": "__hew_actor_0_Boom__explode",
       "params": [
         {

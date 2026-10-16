@@ -250,7 +250,6 @@ jobs:
         if: matrix.builder == 'xwin'
         env:
           AWS_LC_SYS_PREBUILT_NASM: "1"
-          XWIN_CROSS_COMPILER: clang
         run: cargo xwin build -p hew-lib --profile release-lib --target ${{ matrix.rust_target }}
 
       - name: Record FreeBSD ABI baseline

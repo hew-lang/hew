@@ -131,7 +131,11 @@ impl Checker {
                     })
             }
             Expr::Call { args, .. } | Expr::MethodCall { args, .. }
-                if self.is_construct_call(span) =>
+                if self.is_construct_call(span)
+                    || matches!(
+                        self.selected_callable_target(span),
+                        Some(CallTarget::RecordConstructor(_))
+                    ) =>
             {
                 self.callable_sequence_candidates(args.iter().map(CallArg::expr))
             }

@@ -1053,6 +1053,14 @@ fn coalescing_accepts_replacement_and_reports_fallback_discard() {
 }
 
 #[test]
+fn actor_constructor_cleanup_preserves_child_rc_owner() {
+    assert_native_manifest(
+        "actor-rc-constructor-close",
+        hew_compile::SourceSet::in_memory(),
+    );
+}
+
+#[test]
 fn actor_stop_drains_owned_work_in_both_runtimes() {
     assert_native_manifest("actor-stop-drains", hew_compile::SourceSet::in_memory());
     let trace = assert_native_manifest("actor-rc-survivors", hew_compile::SourceSet::in_memory());

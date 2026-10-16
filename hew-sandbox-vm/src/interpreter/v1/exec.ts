@@ -1037,8 +1037,12 @@ class ExecutorV1 {
           rcOwner: act.rcOwner,
           requestDeadline: this.requestDeadline(act),
           returned: (value) =>
-            this.closeValueAsync(value, null, (fault) =>
-              this.finishGenerator(generator, fault),
+            this.closeValueAsync(
+              value,
+              null,
+              (fault) => this.finishGenerator(generator, fault),
+              act.context.actor,
+              act.rcOwner,
             ),
           failed: (fault) => this.finishGenerator(generator, fault),
         };
@@ -1148,10 +1152,12 @@ class ExecutorV1 {
                   this.faultText(failure),
                   finish,
                   act.context.actor,
+                  act.rcOwner,
                 );
               else finish();
             },
             act.context.actor,
+            act.rcOwner,
           );
         };
         task.cancel = () => {
@@ -1205,6 +1211,8 @@ class ExecutorV1 {
               }
               for (const changed of [...group.changed]) changed();
             },
+            act.context.actor,
+            act.rcOwner,
           );
         };
         const context: FrameContext = {
@@ -1540,11 +1548,17 @@ class ExecutorV1 {
         if (entry && ["SinkClose", "StreamClose"].includes(entry.family)) {
           const value = this.boundary(act, term.args[0]!);
           this.running = false;
-          this.closeValueAsync(value, this.pipeFault(act), (fault) => {
-            if (fault) this.raiseFault(act, fault, term.unwind);
-            else this.completeShim(act, term, UNIT);
-            this.scheduler.enqueue(act.context.id, () => this.runFrame(act));
-          });
+          this.closeValueAsync(
+            value,
+            this.pipeFault(act),
+            (fault) => {
+              if (fault) this.raiseFault(act, fault, term.unwind);
+              else this.completeShim(act, term, UNIT);
+              this.scheduler.enqueue(act.context.id, () => this.runFrame(act));
+            },
+            act.context.actor,
+            act.rcOwner,
+          );
           return;
         }
         if (entry?.family === "StructuralFormat") {
@@ -1802,6 +1816,8 @@ class ExecutorV1 {
           this.raiseFault(act, fault, term.unwind);
           resume();
         },
+        act.context.actor,
+        act.rcOwner,
       );
     };
     const next = (value: VmValue = UNIT) => {
@@ -1825,18 +1841,24 @@ class ExecutorV1 {
         fail({ kind: "panic", message: step.value.message });
       } else if (step.value.kind === "release") {
         const request = step.value;
-        this.closeValueAsync(request.value, this.pipeFault(act), (fault) => {
-          if (fault) {
-            if (term.op !== "runtime.call" || !term.releases_contents) {
-              fail(fault, request.onFault);
-              return;
+        this.closeValueAsync(
+          request.value,
+          this.pipeFault(act),
+          (fault) => {
+            if (fault) {
+              if (term.op !== "runtime.call" || !term.releases_contents) {
+                fail(fault, request.onFault);
+                return;
+              }
+              // The shared contract republishes the receiver and result owners
+              // before SIR dispatches a failure from releasing their contents.
+              act.fault ??= fault;
             }
-            // The shared contract republishes the receiver and result owners
-            // before SIR dispatches a failure from releasing their contents.
-            act.fault ??= fault;
-          }
-          next();
-        });
+            next();
+          },
+          act.context.actor,
+          act.rcOwner,
+        );
       } else {
         const request = step.value;
         const child = this.invokeFrame(
@@ -2211,8 +2233,12 @@ class ExecutorV1 {
           if (owned) {
             owned = false;
             closing = true;
-            this.closeValueAsync(value!, this.faultText(fault), (closeFault) =>
-              cancel(closeFault ?? fault),
+            this.closeValueAsync(
+              value!,
+              this.faultText(fault),
+              (closeFault) => cancel(closeFault ?? fault),
+              act.context.actor,
+              act.rcOwner,
             );
           } else if (!closing) cancel(fault);
         };
@@ -2225,8 +2251,12 @@ class ExecutorV1 {
             if (status === 0) wake(UNIT);
             else {
               closing = true;
-              this.closeValueAsync(value!, this.pipeFault(act), (fault) =>
-                wake(UNIT, fault ?? cancelled, status),
+              this.closeValueAsync(
+                value!,
+                this.pipeFault(act),
+                (fault) => wake(UNIT, fault ?? cancelled, status),
+                act.context.actor,
+                act.rcOwner,
               );
             }
           },
@@ -2495,6 +2525,7 @@ class ExecutorV1 {
             this.faultText(act.fault ?? outcome.fault),
             finish,
             act.context.actor,
+            act.rcOwner,
           );
         else finish();
       });
@@ -2540,13 +2571,19 @@ class ExecutorV1 {
   ): void {
     let synchronous = true;
     let completed = false;
-    this.closeValueAsync(value, this.pipeFault(act), (fault) => {
-      completed = true;
-      finish?.();
-      act.fault = combineFaults(act.fault, fault);
-      if (!synchronous)
-        this.scheduler.enqueue(act.context.id, () => this.runFrame(act));
-    });
+    this.closeValueAsync(
+      value,
+      this.pipeFault(act),
+      (fault) => {
+        completed = true;
+        finish?.();
+        act.fault = combineFaults(act.fault, fault);
+        if (!synchronous)
+          this.scheduler.enqueue(act.context.id, () => this.runFrame(act));
+      },
+      act.context.actor,
+      act.rcOwner,
+    );
     synchronous = false;
     if (!completed) this.running = false;
   }
@@ -2577,6 +2614,8 @@ class ExecutorV1 {
         for (const closed of generator.closed.splice(0))
           closed(generator.fault);
       },
+      generator.frame.context.actor,
+      generator.frame.rcOwner,
     );
   }
 
@@ -2640,6 +2679,7 @@ class ExecutorV1 {
                 currentFault,
                 (fault) => next(fault ?? (task.close ? task.fault : null)),
                 actor,
+                rcOwner,
               );
               return;
             }
@@ -2904,14 +2944,20 @@ class ExecutorV1 {
         this.running = false;
         const failed = (fault: Fault) => {
           actor.alive = false;
-          this.closeValueAsync(actor.state, this.faultText(fault), () => {
-            actor.completed = true;
-            for (const message of actor.mailbox.splice(0))
-              message.complete(null, "Dead");
-            for (const closed of actor.closed.splice(0)) closed();
-            this.raiseFault(act, fault, term.unwind);
-            this.scheduler.enqueue(act.context.id, () => this.runFrame(act));
-          });
+          this.closeValueAsync(
+            actor.state,
+            this.faultText(fault),
+            () => {
+              actor.completed = true;
+              for (const message of actor.mailbox.splice(0))
+                message.complete(null, "Dead");
+              for (const closed of actor.closed.splice(0)) closed();
+              this.raiseFault(act, fault, term.unwind);
+              this.scheduler.enqueue(act.context.id, () => this.runFrame(act));
+            },
+            actor,
+            actor.rcOwner,
+          );
         };
         const started = () => {
           act.rcOwner = null;
@@ -3098,6 +3144,7 @@ class ExecutorV1 {
                 else this.completeShim(act, term, report);
               },
               act.context.actor,
+              act.rcOwner,
             );
             if (!settled) {
               waiting = true;
@@ -3397,6 +3444,7 @@ class ExecutorV1 {
     let admitted = false;
     let closing = false;
     const owner = this.current.context.actor;
+    const rcOwner = this.current.rcOwner;
     const deadline = this.requestDeadline(this.current);
     let cancelTimer: (() => void) | undefined;
     let message: ActorMessage | undefined;
@@ -3420,6 +3468,7 @@ class ExecutorV1 {
             else if (fault) this.rootFault ??= fault;
           },
           admitted ? receiver : owner,
+          admitted ? (receiver?.rcOwner ?? null) : rcOwner,
         );
       } else drained?.(null);
     };
@@ -3445,6 +3494,7 @@ class ExecutorV1 {
           for (const waiter of closeWaiters.splice(0)) waiter(fault);
         },
         owner,
+        rcOwner,
       );
     };
     const reject = (reason: string) => {

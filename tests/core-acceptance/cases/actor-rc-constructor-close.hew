@@ -1,0 +1,63 @@
+#[resource]
+type Link {
+    id: i64;
+    edge: Rc<Option<Link>>;
+}
+
+impl Link {
+    fn close(consume self) {
+        println(f"close {self.id}");
+    }
+}
+
+#[resource]
+type Temporary {
+    id: i64;
+}
+
+impl Temporary {
+    fn close(consume self) {
+        sleep(1ms);
+        let empty: Option<Link> = .None;
+        let cycle = Rc.new(empty);
+        let linked: Option<Link> = .Some(Link { id: self.id, edge: cycle.clone() });
+        cycle.set(linked);
+    }
+}
+
+fn prepare() -> i64 {
+    let temporary = Temporary { id: 1 };
+    let _ = temporary;
+    scope {
+        fork {
+            Temporary { id: 2 }
+        };
+    };
+    7
+}
+
+actor Child {
+    let seed: i64 = prepare();
+    init() {
+        assert(seed == 7);
+    }
+    receive fn ready() {}
+}
+
+actor Parent {
+    receive fn child() -> Child {
+        spawn Child
+    }
+}
+
+fn main() {
+    let parent = spawn Parent;
+    let child = parent.child().expect("child constructed");
+    child.ready().expect("child ready");
+    stop(child);
+    stopped(child);
+    println("child stopped");
+    stop(parent);
+    stopped(parent);
+    println("parent stopped");
+}

@@ -9,69 +9,45 @@ it?" without reading the commit log.
 Hew uses **SemVer-ish** versioning: `vMAJOR.MINOR.PATCH`, with optional
 pre-release suffix `-alpha.N`, `-beta.N`, `-rc.N`, or `-pre`.
 
-While Hew is pre-1.0, MAJOR stays at `0` and the **MINOR axis carries the
-weight of "real release"**. PATCH exists and is welcome, but it has a
-narrow purpose (see below).
+While Hew is pre-1.0, MAJOR stays at `0`. The 0.6 series develops edition
+2026 through feature and maintenance releases, including intentional surface
+changes with migration notes. The [specification](../specs/HEW-SPEC-2026.md)
+owns the language's version and edition contract.
 
 ## What each axis signals
 
 | Bump  | Signals                                                                 | Examples                                                   |
 | ----- | ----------------------------------------------------------------------- | ---------------------------------------------------------- |
 | MAJOR | Stability commitment. Multi-year deprecation cycle. Not yet reached.    | `v1.0.0` — see "When v1.0" below.                          |
-| MINOR | Meaningful surface change. Breaking changes allowed. Migration notes.   | `v0.4 → v0.5` (HIR/MIR cutover, concurrency surface).      |
-| PATCH | Bugfix or non-breaking addition on top of an already-shipped MINOR.     | `v0.1.0 → v0.1.9` (the early-language cadence).            |
+| MINOR | New development series with a coherent scope.                           | `v0.5 → v0.6` (native compiler and language development). |
+| PATCH | Feature or maintenance release within the current development series. | `v0.6.0 → v0.6.1` (language additions and fixes).         |
 
 ### MINOR bump (`0.Y`)
 
-Bump MINOR when **any** of the following is true:
-
-- A public language, stdlib, or CLI surface changes shape (signature, return
-  type, default behaviour, error contract).
-- A user-visible capability lands that warrants release notes more than one
-  paragraph long.
-- The compiler/runtime crosses a foundational seam (IR refactor, ABI change,
-  new codegen pipeline) — even if the user-facing surface is unchanged,
-  because tooling and downstream consumers will care.
-- The CHANGELOG `[Unreleased]` section has accumulated enough material that
-  the next release notes file would be a genuine narrative, not a bullet
-  list of three fixes.
-
-A MINOR bump does **not** require breaking changes. "We shipped a coherent
-chunk of work" is sufficient reason.
+Bump MINOR when opening a new development series with a coherent scope.
+An individual feature, refactor or migration does not by itself require
+leaving the 0.6 series.
 
 ### PATCH bump (`Y.Z`, `Z > 0`)
 
-Bump PATCH when **all** of the following are true:
-
-- The change is strictly additive or corrective relative to the most recent
-  MINOR tag (no surface shapes change incompatibly).
-- The change is worth giving downstream users a pinnable tag for — typically
-  a bugfix, a CI/release-asset fix, a security-relevant patch, or a small
-  capability addition users are actively waiting on.
-- The change is small enough that a one-paragraph note in
-  `docs/releases/vY.Z.md` (or appended to the existing MINOR notes) is
-  sufficient.
-
-If a fix is important but a MINOR is imminent (days away), prefer rolling it
-into the MINOR. If the MINOR is weeks away, ship a PATCH.
-
-PATCH is **not** reserved for emergencies. Multiple PATCH releases per
-MINOR is healthy — `v0.1.x` shipped nine of them. The dearth of PATCH
-releases in the `v0.3` and `v0.4` cycles reflects rapid MINOR cadence, not a
-policy against PATCHes.
+Bump PATCH to deliver a useful, qualified set of changes within the current
+series. In 0.6.x this includes language features, standard-library additions,
+correctness and performance fixes, and approved incompatible changes.
+Packages using an addition declare its minimum compiler version through
+`hew` in `hew.toml`. Incompatible changes require exact migration instructions
+and coherent updates to all in-tree consumers.
 
 ### Pre-release suffix
 
-- `-pre` — the workspace `Cargo.toml` version between tags. Always reflects
-  "the next MINOR is being assembled." Example today: `0.5.0-pre`.
-  Never tagged; only present in `Cargo.toml` on `main` between releases.
+- `-pre` — an untagged preview version while a release is being assembled.
+  Development builds also identify their commit through `hew --version`.
 - `-alpha.N` — early preview of a MINOR. Surface is in flux. Tag only when
   external users are asked to exercise a specific capability.
 - `-beta.N` — feature-complete but unstable. Use when the surface is frozen
   and we want bug reports before the `.0`.
 - `-rc.N` — release candidate. No changes expected before the `.0` except
   fixes for issues found in RC. Tag if a release has external-stakeholder
-  validation gates (the only historical use: `v0.2.0-rc2`).
+  validation gates.
 
 We do not require any pre-release stages. Most MINORs ship straight to
 `.0`. Use `-rc` when a release is large enough that a 24–72h soak with
@@ -81,12 +57,13 @@ external pinning is genuinely useful.
 
 SemVer says anything goes pre-1.0. We're stricter than that:
 
-1. **Document every breaking change** in `CHANGELOG.md` under the relevant
-   MINOR, with old shape, new shape, and migration. See `docs/release-runbook.md`.
+1. **Document every breaking change** in `CHANGELOG.md` and the affected
+   release's notes, with old shape, new shape and migration. See `docs/release-runbook.md`.
 2. **Don't break casually.** A breaking change should land in a coherent
    PR with rationale, not as a drive-by during unrelated work.
-3. **PATCH releases never break.** If a PATCH would change a shape, it's a
-   MINOR instead.
+3. **Keep the specification and consumers aligned.** Edition 2026 is still
+   evolving; a 0.6.x release number does not imply that an intentional surface
+   change can omit migration instructions.
 
 ## Release cadence
 
@@ -125,9 +102,10 @@ Until those hold, we stay pre-1.0.
 ## Edition vs. version
 
 Hew has a language **edition** (e.g. `edition = "2026"` in `hew.toml`) that
-is **orthogonal** to the compiler version:
+is **orthogonal** to the compiler version. Edition 2026 remains under
+development; the compatibility rules below apply once an edition stabilizes:
 
-- A **version** (`v0.5.0`) identifies a compiler/runtime/stdlib build.
+- A **version** (`v0.6.1`) identifies a compiler/runtime/stdlib build.
 - An **edition** (`2026`) identifies a stable surface contract that
   Hew source code targets and that the compiler must continue to accept.
 
@@ -171,53 +149,11 @@ git push origin vX.Y.Z
 ```
 
 The tag push triggers `.github/workflows/release.yml`. Pre-tag validation
-runs through `.github/workflows/release-gate.yml` on a `release/vX.Y`
+runs through `.github/workflows/release-gate.yml` on a `release/vX.Y.Z`
 branch — see `docs/release-runbook.md`.
 
-After tagging, bump the workspace version to the next `-pre`:
-
-```toml
-# Cargo.toml
-version = "X.Y+1.0-pre"
-```
-
-Commit that as `chore: open vX.Y+1 development`.
-
-## History (calibration)
-
-Real Hew release history, for grounding:
-
-| Tag        | Date       | Notes                                                          |
-| ---------- | ---------- | -------------------------------------------------------------- |
-| v0.1.0     | 2026-02    | First public tag.                                              |
-| v0.1.1–.9  | 2026-02/03 | Nine PATCHes — early-language bugfix/iteration cadence.        |
-| v0.2.0-rc2 | 2026-03-16 | Only RC in history. Pre-tag soak before a substantial MINOR.   |
-| v0.2.0     | 2026-03-16 |                                                                |
-| v0.2.1–.2  | 2026-03    | Two PATCHes.                                                   |
-| v0.3.0     | 2026-04-06 | No PATCHes — cadence shifted to MINOR-only.                    |
-| v0.4.0     | 2026-05-06 | No PATCHes — substantial release (LSP formatting, stdlib `int` |
-|            |            | unification, explicit teardown for HTTP/regex/JSON).           |
-| v0.5.0     | (planned)  | Compiler-foundation cutover; HIR/MIR + concurrency surface.    |
-
-Observation: the PATCH gap from v0.3 onward correlates with faster MINOR
-cadence, not a policy. If a `v0.5.1` is warranted (stdlib bugfix, release-
-asset issue, regression), tag it.
-
-## Examples
-
-- **Stdlib function gains a new optional parameter:** MINOR. Surface
-  changed shape (even backwards-compatibly).
-- **Bugfix where `std/encoding/json` mishandles surrogate pairs:** PATCH.
-- **LSP server gains a new request handler:** MINOR. New capability.
-- **CI release-asset workflow fix that doesn't change binaries:** Not a
-  release at all; the bug is in CI, fix it in CI.
-- **Codegen miscompile that produces wrong output for a specific shape:**
-  PATCH if a MINOR isn't imminent; otherwise roll into the MINOR.
-- **Compiler internal refactor with zero user-facing change:** MINOR if it
-  crosses a foundational seam (v0.5's IR ladder qualifies). Otherwise no
-  release — it lands on `main` and ships with the next MINOR.
-- **Removing a deprecated alias (`fs.read_line` → `io.read_line()`):**
-  MINOR. Breaking change, documented in release notes with migration.
+After tagging, follow the release runbook when opening the next planned
+development version. A patch release does not automatically open a new MINOR.
 
 ## Closeout
 
@@ -226,6 +162,6 @@ When you ship a release, ask:
 1. Does the CHANGELOG entry tell a coherent story, or is it a list of
    unrelated bullets? If the latter, the next release should be smaller.
 2. Did this release introduce a durable invariant worth adding to [`engineering-invariants.md`](engineering-invariants.md)?
-3. Is `Cargo.toml` now on the next `-pre`?
+3. Does `Cargo.toml` identify the next planned development version?
 4. Is the release notes file (`docs/releases/vX.Y.Z.md`) in place if the
    release warranted one?

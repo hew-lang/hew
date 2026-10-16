@@ -36,17 +36,13 @@ $ hew --supported-editions
 2026
 ```
 
-Before v0.6.0, the native compiler cutover may make breaking changes within
-edition 2026 as the compiler, standard library and documentation converge on
-the agreed design.
-
-Starting with v0.6.0, the 0.6 series preserves existing valid programs and
-their specified behaviour. Compatible additions may extend edition 2026;
-each addition updates this specification and identifies its first supported
-compiler version. New syntax must preserve existing names and parsing, and
-new APIs must preserve existing resolution, ownership and error semantics.
-Incompatible language changes require a later edition. An older compiler
-need not support features introduced by a newer compiler in the same edition.
+Edition 2026 remains under development during the 0.6 series. Compatible
+additions identify their first supported compiler version. Intentional
+incompatible changes may also ship in 0.6.x while the language converges on
+its agreed design; release notes must identify the affected versions and give
+exact migration instructions, and in-tree consumers migrate with the change.
+Each surface change updates this specification. An older compiler need not
+support features introduced by a newer compiler in the same edition.
 
 Hew does not adopt per-file edition pragmas. The edition stamp is
 package-level. Migration tooling (`hew migrate --edition <year>`) is

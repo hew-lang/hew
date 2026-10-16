@@ -3625,12 +3625,14 @@ class ExecutorV1 {
         ? this.childStopBudget(parent.owner, parent.child)!
         : DEFAULT_ACTOR_STOP_NS;
       hook.requestDeadline = this.trace.virtualTimeMs + stopNs / 1_000_000;
-      const expire = () =>
-        hook.cancel?.({
+      const expire = () => {
+        hook.pendingCancellation ??= {
           kind: "panic",
           message: "crash hook deadline elapsed",
           deadline: true,
-        });
+        };
+        hook.cancel?.(hook.pendingCancellation);
+      };
       if (stopNs <= 0) expire();
       else cancelTimer = this.scheduler.after(BigInt(stopNs), expire);
     } else finished("Restart");

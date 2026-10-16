@@ -57,7 +57,7 @@ trait NodeMethods {
 
     /// Return 1 if this is an element node, 0 if text, -1 if null.
     fn is_element(self) -> i32;
-} // INTERNAL-ABI: tri-state kind (1=element, 0=text, -1=null); planned enum migration
+} // INTERNAL-ABI: tri-state kind (1=element, 0=text, -1=null)
 impl NodeMethods for Node {
     fn to_string(self) -> string {
         unsafe {
@@ -92,7 +92,7 @@ impl NodeMethods for Node {
             hew_xml_get_text(self.handle)
         }
     }
-    fn is_element(self) -> i32 { // INTERNAL-ABI: tri-state kind (1=element, 0=text, -1=null); planned enum migration
+    fn is_element(self) -> i32 { // INTERNAL-ABI: tri-state kind (1=element, 0=text, -1=null)
         unsafe {
             hew_xml_is_element(self.handle)
         }

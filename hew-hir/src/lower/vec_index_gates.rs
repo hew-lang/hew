@@ -578,7 +578,7 @@ pub(super) fn vec_index_unsupported_note(
              consume the Vec with `into_iter()` instead."
         ),
         (true, false) => format!(
-            "Vec<{rendered}> range-slice (xs[a..b]) is not yet supported. \
+            "Vec<{rendered}> range-slice (xs[a..b]) is unsupported. \
              Supported element types for Vec range-slicing are: \
              bool, char, i8, u8, i16, u16, i32, u32, i64, u64, isize, \
              usize, f32, f64, string, bytes, tuples, user-defined types, and \
@@ -591,7 +591,7 @@ pub(super) fn vec_index_unsupported_note(
              (`into_iter()`) to move an owner out instead."
         ),
         (false, false) => format!(
-            "Vec<{rendered}> scalar index (xs[i]) is not yet supported. \
+            "Vec<{rendered}> scalar index (xs[i]) is unsupported. \
              Supported element types for Vec scalar indexing are: \
              bool, char, i8, u8, i16, u16, i32, u32, i64, u64, isize, \
              usize, f32, f64, string, bytes, tuples, type-parameter elements, \

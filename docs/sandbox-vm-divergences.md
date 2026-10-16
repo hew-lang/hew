@@ -1,14 +1,13 @@
 # Browser runtime behaviour and limits
 
-The browser compiler uses the same frontend and verified ownership SIR as
-native Hew. `@hew-lang/wasm` exports editor analysis and
-`compileToSandboxBytecode`; `@hew-lang/sandbox-vm` executes the resulting v1
-package. There is no separate AST emitter or source-language profile.
+The browser compiler shares Hew's frontend and verified ownership SIR.
+`@hew-lang/wasm` exports editor analysis and `compileToSandboxBytecode`;
+`@hew-lang/sandbox-vm` executes the resulting v1 package.
 
 The package carries the compiler's ownership transfers, cleanup edges,
 checked operations, selected callables, actor protocols and suspension
-points. The VM loader admits its declared operations before execution.
-Successful compilation alone does not establish browser execution support.
+points. The VM loader validates every declared operation before execution and
+returns `sandbox_rejected` for capabilities outside the browser runtime.
 
 ## Executed language surfaces
 
@@ -29,10 +28,10 @@ Task results, generator captures and buffered pipe items retain their owned
 cleanup obligations. Supervised roles follow replacement incarnations;
 observing a failed call alone does not settle the run's crash debt.
 
-`make sandbox-parity` compiles and executes source programs with both the
+`make sandbox-parity` compiles and executes the same source programs with the
 native compiler and VM. Additional browser tests exercise concurrency,
-recovery, cleanup and deterministic replay. These checks cover their source
-programs; they do not establish parity for every possible composition.
+recovery, cleanup and deterministic replay. The capability categories below
+define the boundary for programs outside that corpus.
 
 ## Capability refusal
 
@@ -43,7 +42,7 @@ developers; `capability` retains the operation identity for tooling.
 | Category | Meaning | Examples |
 | --- | --- | --- |
 | `native_only` | The operation requires a host capability. | Filesystem access, network sockets, remote actor calls. |
-| `not_implemented` | The browser executor has no implementation yet. | Periodic handlers, links and monitors, per-actor heap limits, opaque resource close, missing library shims. |
+| `not_implemented` | The browser executor has no implementation for the operation. | Periodic handlers, links and monitors, per-actor heap limits, opaque resource close, missing library shims. |
 | `invalid_package` | The package does not satisfy the supported bytecode contract. | Missing entry point, unknown schema or opcode. |
 
 Unimplemented features are refused before the program prints output.
@@ -71,12 +70,9 @@ reference, rather than wasm32 pointer width. Strings and owned byte arrays
 retain their Hew value semantics.
 
 Structural rendering of an `#[opaque]` handle (`f"{v:?}"` with no `Display`
-override) prints `<Name@identity>` on both engines, but the identity itself
-is not comparable: native discloses the handle's address, and the VM has no
-address to disclose for a value it does not carry as one of its own
-identity-bearing kinds. This is the one structural-rendering shape the
-native-to-VM parity harness cannot assert byte-for-byte and does not attempt
-to.
+override) prints `<Name@identity>` on both engines. Native uses the handle's
+address; the VM assigns an identity to its own handle representation. Compare
+the shape of this output across targets, not the identity value.
 
 ## Host differences
 

@@ -398,9 +398,9 @@ trait QUICEventMethods {
     ///   0 — connected, 1 — disconnected, 2 — stream opened,
     ///   3 — stream closed, −1 — error.
     fn kind(self) -> i32;
-} // INTERNAL-ABI: opaque event-kind enum (0=connected, 1=disconnected, 2=stream-opened, 3=stream-closed, -1=error); planned enum migration
+} // INTERNAL-ABI: opaque event-kind enum (0=connected, 1=disconnected, 2=stream-opened, 3=stream-closed, -1=error)
 impl QUICEventMethods for QUICEvent {
-    fn kind(self) -> i32 { // INTERNAL-ABI: opaque event-kind enum; planned enum migration
+    fn kind(self) -> i32 { // INTERNAL-ABI: opaque event-kind enum
         unsafe {
             hew_quic_event_kind(self.handle)
         }

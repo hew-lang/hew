@@ -762,10 +762,9 @@ impl Checker {
         }
         let message = match reason {
             crate::vec_authority::VecUnsupported::FunctionGet => {
-                "`Vec.get` on a function/closure element is not supported under \
-                 the `Option<T>` accessor model: the element owns a heap-boxed \
-                 closure environment that the fresh-owner get choke point does \
-                 not yet clone (tracked gap)"
+                "`Vec.get` on a function/closure element cannot return an independent \
+                 owner: the element owns a heap-boxed closure environment; use \
+                 `pop`, `remove`, or consuming iteration to move it out"
                     .to_string()
             }
             crate::vec_authority::VecUnsupported::FunctionSharedCopy => format!(
@@ -1415,8 +1414,8 @@ impl Checker {
 
         let reason = match eligibility {
             EqEligibility::Eligible => format!(
-                "`Vec.contains` on layout-backed element type `{}` is equality-eligible, \
-                 but layout contains is not yet supported for this element type",
+                "`Vec.contains` has no equality implementation for layout-backed \
+                 element type `{}`",
                 elem_ty.user_facing()
             ),
             EqEligibility::IneligibleManaged(managed_ty) => format!(

@@ -521,18 +521,17 @@ impl Manifest {
     #[must_use]
     pub fn render_feature_policy_table(&self) -> String {
         let mut out = String::from(
-            "| ID | Feature surface | Diagnostic label | Checker disposition | Diagnostic reason | Runtime status | Tracking |\n\
-             |----|-----------------|------------------|---------------------|-------------------|----------------|----------|\n",
+            "| ID | Feature surface | Diagnostic label | Checker disposition | Diagnostic reason | Runtime status |\n\
+             |----|-----------------|------------------|---------------------|-------------------|----------------|\n",
         );
         for feature in &self.features {
             let surface = feature.prose_label.as_deref().unwrap_or(&feature.label);
             let reason = feature.reason.as_deref().unwrap_or("—");
-            let tracking = feature.tracking_label.as_deref().unwrap_or("—");
             let disposition = feature.checker_detail.clone().unwrap_or_else(|| {
                 let variant = feature.enum_variant.as_deref();
                 match feature.checker {
                     CheckerDisposition::Pass => "Pass".to_string(),
-                    CheckerDisposition::Todo => "WASM-TODO (not checker-gated)".to_string(),
+                    CheckerDisposition::Todo => "Unsupported (no dedicated diagnostic)".to_string(),
                     CheckerDisposition::Warn => {
                         format!("Warn (`{}`)", variant.expect("validated warn variant"))
                     }
@@ -543,14 +542,13 @@ impl Manifest {
             });
             writeln!(
                 out,
-                "| `{}` | {} | {} | {} | {} | {} | {} |",
+                "| `{}` | {} | {} | {} | {} | {} |",
                 markdown_cell(&feature.id),
                 markdown_cell(surface),
                 markdown_cell(&feature.label),
                 markdown_cell(&disposition),
                 markdown_cell(reason),
                 markdown_cell(&feature.runtime_status),
-                markdown_cell(tracking),
             )
             .expect("String write");
         }
@@ -600,10 +598,7 @@ impl Manifest {
                             entry.id
                         ));
                     }
-                    (
-                        "runnable",
-                        "Runnable in the playground manifest and exercised by the WASI E2E gate",
-                    )
+                    ("runnable", "Verified by WASI end-to-end execution")
                 }
                 PlaygroundManifestWasiStatus::Unsupported => {
                     let row = unsupported.get(entry.id.as_str()).ok_or_else(|| {

@@ -1,8 +1,4 @@
-//! Temporary S1 admission-proof shim for a concrete two-stage i64 pipeline.
-//!
-//! WHY: actor monomorphisation and closure-valued actor state are S2 work.
-//! WHEN: S2 lands, retire these concrete actors and records.
-//! WHAT: the generic `Pipeline<T>` combinator is the planned S3 surface.
+//! A concrete two-stage `i64` actor pipeline with bounded admission.
 
 /// Owning payload carried across the source, stage, and sink mailboxes.
 pub type PipelineItemI64 {
@@ -11,8 +7,8 @@ pub type PipelineItemI64 {
     crash_stage: bool;
 }
 
-/// Concrete S1 builder. The permit count controls sink processing so callers
-/// can deterministically prove capacity-one admission.
+/// Two-stage pipeline builder. The permit count controls sink processing and
+/// makes capacity-one admission deterministic.
 pub type PipelineI64TwoStage {
     sink_permits: i64;
 }

@@ -485,7 +485,7 @@ mod tests {
     }
 
     #[test]
-    fn hir_not_yet_implemented_message_reads_as_limitation_not_debug() {
+    fn hir_not_yet_implemented_message_names_construct_without_debug_fields() {
         let diagnostic = hew_hir::HirDiagnostic::new(
             hew_hir::HirDiagnosticKind::NotYetImplemented {
                 construct: "expression".to_string(),
@@ -508,8 +508,9 @@ mod tests {
             diag.message
         );
         assert!(
-            diag.message.contains("current Hew limitation"),
-            "message should read as a limitation: {}",
+            diag.message
+                .contains("unsupported compiler construct: expression"),
+            "message should name the unsupported construct: {}",
             diag.message
         );
     }

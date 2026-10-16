@@ -1,40 +1,33 @@
 # Diagnostic codes
 
-Every refusal the compiler prints carries a code, and every code belongs to one
-of three channels. The channel decides the exit code and the prefix, so a
-script can tell "your program is wrong" from "the compiler cannot do this yet"
-without parsing prose.
+Every compiler refusal carries a code and belongs to one of three channels.
+The channel determines the exit code and prefix, so scripts can classify a
+diagnostic without parsing its prose.
 
 | Channel    | Exit | Prefix                     | Meaning                                                                                                                           |
 | ---------- | ---- | -------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
-| User       | 1    | none                       | The program is wrong. Fix the program.                                                                                            |
-| Limitation | 3    | `compiler limitation:`     | The program is within the language as specified; this build cannot lower it. The code names the release that removes the refusal. |
-| Internal   | 4    | `internal compiler error:` | Two compiler facts disagree. Never the program's fault; the message prints both facts and a bug-report line.                      |
+| User       | 1    | none                       | The source violates a language rule; the diagnostic gives the location and available fix. |
+| Limitation | 3    | `compiler limitation:`     | The source uses a specified form that this compiler build cannot lower. |
+| Internal   | 4    | `internal compiler error:` | Compiler stages disagree; the diagnostic includes a bug-report line. |
 
 Usage errors keep exit 2. These codes belong to `hew check`, `hew build`, and
 the compile phase of `hew test`. `hew run` exits with the program's own code
 once the program starts (HEW-SPEC-2026 §5.8), so a script that must distinguish
 a limitation from a program's own `exit(3)` runs `hew check` first.
 
-## No internal error reaches a user
+## Compiler-stage diagnostics
 
-`E_HIR`, `E_MIR_CHECK`, and `E_NOT_YET_IMPLEMENTED` are the compiler's own
-channels. A program that reaches one of them was admitted by a checker that
-should have refused it: the checker and the lowering disagree about what the
-language accepts, which is a one-authority violation regardless of what the
-program was trying to do.
-
-So every known member of that set gets a refusal of its own, with a Limitation
-code that names the release removing it, placed where the fact lives — at the
-checker when the shape is syntactic, at the MIR diagnostic site when the
-refusal needs a liveness fact only MIR holds. The refusal is deleted in the
-same change that lands the mechanism.
+Compiler-stage codes use the same channels as other diagnostics. Most
+`E_HIR` diagnostics report a source-level rule, while specific HIR boundary
+violations report internal inconsistencies. `E_NOT_YET_IMPLEMENTED` reports a
+compiler limitation. In each case, the message names the refused form and
+includes a current alternative when one exists.
 
 ## The `E_LIMIT_*` family
 
-| Code               | Channel    | Removed by | Refuses                                                                                                                                    |
-| ------------------ | ---------- | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
-| `E_LIMIT_RC_FIELD` | Limitation | v0.7.0     | A field read through an `Rc<T>` (§3.7.5). `.get()` on a `T: Copy` payload is the accepted form until the borrow-projection lowering lands. |
+| Code               | Channel    | Refuses                                                                                                                                    |
+| ------------------ | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| `E_LIMIT_RC_FIELD` | Limitation | A field read through an `Rc<T>` (§3.7.5). Use `.get()` when the payload implements `Copy`. |
 
 ## User-channel codes in the same family
 
@@ -60,33 +53,5 @@ them.
 | `E_MACHINE_SELF`                               | `self` inside a machine body. A machine is not an actor: the source state's fields are `state`, the incoming payload is `event` (HEW-SPEC-2026 §3.11.3).                                                                                                                               |
 | `E_MACHINE_REDUNDANT_TARGET`                   | A transition body that is nothing but the target the head already named (`=> Filled { Filled { … } }`, `=> Empty { .Empty }`). Write the field list with the target elided, or no body at all for a unit state.                                                                        |
 
-The remaining v0.6.0 surface codes are named by the decision that introduces
-them, and their rule lives in the spec section that decision writes — not
-here. Each row is added by the lane that lands the refusal:
-`E_IS_VALUE_TYPE`, `E_OPAQUE_MESSAGE_PAYLOAD`, `E_UNKNOWN_ATTRIBUTE`,
-`E_ACTOR_CONTEXT_REQUIRED`, `E_BREAK_VALUE`, `E_RESULT_DROPPED`,
-`E_GEN_RETURN_SPELLING`.
-
-## Refusals with no code yet
-
-Each of these is a known member of the internal-error set whose refusal has not
-been written. The code is assigned in the change that adds the refusal, and it
-is listed here then — not before, so this table never names a code the compiler
-does not emit.
-
-| Refusal                                                                   | Removed by |
-| ------------------------------------------------------------------------- | ---------- |
-| Skip-level (transitive) closure capture                                   | v0.7.0     |
-| `if let` with a nested tuple pattern                                      | v0.7.0     |
-| A guarded tuple pattern with a binding                                    | v0.7.0     |
-| `for` over an iterator adapter                                            | v0.7.0     |
-| `println` of an `Option<T>` or `Result<T, E>` — neither has `Display` yet | v0.7.0     |
-| `duration.from_*` constructors                                            | v0.7.0     |
-
-## Where this list is going
-
-This file is written by hand. At v0.7.0 the per-code pages under
-`docs/diagnostics/E_*.md` are generated from one registry table in the compiler,
-`hew check --explain E_CODE` renders them, and a gate fails when a code is
-emitted without a page or without a reject fixture that produces it. Until
-then, a lane that adds a code adds its row here in the same change.
+This page lists codes emitted by the current compiler. Add a row when a new
+stable code ships, and keep its wording aligned with the emitted diagnostic.

@@ -1761,3 +1761,11 @@ fn inline_actor_arguments_transfer_owned_fields_once() {
     let trace = execute(&source);
     assert_eq!(stdout(&trace), "actor arguments evaluated once\n");
 }
+
+#[test]
+fn generic_cleanup_effect_composition_executes() {
+    assert_native_manifest(
+        "effect-graph-cleanup-composition",
+        hew_compile::SourceSet::in_memory(),
+    );
+}

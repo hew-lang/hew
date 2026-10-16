@@ -1,6 +1,6 @@
 [[case]]
 id = "compute-close-safepoints"
-intent = "Explicit and implicit authored close calls yield from a nested compute helper to a queued peer, then complete exactly once despite cancellation of their losing race operand."
+intent = "After synchronizing peer startup, explicit and implicit authored close calls yield from a nested compute helper to the queued peer, then complete exactly once despite cancellation of their losing race operand."
 source = "cases/compute-close-safepoints.hew"
 suites = ["acceptance", "safety"]
 timeout_seconds = 30

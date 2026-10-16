@@ -10,6 +10,7 @@
 
 use hew_parser::ast::{BinaryOp, CompoundAssignOp, Expr, Span, Spanned, StringPart};
 
+use super::admissibility::StructuralTypeWalk;
 use super::{CallTarget, Checker, MethodCallRewrite, SpanKey};
 use crate::error::TypeErrorKind;
 use crate::Ty;
@@ -229,59 +230,64 @@ impl Checker {
     /// Whether releasing a value of `ty` can run an authored `close`. An
     /// abstract type parameter may be instantiated with one.
     fn release_may_run_close(&self, ty: &Ty) -> bool {
-        let mut visiting = std::collections::HashSet::new();
-        self.release_may_run_close_guarded(ty, &mut visiting)
+        self.release_may_run_close_on_graph(ty, &mut StructuralTypeWalk::default())
     }
 
-    fn release_may_run_close_guarded(
-        &self,
-        ty: &Ty,
-        visiting: &mut std::collections::HashSet<crate::TypeHead>,
-    ) -> bool {
-        match ty {
-            Ty::Named { head, args, .. } => {
-                let builtin = head.builtin();
+    fn release_may_run_close_on_graph(&self, ty: &Ty, walk: &mut StructuralTypeWalk) -> bool {
+        let ty = self.subst.resolve(ty);
+        if !walk.explored.insert(ty.clone()) {
+            return false;
+        }
+        if walk.growing(&ty) {
+            if let Ty::Named { args, .. } = &ty {
+                return args
+                    .iter()
+                    .any(|arg| self.release_may_run_close_on_graph(arg, walk));
+            }
+        }
+        walk.active.push(ty.clone());
+        let may = (|| match &ty {
+            Ty::Named { head, args } => {
                 if head
                     .nominal()
-                    .is_some_and(|id| self.registry.is_resource(id))
-                    || head.nominal().is_some_and(|id| self.registry.is_linear(id))
+                    .is_some_and(|id| self.registry.is_resource(id) || self.registry.is_linear(id))
                 {
                     return true;
                 }
                 if args
                     .iter()
-                    .any(|arg| self.release_may_run_close_guarded(arg, visiting))
+                    .any(|arg| self.release_may_run_close_on_graph(arg, walk))
                 {
                     return true;
                 }
-                if builtin.is_some() {
+                if head.builtin().is_some() {
                     return false;
                 }
                 match self.registry.member_types(*head) {
                     Some(members) => {
-                        if !visiting.insert(*head) {
-                            return false;
-                        }
-                        let members = members.to_vec();
-                        let may = members
-                            .iter()
-                            .any(|member| self.release_may_run_close_guarded(member, visiting));
-                        visiting.remove(head);
-                        may
+                        let parameters = self
+                            .head_type_def(*head)
+                            .map(|definition| definition.type_params.as_slice())
+                            .unwrap_or_default();
+                        members.iter().any(|member| {
+                            let member =
+                                Self::instantiate_type_def_member(member, parameters, args);
+                            self.release_may_run_close_on_graph(&member, walk)
+                        })
                     }
-                    // A name with no registered members and no declaration is
-                    // an abstract type parameter.
                     None => matches!(head, crate::TypeHead::Param(_)),
                 }
             }
             Ty::Tuple(elements) => elements
                 .iter()
-                .any(|element| self.release_may_run_close_guarded(element, visiting)),
+                .any(|element| self.release_may_run_close_on_graph(element, walk)),
             Ty::Array(element, _) | Ty::Slice(element) => {
-                self.release_may_run_close_guarded(element, visiting)
+                self.release_may_run_close_on_graph(element, walk)
             }
             _ => false,
-        }
+        })();
+        walk.active.pop();
+        may
     }
 }
 
@@ -298,4 +304,39 @@ fn checked_integer_op(op: BinaryOp, ty: &Ty) -> bool {
                 | BinaryOp::Shl
                 | BinaryOp::Shr
         )
+}
+
+#[cfg(test)]
+mod graph_tests {
+    use super::*;
+    use crate::module_registry::ModuleRegistry;
+
+    #[test]
+    fn release_close_query_visits_shared_cycles_and_preserves_resource_leaves() {
+        let mut checker = Checker::new(ModuleRegistry::new(Vec::new()));
+        let leaf = crate::NominalId::from_minted_declaration(checker.defs.mint_for_test("Node0"));
+        let leaf_ty = Ty::named_in(&checker.defs, "Node0", vec![]);
+        checker.registry.register_type(
+            checker.head_of_declaration(leaf),
+            vec![Ty::builtin_named(
+                crate::BuiltinType::Vec,
+                vec![leaf_ty.clone()],
+            )],
+        );
+        let mut root = leaf_ty;
+        for level in 1..=24 {
+            let name = format!("Node{level}");
+            let id = crate::NominalId::from_minted_declaration(checker.defs.mint_for_test(&name));
+            checker
+                .registry
+                .register_type(checker.head_of_declaration(id), vec![root.clone(), root]);
+            root = Ty::named_in(&checker.defs, &name, vec![]);
+        }
+        assert!(!checker.release_may_run_close(&root));
+        checker.registry.register_resource_type(leaf);
+        assert!(
+            checker.release_may_run_close(&root),
+            "resource cleanup must remain a possible failure edge"
+        );
+    }
 }

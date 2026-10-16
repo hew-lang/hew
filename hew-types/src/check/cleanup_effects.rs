@@ -213,48 +213,60 @@ impl Checker {
         effects
     }
 
-    pub(super) fn cleanup_suspends(
+    pub(super) fn cleanup_effect_targets(
         &self,
         effect: &CleanupEffect,
         substitutions: &HashMap<ParamHead, Ty>,
-        bodies: &HashMap<EffectBody, bool>,
         unknown: bool,
-    ) -> bool {
-        self.cleanup_value_suspends(&effect.value, substitutions, bodies, unknown)
+    ) -> Vec<CleanupTarget> {
+        self.cleanup_value_targets(&effect.value, substitutions, unknown)
     }
 
-    pub(super) fn once_cleanup_suspends(
+    pub(super) fn cleanup_type_targets(
+        &self,
+        ty: &Ty,
+        substitutions: &HashMap<ParamHead, Ty>,
+        unknown: bool,
+    ) -> Vec<CleanupTarget> {
+        self.cleanup_value_targets(
+            &CleanupValue {
+                ty: ty.clone(),
+                absent: Vec::new(),
+                owned: None,
+                own_close: false,
+                static_callable: false,
+                candidates: super::IndirectCallCandidates::unknown(),
+            },
+            substitutions,
+            unknown,
+        )
+    }
+
+    pub(super) fn once_cleanup_targets(
         &self,
         body: &EffectBody,
         graph: &EffectGraph,
         substitutions: &HashMap<ParamHead, Ty>,
-        bodies: &HashMap<EffectBody, bool>,
         unknown: bool,
-    ) -> bool {
-        graph.once_releases.get(body).is_some_and(|values| {
-            values
-                .iter()
-                .any(|value| self.cleanup_value_suspends(value, substitutions, bodies, unknown))
-        })
+    ) -> Vec<CleanupTarget> {
+        graph
+            .once_releases
+            .get(body)
+            .into_iter()
+            .flatten()
+            .flat_map(|value| self.cleanup_value_targets(value, substitutions, unknown))
+            .collect()
     }
 
-    fn cleanup_value_suspends(
+    fn cleanup_value_targets(
         &self,
         value: &CleanupValue,
         substitutions: &HashMap<ParamHead, Ty>,
-        bodies: &HashMap<EffectBody, bool>,
         unknown: bool,
-    ) -> bool {
+    ) -> Vec<CleanupTarget> {
         let mut value = value.clone();
         value.ty = self.subst.resolve(&value.ty);
         cleanup_targets(&value, substitutions, self, unknown)
-            .iter()
-            .any(|target| match target {
-                CleanupTarget::Body { body, .. } => bodies.get(body).copied().unwrap_or(true),
-                CleanupTarget::Callable(_)
-                | CleanupTarget::Unknown(_)
-                | CleanupTarget::Suspends => true,
-            })
     }
 }
 

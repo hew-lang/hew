@@ -427,3 +427,44 @@ fn bounded_collection_parameter_keeps_its_template_capabilities() {
         output.errors
     );
 }
+
+#[test]
+fn shared_generic_type_graph_preserves_collection_and_clone_admission() {
+    use std::fmt::Write;
+
+    let mut declarations = String::from("type Node0<T> { value: T; }\n");
+    for level in 1..=24 {
+        writeln!(
+            declarations,
+            "type Node{level}<T> {{ left: Node{}<T>; right: Node{}<T>; }}",
+            level - 1,
+            level - 1,
+        )
+        .unwrap();
+    }
+    check_ok(&format!(
+        "{declarations}\n\
+         fn inspect(value: Node24<i64>) {{\n\
+             let copy = value.clone();\n\
+             let shared = Rc.new(copy);\n\
+             let values: Vec<Node24<i64>> = Vec.new();\n\
+         }}\n\
+         fn main() {{}}"
+    ));
+
+    let output = check(&format!(
+        "{declarations}\n\
+         fn inspect() {{\n\
+             let values: Vec<Node24<fn() -> i64>> = Vec.new();\n\
+         }}\n\
+         fn main() {{}}"
+    ));
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|error| error.message.contains("contains a function")),
+        "generic substitutions must retain the embedded callable refusal: {:#?}",
+        output.errors,
+    );
+}

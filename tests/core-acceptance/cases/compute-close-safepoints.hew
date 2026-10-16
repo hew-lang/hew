@@ -10,27 +10,31 @@ fn finish_work() {
 type Ticket {
     label: string;
     ready: stream.Sink<i64>;
+    peer_started: stream.Stream<i64>;
 }
 impl Ticket {
     fn close(consume self) {
+        // Ensure the peer is queued before testing compute-loop fairness.
+        self.peer_started.recv().expect("peer started");
         self.ready.send(1).expect("ready");
         finish_work();
         println("closed " + self.label);
     }
 }
 
-fn explicit_close(consume ready: stream.Sink<i64>) -> i64 {
-    let ticket = Ticket { label: "explicit", ready: ready };
+fn explicit_close(consume ready: stream.Sink<i64>, consume peer_started: stream.Stream<i64>) -> i64 {
+    let ticket = Ticket { label: "explicit", ready: ready, peer_started: peer_started };
     ticket.close();
     1
 }
 
-fn implicit_close(consume ready: stream.Sink<i64>) -> i64 {
-    let ticket = Ticket { label: "implicit", ready: ready };
+fn implicit_close(consume ready: stream.Sink<i64>, consume peer_started: stream.Stream<i64>) -> i64 {
+    let ticket = Ticket { label: "implicit", ready: ready, peer_started: peer_started };
     1
 }
 
-fn peer(ready: stream.Stream<i64>) -> i64 {
+fn peer(ready: stream.Stream<i64>, started: stream.Sink<i64>) -> i64 {
+    started.send(1).expect("peer started");
     ready.recv().expect("ready");
     println("peer progressed");
     7
@@ -38,7 +42,9 @@ fn peer(ready: stream.Stream<i64>) -> i64 {
 
 fn main() {
     let (tx, rx): (stream.Sink<i64>, stream.Stream<i64>) = stream.pipe(1).expect("pipe");
-    println(await race [explicit_close(tx), peer(rx)]);
+    let (started_tx, started_rx): (stream.Sink<i64>, stream.Stream<i64>) = stream.pipe(1).expect("pipe");
+    println(await race [explicit_close(tx, started_rx), peer(rx, started_tx)]);
     let (implicit_tx, implicit_rx): (stream.Sink<i64>, stream.Stream<i64>) = stream.pipe(1).expect("pipe");
-    println(await race [implicit_close(implicit_tx), peer(implicit_rx)]);
+    let (implicit_started_tx, implicit_started_rx): (stream.Sink<i64>, stream.Stream<i64>) = stream.pipe(1).expect("pipe");
+    println(await race [implicit_close(implicit_tx, implicit_started_rx), peer(implicit_rx, implicit_started_tx)]);
 }

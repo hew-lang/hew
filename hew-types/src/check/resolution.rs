@@ -2139,7 +2139,7 @@ impl Checker {
         let substituted = self.subst.resolve(ty);
         let projected = self.project_assoc_types(&substituted);
         let canonical = self.canonicalize_nominal_identity(&projected);
-        self.expand_type_aliases(&canonical, &mut HashSet::new())
+        self.expand_type_aliases(&canonical, &mut Vec::new(), &mut HashMap::new())
     }
 
     /// Final checker-output form of a semantic type. Every type-carrying
@@ -2230,57 +2230,78 @@ impl Checker {
             self.head_of_declaration(crate::NominalId::from_minted_declaration(alias)),
             placeholder_args,
         );
-        self.alias_expansion_has_cycle(&probe, &mut HashSet::new())
+        self.alias_expansion_has_cycle(&probe, &mut Vec::new(), &mut HashSet::new())
     }
 
-    /// Walk an alias expansion and distinguish an actual cycle from an
-    /// unrelated `Ty::Error` already reported while resolving the target.
-    fn alias_expansion_has_cycle(&self, ty: &Ty, visiting: &mut HashSet<crate::NominalId>) -> bool {
+    /// Alias states on the current path are grey; fully proved acyclic states
+    /// are black. Full instantiated types distinguish finite nested aliases
+    /// from declaration recursion with growing arguments.
+    fn alias_expansion_has_cycle(
+        &self,
+        ty: &Ty,
+        active: &mut Vec<Ty>,
+        acyclic: &mut HashSet<Ty>,
+    ) -> bool {
+        if acyclic.contains(ty) {
+            return false;
+        }
         if let Ty::Named { head, args } = ty {
             if let Some(target) = self.alias_target_for_instance(*head, args) {
-                let alias = head.nominal().expect("an alias head names its declaration");
-                if !visiting.insert(alias) {
+                if active.iter().any(|ancestor| {
+                    ancestor == ty
+                        || super::admissibility::StructuralTypeWalk::grows_from(ancestor, ty)
+                }) {
                     return true;
                 }
-                let has_cycle = self.alias_expansion_has_cycle(&target, visiting);
-                visiting.remove(&alias);
+                active.push(ty.clone());
+                let has_cycle = self.alias_expansion_has_cycle(&target, active, acyclic);
+                active.pop();
+                if !has_cycle {
+                    acyclic.insert(ty.clone());
+                }
                 return has_cycle;
             }
         }
-
-        let has_cycle = std::cell::Cell::new(false);
-        let _ = ty.map_children_pub(&|child| {
-            let mut child_visiting = visiting.clone();
-            if self.alias_expansion_has_cycle(child, &mut child_visiting) {
-                has_cycle.set(true);
+        let mut has_cycle = false;
+        ty.for_each_child(&mut |child| {
+            if !has_cycle && self.alias_expansion_has_cycle(child, active, acyclic) {
+                has_cycle = true;
             }
-            child.clone()
         });
-        has_cycle.get()
+        if !has_cycle {
+            acyclic.insert(ty.clone());
+        }
+        has_cycle
     }
 
-    fn expand_type_aliases(&self, ty: &Ty, visiting: &mut HashSet<crate::DefId>) -> Ty {
-        if let Ty::Named {
-            head: crate::TypeHead::Nominal(head),
-            args,
-        } = ty
-        {
-            let declaration = head.id.declaration();
-            if let Some(alias) = self.type_aliases.get(&declaration) {
-                if let Some(target) = alias.instantiate(args) {
-                    if !visiting.insert(declaration) {
-                        return Ty::Error;
-                    }
-                    let expanded = self.expand_type_aliases(&target, visiting);
-                    visiting.remove(&declaration);
-                    return expanded;
+    fn expand_type_aliases(
+        &self,
+        ty: &Ty,
+        active: &mut Vec<Ty>,
+        completed: &mut HashMap<Ty, Ty>,
+    ) -> Ty {
+        if let Some(expanded) = completed.get(ty) {
+            return expanded.clone();
+        }
+        if let Ty::Named { head, args } = ty {
+            if let Some(target) = self.alias_target_for_instance(*head, args) {
+                if active.iter().any(|ancestor| {
+                    ancestor == ty
+                        || super::admissibility::StructuralTypeWalk::grows_from(ancestor, ty)
+                }) {
+                    return Ty::Error;
                 }
+                active.push(ty.clone());
+                let expanded = self.expand_type_aliases(&target, active, completed);
+                active.pop();
+                completed.insert(ty.clone(), expanded.clone());
+                return expanded;
             }
         }
-        ty.map_children_pub(&|child| {
-            let mut child_visiting = visiting.clone();
-            self.expand_type_aliases(child, &mut child_visiting)
-        })
+        let expanded =
+            ty.map_children(&mut |child| self.expand_type_aliases(child, active, completed));
+        completed.insert(ty.clone(), expanded.clone());
+        expanded
     }
 
     pub(super) fn resolve_type_expr(&mut self, te: &Spanned<TypeExpr>) -> Ty {
@@ -3121,5 +3142,111 @@ impl Checker {
                 Ty::Var(var)
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod alias_cycle_graph_tests {
+    use super::*;
+    use crate::module_registry::ModuleRegistry;
+
+    fn alias(
+        checker: &mut Checker,
+        name: &str,
+        parameters: Vec<crate::ParamHead>,
+        target: Ty,
+    ) -> crate::DefId {
+        let declaration = checker.defs.mint_for_test(name);
+        checker.type_aliases.insert(
+            declaration,
+            TypeAliasDef {
+                declaration,
+                type_params: parameters,
+                target,
+                source_module: None,
+                file_index: 0,
+            },
+        );
+        declaration
+    }
+
+    #[test]
+    fn finite_nested_alias_arguments_resolve_at_source_use() {
+        let source = "type Identity<T> = T;
+                      type Nested<T> = Identity<Identity<T>>;
+                      fn unwrap(value: Nested<i64>) -> i64 { value }
+                      fn main() { let answer: i64 = unwrap(7); }";
+        let parsed = hew_parser::parse(source);
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let mut checker = Checker::new(ModuleRegistry::new(Vec::new()));
+        let output = checker.check_program(&parsed.program);
+        assert!(output.errors.is_empty(), "{:?}", output.errors);
+        assert!(output.expr_types.values().any(|ty| *ty == Ty::I64));
+    }
+
+    #[test]
+    fn alias_cycle_query_retains_solved_shared_descendants() {
+        let mut checker = Checker::new(ModuleRegistry::new(Vec::new()));
+        let leaf = alias(&mut checker, "Alias0", vec![], Ty::I64);
+        let mut root = leaf;
+        for level in 1..=24 {
+            let previous = Ty::named_in(&checker.defs, &format!("Alias{}", level - 1), vec![]);
+            root = alias(
+                &mut checker,
+                &format!("Alias{level}"),
+                vec![],
+                Ty::Tuple(vec![previous.clone(), previous]),
+            );
+        }
+        assert!(!checker.alias_expansion_is_recursive(root));
+        checker.type_aliases.get_mut(&leaf).unwrap().target =
+            Ty::named_in(&checker.defs, "Alias24", vec![]);
+        assert!(checker.alias_expansion_is_recursive(root));
+    }
+
+    #[test]
+    fn alias_cycle_query_distinguishes_finite_nested_arguments_from_growth() {
+        let mut checker = Checker::new(ModuleRegistry::new(Vec::new()));
+        let parameter = crate::ParamHead::for_test("T");
+        alias(
+            &mut checker,
+            "Identity",
+            vec![parameter],
+            Ty::param(parameter),
+        );
+        let nested = Ty::named_in(
+            &checker.defs,
+            "Identity",
+            vec![Ty::named_in(
+                &checker.defs,
+                "Identity",
+                vec![Ty::param(parameter)],
+            )],
+        );
+        let finite = alias(&mut checker, "Finite", vec![parameter], nested);
+        assert!(!checker.alias_expansion_is_recursive(finite));
+        let growing = alias(&mut checker, "Growing", vec![parameter], Ty::Error);
+        checker.type_aliases.get_mut(&growing).unwrap().target = Ty::named_in(
+            &checker.defs,
+            "Growing",
+            vec![Ty::builtin_named(
+                BuiltinType::Vec,
+                vec![Ty::param(parameter)],
+            )],
+        );
+        assert!(checker.alias_expansion_is_recursive(growing));
+        let function = Ty::Function {
+            capabilities: crate::CallableCapabilities::default(),
+            params: vec![],
+            ret: Box::new(Ty::param(parameter)),
+        };
+        checker.type_aliases.get_mut(&growing).unwrap().target =
+            Ty::named_in(&checker.defs, "Growing", vec![function]);
+        assert!(
+            checker.alias_expansion_is_recursive(growing),
+            "function-wrapped type arguments are genuine alias growth too"
+        );
+        let root = Ty::named_in(&checker.defs, "Growing", vec![Ty::I64]);
+        assert_eq!(checker.normalize_for_use(&root), Ty::Error);
     }
 }

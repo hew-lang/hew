@@ -1,0 +1,7 @@
+[[case]]
+id = "effect-graph-shared-dag"
+intent = "Repeated calls to shared descendants check within a bounded deadline without re-expanding every call path."
+source = "cases/effect-graph-shared-dag.hew"
+suites = ["acceptance"]
+kind = "check"
+timeout_seconds = 15

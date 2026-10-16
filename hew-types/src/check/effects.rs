@@ -16,6 +16,17 @@ use crate::env::TypeBindingId;
 pub use crate::ty::EffectBody;
 use crate::Ty;
 
+#[path = "effect_solver.rs"]
+mod effect_solver;
+use effect_solver::EffectSolver;
+#[path = "effect_markers.rs"]
+mod effect_markers;
+use effect_markers::MarkerSolver;
+
+#[cfg(test)]
+#[path = "tests/effect_markers.rs"]
+mod marker_tests;
+
 /// The checker-owned contract consumed by lowering.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum SuspensionEffect {
@@ -85,7 +96,7 @@ struct Invocation {
 /// erases its captures, so the Send proof for a fork through a record field
 /// or tuple element is not in the slot's type; this ledger keeps the concrete
 /// callable types stored through local bindings for fork transfers only.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum CallableOrigin {
     Unknown,
     Typed(Ty),
@@ -623,56 +634,6 @@ impl Checker {
         }
     }
 
-    fn origin_has_marker(
-        &self,
-        origin: &CallableOrigin,
-        bindings: &HashMap<TypeBindingId, CallableOrigin>,
-        seen: &mut HashSet<TypeBindingId>,
-        marker: crate::traits::MarkerTrait,
-    ) -> bool {
-        match origin {
-            CallableOrigin::Unknown => false,
-            CallableOrigin::Typed(ty) => match self.subst.resolve(ty).callable_body().clone() {
-                Ty::Closure {
-                    identity: EffectBody::Closure(key),
-                    ..
-                } => self
-                    .closure_capture_facts
-                    .get(&key)
-                    .is_some_and(|captures| {
-                        captures.iter().all(|capture| {
-                            (if marker == crate::traits::MarkerTrait::Sync {
-                                capture.is_sync
-                            } else {
-                                capture.is_send
-                            }) || bindings.get(&capture.binding_id).is_some_and(|origin| {
-                                self.origin_has_marker(origin, bindings, seen, marker)
-                            })
-                        })
-                    }),
-                ty => self.registry.implements_marker(&ty, marker),
-            },
-            CallableOrigin::Aggregate(fields) => fields
-                .values()
-                .all(|origin| self.origin_has_marker(origin, bindings, seen, marker)),
-            CallableOrigin::Binding { binding, path } => {
-                if !seen.insert(*binding) {
-                    return false;
-                }
-                let mut origin = bindings
-                    .get(binding)
-                    .cloned()
-                    .unwrap_or(CallableOrigin::Unknown);
-                for field in path {
-                    origin = origin.project(field);
-                }
-                let proven = self.origin_has_marker(&origin, bindings, seen, marker);
-                seen.remove(binding);
-                proven
-            }
-        }
-    }
-
     fn record_value_operation_effects(&mut self, expr: &Expr, span: &Span) {
         let key = SpanKey::in_module(span, self.current_module_idx);
         let receiver = match expr {
@@ -915,134 +876,6 @@ impl Checker {
         result
     }
 
-    fn callee_suspends(
-        &self,
-        invocation: &Invocation,
-        graph: &EffectGraph,
-        bodies: &HashMap<EffectBody, bool>,
-    ) -> bool {
-        match invocation
-            .callee
-            .as_ref()
-            .map(|ty| self.subst.resolve(ty).callable_body().clone())
-        {
-            Some(Ty::Function { capabilities, .. }) => capabilities.suspends,
-            Some(Ty::Closure {
-                identity,
-                capabilities,
-                ..
-            }) => {
-                bodies.get(&identity).copied().unwrap_or(true)
-                    || self.body_cleanup_suspends(
-                        &identity,
-                        graph,
-                        &HashMap::new(),
-                        bodies,
-                        false,
-                        &mut HashSet::new(),
-                    )
-                    || (capabilities.call == crate::CallableCallMode::Once
-                        && self.once_cleanup_suspends(
-                            &identity,
-                            graph,
-                            &HashMap::new(),
-                            bodies,
-                            false,
-                        ))
-            }
-            _ => true,
-        }
-    }
-
-    /// Conditional cleanup remains in the declaration's type terms. A concrete
-    /// generic call substitutes its checked arguments; unrelated instantiations
-    /// never acquire each other's resource effects.
-    fn body_cleanup_suspends(
-        &self,
-        body: &EffectBody,
-        graph: &EffectGraph,
-        substitutions: &HashMap<crate::ParamHead, Ty>,
-        bodies: &HashMap<EffectBody, bool>,
-        unknown: bool,
-        visiting: &mut HashSet<(EffectBody, Vec<(crate::ParamHead, Ty)>)>,
-    ) -> bool {
-        let mut arguments: Vec<_> = substitutions
-            .iter()
-            .map(|(key, value)| (*key, value.clone()))
-            .collect();
-        arguments.sort_by_key(|(key, _)| key.id);
-        let key = (body.clone(), arguments);
-        if !visiting.insert(key.clone()) {
-            return false;
-        }
-        let suspends = graph
-            .releases
-            .iter()
-            .filter(|effect| &effect.owner == body)
-            .any(|effect| self.cleanup_suspends(effect, substitutions, bodies, unknown))
-            || graph
-                .calls
-                .iter()
-                .filter(|(_, invocation)| invocation.owner.as_ref() == Some(body))
-                .any(|(key, invocation)| match self.call_target(key) {
-                    Some(
-                        CallTarget::User(id)
-                        | CallTarget::ImplMethod(id)
-                        | CallTarget::StaticTraitMethod { method: id, .. },
-                    ) => {
-                        let actuals = self.call_cleanup_substitutions(
-                            *id,
-                            key,
-                            invocation.receiver.as_ref(),
-                            substitutions,
-                        );
-                        self.body_cleanup_suspends(
-                            &EffectBody::Declaration(*id),
-                            graph,
-                            &actuals,
-                            bodies,
-                            unknown,
-                            visiting,
-                        )
-                    }
-                    Some(CallTarget::IndirectFunctionValue) => {
-                        match invocation.callee.as_ref().map(|ty| {
-                            self.subst
-                                .resolve(ty)
-                                .substitute_type_params_parallel(substitutions)
-                                .callable_body()
-                                .clone()
-                        }) {
-                            Some(Ty::Closure {
-                                identity,
-                                capabilities,
-                                ..
-                            }) => {
-                                self.body_cleanup_suspends(
-                                    &identity,
-                                    graph,
-                                    substitutions,
-                                    bodies,
-                                    unknown,
-                                    visiting,
-                                ) || (capabilities.call == crate::CallableCallMode::Once
-                                    && self.once_cleanup_suspends(
-                                        &identity,
-                                        graph,
-                                        substitutions,
-                                        bodies,
-                                        unknown,
-                                    ))
-                            }
-                            _ => false,
-                        }
-                    }
-                    _ => false,
-                });
-        visiting.remove(&key);
-        suspends
-    }
-
     fn call_cleanup_substitutions(
         &self,
         declaration: crate::DefId,
@@ -1094,91 +927,38 @@ impl Checker {
         substitutions
     }
 
-    fn invocation_suspends(
-        &self,
-        key: &SpanKey,
-        invocation: &Invocation,
-        graph: &EffectGraph,
-        bodies: &HashMap<EffectBody, bool>,
-    ) -> bool {
-        if let Some(suspends) = graph.submission_effects.get(key) {
-            return *suspends;
-        }
-        match self.call_target(key) {
-            Some(target) if graph.builtin_suspensions.contains(target) => true,
-            Some(CallTarget::IndirectFunctionValue) => {
-                self.callee_suspends(invocation, graph, bodies)
-            }
-            Some(
-                CallTarget::User(id)
-                | CallTarget::ImplMethod(id)
-                | CallTarget::StaticTraitMethod { method: id, .. },
-            ) => {
-                let body = EffectBody::Declaration(*id);
-                bodies.get(&body).copied().unwrap_or(true)
-                    || self.body_cleanup_suspends(
-                        &body,
-                        graph,
-                        &self.call_cleanup_substitutions(
-                            *id,
-                            key,
-                            invocation.receiver.as_ref(),
-                            &HashMap::new(),
-                        ),
-                        bodies,
-                        false,
-                        &mut HashSet::new(),
-                    )
-            }
-            Some(CallTarget::Runtime(family) | CallTarget::DeclaredRuntime { family, .. }) => {
-                family.is_async_suspending().is_some()
-            }
-            Some(CallTarget::Extern { declaration, .. }) => {
-                self.extern_table.is_offload(*declaration)
-            }
-            Some(
-                CallTarget::RecordConstructor(_)
-                | CallTarget::Builtin { .. }
-                | CallTarget::RuntimeCollection(_),
-            ) => false,
-            Some(CallTarget::DynamicVtable { .. }) => self
-                .dyn_trait_method_calls
-                .get(key)
-                .is_none_or(|call| call.effect == super::SlotEffect::Suspends),
-            Some(CallTarget::Unsupported { .. }) => true,
-            None => match self.method_call_rewrites.get(key) {
-                Some(
-                    MethodCallRewrite::RecordFnFieldCall { .. }
-                    | MethodCallRewrite::BuiltinVecHigherOrder { .. },
-                ) => self.callee_suspends(invocation, graph, bodies),
-                Some(
-                    MethodCallRewrite::RemoteActorAsk | MethodCallRewrite::GeneratorNext { .. },
-                ) => true,
-                Some(_) => false,
-                None => !matches!(
-                    self.actor_method_dispatch.get(key),
-                    Some(super::ActorMethodKind::Message { .. })
-                ),
-            },
-        }
-    }
-
     fn finish_fork_transfers(&mut self, graph: &EffectGraph, output: &mut SuspensionEffects) {
-        for PendingForkTransfer {
-            key,
+        let mut markers = MarkerSolver::new(self, graph);
+        let facts: Vec<_> = graph
+            .fork_transfers
+            .iter()
+            .map(|transfer| {
+                let ty = self.subst.resolve(&transfer.ty);
+                let mut proven = |marker| {
+                    self.registry.implements_marker(&ty, marker)
+                        || markers.proves(&transfer.origin, marker)
+                };
+                (
+                    transfer,
+                    ty.clone(),
+                    proven(crate::traits::MarkerTrait::Send),
+                    proven(crate::traits::MarkerTrait::Sync),
+                )
+            })
+            .collect();
+        drop(markers);
+        for (
+            PendingForkTransfer {
+                key,
+                source_module,
+                acquisition,
+                ..
+            },
             ty,
-            origin,
-            source_module,
-            acquisition,
-        } in &graph.fork_transfers
+            is_send,
+            is_sync,
+        ) in facts
         {
-            let ty = self.subst.resolve(ty);
-            let proven = |marker| {
-                self.registry.implements_marker(&ty, marker)
-                    || self.origin_has_marker(origin, &graph.bindings, &mut HashSet::new(), marker)
-            };
-            let is_send = proven(crate::traits::MarkerTrait::Send);
-            let is_sync = proven(crate::traits::MarkerTrait::Sync);
             output.fork_transfers.insert(
                 key.clone(),
                 ForkTransferFact {
@@ -1208,37 +988,29 @@ impl Checker {
     )]
     pub(super) fn finish_suspension_effects(&mut self) -> SuspensionEffects {
         let graph = std::mem::take(&mut self.effect_graph);
-        let mut bodies = graph.bodies.clone();
-        let mut witnesses = graph.witnesses.clone();
-        // Monotone least fixed point handles recursive declarations.
-        loop {
-            let mut changed = false;
-            for effect in &graph.releases {
-                if !bodies.get(&effect.owner).copied().unwrap_or(false)
-                    && self.cleanup_suspends(effect, &HashMap::new(), &bodies, false)
-                {
-                    bodies.insert(effect.owner.clone(), true);
-                    witnesses.insert(effect.owner.clone(), effect.witness.clone());
-                    changed = true;
-                }
-            }
-            for (key, invocation) in &graph.calls {
-                let Some(owner) = &invocation.owner else {
-                    continue;
-                };
-                if bodies.get(owner).copied().unwrap_or(false) {
-                    continue;
-                }
-                if self.invocation_suspends(key, invocation, &graph, &bodies) {
-                    bodies.insert(owner.clone(), true);
-                    witnesses.insert(owner.clone(), invocation.name.clone());
-                    changed = true;
-                }
-            }
-            if !changed {
-                break;
+        let mut solver = EffectSolver::new(self, &graph);
+        let mut conservative = HashMap::new();
+        for body in graph.bodies.keys() {
+            if let Some(witness) = solver.body(body, true) {
+                conservative.insert(body.clone(), witness);
             }
         }
+        let calls: HashMap<_, _> = graph
+            .calls
+            .iter()
+            .map(|(key, invocation)| (key.clone(), solver.invocation(key, invocation)))
+            .collect();
+        let once: HashMap<_, _> = graph
+            .obligations
+            .iter()
+            .filter(|obligation| obligation.once)
+            .filter_map(|obligation| {
+                solver
+                    .once(&obligation.body, true)
+                    .map(|witness| (obligation.body.clone(), witness))
+            })
+            .collect();
+        drop(solver);
         let mut output = SuspensionEffects {
             call_owners: graph.expression_owners.clone(),
             value_operations: graph
@@ -1275,24 +1047,14 @@ impl Checker {
             constructed_bodies: graph.constructed_bodies.clone(),
             ..SuspensionEffects::default()
         };
-        for (body, suspends) in &bodies {
+        for body in graph.bodies.keys() {
             output.bodies.insert(
                 body.clone(),
-                SuspensionEffect::from_bool(
-                    *suspends
-                        || self.body_cleanup_suspends(
-                            body,
-                            &graph,
-                            &HashMap::new(),
-                            &bodies,
-                            true,
-                            &mut HashSet::new(),
-                        ),
-                ),
+                SuspensionEffect::from_bool(conservative.contains_key(body)),
             );
         }
         for (key, invocation) in &graph.calls {
-            let suspends = self.invocation_suspends(key, invocation, &graph, &bodies);
+            let suspends = calls[key];
             output
                 .calls
                 .insert(key.clone(), SuspensionEffect::from_bool(suspends));
@@ -1311,59 +1073,23 @@ impl Checker {
         }
         for obligation in &graph.obligations {
             if matches!(obligation.body, EffectBody::Declaration(_))
-                && !bodies.contains_key(&obligation.body)
+                && !graph.bodies.contains_key(&obligation.body)
             {
                 continue;
             }
-            let suspends = bodies.get(&obligation.body).copied().unwrap_or(true)
-                || self.body_cleanup_suspends(
-                    &obligation.body,
-                    &graph,
-                    &HashMap::new(),
-                    &bodies,
-                    true,
-                    &mut HashSet::new(),
-                )
-                || (obligation.once
-                    && self.once_cleanup_suspends(
-                        &obligation.body,
-                        &graph,
-                        &HashMap::new(),
-                        &bodies,
-                        true,
-                    ));
-            if !suspends {
+            let witness = conservative.get(&obligation.body).or_else(|| {
+                obligation
+                    .once
+                    .then(|| once.get(&obligation.body))
+                    .flatten()
+            });
+            let Some(witness) = witness else {
                 continue;
-            }
+            };
             let subject = match &obligation.body {
                 EffectBody::Declaration(id) => format!("function `{}`", self.defs.path(*id)),
                 _ => "closure".to_string(),
             };
-            let witness = witnesses
-                .get(&obligation.body)
-                .cloned()
-                .or_else(|| {
-                    graph
-                        .releases
-                        .iter()
-                        .find(|effect| {
-                            effect.owner == obligation.body
-                                && self.cleanup_suspends(effect, &HashMap::new(), &bodies, true)
-                        })
-                        .map(|effect| effect.witness.clone())
-                })
-                .or_else(|| {
-                    (obligation.once
-                        && self.once_cleanup_suspends(
-                            &obligation.body,
-                            &graph,
-                            &HashMap::new(),
-                            &bodies,
-                            true,
-                        ))
-                    .then(|| "implicit release of captured values".to_string())
-                })
-                .unwrap_or_else(|| "an unchecked body".to_string());
             let message = match &obligation.slot {
                 ObligationSlot::Callable(slot) => format!(
                     "{subject} suspends via `{witness}`; `{slot}` never suspends, write `fn[suspends]`"

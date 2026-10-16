@@ -2122,39 +2122,91 @@ impl Ty {
         }
     }
 
-    /// Check if any child type satisfies a predicate (boolean fold).
-    fn any_child(&self, f: &impl Fn(&Ty) -> bool) -> bool {
+    /// Visit direct children without cloning or rebuilding their type trees.
+    pub(crate) fn for_each_child<'a>(&'a self, f: &mut impl FnMut(&'a Ty)) {
+        let _ = self.try_for_each_child(&mut |child| {
+            f(child);
+            std::ops::ControlFlow::Continue(())
+        });
+    }
+
+    fn try_for_each_child<'a>(
+        &'a self,
+        f: &mut impl FnMut(&'a Ty) -> std::ops::ControlFlow<()>,
+    ) -> std::ops::ControlFlow<()> {
         match self {
             Ty::GenericCallable {
                 parameters,
                 callable,
             } => {
-                f(callable)
-                    || parameters.iter().any(|parameter| {
-                        parameter.bounds.iter().any(|bound| {
-                            bound.args.iter().any(f)
-                                || bound.assoc_bindings.iter().any(|(_, ty)| f(ty))
-                        })
-                    })
+                f(callable)?;
+                for bound in parameters.iter().flat_map(|parameter| &parameter.bounds) {
+                    for child in bound
+                        .args
+                        .iter()
+                        .chain(bound.assoc_bindings.iter().map(|(_, ty)| ty))
+                    {
+                        f(child)?;
+                    }
+                }
             }
-            Ty::Tuple(elems) => elems.iter().any(f),
-            Ty::Array(elem, _) | Ty::Slice(elem) => f(elem),
-            Ty::Named { args, .. } => args.iter().any(f),
-            Ty::Function { params, ret, .. } => params.iter().any(f) || f(ret),
+            Ty::Tuple(children) | Ty::Named { args: children, .. } => {
+                for child in children {
+                    f(child)?;
+                }
+            }
+            Ty::Array(child, _)
+            | Ty::Slice(child)
+            | Ty::Task(child)
+            | Ty::Pointer { pointee: child, .. }
+            | Ty::Borrow { pointee: child }
+            | Ty::AssocType { base: child, .. } => f(child)?,
+            Ty::Function { params, ret, .. } => {
+                for child in params {
+                    f(child)?;
+                }
+                f(ret)?;
+            }
             Ty::Closure {
                 params,
                 ret,
                 captures,
                 ..
-            } => params.iter().any(f) || f(ret) || captures.iter().any(f),
-            Ty::Pointer { pointee, .. } | Ty::Borrow { pointee } => f(pointee),
-            Ty::TraitObject { traits } => traits.iter().any(|bound| {
-                bound.args.iter().any(f) || bound.assoc_bindings.iter().any(|(_, ty)| f(ty))
-            }),
-            Ty::Task(inner) => f(inner),
-            Ty::AssocType { base, .. } => f(base),
-            _ => false,
+            } => {
+                for child in params {
+                    f(child)?;
+                }
+                f(ret)?;
+                for child in captures {
+                    f(child)?;
+                }
+            }
+            Ty::TraitObject { traits } => {
+                for bound in traits {
+                    for child in bound
+                        .args
+                        .iter()
+                        .chain(bound.assoc_bindings.iter().map(|(_, ty)| ty))
+                    {
+                        f(child)?;
+                    }
+                }
+            }
+            _ => {}
         }
+        std::ops::ControlFlow::Continue(())
+    }
+
+    /// Check if any child type satisfies a predicate (boolean fold).
+    pub(crate) fn any_child(&self, f: &impl Fn(&Ty) -> bool) -> bool {
+        self.try_for_each_child(&mut |child| {
+            if f(child) {
+                std::ops::ControlFlow::Break(())
+            } else {
+                std::ops::ControlFlow::Continue(())
+            }
+        })
+        .is_break()
     }
 
     /// Whether this type contains a resolved generic binder.

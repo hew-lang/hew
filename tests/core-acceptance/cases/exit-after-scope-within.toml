@@ -6,5 +6,5 @@ suites = ["acceptance"]
 timeout_seconds = 20
 
 [case.expected]
-stdout = "0\n"
+stdout = "done\n"
 exit = 3

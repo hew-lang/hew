@@ -289,6 +289,7 @@ fn engine<'ctx>(llvm: &Module<'ctx>, optimized: bool) -> ExecutionEngine<'ctx> {
         hashset::hew_hashset_iter_next_layout,
         hashset::hew_hashset_iter_free_layout,
         vec::hew_vec_new_with_elem_layout,
+        vec::hew_vec_make_unique,
         vec::hew_vec_free_owned,
         vec::hew_vec_free_owned_walk,
         vec::hew_array_free,

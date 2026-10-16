@@ -20808,6 +20808,21 @@
         "native",
         "wasm32-wasip1"
       ],
+      "classification": "non-declarable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_vec_make_unique( *mut HewVec)",
+        "wasm32-wasip1": "fn hew_vec_make_unique( *mut HewVec)"
+      },
+      "symbol": "hew_vec_make_unique"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",

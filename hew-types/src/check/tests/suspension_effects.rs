@@ -1,6 +1,78 @@
 use super::check_source;
 use crate::check::effects::SuspensionEffect;
 
+#[test]
+fn recursive_generic_parameter_swaps_keep_finite_instances_precise() {
+    let source = r#"
+fn swap<A, B>(consume first: A, consume second: B, n: i64) {
+    if n > 0 { swap(second, first, n - 1); }
+}
+fn main() { swap(1, "second", 2); }
+"#;
+    assert_call_effect(source, "swap(1, \"second\", 2)", SuspensionEffect::Never);
+}
+
+#[test]
+fn growing_scalar_cleanup_keeps_plain_callable_boundaries() {
+    let source = r"
+fn grow<T>(consume value: T, n: i64) {
+    if n > 0 { grow<Vec<T>>(Vec.new(), n - 1); }
+}
+fn scalar() { grow(1, 2); }
+fn main() { let callback: fn() -> () = scalar; callback(); }
+";
+    assert_call_effect(source, "grow(1, 2)", SuspensionEffect::Never);
+    assert_call_effect(source, "callback()", SuspensionEffect::Never);
+}
+
+#[test]
+fn growing_scalar_array_cleanup_remains_synchronous() {
+    let source = r"
+fn grow<T>(consume value: T, n: i64) {
+    if n > 0 { grow([value], n - 1); }
+}
+fn scalar() { grow(1, 2); }
+fn main() { let callback: fn() -> () = scalar; callback(); }
+";
+    assert_call_effect(source, "grow(1, 2)", SuspensionEffect::Never);
+}
+
+#[test]
+fn growing_resource_close_keeps_its_suspension_effect() {
+    let source = r"
+#[resource]
+type Wrapper<T> { value: T; }
+impl<T> Wrapper<T> {
+    fn close(consume self) { sleep(1ms); discard(self.value); }
+}
+fn discard<T>(consume value: T) {}
+fn grow<T>(consume value: T, n: i64) {
+    if n > 0 { grow(Wrapper { value: value }, n - 1); }
+}
+fn main() { grow(1, 2); }
+";
+    assert_call_effect(source, "grow(1, 2)", SuspensionEffect::MaySuspend);
+}
+
+#[test]
+fn effect_witnesses_follow_source_calls_across_hash_seeds() {
+    let source = r"
+fn first() { sleep(1ms); }
+fn second() { let child = fork { 1 }; let _ = await child; }
+fn wrapper() { first(); second(); }
+fn main() { let callback: fn() -> () = wrapper; }
+";
+    for _ in 0..16 {
+        let output = check_source(source);
+        assert_eq!(output.errors.len(), 1, "{:?}", output.errors);
+        assert!(
+            output.errors[0].message.contains("via `first(...)`"),
+            "{:?}",
+            output.errors
+        );
+    }
+}
+
 /// Effects recorded for every call whose source text is `expression`.
 fn call_effects(
     output: &crate::check::TypeCheckOutput,
@@ -607,6 +679,150 @@ fn recursive_effects_follow_checked_calls() {
             .filter(|effect| **effect == SuspensionEffect::MaySuspend)
             .count()
             >= 3
+    );
+}
+
+#[test]
+fn effect_graph_shared_descendants_remain_synchronous() {
+    let mut source = String::from("fn f0() -> i64 { 1 }\n");
+    for level in 1..=26 {
+        let child = level - 1;
+        source.push_str(&format!(
+            "fn f{level}() -> i64 {{ f{child}() + f{child}() }}\n"
+        ));
+    }
+    source.push_str("fn main() { let _ = f26(); }\n");
+    let output = check_source(&source);
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+    assert_eq!(output.suspension_effects.calls.len(), 53);
+    assert!(output
+        .suspension_effects
+        .calls
+        .values()
+        .all(|effect| *effect == SuspensionEffect::Never));
+}
+
+#[test]
+fn effect_graph_ignores_irrelevant_growing_generic_arguments() {
+    let source = r"
+fn recurse<T>(n: i64) {
+    if n > 0 { recurse<Vec<T>>(n - 1); }
+}
+fn main() { recurse<i64>(1); }
+";
+    let output = check_source(source);
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+    for expression in ["recurse<Vec<T>>(n - 1)", "recurse<i64>(1)"] {
+        assert_eq!(
+            call_effects(&output, source, expression),
+            vec![SuspensionEffect::Never]
+        );
+    }
+}
+
+#[test]
+fn effect_graph_recursive_cleanup_reaches_every_member() {
+    let source = r"
+#[resource]
+type Ticket { id: i64; }
+impl Ticket {
+    fn close(consume self) { sleep(1ms); }
+}
+fn discard<T>(consume value: T) {}
+fn first(n: i64) {
+    if n > 0 { second(n - 1); }
+    else { discard(Ticket { id: n }); }
+}
+fn second(n: i64) { third(n); }
+fn third(n: i64) { first(n); }
+fn main() { first(2); second(2); third(2); }
+";
+    let output = check_source(source);
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+    for expression in [
+        "first(n)",
+        "second(n - 1)",
+        "third(n)",
+        "first(2)",
+        "second(2)",
+        "third(2)",
+    ] {
+        assert!(call_effects(&output, source, expression)
+            .iter()
+            .all(|effect| *effect == SuspensionEffect::MaySuspend));
+    }
+    let plain = source.replace("sleep(1ms);", "");
+    assert_call_effect(&plain, "first(2)", SuspensionEffect::Never);
+}
+
+#[test]
+fn effect_graph_generic_cleanup_keeps_concrete_close_arguments() {
+    let declarations = r"
+#[resource]
+type Ticket { id: i64; }
+impl Ticket {
+    fn close(consume self) { sleep(1ms); }
+}
+#[resource]
+type Wrapper<T> { value: T; }
+impl<T> Wrapper<T> {
+    fn close(consume self) { discard(self.value); }
+}
+fn discard<T>(consume value: T) {}
+fn forward<T>(consume value: T) { discard(value); }
+";
+    for calls in [
+        "forward(7); forward(Wrapper { value: 8 }); forward(Wrapper { value: Ticket { id: 1 } }); forward(9);",
+        "forward(Wrapper { value: Ticket { id: 1 } }); forward(Wrapper { value: 8 }); forward(7); forward(9);",
+    ] {
+        let source = format!("{declarations}\nfn main() {{ {calls} }}");
+        let output = check_source(&source);
+        assert!(output.errors.is_empty(), "{:?}", output.errors);
+        for expression in ["forward(7)", "forward(Wrapper { value: 8 })", "forward(9)"] {
+            assert_eq!(
+                call_effects(&output, &source, expression),
+                vec![SuspensionEffect::Never]
+            );
+        }
+        assert_eq!(
+            call_effects(
+                &output,
+                &source,
+                "forward(Wrapper { value: Ticket { id: 1 } })"
+            ),
+            vec![SuspensionEffect::MaySuspend]
+        );
+    }
+}
+
+#[test]
+fn effect_graph_reusable_calls_do_not_release_once_captures() {
+    let source = r"
+#[resource]
+type Ticket { id: i64; }
+impl Ticket {
+    fn close(consume self) { sleep(1ms); }
+}
+fn main() {
+    let retained = Ticket { id: 1 };
+    let reusable = move || retained.id;
+    let _ = reusable();
+    let _ = reusable();
+    let ticket = Ticket { id: 2 };
+    let once: fn[once,suspends]() -> Ticket = move || ticket;
+    let result = once();
+    result.close();
+}
+";
+    let output = check_source(source);
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+    assert_eq!(
+        call_effects(&output, source, "reusable()"),
+        vec![SuspensionEffect::Never; 2]
+    );
+    assert_eq!(
+        call_effects(&output, source, "once()"),
+        vec![SuspensionEffect::MaySuspend]
     );
 }
 

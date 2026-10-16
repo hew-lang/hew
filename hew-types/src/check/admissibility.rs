@@ -8,6 +8,99 @@ use crate::type_facts::CloneKind;
 use crate::value_class::{ClassError, ValueClass};
 use crate::BuiltinType;
 
+/// States already expanded by one reachability query, including cycles.
+#[derive(Default)]
+pub(in crate::check) struct StructuralTypeWalk {
+    pub(in crate::check) explored: HashSet<Ty>,
+    pub(in crate::check) active: Vec<Ty>,
+    demands: HashMap<StructuralDemand, HashMap<crate::NominalId, HashSet<usize>>>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub(in crate::check) enum StructuralDemand {
+    VectorCallable,
+    CloneBlocker,
+    RcPayload,
+}
+
+impl StructuralTypeWalk {
+    pub(in crate::check) fn growing(&self, ty: &Ty) -> bool {
+        self.active
+            .iter()
+            .any(|ancestor| Self::grows_from(ancestor, ty))
+    }
+
+    pub(in crate::check) fn grows_from(ancestor: &Ty, ty: &Ty) -> bool {
+        fn contains(outer: &Ty, inner: &Ty) -> bool {
+            outer == inner
+                || match outer {
+                    Ty::Named { args, .. } | Ty::Tuple(args) => {
+                        args.iter().any(|arg| contains(arg, inner))
+                    }
+                    Ty::Array(arg, _) | Ty::Slice(arg) | Ty::Task(arg) => contains(arg, inner),
+                    _ => false,
+                }
+        }
+        let (
+            Ty::Named { head, args },
+            Ty::Named {
+                head: previous,
+                args: previous_args,
+            },
+        ) = (ty, ancestor)
+        else {
+            return false;
+        };
+        head == previous
+            && args != previous_args
+            && !previous_args.is_empty()
+            && previous_args
+                .iter()
+                .all(|previous| args.iter().any(|arg| contains(arg, previous)))
+            && args.iter().any(|arg| {
+                previous_args
+                    .iter()
+                    .any(|previous| arg != previous && contains(arg, previous))
+            })
+    }
+
+    pub(in crate::check) fn demanded_arguments(
+        &mut self,
+        checker: &Checker,
+        ty: &Ty,
+        demand: StructuralDemand,
+    ) -> Vec<Ty> {
+        let Ty::Named { head, args } = ty else {
+            return Vec::new();
+        };
+        let Some(id) = head.nominal() else {
+            return Vec::new();
+        };
+        let demands = self
+            .demands
+            .entry(demand)
+            .or_insert_with(|| checker.structural_parameter_demands(demand));
+        let mut selected: Vec<_> = demands.get(&id).into_iter().flatten().copied().collect();
+        selected.sort_unstable();
+        selected
+            .into_iter()
+            .filter_map(|index| args.get(index).cloned())
+            .collect()
+    }
+}
+
+#[derive(Default)]
+struct RcTypeWalk {
+    reach: StructuralTypeWalk,
+    inline: HashSet<Ty>,
+}
+
+#[derive(Default)]
+struct CopyLayoutWalk {
+    completed: HashMap<Ty, Option<(usize, usize)>>,
+    cycle_cuts: usize,
+}
+
 /// Why a copy-requiring operation cannot copy an element.
 ///
 /// The two answers differ in who has to act: a concrete type with no copy
@@ -91,7 +184,12 @@ fn align_up(offset: usize, align: usize) -> usize {
 /// Returns `None` for types that do not have a fixed Copy layout.
 /// The function is conservative and returns `None` for everything else.
 pub(crate) fn primitive_copy_layout(ty: &Ty, types: TypeDefView<'_>) -> Option<(usize, usize)> {
-    primitive_copy_layout_on_path(ty, types, &mut HashSet::new())
+    primitive_copy_layout_on_path(
+        ty,
+        types,
+        &mut HashSet::new(),
+        &mut CopyLayoutWalk::default(),
+    )
 }
 
 /// `primitive_copy_layout` with the currently-expanded record declarations.
@@ -105,40 +203,55 @@ fn primitive_copy_layout_on_path(
     ty: &Ty,
     types: TypeDefView<'_>,
     visiting: &mut HashSet<String>,
+    walk: &mut CopyLayoutWalk,
 ) -> Option<(usize, usize)> {
-    if let Some(layout) = identity_aggregate_layout(ty) {
-        return Some(layout);
+    if let Some(layout) = walk.completed.get(ty) {
+        return *layout;
     }
-    match ty {
-        Ty::Bool | Ty::I8 | Ty::U8 => Some((1, 1)),
-        Ty::I16 | Ty::U16 => Some((2, 2)),
-        Ty::I32 | Ty::U32 | Ty::Char | Ty::F32 => Some((4, 4)),
-        Ty::I64 | Ty::U64 | Ty::Duration | Ty::F64 => Some((8, 8)),
-        Ty::Array(elem, count) => {
-            let (elem_size, elem_align) = primitive_copy_layout_on_path(elem, types, visiting)?;
-            let count = usize::try_from(*count).ok()?;
-            Some((elem_size.checked_mul(count)?, elem_align))
+    let cycle_cuts = walk.cycle_cuts;
+    let layout = (|| {
+        if let Some(layout) = identity_aggregate_layout(ty) {
+            return Some(layout);
         }
-        Ty::Named { head, args } => {
-            let type_def = types.of(*head)?;
-            let visit_key = type_def.name.clone();
-            if !visiting.insert(visit_key.clone()) {
-                return None;
+        match ty {
+            Ty::Bool | Ty::I8 | Ty::U8 => Some((1, 1)),
+            Ty::I16 | Ty::U16 => Some((2, 2)),
+            Ty::I32 | Ty::U32 | Ty::Char | Ty::F32 => Some((4, 4)),
+            Ty::I64 | Ty::U64 | Ty::Duration | Ty::F64 => Some((8, 8)),
+            Ty::Array(elem, count) => {
+                let (elem_size, elem_align) =
+                    primitive_copy_layout_on_path(elem, types, visiting, walk)?;
+                let count = usize::try_from(*count).ok()?;
+                Some((elem_size.checked_mul(count)?, elem_align))
             }
-            let layout = if args.is_empty() {
-                compute_copy_record_layout_on_path(type_def, types, visiting)
-            } else {
-                if type_def.type_params.len() != args.len() {
-                    visiting.remove(&visit_key);
+            Ty::Named { head, args } => {
+                let type_def = types.of(*head)?;
+                let visit_key = type_def.name.clone();
+                if !visiting.insert(visit_key.clone()) {
+                    walk.cycle_cuts += 1;
                     return None;
                 }
-                compute_copy_record_layout_with_args_on_path(type_def, args, types, visiting)
-            };
-            visiting.remove(&visit_key);
-            layout
+                let layout = if args.is_empty() {
+                    compute_copy_record_layout_on_path(type_def, types, visiting, walk)
+                } else {
+                    if type_def.type_params.len() != args.len() {
+                        visiting.remove(&visit_key);
+                        return None;
+                    }
+                    compute_copy_record_layout_with_args_on_path(
+                        type_def, args, types, visiting, walk,
+                    )
+                };
+                visiting.remove(&visit_key);
+                layout
+            }
+            _ => None,
         }
-        _ => None,
+    })();
+    if walk.cycle_cuts == cycle_cuts {
+        walk.completed.insert(ty.clone(), layout);
     }
+    layout
 }
 
 /// Compute a field layout while retaining the origin of direct type-parameter
@@ -152,6 +265,7 @@ fn primitive_copy_layout_member_on_path(
     type_args: &[Ty],
     types: TypeDefView<'_>,
     visiting: &mut HashSet<String>,
+    walk: &mut CopyLayoutWalk,
 ) -> Option<(usize, usize)> {
     match ty {
         Ty::Named {
@@ -171,11 +285,12 @@ fn primitive_copy_layout_member_on_path(
             if !declaration_walk_terminates(&resolved_arg, types) {
                 return None;
             }
-            primitive_copy_layout(type_arg, types)
+            primitive_copy_layout_on_path(type_arg, types, &mut HashSet::new(), walk)
         }
         Ty::Array(elem, count) => {
-            let (elem_size, elem_align) =
-                primitive_copy_layout_member_on_path(elem, type_def, type_args, types, visiting)?;
+            let (elem_size, elem_align) = primitive_copy_layout_member_on_path(
+                elem, type_def, type_args, types, visiting, walk,
+            )?;
             let count = usize::try_from(*count).ok()?;
             Some((elem_size.checked_mul(count)?, elem_align))
         }
@@ -187,7 +302,7 @@ fn primitive_copy_layout_member_on_path(
                 .map(|(param, arg)| (*param, arg.clone()))
                 .collect();
             let instantiated = ty.substitute_type_params_parallel(&subst);
-            primitive_copy_layout_on_path(&instantiated, types, visiting)
+            primitive_copy_layout_on_path(&instantiated, types, visiting, walk)
         }
     }
 }
@@ -196,8 +311,9 @@ fn compute_copy_record_layout_on_path(
     type_def: &TypeDef,
     types: TypeDefView<'_>,
     visiting: &mut HashSet<String>,
+    walk: &mut CopyLayoutWalk,
 ) -> Option<(usize, usize)> {
-    compute_copy_record_layout_with_args_on_path(type_def, &[], types, visiting)
+    compute_copy_record_layout_with_args_on_path(type_def, &[], types, visiting, walk)
 }
 
 fn compute_copy_record_layout_with_args_on_path(
@@ -205,6 +321,7 @@ fn compute_copy_record_layout_with_args_on_path(
     type_args: &[Ty],
     types: TypeDefView<'_>,
     visiting: &mut HashSet<String>,
+    walk: &mut CopyLayoutWalk,
 ) -> Option<(usize, usize)> {
     if type_def.fields.is_empty() {
         // Zero-size key is an ABI violation: `hew_hashmap_new_with_layout` aborts
@@ -231,8 +348,9 @@ fn compute_copy_record_layout_with_args_on_path(
 
     for name in field_names {
         let field_ty = type_def.fields.get(*name)?;
-        let (field_size, field_align) =
-            primitive_copy_layout_member_on_path(field_ty, type_def, type_args, types, visiting)?;
+        let (field_size, field_align) = primitive_copy_layout_member_on_path(
+            field_ty, type_def, type_args, types, visiting, walk,
+        )?;
 
         // Align the field start offset to the field's natural alignment.
         offset = align_up(offset, field_align);
@@ -393,6 +511,133 @@ impl ConcreteCollectionKind {
 }
 
 impl Checker {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "symbolic parameter transfer and its dependency worklist form one analysis"
+    )]
+    fn structural_parameter_demands(
+        &self,
+        demand: StructuralDemand,
+    ) -> HashMap<crate::NominalId, HashSet<usize>> {
+        fn dependencies(ty: &Ty, found: &mut HashSet<crate::NominalId>) {
+            match ty {
+                Ty::Named { head, args } => {
+                    if let Some(id) = head.nominal() {
+                        found.insert(id);
+                    }
+                    for arg in args {
+                        dependencies(arg, found);
+                    }
+                }
+                Ty::Tuple(items) => {
+                    for item in items {
+                        dependencies(item, found);
+                    }
+                }
+                Ty::Array(item, _) | Ty::Slice(item) => dependencies(item, found),
+                _ => {}
+            }
+        }
+        fn parameters(
+            ty: &Ty,
+            demands: &HashMap<crate::NominalId, HashSet<usize>>,
+            demand: StructuralDemand,
+            found: &mut HashSet<crate::ParamHead>,
+        ) {
+            match ty {
+                Ty::Named {
+                    head: crate::TypeHead::Param(param),
+                    args,
+                } if args.is_empty() => {
+                    found.insert(*param);
+                }
+                Ty::Named { head, args } => {
+                    if let Some(builtin) = head.builtin() {
+                        let transparent = match demand {
+                            StructuralDemand::VectorCallable => matches!(
+                                builtin,
+                                BuiltinType::Range | BuiltinType::Option | BuiltinType::Result
+                            ),
+                            StructuralDemand::CloneBlocker => {
+                                !builtin.is_affine_clone_terminal() && !builtin.is_pipe_half()
+                            }
+                            StructuralDemand::RcPayload => matches!(
+                                builtin,
+                                BuiltinType::Option
+                                    | BuiltinType::Result
+                                    | BuiltinType::Vec
+                                    | BuiltinType::HashSet
+                                    | BuiltinType::HashMap
+                            ),
+                        };
+                        if transparent {
+                            for arg in args {
+                                parameters(arg, demands, demand, found);
+                            }
+                        }
+                    } else if let Some(id) = head.nominal() {
+                        for index in demands.get(&id).into_iter().flatten() {
+                            if let Some(arg) = args.get(*index) {
+                                parameters(arg, demands, demand, found);
+                            }
+                        }
+                    }
+                }
+                Ty::Tuple(items) => {
+                    for item in items {
+                        parameters(item, demands, demand, found);
+                    }
+                }
+                Ty::Array(item, _) | Ty::Slice(item) => parameters(item, demands, demand, found),
+                _ => {}
+            }
+        }
+        let mut reverse: HashMap<crate::NominalId, HashSet<crate::NominalId>> = HashMap::new();
+        for (id, definition) in &self.type_defs {
+            let mut edges = HashSet::new();
+            for member in Self::structural_member_types_for_type(definition) {
+                dependencies(&member, &mut edges);
+            }
+            for dependency in edges {
+                reverse.entry(dependency).or_default().insert(*id);
+            }
+        }
+        let mut demands: HashMap<crate::NominalId, HashSet<usize>> = HashMap::new();
+        let mut pending: std::collections::VecDeque<_> = self.type_defs.keys().copied().collect();
+        let mut queued: HashSet<_> = pending.iter().copied().collect();
+        while let Some(id) = pending.pop_front() {
+            queued.remove(&id);
+            let definition = &self.type_defs[&id];
+            if matches!(
+                demand,
+                StructuralDemand::CloneBlocker | StructuralDemand::RcPayload
+            ) && (self.registry.is_resource(id) || self.registry.is_linear(id))
+            {
+                continue;
+            }
+            let mut found = HashSet::new();
+            for member in Self::structural_member_types_for_type(definition) {
+                parameters(&member, &demands, demand, &mut found);
+            }
+            let selected: HashSet<_> = definition
+                .type_params
+                .iter()
+                .enumerate()
+                .filter_map(|(index, param)| found.contains(param).then_some(index))
+                .collect();
+            if demands.get(&id) == Some(&selected) {
+                continue;
+            }
+            demands.insert(id, selected);
+            for dependent in reverse.get(&id).into_iter().flatten() {
+                if queued.insert(*dependent) {
+                    pending.push_back(*dependent);
+                }
+            }
+        }
+        demands
+    }
+
     pub(super) fn validate_checker_output_contract(
         &mut self,
         expr_types: &mut HashMap<SpanKey, Ty>,
@@ -1376,19 +1621,33 @@ impl Checker {
     /// the layout/owned byte-copy ABIs, which would shallow-copy the embedded
     /// pair and alias its sole-owner environment box, so they fail closed at
     /// admission.
-    pub(super) fn vec_element_contains_fn_value(
+    pub(super) fn vec_element_contains_fn_value(&self, ty: &Ty) -> bool {
+        self.vec_element_contains_fn_value_on_graph(ty, &mut StructuralTypeWalk::default())
+    }
+
+    fn vec_element_contains_fn_value_on_graph(
         &self,
         ty: &Ty,
-        visiting: &mut HashSet<String>,
+        walk: &mut StructuralTypeWalk,
     ) -> bool {
         let resolved = self.subst.resolve(ty);
-        match &resolved {
+        if !walk.explored.insert(resolved.clone()) {
+            return false;
+        }
+        if walk.growing(&resolved) {
+            return walk
+                .demanded_arguments(self, &resolved, StructuralDemand::VectorCallable)
+                .iter()
+                .any(|arg| self.vec_element_contains_fn_value_on_graph(arg, walk));
+        }
+        walk.active.push(resolved.clone());
+        let found = (|| match &resolved {
             Ty::GenericCallable { .. } | Ty::Function { .. } | Ty::Closure { .. } => true,
             Ty::Tuple(elems) => elems
                 .iter()
-                .any(|elem| self.vec_element_contains_fn_value(elem, visiting)),
+                .any(|elem| self.vec_element_contains_fn_value_on_graph(elem, walk)),
             Ty::Array(inner, _) | Ty::Slice(inner) => {
-                self.vec_element_contains_fn_value(inner, visiting)
+                self.vec_element_contains_fn_value_on_graph(inner, walk)
             }
             Ty::Named {
                 head:
@@ -1399,35 +1658,32 @@ impl Checker {
                 ..
             } => args
                 .iter()
-                .any(|arg| self.vec_element_contains_fn_value(arg, visiting)),
+                .any(|arg| self.vec_element_contains_fn_value_on_graph(arg, walk)),
             Ty::Named { head, args } => {
                 let Some(type_def) = self.head_type_def(*head).cloned() else {
                     return false;
                 };
-                if visiting.contains(type_def.name.as_str()) {
-                    return false;
-                }
-                visiting.insert(type_def.name.clone());
                 let result = type_def.fields.values().any(|field_ty| {
                     let field_ty =
                         Self::instantiate_type_def_member(field_ty, &type_def.type_params, args);
-                    self.vec_element_contains_fn_value(&field_ty, visiting)
+                    self.vec_element_contains_fn_value_on_graph(&field_ty, walk)
                 }) || type_def.variants.values().any(|variant| match variant {
                     VariantDef::Unit => false,
                     VariantDef::Tuple(tys) => tys.iter().any(|ty| {
                         let ty = Self::instantiate_type_def_member(ty, &type_def.type_params, args);
-                        self.vec_element_contains_fn_value(&ty, visiting)
+                        self.vec_element_contains_fn_value_on_graph(&ty, walk)
                     }),
                     VariantDef::Struct(fields) => fields.iter().any(|(_, ty)| {
                         let ty = Self::instantiate_type_def_member(ty, &type_def.type_params, args);
-                        self.vec_element_contains_fn_value(&ty, visiting)
+                        self.vec_element_contains_fn_value_on_graph(&ty, walk)
                     }),
                 });
-                visiting.remove(type_def.name.as_str());
                 result
             }
             _ => false,
-        }
+        })();
+        walk.active.pop();
+        found
     }
 
     pub(super) fn validate_resolved_vec_element_type(
@@ -1444,8 +1700,7 @@ impl Checker {
         // shallow-copy the closure pair and alias its sole-owner environment.
         // A direct Vec<fn(...)> element is the supported boxed-pair class.
         if resolved.callable_signature().is_none() {
-            let mut visiting = HashSet::new();
-            if self.vec_element_contains_fn_value(resolved, &mut visiting) {
+            if self.vec_element_contains_fn_value(resolved) {
                 self.report_error(
                     TypeErrorKind::InvalidOperation,
                     span,
@@ -1567,133 +1822,184 @@ impl Checker {
         self.validate_concrete_collection_type(ty, span, ConcreteCollectionKind::HashMap)
     }
 
+    fn rc_payload_clone_drop_supported(&self, ty: &Ty) -> bool {
+        self.rc_payload_clone_drop_supported_on_graph(ty, false, &mut RcTypeWalk::default())
+    }
+
+    fn rc_payload_clone_drop_supported_member(
+        &self,
+        ty: &Ty,
+        supplied: bool,
+        walk: &mut RcTypeWalk,
+    ) -> bool {
+        if supplied {
+            let resolved = self.subst.resolve(ty);
+            let recursive_inline_argument = walk.inline.contains(&resolved) || (walk.reach.growing(&resolved) && walk.inline.iter().any(|ancestor| matches!((&resolved, ancestor), (Ty::Named { head, .. }, Ty::Named { head: previous, .. }) if head == previous)));
+            if recursive_inline_argument {
+                return false;
+            }
+        }
+        self.rc_payload_clone_drop_supported_on_graph(ty, supplied, walk)
+    }
+
+    fn rc_payload_clone_drop_supported_on_graph(
+        &self,
+        ty: &Ty,
+        through_indirection: bool,
+        walk: &mut RcTypeWalk,
+    ) -> bool {
+        let previous = through_indirection.then(|| std::mem::take(&mut walk.inline));
+        let supported = self.rc_payload_clone_drop_supported_state(ty, walk);
+        if let Some(previous) = previous {
+            walk.inline = previous;
+        }
+        supported
+    }
+
     #[allow(
         clippy::too_many_lines,
         reason = "the closed type-shape match keeps aggregate admission auditable in one place"
     )]
-    fn rc_payload_clone_drop_supported(
-        &self,
-        ty: &Ty,
-        visiting: &mut HashSet<String>,
-        through_collection: bool,
-    ) -> bool {
+    fn rc_payload_clone_drop_supported_state(&self, ty: &Ty, walk: &mut RcTypeWalk) -> bool {
         let resolved = self.subst.resolve(ty).materialize_literal_defaults();
-        match &resolved {
-            Ty::Error | Ty::String | Ty::Bytes => true,
-            Ty::Var(_)
-            | Ty::AssocType { .. }
-            | Ty::Slice(_)
-            | Ty::GenericCallable { .. }
-            | Ty::Function { .. }
-            | Ty::Closure { .. }
-            | Ty::TraitObject { .. }
-            | Ty::CancellationToken
-            | Ty::Task(_)
-            | Ty::Borrow { .. }
-            | Ty::Pointer { .. } => false,
-            Ty::Tuple(elems) => elems
-                .iter()
-                .all(|elem| self.rc_payload_clone_drop_supported(elem, visiting, false)),
-            Ty::Array(elem, _) => self.rc_payload_clone_drop_supported(elem, visiting, false),
-            Ty::Named {
-                head: crate::TypeHead::Builtin(BuiltinType::Rc | BuiltinType::Weak),
-                args,
-                ..
-            } => args.len() == 1,
-            Ty::Named {
-                head: head @ crate::TypeHead::Builtin(builtin),
-                args,
-            } => match builtin {
-                BuiltinType::Option | BuiltinType::Result => args
-                    .iter()
-                    .all(|arg| self.rc_payload_clone_drop_supported(arg, visiting, false)),
-                BuiltinType::Vec | BuiltinType::HashSet => args.first().is_some_and(|arg| {
-                    args.len() == 1 && self.rc_payload_clone_drop_supported(arg, visiting, true)
-                }),
-                BuiltinType::HashMap => {
-                    args.len() == 2
-                        && self.rc_payload_clone_drop_supported(&args[0], visiting, false)
-                        && self.rc_payload_clone_drop_supported(&args[1], visiting, true)
-                }
-                _ => {
-                    !self.registry.is_owned_handle(*head)
-                        && !self.is_user_opaque_type(*head)
-                        && self
-                            .registry
-                            .implements_marker(&resolved, MarkerTrait::Copy)
-                }
-            },
-            Ty::Named {
-                head:
-                    head @ (crate::TypeHead::Nominal(_)
-                    | crate::TypeHead::Param(_)
-                    | crate::TypeHead::Unresolved(_)),
-                args,
-            } => {
-                if self.registry.is_owned_handle(*head)
-                    || self.is_user_opaque_type(*head)
-                    || head.nominal().is_some_and(|id| self.registry.is_linear(id))
-                {
-                    return false;
-                }
-                // A `#[resource]` releases through its own `close`, which the
-                // shared allocation installs as the payload destructor. Its
-                // fields belong to that close, not to this walk. `#[linear]`
-                // stays refused: a shared handle can outlive every path that
-                // would consume it.
-                if head
-                    .nominal()
-                    .is_some_and(|id| self.registry.is_resource(id))
-                {
-                    return true;
-                }
-                let Some(type_def) = self.head_type_def(*head).cloned() else {
-                    return self
-                        .registry
-                        .implements_marker(&resolved, MarkerTrait::Copy);
-                };
-                if !matches!(
-                    type_def.kind,
-                    TypeDefKind::Record | TypeDefKind::Struct | TypeDefKind::Enum
-                ) {
-                    return false;
-                }
-                let visit_key = type_def.name.clone();
-                if !visiting.insert(visit_key.clone()) {
-                    return through_collection;
-                }
-                let fields_ok = type_def.fields.values().all(|field| {
-                    let field =
-                        Self::instantiate_type_def_member(field, &type_def.type_params, args);
-                    self.rc_payload_clone_drop_supported(&field, visiting, false)
-                });
-                let variants_ok = fields_ok
-                    && type_def.variants.values().all(|variant| match variant {
-                        VariantDef::Unit => true,
-                        VariantDef::Tuple(fields) => fields.iter().all(|field| {
-                            let field = Self::instantiate_type_def_member(
-                                field,
-                                &type_def.type_params,
-                                args,
-                            );
-                            self.rc_payload_clone_drop_supported(&field, visiting, false)
-                        }),
-                        VariantDef::Struct(fields) => fields.iter().all(|(_, field)| {
-                            let field = Self::instantiate_type_def_member(
-                                field,
-                                &type_def.type_params,
-                                args,
-                            );
-                            self.rc_payload_clone_drop_supported(&field, visiting, false)
-                        }),
-                    });
-                visiting.remove(&visit_key);
-                variants_ok
-            }
-            _ => self
-                .registry
-                .implements_marker(&resolved, MarkerTrait::Copy),
+        if walk.inline.contains(&resolved) {
+            return false;
         }
+        if !walk.reach.explored.insert(resolved.clone()) {
+            return true;
+        }
+        if walk.reach.growing(&resolved) {
+            let inline_growth = walk.reach.active.iter().any(|ancestor| {
+                walk.inline.contains(ancestor) && matches!((&resolved, ancestor), (Ty::Named { head, .. }, Ty::Named { head: previous, .. }) if head == previous)
+            });
+            if inline_growth {
+                return false;
+            }
+            return walk
+                .reach
+                .demanded_arguments(self, &resolved, StructuralDemand::RcPayload)
+                .iter()
+                .all(|arg| self.rc_payload_clone_drop_supported_on_graph(arg, true, walk));
+        }
+        walk.reach.active.push(resolved.clone());
+        walk.inline.insert(resolved.clone());
+        let supported = (|| {
+            match &resolved {
+                Ty::Error | Ty::String | Ty::Bytes => true,
+                Ty::Var(_)
+                | Ty::AssocType { .. }
+                | Ty::Slice(_)
+                | Ty::GenericCallable { .. }
+                | Ty::Function { .. }
+                | Ty::Closure { .. }
+                | Ty::TraitObject { .. }
+                | Ty::CancellationToken
+                | Ty::Task(_)
+                | Ty::Borrow { .. }
+                | Ty::Pointer { .. } => false,
+                Ty::Tuple(elems) => elems
+                    .iter()
+                    .all(|elem| self.rc_payload_clone_drop_supported_on_graph(elem, false, walk)),
+                Ty::Array(elem, _) => {
+                    self.rc_payload_clone_drop_supported_on_graph(elem, false, walk)
+                }
+                Ty::Named {
+                    head: crate::TypeHead::Builtin(BuiltinType::Rc | BuiltinType::Weak),
+                    args,
+                    ..
+                } => args.len() == 1,
+                Ty::Named {
+                    head: head @ crate::TypeHead::Builtin(builtin),
+                    args,
+                } => match builtin {
+                    BuiltinType::Option | BuiltinType::Result => args
+                        .iter()
+                        .all(|arg| self.rc_payload_clone_drop_supported_on_graph(arg, false, walk)),
+                    BuiltinType::Vec | BuiltinType::HashSet => args.first().is_some_and(|arg| {
+                        args.len() == 1
+                            && self.rc_payload_clone_drop_supported_on_graph(arg, true, walk)
+                    }),
+                    BuiltinType::HashMap => {
+                        args.len() == 2
+                            && self.rc_payload_clone_drop_supported_on_graph(&args[0], false, walk)
+                            && self.rc_payload_clone_drop_supported_on_graph(&args[1], true, walk)
+                    }
+                    _ => {
+                        !self.registry.is_owned_handle(*head)
+                            && !self.is_user_opaque_type(*head)
+                            && self
+                                .registry
+                                .implements_marker(&resolved, MarkerTrait::Copy)
+                    }
+                },
+                Ty::Named {
+                    head:
+                        head @ (crate::TypeHead::Nominal(_)
+                        | crate::TypeHead::Param(_)
+                        | crate::TypeHead::Unresolved(_)),
+                    args,
+                } => {
+                    if self.registry.is_owned_handle(*head)
+                        || self.is_user_opaque_type(*head)
+                        || head.nominal().is_some_and(|id| self.registry.is_linear(id))
+                    {
+                        return false;
+                    }
+                    // A `#[resource]` releases through its own `close`, which the
+                    // shared allocation installs as the payload destructor. Its
+                    // fields belong to that close, not to this walk. `#[linear]`
+                    // stays refused: a shared handle can outlive every path that
+                    // would consume it.
+                    if head
+                        .nominal()
+                        .is_some_and(|id| self.registry.is_resource(id))
+                    {
+                        return true;
+                    }
+                    let Some(type_def) = self.head_type_def(*head).cloned() else {
+                        return self
+                            .registry
+                            .implements_marker(&resolved, MarkerTrait::Copy);
+                    };
+                    if !matches!(
+                        type_def.kind,
+                        TypeDefKind::Record | TypeDefKind::Struct | TypeDefKind::Enum
+                    ) {
+                        return false;
+                    }
+                    let fields_ok = type_def.fields.values().all(|field| {
+                        let supplied = matches!(field, Ty::Named { head: crate::TypeHead::Param(_), args } if args.is_empty());
+                        let field = Self::instantiate_type_def_member(field, &type_def.type_params, args);
+                        self.rc_payload_clone_drop_supported_member(&field, supplied, walk)
+                    });
+                    let variants_ok = fields_ok
+                        && type_def.variants.values().all(|variant| match variant {
+                            VariantDef::Unit => true,
+                            VariantDef::Tuple(fields) => fields.iter().all(|field| {
+                                let supplied = matches!(field, Ty::Named { head: crate::TypeHead::Param(_), args } if args.is_empty());
+                                let field = Self::instantiate_type_def_member(field, &type_def.type_params, args);
+                                self.rc_payload_clone_drop_supported_member(
+                                    &field, supplied, walk,
+                                )
+                            }),
+                            VariantDef::Struct(fields) => fields.iter().all(|(_, field)| {
+                                let supplied = matches!(field, Ty::Named { head: crate::TypeHead::Param(_), args } if args.is_empty());
+                                let field = Self::instantiate_type_def_member(field, &type_def.type_params, args);
+                                self.rc_payload_clone_drop_supported_member(
+                                    &field, supplied, walk,
+                                )
+                            }),
+                        });
+                    variants_ok
+                }
+                _ => self
+                    .registry
+                    .implements_marker(&resolved, MarkerTrait::Copy),
+            }
+        })();
+        walk.inline.remove(&resolved);
+        walk.reach.active.pop();
+        supported
     }
 
     pub(super) fn validate_rc_payload_type(&mut self, ty: &Ty, span: &Span) -> bool {
@@ -1713,7 +2019,7 @@ impl Checker {
             );
             return false;
         }
-        if self.rc_payload_clone_drop_supported(&resolved, &mut HashSet::new(), false) {
+        if self.rc_payload_clone_drop_supported(&resolved) {
             return true;
         }
 
@@ -1740,6 +2046,169 @@ mod tests {
 
     use super::*;
     use crate::module_registry::ModuleRegistry;
+
+    #[test]
+    fn structural_type_queries_follow_generic_swaps_and_shared_cycles() {
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let flip = checker_nominal(&mut checker, "Flip");
+        let a = Ty::Named {
+            head: crate::TypeHead::Param(crate::ParamHead::for_test("A")),
+            args: vec![],
+        };
+        let b = Ty::Named {
+            head: crate::TypeHead::Param(crate::ParamHead::for_test("B")),
+            args: vec![],
+        };
+        let swapped = Ty::named_in(&checker.defs, "Flip", vec![b, a.clone()]);
+        checker.type_defs.insert(
+            flip,
+            make_generic_record(
+                "Flip",
+                vec!["A", "B"],
+                vec![("value", a), ("next", Ty::option(swapped))],
+            ),
+        );
+        let callable = Ty::Function {
+            capabilities: crate::CallableCapabilities::default(),
+            params: vec![],
+            ret: Box::new(Ty::I64),
+        };
+        let root = Ty::named_in(&checker.defs, "Flip", vec![Ty::I64, callable]);
+        assert!(
+            checker.vec_element_contains_fn_value(&root),
+            "a finite parameter swap must reveal the second argument"
+        );
+
+        let leaf = checker_nominal(&mut checker, "Node0");
+        let node = Ty::named_in(&checker.defs, "Node0", vec![]);
+        checker.type_defs.insert(
+            leaf,
+            make_record(
+                "Node0",
+                vec![(
+                    "next",
+                    Ty::builtin_named(BuiltinType::Vec, vec![node.clone()]),
+                )],
+            ),
+        );
+        let mut root = node;
+        for level in 1..=24 {
+            let name = format!("Node{level}");
+            let id = checker_nominal(&mut checker, &name);
+            checker.type_defs.insert(
+                id,
+                make_record(&name, vec![("left", root.clone()), ("right", root)]),
+            );
+            root = Ty::named_in(&checker.defs, &name, vec![]);
+        }
+        assert!(!checker.vec_element_contains_fn_value(&root));
+        assert!(
+            checker.rc_payload_clone_drop_supported(&root),
+            "a shared type DAG reaching a collection cycle has a complete payload strategy"
+        );
+    }
+
+    #[test]
+    fn rc_payload_queries_distinguish_inline_cycles_and_finite_parameters() {
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let node = checker_nominal(&mut checker, "Node");
+        let edge = checker_nominal(&mut checker, "Edge");
+        let node_ty = Ty::named_in(&checker.defs, "Node", vec![]);
+        let edge_ty = Ty::named_in(&checker.defs, "Edge", vec![]);
+        checker.type_defs.insert(
+            node,
+            make_record(
+                "Node",
+                vec![(
+                    "edges",
+                    Ty::builtin_named(BuiltinType::Vec, vec![edge_ty.clone()]),
+                )],
+            ),
+        );
+        checker
+            .type_defs
+            .insert(edge, make_record("Edge", vec![("next", node_ty.clone())]));
+        assert!(checker.rc_payload_clone_drop_supported(&node_ty));
+        checker
+            .type_defs
+            .get_mut(&node)
+            .unwrap()
+            .fields
+            .insert("edges".into(), edge_ty);
+        assert!(
+            !checker.rc_payload_clone_drop_supported(&node_ty),
+            "removing the collection creates an inline-size cycle"
+        );
+
+        let wrap = checker_nominal(&mut checker, "Wrap");
+        let parameter = Ty::Named {
+            head: crate::TypeHead::Param(crate::ParamHead::for_test("T")),
+            args: vec![],
+        };
+        checker.type_defs.insert(
+            wrap,
+            make_generic_record("Wrap", vec!["T"], vec![("value", parameter)]),
+        );
+        let finite = Ty::named_in(
+            &checker.defs,
+            "Wrap",
+            vec![Ty::named_in(&checker.defs, "Wrap", vec![Ty::I64])],
+        );
+        assert!(
+            checker.rc_payload_clone_drop_supported(&finite),
+            "a finite supplied nested argument is not an inline declaration cycle"
+        );
+        checker.type_defs.get_mut(&node).unwrap().fields.insert(
+            "edges".into(),
+            Ty::named_in(&checker.defs, "Wrap", vec![node_ty.clone()]),
+        );
+        assert!(
+            !checker.rc_payload_clone_drop_supported(&node_ty),
+            "a parameter must not erase an actual inline declaration cycle"
+        );
+    }
+
+    #[test]
+    fn rc_payload_queries_preserve_relevant_growing_arguments() {
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let grow = checker_nominal(&mut checker, "Grow");
+        let t = Ty::Named {
+            head: crate::TypeHead::Param(crate::ParamHead::for_test("T")),
+            args: vec![],
+        };
+        let next = Ty::builtin_named(
+            BuiltinType::Vec,
+            vec![Ty::named_in(
+                &checker.defs,
+                "Grow",
+                vec![Ty::builtin_named(BuiltinType::Vec, vec![t.clone()])],
+            )],
+        );
+        checker.type_defs.insert(
+            grow,
+            make_generic_record("Grow", vec!["T"], vec![("next", next)]),
+        );
+        let callable = Ty::Function {
+            capabilities: crate::CallableCapabilities::default(),
+            params: vec![],
+            ret: Box::new(Ty::I64),
+        };
+        let root = Ty::named_in(&checker.defs, "Grow", vec![callable]);
+        assert!(
+            checker.rc_payload_clone_drop_supported(&root),
+            "unused growing arguments do not store callable values"
+        );
+        checker
+            .type_defs
+            .get_mut(&grow)
+            .unwrap()
+            .fields
+            .insert("value".into(), t);
+        assert!(
+            !checker.rc_payload_clone_drop_supported(&root),
+            "a stored growing argument retains its unsupported callable leaf"
+        );
+    }
 
     #[test]
     fn ty_contains_error_recurses_through_named_and_closure_types() {

@@ -1,0 +1,51 @@
+#[resource]
+type Ticket { id: i64; }
+
+impl Ticket {
+    fn close(consume self) {
+        sleep(1ms);
+        println(f"closed {self.id}");
+    }
+}
+
+type Holder<T> { value: T; }
+
+fn discard<T>(consume value: T) {}
+
+fn forward<T>(consume value: T) {
+    discard(value);
+}
+
+fn first(n: i64) {
+    if n > 0 {
+        second(n - 1);
+    } else {
+        forward(Holder { value: Ticket { id: 1 } });
+    }
+}
+
+fn second(n: i64) {
+    first(n);
+}
+
+fn scalar() {
+    forward(7);
+}
+
+fn main() {
+    let plain: fn() -> () = scalar;
+    plain();
+    let cycle: fn[suspends](i64) -> () = second;
+    cycle(2);
+    plain();
+    scope {
+        let retained = Ticket { id: 2 };
+        let reusable = move || retained.id;
+        println(reusable() + reusable());
+    };
+    let ticket = Ticket { id: 3 };
+    let once: fn[once,suspends]() -> Ticket = move || ticket;
+    let result = once();
+    result.close();
+    println("done");
+}

@@ -2628,8 +2628,7 @@ impl Checker {
     /// ... is not a registered record layout` message that names an internal
     /// wire detail instead of the offending parameter. See #2511.
     fn reject_opaque_message_payload(&mut self, ty: &Ty, param_span: &Span, handler: &str) {
-        let mut visiting = std::collections::HashSet::new();
-        let Some(opaque_name) = self.ty_message_payload_contains_opaque(ty, &mut visiting) else {
+        let Some(opaque_name) = self.ty_message_payload_contains_opaque(ty) else {
             return;
         };
         self.report_error(

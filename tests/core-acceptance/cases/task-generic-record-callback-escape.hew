@@ -1,0 +1,22 @@
+fn ready() -> i64 {
+    7
+}
+
+type Callback(fn[once,suspends]() -> i64);
+
+type Envelope<T> {
+    value: T;
+}
+
+fn wrap<T>(consume value: T) -> Envelope<T> {
+    Envelope { value }
+}
+
+fn escape() -> Envelope<Callback> {
+    let task = fork ready();
+    wrap(Callback(move || { await task }))
+}
+
+fn main() {
+    let _escaped = escape();
+}

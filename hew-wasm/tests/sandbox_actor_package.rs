@@ -416,6 +416,23 @@ fn an_actor_handler_joins_parallel_requests_without_reentering_its_state() {
 }
 
 #[test]
+fn positional_record_payloads_cannot_hide_a_scoped_task() {
+    let rejected = hew_wasm::sandbox::compile_to_sandbox_bytecode_with_inputs(
+        include_str!("../../tests/core-acceptance/cases/task-generic-record-callback-escape.hew"),
+        Some("sandbox-vm-export"),
+        hew_compile::SourceSet::in_memory(),
+    )
+    .expect("source refusal is a diagnostic");
+    assert!(rejected.bytecode.is_none());
+    assert!(rejected.diagnostics.iter().any(|diagnostic| {
+        diagnostic.kind == "InvalidOperation"
+            && diagnostic
+                .message
+                .contains("a task handle cannot outlive its scope")
+    }));
+}
+
+#[test]
 fn pipe_send_and_receive_resume_through_backpressure() {
     let trace = execute(
         r#"

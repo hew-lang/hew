@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-10-15
+
+- Add generic closures and associated-type projection bounds for reusable helpers.
+- Embed typed JSON, YAML and TOML at compile time, and add source locations,
+  contextual macros and declared source generation.
+- Support deeper machine hierarchies and full-branch computed transitions.
+- Confine actors and functions around supplied services, with directional native
+  file resources and checked transitive authority.
+- Preserve actor request deadlines through local and distributed calls, bound
+  inbound asks per actor incarnation, and keep cancellation responsive during
+  stalled transport.
+- Improve native coroutine lowering, synchronous calls and owned payload transfer.
+- Upgrade rustls to 0.23.46 to address four upstream security advisories.
+
+See the [release notes](docs/releases/v0.6.1.md) for upgrade steps and details.
+
 ## [0.6.0] - 2026-10-12
 
 - Compile native programs through ownership SIR and physical MIR, including

@@ -1925,6 +1925,7 @@ mod tests {
             SPAN_SUPERVISOR_MAX_RESTARTS,
             SPAN_SUPERVISOR_BACKOFF,
             SPAN_DELIVERY_REFUSED,
+            SPAN_RC_SWEEP,
         ];
         for code in all_spans {
             assert!(

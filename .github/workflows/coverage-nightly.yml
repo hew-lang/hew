@@ -45,7 +45,10 @@ jobs:
   # it separate from cargo-llvm-cov: their covmaps are not merge-compatible,
   # and fail if any curated program fails to build, run, or emit profile data.
   runtime-e2e-coverage:
-    if: github.repository == 'hew-lang/hew' && github.ref == 'refs/heads/main'
+    if: >-
+      github.repository == 'hew-lang/hew' &&
+      (github.ref == 'refs/heads/main' ||
+       (github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/heads/release/')))
     name: Runtime E2E coverage
     runs-on: ubuntu-24.04
     timeout-minutes: 45
@@ -100,7 +103,10 @@ jobs:
   # Rust workspace coverage, separate from compiled-program runtime coverage.
   # ─────────────────────────────────────────────────────────────────────────
   coverage:
-    if: github.repository == 'hew-lang/hew' && github.ref == 'refs/heads/main'
+    if: >-
+      github.repository == 'hew-lang/hew' &&
+      (github.ref == 'refs/heads/main' ||
+       (github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/heads/release/')))
     name: Code coverage
     runs-on: ubuntu-24.04
     timeout-minutes: 60

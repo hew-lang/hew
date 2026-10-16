@@ -723,6 +723,7 @@ impl TypeFactService {
         method: crate::DefId,
         receiver: &ResolvedTy,
     ) -> Result<Vec<ResolvedTy>, ClassError> {
+        let mut display = DisplayWalk::default();
         self.context
             .method_binders
             .get(&method)
@@ -739,7 +740,7 @@ impl TypeFactService {
                         Ok(self.is_serializable(ty, &|_, _| false))
                     }
                     _ => self
-                        .select_display_method(ty, ty, &mut HashSet::new())
+                        .select_display_method(ty, ty, &mut display)
                         .map(|selected| selected.is_some()),
                 },
             )

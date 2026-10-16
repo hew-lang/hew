@@ -128,6 +128,35 @@ pub(crate) unsafe fn cancel_checked_turn(actor: &crate::actor::HewActor) -> bool
     true
 }
 
+/// Restore the actor's outer checked invocation after a terminal-hook poll.
+#[derive(Debug)]
+pub(crate) struct CheckedInvocationBinding<'a> {
+    actor: &'a crate::actor::HewActor,
+    previous: *mut std::ffi::c_void,
+}
+
+impl Drop for CheckedInvocationBinding<'_> {
+    fn drop(&mut self) {
+        self.actor
+            .checked_invocation
+            .store(self.previous, std::sync::atomic::Ordering::Release);
+    }
+}
+
+/// Lend the current terminal hook to activation-owned stop polling.
+/// # Safety
+/// The caller exclusively owns the activation and keeps both invocations live
+/// until this binding is restored, before destroying the hook invocation.
+pub(crate) unsafe fn bind_checked_invocation(
+    actor: &crate::actor::HewActor,
+    state: *mut crate::coro_state::HewCoroState,
+) -> CheckedInvocationBinding<'_> {
+    let previous = actor
+        .checked_invocation
+        .swap(state.cast(), std::sync::atomic::Ordering::AcqRel);
+    CheckedInvocationBinding { actor, previous }
+}
+
 /// Observe a latched terminal request while the current strict turn computes.
 /// Cleanup invocations keep their independent cancellation ancestry.
 pub(crate) fn poll_turn_stop() {
@@ -146,8 +175,21 @@ pub(crate) fn poll_turn_stop() {
     {
         return;
     }
+    let terminal_cleanup = actor
+        .native_completion
+        .as_ref()
+        .is_some_and(|completion| completion.cleanup.terminal_in_progress());
+    // A graceful stop admits terminal hooks; only forced termination cancels
+    // them. Mandatory release callbacks retain their independent ancestry.
     // SAFETY: activation ownership pins the mailbox and checked invocation.
-    if unsafe { crate::mailbox::mailbox_stop_requested(actor.mailbox.cast()) } {
+    let stop_requested = unsafe {
+        if terminal_cleanup {
+            crate::mailbox::mailbox_terminate_requested(actor.mailbox.cast())
+        } else {
+            crate::mailbox::mailbox_stop_requested(actor.mailbox.cast())
+        }
+    };
+    if stop_requested {
         // SAFETY: this is the activation owner, not an external stopper.
         unsafe {
             cancel_checked_turn(actor);

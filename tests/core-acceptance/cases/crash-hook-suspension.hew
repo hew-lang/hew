@@ -1,5 +1,9 @@
 import std.failure;
 
+fn compute_forever() {
+    loop {}
+}
+
 fn settle() {
     sleep(1ms);
 }
@@ -36,6 +40,8 @@ actor Worker {
             println("unexpected expired hook completion");
         } else if mode == 2 {
             panic("hook failed");
+        } else if mode == 3 {
+            compute_forever();
         } else {
             settle();
             println("hook settled");
@@ -50,6 +56,7 @@ supervisor App(grace: duration) {
     child quick: Worker { value: 42, mode: 0 } stop: 100ms;
     child slow: Worker { value: 42, mode: 1 } stop: grace;
     child failing: Worker { value: 42, mode: 2 };
+    child computing: Worker { value: 42, mode: 3 } stop: grace;
 }
 
 fn main() -> i64 {
@@ -63,6 +70,9 @@ fn main() -> i64 {
     let _ = sup.failing.boom();
     restarted(sup.failing);
     assert(sup.failing.get().expect("restarted child replies") == 42);
+    let _ = sup.computing.boom();
+    restarted(sup.computing);
+    assert(sup.computing.get().expect("restarted computing child replies") == 42);
     stop(sup);
     stopped(sup);
     0

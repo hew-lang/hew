@@ -506,6 +506,27 @@ impl ReleaseDriver {
     /// The driver remains boxed and uniquely driven through completion. The
     /// invocation is live through this poll and supplies its retained waker.
     pub(crate) unsafe fn poll(&mut self, parent: *mut crate::coro_state::HewCoroState) -> bool {
+        // SAFETY: the caller owns this driver and its parent through the poll.
+        unsafe { self.poll_inner(parent, None) }
+    }
+
+    /// Drive a terminal hook with its executing child visible to stop polling.
+    /// # Safety
+    /// The caller owns the actor activation, driver and parent through the poll.
+    pub(crate) unsafe fn poll_terminal_hook(
+        &mut self,
+        parent: *mut crate::coro_state::HewCoroState,
+        actor: &crate::actor::HewActor,
+    ) -> bool {
+        // SAFETY: activation ownership pins the actor and both invocations.
+        unsafe { self.poll_inner(parent, Some(actor)) }
+    }
+
+    unsafe fn poll_inner(
+        &mut self,
+        parent: *mut crate::coro_state::HewCoroState,
+        terminal_actor: Option<&crate::actor::HewActor>,
+    ) -> bool {
         use crate::coro_state::{
             hew_coro_state_cleanup_child, hew_coro_state_free, hew_coro_state_set_cleanup_fault,
             hew_coro_state_status, CoroStatus,
@@ -519,6 +540,9 @@ impl ReleaseDriver {
                         if self.frame.is_null() {
                             std::process::abort();
                         }
+                        let _binding = terminal_actor.map(|actor| {
+                            crate::actor_native::bind_checked_invocation(actor, self.state)
+                        });
                         crate::cont::hew_cont_resume(self.frame);
                     }
                     if hew_coro_state_status(self.state) == CoroStatus::Pending as i32 {
@@ -554,7 +578,13 @@ impl ReleaseDriver {
                     if self.state.is_null() {
                         std::process::abort();
                     }
-                    self.frame = start(slot, (&raw mut self.child_fault).cast(), self.state.cast());
+                    {
+                        let _binding = terminal_actor.map(|actor| {
+                            crate::actor_native::bind_checked_invocation(actor, self.state)
+                        });
+                        self.frame =
+                            start(slot, (&raw mut self.child_fault).cast(), self.state.cast());
+                    }
                     if hew_coro_state_status(self.state) == CoroStatus::Pending as i32 {
                         return false;
                     }

@@ -642,10 +642,14 @@ fn a_crash_hook_observes_the_last_valid_state_before_restart() {
         stdout(&trace),
         "CHANGED!\nlast valid crash state, fresh restart\n"
     );
-    let trace =
-        assert_native_manifest("crash-hook-suspension", hew_compile::SourceSet::in_memory());
-    // One helper millisecond, the authored 100ms timeout and six 1ms releases.
-    assert_eq!(trace["final_state"]["virtual_clock"]["current_ms"], 107);
+    // The 100ms compute deadline crosses 100 compiler-authored 4000-poll slices.
+    let trace = assert_native_manifest_options(
+        "crash-hook-suspension",
+        hew_compile::SourceSet::in_memory(),
+        r#"{"stepBudget":2000000}"#,
+    );
+    // One helper millisecond, two authored 100ms deadlines and eight 1ms releases.
+    assert_eq!(trace["final_state"]["virtual_clock"]["current_ms"], 209);
 }
 
 #[test]
@@ -990,6 +994,14 @@ fn imported_generic_resources_specialize_and_drain_on_every_exit() {
 }
 
 fn assert_native_manifest(name: &str, inputs: hew_compile::SourceSet) -> serde_json::Value {
+    assert_native_manifest_options(name, inputs, "{}")
+}
+
+fn assert_native_manifest_options(
+    name: &str,
+    inputs: hew_compile::SourceSet,
+    options: &str,
+) -> serde_json::Value {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../tests/core-acceptance");
     let manifest = std::fs::read_to_string(root.join(format!("cases/{name}.toml")))
         .expect("shared native manifest");
@@ -997,7 +1009,7 @@ fn assert_native_manifest(name: &str, inputs: hew_compile::SourceSet) -> serde_j
     let case = &manifest["case"][0];
     let source = std::fs::read_to_string(root.join(case["source"].as_str().unwrap()))
         .expect("shared native source");
-    let trace = execute_options(&source, "ok", "{}", inputs);
+    let trace = execute_options(&source, "ok", options, inputs);
     assert_eq!(
         stdout(&trace),
         case["expected"]["stdout"].as_str().unwrap(),

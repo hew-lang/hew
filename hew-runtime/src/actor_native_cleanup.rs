@@ -115,6 +115,10 @@ impl Cleanup {
             || !self.inbox.lock_or_recover().pending.is_empty()
     }
 
+    pub(crate) fn terminal_in_progress(&self) -> bool {
+        self.terminal.load(Ordering::Acquire) != 0
+    }
+
     pub(crate) fn is_driving(&self) -> bool {
         self.terminal.load(Ordering::Acquire) != 0 || self.work.lock_or_recover().is_some()
     }
@@ -229,7 +233,14 @@ pub(crate) unsafe fn drive_actor_cleanup(actor: &HewActor) -> bool {
         }
         if let Some(driver) = work.driver.as_mut() {
             // SAFETY: the boxed driver and parent retain every borrowed output.
-            if !unsafe { driver.poll(work.state) } {
+            let complete = unsafe {
+                if matches!(work.releasing, Releasing::Stop | Releasing::Crash) {
+                    driver.poll_terminal_hook(work.state, actor)
+                } else {
+                    driver.poll(work.state)
+                }
+            };
+            if !complete {
                 pending = true;
                 break;
             }

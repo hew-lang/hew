@@ -2,6 +2,20 @@
 
 use super::*;
 
+fn native_crash_context_type(ctx: &Context) -> StructType<'_> {
+    let ptr = ctx.ptr_type(AddressSpace::default());
+    ctx.struct_type(
+        &[
+            ptr.into(),
+            ctx.i64_type().into(),
+            ptr.into(),
+            ctx.i64_type().into(),
+            ctx.i32_type().into(),
+        ],
+        false,
+    )
+}
+
 impl<'ctx> ModuleEmitter<'ctx, '_> {
     fn lifecycle_word(
         &self,
@@ -304,16 +318,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         let ptr = self.ctx.ptr_type(AddressSpace::default());
         let i64_ty = self.ctx.i64_type();
         let i32_ty = self.ctx.i32_type();
-        let context_ty = self.ctx.struct_type(
-            &[
-                ptr.into(),
-                i64_ty.into(),
-                ptr.into(),
-                i64_ty.into(),
-                i32_ty.into(),
-            ],
-            false,
-        );
+        let context_ty = native_crash_context_type(self.ctx);
         release::custom(
             self.ctx,
             &self.llvm,
@@ -969,5 +974,62 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         }
         args.push(fault.into());
         Ok(args)
+    }
+}
+
+#[cfg(test)]
+mod abi_tests {
+    use super::super::actor::{c_mirror_mismatch, field_size};
+    use super::*;
+    use hew_runtime::actor_native::HewNativeCrashContext;
+    use std::mem::{align_of, offset_of, size_of};
+
+    #[test]
+    fn native_crash_context_matches_the_runtime_c_abi() {
+        let ctx = Context::create();
+        let fields = [
+            (
+                offset_of!(HewNativeCrashContext, state),
+                field_size(|c: &HewNativeCrashContext| &c.state),
+            ),
+            (
+                offset_of!(HewNativeCrashContext, code),
+                field_size(|c: &HewNativeCrashContext| &c.code),
+            ),
+            (
+                offset_of!(HewNativeCrashContext, message),
+                field_size(|c: &HewNativeCrashContext| &c.message),
+            ),
+            (
+                offset_of!(HewNativeCrashContext, stop_ns),
+                field_size(|c: &HewNativeCrashContext| &c.stop_ns),
+            ),
+            (
+                offset_of!(HewNativeCrashContext, action),
+                field_size(|c: &HewNativeCrashContext| &c.action),
+            ),
+        ];
+        let mismatch = |mirror| {
+            c_mirror_mismatch(
+                mirror,
+                &fields,
+                size_of::<HewNativeCrashContext>(),
+                align_of::<HewNativeCrashContext>(),
+            )
+        };
+        assert_eq!(mismatch(native_crash_context_type(&ctx)), None);
+        // A misplaced narrow action must be rejected.
+        let ptr = ctx.ptr_type(AddressSpace::default());
+        let reordered = ctx.struct_type(
+            &[
+                ptr.into(),
+                ctx.i32_type().into(),
+                ptr.into(),
+                ctx.i64_type().into(),
+                ctx.i64_type().into(),
+            ],
+            false,
+        );
+        assert!(mismatch(reordered).is_some());
     }
 }

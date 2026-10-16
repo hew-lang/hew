@@ -14,7 +14,42 @@ actor Worker {
 
     #[on(stop)]
     fn done() {
+        var total = 0;
+        for _ in 0..10000 {
+            total += 1;
+        }
+        assert(total == 10000);
         println("hook");
+    }
+}
+
+#[resource]
+type TerminalLease {
+}
+
+impl TerminalLease {
+    fn close(consume self) {
+        var total = 0;
+        for _ in 0..10000 {
+            total += 1;
+        }
+        assert(total == 10000);
+        sleep(1ms);
+        println("terminal state released");
+    }
+}
+
+actor ComputingStop {
+    let ready: stream.Sink<i64>;
+    var lease: TerminalLease = TerminalLease {  };
+
+    #[on(stop)]
+    fn done() {
+        defer {
+            println("computing hook drained");
+        }
+        ready.send(1).expect("terminal hook entered");
+        loop {}
     }
 }
 
@@ -38,4 +73,12 @@ fn main() {
     open.close();
     stopped(worker);
     println("after stopped");
+    let (tx, rx): (stream.Sink<i64>, stream.Stream<i64>) = stream.pipe(1).expect("terminal gate");
+    let computing = spawn ComputingStop { ready: tx };
+    stop(computing);
+    rx.recv().expect("computing stop hook entered");
+    terminate(computing);
+    stopped(computing);
+    rx.close();
+    println("forced hook stopped");
 }

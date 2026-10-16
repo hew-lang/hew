@@ -2127,6 +2127,12 @@ pub enum SemTerminator {
     Trap {
         kind: TrapKind,
     },
+    /// A compiler-authored scheduling boundary. Cancellation follows the
+    /// current lexical cleanup; polling has no operation-failure edge.
+    Safepoint {
+        resume: Edge,
+        cancel: Edge,
+    },
     /// A suspension (§1.5).
     ///
     /// Operand slots are flattened deterministically: the inputs in order, then
@@ -2235,7 +2241,8 @@ impl SemTerminator {
                     );
                 }
             }
-            Self::EnterDefer { .. }
+            Self::Safepoint { .. }
+            | Self::EnterDefer { .. }
             | Self::FinishDefer { .. }
             | Self::CheckedRaiseFault { .. }
             | Self::CleanupDispatch { .. }
@@ -2352,6 +2359,7 @@ impl SemTerminator {
                 ..
             }
             | Self::Panic { .. }
+            | Self::Safepoint { .. }
             | Self::Trap { .. }
             | Self::Suspend {
                 result: CallResult::Unit | CallResult::Never,
@@ -2393,6 +2401,10 @@ impl SemTerminator {
             | Self::CheckedRaiseFault { cleanup: edge, .. }
             | Self::Goto(edge) => edge.visit_operands(visit),
             Self::CleanupDispatch { normal, fault }
+            | Self::Safepoint {
+                resume: normal,
+                cancel: fault,
+            }
             | Self::RecoverFault {
                 normal,
                 unwind: fault,
@@ -2575,6 +2587,10 @@ impl SemTerminator {
             | Self::CheckedRaiseFault { cleanup: edge, .. }
             | Self::Goto(edge) => edge.visit_operands_mut(visit),
             Self::CleanupDispatch { normal, fault }
+            | Self::Safepoint {
+                resume: normal,
+                cancel: fault,
+            }
             | Self::RecoverFault {
                 normal,
                 unwind: fault,
@@ -2744,6 +2760,10 @@ impl SemTerminator {
     pub fn visit_successors_with_slots(&self, mut visit: impl FnMut(SuccessorSlot, &Edge)) {
         match self {
             Self::CleanupDispatch { normal, fault }
+            | Self::Safepoint {
+                resume: normal,
+                cancel: fault,
+            }
             | Self::RecoverFault {
                 normal,
                 unwind: fault,
@@ -2844,6 +2864,10 @@ impl SemTerminator {
     ) {
         match self {
             Self::CleanupDispatch { normal, fault }
+            | Self::Safepoint {
+                resume: normal,
+                cancel: fault,
+            }
             | Self::RecoverFault {
                 normal,
                 unwind: fault,
@@ -2941,6 +2965,10 @@ impl SemTerminator {
     pub fn successor(&self, slot: SuccessorSlot) -> Option<&Edge> {
         match self {
             Self::CleanupDispatch { normal, fault }
+            | Self::Safepoint {
+                resume: normal,
+                cancel: fault,
+            }
             | Self::RecoverFault {
                 normal,
                 unwind: fault,
@@ -3027,6 +3055,10 @@ impl SemTerminator {
     pub fn successor_mut(&mut self, slot: SuccessorSlot) -> Option<&mut Edge> {
         match self {
             Self::CleanupDispatch { normal, fault }
+            | Self::Safepoint {
+                resume: normal,
+                cancel: fault,
+            }
             | Self::RecoverFault {
                 normal,
                 unwind: fault,
@@ -3220,6 +3252,7 @@ impl SemTerminator {
                 "suspend input"
             }
             Self::Suspend { .. } => "suspend edge argument",
+            Self::Safepoint { .. } => "safepoint edge argument",
             Self::EnterDefer { .. }
             | Self::FinishDefer { .. }
             | Self::CheckedRaiseFault { .. }

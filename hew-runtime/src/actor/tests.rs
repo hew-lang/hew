@@ -1485,7 +1485,6 @@ fn make_stop_test_actor_with_id(
             supervisor: ptr::null_mut(),
             supervisor_child_index: -1,
             priority: AtomicI32::new(HEW_PRIORITY_NORMAL),
-            reductions: AtomicI32::new(HEW_DEFAULT_REDUCTIONS),
             idle_count: AtomicI32::new(0),
             hibernation_threshold: AtomicI32::new(0),
             hibernating: AtomicI32::new(0),
@@ -2602,21 +2601,6 @@ fn null_actor_set_terminate_returns_without_crash() {
     let _guard = crate::runtime_test_guard();
     // SAFETY: null is the input we are testing the guard against.
     unsafe { hew_actor_set_terminate(ptr::null_mut(), null_guard_dummy_terminate) };
-}
-
-#[test]
-fn null_actor_set_reductions_returns_without_crash() {
-    let _guard = crate::runtime_test_guard();
-    // SAFETY: null is the input we are testing the guard against.
-    unsafe { hew_actor_set_reductions(ptr::null_mut(), 5) };
-}
-
-#[test]
-fn null_actor_get_reductions_returns_sentinel() {
-    let _guard = crate::runtime_test_guard();
-    // SAFETY: null is the input we are testing the guard against.
-    let v = unsafe { hew_actor_get_reductions(ptr::null()) };
-    assert_eq!(v, 0, "expected zero sentinel for null actor");
 }
 
 #[test]

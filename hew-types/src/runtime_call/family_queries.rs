@@ -718,7 +718,6 @@ impl RuntimeCallFamily {
             | F::ActorRequestTake
             | F::ActorAsk
             | F::ActorAskWithChannel
-            | F::ActorCooperate
             | F::ActorDemonitor
             | F::ActorLink
             | F::LinkRemote

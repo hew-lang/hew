@@ -16,10 +16,10 @@ struct hew_cabi_manifest_row {
   enum hew_cabi_manifest_ownership ownership;
 };
 
-#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1629u
+#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1630u
 #define HEW_CABI_MANIFEST_STATIC_COUNT 24u
 
-static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1629] = {
+static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1630] = {
     {"hew_actor_ask",
      "{\"native\": \"fn hew_actor_ask( *mut HewActor, i32, *mut c_void, usize, "
      ") -> *mut c_void\"}",
@@ -154,10 +154,6 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1629] = {
      "\"wasm32-wasip1\": \"fn hew_actor_cancel_periodic( *mut c_void)\"}",
      "native,wasm32-wasip1", "stable", "not-applicable",
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
-    {"hew_actor_cooperate",
-     "{\"native\": \"fn hew_actor_cooperate() -> c_int\"}", "native",
-     "non-declarable", "not-applicable", "not-applicable",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_actor_coro_set_fault",
      "{\"native\": \"fn hew_actor_coro_set_fault( *mut HewFault)\", "
      "\"wasm32-wasip1\": \"fn hew_actor_coro_set_fault( *mut HewFault)\"}",
@@ -231,12 +227,6 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1629] = {
      "{\"native\": \"fn hew_actor_get_priority( *const HewActor) -> c_int\", "
      "\"wasm32-wasip1\": \"fn hew_actor_get_priority( *const HewActor) -> "
      "c_int\"}",
-     "native,wasm32-wasip1", "stable", "not-applicable",
-     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
-    {"hew_actor_get_reductions",
-     "{\"native\": \"fn hew_actor_get_reductions( *const HewActor) -> u32\", "
-     "\"wasm32-wasip1\": \"fn hew_actor_get_reductions( *const HewActor) -> "
-     "u32\"}",
      "native,wasm32-wasip1", "stable", "not-applicable",
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_actor_group_add",
@@ -412,11 +402,6 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1629] = {
     {"hew_actor_set_priority",
      "{\"native\": \"fn hew_actor_set_priority( *mut HewActor, c_int)\", "
      "\"wasm32-wasip1\": \"fn hew_actor_set_priority( *mut HewActor, c_int)\"}",
-     "native,wasm32-wasip1", "stable", "not-applicable",
-     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
-    {"hew_actor_set_reductions",
-     "{\"native\": \"fn hew_actor_set_reductions( *mut HewActor, u32)\", "
-     "\"wasm32-wasip1\": \"fn hew_actor_set_reductions( *mut HewActor, u32)\"}",
      "native,wasm32-wasip1", "stable", "not-applicable",
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_actor_set_state_clone",
@@ -1741,6 +1726,30 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1629] = {
      "HewFault, ) -> i32\"}",
      "native,wasm32-wasip1", "non-declarable", "not-applicable",
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_coro_safepoint",
+     "{\"native\": \"fn hew_coro_safepoint( *mut HewCoroState, u32) -> i32\", "
+     "\"wasm32-wasip1\": \"fn hew_coro_safepoint( *mut HewCoroState, u32) -> "
+     "i32\"}",
+     "native,wasm32-wasip1", "non-declarable", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_coro_safepoint_budget",
+     "{\"native\": \"fn hew_coro_safepoint_budget( *mut HewCoroState, u32, ) "
+     "-> *mut u32\", \"wasm32-wasip1\": \"fn hew_coro_safepoint_budget( *mut "
+     "HewCoroState, u32, ) -> *mut u32\"}",
+     "native,wasm32-wasip1", "non-declarable", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_coro_safepoint_restore",
+     "{\"native\": \"fn hew_coro_safepoint_restore( *mut HewCoroState)\", "
+     "\"wasm32-wasip1\": \"fn hew_coro_safepoint_restore( *mut "
+     "HewCoroState)\"}",
+     "native,wasm32-wasip1", "non-declarable", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_coro_safepoint_suppress",
+     "{\"native\": \"fn hew_coro_safepoint_suppress( *mut HewCoroState)\", "
+     "\"wasm32-wasip1\": \"fn hew_coro_safepoint_suppress( *mut "
+     "HewCoroState)\"}",
+     "native,wasm32-wasip1", "non-declarable", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_coro_sleep_free",
      "{\"native\": \"fn hew_coro_sleep_free( *mut HewCoroSleep)\", "
      "\"wasm32-wasip1\": \"fn hew_coro_sleep_free( *mut HewCoroSleep)\"}",
@@ -1775,12 +1784,6 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1629] = {
      "HewCoroState) -> i32\"}",
      "native,wasm32-wasip1", "non-declarable", "not-applicable",
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
-    {"hew_coro_state_child",
-     "{\"native\": \"fn hew_coro_state_child( *const HewCoroState) -> *mut "
-     "HewCoroState\", \"wasm32-wasip1\": \"fn hew_coro_state_child( *const "
-     "HewCoroState) -> *mut HewCoroState\"}",
-     "native,wasm32-wasip1", "non-declarable", "not-applicable",
-     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_coro_state_cleanup_child",
      "{\"native\": \"fn hew_coro_state_cleanup_child( *const HewCoroState, ) "
      "-> *mut HewCoroState\", \"wasm32-wasip1\": \"fn "
@@ -1804,6 +1807,12 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1629] = {
     {"hew_coro_state_free",
      "{\"native\": \"fn hew_coro_state_free( *mut HewCoroState)\", "
      "\"wasm32-wasip1\": \"fn hew_coro_state_free( *mut HewCoroState)\"}",
+     "native,wasm32-wasip1", "non-declarable", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_coro_state_init_child",
+     "{\"native\": \"fn hew_coro_state_init_child( *mut HewCoroState, *const "
+     "HewCoroState, )\", \"wasm32-wasip1\": \"fn hew_coro_state_init_child( "
+     "*mut HewCoroState, *const HewCoroState, )\"}",
      "native,wasm32-wasip1", "non-declarable", "not-applicable",
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_coro_state_is_cancelled",

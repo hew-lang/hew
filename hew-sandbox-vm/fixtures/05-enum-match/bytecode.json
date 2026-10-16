@@ -14,6 +14,35 @@
       "blocks": [
         {
           "id": 0,
+          "ops": [],
+          "params": [],
+          "term": {
+            "cancel": {
+              "args": [],
+              "to": 2
+            },
+            "detail": {
+              "budget": 4000
+            },
+            "error_shape": null,
+            "inputs": [],
+            "kind": "Safepoint",
+            "op": "suspend",
+            "request_shapes": null,
+            "result": null,
+            "result_shape": null,
+            "resumes": [
+              {
+                "args": [],
+                "to": 1
+              }
+            ],
+            "span": null,
+            "unwind": null
+          }
+        },
+        {
+          "id": 1,
           "ops": [
             {
               "dst": 0,
@@ -66,7 +95,7 @@
               "args": [
                 3
               ],
-              "to": 1
+              "to": 6
             },
             "op": "call",
             "result": {
@@ -79,43 +108,8 @@
             },
             "unwind": {
               "args": [],
-              "to": 2
+              "to": 7
             }
-          }
-        },
-        {
-          "id": 1,
-          "ops": [],
-          "params": [
-            {
-              "own": "none",
-              "value": 4
-            }
-          ],
-          "term": {
-            "args": [
-              {
-                "decision": "copy",
-                "value": 4
-              }
-            ],
-            "callbacks": [],
-            "family": 0,
-            "normal": {
-              "args": [],
-              "to": 6
-            },
-            "op": "runtime.call",
-            "releases_contents": false,
-            "result": null,
-            "result_member_shapes": [],
-            "result_shape": null,
-            "span": {
-              "end": 208,
-              "start": 208
-            },
-            "structural": null,
-            "unwind": null
           }
         },
         {
@@ -128,10 +122,7 @@
               "to": 4
             },
             "op": "goto",
-            "span": {
-              "end": 213,
-              "start": 213
-            }
+            "span": null
           }
         },
         {
@@ -172,11 +163,62 @@
         {
           "id": 6,
           "ops": [],
+          "params": [
+            {
+              "own": "none",
+              "value": 4
+            }
+          ],
+          "term": {
+            "args": [
+              {
+                "decision": "copy",
+                "value": 4
+              }
+            ],
+            "callbacks": [],
+            "family": 0,
+            "normal": {
+              "args": [],
+              "to": 8
+            },
+            "op": "runtime.call",
+            "releases_contents": false,
+            "result": null,
+            "result_member_shapes": [],
+            "result_shape": null,
+            "span": {
+              "end": 208,
+              "start": 208
+            },
+            "structural": null,
+            "unwind": null
+          }
+        },
+        {
+          "id": 7,
+          "ops": [],
           "params": [],
           "term": {
             "edge": {
               "args": [],
-              "to": 7
+              "to": 4
+            },
+            "op": "goto",
+            "span": {
+              "end": 213,
+              "start": 213
+            }
+          }
+        },
+        {
+          "id": 8,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 9
             },
             "op": "goto",
             "span": {
@@ -186,7 +228,7 @@
           }
         },
         {
-          "id": 7,
+          "id": 9,
           "ops": [],
           "params": [],
           "term": {
@@ -212,13 +254,26 @@
           "ops": [],
           "params": [],
           "term": {
+            "edge": {
+              "args": [],
+              "to": 1
+            },
+            "op": "goto",
+            "span": null
+          }
+        },
+        {
+          "id": 1,
+          "ops": [],
+          "params": [],
+          "term": {
             "arms": [
               {
                 "edge": {
                   "args": [
                     1
                   ],
-                  "to": 1
+                  "to": 5
                 },
                 "fields": [
                   {
@@ -234,7 +289,7 @@
                     3,
                     5
                   ],
-                  "to": 2
+                  "to": 6
                 },
                 "fields": [
                   {
@@ -259,7 +314,42 @@
           }
         },
         {
-          "id": 1,
+          "id": 2,
+          "ops": [],
+          "params": [],
+          "term": {
+            "op": "resume_unwind",
+            "span": null
+          }
+        },
+        {
+          "id": 3,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 4
+            },
+            "op": "goto",
+            "span": null
+          }
+        },
+        {
+          "id": 4,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 2
+            },
+            "op": "goto",
+            "span": null
+          }
+        },
+        {
+          "id": 5,
           "ops": [],
           "params": [
             {
@@ -273,7 +363,7 @@
               {
                 "edge": {
                   "args": [],
-                  "to": 4
+                  "to": 8
                 },
                 "trap": "integer_overflow"
               }
@@ -283,7 +373,7 @@
               "args": [
                 7
               ],
-              "to": 3
+              "to": 7
             },
             "op": "checked.binary",
             "result": {
@@ -299,7 +389,7 @@
           }
         },
         {
-          "id": 2,
+          "id": 6,
           "ops": [],
           "params": [
             {
@@ -317,7 +407,7 @@
               {
                 "edge": {
                   "args": [],
-                  "to": 13
+                  "to": 14
                 },
                 "trap": "integer_overflow"
               }
@@ -327,7 +417,7 @@
               "args": [
                 12
               ],
-              "to": 12
+              "to": 13
             },
             "op": "checked.binary",
             "result": {
@@ -343,7 +433,7 @@
           }
         },
         {
-          "id": 3,
+          "id": 7,
           "ops": [
             {
               "dst": 9,
@@ -369,7 +459,7 @@
               {
                 "edge": {
                   "args": [],
-                  "to": 10
+                  "to": 11
                 },
                 "trap": "integer_overflow"
               }
@@ -379,7 +469,7 @@
               "args": [
                 10
               ],
-              "to": 9
+              "to": 10
             },
             "op": "checked.binary",
             "result": {
@@ -395,13 +485,13 @@
           }
         },
         {
-          "id": 4,
+          "id": 8,
           "ops": [],
           "params": [],
           "term": {
             "cleanup": {
               "args": [],
-              "to": 5
+              "to": 9
             },
             "op": "checked_raise",
             "span": {
@@ -412,13 +502,13 @@
           }
         },
         {
-          "id": 5,
+          "id": 9,
           "ops": [],
           "params": [],
           "term": {
             "edge": {
               "args": [],
-              "to": 7
+              "to": 3
             },
             "op": "goto",
             "span": {
@@ -428,42 +518,7 @@
           }
         },
         {
-          "id": 6,
-          "ops": [],
-          "params": [],
-          "term": {
-            "op": "resume_unwind",
-            "span": null
-          }
-        },
-        {
-          "id": 7,
-          "ops": [],
-          "params": [],
-          "term": {
-            "edge": {
-              "args": [],
-              "to": 8
-            },
-            "op": "goto",
-            "span": null
-          }
-        },
-        {
-          "id": 8,
-          "ops": [],
-          "params": [],
-          "term": {
-            "edge": {
-              "args": [],
-              "to": 6
-            },
-            "op": "goto",
-            "span": null
-          }
-        },
-        {
-          "id": 9,
+          "id": 10,
           "ops": [],
           "params": [
             {
@@ -476,7 +531,7 @@
               "args": [
                 11
               ],
-              "to": 15
+              "to": 16
             },
             "op": "goto",
             "span": {
@@ -486,13 +541,13 @@
           }
         },
         {
-          "id": 10,
+          "id": 11,
           "ops": [],
           "params": [],
           "term": {
             "cleanup": {
               "args": [],
-              "to": 11
+              "to": 12
             },
             "op": "checked_raise",
             "span": {
@@ -503,13 +558,13 @@
           }
         },
         {
-          "id": 11,
+          "id": 12,
           "ops": [],
           "params": [],
           "term": {
             "edge": {
               "args": [],
-              "to": 7
+              "to": 3
             },
             "op": "goto",
             "span": {
@@ -519,7 +574,7 @@
           }
         },
         {
-          "id": 12,
+          "id": 13,
           "ops": [],
           "params": [
             {
@@ -532,7 +587,7 @@
               "args": [
                 13
               ],
-              "to": 15
+              "to": 16
             },
             "op": "goto",
             "span": {
@@ -542,13 +597,13 @@
           }
         },
         {
-          "id": 13,
+          "id": 14,
           "ops": [],
           "params": [],
           "term": {
             "cleanup": {
               "args": [],
-              "to": 14
+              "to": 15
             },
             "op": "checked_raise",
             "span": {
@@ -559,13 +614,13 @@
           }
         },
         {
-          "id": 14,
+          "id": 15,
           "ops": [],
           "params": [],
           "term": {
             "edge": {
               "args": [],
-              "to": 7
+              "to": 3
             },
             "op": "goto",
             "span": {
@@ -575,7 +630,7 @@
           }
         },
         {
-          "id": 15,
+          "id": 16,
           "ops": [],
           "params": [
             {
@@ -586,7 +641,7 @@
           "term": {
             "edge": {
               "args": [],
-              "to": 16
+              "to": 17
             },
             "op": "goto",
             "span": {
@@ -596,7 +651,7 @@
           }
         },
         {
-          "id": 16,
+          "id": 17,
           "ops": [],
           "params": [],
           "term": {
@@ -642,7 +697,9 @@
   "strings": [],
   "structural_render": [],
   "supervisors": [],
-  "suspend_kinds": [],
+  "suspend_kinds": [
+    "Safepoint"
+  ],
   "value_capabilities": [],
   "variants": [
     {

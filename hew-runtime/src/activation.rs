@@ -21,7 +21,7 @@ use crate::scheduler::{ActivationPreTerminalLockHook, SchedulerQueueHandoffHook}
 
 use crate::set_last_error;
 
-use crate::actor::{self, HewActor, HEW_DEFAULT_REDUCTIONS, HEW_MSG_BUDGET};
+use crate::actor::{self, HewActor, HEW_MSG_BUDGET};
 use crate::execution_context::HewExecutionContext;
 use crate::internal::types::{HewActorState, HewDispatchFn, HewSysDispatchFn};
 use crate::lifetime::live_actors::ActorIncarnation;
@@ -402,9 +402,9 @@ unsafe fn resume_suspended_activation(actor: *mut HewActor) {
         // SAFETY: activation ownership keeps the parked invocation live here.
         let invocation = unsafe { &*invocation.cast::<crate::coro_state::HewCoroState>() };
         (
-            invocation.actor_message_type,
-            invocation.actor_caller,
-            invocation.request_deadline,
+            invocation.execution().actor_message_type,
+            invocation.execution().actor_caller,
+            invocation.execution().request_deadline,
         )
     };
     let stashed_reply = a.suspended_reply_channel.load(Ordering::Acquire);
@@ -866,10 +866,6 @@ pub(crate) fn activate_queued_actor(actor: *mut HewActor) {
                 // Check for injected delay fault (testing only).
                 let delay_ms = crate::deterministic::check_delay_fault(a.id);
 
-                // Reset reduction counter for this dispatch.
-                a.reductions
-                    .store(HEW_DEFAULT_REDUCTIONS, Ordering::Relaxed);
-
                 // The reply channel travels with the dispatch carrier
                 // (`execution_context.reply_channel` below) so that
                 // `hew_get_reply_channel` reads sole-authoritatively from
@@ -1227,9 +1223,11 @@ pub(crate) fn activate_queued_actor(actor: *mut HewActor) {
                         // park is published; resume consumes the message identity.
                         unsafe {
                             (*invocation.cast::<crate::coro_state::HewCoroState>())
+                                .execution_mut()
                                 .actor_message_type = msg_ref.msg_type;
-                            (*invocation.cast::<crate::coro_state::HewCoroState>()).actor_caller =
-                                msg_ref.caller;
+                            (*invocation.cast::<crate::coro_state::HewCoroState>())
+                                .execution_mut()
+                                .actor_caller = msg_ref.caller;
                         }
                     }
                     // SAFETY: `ec_ptr` points at the live dispatch-local

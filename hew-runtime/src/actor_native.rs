@@ -75,7 +75,7 @@ unsafe fn new_actor_state(
     // SAFETY: the local Arc and current context retain both inputs for creation.
     let state = unsafe { crate::coro_state::hew_coro_state_new(&raw const waker, token) };
     // SAFETY: the new invocation belongs exclusively to this strict actor turn.
-    unsafe { (*state).actor_turn = *target };
+    unsafe { (*state).execution_mut().actor_turn = *target };
     // SAFETY: this activation owns the actor and its one strict turn. The
     // adapter clears the borrowed slot after child completion under the same
     // activation ownership, before another turn can start.
@@ -112,8 +112,9 @@ pub unsafe extern "C" fn hew_actor_coro_set_fault(fault: *mut HewFault) {
 /// Request cooperative cleanup while preserving the scheduler's strict turn.
 ///
 /// # Safety
-/// The caller owns the actor activation, excluding execution and invocation
-/// teardown. External stoppers must latch mailbox stop and wake the actor.
+/// The caller owns the actor activation, keeping its invocation and current
+/// token stable during this call. External stoppers must latch mailbox stop
+/// and wake the actor.
 pub(crate) unsafe fn cancel_checked_turn(actor: &crate::actor::HewActor) -> bool {
     let state = actor
         .checked_invocation
@@ -124,6 +125,33 @@ pub(crate) unsafe fn cancel_checked_turn(actor: &crate::actor::HewActor) -> bool
     // SAFETY: activation ownership keeps the borrowed invocation state live.
     unsafe { crate::coro_state::hew_coro_state_cancel(state.cast()) };
     true
+}
+
+/// Observe a latched terminal request while the current strict turn computes.
+/// Cleanup invocations keep their independent cancellation ancestry.
+pub(crate) fn poll_turn_stop() {
+    let context = crate::execution_context::current_context();
+    if context.is_null() {
+        return;
+    }
+    // SAFETY: an installed actor execution context owns its live activation.
+    let actor = unsafe { (*context).actor };
+    // SAFETY: the installed context pins this optional actor until dispatch ends.
+    let Some(actor) = (unsafe { actor.as_ref() }) else {
+        return;
+    };
+    if actor.actor_state.load(std::sync::atomic::Ordering::Acquire)
+        != crate::internal::types::HewActorState::Running as i32
+    {
+        return;
+    }
+    // SAFETY: activation ownership pins the mailbox and checked invocation.
+    if unsafe { crate::mailbox::mailbox_stop_requested(actor.mailbox.cast()) } {
+        // SAFETY: this is the activation owner, not an external stopper.
+        unsafe {
+            cancel_checked_turn(actor);
+        }
+    }
 }
 
 /// Finish the process root after its source cleanup and child joins complete.

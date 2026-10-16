@@ -531,6 +531,17 @@ fn dump_term(out: &mut String, module: &SemModule, term: &SemTerminator) {
         SemTerminator::Trap { kind } => {
             writeln!(out, "    trap{{{kind:?}}}").expect("write to String");
         }
+        SemTerminator::Safepoint { resume, cancel } => {
+            writeln!(
+                out,
+                "    safepoint resume bb{}{} cancel bb{}{}",
+                resume.target.0,
+                edge_args(resume),
+                cancel.target.0,
+                edge_args(cancel)
+            )
+            .expect("write to String");
+        }
         SemTerminator::Suspend {
             kind,
             inputs,

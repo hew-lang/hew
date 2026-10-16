@@ -181,6 +181,7 @@ pub(super) fn edges(term: &PhysicalTerminator) -> Vec<&PhysicalEdge> {
             unwind,
             ..
         } => vec![normal, cancel, unwind],
+        PhysicalTerminator::Safepoint { normal, cancel } => vec![normal, cancel],
         PhysicalTerminator::TaskAwait {
             normal,
             cancel,
@@ -253,8 +254,23 @@ pub(super) fn verify_calls(
             .ok_or_else(|| {
                 PhysicalError::new("physical defer call has no proven non-suspending body")
             })?;
-        for block in &body.blocks {
-            inspect(module, &block.terminator, seen)?;
+        let mut pending = vec![body.entry];
+        let mut visited = BTreeSet::new();
+        while let Some(id) = pending.pop() {
+            if !visited.insert(id) {
+                continue;
+            }
+            let block = body
+                .blocks
+                .iter()
+                .find(|block| block.id == id)
+                .expect("verified block");
+            if let PhysicalTerminator::Safepoint { normal, .. } = &block.terminator {
+                pending.push(normal.target);
+            } else {
+                inspect(module, &block.terminator, seen)?;
+                pending.extend(edges(&block.terminator).iter().map(|edge| edge.target));
+            }
         }
         Ok(())
     }
@@ -440,7 +456,8 @@ pub(super) fn verify_regions(
                 // Divergence is not escape: a `Never`-typed call in the body
                 // never returns control, so it owes no finish.
                 PhysicalTerminator::Unreachable => diverged = true,
-                PhysicalTerminator::Return { .. }
+                PhysicalTerminator::Safepoint { .. }
+                | PhysicalTerminator::Return { .. }
                 | PhysicalTerminator::PropagateFault { .. }
                 | PhysicalTerminator::Trap(_) => {
                     return Err(PhysicalError::new(

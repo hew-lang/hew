@@ -163,6 +163,13 @@ fn main() {
   assert.deepEqual(trace.final_state.stdout, ["x\n", "y\n"]);
 });
 
+test("compute-only loops and recursion yield, cancel and close their owners", () => {
+  const source = fs.readFileSync(path.join(repoRoot, "tests/core-acceptance/cases/compute-safepoints.hew"), "utf8");
+  const result = runProgram(source, "");
+  assert.equal(result.exit_code, 0, JSON.stringify(result.diagnostics));
+  assert.equal(result.stdout, "peer progressed\ndeferred loop 10000\nclosed loop\n7\npeer progressed\ndeferred recursion 10000\nclosed recursion\n7\ndeferred actor 10000\nclosed actor\nactor stopped\nclosed deadline\ndeadline recovered\nrollback:ORIGINAL\nmachine deadline recovered\n");
+});
+
 test("runProgram parse errors return diagnostics and do not execute cached bytecode", () => {
   const result = runProgram("fn main( {\n    println(\"nope\");\n}\n", "");
 

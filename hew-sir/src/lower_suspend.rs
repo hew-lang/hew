@@ -4,6 +4,30 @@ use super::{Builder, CallResult, Edge, HirExpr, Operand, ResolvedTy, SemTerminat
 use crate::{BoundaryDecision, BoundaryOperand, SuspendKind};
 
 impl Builder<'_, '_> {
+    pub(super) fn lower_safepoint(&mut self) -> Result<(), String> {
+        if !self.defer_bodies.is_empty() {
+            return Ok(());
+        }
+        let saved = self.control_state();
+        let recovery = self.recovery_bodies.clone();
+        let normal = self.new_block(Vec::new());
+        let cancel = self.new_block(Vec::new());
+        let edge = |target| Edge {
+            target,
+            args: Vec::new(),
+        };
+        self.set_terminator(SemTerminator::Safepoint {
+            resume: edge(normal),
+            cancel: edge(cancel),
+        })?;
+        self.current = cancel;
+        self.finish_fault_exit()?;
+        self.restore_control_state(&saved);
+        self.recovery_bodies = recovery;
+        self.current = normal;
+        Ok(())
+    }
+
     pub(super) fn lower_sleep(
         &mut self,
         expression: &HirExpr,
@@ -70,5 +94,34 @@ impl Builder<'_, '_> {
         self.current = normal;
         self.owned_live = live;
         Ok(())
+    }
+}
+
+pub(super) fn remove_bounded_entry_poll(function: &mut crate::SemFunction) {
+    // A call-free, straight-line body performs bounded work. Keep its
+    // direct ABI; all loops and recursive call paths retain entry polling.
+    let bounded_leaf = !function.blocks.iter().any(|block| {
+        if block.id == function.entry {
+            return false;
+        }
+        matches!(
+            block.terminator,
+            SemTerminator::Call { .. }
+                | SemTerminator::IndirectCall { .. }
+                | SemTerminator::DynCall { .. }
+                | SemTerminator::ValueCall { .. }
+                | SemTerminator::ActorCall { .. }
+                | SemTerminator::WireCodec { .. }
+                | SemTerminator::RtCall { .. }
+                | SemTerminator::ExternCall { .. }
+                | SemTerminator::Suspend { .. }
+                | SemTerminator::Safepoint { .. }
+        )
+    });
+    if bounded_leaf {
+        let entry = &mut function.blocks[function.entry.0 as usize];
+        if let SemTerminator::Safepoint { resume, .. } = &entry.terminator {
+            entry.terminator = SemTerminator::Goto(resume.clone());
+        }
     }
 }

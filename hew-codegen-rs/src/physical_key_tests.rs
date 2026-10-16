@@ -218,7 +218,11 @@ fn engine<'ctx>(llvm: &Module<'ctx>, optimized: bool) -> ExecutionEngine<'ctx> {
         cont::hew_cont_resume,
         cont::hew_cont_destroy,
         coro_root::hew_coro_run_root,
-        coro_state::hew_coro_state_child,
+        coro_state::hew_coro_safepoint,
+        coro_state::hew_coro_safepoint_budget,
+        coro_state::hew_coro_safepoint_suppress,
+        coro_state::hew_coro_safepoint_restore,
+        coro_state::hew_coro_state_init_child,
         coro_state::hew_coro_state_cleanup_child,
         coro_state::hew_coro_state_set_cleanup_fault,
         coro_state::hew_coro_state_free,
@@ -226,6 +230,7 @@ fn engine<'ctx>(llvm: &Module<'ctx>, optimized: bool) -> ExecutionEngine<'ctx> {
         coro_state::hew_coro_state_status,
         coro_state::hew_coro_state_private_status,
         coro_state::hew_coro_state_is_cancelled,
+        coro_state::hew_coro_state_cancel_code,
         coro_state::hew_coro_state_finish,
         coro_sleep::hew_coro_sleep_new,
         coro_sleep::hew_coro_sleep_until_new,
@@ -316,6 +321,7 @@ fn engine<'ctx>(llvm: &Module<'ctx>, optimized: bool) -> ExecutionEngine<'ctx> {
         hashmap::hew_hashmap_clear_release,
         hashset::hew_hashset_clear_release,
         mailbox::hew_msg_envelope_release,
+        cow_envelope::hew_msg_envelope_release_begin,
         fault::hew_fault_new,
         fault::hew_fault_code,
         fault::hew_fault_new_panic,
@@ -565,6 +571,10 @@ fn main() {
         emitter.emit_selected_value_callbacks().unwrap();
         // Model the private callable's failure ABI with a distinct nonzero status
         // and an opaque pointer. It deliberately dirties its own scratch result.
+        // Unused coroutine bodies are declarations in this isolated ABI fixture.
+        for ramp in emitter.ramps.values() {
+            ramp.set_linkage(Linkage::External);
+        }
         for plan in physical.value_capabilities.values() {
             if let PhysicalValueMethod::User(id) = plan.method {
                 let function = emitter.functions[&id];

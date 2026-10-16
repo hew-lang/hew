@@ -355,6 +355,7 @@ pub(super) fn semantic_callables(checked: &hew_sir::CheckedModule<'_>) -> BTreeS
                     resumable.insert(function.callable);
                 }
                 hew_sir::SemTerminator::RecoverFault { .. }
+                | hew_sir::SemTerminator::Safepoint { .. }
                 | hew_sir::SemTerminator::Suspend { .. }
                 | hew_sir::SemTerminator::ActorCall {
                     operation:
@@ -508,6 +509,7 @@ pub(super) fn verify_callables(module: &PhysicalModule) -> Result<(), PhysicalEr
                 PhysicalTerminator::RecoverFault { .. }
                 | PhysicalTerminator::NativeIo { .. }
                 | PhysicalTerminator::Offload { .. }
+                | PhysicalTerminator::Safepoint { .. }
                 | PhysicalTerminator::Sleep { .. }
                 | PhysicalTerminator::SleepUntil { .. }
                 | PhysicalTerminator::TaskSelect { .. }

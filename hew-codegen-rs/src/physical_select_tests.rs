@@ -110,10 +110,6 @@ fn task_select_native_timer_abi() {
                 "hew_checked_task_select_free",
                 hew_checked_task_select_free as *const () as usize,
             ),
-            (
-                "hew_coro_state_cancel_code",
-                hew_runtime::coro_state::hew_coro_state_cancel_code as *const () as usize,
-            ),
         ] {
             if let Some(function) = llvm.get_function(symbol) {
                 engine.add_global_mapping(&function, address);

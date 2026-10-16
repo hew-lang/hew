@@ -430,6 +430,18 @@ pub(crate) fn terminator_successors(
             successors.push((cancel.target, cancelled));
             Ok(successors)
         }
+        PhysicalTerminator::Safepoint { normal, cancel } => {
+            if state.fault != FaultState::None {
+                return Err(PhysicalError::new(
+                    "safepoint cannot overwrite an active fault",
+                ));
+            }
+            let mut successors = vec![apply_edge(function, borrows, normal, state.clone(), block)?];
+            state.fault = FaultState::Active;
+            state.exit = defer::CANCEL;
+            successors.push(apply_edge(function, borrows, cancel, state, block)?);
+            Ok(successors)
+        }
         PhysicalTerminator::Sleep {
             duration: operand,
             normal,
@@ -1296,6 +1308,10 @@ pub(crate) fn verify_terminator(
             edge(normal)?;
             edge(cancel)?;
             edge(unwind)
+        }
+        PhysicalTerminator::Safepoint { normal, cancel } => {
+            edge(normal)?;
+            edge(cancel)
         }
         PhysicalTerminator::Sleep {
             duration,

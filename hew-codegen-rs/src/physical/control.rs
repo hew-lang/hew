@@ -84,6 +84,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 cancel,
                 unwind,
             } => self.emit_offload(*function, args, *result, normal, cancel, unwind),
+            PhysicalTerminator::Safepoint { normal, cancel } => self.emit_safepoint(normal, cancel),
             PhysicalTerminator::Sleep {
                 duration,
                 normal,
@@ -923,6 +924,9 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
         park: hew_mir::physical::FaultParkId,
         body: &PhysicalEdge,
     ) -> CodegenResult<()> {
+        if let Some(frame) = &self.frame {
+            self.free_handle("hew_coro_safepoint_suppress", frame.state)?;
+        }
         let (park_fault, park_status) = self.fault_parks[&park];
         let fault = self
             .builder
@@ -972,6 +976,9 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
         park: hew_mir::physical::FaultParkId,
         next: &PhysicalEdge,
     ) -> CodegenResult<()> {
+        if let Some(frame) = &self.frame {
+            self.free_handle("hew_coro_safepoint_restore", frame.state)?;
+        }
         let (park_fault, park_status) = self.fault_parks[&park];
         let pointer = self.ctx.ptr_type(AddressSpace::default());
         let primary = self

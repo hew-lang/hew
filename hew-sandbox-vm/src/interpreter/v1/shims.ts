@@ -162,6 +162,7 @@ export const SUPPORTED_SUSPEND_KINDS: ReadonlySet<string> = new Set([
   "GeneratorNext",
   "Yield",
   "Sleep",
+  "Safepoint",
   "Ask",
   "Await",
   "Join",

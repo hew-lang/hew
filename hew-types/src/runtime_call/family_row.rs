@@ -100,15 +100,6 @@ impl RuntimeCallFamily {
                 physical: RuntimePhysicalForm::NotAnAction,
                 c_return: RuntimeCReturn::Storage,
             },
-            Self::ActorCooperate => RuntimeOpRow {
-                authority: RuntimeAuthority::Service,
-                symbol: "hew_actor_cooperate",
-                contract: None,
-                staging: RuntimeStaging::Declared,
-                abi_shape: RuntimeCallAbiShape::Other,
-                physical: RuntimePhysicalForm::NotAnAction,
-                c_return: RuntimeCReturn::Storage,
-            },
             Self::ActorDemonitor => RuntimeOpRow {
                 authority: RuntimeAuthority::Service,
                 symbol: "hew_actor_demonitor",

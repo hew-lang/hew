@@ -1,0 +1,122 @@
+import std.stream;
+
+#[resource]
+type Ticket {
+    label: string;
+}
+
+impl Ticket {
+    fn close(consume self) {
+        println(f"closed {self.label}");
+    }
+}
+
+fn deferred(label: string) {
+    var count = 0;
+    for _ in 0..10000 {
+        count += 1;
+    }
+    println(f"deferred {label} {count}");
+}
+
+fn busy(started: stream.Sink<i64>) -> i64 {
+    let ticket = Ticket { label: "loop" };
+    defer { deferred(ticket.label); }
+    started.send(1).expect("started");
+    var count: i64 = 0;
+    loop {
+        count = count.wrapping_add(1);
+    }
+}
+
+fn recursive(depth: i64) -> i64 {
+    if depth == 0 { 1 } else { recursive(depth - 1) + recursive(depth - 1) }
+}
+
+fn tree(started: stream.Sink<i64>) -> i64 {
+    let ticket = Ticket { label: "recursion" };
+    defer { deferred(ticket.label); }
+    started.send(1).expect("started");
+    let value = recursive(30);
+    println("computation escaped cancellation");
+    value
+}
+
+fn peer(started: stream.Stream<i64>) -> i64 {
+    started.recv().expect("started");
+    println("peer progressed");
+    7
+}
+
+fn deadline_work() {
+    let ticket = Ticket { label: "deadline" };
+    loop {}
+}
+
+fn staged_work() -> i64 {
+    loop {}
+}
+
+machine Gate {
+    events { Open; }
+    emits { Pending { label: string; } }
+    state Closed { label: string; }
+    state Opened { label: string; value: i64; }
+    on Open: Closed => Opened {
+        emit Pending { label: state.label + ":pending" };
+        Opened { label: state.label + ":candidate", value: staged_work() }
+    }
+    default { state }
+}
+
+fn machine_work() {
+    var gate: Gate = .Closed { label: "original".to_upper() };
+    defer {
+        match gate {
+            .Closed { label } => println("rollback:" + label),
+            .Opened { label, value } => println(f"committed:{label}:{value}"),
+        }
+    }
+    let _report = gate.step(.Open);
+}
+
+actor Compute {
+    let ready: stream.Sink<i64>;
+    receive fn work() {
+        let ticket = Ticket { label: "actor" };
+        defer { deferred(ticket.label); }
+        ready.send(1).expect("ready");
+        loop {}
+    }
+}
+
+fn main() {
+    let (tx, rx): (stream.Sink<i64>, stream.Stream<i64>) = stream.pipe(1).expect("pipe");
+    println(await race [busy(tx), peer(rx)]);
+    let (tree_tx, tree_rx): (stream.Sink<i64>, stream.Stream<i64>) = stream.pipe(1).expect("pipe");
+    println(await race [tree(tree_tx), peer(tree_rx)]);
+    let (actor_tx, actor_rx): (stream.Sink<i64>, stream.Stream<i64>) = stream.pipe(1).expect("pipe");
+    let target = spawn Compute { ready: actor_tx };
+    mailbox(target, on_full: .Wait).work().expect("submit");
+    actor_rx.recv().expect("ready");
+    terminate(target);
+    stopped(target);
+    actor_rx.close();
+    println("actor stopped");
+    scope within 2ms {
+        deadline_work();
+    } handle failure {
+        match failure {
+            .Deadline { message } => println("deadline recovered"),
+            .Fault { message } => panic(message),
+        }
+    };
+    scope within 2ms {
+        machine_work();
+    } handle failure {
+        match failure {
+            .Deadline { message } => println("machine deadline recovered"),
+            .Fault { message } => panic(message),
+        }
+    };
+}

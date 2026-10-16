@@ -293,6 +293,118 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         Ok(())
     }
 
+    pub(super) fn emit_safepoint(
+        &self,
+        normal: &PhysicalEdge,
+        cancel: &PhysicalEdge,
+    ) -> CodegenResult<()> {
+        let frame = self.frame.as_ref().ok_or_else(|| {
+            CodegenError::FailClosed("safepoint requires a resumable body".into())
+        })?;
+        let continuing = self
+            .ctx
+            .append_basic_block(self.value, "safepoint.continue");
+        let countdown = self
+            .ctx
+            .append_basic_block(self.value, "safepoint.countdown");
+        let slow = self.ctx.append_basic_block(self.value, "safepoint.poll");
+        let enabled = self
+            .builder
+            .build_is_not_null(frame.budget, "safepoint.enabled")
+            .llvm_ctx("test safepoint suppression")?;
+        self.builder
+            .build_conditional_branch(enabled, countdown, continuing)
+            .llvm_ctx("enter safepoint countdown")?;
+        self.builder.position_at_end(countdown);
+        let remaining = self
+            .builder
+            .build_load(self.ctx.i32_type(), frame.budget, "safepoint.remaining")
+            .llvm_ctx("read invocation countdown")?
+            .into_int_value();
+        let remaining = self
+            .builder
+            .build_int_sub(
+                remaining,
+                self.ctx.i32_type().const_int(1, false),
+                "safepoint.next",
+            )
+            .llvm_ctx("decrement invocation countdown")?;
+        self.builder
+            .build_store(frame.budget, remaining)
+            .llvm_ctx("save invocation countdown")?;
+        let exhausted = self
+            .builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                remaining,
+                self.ctx.i32_type().const_zero(),
+                "safepoint.exhausted",
+            )
+            .llvm_ctx("test invocation countdown")?;
+        self.builder
+            .build_conditional_branch(exhausted, slow, continuing)
+            .llvm_ctx("select safepoint slow path")?;
+        self.builder.position_at_end(slow);
+        let poll = get_or_declare_external(
+            self.llvm,
+            "hew_coro_safepoint",
+            self.ctx.i32_type().fn_type(
+                &[
+                    self.ctx.ptr_type(AddressSpace::default()).into(),
+                    self.ctx.i32_type().into(),
+                ],
+                false,
+            ),
+        )?;
+        let status = call_value(
+            &self.builder,
+            poll,
+            &[
+                frame.state.into(),
+                self.ctx
+                    .i32_type()
+                    .const_int(u64::from(hew_mir::SAFEPOINT_BUDGET), false)
+                    .into(),
+            ],
+            "safepoint.status",
+        )?
+        .into_int_value();
+        let yielding = self.ctx.append_basic_block(self.value, "safepoint.yield");
+        let resumed = self.ctx.append_basic_block(self.value, "safepoint.resume");
+        let cancelled = self.ctx.append_basic_block(self.value, "safepoint.cancel");
+        self.builder
+            .build_switch(
+                status,
+                continuing,
+                &[
+                    (self.ctx.i32_type().const_int(1, false), yielding),
+                    (self.ctx.i32_type().const_int(2, false), cancelled),
+                ],
+            )
+            .llvm_ctx("select safepoint outcome")?;
+        self.builder.position_at_end(yielding);
+        frame.suspend(self.ctx, &self.builder, resumed, cancelled)?;
+        self.builder.position_at_end(resumed);
+        let cancellation = self.state_value("hew_coro_state_is_cancelled", frame.state)?;
+        let cancellation = self
+            .builder
+            .build_int_compare(
+                IntPredicate::NE,
+                cancellation,
+                self.ctx.i32_type().const_zero(),
+                "safepoint.cancelled",
+            )
+            .llvm_ctx("test resumed safepoint cancellation")?;
+        self.builder
+            .build_conditional_branch(cancellation, cancelled, continuing)
+            .llvm_ctx("select resumed safepoint outcome")?;
+        self.builder.position_at_end(cancelled);
+        self.initialize_cancellation_fault()?;
+        self.emit_edge(cancel)?;
+        self.builder.position_at_end(continuing);
+        self.emit_edge(normal)
+    }
+
     pub(super) fn emit_sleep(
         &self,
         duration: StorageId,
@@ -429,19 +541,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         let frame = self.frame.as_ref().ok_or_else(|| {
             CodegenError::FailClosed("resumable call requires a resumable caller".into())
         })?;
-        let pointer = self.ctx.ptr_type(AddressSpace::default());
-        let child_fn = get_or_declare_external(
-            self.llvm,
-            "hew_coro_state_child",
-            pointer.fn_type(&[pointer.into()], false),
-        )?;
-        let child = call_value(
-            &self.builder,
-            child_fn,
-            &[frame.state.into()],
-            "call.child.state",
-        )?
-        .into_pointer_value();
+        let child = frame.init_child(self.ctx, self.llvm, &self.builder)?;
         let mut args = args.to_vec();
         args.push(child.into());
         let child_frame = call_value(
@@ -586,19 +686,7 @@ pub(super) fn invoke_child<'ctx>(
     callee: FunctionValue<'ctx>,
     args: &[BasicMetadataValueEnum<'ctx>],
 ) -> CodegenResult<IntValue<'ctx>> {
-    let pointer = ctx.ptr_type(AddressSpace::default());
-    let create = get_or_declare_external(
-        llvm,
-        "hew_coro_state_child",
-        pointer.fn_type(&[pointer.into()], false),
-    )?;
-    let child = call_value(
-        builder,
-        create,
-        &[frame.state.into()],
-        "structural.child.state",
-    )?
-    .into_pointer_value();
+    let child = frame.init_child(ctx, llvm, builder)?;
     let mut args = args.to_vec();
     args.push(child.into());
     let child_frame =

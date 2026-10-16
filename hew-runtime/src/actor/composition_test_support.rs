@@ -62,7 +62,6 @@ fn idle_actor(mailbox: *mut HewMailbox) -> *mut HewActor {
         supervisor: ptr::null_mut(),
         supervisor_child_index: -1,
         priority: AtomicI32::new(HEW_PRIORITY_NORMAL),
-        reductions: AtomicI32::new(HEW_DEFAULT_REDUCTIONS),
         idle_count: AtomicI32::new(0),
         hibernation_threshold: AtomicI32::new(0),
         hibernating: AtomicI32::new(0),

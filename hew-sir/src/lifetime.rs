@@ -1238,6 +1238,13 @@ impl<'a> Flow<'a> {
             SemTerminator::SwitchVariant {
                 scrutinee, arms, ..
             } => successors.extend(self.variant_switch(id, scrutinee, arms, &state, emit)),
+            SemTerminator::Safepoint { resume, cancel } => {
+                Self::require_fault(id, DEAD, &state, emit);
+                successors.extend(self.edge(id, resume, state.clone(), emit));
+                state.exit = (state.exit & !ORDINARY) | CANCEL;
+                state.fault = LIVE;
+                successors.extend(self.edge(id, cancel, state, emit));
+            }
             SemTerminator::Suspend {
                 kind:
                     crate::SuspendKind::Join {

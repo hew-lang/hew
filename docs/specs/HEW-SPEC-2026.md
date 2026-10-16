@@ -5380,8 +5380,15 @@ faults, an enclosing lifetime is cancelled, or its `within` deadline expires.
 A race also cancels its losing operands (§4.11.2). Ordinary `Err` values do not
 trigger these transitions.
 
-Cancellation is observed at supported safepoints, including suspending calls
-and task waits. It is not preemption of an arbitrary instruction. The scope
+Cancellation is observed at suspending calls, task waits and compiler-inserted
+safepoints at loop headers and non-leaf function entry. A call-free,
+straight-line function performs bounded work and needs no structural poll.
+The scheduler checks cancellation after each budget of 4000 structural polls;
+nested and recursive calls share the same budget. When other work is runnable,
+a spent budget also yields the current continuation. Deferred actions and their
+callees suppress structural polls and run to completion. Extern calls contain
+no polls, so a long extern call delays cancellation and scheduling until it
+returns. This is not preemption of an arbitrary instruction. The scope
 waits for cancelled children to drain before returning or running its attached
 failure handler. Nested lifetimes receive the cancellation; unrelated actors
 do not become children of that scope.
@@ -7339,9 +7346,11 @@ Hew uses an **M:N work-stealing scheduler** inspired by Go, Tokio, and BEAM:
 The scheduler bounds an activation's message work and resumes parked
 continuations when their readiness source fires. Suspending calls, task waits
 and timer operations use this mechanism without a public yield keyword.
-Compute-only cancellation and fairness depend on the safepoints actually
-inserted; this specification does not promise a future reduction budget as a
-current execution guarantee (§4.5).
+Compute-only loops and recursive calls share a 4000-poll scheduling budget
+(§4.5). A spent budget yields only when another continuation or actor is runnable.
+This physical scheduling does not change a function's written suspension effect.
+The deterministic native driver and sandbox advance virtual time by one tick
+per spent budget, allowing deadlines to interrupt compute-only work.
 
 **Memory management:**
 

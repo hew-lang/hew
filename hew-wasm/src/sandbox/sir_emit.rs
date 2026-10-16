@@ -505,7 +505,8 @@ impl<'m> Walker<'m> {
                         }
                     }
                 }
-                SemTerminator::EnterDefer { .. }
+                SemTerminator::Safepoint { .. }
+                | SemTerminator::EnterDefer { .. }
                 | SemTerminator::FinishDefer { .. }
                 | SemTerminator::CleanupDispatch { .. }
                 | SemTerminator::CheckedRaiseFault { .. }
@@ -1758,6 +1759,17 @@ impl<'m> Walker<'m> {
                 "normal": encode_edge(normal),
                 "unwind": encode_edge(unwind),
             }),
+            SemTerminator::Safepoint { resume, cancel } => {
+                self.suspend_kind_id("Safepoint");
+                serde_json::json!({
+                    "op": "suspend", "kind": "Safepoint",
+                    "detail": { "budget": hew_sir::SAFEPOINT_BUDGET },
+                    "inputs": [], "result": null, "result_shape": null,
+                    "error_shape": null, "request_shapes": null,
+                    "resumes": [encode_edge(resume)], "cancel": encode_edge(cancel),
+                    "unwind": null,
+                })
+            }
             // The VM has no pool: an offloaded extern runs as the call it wraps.
             SemTerminator::Suspend {
                 kind: SuspendKind::Offload { function },

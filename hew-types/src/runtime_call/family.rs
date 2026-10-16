@@ -38,7 +38,6 @@ pub enum RuntimeCallFamily {
     // --- Actor cooperate/link/monitor/unlink/spawn surface ------------------
     ActorAsk,
     ActorAskWithChannel,
-    ActorCooperate,
     /// `MonitorRef::close` → `hew_actor_demonitor(ref_id: u64) -> void`.
     /// In the drop path, codegen extracts `ref_id` from the struct alloca
     /// via `build_struct_gep` + `build_load` and passes it directly.

@@ -90,6 +90,9 @@ type CallerStamp =
   | { kind: "Actor"; identity: bigint };
 
 interface FrameContext {
+  pollBudget?: number;
+  pollSuppression?: number;
+  pendingCancellation?: Fault;
   requestDeadline?: number;
   caller?: CallerStamp;
   reply?: boolean;
@@ -1196,8 +1199,14 @@ class ExecutorV1 {
         let started = false;
         task.cancel = () => {
           if (task.done || task.finishing) return;
-          if (started) context.cancel?.();
-          else
+          if (started) {
+            context.pendingCancellation ??= {
+              kind: "panic",
+              message: "task cancelled",
+              cancelled: true,
+            };
+            context.cancel?.(context.pendingCancellation);
+          } else
             settle(UNIT, {
               kind: "panic",
               message: "task cancelled",
@@ -1577,6 +1586,7 @@ class ExecutorV1 {
         this.takeEdge(act, act.fault ? term.fault : term.normal);
         return;
       case "enter_defer":
+        act.context.pollSuppression = (act.context.pollSuppression ?? 0) + 1;
         // The deferred body runs on its own fault state: a body reached while
         // unwinding must not read the fault it is cleaning up after.
         act.parked.push(act.fault);
@@ -1584,6 +1594,7 @@ class ExecutorV1 {
         this.takeEdge(act, term.body);
         return;
       case "finish_defer": {
+        act.context.pollSuppression = (act.context.pollSuppression ?? 0) - 1;
         // Combine the parked fault with whatever the body left, keeping the
         // first: a join must never forget the fault the boundary carried in.
         const parked = act.parked.pop();
@@ -2242,6 +2253,38 @@ class ExecutorV1 {
         this.park(act, term)(bytesValue([...line]));
         return;
       }
+      case "Safepoint": {
+        if (act.context.pollSuppression) {
+          this.takeEdge(act, term.resumes[0]!);
+          return;
+        }
+        const budget = term.detail?.budget;
+        if (!Number.isInteger(budget) || budget <= 0)
+          throw new Error(
+            "safepoint requires a positive compiler-authored budget",
+          );
+        act.context.pollBudget = (act.context.pollBudget ?? budget) - 1;
+        if (act.context.pollBudget > 0) {
+          this.takeEdge(act, term.resumes[0]!);
+          return;
+        }
+        act.context.pollBudget = budget;
+        this.scheduler.advanceSlice();
+        let fault = act.context.pendingCancellation;
+        for (let frame: Activation | null = act; frame; frame = frame.caller) {
+          for (const scope of frame.scopes.values())
+            fault ??= scope.deadline ?? undefined;
+        }
+        if (fault) {
+          act.fault = fault;
+          this.takeEdge(act, term.cancel);
+        } else if (this.scheduler.hasRunnableWork()) {
+          this.park(act, term)(UNIT);
+        } else {
+          this.takeEdge(act, term.resumes[0]!);
+        }
+        return;
+      }
       case "Sleep": {
         const duration = term.inputs[0]
           ? this.boundary(act, term.inputs[0])
@@ -2281,7 +2324,8 @@ class ExecutorV1 {
             act.fault = fault;
             this.takeEdge(
               act,
-              fault.kind === "panic" && fault.cancelled
+              term.kind === "Safepoint" ||
+                (fault.kind === "panic" && fault.cancelled)
                 ? term.cancel
                 : term.unwind!,
             );
@@ -3864,8 +3908,15 @@ class ExecutorV1 {
     if (actor.completed || actor.terminating) return;
     actor.closing = true;
     actor.terminating = true;
-    actor.active?.cancel?.();
-    actor.stopHook?.cancel?.();
+    for (const context of [actor.active, actor.stopHook]) {
+      if (!context) continue;
+      context.pendingCancellation ??= {
+        kind: "panic",
+        message: "actor terminated",
+        cancelled: true,
+      };
+      context.cancel?.(context.pendingCancellation);
+    }
     this.dispatchActor(actor);
     for (const admit of actor.admission.splice(0)) admit();
   }

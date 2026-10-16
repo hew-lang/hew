@@ -112,6 +112,7 @@ impl Builder<'_, '_> {
         let entry = self.loop_edge(&scope, header.block)?;
         self.set_terminator(SemTerminator::Goto(entry))?;
         self.restore_control_state(&header);
+        self.lower_safepoint()?;
         let body_block = self.new_block(Vec::new());
         if let Some(condition) = condition {
             let condition = self.lower_read_operand(condition, "while condition")?;
@@ -267,6 +268,7 @@ impl Builder<'_, '_> {
         let entry = self.loop_edge(&scope, header.block)?;
         self.set_terminator(SemTerminator::Goto(entry))?;
         self.restore_control_state(&header);
+        self.lower_safepoint()?;
         let counter = Operand {
             value: self.scalar_binding(loop_binding.id)?,
         };

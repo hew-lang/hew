@@ -1,0 +1,12 @@
+[[case]]
+id = "compute-safepoints"
+intent = "One worker schedules a queued peer during a plain compute loop and recursive call tree, cancels both race losers, and runs deferred helper loops and owned cleanup exactly once."
+source = "cases/compute-safepoints.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+env = { HEW_WORKERS = "1", HEW_ACTOR_LEAK_CHECK = "1" }
+
+[case.expected]
+stdout = "peer progressed\ndeferred loop 10000\nclosed loop\n7\npeer progressed\ndeferred recursion 10000\nclosed recursion\n7\ndeferred actor 10000\nclosed actor\nactor stopped\nclosed deadline\ndeadline recovered\nrollback:ORIGINAL\nmachine deadline recovered\n"
+stderr = ""
+exit = 0

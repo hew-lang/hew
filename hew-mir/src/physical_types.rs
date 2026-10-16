@@ -1137,6 +1137,11 @@ pub enum PhysicalTerminator {
         cancel: PhysicalEdge,
         unwind: PhysicalEdge,
     },
+    /// A structural scheduling poll with SIR-authored cancellation cleanup.
+    Safepoint {
+        normal: PhysicalEdge,
+        cancel: PhysicalEdge,
+    },
     Sleep {
         duration: StorageId,
         normal: PhysicalEdge,

@@ -5103,6 +5103,7 @@ fn failure_cfg_matches_exit(
             | SemTerminator::IndirectCall { .. }
             | SemTerminator::DynCall { .. }
             | SemTerminator::Suspend { .. }
+            | SemTerminator::Safepoint { .. }
             | SemTerminator::Unreachable => false,
         };
         visiting.remove(&block_id);
@@ -5314,6 +5315,16 @@ fn verify_terminator_shape(
 ) {
     let terminator = &block.terminator;
     match terminator {
+        SemTerminator::Safepoint { cancel, .. } => {
+            if !failure_cfg_matches_exit(cancel, None, blocks) {
+                diagnostics.push(diag(
+                    function,
+                    SirDiagnosticKind::InvalidTerminator {
+                        reason: "safepoint cancellation must leave through fault cleanup".into(),
+                    },
+                ));
+            }
+        }
         SemTerminator::RecoverFault {
             result,
             deadline_variant,

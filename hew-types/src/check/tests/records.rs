@@ -1649,8 +1649,8 @@ fn main() {}
     /// compiler-emitted, not user-callable. The checker only accepts `stable`.
     #[test]
     fn extern_rt_codegen_stable_symbol_rejected() {
-        // hew_actor_cooperate is in the non-declarable tier, not stable.
-        let extern_item = make_extern_rt_block(&["hew_actor_cooperate"]);
+        // hew_coro_safepoint is in the non-declarable tier, not stable.
+        let extern_item = make_extern_rt_block(&["hew_coro_safepoint"]);
         let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         let output = checker.check_program(&Program {
             expansions: hew_parser::macro_syntax::ExpansionMap::default(),
@@ -1661,9 +1661,9 @@ fn main() {}
         assert!(
             output.errors.iter().any(|e| matches!(&e.kind,
                 TypeErrorKind::ExternRtSymbolUnclassified { symbol_name, .. }
-                if symbol_name == "hew_actor_cooperate"
+                if symbol_name == "hew_coro_safepoint"
             )),
-            "non-declarable symbol hew_actor_cooperate must be rejected in \
+            "non-declarable symbol hew_coro_safepoint must be rejected in \
              extern \"rt\"; got: {:?}",
             output.errors
         );

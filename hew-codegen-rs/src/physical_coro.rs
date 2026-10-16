@@ -12,6 +12,7 @@ use std::cell::Cell;
 
 pub(super) struct Frame<'ctx> {
     pub state: PointerValue<'ctx>,
+    pub budget: PointerValue<'ctx>,
     destroying: PointerValue<'ctx>,
     pub finish: BasicBlock<'ctx>,
     entry: BasicBlock<'ctx>,
@@ -19,6 +20,7 @@ pub(super) struct Frame<'ctx> {
     exit: BasicBlock<'ctx>,
     invalid_destroy: BasicBlock<'ctx>,
     child: Cell<Option<(PointerValue<'ctx>, PointerValue<'ctx>)>>,
+    child_invocation: Cell<Option<PointerValue<'ctx>>>,
 }
 
 const _: () = {
@@ -153,6 +155,23 @@ pub(super) fn begin<'ctx>(
     .basic()
     .unwrap()
     .into_pointer_value();
+    let budget_fn = get_or_declare_external(
+        module,
+        "hew_coro_safepoint_budget",
+        pointer.fn_type(&[pointer.into(), ctx.i32_type().into()], false),
+    )?;
+    let budget = call_value(
+        builder,
+        budget_fn,
+        &[
+            state.into(),
+            ctx.i32_type()
+                .const_int(u64::from(hew_mir::SAFEPOINT_BUDGET), false)
+                .into(),
+        ],
+        "safepoint.budget",
+    )?
+    .into_pointer_value();
     let body = ctx.append_basic_block(function, "coro.body");
     builder
         .build_unconditional_branch(body)
@@ -250,6 +269,7 @@ pub(super) fn begin<'ctx>(
     builder.position_at_end(body);
     Ok(Frame {
         state,
+        budget,
         destroying,
         finish,
         entry,
@@ -257,10 +277,51 @@ pub(super) fn begin<'ctx>(
         exit,
         invalid_destroy,
         child: Cell::new(None),
+        child_invocation: Cell::new(None),
     })
 }
 
 impl<'ctx> Frame<'ctx> {
+    pub fn init_child(
+        &self,
+        ctx: &'ctx Context,
+        module: &Module<'ctx>,
+        builder: &Builder<'ctx>,
+    ) -> CodegenResult<PointerValue<'ctx>> {
+        let pointer = ctx.ptr_type(AddressSpace::default());
+        let storage = if let Some(storage) = self.child_invocation.get() {
+            storage
+        } else {
+            // The exact HewCoroInvocation fields; LLVM applies the target's C
+            // padding and alignment rather than importing the host's size.
+            let record = ctx.struct_type(
+                &[
+                    pointer.into(),
+                    ctx.i32_type().into(),
+                    ctx.i32_type().into(),
+                    ctx.i32_type().into(),
+                    ctx.i32_type().into(),
+                    ctx.i8_type().into(),
+                    ctx.i8_type().into(),
+                    ctx.i8_type().into(),
+                ],
+                false,
+            );
+            let storage = self.storage(ctx, record.into(), "call.child.invocation")?;
+            self.child_invocation.set(Some(storage));
+            storage
+        };
+        let init = get_or_declare_external(
+            module,
+            "hew_coro_state_init_child",
+            ctx.void_type().fn_type(&[pointer.into(); 2], false),
+        )?;
+        builder
+            .build_call(init, &[storage.into(), self.state.into()], "")
+            .llvm_ctx("initialize the frame-owned child invocation")?;
+        Ok(storage)
+    }
+
     pub fn child_storage(
         &self,
         ctx: &'ctx Context,

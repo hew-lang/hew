@@ -15,9 +15,9 @@
 //! order is the ticket order. `fifo` always takes the front, `random` takes
 //! `splitmix64(seed) % len` (the sandbox VM's pick, so a seed names the same
 //! schedule on both engines). Under a deterministic configuration the clock is
-//! virtual: it starts at 0 and moves only when nothing is ready, jumping to the
-//! earliest pending timer. Nothing ready, no timer pending and no host
-//! operation in flight is a deadlock, reported at once.
+//! virtual: it starts at 0, advances a millisecond per spent compute budget,
+//! and jumps to the earliest pending timer when nothing is ready. Nothing ready,
+//! no timer pending and no host operation in flight is a deadlock, reported at once.
 
 use std::collections::VecDeque;
 use std::ptr;
@@ -399,6 +399,19 @@ fn now_ms() -> u64 {
 fn fire_due_timers() -> i32 {
     // SAFETY: `global_wheel` returns the live process-owned wheel.
     unsafe { timer_wheel_tick_to(global_wheel(), now_ms()) }
+}
+
+/// A spent compute budget advances deterministic time and services due timers.
+/// It never runs another participant inside the current activation.
+pub(crate) fn safepoint_tick() {
+    let Some(config) = config() else {
+        return;
+    };
+    if config.virtual_clock {
+        let next = now_ms().saturating_add(1);
+        let _ = crate::deterministic::hew_simtime_set_ms(i64::try_from(next).unwrap_or(i64::MAX));
+    }
+    fire_due_timers();
 }
 
 /// Move the clock to the earliest pending timer and fire what is due there.

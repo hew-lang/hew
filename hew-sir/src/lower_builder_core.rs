@@ -319,6 +319,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             ));
         }
         self.enter_task_scope()?;
+        self.lower_safepoint()?;
         let result = self.lower_source_body(source)?;
         let result = result
             .map(|operand| {
@@ -356,6 +357,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             bindings: self.source_bindings,
         };
         tasks::remove_empty_scopes(&mut function);
+        super::suspend::remove_bounded_entry_poll(&mut function);
         projection::complete_edge_partitions(
             &mut function,
             &self.service.aggregate_shapes,

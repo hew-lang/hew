@@ -400,6 +400,12 @@ pub unsafe extern "C" fn hew_rc_new(
         // SAFETY: construction has not published this fresh allocation.
         unsafe { owner.register(header) };
     }
+    #[cfg(all(feature = "profiler", not(target_arch = "wasm32")))]
+    {
+        // SAFETY: the caller retains the immutable label until final header free.
+        let label = unsafe { std::ffi::CStr::from_ptr(type_name) }.to_string_lossy();
+        crate::observe::record_rc_allocation(&label);
+    }
     data_ptr
 }
 
@@ -789,6 +795,12 @@ pub unsafe extern "C" fn hew_weak_drop_rc(weak_ptr: *mut u8) {
         // SAFETY: data_size was validated at construction time.
         let (layout, _) = alloc_layout(inner.data_size, inner.data_align)
             .expect("layout was valid at construction");
+        #[cfg(all(feature = "profiler", not(target_arch = "wasm32")))]
+        {
+            // SAFETY: the immutable label is retained through this final free.
+            let label = unsafe { std::ffi::CStr::from_ptr(inner.type_name) }.to_string_lossy();
+            crate::observe::record_rc_free(&label);
+        }
         // SAFETY: header was allocated with this layout.
         unsafe { dealloc(header.cast(), layout) };
     }

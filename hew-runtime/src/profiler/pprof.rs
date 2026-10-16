@@ -239,6 +239,16 @@ pub fn generate_heap_profile() -> Vec<u8> {
     }
     encode_int64(&mut buf, 12, 1); // period
 
+    // Standard informational profile comments disclose the census without
+    // adding subset samples to the global allocator's totals.
+    for entry in crate::observe::rc_live_by_type() {
+        let comment = strings.intern(&format!(
+            "Live Rc blocks (including weak-only headers): {} {}",
+            entry.count, entry.type_name
+        ));
+        encode_int64(&mut buf, 13, comment);
+    }
+
     // String table (field 6).
     strings.encode(&mut buf);
 
@@ -322,6 +332,16 @@ pub fn generate_flat_profile() -> String {
         format_bytes(alloc.peak_bytes_live),
         alloc.alloc_count,
     );
+
+    out.push_str("Live Rc blocks by payload type (including weak-only headers):\n");
+    let rc_types = crate::observe::rc_live_by_type();
+    if rc_types.is_empty() {
+        out.push_str("  none\n");
+    }
+    for entry in rc_types {
+        let _ = writeln!(out, "  {} {}", entry.count, entry.type_name);
+    }
+    out.push('\n');
 
     // Column headers.
     out.push_str("  %       cumulative   self                self       total\n");

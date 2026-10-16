@@ -5,6 +5,8 @@
 //! are sharded by worker to avoid cache-line contention when enabled.
 
 use std::cell::Cell;
+#[cfg(all(feature = "profiler", not(target_arch = "wasm32")))]
+use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::ffi::c_void;
 use std::fmt::Write as _;
@@ -68,6 +70,48 @@ static THREADS_BLOCKING_COUNT: AtomicU64 = AtomicU64::new(0);
 static IO_HANDLES_LIVE: AtomicU64 = AtomicU64::new(0);
 static POOL_THREADS: AtomicU64 = AtomicU64::new(0);
 static POOL_SATURATIONS_TOTAL: AtomicU64 = AtomicU64::new(0);
+
+// Counts domain blocks, not references or pointers. Weak-only headers remain
+// allocated; unlike session counters this gauge is cleared only by final free.
+#[cfg(all(feature = "profiler", not(target_arch = "wasm32")))]
+static RC_LIVE_BY_TYPE: PoisonSafe<BTreeMap<String, u64>> = PoisonSafe::new(BTreeMap::new());
+
+#[cfg(all(feature = "profiler", not(target_arch = "wasm32")))]
+pub(crate) fn record_rc_allocation(type_name: &str) {
+    RC_LIVE_BY_TYPE.access(|counts| {
+        if let Some(count) = counts.get_mut(type_name) {
+            *count += 1;
+        } else {
+            counts.insert(type_name.to_owned(), 1);
+        }
+    });
+}
+
+#[cfg(all(feature = "profiler", not(target_arch = "wasm32")))]
+pub(crate) fn record_rc_free(type_name: &str) {
+    RC_LIVE_BY_TYPE.access(|counts| {
+        let count = counts
+            .get_mut(type_name)
+            .expect("allocated Rc type is registered");
+        *count -= 1;
+        if *count == 0 {
+            counts.remove(type_name);
+        }
+    });
+}
+
+#[cfg(all(feature = "profiler", not(target_arch = "wasm32")))]
+pub(crate) fn rc_live_by_type() -> Vec<hew_observe_protocol::RcSurvivorType> {
+    RC_LIVE_BY_TYPE.access(|counts| {
+        counts
+            .iter()
+            .map(|(type_name, &count)| hew_observe_protocol::RcSurvivorType {
+                type_name: type_name.clone(),
+                count,
+            })
+            .collect()
+    })
+}
 
 static ATTRIBUTED_TURNS: PoisonSafe<Option<HashMap<(usize, i32), AttributedTurn>>> =
     PoisonSafe::new(None);
@@ -1174,7 +1218,9 @@ pub(crate) fn reset_live_safe_counters() {
     });
 }
 
-/// Reset every observe/session value after the runtime has quiesced.
+/// Reset observe/session counters after the runtime has quiesced.
+/// Process-lifetime Rc allocation counts survive a session reset: escaped
+/// allocations and weak-only headers can still be released by their owners.
 ///
 /// Quiescence authority is `scheduler::hew_sched_shutdown`: it joins native
 /// workers before firing `session_reset`, which invokes this hook.  Do not call

@@ -259,6 +259,7 @@ public struct Memory: Codable, Sendable {
     public let bytesFreed: UInt64
     public let bytesLive: UInt64
     public let peakBytesLive: UInt64
+    public let rcLiveByType: [RcSurvivorType]?
 
     enum CodingKeys: String, CodingKey {
         case allocCount = "alloc_count"
@@ -267,6 +268,7 @@ public struct Memory: Codable, Sendable {
         case bytesFreed = "bytes_freed"
         case bytesLive = "bytes_live"
         case peakBytesLive = "peak_bytes_live"
+        case rcLiveByType = "rc_live_by_type"
     }
 
     public init(
@@ -275,7 +277,8 @@ public struct Memory: Codable, Sendable {
         bytesAllocated: UInt64 = 0,
         bytesFreed: UInt64 = 0,
         bytesLive: UInt64 = 0,
-        peakBytesLive: UInt64 = 0
+        peakBytesLive: UInt64 = 0,
+        rcLiveByType: [RcSurvivorType]? = nil
     ) {
         self.allocCount = allocCount
         self.deallocCount = deallocCount
@@ -283,6 +286,7 @@ public struct Memory: Codable, Sendable {
         self.bytesFreed = bytesFreed
         self.bytesLive = bytesLive
         self.peakBytesLive = peakBytesLive
+        self.rcLiveByType = rcLiveByType
     }
 
     public init(from decoder: Decoder) throws {
@@ -293,6 +297,11 @@ public struct Memory: Codable, Sendable {
         bytesFreed = try decodeUInt64Decimal(from: values, forKey: .bytesFreed)
         bytesLive = try decodeUInt64Decimal(from: values, forKey: .bytesLive)
         peakBytesLive = try decodeUInt64Decimal(from: values, forKey: .peakBytesLive)
+        if values.contains(.rcLiveByType) {
+            rcLiveByType = try values.decode([RcSurvivorType]?.self, forKey: .rcLiveByType)
+        } else {
+            rcLiveByType = nil
+        }
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -303,6 +312,7 @@ public struct Memory: Codable, Sendable {
         try values.encode(String(bytesFreed), forKey: .bytesFreed)
         try values.encode(String(bytesLive), forKey: .bytesLive)
         try values.encode(String(peakBytesLive), forKey: .peakBytesLive)
+        try values.encode(rcLiveByType, forKey: .rcLiveByType)
     }
 }
 

@@ -209,6 +209,8 @@ pub struct Memory {
     pub bytes_live: u64,
     #[serde(with = "uint64_decimal")]
     pub peak_bytes_live: u64,
+    #[serde(default)]
+    pub rc_live_by_type: Option<Vec<RcSurvivorType>>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

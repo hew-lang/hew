@@ -30,6 +30,16 @@ type RcNode {
     back: Weak<Option<RcNode>>;
 }
 
+type RootCycle {
+    next: Rc<Option<RootCycle>>;
+}
+
+type WeakOnly {
+}
+
+type FreedPayload {
+}
+
 actor LocalCycle {
     receive fn allocate() {
         let empty: Option<RcNode> = .None;
@@ -55,6 +65,20 @@ fn main() {
     local.allocate().expect("cycle allocated");
     stop(local);
     stopped(local);
+    let weak_only = {
+        let value = Rc.new(WeakOnly {  });
+        value.downgrade()
+    };
+    assert(weak_only.upgrade().is_none());
+    {
+        let freed = Rc.new(FreedPayload {  });
+        let _ = freed;
+    };
+    // This root-owned cycle is disclosed at orderly process exit, not swept.
+    let empty: Option<RootCycle> = .None;
+    let root = Rc.new(empty);
+    let linked: Option<RootCycle> = .Some(RootCycle { next: root.clone() });
+    root.set(linked);
     let _barrier = observe.barrier().expect("barrier succeeds");
     sleep(15s);
 }

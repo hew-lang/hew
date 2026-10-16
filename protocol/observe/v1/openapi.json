@@ -578,6 +578,11 @@
           "peak_bytes_live": {
             "$ref": "#/components/schemas/UInt64Decimal",
             "x-unit": "bytes"
+          },
+          "rc_live_by_type": {
+            "type": ["array", "null"],
+            "items": { "$ref": "#/components/schemas/RcSurvivorType" },
+            "description": "Live Rc allocation blocks by payload type, including weak-only headers until their final weak owner is released."
           }
         }
       },

@@ -25,7 +25,7 @@ const EXPECTED_TASKS_SPAWNED: u64 = EXPECTED_ACTORS_LIVE;
 struct Snapshot {
     metrics: Metrics,
     actors: Vec<ActorInfo>,
-    _memory: Memory,
+    memory: Memory,
     _history: Vec<HistoryEntry>,
     _cluster_members: Vec<ClusterMember>,
     _connections: Vec<ConnectionInfo>,
@@ -87,6 +87,8 @@ fn profiler_endpoint_captures_fixture_observability_data() {
         Command::new(&fixture.binary)
             .env("HEW_PPROF", format!("127.0.0.1:{port}"))
             .env("HEW_OBSERVE", "hot")
+            .env("HEW_PROF_OUTPUT", "both")
+            .current_dir(fixture._dir.path())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
@@ -106,6 +108,48 @@ fn profiler_endpoint_captures_fixture_observability_data() {
             panic!("{error}\n{}", child.output_after_kill());
         }
     }
+    let mut child = child;
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while matches!(
+        child.child.as_mut().expect("owned fixture").try_wait(),
+        Ok(None)
+    ) {
+        assert!(
+            Instant::now() < deadline,
+            "fixture did not exit after its sleep"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let output = child
+        .child
+        .take()
+        .expect("owned fixture")
+        .wait_with_output()
+        .expect("collect fixture");
+    assert!(
+        output.status.success(),
+        "fixture failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let profile =
+        std::fs::read_to_string(fixture._dir.path().join("hew-profile.txt")).expect("exit profile");
+    assert!(profile.contains("Live Rc blocks by payload type (including weak-only headers):\n  1 Option<RootCycle>\n"), "{profile}");
+    assert!(
+        !profile.contains("WeakOnly")
+            && !profile.contains("FreedPayload")
+            && !profile.contains("RcNode"),
+        "{profile}"
+    );
+    assert!(
+        fixture
+            ._dir
+            .path()
+            .join("hew-profile.pb.gz")
+            .metadata()
+            .expect("exit pprof")
+            .len()
+            > 0
+    );
 }
 
 /// `supervisor.restarts_by_child_total` reports each child's lifetime restart total
@@ -302,7 +346,7 @@ fn wait_for_valid_snapshot(
 fn fetch_snapshot(client: &reqwest::blocking::Client, base_url: &str) -> Result<Snapshot, String> {
     Ok(Snapshot {
         metrics: fetch_json(client, base_url, "/api/metrics")?,
-        _memory: fetch_json(client, base_url, "/api/memory")?,
+        memory: fetch_json(client, base_url, "/api/memory")?,
         actors: fetch_json(client, base_url, "/api/actors")?,
         _history: fetch_json(client, base_url, "/api/metrics/history")?,
         _cluster_members: fetch_json(client, base_url, "/api/cluster/members")?,
@@ -384,6 +428,21 @@ fn validate_snapshot(snapshot: &Snapshot) -> Result<(), String> {
         || !sweep.by_type[0].type_name.contains("RcNode")
     {
         return Err(format!("unexpected Rc sweep summary: {sweep:?}"));
+    }
+
+    let live = snapshot
+        .memory
+        .rc_live_by_type
+        .as_ref()
+        .ok_or("Rc census missing from memory")?;
+    if live.len() != 2
+        || live.iter().any(|entry| entry.count != 1)
+        || !live.iter().any(|entry| entry.type_name == "WeakOnly")
+        || !live
+            .iter()
+            .any(|entry| entry.type_name == "Option<RootCycle>")
+    {
+        return Err(format!("unexpected live Rc census: {live:?}"));
     }
 
     validate_scheduler_metrics(&snapshot.metrics)?;

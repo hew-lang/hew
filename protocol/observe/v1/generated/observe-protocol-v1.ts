@@ -47,6 +47,7 @@ export interface Memory {
   bytes_freed: bigint;
   bytes_live: bigint;
   peak_bytes_live: bigint;
+  rc_live_by_type?: RcSurvivorType[] | null;
   [key: string]: unknown;
 }
 
@@ -272,6 +273,7 @@ export function decodeMemory(value: unknown): Memory {
     bytes_freed: asBoundedBigInt(input.bytes_freed, 0n, 18446744073709551615n),
     bytes_live: asBoundedBigInt(input.bytes_live, 0n, 18446744073709551615n),
     peak_bytes_live: asBoundedBigInt(input.peak_bytes_live, 0n, 18446744073709551615n),
+    rc_live_by_type: input.rc_live_by_type === undefined ? null : (input.rc_live_by_type === null ? null : asArray(input.rc_live_by_type).map((item) => decodeRcSurvivorType(item))),
   } as Memory;
   return output;
 }

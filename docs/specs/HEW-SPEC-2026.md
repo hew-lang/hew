@@ -2796,6 +2796,13 @@ reclaimed count and counts by payload type. Allocations belonging to another
 creator are not reclaimed by this actor's exit. Strong cycles outside an actor
 still require weak backedges; Hew does not run a tracing collector.
 
+Observe's memory response also reports live Rc blocks by payload type. These
+are allocation counts: a weak-only header remains live until its final weak
+owner is released. Counts change only at allocation and final header free.
+Orderly shutdown includes it in the existing `HEW_PROF_OUTPUT=flat` report, and pprof
+profiles include it as informational comments. A root-owned cycle remains
+visible there; it is not reclaimed by an actor's terminal sweep.
+
 `Rc.new_cyclic`, dereference/borrow access to an Rc payload, and cross-actor
 transfer are not supported in edition 2026.
 

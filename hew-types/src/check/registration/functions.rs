@@ -1469,29 +1469,27 @@ impl Checker {
         // still needs the checker-owned identity for static dispatch and must
         // not reconstruct it from the trait's leaf spelling.
         let implemented_trait = trait_bound.and_then(|bound| self.resolve_trait_path(&bound.path));
+        let impl_parameters = self
+            .source_parameter_heads(impl_type_params.map_or(&[], Vec::as_slice), &method.fn_span);
+        let method_parameters = self.source_parameter_heads(
+            method.type_params.as_deref().unwrap_or_default(),
+            &method.fn_span,
+        );
+        let obligations =
+            self.value_method_obligations(impl_type_params, impl_where_clause, method);
+        self.impl_method_binders.insert(
+            declaration_id,
+            crate::type_facts::ImplMethodBinders {
+                receiver: self.normalize_for_use(&receiver),
+                obligations,
+                impl_params: impl_parameters.clone(),
+                method_params: method_parameters,
+            },
+        );
         if let Some(bound) = trait_bound {
-            let impl_parameters = self.source_parameter_heads(
-                impl_type_params.map_or(&[], Vec::as_slice),
-                &method.fn_span,
-            );
             if let Some(owner) = self.impl_method_owner(trait_bound) {
                 self.record_from_impl(owner, bound, &receiver, &impl_parameters, declaration_id);
             }
-            let method_parameters = self.source_parameter_heads(
-                method.type_params.as_deref().unwrap_or_default(),
-                &method.fn_span,
-            );
-            let obligations =
-                self.value_method_obligations(impl_type_params, impl_where_clause, method);
-            self.trait_impl_method_binders.insert(
-                declaration_id,
-                crate::type_facts::ImplMethodBinders {
-                    receiver: self.normalize_for_use(&receiver),
-                    obligations,
-                    impl_params: impl_parameters,
-                    method_params: method_parameters,
-                },
-            );
             if let (Some(slot), Ok(receiver)) = (
                 implemented_trait.and_then(|trait_id| {
                     self.impl_method_slot(trait_id, method.name.name.as_str())

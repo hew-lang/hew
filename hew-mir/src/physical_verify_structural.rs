@@ -48,6 +48,7 @@ pub(crate) fn verify_resources(module: &PhysicalModule) -> Result<(), PhysicalEr
             if callable.declaration != *declaration
                 || callable.params.len() != 1
                 || callable.params[0].ty != resource.ty
+                || callable.params[0].passing != SemParamPassing::Consume
                 || callable.return_ty != ResolvedTy::Unit
             {
                 return Err(PhysicalError::new(

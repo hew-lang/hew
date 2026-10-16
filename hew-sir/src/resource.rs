@@ -232,30 +232,23 @@ pub(crate) fn resource_release_from_hir(
 
 /// The checked `#[resource]` record lifecycle for one exact nominal type.
 ///
-/// Keyed by the resource's qualified declaration path, which is the same
-/// identity `ResolvedTy::Named` carries; no short or leaf name is retried.
+/// Keyed by the nominal declaration carried by the concrete instance.
 pub(crate) fn record_resource_lifecycle<'a>(
     module: &'a hew_hir::HirModule,
     ty: &ResolvedTy,
 ) -> Option<&'a hew_hir::ResourceRecordLifecycle> {
     let ResolvedTy::Named {
         head,
-        args,
         is_opaque: false,
         ..
     } = ty
     else {
         return None;
     };
-    let name = head.registry_key();
-    if !args.is_empty() {
-        return None;
-    }
     module
         .type_classes
         .lifecycle_registry()
-        .resource_records()
-        .find(|lifecycle| module.defs.path(lifecycle.resource_declaration) == name)
+        .resource_record(&head.nominal()?.declaration())
 }
 
 /// The authored `#[resource] #[opaque]` lifecycle for one exact nominal type.
@@ -471,15 +464,15 @@ pub fn verify_resource_release(
     if let ResourceRelease::RecordClose { lifecycle, .. } = release {
         let ResolvedTy::Named {
             head,
-            args,
             is_opaque: false,
             ..
         } = ty
         else {
             return Err("a record release requires an exact non-opaque nominal type".into());
         };
-        let name = head.registry_key();
-        return if args.is_empty() && defs.path(lifecycle.resource_declaration) == name {
+        return if head.nominal().map(hew_types::NominalId::declaration)
+            == Some(lifecycle.resource_declaration)
+        {
             Ok(())
         } else {
             Err("record release declaration does not match its nominal owner".into())

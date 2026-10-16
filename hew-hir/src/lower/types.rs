@@ -61,6 +61,7 @@ impl LowerCtx {
         // actor-specific fields; user resources still need their declared methods.
         if !interceptor_token
             && matches!(marker, ResourceMarker::Resource | ResourceMarker::Linear)
+            && facts.is_opaque
             && !facts.type_params.is_empty()
         {
             self.diagnostics.push(HirDiagnostic::new(
@@ -68,7 +69,7 @@ impl LowerCtx {
                     name: decl.name.to_string(),
                 },
                 span.clone(),
-                "`#[resource]` / `#[linear]` types cannot have type parameters in v0.5",
+                "generic opaque resource types have no per-instance release ABI",
             ));
         }
 

@@ -745,7 +745,7 @@ impl Checker {
             .with_serial_layouts(self.serial_layouts.clone())
             .with_impl_methods(
                 self.trait_impl_method_declaration_ids.clone(),
-                self.trait_impl_method_binders.clone(),
+                self.impl_method_binders.clone(),
             )
             .with_display_method(
                 self.lang_trait(crate::LangItem::Display)
@@ -2998,7 +2998,7 @@ impl Checker {
             reported_unknown_bounds: self.reported_unknown_bounds.clone(),
             trait_impl_method_names: self.trait_impl_method_names.clone(),
             trait_impl_method_declaration_ids: self.trait_impl_method_declaration_ids.clone(),
-            trait_impl_method_binders: self.trait_impl_method_binders.clone(),
+            impl_method_binders: self.impl_method_binders.clone(),
             primitive_trait_impls: self.primitive_trait_impls.clone(),
             supervisor_children: self.supervisor_children.clone(),
             supervisor_child_slots: self.supervisor_child_slots.clone(),

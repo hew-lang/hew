@@ -602,6 +602,10 @@ fn verify_vtables(module: &SemModule, diagnostics: &mut Vec<SirDiagnostic>) {
 fn verify_resources(module: &SemModule, diagnostics: &mut Vec<SirDiagnostic>) {
     for (key, _) in module.type_facts.iter().filter(|(key, facts)| {
         matches!(key.0, ResolvedTy::Task(_))
+            || module.aggregate_shapes.iter().any(|shape| {
+                shape.aggregate_ty == key.0
+                    && shape.marker == hew_types::DeclarationMarker::Resource
+            })
             || crate::generator_parts(&key.0).is_some()
             || key.0.is_builtin(hew_types::BuiltinType::Stream)
             || key.0.is_builtin(hew_types::BuiltinType::Sink)
@@ -628,7 +632,34 @@ fn verify_resources(module: &SemModule, diagnostics: &mut Vec<SirDiagnostic>) {
             .type_facts
             .get(&hew_types::TypeInstanceKey(ty.clone()))
             .ok_or_else(|| "resource release has no exact type facts".to_string())
-            .and_then(|facts| crate::verify_resource_release(&module.defs, ty, release, facts));
+            .and_then(|facts| crate::verify_resource_release(&module.defs, ty, release, facts))
+            .and_then(|()| {
+                let (declaration, close) = match release {
+                    crate::ResourceRelease::RecordClose { lifecycle, close } => {
+                        (lifecycle.close_declaration, *close)
+                    }
+                    crate::ResourceRelease::OpaqueClose { lifecycle, close } => {
+                        (lifecycle.close_declaration, *close)
+                    }
+                    _ => return Ok(()),
+                };
+                let callable = module
+                    .callables
+                    .get(close.0 as usize)
+                    .ok_or_else(|| "authored release names no admitted callable".to_string())?;
+                if callable.declaration != declaration
+                    || callable.signature.params.len() != 1
+                    || callable.signature.params[0].ty != *ty
+                    || callable.signature.params[0].passing != crate::SemParamPassing::Consume
+                    || callable.signature.return_ty != ResolvedTy::Unit
+                {
+                    return Err(
+                        "authored release callable must consume its exact owner and return unit"
+                            .into(),
+                    );
+                }
+                Ok(())
+            });
         if let Err(reason) = result {
             diagnostics.push(module_diag(SirDiagnosticKind::InvalidResourceType {
                 ty: ty.clone(),

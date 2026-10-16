@@ -151,10 +151,7 @@ pub enum HirDiagnosticKind {
     LinearNoConsumingMethods {
         name: String,
     },
-    /// `#[resource]` or `#[linear]` type carries type parameters. Generic
-    /// resource/linear types are out of scope for the v0.5 vertical slice
-    /// (the marker→ValueClass mapping is keyed by type name, not by
-    /// instantiated type).
+    /// An opaque resource carries type parameters without a per-instance release ABI.
     ResourceGenericUnsupported {
         name: String,
     },

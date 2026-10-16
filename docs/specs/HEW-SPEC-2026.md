@@ -2879,11 +2879,36 @@ For example, a file-like resource may have `finish() -> Result<(), E>` to
 report a failed flush and a unit-returning close to release its descriptor.
 That is a resource API contract, not a second language cleanup mechanism.
 
+Field-bearing resource declarations may have type parameters. Each concrete
+instance uses its specialized consuming `close` and ordinary ownership rules
+for its payload. Returning or passing the wrapper to a `consume` parameter transfers
+that same cleanup obligation, including across imported modules. After the
+close body finishes, its remaining owned fields are released once.
+
+Generic opaque FFI resources are not yet admitted: each concrete instance
+needs a release ABI. The compiler reports `ResourceGenericUnsupported` for
+that boundary.
+
+```hew
+#[resource]
+type Wrapper<T> {
+    payload: T;
+}
+
+impl<T> Wrapper<T> {
+    fn close(consume self) {}
+}
+```
+
 ##### 3.7.8.2 `#[linear]` — single-owner with no implicit drop
 
 `#[linear]` marks a type that **must be consumed** by one of its declared
 consuming methods. There is no implicit drop. Letting a `#[linear]` value
 go out of scope without consuming it is a compile error.
+
+Field-bearing linear declarations may also have type parameters. Their
+consuming methods specialize for the concrete receiver and may transfer an
+owned payload to the caller; specialization does not introduce implicit drop.
 
 ```text
 #[linear]

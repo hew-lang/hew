@@ -964,6 +964,31 @@ fn imported_associated_projection_bounds_execute() {
     assert_native_manifest("associated-projection-bounds", inputs);
 }
 
+#[test]
+fn imported_generic_resources_specialize_and_drain_on_every_exit() {
+    let mut inputs = hew_compile::SourceSet::in_memory();
+    inputs.insert(
+        "generic_resource_support/wrapper.hew",
+        include_str!("../../tests/core-acceptance/cases/generic_resource_support/wrapper.hew"),
+    );
+    assert_native_manifest("generic-resource-lifecycle", inputs.clone());
+    let rejected = hew_wasm::sandbox::compile_to_sandbox_bytecode_with_inputs(
+        include_str!("../../tests/core-acceptance/cases/generic-resource-consume-reject.hew"),
+        Some("sandbox-vm-export"),
+        inputs,
+    )
+    .expect("source refusal is a diagnostic");
+    assert!(rejected.bytecode.is_none());
+    assert!(rejected
+        .diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.severity == "error" && diagnostic.kind == "UseAfterMove"));
+    assert!(rejected
+        .diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.severity == "error" && diagnostic.kind == "UseAfterConsume"));
+}
+
 fn assert_native_manifest(name: &str, inputs: hew_compile::SourceSet) -> serde_json::Value {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../tests/core-acceptance");
     let manifest = std::fs::read_to_string(root.join(format!("cases/{name}.toml")))

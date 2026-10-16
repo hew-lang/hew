@@ -56,6 +56,57 @@ fn count_ops(function: &SemFunction, matches: impl Fn(&SemOpKind) -> bool) -> us
 }
 
 #[test]
+fn generic_resource_release_requires_its_exact_consuming_close_instance() {
+    let lowered = lower_source(
+        r#"
+        #[resource]
+        type Wrapper<T> { payload: T; }
+        impl<T> Wrapper<T> { fn close(consume self) {} }
+        fn main() {
+            let number = Wrapper<i64> { payload: 7 };
+            let text = Wrapper<string> { payload: "owned" };
+        }
+        "#,
+    );
+    verified_main(&lowered);
+    let resources: Vec<_> = lowered
+        .module
+        .resources
+        .iter()
+        .filter_map(|(ty, release)| match release {
+            hew_sir::ResourceRelease::RecordClose { close, .. } => Some((ty.clone(), *close)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(resources.len(), 2);
+    for mutation in 0..3 {
+        let mut module = lowered.module.clone();
+        match mutation {
+            0 => {
+                module.resources.remove(&resources[0].0);
+            }
+            1 => {
+                let hew_sir::ResourceRelease::RecordClose { close, .. } =
+                    module.resources.get_mut(&resources[0].0).unwrap()
+                else {
+                    unreachable!()
+                };
+                *close = resources[1].1;
+            }
+            _ => {
+                let close = resources[0].1;
+                module.callables[close.0 as usize].signature.params[0].passing =
+                    hew_sir::SemParamPassing::Borrow;
+            }
+        }
+        assert!(verify_module(&module).iter().any(|diagnostic| matches!(
+            diagnostic.kind,
+            hew_sir::SirDiagnosticKind::InvalidResourceType { .. }
+        )));
+    }
+}
+
+#[test]
 fn a_discarded_consumed_value_is_released_where_it_is_dropped() {
     let lowered = lower_source(
         r#"

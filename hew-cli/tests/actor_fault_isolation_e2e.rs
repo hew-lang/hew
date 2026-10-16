@@ -215,22 +215,33 @@ fn main() {
 }
 "#;
 
-/// Crash IN the supervisor: the child's `#[on(crash)]` hook runs on the
-/// supervisor's own actor, so panicking there makes the supervisor terminal. A
-/// root supervisor has no supervisor of its own, so that crash is unrecovered.
-/// The independent probe must still answer — the fault is reported, not
-/// cascaded.
-const CRASH_IN_SUPERVISOR_ITSELF: &str = r#"import std.failure;
+/// A failed child crash hook drains its own cleanup and falls back to the
+/// child's ordinary restart policy. The replacement and independent probe
+/// remain usable; the recovered failure does not fail the process.
+const FAILED_CHILD_CRASH_HOOK: &str = r#"import std.failure;
+
+#[resource]
+type HookCleanup {}
+
+impl HookCleanup {
+    fn close(consume self) {
+        sleep(1ms);
+        println("HOOK_CLEANUP");
+    }
+}
 
 actor Worker {
     #[on(crash)]
     fn on_crash(info: CrashInfo) -> CrashAction {
+        let cleanup = HookCleanup {};
         panic("crash hook itself failed")
     }
 
     receive fn boom() {
         panic("child crash that fires the hook")
     }
+
+    receive fn ping() -> i64 { 9 }
 }
 
 actor Probe {
@@ -251,7 +262,10 @@ fn main() {
     let probe = spawn Probe;
     let w = sup.w;
     let _ = w.boom();
-    let _ = restarted(sup.w);
+    restarted(sup.w);
+    let fresh = sup.w;
+    let child = fresh.ping().expect("replacement responds");
+    println(f"CHILD:{child}");
     match probe.ping() {
         .Ok(v) => println(f"PROBE:{v}"),
         .Err(_) => println("PROBE_DEAD"),
@@ -872,16 +886,16 @@ fn root_supervisor_exhausting_its_budget_fails_the_process() {
     );
 }
 
-/// A crash in the supervisor's own actor is unrecovered (a root supervisor has
-/// no supervisor), and must be reported without cascading to unrelated actors.
+/// A failed crash hook closes its locals before the supervisor's restart
+/// barrier completes, without cascading to unrelated actors.
 #[test]
-fn crash_in_the_supervisor_itself_fails_the_process_without_cascading() {
+fn failed_child_crash_hook_drains_cleanup_before_restart() {
     require_codegen();
     assert_fixture_under_every_worker_pool(
-        CRASH_IN_SUPERVISOR_ITSELF,
-        "crash_in_supervisor_itself",
-        1,
-        &["PROBE:7", "MAIN_DONE"],
+        FAILED_CHILD_CRASH_HOOK,
+        "failed_child_crash_hook",
+        0,
+        &["HOOK_CLEANUP\nCHILD:9", "PROBE:7", "MAIN_DONE"],
         &["crash hook itself failed"],
     );
 }

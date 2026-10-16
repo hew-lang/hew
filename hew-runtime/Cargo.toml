@@ -92,6 +92,7 @@ finl_unicode = { version = "=1.5.0", default-features = false, features = [
 
 # Threading/networking deps — not available on wasm32
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+cap-std = "4.0.3"
 crossbeam-deque = "0.8"
 crossbeam-utils = "0.8"
 rand = "0.10.1"

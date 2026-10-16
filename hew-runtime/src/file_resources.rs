@@ -23,6 +23,10 @@ pub struct HewReadFile(Mutex<File>);
 pub struct HewWriteFile(Mutex<File>);
 
 impl HewReadFile {
+    pub(crate) fn new(file: File) -> Self {
+        Self(Mutex::new(file))
+    }
+
     pub(crate) fn read_remaining(&self) -> io::Result<Vec<u8>> {
         let mut file = self
             .0
@@ -35,6 +39,10 @@ impl HewReadFile {
 }
 
 impl HewWriteFile {
+    pub(crate) fn new(file: File) -> Self {
+        Self(Mutex::new(file))
+    }
+
     pub(crate) fn write(&self, bytes: &[u8]) -> io::Result<()> {
         self.0
             .lock()
@@ -56,7 +64,7 @@ pub unsafe extern "C" fn hew_file_open_read(path: *const HewString) -> *mut HewR
     match File::open(path) {
         Ok(file) => {
             clear_file_io_error();
-            Box::into_raw(Box::new(HewReadFile(Mutex::new(file))))
+            Box::into_raw(Box::new(HewReadFile::new(file)))
         }
         Err(error) => {
             set_file_io_error("open read file", &error);
@@ -83,7 +91,7 @@ pub unsafe extern "C" fn hew_file_open_write(path: *const HewString) -> *mut Hew
     {
         Ok(file) => {
             clear_file_io_error();
-            Box::into_raw(Box::new(HewWriteFile(Mutex::new(file))))
+            Box::into_raw(Box::new(HewWriteFile::new(file)))
         }
         Err(error) => {
             set_file_io_error("open write file", &error);

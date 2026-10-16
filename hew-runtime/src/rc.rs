@@ -1,7 +1,8 @@
 //! Reference-counted smart pointer (`Rc<T>`).
 //!
 //! Non-atomic reference counting for single-actor use. NOT `Send` — cannot
-//! cross actor boundaries. For cross-actor sharing, use `Arc<T>`.
+//! cross actor boundaries. Ordinary immutable values retain their checked
+//! cross-actor value semantics.
 //!
 //! Layout: `[HewRcInner header | data bytes...]`
 //! The returned pointer from `hew_rc_new` points to the **data region**
@@ -12,19 +13,262 @@
     reason = "FFI entry-point module; SAFETY documented at fn signature."
 )]
 
+use crate::util::MutexExt;
+use hew_cabi::value::{HewValueDropThunk, HewValueLayout};
 use std::alloc::{alloc, dealloc, Layout};
+use std::cell::Cell;
+use std::ffi::{c_char, c_void};
 use std::ptr;
+use std::sync::{Arc, Mutex};
 
 /// Header preceding the user data in an Rc allocation.
 #[repr(C)]
 #[derive(Debug)]
 struct HewRcInner {
-    strong: usize,
-    weak: usize,
-    drop_fn: Option<unsafe extern "C" fn(*mut u8)>,
+    strong: Cell<usize>,
+    weak: Cell<usize>,
+    layout: HewValueLayout,
+    type_name: *const c_char,
+    owner: Option<Arc<RcAllocations>>,
+    owner_index: Cell<usize>,
+    dying: bool,
     data_size: usize,
     data_align: usize,
     data_offset: usize,
+}
+
+/// Actor-owned membership only; the release walker owns payload destruction.
+#[derive(Debug, Default)]
+pub(crate) struct RcAllocations {
+    inner: Mutex<Allocations>,
+}
+
+#[derive(Debug, Default)]
+struct Allocations {
+    blocks: Vec<*mut HewRcInner>,
+    closed: bool,
+}
+// SAFETY: membership and slot indices are protected by `inner`; each payload
+// and its non-atomic counts remain with their checked single-actor owner.
+unsafe impl Send for Allocations {}
+
+impl RcAllocations {
+    pub(crate) fn is_empty(&self) -> bool {
+        self.inner.lock_or_recover().blocks.is_empty()
+    }
+
+    pub(crate) fn close_empty(&self) -> bool {
+        let mut allocations = self.inner.lock_or_recover();
+        if !allocations.blocks.is_empty() {
+            return false;
+        }
+        allocations.closed = true;
+        true
+    }
+
+    unsafe fn register(self: &Arc<Self>, header: *mut HewRcInner) {
+        let mut allocations = self.inner.lock_or_recover();
+        assert!(
+            !allocations.closed,
+            "Rc allocation after actor cleanup quiesced"
+        );
+        // SAFETY: construction owns this fresh header; membership protects index.
+        unsafe {
+            (*header).owner_index.set(allocations.blocks.len());
+            (*header).owner = Some(self.clone());
+        }
+        allocations.blocks.push(header);
+    }
+
+    /// Detach the first finite wave. Its cursor drains successive waves in bounded
+    /// polls, marking every member before any authored payload cleanup.
+    /// # Safety
+    /// The actor terminal owner has drained ordinary turns and scoped tasks.
+    pub(crate) unsafe fn sweep(
+        self: &Arc<Self>,
+    ) -> Option<*mut crate::release_walker::HewReleaseCursor> {
+        let mut allocations = self.inner.lock_or_recover();
+        if allocations.blocks.is_empty() {
+            allocations.closed = true;
+            return None;
+        }
+        let blocks = std::mem::take(&mut allocations.blocks);
+        drop(allocations);
+        Some(crate::release_walker::HewReleaseCursor::new(vec![
+            crate::release_walker::ReleaseItem::RcSurvivors(Box::new(RcSurvivors {
+                count: blocks.len() as u64,
+                blocks,
+                owner: self.clone(),
+                waves_complete: false,
+                marked: 0,
+                released: 0,
+                freed: 0,
+                by_type: std::collections::BTreeMap::new(),
+                summary: Vec::new(),
+            })),
+        ]))
+    }
+}
+
+/// Retained terminal sweep. Preparation, release and header reclamation are
+/// cursor steps; every wave is fully pinned and marked before payload cleanup.
+#[derive(Debug)]
+pub(crate) struct RcSurvivors {
+    owner: Arc<RcAllocations>,
+    waves_complete: bool,
+    count: u64,
+    blocks: Vec<*mut HewRcInner>,
+    marked: usize,
+    released: usize,
+    freed: usize,
+    by_type: std::collections::BTreeMap<String, u64>,
+    summary: Vec<hew_observe_protocol::RcSurvivorType>,
+}
+
+impl RcSurvivors {
+    /// # Safety
+    /// The cursor owns this detached wave after actor/construction quiescence.
+    pub(crate) unsafe fn step(
+        mut self: Box<Self>,
+        pending: &mut Vec<crate::release_walker::ReleaseItem>,
+    ) -> Option<hew_observe_protocol::RcSweep> {
+        use crate::release_walker::ReleaseItem;
+        if let Some(&header) = self.blocks.get(self.marked) {
+            // SAFETY: no ordinary turn or scoped child can access this wave.
+            let inner = unsafe { &mut *header };
+            assert!(inner.strong.get() != 0 && !inner.dying);
+            // SAFETY: construction retains the immutable descriptor label through this wave.
+            let type_name = unsafe { std::ffi::CStr::from_ptr(inner.type_name) }
+                .to_string_lossy()
+                .into_owned();
+            *self.by_type.entry(type_name).or_default() += 1;
+            inner.dying = true;
+            inner.strong.set(0);
+            inner.weak.set(
+                inner
+                    .weak
+                    .get()
+                    .checked_add(1)
+                    .expect("Rc weak count overflow"),
+            );
+            inner.owner = None;
+            self.marked += 1;
+            pending.push(ReleaseItem::RcSurvivors(self));
+        } else if let Some(&header) = self.blocks.get(self.released) {
+            self.released += 1;
+            // SAFETY: all headers remain pinned until every payload closes.
+            let value = unsafe {
+                ReleaseItem::Value {
+                    slot: header.cast::<u8>().add((*header).data_offset).cast(),
+                    layout: (*header).layout,
+                }
+            };
+            pending.push(ReleaseItem::RcSurvivors(self));
+            pending.push(value);
+        } else if let Some(&header) = self.blocks.get(self.freed) {
+            self.freed += 1;
+            // SAFETY: all payloads have completed; this consumes one reserved pin.
+            unsafe { release_pin(header.cast()) };
+            pending.push(ReleaseItem::RcSurvivors(self));
+        } else if !self.waves_complete {
+            let mut allocations = self.owner.inner.lock_or_recover();
+            self.blocks = std::mem::take(&mut allocations.blocks);
+            if self.blocks.is_empty() {
+                allocations.closed = true;
+                self.waves_complete = true;
+            }
+            drop(allocations);
+            self.count += self.blocks.len() as u64;
+            self.marked = 0;
+            self.released = 0;
+            self.freed = 0;
+            pending.push(ReleaseItem::RcSurvivors(self));
+        } else if let Some((type_name, count)) = self.by_type.pop_first() {
+            self.summary
+                .push(hew_observe_protocol::RcSurvivorType { type_name, count });
+            pending.push(ReleaseItem::RcSurvivors(self));
+        } else {
+            return Some(hew_observe_protocol::RcSweep {
+                count: self.count,
+                by_type: self.summary,
+            });
+        }
+        None
+    }
+}
+
+pub(crate) fn current_allocations() -> Option<Arc<RcAllocations>> {
+    let actor = crate::actor::hew_actor_self();
+    if !actor.is_null() {
+        // SAFETY: the canonical dispatch context pins its actor incarnation.
+        return unsafe { &*actor }
+            .native_completion
+            .as_ref()
+            .map(|completion| completion.cleanup.rc.clone());
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        // Independently scheduled scoped tasks retain their creator attribution.
+        let owner = crate::fault::owning_actor_at_spawn();
+        let pin = crate::lifetime::live_actors::pin_actor_by_id(owner)?;
+        pin.actor()
+            .native_completion
+            .as_ref()
+            .map(|completion| completion.cleanup.rc.clone())
+    }
+    #[cfg(target_arch = "wasm32")]
+    None
+}
+
+unsafe fn unlink(header: *mut HewRcInner) {
+    // SAFETY: one final strong release owns this header. The membership lock
+    // serializes swap-removal against unrelated scoped-task allocations.
+    let Some(owner) = (unsafe { (*header).owner.take() }) else {
+        return;
+    };
+    let mut allocations = owner.inner.lock_or_recover();
+    // SAFETY: membership retains the header, and its index is locked here.
+    let index = unsafe { (*header).owner_index.get() };
+    assert_eq!(allocations.blocks.swap_remove(index), header);
+    if let Some(&moved) = allocations.blocks.get(index) {
+        // SAFETY: this index is read and written only under its owner's lock.
+        unsafe { (*moved).owner_index.set(index) };
+    }
+}
+
+unsafe fn release_pin(header: *mut c_void) {
+    // SAFETY: this consumes one temporary weak owner retained before cleanup.
+    unsafe { hew_weak_drop_rc(header.cast()) };
+}
+
+/// Take the final payload once and pin its header across opaque callbacks.
+unsafe fn release_strong(value: *mut u8) -> Option<(*mut HewRcInner, HewValueLayout)> {
+    if value.is_null() {
+        return None;
+    }
+    // SAFETY: the caller transfers a valid live strong handle.
+    let header = unsafe { header_from_data(value) };
+    // SAFETY: that strong owner pins the header during this count transition.
+    let inner = unsafe { &*header };
+    if inner.dying {
+        return None;
+    }
+    assert!(inner.strong.get() != 0, "Rc strong owner already released");
+    inner.strong.set(inner.strong.get() - 1);
+    if inner.strong.get() != 0 {
+        return None;
+    }
+    inner.weak.set(
+        inner
+            .weak
+            .get()
+            .checked_add(1)
+            .expect("Rc weak count overflow"),
+    );
+    let layout = inner.layout;
+    // SAFETY: final release owns removal and already reserved the weak pin.
+    unsafe { unlink(header) };
+    Some((header, layout))
 }
 
 /// Recover header pointer from data pointer.
@@ -49,7 +293,7 @@ unsafe fn header_from_data(data_ptr: *mut u8) -> *mut HewRcInner {
 /// alignment (a non-zero power of two).
 ///
 /// Codegen knows the payload type's ABI alignment and threads it in via
-/// `hew_rc_new`'s `align` argument. A value of `0` means "no explicit
+/// `hew_rc_new`'s payload descriptor. A value of `0` means "no explicit
 /// alignment" (e.g. a zero-sized payload); we fall back to `1`, which is
 /// the natural alignment of an empty allocation. A non-power-of-two value
 /// would be a codegen bug, so we round up to the next power of two rather
@@ -75,26 +319,21 @@ fn alloc_layout(data_size: usize, data_align: usize) -> Option<(Layout, usize)> 
 
 // ── Public C ABI ───────────────────────────────────────────────────────
 
-/// Create a new `Rc<T>`. Copies `size` bytes from `data` into a
+/// Create a new `Rc<T>`. Copies `layout.size` bytes from `data` into a
 /// heap-allocated block with a reference count header. Returns a pointer
 /// to the data region (caller uses this as the Rc handle).
 ///
-/// `align` is the payload type's ABI alignment, which codegen knows from
-/// the LLVM layout and threads in explicitly. The allocation is aligned to
-/// (at least) this value so that over-aligned payloads (SIMD vectors,
-/// cache-line-padded structs) are not under-aligned. Pass `0` only for a
-/// zero-sized / null payload.
-///
+/// The exact payload descriptor supplies alignment and synchronous/resumable
+/// release. The allocation is attributed to the checked invocation's creator.
 /// Returns null if the layout computation overflows.
 ///
 /// # Safety
 ///
-/// - `data` must be valid for `size` bytes (may be null if `size == 0`).
-/// - `align` must be the payload's true ABI alignment (or `0` when there
-///   is no payload). A value smaller than the payload's real alignment
-///   produces an under-aligned allocation.
-/// - `drop_fn`, if provided, will be called with a pointer to the data
-///   region when the strong count reaches zero.
+/// - `data` is valid for `layout.size` bytes (or null for an empty payload).
+/// - `layout` is the exact immutable payload descriptor and its callbacks remain
+///   live until all payloads and weak headers have been released.
+/// - `type_name` is an immutable NUL-terminated payload name with that lifetime.
+/// - `invocation` is null or a live checked invocation through this call.
 #[no_mangle]
 #[expect(
     clippy::cast_ptr_alignment,
@@ -102,10 +341,14 @@ fn alloc_layout(data_size: usize, data_align: usize) -> Option<(Layout, usize)> 
 )]
 pub unsafe extern "C" fn hew_rc_new(
     data: *const u8,
-    size: usize,
-    align: usize,
-    drop_fn: Option<unsafe extern "C" fn(*mut u8)>,
+    layout: *const HewValueLayout,
+    type_name: *const c_char,
+    invocation: *const crate::coro_state::HewCoroState,
 ) -> *mut u8 {
+    // SAFETY: codegen supplies an immutable exact payload descriptor.
+    let value_layout = unsafe { *layout };
+    let size = value_layout.size;
+    let align = value_layout.align;
     let data_align = normalise_align(align);
     let Some((layout, data_offset)) = alloc_layout(size, data_align) else {
         return ptr::null_mut();
@@ -121,9 +364,13 @@ pub unsafe extern "C" fn hew_rc_new(
     // SAFETY: ptr is freshly allocated with correct alignment.
     unsafe {
         header.write(HewRcInner {
-            strong: 1,
-            weak: 0,
-            drop_fn,
+            strong: Cell::new(1),
+            weak: Cell::new(0),
+            layout: value_layout,
+            type_name,
+            owner: None,
+            owner_index: Cell::new(0),
+            dying: false,
             data_size: size,
             data_align,
             data_offset,
@@ -144,7 +391,33 @@ pub unsafe extern "C" fn hew_rc_new(
         // SAFETY: data is valid for size bytes, data_ptr is valid for size.
         unsafe { ptr::copy_nonoverlapping(data, data_ptr, size) };
     }
+    // SAFETY: checked code supplies its live invocation; runtime controls may
+    // pass null and use the canonical activation/creator attribution.
+    let owner = unsafe { invocation.as_ref() }.map_or_else(current_allocations, |state| {
+        state.execution().rc_owner.clone()
+    });
+    if let Some(owner) = owner {
+        // SAFETY: construction has not published this fresh allocation.
+        unsafe { owner.register(header) };
+    }
     data_ptr
+}
+
+/// Return an owned ordinary fault for access to terminally consumed storage.
+///
+/// # Safety
+/// `value` is null or a live Rc handle, including a pinned dying survivor.
+#[no_mangle]
+pub unsafe extern "C" fn hew_rc_check(value: *mut u8) -> *mut crate::fault::HewFault {
+    // SAFETY: checked handles retain their header throughout each access.
+    if value.is_null() || unsafe { (*header_from_data(value)).dying } {
+        Box::into_raw(Box::new(crate::fault::HewFault::with_message(
+            crate::internal::types::HEW_TRAP_USER_PANIC,
+            "Rc payload is being released".into(),
+        )))
+    } else {
+        ptr::null_mut()
+    }
 }
 
 /// Increment the strong reference count. Returns the same data pointer.
@@ -159,8 +432,14 @@ pub unsafe extern "C" fn hew_rc_clone(ptr: *mut u8) -> *mut u8 {
     }
     // SAFETY: caller guarantees ptr is a valid Rc data pointer.
     let header = unsafe { header_from_data(ptr) };
-    // SAFETY: header is valid.
-    unsafe { (*header).strong += 1 };
+    // A descriptor copy cannot resurrect a dying payload. Its empty handle
+    // remains safely releasable, and every authored access checks it first.
+    // SAFETY: the input handle pins its header through this descriptor copy.
+    if unsafe { (*header).dying } {
+        return ptr::null_mut();
+    }
+    // SAFETY: header is valid and remains live under its strong owner.
+    unsafe { (*header).strong.set((*header).strong.get() + 1) };
     ptr
 }
 
@@ -179,60 +458,26 @@ pub unsafe extern "C" fn hew_rc_clone(ptr: *mut u8) -> *mut u8 {
 /// Must not be used after this call (use-after-free).
 #[no_mangle]
 pub unsafe extern "C-unwind" fn hew_rc_drop(ptr: *mut u8) {
-    if ptr.is_null() {
-        return;
+    struct Pin(*mut HewRcInner);
+    impl Drop for Pin {
+        fn drop(&mut self) {
+            // SAFETY: final release reserved this exact weak pin.
+            unsafe { release_pin(self.0.cast()) };
+        }
     }
-    // SAFETY: caller guarantees ptr is a valid Rc data pointer.
-    let header = unsafe { header_from_data(ptr) };
-
-    // Decrement the strong count and snapshot every field the post-drop path
-    // needs (`drop_fn`, `weak`, `data_size`, `data_align`) into locals while
-    // the `&mut` borrow is alive, then END the borrow before calling
-    // `drop_fn`. `drop_fn` is an opaque caller-supplied callback that may
-    // reach this same allocation; holding a live `&mut *header` across that
-    // call is aliasing UB (FND-01). After this block no reference into the
-    // allocation is live — only the raw `header` pointer and the locals.
-    let (strong_now, drop_fn, weak, data_size, data_align) = {
-        // SAFETY: header is valid; the borrow is confined to this block and
-        // dropped before any opaque call or deallocation below.
-        let inner = unsafe { &mut *header };
-        // Refcount invariant: strong must be > 0 before decrement. In release
-        // mode a zero-or-underflowed strong count indicates a double-free or
-        // use-after-free — both are memory-safety violations that must not
-        // pass silently. `assert!` aborts in release; `debug_assert!` would
-        // let the decrement wrap and corrupt the header in production builds.
-        assert!(
-            inner.strong > 0,
-            "Rc double-free: strong refcount is already 0"
-        );
-        inner.strong -= 1;
-        (
-            inner.strong,
-            inner.drop_fn,
-            inner.weak,
-            inner.data_size,
-            inner.data_align,
-        )
+    // SAFETY: the caller transfers one strong owner.
+    let Some((header, layout)) = (unsafe { release_strong(ptr) }) else {
+        return;
     };
-
-    if strong_now == 0 {
-        // Call destructor on the data. No reference into the allocation is
-        // live here, so `drop_fn` may freely reach back into it.
-        if let Some(drop_fn) = drop_fn {
-            // SAFETY: drop_fn contract per hew_rc_new.
-            unsafe { drop_fn(ptr) };
-        }
-
-        if weak == 0 {
-            // SAFETY: data_size was validated at construction time.
-            let (layout, _) =
-                alloc_layout(data_size, data_align).expect("layout was valid at construction");
-            // SAFETY: header was allocated with this layout; no borrow of the
-            // allocation is live (the `&mut *header` ended above).
-            unsafe { dealloc(header.cast(), layout) };
-        }
-        // If weak > 0, the allocation stays alive for weak references
-        // but the data is considered dead (strong == 0).
+    let _pin = Pin(header);
+    // A synchronous descriptor never substitutes for a resumable close.
+    assert!(
+        layout.release_start.is_none(),
+        "Rc payload needs resumable release"
+    );
+    if let Some(drop) = layout.drop_fn {
+        // SAFETY: the pin retains storage, with no header borrow across cleanup.
+        unsafe { drop(ptr.cast()) };
     }
 }
 
@@ -249,36 +494,22 @@ pub unsafe extern "C" fn hew_rc_release_begin(
     layout: *const hew_cabi::value::HewValueLayout,
 ) -> *mut crate::release_walker::HewReleaseCursor {
     use crate::release_walker::{HewReleaseCursor, ReleaseItem};
-    unsafe fn release_pin(header: *mut std::ffi::c_void) {
-        // SAFETY: this is the temporary weak owner reserved below.
-        unsafe { hew_weak_drop_rc(header.cast()) };
-    }
     let mut pending = Vec::new();
-    if !value.is_null() {
-        // SAFETY: the caller transfers one strong owner and its exact descriptor.
-        unsafe {
-            let header = header_from_data(value);
-            let inner = &mut *header;
-            assert!(inner.strong > 0, "Rc strong owner already released");
-            let layout = *layout;
-            assert_eq!(
-                (layout.size, layout.align),
-                (inner.data_size, inner.data_align)
-            );
-            inner.strong -= 1;
-            if inner.strong == 0 {
-                inner.weak = inner.weak.checked_add(1).expect("Rc weak count overflow");
-                pending.push(ReleaseItem::Storage {
-                    owner: header.cast(),
-                    free: release_pin,
-                });
-                if layout.drop_fn.is_some() || layout.release_start.is_some() {
-                    pending.push(ReleaseItem::Value {
-                        slot: value.cast(),
-                        layout,
-                    });
-                }
-            }
+    // SAFETY: the caller transfers one strong owner and its payload descriptor.
+    if let Some((header, stored)) = unsafe { release_strong(value) } {
+        // SAFETY: the retained header stores the construction descriptor.
+        assert_eq!((stored.size, stored.align), unsafe {
+            ((*layout).size, (*layout).align)
+        });
+        pending.push(ReleaseItem::Storage {
+            owner: header.cast(),
+            free: release_pin,
+        });
+        if stored.drop_fn.is_some() || stored.release_start.is_some() {
+            pending.push(ReleaseItem::Value {
+                slot: value.cast(),
+                layout: stored,
+            });
         }
     }
     HewReleaseCursor::new(pending)
@@ -297,7 +528,7 @@ pub unsafe extern "C" fn hew_rc_strong_count(ptr: *mut u8) -> usize {
     // SAFETY: caller guarantees ptr is valid.
     let header = unsafe { header_from_data(ptr) };
     // SAFETY: header is valid.
-    unsafe { (*header).strong }
+    unsafe { (*header).strong.get() }
 }
 
 /// Get the current weak reference count.
@@ -313,7 +544,7 @@ pub unsafe extern "C" fn hew_rc_weak_count(ptr: *mut u8) -> usize {
     // SAFETY: caller guarantees ptr is valid.
     let header = unsafe { header_from_data(ptr) };
     // SAFETY: header is valid.
-    unsafe { (*header).weak }
+    unsafe { (*header).weak.get() }
 }
 
 /// Get the data pointer from an `Rc`. In the current layout the handle
@@ -352,7 +583,7 @@ pub unsafe extern "C-unwind" fn hew_rc_set(ptr: *mut u8, replacement: *mut u8) {
     // SAFETY: the swap validates both slots before transferring their owners.
     if let Some(drop_fn) = unsafe { swap_payload(ptr, replacement) } {
         // SAFETY: replacement now owns the displaced payload, independently of Rc.
-        unsafe { drop_fn(replacement) };
+        unsafe { drop_fn(replacement.cast()) };
     }
 }
 
@@ -379,10 +610,7 @@ pub unsafe extern "C-unwind" fn hew_rc_set_release(
     }
 }
 
-unsafe fn swap_payload(
-    ptr: *mut u8,
-    replacement: *mut u8,
-) -> Option<unsafe extern "C" fn(*mut u8)> {
+unsafe fn swap_payload(ptr: *mut u8, replacement: *mut u8) -> Option<HewValueDropThunk> {
     assert!(!ptr.is_null(), "Rc.set requires a non-null Rc data pointer");
     assert!(
         !replacement.is_null(),
@@ -397,8 +625,11 @@ unsafe fn swap_payload(
         // SAFETY: the shared header remains live while strong > 0. This
         // immutable borrow ends at the block boundary before the callback.
         let inner = unsafe { &*header };
-        assert!(inner.strong > 0, "Rc.set requires a live strong reference");
-        (inner.data_size, inner.data_align, inner.drop_fn)
+        assert!(
+            inner.strong.get() > 0,
+            "Rc.set requires a live strong reference"
+        );
+        (inner.data_size, inner.data_align, inner.layout.drop_fn)
     };
 
     assert_eq!(
@@ -454,7 +685,7 @@ pub unsafe extern "C" fn hew_rc_downgrade(ptr: *mut u8) -> *mut u8 {
     // SAFETY: caller guarantees ptr is valid.
     let header = unsafe { header_from_data(ptr) };
     // SAFETY: header is valid.
-    unsafe { (*header).weak += 1 };
+    unsafe { (*header).weak.set((*header).weak.get() + 1) };
     header.cast()
 }
 
@@ -480,9 +711,12 @@ pub unsafe extern "C" fn hew_weak_clone_rc(weak_ptr: *mut u8) -> *mut u8 {
     }
     let header = weak_ptr.cast::<HewRcInner>();
     // SAFETY: caller guarantees weak_ptr is a live Rc header pointer.
-    let inner = unsafe { &mut *header };
-    assert!(inner.weak > 0, "Weak<Rc> clone requires a live weak handle");
-    inner.weak += 1;
+    let inner = unsafe { &*header };
+    assert!(
+        inner.weak.get() > 0,
+        "Weak<Rc> clone requires a live weak handle"
+    );
+    inner.weak.set(inner.weak.get() + 1);
     weak_ptr
 }
 
@@ -506,13 +740,13 @@ pub unsafe extern "C" fn hew_weak_upgrade_rc(weak_ptr: *mut u8) -> *mut u8 {
     // allocated with align_of::<HewRcInner>().
     let header = weak_ptr.cast::<HewRcInner>();
     // SAFETY: weak_ptr is a header pointer.
-    let inner = unsafe { &mut *header };
+    let inner = unsafe { &*header };
 
-    if inner.strong == 0 {
+    if inner.strong.get() == 0 {
         return ptr::null_mut();
     }
 
-    inner.strong += 1;
+    inner.strong.set(inner.strong.get() + 1);
     // SAFETY: data pointer is immediately after header, within the allocation.
     unsafe { weak_ptr.add(inner.data_offset) }
 }
@@ -541,17 +775,17 @@ pub unsafe extern "C" fn hew_weak_drop_rc(weak_ptr: *mut u8) {
     // allocated with align_of::<HewRcInner>().
     let header = weak_ptr.cast::<HewRcInner>();
     // SAFETY: weak_ptr is a header pointer.
-    let inner = unsafe { &mut *header };
+    let inner = unsafe { &*header };
 
     // Same rationale as the strong-count assert in hew_rc_drop: a zero weak
     // count before decrement is a double-free and must abort in release.
     assert!(
-        inner.weak > 0,
+        inner.weak.get() > 0,
         "Weak<Rc> double-free: weak refcount is already 0"
     );
-    inner.weak -= 1;
+    inner.weak.set(inner.weak.get() - 1);
 
-    if inner.weak == 0 && inner.strong == 0 {
+    if inner.weak.get() == 0 && inner.strong.get() == 0 {
         // SAFETY: data_size was validated at construction time.
         let (layout, _) = alloc_layout(inner.data_size, inner.data_align)
             .expect("layout was valid at construction");
@@ -568,6 +802,30 @@ pub unsafe extern "C" fn hew_weak_drop_rc(weak_ptr: *mut u8) {
     reason = "test data is allocated with proper alignment by hew_rc_new"
 )]
 mod tests {
+    unsafe fn new_for_test(
+        data: *const u8,
+        size: usize,
+        align: usize,
+        drop_fn: Option<unsafe extern "C" fn(*mut u8)>,
+    ) -> *mut u8 {
+        let layout = HewValueLayout {
+            size,
+            align,
+            ownership_kind: hew_cabi::value::HewTypeOwnershipKind::LayoutManaged,
+            clone_fn: None,
+            // SAFETY: a non-unwinding C callback also satisfies C-unwind.
+            drop_fn: unsafe {
+                std::mem::transmute::<
+                    Option<unsafe extern "C" fn(*mut u8)>,
+                    Option<HewValueDropThunk>,
+                >(drop_fn)
+            },
+            release_start: None,
+        };
+        // SAFETY: the test supplies matching payload storage and callback.
+        unsafe { hew_rc_new(data, &raw const layout, c"test".as_ptr(), ptr::null()) }
+    }
+
     use super::*;
 
     #[test]
@@ -575,7 +833,7 @@ mod tests {
         // SAFETY: Test exercises the Rc FFI lifecycle with valid pointers.
         unsafe {
             let val: i32 = 42;
-            let rc = hew_rc_new(
+            let rc = new_for_test(
                 (&raw const val).cast(),
                 size_of::<i32>(),
                 align_of::<i32>(),
@@ -615,7 +873,7 @@ mod tests {
         unsafe {
             DROP_COUNT.store(0, Ordering::SeqCst);
             let val: i32 = 99;
-            let rc = hew_rc_new(
+            let rc = new_for_test(
                 (&raw const val).cast(),
                 size_of::<i32>(),
                 align_of::<i32>(),
@@ -655,12 +913,15 @@ mod tests {
             // Miri. This is the exact window FND-01 closes.
             // SAFETY: `data` is a valid Rc data pointer for this allocation.
             let header = unsafe { header_from_data(data) };
+            // SAFETY: this callback consumes the one explicit weak owner;
+            // final strong release must retain its independent temporary pin.
+            unsafe { hew_weak_drop_rc(header.cast()) };
             // SAFETY: header is valid; strong is 0 here (decremented before the
             // call), so the allocation is still live and writable. Bump weak up
             // and back so the value is preserved but the WRITE actually occurs.
             unsafe {
-                (*header).weak += 1;
-                (*header).weak -= 1;
+                (*header).weak.set((*header).weak.get() + 1);
+                (*header).weak.set((*header).weak.get() - 1);
             }
         }
 
@@ -668,13 +929,16 @@ mod tests {
         unsafe {
             OBSERVED.store(0, Ordering::SeqCst);
             let val: i32 = 1234;
-            let rc = hew_rc_new(
+            let rc = new_for_test(
                 (&raw const val).cast(),
                 size_of::<i32>(),
                 align_of::<i32>(),
                 Some(drop_reads_self),
             );
-            // The destructor stores the payload value (1234) into OBSERVED.
+            let weak = hew_rc_downgrade(rc);
+            assert!(!weak.is_null());
+            assert_eq!(hew_rc_weak_count(rc), 1);
+            // The destructor consumes weak and records the payload (1234).
             hew_rc_drop(rc);
             assert_eq!(OBSERVED.load(Ordering::SeqCst), 1234);
         }
@@ -685,7 +949,7 @@ mod tests {
         // SAFETY: Test exercises weak reference upgrade with valid Rc pointers.
         unsafe {
             let val: i32 = 77;
-            let rc = hew_rc_new(
+            let rc = new_for_test(
                 (&raw const val).cast(),
                 size_of::<i32>(),
                 align_of::<i32>(),
@@ -722,7 +986,7 @@ mod tests {
         // SAFETY: every handle is released exactly once in the asserted order.
         unsafe {
             let value = 17_i32;
-            let rc = hew_rc_new(
+            let rc = new_for_test(
                 (&raw const value).cast(),
                 size_of::<i32>(),
                 align_of::<i32>(),
@@ -745,10 +1009,10 @@ mod tests {
             hew_rc_drop(rc);
 
             let header = weak.cast::<HewRcInner>();
-            assert_eq!(((*header).strong, (*header).weak), (0, 2));
+            assert_eq!(((*header).strong.get(), (*header).weak.get()), (0, 2));
             assert!(hew_weak_upgrade_rc(weak).is_null());
             hew_weak_drop_rc(weak2);
-            assert_eq!(((*header).strong, (*header).weak), (0, 1));
+            assert_eq!(((*header).strong.get(), (*header).weak.get()), (0, 1));
             hew_weak_drop_rc(weak);
         }
     }
@@ -766,7 +1030,7 @@ mod tests {
         unsafe {
             DROPS.store(0, Ordering::SeqCst);
             let value = 5_i64;
-            let rc = hew_rc_new(
+            let rc = new_for_test(
                 (&raw const value).cast(),
                 size_of::<i64>(),
                 align_of::<i64>(),
@@ -817,7 +1081,7 @@ mod tests {
         unsafe {
             DROP_SEQUENCE.store(0, Ordering::SeqCst);
             let initial = Payload { value: 1 };
-            let rc = hew_rc_new(
+            let rc = new_for_test(
                 (&raw const initial).cast(),
                 size_of::<Payload>(),
                 align_of::<Payload>(),
@@ -867,7 +1131,7 @@ mod tests {
                 weak: ptr::null_mut(),
                 value: 1,
             };
-            let rc = hew_rc_new(
+            let rc = new_for_test(
                 (&raw const initial).cast(),
                 size_of::<Payload>(),
                 align_of::<Payload>(),
@@ -913,7 +1177,7 @@ mod tests {
         unsafe {
             DROPS.store(0, Ordering::SeqCst);
             let initial = ();
-            let rc = hew_rc_new(
+            let rc = new_for_test(
                 (&raw const initial).cast(),
                 0,
                 align_of::<()>(),
@@ -943,7 +1207,7 @@ mod tests {
         // Rc allocation that is dropped before the test exits.
         unsafe {
             let value = Over { _x: [1; 64] };
-            let rc = hew_rc_new(
+            let rc = new_for_test(
                 (&raw const value).cast(),
                 size_of::<Over>(),
                 align_of::<Over>(),

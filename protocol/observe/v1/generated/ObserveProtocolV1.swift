@@ -93,6 +93,7 @@ private func encodeTraceStreamMismatchLiteral<Key: CodingKey>(_ value: String, t
 public let observeSchemaVersion = "v1"
 public let actionableTraceEventTypes: Set<String> = [
     "actor.delivery_refused",
+    "actor.rc_sweep",
     "send",
     "spawn",
     "crash",
@@ -821,6 +822,66 @@ public struct TraceOverrun: Codable, Sendable {
     }
 }
 
+public struct RcSurvivorType: Codable, Sendable {
+    public let typeName: String
+    public let count: UInt64
+
+    enum CodingKeys: String, CodingKey {
+        case typeName = "type_name"
+        case count
+    }
+
+    public init(
+        typeName: String = "",
+        count: UInt64 = 0
+    ) {
+        self.typeName = typeName
+        self.count = count
+    }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        typeName = try values.decode(String.self, forKey: .typeName)
+        count = try decodeUInt64Decimal(from: values, forKey: .count)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(typeName, forKey: .typeName)
+        try values.encode(String(count), forKey: .count)
+    }
+}
+
+public struct RcSweep: Codable, Sendable {
+    public let count: UInt64
+    public let byType: [RcSurvivorType]
+
+    enum CodingKeys: String, CodingKey {
+        case count
+        case byType = "by_type"
+    }
+
+    public init(
+        count: UInt64 = 0,
+        byType: [RcSurvivorType] = []
+    ) {
+        self.count = count
+        self.byType = byType
+    }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        count = try decodeUInt64Decimal(from: values, forKey: .count)
+        byType = try values.decode([RcSurvivorType].self, forKey: .byType)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(String(count), forKey: .count)
+        try values.encode(byType, forKey: .byType)
+    }
+}
+
 public struct TraceEvent: Codable, Sendable {
     public let sequence: UInt64
     public let traceId: String
@@ -835,6 +896,7 @@ public struct TraceEvent: Codable, Sendable {
     public let msgType: Int32
     public let timestampNs: UInt64
     public let handlerName: String?
+    public let rcSweep: RcSweep?
     public let reason: String?
 
     enum CodingKeys: String, CodingKey {
@@ -851,6 +913,7 @@ public struct TraceEvent: Codable, Sendable {
         case msgType = "msg_type"
         case timestampNs = "timestamp_ns"
         case handlerName = "handler_name"
+        case rcSweep = "rc_sweep"
         case reason
     }
 
@@ -868,6 +931,7 @@ public struct TraceEvent: Codable, Sendable {
         msgType: Int32 = 0,
         timestampNs: UInt64 = 0,
         handlerName: String? = nil,
+        rcSweep: RcSweep? = nil,
         reason: String? = nil
     ) {
         self.sequence = sequence
@@ -883,6 +947,7 @@ public struct TraceEvent: Codable, Sendable {
         self.msgType = msgType
         self.timestampNs = timestampNs
         self.handlerName = handlerName
+        self.rcSweep = rcSweep
         self.reason = reason
     }
 
@@ -901,6 +966,11 @@ public struct TraceEvent: Codable, Sendable {
         msgType = try values.decode(Int32.self, forKey: .msgType)
         timestampNs = try decodeUInt64Decimal(from: values, forKey: .timestampNs)
         handlerName = try values.decode(String?.self, forKey: .handlerName)
+        if values.contains(.rcSweep) {
+            rcSweep = try values.decode(RcSweep?.self, forKey: .rcSweep)
+        } else {
+            rcSweep = nil
+        }
         if values.contains(.reason) {
             reason = try values.decode(String?.self, forKey: .reason)
         } else {
@@ -935,6 +1005,7 @@ public struct TraceEvent: Codable, Sendable {
         try values.encode(msgType, forKey: .msgType)
         try values.encode(String(timestampNs), forKey: .timestampNs)
         try values.encode(handlerName, forKey: .handlerName)
+        try values.encode(rcSweep, forKey: .rcSweep)
         try values.encode(reason, forKey: .reason)
     }
 }

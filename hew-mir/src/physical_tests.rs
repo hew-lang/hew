@@ -16,8 +16,8 @@ mod utf8_fixture {
 
 use hew_hir::{lower_program_host_target, ItemId, ResolutionCtx};
 use hew_sir::{
-    BoundaryOperand, CallableInstance, CheckedFailure, FunctionSourceOrigin, Operand, Provenance,
-    SemBlock, SemCallConv, SemCallable, SemCallableKind, SemSignature, ValueDef,
+    BoundaryOperand, CheckedFailure, FunctionSourceOrigin, Operand, Provenance, SemBlock,
+    SemCallConv, SemCallable, SemCallableKind, SemSignature, ValueDef,
 };
 use hew_types::{module_registry::ModuleRegistry, Checker, DefId, SendFact, TypeFacts, ValueClass};
 

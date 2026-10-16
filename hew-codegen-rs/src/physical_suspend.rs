@@ -245,6 +245,49 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
     pub(super) fn emit_finish(&self, status: IntValue<'ctx>) -> CodegenResult<()> {
         if let Some(frame) = &self.frame {
             let pointer = self.ctx.ptr_type(AddressSpace::default());
+            if matches!(
+                self.module.callables[self.function.callable.0 as usize].instance,
+                hew_mir::physical::CallableInstance::ActorConstruction { .. }
+            ) {
+                let sweep = get_or_declare_external(
+                    self.llvm,
+                    "hew_coro_state_rc_sweep",
+                    pointer.fn_type(&[pointer.into()], false),
+                )?;
+                let again = self
+                    .ctx
+                    .append_basic_block(self.value, "construction.rc.sweep");
+                let release = self
+                    .ctx
+                    .append_basic_block(self.value, "construction.rc.release");
+                let done = self
+                    .ctx
+                    .append_basic_block(self.value, "construction.rc.done");
+                self.builder
+                    .build_unconditional_branch(again)
+                    .llvm_ctx("finish constructor ownership")?;
+                self.builder.position_at_end(again);
+                let cursor = call_value(
+                    &self.builder,
+                    sweep,
+                    &[frame.state.into()],
+                    "construction.rc.cursor",
+                )?
+                .into_pointer_value();
+                let present = self
+                    .builder
+                    .build_is_not_null(cursor, "construction.rc.present")
+                    .llvm_ctx("test constructor survivors")?;
+                self.builder
+                    .build_conditional_branch(present, release, done)
+                    .llvm_ctx("drain constructor survivors")?;
+                self.builder.position_at_end(release);
+                super::release::drain(&self.value_emitter(), Some(frame), cursor)?;
+                self.builder
+                    .build_unconditional_branch(again)
+                    .llvm_ctx("drain next constructor wave")?;
+                self.builder.position_at_end(done);
+            }
             let finish = get_or_declare_external(
                 self.llvm,
                 "hew_coro_state_finish",
@@ -559,7 +602,19 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         let frame = self.frame.as_ref().ok_or_else(|| {
             CodegenError::FailClosed("resumable call requires a resumable caller".into())
         })?;
-        let child = frame.init_child(self.ctx, self.llvm, &self.builder)?;
+        let child = if matches!(
+            self.module.callables[callee.0 as usize].instance,
+            hew_mir::physical::CallableInstance::ActorConstruction { .. }
+        ) {
+            frame.init_child_with(
+                self.ctx,
+                self.llvm,
+                &self.builder,
+                "hew_coro_state_init_construction",
+            )?
+        } else {
+            frame.init_child(self.ctx, self.llvm, &self.builder)?
+        };
         let mut args = args.to_vec();
         args.push(child.into());
         let child_frame = call_value(

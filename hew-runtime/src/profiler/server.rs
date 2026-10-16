@@ -671,6 +671,7 @@ fn trace_event_model(record: &crate::tracing::TraceEventRecord) -> TraceEvent {
         timestamp_ns: event.timestamp_ns,
         handler_name,
         reason: record.reason.as_deref().map(str::to_owned),
+        rc_sweep: record.rc_sweep.clone(),
     }
 }
 

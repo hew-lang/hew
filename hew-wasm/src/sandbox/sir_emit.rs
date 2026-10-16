@@ -329,6 +329,8 @@ fn native_capability(symbol: &str) -> Option<String> {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Function {
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub actor_construction: bool,
     pub id: u32,
     pub name: String,
     pub params: Vec<Value>,
@@ -1173,6 +1175,10 @@ impl<'m> Walker<'m> {
     fn function(&mut self, id: u32, function: &SemFunction) -> Result<Function, EmitError> {
         self.index_value_types(function);
         Ok(Function {
+            actor_construction: matches!(
+                self.module.callables[function.callable.0 as usize].instance,
+                hew_sir::CallableInstance::ActorConstruction { .. }
+            ),
             id,
             name: function.name.clone(),
             params: function.params.iter().map(block_arg).collect(),
@@ -1687,6 +1693,15 @@ impl<'m> Walker<'m> {
                     "normal": encode_edge(normal),
                     "unwind": encode_unwind(unwind),
                 });
+                if *family == hew_types::RuntimeCallFamily::RcNew {
+                    call["shared_payload_type"] = serde_json::Value::String(
+                        self.value_types
+                            .get(&args[0].operand.value)
+                            .ok_or_else(|| EmitError::new("Rc payload lacks its checked type"))?
+                            .user_facing()
+                            .to_string(),
+                    );
+                }
                 // A failure that leaves the inputs with the caller, whose
                 // unwind edge stores the moved receiver back.
                 if family

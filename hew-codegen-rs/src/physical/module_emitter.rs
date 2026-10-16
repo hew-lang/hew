@@ -126,13 +126,6 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                 &format!("__hew_shared_payload_{}_layout", glue.id.0),
                 &glue.payload,
             )?;
-            let Some(action) = glue.payload.destroy else {
-                continue;
-            };
-            let layout = self.module.target.layout(&glue.payload.ty).ok_or_else(|| {
-                CodegenError::FailClosed("shared payload has no target layout".into())
-            })?;
-            self.emit_value_drop_callback(&shared_payload_drop_symbol(glue.id), layout, action)?;
         }
         Ok(())
     }

@@ -217,6 +217,7 @@ fn spawn_bounded_test_actor(
             0,
             None,
             ptr::null_mut(),
+            ptr::null_mut(),
         )
     };
     assert!(fault.is_null(), "test actor spawn faulted");

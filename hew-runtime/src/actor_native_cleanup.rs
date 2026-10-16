@@ -46,6 +46,8 @@ enum Releasing {
     Stop,
     /// The actor state itself.
     State,
+    /// Detached actor-local Rc survivors.
+    Rc,
 }
 
 #[derive(Debug)]
@@ -56,6 +58,7 @@ struct Work {
     crash: Option<HewNativeCrashContext>,
     stop_started: bool,
     state_started: bool,
+    rc_sweep: Option<hew_observe_protocol::RcSweep>,
     releasing: Releasing,
     fault: *mut HewFault,
 }
@@ -70,6 +73,7 @@ pub(crate) struct Cleanup {
     state_release: AtomicPtr<c_void>,
     stop_release: AtomicPtr<c_void>,
     terminal: AtomicI32,
+    pub(crate) rc: std::sync::Arc<crate::rc::RcAllocations>,
 }
 
 impl Cleanup {
@@ -127,6 +131,7 @@ impl Cleanup {
         !self.state_release.load(Ordering::Acquire).is_null()
             || !self.stop_release.load(Ordering::Acquire).is_null()
             || self.inbox.lock_or_recover().owners != 0
+            || !self.rc.is_empty()
     }
 
     pub(crate) unsafe fn begin_terminal(&self, actor: &HewActor, terminal: i32) {
@@ -204,6 +209,7 @@ pub(crate) unsafe fn drive_actor_cleanup(actor: &HewActor) -> bool {
             crash: None,
             stop_started: false,
             state_started: false,
+            rc_sweep: None,
             releasing: Releasing::State,
             fault: ptr::null_mut(),
         })
@@ -244,6 +250,9 @@ pub(crate) unsafe fn drive_actor_cleanup(actor: &HewActor) -> bool {
                 pending = true;
                 break;
             }
+            if let Some(summary) = driver.take_rc_sweep() {
+                work.rc_sweep = Some(summary);
+            }
             let fault = driver.take_fault();
             let failed = !fault.is_null();
             let stopped_by_termination = matches!(work.releasing, Releasing::Stop | Releasing::Crash)
@@ -270,7 +279,7 @@ pub(crate) unsafe fn drive_actor_cleanup(actor: &HewActor) -> bool {
                         .crash_action
                         .store(if failed { 0 } else { context.action }, Ordering::Release);
                 }
-                Releasing::Stop | Releasing::State => {}
+                Releasing::Stop | Releasing::State | Releasing::Rc => {}
             }
         }
         let cursor = cleanup.inbox.lock_or_recover().pending.pop_front();
@@ -375,6 +384,14 @@ pub(crate) unsafe fn drive_actor_cleanup(actor: &HewActor) -> bool {
                 }
             }
         }
+        // State release may have left cycles or created fresh Rc values while
+        // suspending. Every wave is detached and marked before consuming it.
+        // SAFETY: terminal ownership follows turn and scoped-task quiescence.
+        if let Some(cursor) = unsafe { cleanup.rc.sweep() } {
+            work.releasing = Releasing::Rc;
+            work.driver = Some(ReleaseDriver::new(cursor));
+            continue;
+        }
         break;
     }
     let _ = crate::execution_context::set_current_context(previous);
@@ -420,6 +437,9 @@ pub(crate) unsafe fn drive_actor_cleanup(actor: &HewActor) -> bool {
         }
     }
     if terminal != 0 {
+        if let Some(summary) = work.rc_sweep.take() {
+            crate::tracing::record_rc_survivors(actor, summary);
+        }
         actor.actor_state.store(terminal, Ordering::Release);
         // SAFETY: all consuming callbacks and their frames have completed.
         super::finish_actor_terminal(actor, terminal);

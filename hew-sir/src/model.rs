@@ -88,6 +88,12 @@ pub enum CallableInstance {
     ActorSupervisorIntercept {
         layer: u32,
     },
+    /// One checked spawn boundary. Written arguments are evaluated by its
+    /// caller; defaults and lifecycle initialization share its allocation owner.
+    ActorConstruction {
+        enclosing: CallableId,
+        site: hew_hir::HirNodeId,
+    },
     Generic(SirInstanceKey),
     /// A concrete closure body, resolved by its environment descriptor.
     Closure(ClosureId),

@@ -1353,11 +1353,6 @@ pub(super) fn vector_descriptor_symbol(id: PhysicalVectorId) -> String {
     format!("__hew_vector_element_layout_{}", id.0)
 }
 
-/// The payload destructor one shared allocation installs at construction.
-pub(super) fn shared_payload_drop_symbol(id: hew_mir::physical::PhysicalSharedId) -> String {
-    format!("__hew_shared_payload_{}_drop", id.0)
-}
-
 pub(super) fn map_key_descriptor_symbol(id: PhysicalMapId) -> String {
     format!("__hew_map_key_{}", id.0)
 }

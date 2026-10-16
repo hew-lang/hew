@@ -1080,8 +1080,8 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_actor_spawn_native( *mut c_void, usize, HewDispatchFn, unsafe extern \"C\" fn(*mut c_void), HewStateCloneFn, Option<hew_cabi::value::HewValueReleaseStart>, i32, i32, usize, *const HewNativePeriodicHandler, usize, Option<HewSysDispatchFn>, Option<HewNativeCrashFn>, *mut *mut HewFault, Option<mailbox::HewCoalesceMatchFn>, i32, Option<hew_cabi::value::HewValueReleaseStart>, *mut *mut HewReleaseCursor, ) -> HewLocalPidId",
-        "wasm32-wasip1": "fn hew_actor_spawn_native( *mut c_void, usize, HewDispatchFn, unsafe extern \"C\" fn(*mut c_void), HewStateCloneFn, Option<hew_cabi::value::HewValueReleaseStart>, i32, i32, usize, *const HewNativePeriodicHandler, usize, Option<HewSysDispatchFn>, Option<HewNativeCrashFn>, *mut *mut HewFault, Option<mailbox::HewCoalesceMatchFn>, i32, Option<hew_cabi::value::HewValueReleaseStart>, *mut *mut HewReleaseCursor, ) -> HewLocalPidId"
+        "native": "fn hew_actor_spawn_native( *mut c_void, usize, HewDispatchFn, unsafe extern \"C\" fn(*mut c_void), HewStateCloneFn, Option<hew_cabi::value::HewValueReleaseStart>, i32, i32, usize, *const HewNativePeriodicHandler, usize, Option<HewSysDispatchFn>, Option<HewNativeCrashFn>, *mut *mut HewFault, Option<mailbox::HewCoalesceMatchFn>, i32, Option<hew_cabi::value::HewValueReleaseStart>, *mut *mut HewReleaseCursor, *mut HewCoroState, ) -> HewLocalPidId",
+        "wasm32-wasip1": "fn hew_actor_spawn_native( *mut c_void, usize, HewDispatchFn, unsafe extern \"C\" fn(*mut c_void), HewStateCloneFn, Option<hew_cabi::value::HewValueReleaseStart>, i32, i32, usize, *const HewNativePeriodicHandler, usize, Option<HewSysDispatchFn>, Option<HewNativeCrashFn>, *mut *mut HewFault, Option<mailbox::HewCoalesceMatchFn>, i32, Option<hew_cabi::value::HewValueReleaseStart>, *mut *mut HewReleaseCursor, *mut HewCoroState, ) -> HewLocalPidId"
       },
       "symbol": "hew_actor_spawn_native"
     },
@@ -3211,6 +3211,21 @@
         "native",
         "wasm32-wasip1"
       ],
+      "classification": "unclassified-stdlib",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_checked_scope_set_rc_owner( *mut HewTaskScope, *const HewCoroState, )",
+        "wasm32-wasip1": "fn hew_checked_scope_set_rc_owner( *mut HewTaskScope, *const HewCoroState, )"
+      },
+      "symbol": "hew_checked_scope_set_rc_owner"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
       "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
@@ -4580,6 +4595,21 @@
         "native",
         "wasm32-wasip1"
       ],
+      "classification": "unclassified-stdlib",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_coro_state_init_construction( *mut HewCoroState, *const HewCoroState, )",
+        "wasm32-wasip1": "fn hew_coro_state_init_construction( *mut HewCoroState, *const HewCoroState, )"
+      },
+      "symbol": "hew_coro_state_init_construction"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
       "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
@@ -4649,6 +4679,21 @@
         "wasm32-wasip1": "fn hew_coro_state_publish( *mut HewCoroState, i32) -> i32"
       },
       "symbol": "hew_coro_state_publish"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "unclassified-stdlib",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_coro_state_rc_sweep( *mut HewCoroState, ) -> *mut HewReleaseCursor",
+        "wasm32-wasip1": "fn hew_coro_state_rc_sweep( *mut HewCoroState, ) -> *mut HewReleaseCursor"
+      },
+      "symbol": "hew_coro_state_rc_sweep"
     },
     {
       "availability": [
@@ -13525,6 +13570,21 @@
         "native",
         "wasm32-wasip1"
       ],
+      "classification": "unclassified-stdlib",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_rc_check( *mut u8) -> *mut HewFault",
+        "wasm32-wasip1": "fn hew_rc_check( *mut u8) -> *mut HewFault"
+      },
+      "symbol": "hew_rc_check"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
@@ -13601,12 +13661,12 @@
         "wasm32-wasip1"
       ],
       "classification": "stable",
-      "extent": "length-or-count",
-      "nul": "not-applicable",
+      "extent": "no-in-signature-extent",
+      "nul": "nul-terminated",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_rc_new( *const u8, usize, usize, Option<unsafe extern \"C\" fn(*mut u8)>, ) -> *mut u8",
-        "wasm32-wasip1": "fn hew_rc_new( *const u8, usize, usize, Option<unsafe extern \"C\" fn(*mut u8)>, ) -> *mut u8"
+        "native": "fn hew_rc_new( *const u8, *const HewValueLayout, *const c_char, *const HewCoroState, ) -> *mut u8",
+        "wasm32-wasip1": "fn hew_rc_new( *const u8, *const HewValueLayout, *const c_char, *const HewCoroState, ) -> *mut u8"
       },
       "symbol": "hew_rc_new"
     },
@@ -14250,6 +14310,21 @@
         "wasm32-wasip1": "fn hew_release_next( *mut HewReleaseCursor) -> *mut c_void"
       },
       "symbol": "hew_release_next"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "unclassified-stdlib",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_release_poll( *mut HewReleaseCursor, *const HewCoroState, *mut *mut c_void, ) -> i32",
+        "wasm32-wasip1": "fn hew_release_poll( *mut HewReleaseCursor, *const HewCoroState, *mut *mut c_void, ) -> i32"
+      },
+      "symbol": "hew_release_poll"
     },
     {
       "availability": [

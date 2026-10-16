@@ -37,6 +37,7 @@ pub struct HewCoroState {
 #[derive(Debug)]
 pub(crate) struct InvocationContext {
     pub(crate) actor_turn: crate::lifetime::live_actors::ActorIncarnation,
+    pub(crate) rc_owner: Option<std::sync::Arc<crate::rc::RcAllocations>>,
     pub(crate) actor_message_type: i32,
     pub(crate) actor_caller: crate::actor_caller::HewCallerStamp,
     pub(crate) request_deadline: crate::request_deadline::RequestDeadline,
@@ -139,6 +140,7 @@ unsafe fn context_with_token(
     let observer = unsafe { hew_cancel_observe(token, waker.descriptor()) };
     InvocationContext {
         actor_turn: crate::lifetime::live_actors::ActorIncarnation::NONE,
+        rc_owner: crate::rc::current_allocations(),
         actor_message_type: 0,
         actor_caller: crate::actor_caller::HewCallerStamp::default(),
         request_deadline: crate::request_deadline::RequestDeadline::current(),
@@ -227,6 +229,68 @@ pub unsafe extern "C" fn hew_coro_state_init_child(
     unsafe { storage.write(child) };
 }
 
+/// Initialize a checked actor construction in ordinary caller-owned storage.
+/// Its allocation list is transferred unchanged when the actor is published.
+///
+/// # Safety
+/// The storage and parent obey `hew_coro_state_init_child`'s lifetime contract.
+#[no_mangle]
+pub unsafe extern "C" fn hew_coro_state_init_construction(
+    storage: *mut HewCoroState,
+    parent: *const HewCoroState,
+) {
+    // SAFETY: the suspended caller retains its execution context and token.
+    let parent = unsafe { &*parent };
+    let execution = parent.execution();
+    // SAFETY: this owned context retains the same cancellation ancestry.
+    unsafe { hew_cancel_token_retain(execution.token) };
+    // SAFETY: parent retains the descriptor through initialization.
+    let mut context = unsafe {
+        context_with_token(
+            execution.waker.descriptor(),
+            execution.token,
+            execution.budget.clone(),
+            std::ptr::null_mut(),
+        )
+    };
+    context.actor_turn = execution.actor_turn;
+    context.actor_message_type = execution.actor_message_type;
+    context.actor_caller = execution.actor_caller;
+    context.request_deadline = execution.request_deadline;
+    context.rc_owner = Some(std::sync::Arc::default());
+    let child = HewCoroState::with_context(
+        Box::into_raw(Box::new(context)),
+        hew_cabi::coro::OWNS_CONTEXT,
+        parent.invocation.poll_suppression,
+    );
+    // SAFETY: the caller grants aligned, uninitialized invocation storage.
+    unsafe { storage.write(child) };
+}
+
+/// Detach the next failed-construction survivor wave, or finish its owner.
+/// Successful publication has already transferred the list and returns null.
+///
+/// # Safety
+/// `state` is the exclusively executing construction invocation. Prior waves
+/// and scoped children have drained before calling again.
+#[no_mangle]
+pub unsafe extern "C" fn hew_coro_state_rc_sweep(
+    state: *mut HewCoroState,
+) -> *mut crate::release_walker::HewReleaseCursor {
+    // SAFETY: the generated construction body owns this execution context.
+    let execution = unsafe { &mut *state }.execution_mut();
+    let Some(owner) = &execution.rc_owner else {
+        return std::ptr::null_mut();
+    };
+    // SAFETY: ordinary body cleanup and scoped children have quiesced.
+    if let Some(cursor) = unsafe { owner.sweep() } {
+        cursor
+    } else {
+        execution.rc_owner = None;
+        std::ptr::null_mut()
+    }
+}
+
 /// Create a cleanup invocation with independent cancellation ancestry.
 ///
 /// # Safety
@@ -254,6 +318,7 @@ pub unsafe extern "C" fn hew_coro_state_cleanup_child(
     unsafe {
         let child_execution = (*child).execution_mut();
         child_execution.actor_turn = execution.actor_turn;
+        child_execution.rc_owner.clone_from(&execution.rc_owner);
         child_execution.actor_message_type = execution.actor_message_type;
         child_execution.actor_caller = execution.actor_caller;
         child_execution.request_deadline = crate::request_deadline::RequestDeadline::default();
@@ -425,6 +490,7 @@ pub unsafe extern "C" fn hew_coro_state_enter_token(
         )
     };
     context.actor_turn = execution.actor_turn;
+    context.rc_owner.clone_from(&execution.rc_owner);
     context.actor_message_type = execution.actor_message_type;
     context.actor_caller = execution.actor_caller;
     context.request_deadline = execution.request_deadline;

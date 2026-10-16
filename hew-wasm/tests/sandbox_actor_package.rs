@@ -1053,8 +1053,28 @@ fn coalescing_accepts_replacement_and_reports_fallback_discard() {
 }
 
 #[test]
-fn actor_stop_drains_accepted_work_and_refuses_new_work_in_both_runtimes() {
+fn actor_stop_drains_owned_work_in_both_runtimes() {
     assert_native_manifest("actor-stop-drains", hew_compile::SourceSet::in_memory());
+    let trace = assert_native_manifest("actor-rc-survivors", hew_compile::SourceSet::in_memory());
+    let sweeps: Vec<_> = trace["events"]
+        .as_array()
+        .expect("trace events")
+        .iter()
+        .filter(|event| event["message"] == "actor.rc_sweep")
+        .map(|event| {
+            serde_json::from_str::<serde_json::Value>(
+                event["text"].as_str().expect("snapshot payload"),
+            )
+            .expect("typed sweep")
+        })
+        .collect();
+    assert_eq!(
+        sweeps
+            .iter()
+            .map(|event| event["rc_sweep"]["count"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["132", "2"]
+    );
 }
 
 #[test]

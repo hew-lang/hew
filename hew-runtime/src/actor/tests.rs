@@ -4733,6 +4733,7 @@ fn native_graceful_stop_drains_accepted_turns_before_completion() {
             0,
             None,
             ptr::null_mut(),
+            ptr::null_mut(),
         )
     };
     assert!(fault.is_null());

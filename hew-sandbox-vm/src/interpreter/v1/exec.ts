@@ -16,7 +16,13 @@ import type {
   SandboxTrace,
   TrapKind,
 } from "../types.js";
-import { UNIT, cloneValue, toJsonValue, type VmValue } from "../values.js";
+import {
+  UNIT,
+  cloneValue,
+  toJsonValue,
+  type VmValue,
+  type RcOwner,
+} from "../values.js";
 import type {
   ActorShape,
   SupervisorShape,
@@ -92,6 +98,7 @@ type CallerStamp =
 const DEFAULT_ACTOR_STOP_NS = 5_000_000_000;
 
 interface FrameContext {
+  rcOwner?: RcOwner | null;
   pollBudget?: { remaining: number };
   pollSuppression?: number;
   pendingCancellation?: Fault;
@@ -133,6 +140,7 @@ interface ActorMessage {
 }
 
 interface ActorInstance {
+  rcOwner: RcOwner;
   identity: bigint;
   id: string;
   layout: ActorShape;
@@ -210,6 +218,7 @@ interface TaskGroup {
 }
 
 interface Activation {
+  rcOwner: RcOwner | null;
   context: FrameContext;
   fn: FunctionV1;
   block: BlockV1;
@@ -504,6 +513,12 @@ class ExecutorV1 {
         for (const arm of term.arms) arm.fields.forEach(record);
     }
     return {
+      rcOwner: fn.actor_construction
+        ? { blocks: new Set(), closed: false }
+        : (caller?.rcOwner ??
+          executionContext.rcOwner ??
+          executionContext.actor?.rcOwner ??
+          null),
       context: executionContext,
       fn,
       block: this.blockAt(fn, fn.entry),
@@ -1019,6 +1034,7 @@ class ExecutorV1 {
         const context: FrameContext = {
           id,
           actor: act.context.actor,
+          rcOwner: act.rcOwner,
           requestDeadline: this.requestDeadline(act),
           returned: (value) =>
             this.closeValueAsync(value, null, (fault) =>
@@ -1194,6 +1210,7 @@ class ExecutorV1 {
         const context: FrameContext = {
           id: task.id,
           actor: act.context.actor,
+          rcOwner: act.rcOwner,
           requestDeadline: this.requestDeadline(act),
           returned: (value) => settle(value, null),
           failed: (fault) => settle(UNIT, fault),
@@ -1486,6 +1503,9 @@ class ExecutorV1 {
           [
             "RcNew",
             "RcClone",
+            "RcDowngrade",
+            "WeakCloneRc",
+            "WeakUpgradeRc",
             "RcGet",
             "RcIsUnique",
             "RcSet",
@@ -1498,7 +1518,18 @@ class ExecutorV1 {
             act,
             term,
             args,
-            sharedOperation(entry.family, args),
+            sharedOperation(
+              entry.family,
+              args,
+              act.rcOwner,
+              term.shared_payload_type ?? "",
+              (value) =>
+                this.variant(
+                  term.result_shape,
+                  value ? "OptionSome" : "OptionNone",
+                  value ? [value] : [],
+                ),
+            ),
           );
           return;
         }
@@ -1790,6 +1821,8 @@ class ExecutorV1 {
       if (step.done) {
         this.completeShim(act, term, step.value);
         resume();
+      } else if (step.value.kind === "fault") {
+        fail({ kind: "panic", message: step.value.message });
       } else if (step.value.kind === "release") {
         const request = step.value;
         this.closeValueAsync(request.value, this.pipeFault(act), (fault) => {
@@ -1812,6 +1845,7 @@ class ExecutorV1 {
           request.args,
           next,
           fail,
+          act.rcOwner,
         );
         act.context.cancel = (fault) => child.cancel?.(fault);
       }
@@ -1906,7 +1940,103 @@ class ExecutorV1 {
     this.takeEdge(act, term.normal);
   }
 
+  private sweepRcOwner(
+    owner: RcOwner,
+    actor: ActorInstance | null,
+    done: (fault: Fault | null) => void,
+  ): void {
+    let firstFault: Fault | null = null;
+    let count = 0;
+    const byType = new Map<string, number>();
+    const schedule = (work: () => void) =>
+      this.scheduler.enqueue(actor?.id ?? "actor:root", work);
+    const next = () => {
+      const blocks = owner.blocks;
+      owner.blocks = new Set();
+      if (!blocks.size) {
+        owner.closed = true;
+        if (actor && count)
+          this.trace.snapshot("actor.rc_sweep", {
+            actor_id: actor.id,
+            rc_sweep: {
+              count: String(count),
+              by_type: [...byType]
+                .sort(([a], [b]) => a.localeCompare(b))
+                .map(([type_name, amount]) => ({
+                  type_name,
+                  count: String(amount),
+                })),
+            },
+          });
+        done(firstFault);
+        return;
+      }
+      const marking = blocks.values();
+      const payloads = blocks.values();
+      let remaining = 64;
+      const release = () => {
+        if (!remaining--) {
+          remaining = 64;
+          schedule(release);
+          return;
+        }
+        const item = payloads.next();
+        if (item.done) {
+          schedule(next);
+          return;
+        }
+        const cell = item.value;
+        const payload = cell.value;
+        cell.value = UNIT;
+        blocks.delete(cell);
+        this.closeValueAsync(
+          payload,
+          this.faultText(firstFault),
+          (fault) => {
+            firstFault = combineFaults(firstFault, fault);
+            release();
+          },
+          actor,
+          owner,
+        );
+      };
+      const mark = () => {
+        for (let i = 0; i < 64; i++) {
+          const item = marking.next();
+          if (item.done) {
+            release();
+            return;
+          }
+          const cell = item.value;
+          cell.dying = true;
+          cell.refs = 0;
+          cell.owner = null;
+          count += 1;
+          byType.set(cell.typeName, (byType.get(cell.typeName) ?? 0) + 1);
+        }
+        schedule(mark);
+      };
+      mark();
+    };
+    next();
+  }
+
+  private finishConstruction(act: Activation, done: () => void): boolean {
+    if (!act.fn.actor_construction || !act.rcOwner) return false;
+    const owner = act.rcOwner;
+    act.rcOwner = null;
+    this.running = false;
+    this.sweepRcOwner(owner, act.context.actor, (fault) => {
+      act.fault = combineFaults(act.fault, fault);
+      done();
+      const current = this.current;
+      this.scheduler.enqueue(current.context.id, () => this.runFrame(current));
+    });
+    return true;
+  }
+
   private returnFrom(act: Activation, value: VmValue): void {
+    if (this.finishConstruction(act, () => this.returnFrom(act, value))) return;
     const caller = act.caller;
     if (!caller) {
       this.running = false;
@@ -1968,6 +2098,8 @@ class ExecutorV1 {
   }
 
   private resumeUnwind(act: Activation, handback: VmValue | null): void {
+    if (this.finishConstruction(act, () => this.resumeUnwind(act, handback)))
+      return;
     const fault = act.fault;
     if (!fault) {
       throw new Error(`${act.fn.name}: resume_unwind with no pending fault`);
@@ -2466,6 +2598,7 @@ class ExecutorV1 {
     fault: string | null,
     done: (fault: Fault | null) => void,
     actor: ActorInstance | null = this.current.context.actor,
+    rcOwner: RcOwner | null = actor?.rcOwner ?? this.current.rcOwner,
   ): void {
     const pending = [value];
     let firstFault: Fault | null = null;
@@ -2481,10 +2614,18 @@ class ExecutorV1 {
           case "rc":
             if (!value.closed) {
               value.closed = true;
-              if (--value.cell.refs === 0) {
+              if (value.cell && !value.cell.dying && --value.cell.refs === 0) {
+                value.cell.owner?.blocks.delete(value.cell);
+                value.cell.owner = null;
                 pending.push(value.cell.value);
                 value.cell.value = UNIT;
               }
+            }
+            break;
+          case "weak":
+            if (!value.closed) {
+              value.closed = true;
+              value.cell.weak -= 1;
             }
             break;
           case "task": {
@@ -2535,6 +2676,7 @@ class ExecutorV1 {
                   [value],
                   () => next(),
                   next,
+                  rcOwner,
                 );
                 return;
               }
@@ -2616,10 +2758,12 @@ class ExecutorV1 {
     args: VmValue[],
     returned: (value: VmValue) => void,
     failed: (fault: Fault) => void,
+    rcOwner: RcOwner | null = actor?.rcOwner ?? null,
   ): FrameContext {
     const context: FrameContext = {
       id: actor?.id ?? "actor:root",
       actor,
+      rcOwner,
       returned,
       failed,
     };
@@ -2726,6 +2870,7 @@ class ExecutorV1 {
           throw new Error(`actor layout ${operation.actor} is missing`);
         let supplied = 0;
         const actor: ActorInstance = {
+          rcOwner: act.rcOwner ?? { blocks: new Set(), closed: false },
           identity: ++this.actorIdentity,
           id: this.ids.actor(),
           layout,
@@ -2769,6 +2914,7 @@ class ExecutorV1 {
           });
         };
         const started = () => {
+          act.rcOwner = null;
           actor.busy = false;
           this.dispatchActor(actor);
           this.completeShim(act, term, handle);
@@ -3582,20 +3728,24 @@ class ExecutorV1 {
         this.faultText(fault),
         () =>
           this.drainMailbox(actor, this.faultText(fault), () => {
-            actor.completed = true;
-            for (const wake of actor.closed.splice(0)) wake();
-            for (const admit of actor.admission.splice(0)) admit();
-            if (actor.supervisor) {
-              const { owner, child } = actor.supervisor;
-              if (action === "Restart") this.restartChild(owner, child, [debt]);
-              else if (action === "Escalate")
-                this.escalateSupervisor(owner, [debt]);
-              else {
-                owner.spent.add(child);
-                owner.recovering.delete(child);
-                this.wakeRoles();
+            this.sweepRcOwner(actor.rcOwner, actor, (sweepFault) => {
+              actor.crashing = combineFaults(actor.crashing, sweepFault);
+              actor.completed = true;
+              for (const wake of actor.closed.splice(0)) wake();
+              for (const admit of actor.admission.splice(0)) admit();
+              if (actor.supervisor) {
+                const { owner, child } = actor.supervisor;
+                if (action === "Restart")
+                  this.restartChild(owner, child, [debt]);
+                else if (action === "Escalate")
+                  this.escalateSupervisor(owner, [debt]);
+                else {
+                  owner.spent.add(child);
+                  owner.recovering.delete(child);
+                  this.wakeRoles();
+                }
               }
-            }
+            });
           }),
         actor,
       );
@@ -4005,29 +4155,35 @@ class ExecutorV1 {
           this.faultText(actor.closingFault),
           (fault) => {
             actor.closingFault = combineFaults(actor.closingFault, fault);
-            // Stopped cleanup belongs to the completion barrier, independently
-            // of handler-crash debt and supervisor restart decisions.
-            actor.crashing = null;
-            if (actor.closingFault) {
-              actor.closeFaultDebt = ++this.nextFaultDebt;
-              this.faultDebts.add(actor.closeFaultDebt);
-            }
-            actor.completed = true;
-            actor.alive = false;
-            actor.busy = false;
-            this.trace.snapshot(
-              actor.terminating ? "actor.terminate" : "actor.stop",
-              { actor_id: actor.id },
-            );
-            this.settleSupervisedEnd(
-              actor,
-              actor.closingFault
-                ? "Crashed"
-                : actor.terminating
-                  ? "Terminated"
-                  : "Stopped",
-            );
-            for (const wake of actor.closed.splice(0)) wake();
+            this.sweepRcOwner(actor.rcOwner, actor, (sweepFault) => {
+              actor.closingFault = combineFaults(
+                actor.closingFault,
+                sweepFault,
+              );
+              // Stopped cleanup belongs to the completion barrier, independently
+              // of handler-crash debt and supervisor restart decisions.
+              actor.crashing = null;
+              if (actor.closingFault) {
+                actor.closeFaultDebt = ++this.nextFaultDebt;
+                this.faultDebts.add(actor.closeFaultDebt);
+              }
+              actor.completed = true;
+              actor.alive = false;
+              actor.busy = false;
+              this.trace.snapshot(
+                actor.terminating ? "actor.terminate" : "actor.stop",
+                { actor_id: actor.id },
+              );
+              this.settleSupervisedEnd(
+                actor,
+                actor.closingFault
+                  ? "Crashed"
+                  : actor.terminating
+                    ? "Terminated"
+                    : "Stopped",
+              );
+              for (const wake of actor.closed.splice(0)) wake();
+            });
           },
           actor,
         );
@@ -4324,7 +4480,9 @@ function toComparable(value: VmValue): unknown {
     case "vector":
       return value.items.map(toComparable);
     case "rc":
-      return toComparable(value.cell.value);
+      return "Rc";
+    case "weak":
+      return "Weak";
     case "map":
       return [...value.entries.values()].map((entry) => [
         toComparable(entry.key),

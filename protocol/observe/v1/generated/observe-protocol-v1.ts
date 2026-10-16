@@ -2,6 +2,7 @@
 export const OBSERVE_SCHEMA_VERSION = "v1" as const;
 export const ACTIONABLE_TRACE_EVENT_TYPES = new Set([
   "actor.delivery_refused",
+  "actor.rc_sweep",
   "send",
   "spawn",
   "crash",
@@ -144,6 +145,18 @@ export interface TraceOverrun {
   [key: string]: unknown;
 }
 
+export interface RcSurvivorType {
+  type_name: string;
+  count: bigint;
+  [key: string]: unknown;
+}
+
+export interface RcSweep {
+  count: bigint;
+  by_type: RcSurvivorType[];
+  [key: string]: unknown;
+}
+
 export interface TraceEvent {
   sequence: bigint;
   trace_id: string;
@@ -158,6 +171,7 @@ export interface TraceEvent {
   msg_type: number;
   timestamp_ns: bigint;
   handler_name: string | null;
+  rc_sweep?: RcSweep | null;
   reason?: string | null;
   [key: string]: unknown;
 }
@@ -388,6 +402,24 @@ export function decodeTraceOverrun(value: unknown): TraceOverrun {
   return output;
 }
 
+export function decodeRcSurvivorType(value: unknown): RcSurvivorType {
+  const input = asRecord(value);
+  const output = { ...input,
+    type_name: asString(input.type_name),
+    count: asBoundedBigInt(input.count, 0n, 18446744073709551615n),
+  } as RcSurvivorType;
+  return output;
+}
+
+export function decodeRcSweep(value: unknown): RcSweep {
+  const input = asRecord(value);
+  const output = { ...input,
+    count: asBoundedBigInt(input.count, 0n, 18446744073709551615n),
+    by_type: asArray(input.by_type).map((item) => decodeRcSurvivorType(item)),
+  } as RcSweep;
+  return output;
+}
+
 export function decodeTraceEvent(value: unknown): TraceEvent {
   const input = asRecord(value);
   const output = { ...input,
@@ -404,6 +436,7 @@ export function decodeTraceEvent(value: unknown): TraceEvent {
     msg_type: asBoundedNumber(input.msg_type, -2147483648, 2147483647),
     timestamp_ns: asBoundedBigInt(input.timestamp_ns, 0n, 18446744073709551615n),
     handler_name: (input.handler_name === null ? null : asString(input.handler_name)),
+    rc_sweep: input.rc_sweep === undefined ? null : (input.rc_sweep === null ? null : decodeRcSweep(input.rc_sweep)),
     reason: input.reason === undefined ? null : (input.reason === null ? null : asString(input.reason)),
   } as TraceEvent;
   validateActorAttribution('source', output.source_attribution, output.source_actor);

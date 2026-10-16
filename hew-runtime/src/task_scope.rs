@@ -119,6 +119,7 @@ pub struct HewTaskScope {
     tasks: *mut HewTask,
     pub(crate) cancel_token: *mut HewCancellationToken,
     checked_deadline: *mut crate::coro_sleep::HewCoroSleep,
+    pub(crate) rc_owner: Option<std::sync::Arc<crate::rc::RcAllocations>>,
 }
 
 impl Drop for HewTaskScope {

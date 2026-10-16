@@ -16,8 +16,9 @@ use hew_observe_protocol::{
 const FIXTURE_COUNTER_INCREMENTS: u64 = 7;
 const EXPECTED_COUNTER_MESSAGES: u64 = FIXTURE_COUNTER_INCREMENTS + 1;
 const EXPECTED_PINGER_MESSAGES: u64 = 1;
-const EXPECTED_ACTORS_LIVE: u64 = 2;
-const EXPECTED_ACTOR_TURNS: u64 = EXPECTED_COUNTER_MESSAGES + EXPECTED_PINGER_MESSAGES;
+// The stopped LocalCycle handle remains live until the fixture exits.
+const EXPECTED_ACTORS_LIVE: u64 = 3;
+const EXPECTED_ACTOR_TURNS: u64 = EXPECTED_COUNTER_MESSAGES + EXPECTED_PINGER_MESSAGES + 1;
 const EXPECTED_TASKS_SPAWNED: u64 = EXPECTED_ACTORS_LIVE;
 
 #[derive(Debug, Default)]
@@ -29,7 +30,7 @@ struct Snapshot {
     _cluster_members: Vec<ClusterMember>,
     _connections: Vec<ConnectionInfo>,
     _routing: RoutingSnapshot,
-    _traces: TraceBatch,
+    traces: TraceBatch,
     _supervisors: Vec<SupervisorRow>,
     _crashes: Vec<CrashEntry>,
     scrape: String,
@@ -307,7 +308,7 @@ fn fetch_snapshot(client: &reqwest::blocking::Client, base_url: &str) -> Result<
         _cluster_members: fetch_json(client, base_url, "/api/cluster/members")?,
         _connections: fetch_json(client, base_url, "/api/connections")?,
         _routing: fetch_json(client, base_url, "/api/routing/table")?,
-        _traces: fetch_json(client, base_url, "/api/traces")?,
+        traces: fetch_json(client, base_url, "/api/traces")?,
         _supervisors: fetch_json(client, base_url, "/api/supervisors")?,
         _crashes: fetch_json(client, base_url, "/api/crashes")?,
         scrape: fetch_text(client, base_url, "/api/observe/scrape")?,
@@ -369,6 +370,20 @@ fn validate_snapshot(snapshot: &Snapshot) -> Result<(), String> {
             "Pinger processed {} messages, expected exactly {EXPECTED_PINGER_MESSAGES}",
             pinger.msgs
         ));
+    }
+
+    let sweep = snapshot
+        .traces
+        .events
+        .iter()
+        .find_map(|event| event.rc_sweep.as_ref())
+        .ok_or("actor-terminal Rc sweep is missing from the typed trace batch")?;
+    if sweep.count != 1
+        || sweep.by_type.len() != 1
+        || sweep.by_type[0].count != 1
+        || !sweep.by_type[0].type_name.contains("RcNode")
+    {
+        return Err(format!("unexpected Rc sweep summary: {sweep:?}"));
     }
 
     validate_scheduler_metrics(&snapshot.metrics)?;

@@ -4104,6 +4104,16 @@ impl Checker {
                 .warnings
                 .push(TypeError::actor_ref_cycle(span, &desc));
         }
+        for cycle in crate::cycle::detect_strong_rc_cycles(output.types()) {
+            let span = cycle
+                .iter()
+                .filter_map(|name| self.type_def_spans.get(name).cloned())
+                .min_by_key(|span| span.start)
+                .unwrap_or(0..0);
+            output
+                .warnings
+                .push(TypeError::strong_rc_cycle(span, &cycle.join(" -> ")));
+        }
         output.cycle_capable_actors = cycle_capable;
         if output.errors.is_empty() {
             output

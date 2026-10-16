@@ -234,6 +234,12 @@ pub(super) fn semantic_callables(checked: &hew_sir::CheckedModule<'_>) -> BTreeS
     let mut resumable = BTreeSet::new();
     let mut calls = BTreeMap::<_, Vec<_>>::new();
     for function in &module.functions {
+        if matches!(
+            module.callables[function.callable.0 as usize].instance,
+            hew_sir::CallableInstance::ActorConstruction { .. }
+        ) {
+            resumable.insert(function.callable);
+        }
         let mut types = BTreeMap::new();
         for parameter in &function.params {
             types.insert(parameter.value, parameter.ty.clone());
@@ -413,6 +419,9 @@ pub(super) fn semantic_callables(checked: &hew_sir::CheckedModule<'_>) -> BTreeS
                     });
                 }
                 hew_sir::SemTerminator::RtCall { family, args, .. } => {
+                    if *family == hew_types::RuntimeCallFamily::RcNew {
+                        resumable.insert(function.callable);
+                    }
                     if family.releases_receiver_contents() {
                         let (intrinsic, dependencies) = semantic_release_dependencies(
                             module,
@@ -467,6 +476,12 @@ pub(super) fn verify_callables(module: &PhysicalModule) -> Result<(), PhysicalEr
     let mut calls = BTreeMap::<_, Vec<_>>::new();
     let releases = super::release::ReleaseEffects::compute(module);
     for function in &module.functions {
+        if matches!(
+            module.callables[function.callable.0 as usize].instance,
+            hew_sir::CallableInstance::ActorConstruction { .. }
+        ) {
+            resumable.insert(function.callable);
+        }
         for block in &function.blocks {
             for operation in &block.ops {
                 let action = match operation {
@@ -560,6 +575,9 @@ pub(super) fn verify_callables(module: &PhysicalModule) -> Result<(), PhysicalEr
                     resumable.insert(function.callable);
                 }
                 PhysicalTerminator::RuntimeCall { action, args, .. } => {
+                    if action.family == hew_types::RuntimeCallFamily::RcNew {
+                        resumable.insert(function.callable);
+                    }
                     if super::runtime_receiver_release(module, action)?
                         .is_some_and(|action| releases.suspends(action))
                     {

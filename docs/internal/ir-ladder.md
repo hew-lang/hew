@@ -344,10 +344,10 @@ whose header `RetMode` is `Fresh` (§4.2), `WireCodec{Encode}` (bytes) and
 `WireCodec{Decode}` (value) results (node.rs:2254-2258), `RcIntrinsic{New,
 Downgrade, WeakUpgrade}` results (`hew_rc_new`, `hew_rc_downgrade`,
 `hew_weak_upgrade_rc` mint; `WeakUpgrade` mints `Option<Rc<T>>`;
-`RcIntrinsic{New}` passes `hew_drop$T` of the payload as `hew_rc_new`'s
-`drop_fn`, rc.rs:103-107 — today `rc_payload_drop_thunk`, llvm.rs:16052 —
-without which `hew_rc_drop`/`hew_rc_set` (rc.rs:345) release nothing inside
-the payload), `CoerceToDynTrait` result, `MakeGenerator`/`GenBlock` result,
+`RcIntrinsic{New}` passes the exact payload descriptor, type label and checked
+invocation to `hew_rc_new`. Final strong release and actor-terminal survivor
+cleanup consume that descriptor through the common release walker, including
+resumable payload cleanup), `CoerceToDynTrait` result, `MakeGenerator`/`GenBlock` result,
 `SpawnLambdaActor` handle, `SpawnedCall { bound: true }` handle (a
 `Linear Task<T>`; `bound: false` and `ForkBlock` produce **no value**, §1.5),
 `ActorGenStream` (a `Stream`, `AffineResource`), `RegexLiteralRef` (its type is
@@ -1899,7 +1899,7 @@ double-insert fixture [P2].
 | `BoxedActor` (compiler-internal) | AffineResource | None | rejected (6b) | release symbol named at P4 or the variant deleted (§1.1) | none |
 | `LambdaPid` | AffineResource | Retain | `hew_lambda_actor_clone` (new handle into `dst`); a send is `Transfer` regardless (rule 5) | `hew_lambda_actor_release` | none |
 | `Generator` | AffineResource | None | rejected (6b) | `hew_gen_coro_destroy` | none |
-| `Rc<T>` / `Weak<T>` | AffineResource | Retain | `hew_rc_clone` / `hew_weak_clone_rc`; `hew_rc_new` receives `hew_drop$T` as its payload `drop_fn` (rc.rs:103-107) | `hew_rc_drop` / `hew_weak_drop_rc` | none |
+| `Rc<T>` / `Weak<T>` | AffineResource | Retain | `hew_rc_clone` / `hew_weak_clone_rc`; `hew_rc_new` receives the exact payload descriptor and creator invocation | `hew_rc_drop` / `hew_weak_drop_rc` | none |
 | `#[resource] T` (record) | AffineResource | None | rejected (6b) | user `close` (consumes) | none |
 | opaque `#[resource]` (std handles), `MonitorRef`, `CancellationToken` | AffineResource | None | rejected (6b) | `release_symbol` from `LifecycleRegistry` / `hew_cancel_token_release` | none |
 | `Duplex`, halves, `Sender`/`Receiver`, `Stream`/`Sink`, `StreamPair`, regex `Pattern` | AffineResource | None | rejected (6b) | `hew_duplex_close(_half)`, channel/stream close symbols, `hew_reply_channel_free`; `StreamPair`/`Pattern` via their declared `close(consume self)` (`hew_stream_pair_free`, …) | none |

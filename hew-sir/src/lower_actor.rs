@@ -627,8 +627,13 @@ impl Builder<'_, '_> {
         if expression.node != self.function.node {
             return None;
         }
-        let CallableInstance::SupervisorChild { supervisor, child } = &self.callable.instance
-        else {
+        let instance = match self.callable.instance {
+            CallableInstance::ActorConstruction { enclosing, .. } => {
+                &self.service.callable(enclosing)?.instance
+            }
+            _ => &self.callable.instance,
+        };
+        let CallableInstance::SupervisorChild { supervisor, child } = instance else {
             return None;
         };
         self.service
@@ -1089,6 +1094,14 @@ impl Builder<'_, '_> {
         &mut self,
         expression: &HirExpr,
     ) -> Result<Option<ValueId>, String> {
+        if let HirExprKind::Spawn { args, .. } = &expression.kind {
+            if !matches!(self.callable.instance, CallableInstance::ActorConstruction { site, .. } if site == expression.node)
+                && super::supervisor::declaration(self.service.module, &self.ty(&expression.ty))
+                    .is_none()
+            {
+                return self.lower_actor_construction(expression, args);
+            }
+        }
         let (operation, sources, argument_order) = self.actor_arguments(expression)?;
         let signature = self.actor_signature(&operation)?;
         let mut values = Vec::new();
@@ -1174,6 +1187,173 @@ impl Builder<'_, '_> {
             )?);
         }
         self.emit_actor_call(operation, signature, args)
+    }
+
+    /// Materialize defaults/init/start as one ordinary checked initializer.
+    fn actor_construction_function(
+        &self,
+        expression: &HirExpr,
+        parameters: &[HirBinding],
+    ) -> HirFn {
+        let mut spawn = expression.clone();
+        spawn.ty = self.ty(&expression.ty);
+        let HirExprKind::Spawn { args, .. } = &mut spawn.kind else {
+            unreachable!()
+        };
+        for ((_, argument), parameter) in args.iter_mut().zip(parameters) {
+            argument.ty = parameter.ty.clone();
+            argument.kind = HirExprKind::BindingRef {
+                name: parameter.name.clone(),
+                resolved: hew_hir::ResolvedRef::Binding(parameter.id),
+            };
+            argument.intent = hew_hir::IntentKind::Consume;
+        }
+        HirFn {
+            failure_domain: hew_types::CallableFailureDomain::HewFault,
+            id: self.function.id,
+            node: self.function.node,
+            declaration: self.function.declaration,
+            name: format!("{}::construction{}", self.function.name, expression.node.0),
+            type_params: Vec::new(),
+            params: parameters.to_vec(),
+            var_self_receiver: None,
+            terminal_receiver: None,
+            return_ty: spawn.ty.clone(),
+            body: HirBlock {
+                node: expression.node,
+                scope: hew_hir::ScopeId(0),
+                statements: Vec::new(),
+                tail: Some(Box::new(spawn)),
+                ty: self.ty(&expression.ty),
+                span: expression.span.clone(),
+            },
+            span: expression.span.clone(),
+            is_generator: false,
+            intrinsic_id: None,
+        }
+    }
+
+    fn require_actor_construction(
+        &mut self,
+        expression: &HirExpr,
+        parameters: &[HirBinding],
+    ) -> Result<CallableId, String> {
+        let instance = CallableInstance::ActorConstruction {
+            enclosing: self.callable.id,
+            site: expression.node,
+        };
+        if let Some(callable) = self
+            .service
+            .table
+            .callables
+            .iter()
+            .find(|callable| callable.instance == instance)
+        {
+            return Ok(callable.id);
+        }
+        let id = CallableId(
+            u32::try_from(self.service.table.callables.len()).map_err(|_| "too many callables")?,
+        );
+        let function = self.actor_construction_function(expression, parameters);
+        let signature = SemSignature {
+            failure_domain: hew_types::CallableFailureDomain::HewFault,
+            params: parameters
+                .iter()
+                .map(|parameter| {
+                    Ok(SemAbiParam {
+                        ty: parameter.ty.clone(),
+                        passing: if OwnKind::of_ty(
+                            &parameter.ty,
+                            self.service.checked_facts.rows(),
+                        )? == OwnKind::Owned
+                        {
+                            SemParamPassing::Consume
+                        } else {
+                            SemParamPassing::ReadOnly
+                        },
+                        caller_visible_projection: false,
+                    })
+                })
+                .collect::<Result<Vec<_>, String>>()?,
+            return_ty: function.return_ty.clone(),
+        };
+        self.service.require_signature_shapes(&signature)?;
+        self.service.table.callables.push(SemCallable {
+            id,
+            function: function.id,
+            declaration: function.declaration,
+            instance,
+            symbol: format!("__hew_construction_{}", id.0),
+            source_origin: function_source_origin(self.service.module, &function),
+            signature,
+            call_conv: SemCallConv::Default,
+            kind: SemCallableKind::HewDirect,
+        });
+        self.service
+            .synthetic_sources
+            .insert(id, (function, self.substitution.clone()));
+        self.service.states.push(CallableState::Unreached);
+        self.service.statuses.push(None);
+        self.service.request_body(id);
+        Ok(id)
+    }
+
+    fn lower_actor_construction(
+        &mut self,
+        expression: &HirExpr,
+        written: &[(String, HirExpr)],
+    ) -> Result<Option<ValueId>, String> {
+        let live_before = self.owned_live.keys().copied().collect();
+        let mut values = Vec::new();
+        let mut parameters = Vec::new();
+        for (index, (_, argument)) in written.iter().enumerate() {
+            let value = lower_initial_value_transfer(
+                self,
+                argument,
+                "actor construction argument",
+                OwnedBindingUse::Copy,
+            )?;
+            if !self.is_open() {
+                return Ok(None);
+            }
+            let ty = self.ty(&argument.ty);
+            values.push(crate::BoundaryOperand {
+                operand: Operand { value },
+                decision: if OwnKind::of_ty(&ty, self.service.checked_facts.rows())?
+                    == OwnKind::Owned
+                {
+                    crate::BoundaryDecision::Move
+                } else {
+                    crate::BoundaryDecision::Copy
+                },
+            });
+            parameters.push(HirBinding {
+                id: hew_hir::BindingId(
+                    u32::try_from(index).map_err(|_| "too many constructor arguments")?,
+                ),
+                name: format!("argument{index}"),
+                ty,
+                mutable: false,
+                span: argument.span.clone(),
+                is_consume: true,
+            });
+        }
+        let target = self.require_actor_construction(expression, &parameters)?;
+        let signature = self
+            .service
+            .callable(target)
+            .ok_or("missing construction callable")?
+            .signature
+            .clone();
+        self.finish_user_call(
+            super::PreparedCallee::Direct { target, site: None },
+            signature,
+            values,
+            &[],
+            &live_before,
+            true,
+            None,
+        )
     }
 
     pub(super) fn actor_signature(

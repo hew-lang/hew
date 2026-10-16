@@ -1174,7 +1174,8 @@ impl<'a> InstanceService<'a> {
             | CallableInstance::ActorSupervisorIntercept { .. }
             | CallableInstance::Closure(_)
             | CallableInstance::EntryAdapter
-            | CallableInstance::SupervisorChild { .. } => {
+            | CallableInstance::SupervisorChild { .. }
+            | CallableInstance::ActorConstruction { .. } => {
                 unreachable!("closure, entry adapter and child spawn inputs are resolved above")
             }
             CallableInstance::Monomorphic => {

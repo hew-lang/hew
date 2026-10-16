@@ -24,7 +24,12 @@
     "vtables"
   ],
   "properties": {
-    "codecs": { "type": "array", "items": { "type": "string" } },
+    "codecs": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
     "resources": {
       "type": "array",
       "items": {
@@ -304,8 +309,12 @@
               "additionalProperties": false,
               "required": ["body", "specialization"],
               "properties": {
-                "body": { "$ref": "#/$defs/id" },
-                "specialization": { "$ref": "#/$defs/specialization" }
+                "body": {
+                  "$ref": "#/$defs/id"
+                },
+                "specialization": {
+                  "$ref": "#/$defs/specialization"
+                }
               }
             }
           },
@@ -367,7 +376,14 @@
   },
   "$defs": {
     "specialization": {
-      "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/id" }]
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "$ref": "#/$defs/id"
+        }
+      ]
     },
     "id": {
       "type": "integer",
@@ -528,6 +544,9 @@
           "items": {
             "$ref": "#/$defs/block"
           }
+        },
+        "actor_construction": {
+          "type": "boolean"
         }
       }
     },
@@ -561,28 +580,29 @@
       "required": ["op"],
       "allOf": [
         {
-          "if": { "properties": { "op": { "const": "callable.coerce" } } },
+          "if": {
+            "properties": {
+              "op": {
+                "const": "indirect.call"
+              }
+            }
+          },
           "then": {
             "properties": {
-              "specialization": { "$ref": "#/$defs/specialization" }
-            },
-            "required": ["specialization"]
-          }
-        }
-      ],
-      "allOf": [
-        {
-          "if": { "properties": { "op": { "const": "indirect.call" } } },
-          "then": {
-            "properties": {
-              "specialization": { "$ref": "#/$defs/specialization" }
+              "specialization": {
+                "$ref": "#/$defs/specialization"
+              }
             },
             "required": ["specialization"]
           }
         }
       ],
       "properties": {
-        "counter": { "type": "integer", "minimum": 0, "maximum": 4294967295 },
+        "counter": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295
+        },
         "op": {
           "enum": [
             "coverage.hit",
@@ -850,7 +870,10 @@
             "additionalProperties": false,
             "required": ["name", "role", "restart", "spawn"],
             "not": {
-              "properties": { "stop_ns": {}, "stop_config": {} },
+              "properties": {
+                "stop_ns": {},
+                "stop_config": {}
+              },
               "required": ["stop_ns", "stop_config"]
             },
             "properties": {

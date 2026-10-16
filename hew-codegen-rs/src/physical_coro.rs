@@ -312,6 +312,16 @@ impl<'ctx> Frame<'ctx> {
         module: &Module<'ctx>,
         builder: &Builder<'ctx>,
     ) -> CodegenResult<PointerValue<'ctx>> {
+        self.init_child_with(ctx, module, builder, "hew_coro_state_init_child")
+    }
+
+    pub fn init_child_with(
+        &self,
+        ctx: &'ctx Context,
+        module: &Module<'ctx>,
+        builder: &Builder<'ctx>,
+        init_symbol: &str,
+    ) -> CodegenResult<PointerValue<'ctx>> {
         let pointer = ctx.ptr_type(AddressSpace::default());
         let storage = if let Some(storage) = self.child_invocation.get() {
             storage
@@ -323,7 +333,7 @@ impl<'ctx> Frame<'ctx> {
         };
         let init = get_or_declare_external(
             module,
-            "hew_coro_state_init_child",
+            init_symbol,
             ctx.void_type().fn_type(&[pointer.into(); 2], false),
         )?;
         builder

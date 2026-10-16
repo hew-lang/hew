@@ -372,7 +372,8 @@ pub const fn runtime_failure_trap_kind(
     match failure {
         hew_types::RuntimeLogicalFailure::IndexOutOfBounds => Some(TrapKind::IndexOutOfBounds),
         hew_types::RuntimeLogicalFailure::IntegerOverflow => Some(TrapKind::IntegerOverflow),
-        hew_types::RuntimeLogicalFailure::CallbackFault => None,
+        hew_types::RuntimeLogicalFailure::CallbackFault
+        | hew_types::RuntimeLogicalFailure::RcUnavailable => None,
     }
 }
 

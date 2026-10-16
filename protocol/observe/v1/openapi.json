@@ -887,6 +887,27 @@
           }
         }
       },
+      "RcSurvivorType": {
+        "type": "object",
+        "x-hew-model": true,
+        "required": ["type_name", "count"],
+        "properties": {
+          "type_name": { "type": "string" },
+          "count": { "$ref": "#/components/schemas/UInt64Decimal" }
+        }
+      },
+      "RcSweep": {
+        "type": "object",
+        "x-hew-model": true,
+        "required": ["count", "by_type"],
+        "properties": {
+          "count": { "$ref": "#/components/schemas/UInt64Decimal" },
+          "by_type": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/RcSurvivorType" }
+          }
+        }
+      },
       "TraceEvent": {
         "type": "object",
         "x-hew-model": true,
@@ -1034,12 +1055,14 @@
               "supervisor_max_restarts",
               "supervisor_backoff",
               "actor.delivery_refused",
+              "actor.rc_sweep",
               "lambda_spawned",
               "lambda_released",
               "unknown"
             ],
             "x-hew-actionable-values": [
               "actor.delivery_refused",
+              "actor.rc_sweep",
               "send",
               "spawn",
               "crash",
@@ -1064,6 +1087,13 @@
           "handler_name": {
             "type": ["string", "null"],
             "description": "Selected message handler for destination_actor or an actor subject, or null when not applicable or unavailable."
+          },
+          "rc_sweep": {
+            "anyOf": [
+              { "$ref": "#/components/schemas/RcSweep" },
+              { "type": "null" }
+            ],
+            "description": "Actor-terminal Rc survivors consumed exactly once, grouped by payload type. Optional for older producers."
           },
           "reason": {
             "type": ["string", "null"],

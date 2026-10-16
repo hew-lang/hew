@@ -1890,6 +1890,16 @@ fn verify_callable_table<'a>(
                     }));
                 }
             }
+            CallableInstance::ActorConstruction { enclosing, .. } => {
+                if module.callable(*enclosing).is_none()
+                    || !matches!(callable.kind, SemCallableKind::HewDirect)
+                {
+                    diagnostics.push(module_diag(SirDiagnosticKind::InvalidCallable {
+                        callable: callable.id,
+                        reason: "actor construction lacks its enclosing callable".into(),
+                    }));
+                }
+            }
             CallableInstance::SupervisorChild { supervisor, child } => {
                 if module
                     .supervisor(*supervisor)

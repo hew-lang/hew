@@ -26,9 +26,12 @@ use crate::hashmap::HewLayoutHashMap;
 /// One pending step of a release.
 ///
 /// Each item borrows a structure the walker exclusively owns for the duration
-/// of the walk, and the thread that queued an item is the thread that runs it.
-#[derive(Debug, Clone, Copy)]
+/// of the walk. One consuming owner drives each cursor; synchronous release
+/// sinks remain thread-local.
+#[derive(Debug)]
 pub(crate) enum ReleaseItem {
+    /// Prepare and consume one actor-owned Rc survivor wave incrementally.
+    RcSurvivors(Box<crate::rc::RcSurvivors>),
     /// One initialized value; the descriptor consumes its semantic owners.
     Value {
         slot: *mut c_void,
@@ -277,16 +280,20 @@ unsafe fn run(item: ReleaseItem) {
     } else {
         PENDING.with(|pending| {
             // SAFETY: expansion calls no authored code and cannot re-enter the walk.
-            unsafe { expand(item, &mut pending.borrow_mut()) };
+            let _ = unsafe { expand(item, &mut pending.borrow_mut()) };
         });
     }
 }
 
 /// Expand storage without executing any selected semantic value callback.
-unsafe fn expand(item: ReleaseItem, pending: &mut Vec<ReleaseItem>) {
+unsafe fn expand(
+    item: ReleaseItem,
+    pending: &mut Vec<ReleaseItem>,
+) -> Option<hew_observe_protocol::RcSweep> {
     // SAFETY: the caller owns the item and retains queued storage until release.
     unsafe {
         match item {
+            ReleaseItem::RcSurvivors(wave) => return wave.step(pending),
             ReleaseItem::Value { .. } => pending.push(item),
             ReleaseItem::String { value } => hew_cabi::string::string_release(value),
             ReleaseItem::Storage { owner, free } => free(owner),
@@ -309,6 +316,7 @@ unsafe fn expand(item: ReleaseItem, pending: &mut Vec<ReleaseItem>) {
             ReleaseItem::MapStorage { map } => crate::hashmap::free_map_storage(map),
         }
     }
+    None
 }
 
 /// An owning release traversal. Each yielded slot remains live until the next
@@ -317,6 +325,8 @@ unsafe fn expand(item: ReleaseItem, pending: &mut Vec<ReleaseItem>) {
 pub struct HewReleaseCursor {
     pending: Vec<ReleaseItem>,
     current_layout: Option<HewValueLayout>,
+    remaining: usize,
+    rc_sweep: Option<hew_observe_protocol::RcSweep>,
 }
 
 impl HewReleaseCursor {
@@ -352,6 +362,8 @@ impl HewReleaseCursor {
         Box::into_raw(Box::new(Self {
             pending,
             current_layout: None,
+            remaining: STEP_ELEMENTS,
+            rc_sweep: None,
         }))
     }
 
@@ -475,6 +487,7 @@ pub(crate) struct ReleaseDriver {
     child_fault: *mut crate::fault::HewFault,
     fault: *mut crate::fault::HewFault,
     done: bool,
+    rc_sweep: Option<hew_observe_protocol::RcSweep>,
 }
 
 impl ReleaseDriver {
@@ -499,6 +512,7 @@ impl ReleaseDriver {
             child_fault: ptr::null_mut(),
             fault: ptr::null_mut(),
             done: cursor.is_null(),
+            rc_sweep: None,
         })
     }
 
@@ -562,8 +576,13 @@ impl ReleaseDriver {
                         std::mem::take(&mut self.child_fault),
                     );
                 }
-                let slot = hew_release_next(self.cursor);
-                if slot.is_null() {
+                let mut slot = ptr::null_mut();
+                let status = hew_release_poll(self.cursor, parent, &raw mut slot);
+                if status == 0 {
+                    return false;
+                }
+                if status == 2 {
+                    self.rc_sweep = (*self.cursor).rc_sweep.take();
                     hew_release_finish(self.cursor);
                     self.cursor = ptr::null_mut();
                     self.done = true;
@@ -598,6 +617,11 @@ impl ReleaseDriver {
             }
             true
         }
+    }
+
+    pub(crate) fn take_rc_sweep(&mut self) -> Option<hew_observe_protocol::RcSweep> {
+        assert!(self.done);
+        self.rc_sweep.take()
     }
 
     pub(crate) fn take_fault(&mut self) -> *mut crate::fault::HewFault {
@@ -668,9 +692,59 @@ pub unsafe extern "C" fn hew_release_next(cursor: *mut HewReleaseCursor) -> *mut
             return slot;
         }
         // SAFETY: the cursor owns each item and all storage below its children.
-        unsafe { expand(item, &mut cursor.pending) };
+        if let Some(summary) = unsafe { expand(item, &mut cursor.pending) } {
+            cursor.rc_sweep = Some(summary);
+        }
     }
     ptr::null_mut()
+}
+
+/// Poll at most one cursor quantum, returning pending (0), a payload (1), or
+/// completion (2). Internal work retains the same invocation's wake target.
+///
+/// # Safety
+/// The cursor obeys `hew_release_next`'s ownership contract; `state` is live,
+/// and `slot` points to writable pointer storage through this call.
+#[no_mangle]
+pub unsafe extern "C" fn hew_release_poll(
+    cursor: *mut HewReleaseCursor,
+    state: *const crate::coro_state::HewCoroState,
+    slot: *mut *mut c_void,
+) -> i32 {
+    // SAFETY: the caller exclusively drives this cursor and owns its slot.
+    let cursor = unsafe { &mut *cursor };
+    cursor.current_layout = None;
+    // SAFETY: the caller supplies writable pointer storage.
+    unsafe { slot.write(ptr::null_mut()) };
+    while !cursor.pending.is_empty() {
+        if cursor.remaining == 0 {
+            cursor.remaining = STEP_ELEMENTS;
+            // SAFETY: the invocation retains this descriptor through polling.
+            let waker = unsafe { &*crate::coro_state::hew_coro_state_waker(state) };
+            // SAFETY: the retained invocation owns the callback and its context.
+            unsafe { (waker.wake)(waker.context) };
+            return 0;
+        }
+        cursor.remaining -= 1;
+        let Some(item) = cursor.pending.pop() else {
+            break;
+        };
+        if let ReleaseItem::Value {
+            slot: value,
+            layout,
+        } = item
+        {
+            cursor.current_layout = Some(layout);
+            // SAFETY: this output slot remains writable through polling.
+            unsafe { slot.write(value) };
+            return 1;
+        }
+        // SAFETY: expansion consumes only one cursor-owned structural step.
+        if let Some(summary) = unsafe { expand(item, &mut cursor.pending) } {
+            cursor.rc_sweep = Some(summary);
+        }
+    }
+    2
 }
 
 /// Borrow the exact descriptor of the current yielded slot.
@@ -791,8 +865,12 @@ mod tests {
         // weak owner is released during the simulated suspended destructor.
         unsafe {
             let value = 42_i64;
-            let rc =
-                crate::rc::hew_rc_new((&raw const value).cast(), LAYOUT.size, LAYOUT.align, None);
+            let rc = crate::rc::hew_rc_new(
+                (&raw const value).cast(),
+                &LAYOUT,
+                c"test".as_ptr(),
+                ptr::null(),
+            );
             let weak = crate::rc::hew_rc_downgrade(rc);
             let cursor = crate::rc::hew_rc_release_begin(rc, &LAYOUT);
             let slot = hew_release_next(cursor).cast::<i64>();

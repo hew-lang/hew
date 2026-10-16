@@ -290,7 +290,12 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             &self.callable.instance,
             self.function.type_params.is_empty(),
         ) {
-            (CallableInstance::Monomorphic | CallableInstance::SupervisorChild { .. }, true) => {}
+            (
+                CallableInstance::Monomorphic
+                | CallableInstance::SupervisorChild { .. }
+                | CallableInstance::ActorConstruction { .. },
+                true,
+            ) => {}
             (
                 CallableInstance::ActorMember
                 | CallableInstance::ActorInterceptEntry { .. }

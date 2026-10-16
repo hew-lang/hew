@@ -2767,9 +2767,37 @@ lands, the checker refuses the projection with `E_LIMIT_RC_FIELD`
 (Limitation channel); `.get()` on a `T: Copy` payload is the accepted form in
 the meantime.
 
-Strong `Rc` cycles leak because Hew does not run a tracing collector. Use weak
-back-edges to break cycles. `Rc.new_cyclic`, dereference/borrow access to an Rc
-payload, and cross-actor transfer are not supported in edition 2026.
+**Actor-terminal survivors.** Each actor owns the Rc allocations it creates,
+including allocations in ordinary helpers, callbacks and scoped tasks. Explicit
+spawn arguments evaluate in the caller; field defaults, `init` and `on(start)`
+share one construction owner that transfers to the child on successful spawn.
+Failed construction releases that owner's survivors before reporting failure.
+
+After ordinary turns, scoped tasks and state cleanup have finished, actor exit
+consumes every surviving allocation through the normal release walker. Every
+block in a detached wave is marked dying before any payload is closed. Marking
+and release advance in bounded polls through that same walker. Strong
+backedge releases then do nothing, weak upgrades return `None`, and each payload
+closes exactly once. A suspending close may create new Rc values; subsequent
+waves drain them before terminal completion. Cleanup faults are reported through
+the ordinary failure path while remaining payloads still close.
+
+Access to a dying Rc payload fails with `Rc payload is being released`, including
+explicit clone, downgrade, get, set and count operations. Infallible descriptor
+copies during terminal cleanup may carry an internal inert dead handle; it has
+no strong owner, cannot resurrect storage, and every authored Rc operation on it
+fails before accessing storage. Dropping it is safe. This is not a source-visible
+handle mode.
+
+The `StrongRcCycle` warning identifies payload types with strong-only self-reach
+and suggests a `Weak<T>` backedge. Weak backedges allow prompt release rather
+than retaining a cycle until actor exit. Observe emits `actor.rc_sweep` with the
+reclaimed count and counts by payload type. Allocations belonging to another
+creator are not reclaimed by this actor's exit. Strong cycles outside an actor
+still require weak backedges; Hew does not run a tracing collector.
+
+`Rc.new_cyclic`, dereference/borrow access to an Rc payload, and cross-actor
+transfer are not supported in edition 2026.
 
 The compiler and runtime select internal reference-count implementations for
 ordinary values. Cross-actor transfer preserves isolation and the checked
@@ -2812,10 +2840,11 @@ produces identical results with or without them.
 | No double-free    | Single ownership; `drop()` runs exactly once                   |
 | No data races     | No shared mutable state; `Send` requires `Frozen` for sharing  |
 | No GC pauses      | No tracing GC; deterministic refcounting and scope-based drops |
-| No memory leaks\* | RAII ensures cleanup; cycles in `Rc` can leak (use weak refs)  |
+| Finite actor cleanup | RAII and actor-terminal Rc survivor reclamation consume owned payloads once |
 
-\*Strong reference cycles in `Rc<T>` can leak. Use `Weak<T>` back-edges; there
-is deliberately no empty `Weak.new()` constructor.
+Strong cycles retain payloads until actor exit; cycles outside actors still need
+`Weak<T>` backedges. Nonterminating authored cleanup remains nonterminating.
+There is deliberately no empty `Weak.new()` constructor.
 
 #### 3.7.8 Resource markers (`#[resource]` and `#[linear]`)
 

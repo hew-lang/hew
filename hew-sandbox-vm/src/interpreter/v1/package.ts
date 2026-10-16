@@ -201,6 +201,7 @@ export interface VtableShape {
 }
 
 export interface FunctionV1 {
+  actor_construction?: boolean;
   id: number;
   name: string;
   params: ValueDef[];
@@ -491,6 +492,7 @@ export type TermV1 =
   | (TermBase &
       CallShape & {
         op: "runtime.call";
+        shared_payload_type?: string;
         family: number;
         structural?: number | null;
         callbacks?: number[];

@@ -132,6 +132,12 @@ pub(crate) unsafe fn finish_native_terminal_after_terminate(actor: &HewActor) {
     // SAFETY: this terminal owner has reserved completion before taking the
     // actor's existing exactly-once state destructor authority.
     unsafe { crate::actor::drop_initialized_actor_state(actor) };
+    if !completion.cleanup.rc.close_empty() {
+        // SAFETY: any allocations made during synchronous state release belong
+        // to this same terminal owner and drain before completion publication.
+        unsafe { completion.cleanup.begin_terminal(actor, state) };
+        return;
+    }
     finish_actor_terminal(actor, state);
 }
 

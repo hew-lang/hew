@@ -76,7 +76,14 @@ unsafe fn new_actor_state(
     // SAFETY: the local Arc and current context retain both inputs for creation.
     let state = unsafe { crate::coro_state::hew_coro_state_new(&raw const waker, token) };
     // SAFETY: the new invocation belongs exclusively to this strict actor turn.
-    unsafe { (*state).execution_mut().actor_turn = *target };
+    unsafe {
+        let execution = (*state).execution_mut();
+        execution.actor_turn = *target;
+        execution.rc_owner = (*actor)
+            .native_completion
+            .as_ref()
+            .map(|completion| completion.cleanup.rc.clone());
+    }
     // SAFETY: this activation owns the actor and its one strict turn. The
     // adapter clears the borrowed slot after child completion under the same
     // activation ownership, before another turn can start.

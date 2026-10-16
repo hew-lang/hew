@@ -117,6 +117,7 @@ fn duration_seconds_large_value() {
 
 #[test]
 fn now_ms_is_monotonic() {
+    let _lock = SIMTIME_LOCK.lock().unwrap();
     // Two consecutive calls should be non-decreasing.
     unsafe {
         let a = hew_now_ms();
@@ -158,6 +159,7 @@ fn sleep_ns_short_duration_waits() {
 
 #[test]
 fn sleep_until_ns_past_returns_immediately() {
+    let _lock = SIMTIME_LOCK.lock().unwrap();
     let past_ns = unsafe { hew_instant_now() } - 1_000_000; // 1ms in the past
     let before = std::time::Instant::now();
     unsafe { hew_sleep_until_ns(past_ns) };
@@ -171,6 +173,7 @@ fn sleep_until_ns_past_returns_immediately() {
 
 #[test]
 fn sleep_until_ns_near_future_waits() {
+    let _lock = SIMTIME_LOCK.lock().unwrap();
     let target_ns = unsafe { hew_instant_now() } + 10_000_000; // 10ms ahead
     let before = std::time::Instant::now();
     unsafe { hew_sleep_until_ns(target_ns) };

@@ -140,6 +140,32 @@ impl DispatchTable {
 
     /// The method `name` of `owner` a receiver reaches.
     #[must_use]
+    pub fn select_trait(
+        &self,
+        head: NominalId,
+        instance: Option<&NominalInstance>,
+        declaring: DefId,
+        name: Symbol,
+    ) -> MethodSelection {
+        let candidates: Vec<_> = self
+            .candidates(head, instance, name)
+            .into_iter()
+            .filter(|(owner, _)| *owner == MethodOwner::Trait(declaring))
+            .collect();
+        match candidates.as_slice() {
+            [] => MethodSelection::Missing,
+            [(owner, method)] => MethodSelection::Unique(*owner, *method),
+            _ => MethodSelection::Ambiguous(
+                candidates
+                    .into_iter()
+                    .map(|(_, method)| (declaring, method))
+                    .collect(),
+            ),
+        }
+    }
+
+    /// The method `name` of `owner` a receiver reaches.
+    #[must_use]
     pub fn method_of(
         &self,
         head: NominalId,

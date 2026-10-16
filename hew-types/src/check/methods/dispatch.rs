@@ -2401,162 +2401,15 @@ impl Checker {
                 // 2. Collect all hits, deduplicate by declaring_trait
                 // 3. 0 hits → UndefinedMethod, >1 distinct declaring traits → AmbiguousTraitMethod,
                 //    1 → record StaticTraitDispatch rewrite
-                let bounds_for_type_param = match &resolved {
-                    Ty::Named {
-                        head: crate::TypeHead::Param(parameter),
-                        ..
-                    } => Some(self.active_bounds_of(parameter.id))
-                        .filter(|bounds| !bounds.is_empty()),
-                    _ => None,
-                };
-                if let (
-                    Ty::Named {
-                        head: crate::TypeHead::Param(receiver_parameter),
-                        ..
-                    },
-                    Some(bounds),
-                ) = (&resolved, bounds_for_type_param)
-                {
-                    // Expand all bounds into (bound_trait, declaring_trait, sig) tuples.
-                    // For each bound, also walk its supertrait DAG to collect every
-                    // trait that DIRECTLY declares the method — this catches the
-                    // supertrait-redeclaration case (plan §4 V14) where a bound
-                    // `T: B` with `trait B: A` and both A and B declaring the same
-                    // method reaches two distinct declaring traits.
-                    let mut hits: Vec<(crate::DefId, FnSig)> = Vec::new();
-                    for bound in &bounds {
-                        let declaring =
-                            self.collect_all_declaring_traits_for_method(bound.trait_id, method);
-                        for declaring_trait in declaring {
-                            // Resolve the sig from the declaring trait directly.
-                            if let Some((_, sig)) =
-                                self.lookup_trait_method_with_origin(declaring_trait, method)
-                            {
-                                hits.push((declaring_trait, sig));
-                            }
-                        }
-                    }
-                    // Deduplicate by declaring_trait — same origin via multiple bounds is NOT ambiguous.
-                    hits.sort_by_key(|hit| hit.0);
-                    hits.dedup_by_key(|hit| hit.0);
-
-                    if hits.len() == 1 {
-                        let (declaring_id, trait_sig) = hits.into_iter().next().unwrap();
-                        let declaring_trait = self.defs.path(declaring_id).to_string();
-                        let self_ty = self.normalize_for_use(&receiver_ty);
-                        if self.refuse_associated_dot_call(
-                            &trait_sig,
-                            &declaring_trait,
-                            method,
-                            args,
-                            span,
-                        ) {
-                            return Ty::Error;
-                        }
-                        if trait_sig.requires_mutable_receiver {
-                            self.check_mutable_method_receiver(
-                                receiver,
-                                &format!("trait method `{declaring_trait}.{method}` (statically dispatched on type parameter `{name}`)"),
-                                span,
-                            );
-                        }
-                        let selected_bounds: Vec<_> = bounds
-                            .iter()
-                            .filter(|bound| bound.trait_id == declaring_id)
-                            .cloned()
-                            .collect();
-                        let Some((applied_sig, selected)) = self.apply_call_over_bounds(
-                            self_ty,
-                            (name, "bounds"),
-                            (declaring_id, trait_sig.clone(), &selected_bounds),
-                            (method, &declaring_trait),
-                            args,
-                            span,
-                        ) else {
-                            return Ty::Error;
-                        };
-                        let trait_args = selected_bounds[selected]
-                            .args
-                            .iter()
-                            .map(|ty| self.subst.resolve(ty))
-                            .collect();
-                        if declaring_trait == "std.builtins.Pid" && method == "send" {
-                            // TODO(A640): replace this fail-closed branch with
-                            // a first-class `P::Msg: Serializable` projection
-                            // bound once the checker can express that shape on
-                            // pid-polymorphic call sites. If the projection is
-                            // already concretely bound (for example
-                            // `P: Pid<Msg = Ping>`), the regular Serializable
-                            // gate below proves it and the call may proceed.
-                            if !self.enforce_pid_polymorphic_send_serializable_args(args, name) {
-                                return Ty::Error;
-                            }
-                            self.enforce_actor_method_send_args(args);
-                        }
-                        self.record_method_call_receiver_kind(
-                            span,
-                            MethodCallReceiverKind::NamedTypeInstance {
-                                type_name: name.to_string(),
-                            },
-                        );
-                        if trait_sig.consumes_receiver {
-                            self.method_call_consumes_receiver
-                                .insert(SpanKey::in_module(span, self.current_module_idx));
-                            let resolved_ty = self.subst.resolve(&receiver_ty);
-                            self.mark_expr_moved_if_non_copy(
-                                &receiver.0,
-                                &receiver.1,
-                                &resolved_ty,
-                            );
-                        }
-                        // Record the StaticTraitDispatch rewrite for HIR consumption.
-                        let target = self
-                            .trait_method_ids_of(declaring_id, method)
-                            .map_or_else(
-                                || CallTarget::Unsupported {
-                                    reason: format!(
-                                        "trait method `{declaring_trait}.{method}` has no registered declaration identity"
-                                    ),
-                                },
-                                |(declaring_trait, method)| CallTarget::StaticTraitMethod {
-                                    declaring_trait,
-                                    method,
-                                },
-                            );
-                        self.record_method_call_rewrite(
-                            span,
-                            MethodCallRewrite::StaticTraitDispatch {
-                                target,
-                                receiver_type_param: *receiver_parameter,
-                                trait_args,
-                                requires_mutable_receiver: trait_sig.requires_mutable_receiver,
-                                consumes_receiver: trait_sig.consumes_receiver,
-                                returns_receiver_identity: trait_sig.returns_receiver_identity,
-                            },
-                        );
-                        return self.project_assoc_types(&applied_sig.return_type);
-                    } else if hits.len() > 1 {
-                        // Multiple distinct declaring traits → ambiguous.
-                        for arg in args {
-                            let (expr, sp) = arg.expr();
-                            self.synthesize(expr, sp);
-                        }
-                        let mut declaring_traits: Vec<&str> =
-                            hits.iter().map(|hit| self.defs.path(hit.0)).collect();
-                        declaring_traits.sort_unstable();
-                        self.report_error(
-                            TypeErrorKind::AmbiguousTraitMethod,
-                            span,
-                            format!(
-                                "ambiguous trait method `{method}` on `{}`: method is declared by \
-                                 multiple traits ({}); qualify the call to disambiguate",
-                                resolved.user_facing(),
-                                declaring_traits.join(", ")
-                            ),
-                        );
-                        return Ty::Error;
-                    }
-                    // hits.is_empty() → fall through to UndefinedMethod below.
+                if let Some(result) = self.check_bound_receiver_method(
+                    receiver,
+                    &receiver_ty,
+                    method,
+                    args,
+                    span,
+                    None,
+                ) {
+                    return result;
                 }
                 // Fn-typed field call: `w.cb(args)` where `cb` is a record
                 // field of function type dispatches as a field-load +
@@ -3264,7 +3117,7 @@ impl Checker {
     /// leave the trait's parameters as holes the call's arguments fill, and
     /// the filled holes choose the bound. Returns the applied signature and
     /// the index of the chosen bound, or `None` once the choice is reported.
-    fn apply_call_over_bounds(
+    pub(super) fn apply_call_over_bounds(
         &mut self,
         self_ty: Ty,
         (subject, noun): (&str, &str),

@@ -395,6 +395,7 @@ pub(crate) fn selected_impl_method(
 #[derive(Debug, Clone, Default)]
 pub struct TypeFactContext {
     declarations: BTreeMap<crate::NominalId, DeclaredType>,
+    associated_types: crate::check::AssociatedTypeSchemas,
     registry: TraitRegistry,
     type_defs: HashMap<crate::NominalId, TypeDef>,
     method_ids: HashMap<ImplMethodKey, crate::DefId>,
@@ -489,6 +490,7 @@ impl TypeFactContext {
     ) -> Self {
         Self {
             declarations,
+            associated_types: crate::check::AssociatedTypeSchemas::default(),
             registry,
             type_defs,
             method_ids: HashMap::new(),
@@ -499,6 +501,34 @@ impl TypeFactContext {
             rendering_members: HashMap::new(),
             serial_layouts: HashMap::new(),
         }
+    }
+
+    pub(crate) fn with_associated_types(
+        mut self,
+        associated: crate::check::AssociatedTypeSchemas,
+    ) -> Self {
+        self.associated_types = associated;
+        self
+    }
+
+    fn instantiate_member(
+        &self,
+        member: &ResolvedTy,
+        parameters: &[crate::ParamHead],
+        arguments: &[ResolvedTy],
+    ) -> Result<ResolvedTy, ClassError> {
+        let member = self
+            .associated_types
+            .instantiate_resolved_member(member, parameters, arguments, &self.defs)?;
+        Ok(crate::check::restore_member_opacity(
+            member,
+            &self.defs,
+            &|id| {
+                self.declarations
+                    .get(&id)
+                    .is_some_and(|declaration| declaration.is_opaque)
+            },
+        ))
     }
 
     pub(crate) fn with_impl_methods(
@@ -574,6 +604,28 @@ impl TypeFactContext {
 pub struct TypeFactService {
     context: TypeFactContext,
     rows: BTreeMap<TypeInstanceKey, TypeFacts>,
+}
+
+impl crate::value_class::ClassDeclarations for TypeFactContext {
+    fn declared_type(&self, id: crate::NominalId) -> Option<DeclaredType> {
+        self.declarations.get(&id).cloned()
+    }
+
+    fn builtin_declaration(&self, builtin: BuiltinType) -> Option<crate::NominalId> {
+        crate::value_class::ClassDeclarations::builtin_declaration(&self.declarations, builtin)
+    }
+
+    fn instantiate_members(
+        &self,
+        declaration: &DeclaredType,
+        arguments: &[ResolvedTy],
+    ) -> Result<Vec<ResolvedTy>, ClassError> {
+        declaration
+            .members
+            .iter()
+            .map(|member| self.instantiate_member(member, &declaration.type_params, arguments))
+            .collect()
+    }
 }
 
 impl TypeFactService {
@@ -675,16 +727,12 @@ impl TypeFactService {
             .into_iter()
             .zip(&declaration.members)
             .map(|(name, field)| {
-                (
-                    name,
-                    crate::resolved_ty::substitute_type_params(
-                        field,
-                        &definition.type_params,
-                        &instance.args,
-                    ),
-                )
+                self.context
+                    .instantiate_member(field, &definition.type_params, &instance.args)
+                    .map(|field| (name, field))
+                    .map_err(|error| error.to_string())
             })
-            .collect();
+            .collect::<Result<Vec<_>, _>>()?;
         Ok((instance, fields))
     }
 
@@ -1016,7 +1064,7 @@ impl TypeFactService {
         visiting: &mut HashSet<(ResolvedTy, ValueCapability)>,
         calls: &mut Vec<(crate::DefId, Vec<ResolvedTy>)>,
     ) -> Result<Option<ValueMethodPlan>, ClassError> {
-        crate::value_class::classify_ty(ty, &ClassContext::new(&self.context.declarations))?;
+        crate::value_class::classify_ty(ty, &ClassContext::new(&self.context))?;
         require_concrete_capability_type(ty)?;
         let method = selected_impl_method(
             &self.context.method_ids,
@@ -1296,18 +1344,15 @@ impl TypeFactService {
                 name: ty.user_facing().to_string(),
             });
         }
-        if declaration.marker == crate::DeclarationMarker::None {
-            return Ok(declaration
+        if declaration.marker == crate::DeclarationMarker::None || !declaration.members.is_empty() {
+            return declaration
                 .members
                 .iter()
                 .map(|member| {
-                    crate::resolved_ty::substitute_type_params(
-                        member,
-                        &declaration.type_params,
-                        args,
-                    )
+                    self.context
+                        .instantiate_member(member, &declaration.type_params, args)
                 })
-                .collect());
+                .collect();
         }
         // A marked declaration keeps no members when one of them could not be
         // rendered at the boundary: its class came from the marker anyway.
@@ -1336,8 +1381,14 @@ impl TypeFactService {
         types
             .into_iter()
             .map(|member| {
+                let member = self.context.associated_types.instantiate_member(
+                    member,
+                    &declaration.type_params,
+                    args,
+                    &self.context.defs,
+                );
                 let member =
-                    ResolvedTy::from_ty(member).map_err(|_| ClassError::UnknownDeclaration {
+                    ResolvedTy::from_ty(&member).map_err(|_| ClassError::UnknownDeclaration {
                         name: name.to_string(),
                     })?;
                 let member =
@@ -1347,11 +1398,7 @@ impl TypeFactService {
                             .get(&name)
                             .is_some_and(|decl| decl.is_opaque)
                     });
-                Ok(crate::resolved_ty::substitute_type_params(
-                    &member,
-                    &declaration.type_params,
-                    args,
-                ))
+                Ok(member)
             })
             .collect()
     }
@@ -1521,7 +1568,7 @@ impl TypeFactService {
     }
 
     fn contextual_facts(&self, ty: &ResolvedTy) -> Result<TypeFacts, ClassError> {
-        let declarations = ClassContext::new(&self.context.declarations);
+        let declarations = ClassContext::new(&self.context);
         let as_ty = ty.to_ty();
         let send = self.send_fact(ty, &as_ty);
         let hash = self.select_capability(ty, ValueCapability::Hash)?.is_some();

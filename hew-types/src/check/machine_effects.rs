@@ -757,6 +757,12 @@ impl NodeVisitor for EffectVisitor<'_> {
             Expr::MethodCall { method, .. } => {
                 self.method(&key, span, &format!("{}(...)", method.0));
             }
+            Expr::Index { .. }
+                if self.output.method_call_rewrites.contains_key(&key)
+                    || self.output.dyn_trait_method_calls.contains_key(&key) =>
+            {
+                self.method(&key, span, "Index.at(...)");
+            }
             Expr::Clone(_) => self.method(&key, span, "clone"),
             Expr::Spawn { .. }
             | Expr::SpawnLambdaActor { .. }

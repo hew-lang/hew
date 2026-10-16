@@ -4142,16 +4142,6 @@ pub struct Checker {
     /// registering a trait method signature). The carrier is collapsed at
     /// call sites where `Self` is substituted by a concrete type.
     pub(super) current_trait_for_self_projection: Option<crate::DefId>,
-    /// Resolved impl-side `type Bar = X` bindings, keyed by
-    /// `(impl_type_name, trait_name, assoc_name)`. Populated at impl
-    /// registration so that downstream projection-collapse
-    /// (`project_assoc_types`) can substitute `Ty::AssocType` carriers once
-    /// their `base` becomes concrete.
-    ///
-    /// Distinct from `ImplAliasScope.entries`, which is the per-impl scope
-    /// stack used for `Self::Bar` lookup during impl-body checking.
-    pub(super) impl_assoc_type_bindings:
-        HashMap<(ResolvedTy, crate::DefId, Symbol), Vec<ImplAssociatedType>>,
     pub(super) associated_schema_parameters: super::AssociatedTypeSchemas,
     /// Whether warnings for WASM-only builds should be emitted.
     pub(super) wasm_target: bool,
@@ -4668,7 +4658,6 @@ impl Checker {
             lambda_actor_declarations: HashMap::new(),
             impl_alias_scopes: Vec::new(),
             current_trait_for_self_projection: None,
-            impl_assoc_type_bindings: HashMap::new(),
             associated_schema_parameters: super::AssociatedTypeSchemas::default(),
             wasm_target: false,
             repl_fragment: false,

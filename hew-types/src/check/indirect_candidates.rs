@@ -112,16 +112,14 @@ impl Checker {
             Expr::Array(values) => self.callable_sequence_candidates(
                 values.iter().map(hew_parser::ast::ArrayElement::expr),
             ),
-            Expr::Spawn { .. } | Expr::StructInit { .. } => IndirectCallCandidates::single(
-                CallableCandidate::Aggregate(SpanKey::in_module(span, self.current_module_idx)),
-            ),
-            Expr::Lambda { .. } | Expr::SpawnLambdaActor { .. } => IndirectCallCandidates::single(
-                CallableCandidate::Closure(SpanKey::in_module(span, self.current_module_idx)),
-            ),
+            Expr::Spawn { .. } | Expr::StructInit { .. } => {
+                IndirectCallCandidates::single(CallableCandidate::Aggregate(key))
+            }
+            Expr::Lambda { .. } | Expr::SpawnLambdaActor { .. } => {
+                IndirectCallCandidates::single(CallableCandidate::Closure(key))
+            }
             Expr::GenBlock { .. } => {
-                IndirectCallCandidates::single(CallableCandidate::GeneratorBlock(
-                    SpanKey::in_module(span, self.current_module_idx),
-                ))
+                IndirectCallCandidates::single(CallableCandidate::GeneratorBlock(key))
             }
             Expr::Ident(_) => self.resolved_callable_candidate(span),
             Expr::FieldAccess { object, field } => self.callable_field_candidates(object, field),
@@ -129,15 +127,11 @@ impl Checker {
                 self.callable_candidates_for_expr(&target.0, &target.1)
             }
             Expr::ContextVariant(context) if context.record.is_some() => {
-                IndirectCallCandidates::single(CallableCandidate::Aggregate(SpanKey::in_module(
-                    span,
-                    self.current_module_idx,
-                )))
+                IndirectCallCandidates::single(CallableCandidate::Aggregate(key))
             }
             Expr::Call { args, .. }
                 if matches!(
-                    self.actor_delivery_calls
-                        .get(&SpanKey::in_module(span, self.current_module_idx)),
+                    self.actor_delivery_calls.get(&key),
                     Some(crate::actor_delivery::ActorDeliveryCall::Policy { .. })
                 ) =>
             {
@@ -156,9 +150,12 @@ impl Checker {
             {
                 self.callable_sequence_candidates(args.iter().map(CallArg::expr))
             }
-            Expr::Call { .. } | Expr::MethodCall { .. } => IndirectCallCandidates::single(
-                CallableCandidate::CallResult(SpanKey::in_module(span, self.current_module_idx)),
-            ),
+            Expr::Call { .. } | Expr::MethodCall { .. } | Expr::Index { .. }
+                if !matches!(expr, Expr::Index { .. })
+                    || self.selected_callable_target(span).is_some() =>
+            {
+                IndirectCallCandidates::single(CallableCandidate::CallResult(key))
+            }
             Expr::If { .. } | Expr::IfLet { .. } | Expr::Match { .. } => {
                 self.branch_value_candidates(expr)
             }
@@ -532,9 +529,14 @@ impl Checker {
     /// declaration. Formal IDs may be registered later in source order; the
     /// completed table joins them at the output boundary.
     pub(super) fn record_call_argument_sources(&mut self, expr: &Expr, span: &Span) {
+        let indexed_argument;
         let (receiver, args): (Option<&Spanned<Expr>>, &[CallArg]) = match expr {
             Expr::Call { args, .. } => (None, args),
             Expr::MethodCall { receiver, args, .. } => (Some(receiver), args),
+            Expr::Index { object, index } => {
+                indexed_argument = CallArg::Positional((**index).clone());
+                (Some(object), std::slice::from_ref(&indexed_argument))
+            }
             _ => return,
         };
         let key = SpanKey::in_module(span, self.current_module_idx);

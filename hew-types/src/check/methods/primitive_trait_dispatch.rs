@@ -212,7 +212,7 @@ impl Checker {
         // Project any `Self::Output`-style associated-type carrier in the
         // return now that the impl's type params are bound to the concrete
         // receiver — `project_assoc_types` keys the concrete builtin base
-        // (`<Vec<i64> as Index>::Output`) through `impl_assoc_type_bindings`.
+        // (`<Vec<i64> as Index>::Output`) through `AssociatedTypeSchemas`.
         Some(self.project_assoc_types(&applied_sig.return_type))
     }
 

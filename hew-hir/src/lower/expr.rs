@@ -1198,6 +1198,23 @@ impl LowerCtx {
                 (HirExprKind::Block(hir_block), ty)
             }
             Expr::Index { object, index } => {
+                if self.method_call_rewrites.contains_key(&self.mk_key(&span)) {
+                    let (kind, ty) = self.lower_method_call(
+                        object,
+                        "at",
+                        &[hew_parser::ast::CallArg::Positional((**index).clone())],
+                        span.clone(),
+                        site,
+                    );
+                    return HirExpr {
+                        node: self.ids.node(),
+                        site,
+                        ty,
+                        intent,
+                        kind,
+                        span,
+                    };
+                }
                 // The checker records the element/result type at the whole
                 // index expression's span. LESSONS: `checker-authority` P0 —
                 // we never re-derive the element type from the container;
@@ -1324,52 +1341,6 @@ impl LowerCtx {
                     // also falls through to the plain `Index` node, which the
                     // MIR `assign` arm recognises and lowers to
                     // `hew_hashmap_insert_layout`.
-
-                    if let ResolvedTy::Named { head, .. } = &container.ty {
-                        let name = head.registry_key();
-                        let builtin = head.builtin();
-                        let callee_name = format!("{name}::at");
-                        if !matches!(builtin, Some(BuiltinType::Vec | BuiltinType::HashMap))
-                            && self.fn_registry.contains_key(&callee_name)
-                        {
-                            let target = self.registered_symbol_target(&callee_name);
-                            let callee_ty = ResolvedTy::Function {
-                                capabilities: hew_types::CallableCapabilities::FUNCTION_ITEM,
-                                params: vec![container.ty.clone(), index_expr.ty.clone()],
-                                ret: Box::new(result_ty.clone()),
-                            };
-                            let resolved = self
-                                .fn_registry
-                                .get(&callee_name)
-                                .map_or(ResolvedRef::Unresolved, |entry| {
-                                    ResolvedRef::Item(entry.id)
-                                });
-                            let callee = HirExpr {
-                                node: self.ids.node(),
-                                site: self.ids.site(),
-                                ty: callee_ty,
-                                intent: IntentKind::Read,
-                                kind: HirExprKind::BindingRef {
-                                    name: callee_name,
-                                    resolved,
-                                },
-                                span: span.clone(),
-                            };
-                            return HirExpr {
-                                node: self.ids.node(),
-                                site,
-                                ty: result_ty.clone(),
-                                intent,
-                                kind: HirExprKind::Call {
-                                    target,
-                                    callee: Box::new(callee),
-                                    args: vec![container, index_expr],
-                                    evaluation_order: Vec::new(),
-                                },
-                                span: span.clone(),
-                            };
-                        }
-                    }
 
                     // C-2 single-element Vec indexing: result type is element type T.
                     // D432: the checker records the reads whose element has no

@@ -1733,27 +1733,46 @@ impl Checker {
             );
             return Ty::child_ref(child_ty.clone());
         }
-        if let Ty::TraitObject { traits } = &resolved_obj {
-            for bound in traits {
-                if bound.trait_name != "Index" {
-                    continue;
-                }
-                self.check_against(&index.0, &index.1, &Ty::I32);
-                if let Some((_, output_ty)) = bound
-                    .assoc_bindings
+        if let Some(index_trait) = self.lang_trait(crate::LangItem::Index) {
+            if let Ty::TraitObject { traits } = &resolved_obj {
+                if traits
                     .iter()
-                    .find(|(name, _)| name == "Output")
+                    .filter_map(|bound| bound.trait_id)
+                    .any(|trait_id| self.bound_provides(trait_id, index_trait))
                 {
-                    self.record_dyn_index_method_call(traits, bound, span);
-                    return output_ty.clone();
+                    if ctx == IndexContext::AssignTarget {
+                        self.report_trait_index_assignment(span);
+                        return Ty::Error;
+                    }
+                    let Some(signature) = self.record_dyn_index_method_call(traits, span) else {
+                        return Ty::Error;
+                    };
+                    self.check_against(&index.0, &index.1, &signature.params[0]);
+                    if matches!(signature.return_type, Ty::AssocType { .. }) {
+                        self.report_error(
+                            TypeErrorKind::InvalidOperation,
+                            span,
+                            "`[]` over `dyn Index` requires an `Output` associated-type binding"
+                                .into(),
+                        );
+                        return Ty::Error;
+                    }
+                    return signature.return_type;
                 }
-                self.report_error(
-                    TypeErrorKind::InvalidOperation,
-                    span,
-                    "`[]` over `dyn Index` requires an `Output` associated-type binding"
-                        .to_string(),
-                );
-                return Ty::Error;
+            }
+            if let Some(result) = self.check_bound_receiver_method(
+                object,
+                &resolved_obj,
+                "at",
+                &[CallArg::Positional(index.clone())],
+                span,
+                Some(index_trait),
+            ) {
+                if ctx == IndexContext::AssignTarget {
+                    self.report_trait_index_assignment(span);
+                    return Ty::Error;
+                }
+                return result;
             }
         }
 
@@ -1910,34 +1929,15 @@ impl Checker {
                     .lang_trait(crate::LangItem::Index)
                     .filter(|index_trait| self.type_satisfies_trait(&resolved_obj, *index_trait))
                 {
-                    let expected_key = self
-                        .lookup_named_method_sig(name, args, "at")
-                        .and_then(|sig| sig.params.first().cloned())
-                        .unwrap_or(Ty::I32);
-                    self.check_against(&index.0, &index.1, &expected_key);
-                    let output = self.project_assoc_types(&Ty::AssocType {
-                        base: Box::new(resolved_obj.clone()),
-                        trait_name: self.defs.path(index_trait).into(),
-                        assoc_name: "Output".into(),
-                    });
-                    if matches!(output, Ty::AssocType { .. }) {
-                        self.report_error(
-                            TypeErrorKind::AssocTypeProjectionFailed {
-                                type_name: resolved_obj.user_facing().to_string(),
-                                trait_name: "Index".to_string(),
-                                assoc_name: "Output".to_string(),
-                            },
-                            span,
-                            format!(
-                                "could not project associated type `<{} as Index>.Output` \
-                                 while checking `[]`; ensure the impl defines \
-                                 `type Output = ...`",
-                                resolved_obj.user_facing()
-                            ),
-                        );
+                    if ctx == IndexContext::AssignTarget {
+                        self.report_trait_index_assignment(span);
                         return Ty::Error;
                     }
-                    return output;
+                    if let Some(result) =
+                        self.check_named_index(&resolved_obj, index, index_trait, span)
+                    {
+                        return result;
+                    }
                 }
 
                 self.check_against(&index.0, &index.1, &Ty::I64);
@@ -1999,6 +1999,14 @@ impl Checker {
                 Ty::Error
             }
         }
+    }
+
+    fn report_trait_index_assignment(&mut self, span: &Span) {
+        self.report_error(
+            TypeErrorKind::InvalidOperation,
+            span,
+            "`Index.at` returns a value and does not support indexed assignment".into(),
+        );
     }
 
     /// Type-check an arithmetic operation where at least one operand is `duration` or `instant`.

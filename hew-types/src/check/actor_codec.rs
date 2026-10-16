@@ -157,7 +157,7 @@ impl Checker {
             let Some(key) = Self::impl_self_key(&Ty::actor_handle(nominal, Vec::new())) else {
                 continue;
             };
-            let Some(bindings) = self.impl_assoc_type_bindings.get(&(
+            let Some(bindings) = self.associated_schema_parameters.implementations.get(&(
                 key,
                 trait_id,
                 hew_parser::ast::Symbol::intern("Msg"),

@@ -3,10 +3,120 @@ use super::{BTreeMap, Checker, HashMap, SpanKey, Symbol, Ty};
 #[derive(Debug, Clone, Default)]
 /// Implicit declaration-owned binders for associated types in generic bodies.
 pub struct AssociatedTypeSchemas {
+    pub(super) implementations:
+        HashMap<(super::ResolvedTy, crate::DefId, Symbol), Vec<super::types::ImplAssociatedType>>,
     parameters: BTreeMap<(crate::ParamHead, crate::DefId, Symbol), crate::ParamHead>,
 }
 
 impl AssociatedTypeSchemas {
+    pub(crate) fn instantiate_resolved_member(
+        &self,
+        member: &super::ResolvedTy,
+        parameters: &[crate::ParamHead],
+        arguments: &[super::ResolvedTy],
+        defs: &crate::DefTable,
+    ) -> Result<super::ResolvedTy, crate::value_class::ClassError> {
+        let member = self.instantiate_member(&member.to_ty(), parameters, arguments, defs);
+        super::ResolvedTy::from_ty(&member).map_err(|_| {
+            crate::value_class::ClassError::UnknownDeclaration {
+                name: member.user_facing().to_string(),
+            }
+        })
+    }
+
+    pub(crate) fn instantiate_member(
+        &self,
+        ty: &Ty,
+        parameters: &[crate::ParamHead],
+        arguments: &[super::ResolvedTy],
+        defs: &crate::DefTable,
+    ) -> Ty {
+        let bindings = parameters
+            .iter()
+            .copied()
+            .zip(arguments.iter().map(super::ResolvedTy::to_ty))
+            .collect();
+        self.instantiate_member_inner(ty, &bindings, defs, &mut std::collections::HashSet::new())
+    }
+
+    fn instantiate_member_inner(
+        &self,
+        ty: &Ty,
+        bindings: &HashMap<crate::ParamHead, Ty>,
+        defs: &crate::DefTable,
+        expanding: &mut std::collections::HashSet<Ty>,
+    ) -> Ty {
+        let projected = match ty {
+            Ty::Named {
+                head: crate::TypeHead::Param(parameter),
+                args,
+            } if args.is_empty() => {
+                if let Some(argument) = bindings.get(parameter) {
+                    return argument.clone();
+                }
+                let Some((base, trait_id, associated)) = self.projection_of(*parameter) else {
+                    return ty.clone();
+                };
+                let Some(base) = bindings.get(&base) else {
+                    return ty.clone();
+                };
+                if let Ty::Named {
+                    head: crate::TypeHead::Param(parameter),
+                    args,
+                } = base
+                {
+                    if args.is_empty() {
+                        if let Some(projected) =
+                            self.parameters.get(&(*parameter, trait_id, associated))
+                        {
+                            return Ty::param(*projected);
+                        }
+                    }
+                }
+                Ty::AssocType {
+                    base: Box::new(base.clone()),
+                    trait_name: defs.path(trait_id).into(),
+                    assoc_name: associated.as_str().into(),
+                }
+            }
+            _ => ty.map_children(&mut |child| {
+                self.instantiate_member_inner(child, bindings, defs, expanding)
+            }),
+        };
+        let Ty::AssocType {
+            base,
+            trait_name,
+            assoc_name,
+        } = &projected
+        else {
+            return projected;
+        };
+        let Some(trait_id) = defs.lookup_path(trait_name) else {
+            return projected;
+        };
+        let Some(binding) = self.implementation(base, trait_id, Symbol::intern(assoc_name)) else {
+            return projected;
+        };
+        if !expanding.insert(projected.clone()) {
+            return projected;
+        }
+        let result = self.instantiate_member_inner(&binding, bindings, defs, expanding);
+        expanding.remove(&projected);
+        result
+    }
+
+    pub(crate) fn implementation(
+        &self,
+        receiver: &Ty,
+        trait_id: crate::DefId,
+        associated: Symbol,
+    ) -> Option<Ty> {
+        self.implementations
+            .get(&(Checker::impl_self_key(receiver)?, trait_id, associated))?
+            .iter()
+            .find_map(|binding| binding.instantiate(receiver))
+    }
+
     pub(super) fn projection_of(
         &self,
         parameter: crate::ParamHead,

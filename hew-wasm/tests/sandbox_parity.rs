@@ -713,6 +713,21 @@ fn utf8_decode_matches_native() {
 
 #[cfg(unix)]
 #[test]
+fn associated_fields_and_index_match_native() {
+    set_test_hewpath();
+    ensure_native_toolchain();
+    ensure_parity_runner_built();
+    assert_case(
+        &ParityCase {
+            test_name: "associated-index-dispatch",
+            source_rel: "tests/core-acceptance/cases/associated-index-dispatch.hew",
+        },
+        "",
+    );
+}
+
+#[cfg(unix)]
+#[test]
 fn user_codec_stream_matches_native() {
     set_test_hewpath();
     ensure_native_toolchain();

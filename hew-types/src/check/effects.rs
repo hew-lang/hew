@@ -673,27 +673,16 @@ impl Checker {
                 .insert(key.clone(), owner.clone());
         }
         self.record_value_operation_effects(expr, span);
-        let releases_receiver = self.call_target(&key).is_some_and(|target| {
-            let family = match target {
-                CallTarget::Runtime(family) | CallTarget::DeclaredRuntime { family, .. } => {
-                    Some(*family)
-                }
-                CallTarget::RuntimeCollection(method) => method.runtime_family(),
-                _ => None,
-            };
-            family.is_some_and(|family| {
-                family.consumes_receiver() || family.releases_receiver_contents()
-            })
-        });
-        if releases_receiver {
-            if let Some(receiver) = self.effect_graph.receivers.get(&key).cloned() {
-                self.record_owned_cleanup_effect(&receiver);
-            }
-        }
+        self.record_receiver_release_effect(&key);
+        let checked_invocation = self.selected_callable_target(span).is_some()
+            || self.method_call_rewrites.contains_key(&key)
+            || self.actor_method_dispatch.contains_key(&key)
+            || self.actor_delivery_calls.contains_key(&key);
         if matches!(
             expr,
             Expr::Call { .. } | Expr::MethodCall { .. } | Expr::Spawn { .. }
-        ) {
+        ) || (checked_invocation && matches!(expr, Expr::Index { .. }))
+        {
             self.effect_graph
                 .seen_calls
                 .insert(key.clone(), self.effect_graph.current_body.clone());
@@ -701,13 +690,12 @@ impl Checker {
         if matches!(expr, Expr::Spawn { .. }) {
             self.effect_graph.construct_calls.insert(key.clone());
         }
-        let checked_invocation = self.direct_call_targets.contains_key(&key)
-            || self.resolved_calls.contains_key(&key)
-            || self.method_call_rewrites.contains_key(&key)
-            || self.dyn_trait_method_calls.contains_key(&key)
-            || self.actor_method_dispatch.contains_key(&key)
-            || self.actor_delivery_calls.contains_key(&key);
-        if checked_invocation && matches!(expr, Expr::Call { .. } | Expr::MethodCall { .. }) {
+        if checked_invocation
+            && matches!(
+                expr,
+                Expr::Call { .. } | Expr::MethodCall { .. } | Expr::Index { .. }
+            )
+        {
             let (callee, name) = match expr {
                 Expr::Call { function, .. } => (
                     self.callee_value_type(function),
@@ -743,6 +731,7 @@ impl Checker {
                     };
                     (callee, method.0.to_string())
                 }
+                Expr::Index { .. } => (None, "Index.at".to_string()),
                 _ => (None, "send".to_string()),
             };
             self.effect_graph.calls.insert(
@@ -751,6 +740,7 @@ impl Checker {
                     owner: self.effect_graph.current_body.clone(),
                     receiver: match expr {
                         Expr::MethodCall { receiver, .. } => self.callee_value_type(receiver),
+                        Expr::Index { object, .. } => self.callee_value_type(object),
                         _ => None,
                     },
                     callee,
@@ -761,6 +751,26 @@ impl Checker {
             );
         }
         self.record_intrinsic_suspension(expr);
+    }
+
+    fn record_receiver_release_effect(&mut self, key: &SpanKey) {
+        let releases_receiver = self.call_target(key).is_some_and(|target| {
+            let family = match target {
+                CallTarget::Runtime(family) | CallTarget::DeclaredRuntime { family, .. } => {
+                    Some(*family)
+                }
+                CallTarget::RuntimeCollection(method) => method.runtime_family(),
+                _ => None,
+            };
+            family.is_some_and(|family| {
+                family.consumes_receiver() || family.releases_receiver_contents()
+            })
+        });
+        if releases_receiver {
+            if let Some(receiver) = self.effect_graph.receivers.get(key).cloned() {
+                self.record_owned_cleanup_effect(&receiver);
+            }
+        }
     }
 
     pub(super) fn is_construct_call(&self, span: &Span) -> bool {

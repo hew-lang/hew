@@ -455,7 +455,7 @@ impl Checker {
             .as_ref()
             .and_then(|tb| self.resolve_trait_path(&tb.path));
         let target = self.current_impl_target();
-        // Populate impl_assoc_type_bindings on every enter (not gated on
+        // Populate AssociatedTypeSchemas on every enter (not gated on
         // `enforce`) so projection collapse can find bindings during
         // call-site monomorphisation even when this scope was entered by
         // a non-enforcing registration sweep. The first writer wins;
@@ -485,7 +485,8 @@ impl Checker {
                         );
                         let receiver = self.resolve_type_expr(&id.target_type);
                         let bindings = self
-                            .impl_assoc_type_bindings
+                            .associated_schema_parameters
+                            .implementations
                             .entry(binding_key)
                             .or_default();
                         if !bindings.iter().any(|binding| binding.receiver == receiver) {

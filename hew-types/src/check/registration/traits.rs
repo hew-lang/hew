@@ -702,12 +702,19 @@ impl Checker {
         trait_id: crate::DefId,
         td: &TraitDecl,
     ) {
-        let supers: Vec<crate::DefId> = td
+        let supers: Vec<TraitRef> = td
             .super_traits
             .iter()
             .flatten()
-            .filter_map(|bound| self.resolve_written_bound(td.name.name, bound))
-            .map(|bound| bound.trait_id)
+            .filter_map(|bound| {
+                let mut resolved = self.resolve_written_bound(td.name.name, bound)?;
+                resolved.assoc = bound
+                    .assoc_type_bindings
+                    .iter()
+                    .map(|binding| (binding.name.name, self.resolve_type_expr(&binding.ty)))
+                    .collect();
+                Some(resolved)
+            })
             .collect();
         self.trait_super.insert(trait_id, supers);
     }

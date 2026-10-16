@@ -2345,14 +2345,11 @@ impl Checker {
                                 span,
                             );
                         }
-                        let mut selected_bounds: Vec<_> = bounds
+                        let selected_bounds: Vec<_> = bounds
                             .iter()
                             .filter(|bound| bound.trait_id == declaring_id)
                             .cloned()
                             .collect();
-                        if selected_bounds.is_empty() {
-                            selected_bounds.push(TraitRef::bare(declaring_id));
-                        }
                         let Some((applied_sig, selected)) = self.apply_call_over_bounds(
                             self_ty,
                             (name, "bounds"),
@@ -2941,6 +2938,9 @@ impl Checker {
         let mut hits: Vec<BinderMethod> = Vec::new();
         for bound in self.active_bounds_of(param.id) {
             for declaring in self.collect_all_declaring_traits_for_method(bound.trait_id, method) {
+                if declaring != bound.trait_id {
+                    continue;
+                }
                 if let Some((_, _, bounds)) =
                     hits.iter_mut().find(|(known, _, _)| *known == declaring)
                 {

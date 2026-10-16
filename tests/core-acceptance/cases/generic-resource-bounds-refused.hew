@@ -35,4 +35,18 @@ impl Codec<i64> for BytesCodec {
 fn main() {
     discard(SafeService {  }, StringCodec {  });
     discard(SafeService {  }, BytesCodec {  });
+    let _ = inherited_value(WrongValue {});
+}
+
+type WrongValue {
+}
+
+impl WrongValue {
+    fn take(self, value: string) -> string {
+        value
+    }
+
+    fn tag(self) -> i64 {
+        0
+    }
 }

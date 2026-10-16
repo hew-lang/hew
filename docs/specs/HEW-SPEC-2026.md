@@ -3238,6 +3238,11 @@ does. A trait with no required method of its own - a marker trait, or one
 whose methods all carry defaults - is not satisfied structurally and still
 needs an explicit `impl Trait for T` block.
 
+Trait arguments compose through inherited bounds. For `trait Child<U>:
+Parent<U>`, a `Child<i64>` bound provides `Parent<i64>`. Inherited method
+signatures use those arguments for structural satisfaction, generic calls
+and dynamic dispatch.
+
 #### 3.8.3 Trait Bounds
 
 **Inline bounds:**

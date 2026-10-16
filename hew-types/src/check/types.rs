@@ -3679,7 +3679,7 @@ pub struct Checker {
     pub(super) trait_defs: HashMap<crate::DefId, TraitInfo>,
     /// The direct super-traits of each trait, resolved where the trait
     /// declares them.
-    pub(super) trait_super: HashMap<crate::DefId, Vec<crate::DefId>>,
+    pub(super) trait_super: HashMap<crate::DefId, Vec<TraitRef>>,
     /// Declared trait impls: the receiver with its type arguments erased and
     /// the trait, to the trait arguments of each impl.
     pub(super) trait_impls: HashMap<(ResolvedTy, crate::DefId), Vec<TraitImplArgs>>,

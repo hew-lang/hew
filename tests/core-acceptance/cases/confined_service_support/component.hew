@@ -81,3 +81,44 @@ pub actor Copier<S: Service + Clone, C: Codec<i64, Encoded = string> + Clone> {
         42
     }
 }
+
+pub trait ValueParent<T> {
+    fn take(self, value: T) -> T;
+}
+
+pub trait ValueChild<U>: ValueParent<U> {
+    fn tag(self) -> i64;
+}
+
+pub trait MakerParent<T> {
+    fn make(value: T) -> Self;
+}
+
+pub trait MakerChild<U>: MakerParent<U> {
+    fn tag(self) -> i64;
+}
+
+pub trait ActionFactory {
+    fn action(self) -> fn() -> i64;
+}
+
+#[confined]
+pub fn inherited_value<C: ValueChild<i64>>(value: C) -> i64 {
+    value.take(40) + value.tag()
+}
+
+#[confined]
+pub fn inherited_make<M: MakerChild<i64>>() -> i64 {
+    M.make(42).tag()
+}
+
+#[confined]
+pub fn inherited_dynamic(consume value: dyn ValueChild<i64>) -> i64 {
+    value.take(40)
+}
+
+#[confined]
+pub fn run_factory<F: ActionFactory>(factory: F) -> i64 {
+    let action = factory.action();
+    action()
+}

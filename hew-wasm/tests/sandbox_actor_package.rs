@@ -1044,16 +1044,18 @@ fn confined_supplied_services_keep_generic_and_erased_cleanup_authority() {
     let trace = execute_options(&source, "ok", "{}", structural_inputs);
     assert_eq!(stdout(&trace), "confined supplied service closed\n");
     assert_eq!(trace["final_state"]["exit_code"], 0);
-    for (source, kind) in [
+    for (source, kind, message) in [
         (
             include_str!(
                 "../../tests/core-acceptance/cases/confined-service-summaries-refused.hew"
             ),
             "E_CONFINED_AUTHORITY",
+            "confined `run_factory` reaches `fs.open_read`",
         ),
         (
             include_str!("../../tests/core-acceptance/cases/generic-resource-bounds-refused.hew"),
             "BoundsNotSatisfied",
+            "trait `ValueChild<i64>`",
         ),
     ] {
         let rejected = hew_wasm::sandbox::compile_to_sandbox_bytecode_with_inputs(
@@ -1064,10 +1066,11 @@ fn confined_supplied_services_keep_generic_and_erased_cleanup_authority() {
         .expect("source refusal is a diagnostic");
         assert!(rejected.bytecode.is_none());
         assert!(
-            rejected
-                .diagnostics
-                .iter()
-                .any(|diagnostic| { diagnostic.severity == "error" && diagnostic.kind == kind }),
+            rejected.diagnostics.iter().any(|diagnostic| {
+                diagnostic.severity == "error"
+                    && diagnostic.kind == kind
+                    && diagnostic.message.contains(message)
+            }),
             "{:?}",
             rejected.diagnostics
         );

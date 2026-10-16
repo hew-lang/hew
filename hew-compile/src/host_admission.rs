@@ -396,6 +396,7 @@ fn resolve_candidate_at(
         CallableCandidate::CallWriteback(site) | CallableCandidate::CallResult(site) => {
             let mut callees = selected_call_declaration(output, site)
                 .into_iter()
+                .map(|callee| (callee, None))
                 .collect::<Vec<_>>();
             let mut symbolic_receiver = Vec::new();
             if callees.is_empty() {
@@ -424,19 +425,25 @@ fn resolve_candidate_at(
                     {
                         symbolic_receiver.clone_from(&receiver);
                     }
+                    let (trait_args, method_args) = trait_method_arguments(output, site, env);
                     for value in receiver {
-                        if let ResolvedValue::Aggregate { span, .. } = value {
-                            if let Some(nominal) = output
-                                .aggregate_field_candidates
-                                .get(&span)
-                                .and_then(|fields| fields.first())
-                                .map(|field| field.owner)
-                            {
-                                for (name, owner, declaration) in
-                                    output.dispatch.methods_of(nominal)
-                                {
-                                    if name == output.defs.name(*method) && (owner == hew_types::check::dispatch_table::MethodOwner::Inherent || owner == hew_types::check::dispatch_table::MethodOwner::Trait(*declaring_trait)) && !callees.contains(&declaration) { callees.push(declaration); }
-                                }
+                        let Some(instance) = actual_type(output, &value)
+                            .and_then(|ty| ResolvedTy::from_ty(&ty).ok())
+                            .and_then(|ty| ty.impl_receiver_instance(&output.defs))
+                        else {
+                            continue;
+                        };
+                        for (callee, arguments) in service_methods(
+                            output,
+                            &instance,
+                            (*declaring_trait, *method),
+                            &trait_args,
+                            &method_args,
+                            true,
+                        ) {
+                            let selected = (callee, Some(arguments));
+                            if !callees.contains(&selected) {
+                                callees.push(selected);
                             }
                         }
                     }
@@ -446,7 +453,16 @@ fn resolve_candidate_at(
             if callees.is_empty() && values.is_empty() {
                 values.push(ResolvedValue::Unknown);
             }
-            for callee in callees {
+            for (callee, arguments) in callees {
+                let mut next_env = callee_env(output, site, callee, env);
+                if let Some(arguments) = arguments {
+                    bind_type_context(
+                        output,
+                        &CallableNode::Declaration(callee),
+                        &arguments,
+                        &mut next_env,
+                    );
+                }
                 if matches!(candidate, CallableCandidate::CallResult(_))
                     && output
                         .suspension_effects
@@ -455,7 +471,7 @@ fn resolve_candidate_at(
                 {
                     values.push(ResolvedValue::Generator {
                         body: CallableNode::Generator(callee),
-                        captures: env_key(&callee_env(output, site, callee, env)),
+                        captures: env_key(&next_env),
                     });
                     continue;
                 }
@@ -465,7 +481,6 @@ fn resolve_candidate_at(
                 } else {
                     output.callable_return_candidates.get(&body)
                 };
-                let next_env = callee_env(output, site, callee, env);
                 let next = returned.map_or_else(
                     || vec![ResolvedValue::Unknown],
                     |returned| {
@@ -844,6 +859,81 @@ fn actual_type(output: &TypeCheckOutput, value: &ResolvedValue) -> Option<Ty> {
         _ => return None,
     };
     Some(ty.substitute_type_params_parallel(&captures.types.iter().cloned().collect()))
+}
+
+fn trait_method_arguments(
+    output: &TypeCheckOutput,
+    site: &SpanKey,
+    env: &CandidateEnv,
+) -> (Vec<Ty>, Vec<Ty>) {
+    let substitutions = env.types.iter().cloned().collect();
+    let trait_args = output
+        .method_call_rewrites
+        .get(site)
+        .into_iter()
+        .flat_map(|rewrite| match rewrite {
+            hew_types::MethodCallRewrite::StaticTraitDispatch { trait_args, .. } => {
+                trait_args.as_slice()
+            }
+            hew_types::MethodCallRewrite::BinderStaticCall(call) => call.trait_args.as_slice(),
+            _ => &[],
+        })
+        .map(|ty| ty.substitute_type_params_parallel(&substitutions))
+        .collect();
+    let method_args = output
+        .call_type_args
+        .get(site)
+        .into_iter()
+        .flatten()
+        .map(|ty| ty.substitute_type_params_parallel(&substitutions))
+        .collect();
+    (trait_args, method_args)
+}
+
+fn service_methods(
+    output: &TypeCheckOutput,
+    instance: &hew_types::NominalInstance,
+    (declaring_trait, method): (DefId, DefId),
+    trait_args: &[Ty],
+    method_args: &[Ty],
+    confined: bool,
+) -> Vec<(DefId, Vec<Ty>)> {
+    let name = output.defs.name(method);
+    let methods: Vec<_> = if confined {
+        output
+            .dispatch
+            .candidates(instance.nominal, Some(instance), name)
+            .into_iter()
+            .map(|(owner, method)| (name, owner, method))
+            .collect()
+    } else {
+        output.dispatch.methods_of(instance.nominal).collect()
+    };
+    let receiver = ResolvedTy::Named {
+        head: hew_types::TypeHead::of_declaration(&output.defs, instance.nominal),
+        args: instance.args.clone(),
+        is_opaque: false,
+    };
+    methods
+        .into_iter()
+        .filter(|(candidate_name, owner, candidate)| {
+            *candidate_name == name
+                && service_method_owner(
+                    output,
+                    *owner,
+                    instance.nominal,
+                    *candidate,
+                    declaring_trait,
+                    method,
+                )
+        })
+        .filter_map(|(_, _, candidate)| {
+            Some((
+                candidate,
+                method_instance_arguments(output, candidate, &receiver, trait_args, method_args)?,
+            ))
+        })
+        .collect()
 }
 
 fn method_instance_arguments(
@@ -2576,30 +2666,8 @@ fn check_profile(
                     method,
                 } = &call.target
                 {
-                    let method_name = output.defs.name(*method);
-                    let trait_args: Vec<_> = output
-                        .method_call_rewrites
-                        .get(&call.span)
-                        .into_iter()
-                        .flat_map(|rewrite| match rewrite {
-                            hew_types::MethodCallRewrite::StaticTraitDispatch {
-                                trait_args,
-                                ..
-                            } => trait_args.as_slice(),
-                            hew_types::MethodCallRewrite::BinderStaticCall(call) => {
-                                call.trait_args.as_slice()
-                            }
-                            _ => &[],
-                        })
-                        .map(|ty| ty.substitute_type_params_parallel(&substitutions))
-                        .collect();
-                    let method_args: Vec<_> = output
-                        .call_type_args
-                        .get(&call.span)
-                        .into_iter()
-                        .flatten()
-                        .map(|ty| ty.substitute_type_params_parallel(&substitutions))
-                        .collect();
+                    let (trait_args, method_args) =
+                        trait_method_arguments(output, &call.span, &caller_env);
                     let receiver_param = output.method_call_rewrites.get(&call.span).and_then(
                         |rewrite| match rewrite {
                             hew_types::MethodCallRewrite::StaticTraitDispatch {
@@ -2675,56 +2743,24 @@ fn check_profile(
                                 .collect::<Result<_, _>>()
                                 .unwrap_or_default(),
                         };
-                        let methods: Vec<_> = if confined {
-                            output
-                                .dispatch
-                                .candidates(nominal, Some(&instance), method_name)
-                                .into_iter()
-                                .map(|(owner, method)| (method_name, owner, method))
-                                .collect()
-                        } else {
-                            output.dispatch.methods_of(nominal).collect()
-                        };
-                        for (name, owner, candidate) in methods {
-                            if name == method_name
-                                && service_method_owner(
-                                    output,
-                                    owner,
-                                    nominal,
-                                    candidate,
-                                    *declaring_trait,
-                                    *method,
-                                )
-                            {
-                                let receiver = ResolvedTy::Named {
-                                    head: hew_types::TypeHead::of_declaration(
-                                        &output.defs,
-                                        nominal,
-                                    ),
-                                    args: instance.args.clone(),
-                                    is_opaque: false,
-                                };
-                                let Some(arguments) = method_instance_arguments(
-                                    output,
-                                    candidate,
-                                    &receiver,
-                                    &trait_args,
-                                    &method_args,
-                                ) else {
-                                    continue;
-                                };
-                                matched = true;
-                                let next_env =
-                                    callee_env(output, &call.span, candidate, &caller_env);
-                                queue.push_back((
-                                    CallableNode::Declaration(candidate),
-                                    selected_site.clone(),
-                                    arguments,
-                                    next_env,
-                                    ancestors.clone(),
-                                    boundary,
-                                ));
-                            }
+                        for (candidate, arguments) in service_methods(
+                            output,
+                            &instance,
+                            (*declaring_trait, *method),
+                            &trait_args,
+                            &method_args,
+                            confined,
+                        ) {
+                            matched = true;
+                            let next_env = callee_env(output, &call.span, candidate, &caller_env);
+                            queue.push_back((
+                                CallableNode::Declaration(candidate),
+                                selected_site.clone(),
+                                arguments,
+                                next_env,
+                                ancestors.clone(),
+                                boundary,
+                            ));
                         }
                     }
                     let deferred_receiver = receiver_param
@@ -2756,25 +2792,12 @@ fn check_profile(
                                     .slots
                                     .iter()
                                     .find(|slot| slot.method == *method)?;
-                                let ResolvedTy::TraitObject { traits } = &coercion.target else {
-                                    return None;
-                                };
-                                let trait_args: Vec<_> = traits
+                                let substitutions = captures.types.iter().cloned().collect();
+                                let trait_args: Vec<_> = slot
+                                    .trait_args
                                     .iter()
-                                    .find(|bound| bound.trait_id == Some(slot.declaring_trait))
-                                    .map(|bound| {
-                                        let substitutions =
-                                            captures.types.iter().cloned().collect();
-                                        bound
-                                            .args
-                                            .iter()
-                                            .map(|ty| {
-                                                ty.to_ty()
-                                                    .substitute_type_params_parallel(&substitutions)
-                                            })
-                                            .collect()
-                                    })
-                                    .unwrap_or_default();
+                                    .map(|ty| ty.substitute_type_params_parallel(&substitutions))
+                                    .collect();
                                 let receiver =
                                     ResolvedTy::from_ty(&actual_type(output, &value)?).ok()?;
                                 let instance = receiver.impl_receiver_instance(&output.defs)?;

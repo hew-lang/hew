@@ -654,11 +654,17 @@ impl<'a> InstanceService<'a> {
         for (index, layout_slot) in layout.slots.iter().enumerate() {
             let slot = u32::try_from(index)
                 .map_err(|_| "trait-object method count exceeds u32".to_string())?;
+            let trait_args = layout_slot
+                .trait_args
+                .iter()
+                .map(|ty| ResolvedTy::from_ty(ty).map(|ty| substitution.apply(&ty)))
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|error| format!("unresolved trait-object slot arguments: {error:?}"))?;
             let target = self.resolve_static_trait_call(
                 layout_slot.declaring_trait,
                 layout_slot.method,
                 concrete_ty,
-                &[],
+                &trait_args,
                 site,
                 substitution,
             )?;

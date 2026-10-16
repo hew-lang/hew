@@ -261,7 +261,21 @@ impl Checker {
                 }
             }
         }
-        found
+        let self_ty = self
+            .scopes
+            .declaration_parameters(param.owner)
+            .into_iter()
+            .find(|head| head.id == param)
+            .map(Ty::param);
+        let mut applied = Vec::new();
+        for bound in found {
+            for parent in self.applied_trait_closure(&bound, self_ty.as_ref()) {
+                if !applied.contains(&parent) {
+                    applied.push(parent);
+                }
+            }
+        }
+        applied
     }
 
     /// Every bound in force here, for a check replayed later in another
@@ -316,20 +330,66 @@ impl Checker {
             .then_some(MarkerTrait::Display)
     }
 
+    pub(in crate::check) fn applied_trait_closure(
+        &self,
+        bound: &TraitRef,
+        self_ty: Option<&Ty>,
+    ) -> Vec<TraitRef> {
+        let mut pending = vec![(bound.clone(), Vec::new())];
+        let mut applied = Vec::new();
+        while let Some((bound, mut path)) = pending.pop() {
+            if path.contains(&bound.trait_id) || applied.contains(&bound) {
+                continue;
+            }
+            path.push(bound.trait_id);
+            let mut substitutions: HashMap<_, _> = self
+                .trait_info(bound.trait_id)
+                .into_iter()
+                .flat_map(|info| info.type_params.iter().copied())
+                .zip(bound.args.iter().cloned())
+                .collect();
+            if let Some(self_ty) = self_ty {
+                substitutions.insert(crate::ParamHead::receiver(bound.trait_id), self_ty.clone());
+            }
+            for parent in self.trait_super.get(&bound.trait_id).into_iter().flatten() {
+                pending.push((
+                    TraitRef {
+                        trait_id: parent.trait_id,
+                        args: parent
+                            .args
+                            .iter()
+                            .map(|ty| ty.substitute_type_params_parallel(&substitutions))
+                            .collect(),
+                        assoc: parent
+                            .assoc
+                            .iter()
+                            .map(|(name, ty)| {
+                                (*name, ty.substitute_type_params_parallel(&substitutions))
+                            })
+                            .collect(),
+                    },
+                    path.clone(),
+                ));
+            }
+            applied.push(bound);
+        }
+        applied
+    }
+
     /// Whether `child` transitively extends `parent`.
     pub(in crate::check) fn trait_extends(
         &self,
         child: crate::DefId,
         parent: crate::DefId,
     ) -> bool {
-        let mut stack = self.trait_supers(child).to_vec();
+        let mut stack = self.trait_supers(child).collect::<Vec<_>>();
         let mut visited = HashSet::new();
         while let Some(current) = stack.pop() {
             if current == parent {
                 return true;
             }
             if visited.insert(current) {
-                stack.extend_from_slice(self.trait_supers(current));
+                stack.extend(self.trait_supers(current));
             }
         }
         false
@@ -340,7 +400,7 @@ impl Checker {
         let mut out = vec![trait_id];
         let mut index = 0;
         while let Some(&current) = out.get(index) {
-            for &parent in self.trait_supers(current) {
+            for parent in self.trait_supers(current) {
                 if !out.contains(&parent) {
                     out.push(parent);
                 }

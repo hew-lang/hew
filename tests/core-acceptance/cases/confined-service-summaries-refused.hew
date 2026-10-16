@@ -59,7 +59,22 @@ fn execute_cleanup_service(consume service: dyn Service) {
 #[confined]
 fn discard_service(consume service: dyn Service) {}
 
+type AmbientFactory {
+}
+
+fn ambient_action() -> i64 {
+    let file = fs.open_read("ungranted factory");
+    42
+}
+
+impl ActionFactory for AmbientFactory {
+    fn action(self) -> fn() -> i64 {
+        ambient_action
+    }
+}
+
 fn main() {
+    let _ = run_factory(AmbientFactory {});
     discard_pair(ServicePair { first: AmbientCleanup { tag: 5 }, second: SafeService {  } });
     let copier = spawn Copier { service: AmbientService {  }, codec: TextCodec {  } };
     run_callback(close_later(AmbientService {  }, TextCodec {  }));

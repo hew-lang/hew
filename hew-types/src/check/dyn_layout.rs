@@ -37,6 +37,7 @@ pub enum SlotEffect {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DynSlot {
     pub declaring_trait: DefId,
+    pub trait_args: Vec<Ty>,
     /// The trait method declaration this slot dispatches.
     pub method: DefId,
     pub receiver: DynReceiver,
@@ -73,19 +74,53 @@ impl Checker {
         traits: &[crate::ty::TraitObjectBound],
         closure: Vec<DefId>,
         walk: &[DynLayoutSlot],
-    ) {
+    ) -> Result<(), String> {
         if self.trait_object_layouts.contains_key(traits) {
-            return;
+            return Ok(());
         }
         let mut slots = Vec::with_capacity(walk.len());
         for slot in walk {
             let Some(mut signature) = self.lookup_trait_method(slot.trait_id, &slot.method_name)
             else {
-                return;
+                return Err(format!(
+                    "trait method `{}` has no signature",
+                    slot.method_name
+                ));
             };
+            let applied: Vec<_> = traits
+                .iter()
+                .filter_map(|bound| {
+                    Some(self.applied_trait_closure(
+                        &TraitRef {
+                            trait_id: bound.trait_id?,
+                            args: bound.args.clone(),
+                            assoc: Vec::new(),
+                        },
+                        None,
+                    ))
+                })
+                .flatten()
+                .collect();
+            let mut arguments = applied
+                .iter()
+                .filter(|bound| bound.trait_id == slot.declaring_trait)
+                .map(|bound| &bound.args);
+            let trait_args = arguments.next().cloned().ok_or_else(|| {
+                format!(
+                    "trait method `{}` has no applied declaring bound",
+                    slot.method_name
+                )
+            })?;
+            if arguments.any(|args| *args != trait_args) {
+                return Err(format!(
+                    "trait method `{}` is inherited with conflicting type arguments",
+                    slot.method_name
+                ));
+            }
             self.apply_trait_object_bound_substitutions(&mut signature, &traits[slot.bound]);
             slots.push(DynSlot {
                 declaring_trait: slot.declaring_trait,
+                trait_args,
                 method: slot.method,
                 receiver: slot.receiver,
                 signature,
@@ -94,6 +129,7 @@ impl Checker {
         }
         self.trait_object_layouts
             .insert(traits.to_vec(), TraitObjectLayout { closure, slots });
+        Ok(())
     }
 
     /// The canonical trait-object type an erasure targets. Its type
@@ -146,6 +182,9 @@ impl Checker {
                 continue;
             };
             for slot in &mut layout.slots {
+                for argument in &mut slot.trait_args {
+                    *argument = self.finalize_type_for_handoff(argument);
+                }
                 for param in &mut slot.signature.params {
                     *param = self.finalize_type_for_handoff(param);
                 }

@@ -1,0 +1,54 @@
+import std.fs;
+import std.os;
+import std.stream;
+
+#[confined]
+actor Copier {
+    let input: fs.ReadDir;
+    let output: fs.WriteDir;
+
+    receive fn copy(consume entered: stream.Sink<i64>, consume gate: stream.Stream<i64>) fails fs.IoError {
+        entered.send(1).expect("signal active handler");
+        entered.close();
+        let _ = gate.recv().expect("release active handler");
+        gate.close();
+        let data = input.read("order")?;
+        output.write("receipt", data)?;
+    }
+
+    receive fn verify() -> Result<bytes, fs.IoError> {
+        input.read("order")
+    }
+}
+
+fn started(consume entered: stream.Stream<i64>) -> duration {
+    let _ = entered.recv().expect("handler started");
+    entered.close();
+    0ns
+}
+
+fn main() {
+    let base = os.temp_dir() + f"/hew-directory-cancellation-{os.pid()}";
+    fs.mkdir_all(base + "/input").expect("input directory");
+    fs.mkdir_all(base + "/output").expect("output directory");
+    fs.write(base + "/input/order", "retained").expect("order fixture");
+    let copier = spawn Copier {
+        input: fs.open_read_dir(base + "/input").expect("input grant"),
+        output: fs.open_write_dir(base + "/output").expect("output grant"),
+    };
+    let (entered, waiting): (stream.Sink<i64>, stream.Stream<i64>) = stream.pipe(1).expect("entered pipe");
+    let (release, gate): (stream.Sink<i64>, stream.Stream<i64>) = stream.pipe(1).expect("release pipe");
+    select {
+        reply from copier.copy(entered, gate) => panic("handler must wait for release"),
+        after started(waiting) => (),
+    };
+    release.send(1).expect("release abandoned reply");
+    release.close();
+    assert(copier.verify().expect("next actor reply").expect("retained read root") == "retained".to_bytes());
+    stop(copier);
+    stopped(copier);
+    assert(fs.read(base + "/output/receipt").expect("retained write root") == "retained");
+    fs.delete(base + "/input/order").expect("remove input");
+    fs.delete(base + "/output/receipt").expect("remove output");
+    println("abandoned replies preserve supplied directory owners");
+}

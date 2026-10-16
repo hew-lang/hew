@@ -1,0 +1,61 @@
+import std.fs;
+import std.os;
+import std.process;
+
+fn link(target: string, path: string) {
+    let result = process.run_argv("ln", ["-s", target, path]).expect("create symbolic link");
+    match result.status {
+        process.ExitStatus.Exited(code) => assert(code == 0),
+        _ => panic("symbolic link command interrupted"),
+    }
+}
+
+fn main() {
+    let base = os.temp_dir() + f"/hew-directory-containment-{os.pid()}";
+    let root = base + "/root";
+    let sibling = base + "/root-other";
+    fs.mkdir_all(root + "/child").expect("root directory");
+    fs.mkdir_all(sibling).expect("sibling directory");
+    fs.write(root + "/child/value", "inside").expect("inside fixture");
+    fs.write(sibling + "/value", "outside").expect("outside fixture");
+    link("child/value", root + "/contained");
+    link("child", root + "/contained-dir");
+    link("../root-other/value", root + "/escape");
+    link("../root-other", root + "/escape-dir");
+    link(sibling + "/value", root + "/absolute");
+    let read = fs.open_read_dir(root).expect("read root");
+    let write = fs.open_write_dir(root).expect("write root");
+    assert(read.read("contained").expect("contained relative link") == "inside".to_bytes());
+    let child = read.subdir("contained-dir").expect("contained directory link");
+    assert(child.read("value").expect("narrowed read") == "inside".to_bytes());
+    assert(child.read("../child/value").is_err());
+    child.close();
+    for path in ["../root-other/value", sibling + "/value", "escape", "absolute"] {
+        assert(read.read(path).is_err());
+        assert(write.write(path, "changed".to_bytes()).is_err());
+    }
+    for path in ["..", "../root-other", sibling, "escape-dir"] {
+        assert(read.subdir(path).is_err());
+        assert(write.subdir(path).is_err());
+    }
+    write.write("contained", "updated".to_bytes()).expect("contained write link");
+    let input = read.open_read("contained").expect("opened child read");
+    let output = write.open_write("receipt").expect("opened child write");
+    // Root identity survives rename and replacing the original pathname.
+    fs.rename(root, base + "/moved").expect("rename granted directory");
+    fs.mkdir_all(root).expect("replace original directory path");
+    fs.write(root + "/ungranted", "replacement").expect("replacement fixture");
+    assert(read.read("child/value").expect("read renamed root") == "updated".to_bytes());
+    assert(read.read("ungranted").is_err());
+    write.write("after-rename", "rooted".to_bytes()).expect("write renamed root");
+    read.close();
+    write.close();
+    assert(input.read().expect("child outlives root") == "updated".to_bytes());
+    output.write("receipt".to_bytes()).expect("child writer outlives root");
+    input.close();
+    output.close();
+    assert(fs.read(base + "/moved/receipt").expect("receipt") == "receipt");
+    assert(fs.read(base + "/moved/after-rename").expect("renamed root output") == "rooted");
+    assert(fs.read(sibling + "/value").expect("outside unchanged") == "outside");
+    println("rooted paths and symlinks remain contained");
+}

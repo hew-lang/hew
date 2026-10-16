@@ -287,6 +287,16 @@ stable = [
   "hew_deque_pop_front",
   "hew_deque_push_back",
   "hew_deque_push_front",
+  "hew_dir_open_read",
+  "hew_dir_open_write",
+  "hew_dir_read_close",
+  "hew_dir_read_is_valid",
+  "hew_dir_read_open_file",
+  "hew_dir_read_subdir",
+  "hew_dir_write_close",
+  "hew_dir_write_is_valid",
+  "hew_dir_write_open_file",
+  "hew_dir_write_subdir",
   "hew_env_get",
   "hew_env_has",
   "hew_env_remove",
@@ -7385,5 +7395,103 @@ symbol = "hew_msg_envelope_release"
 result = "none"
 params = ["consume"]
 resource-param-types = ["std.builtins.ActorRequestOwner"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_dir_open_read"
+result = "fresh"
+params = ["borrow"]
+resource-param-types = [""]
+resource-result-type = "std.fs.ReadDir"
+release-symbol = "hew_dir_read_close"
+discharge-depth = "shallow"
+result-retention = "resource-transfer"
+result-retention-basis = "returns one independently owned cap-std directory or directional child file as Box::into_raw; no retained owner or registry; consuming close drops that box"
+
+[[ownership.contracts]]
+symbol = "hew_dir_read_subdir"
+result = "fresh"
+params = ["borrow", "borrow"]
+resource-param-types = ["std.fs.ReadDir", ""]
+resource-result-type = "std.fs.ReadDir"
+release-symbol = "hew_dir_read_close"
+discharge-depth = "shallow"
+result-retention = "resource-transfer"
+result-retention-basis = "returns one independently owned cap-std directory or directional child file as Box::into_raw; no retained owner or registry; consuming close drops that box"
+
+[[ownership.contracts]]
+symbol = "hew_dir_read_open_file"
+result = "fresh"
+params = ["borrow", "borrow"]
+resource-param-types = ["std.fs.ReadDir", ""]
+resource-result-type = "std.fs.ReadFile"
+release-symbol = "hew_file_read_close"
+discharge-depth = "shallow"
+result-retention = "resource-transfer"
+result-retention-basis = "returns one independently owned cap-std directory or directional child file as Box::into_raw; no retained owner or registry; consuming close drops that box"
+
+[[ownership.contracts]]
+symbol = "hew_dir_read_is_valid"
+result = "none"
+params = ["borrow"]
+resource-param-types = ["std.fs.ReadDir"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_dir_read_close"
+result = "none"
+params = ["consume"]
+resource-param-types = ["std.fs.ReadDir"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_dir_open_write"
+result = "fresh"
+params = ["borrow"]
+resource-param-types = [""]
+resource-result-type = "std.fs.WriteDir"
+release-symbol = "hew_dir_write_close"
+discharge-depth = "shallow"
+result-retention = "resource-transfer"
+result-retention-basis = "returns one independently owned cap-std directory or directional child file as Box::into_raw; no retained owner or registry; consuming close drops that box"
+
+[[ownership.contracts]]
+symbol = "hew_dir_write_subdir"
+result = "fresh"
+params = ["borrow", "borrow"]
+resource-param-types = ["std.fs.WriteDir", ""]
+resource-result-type = "std.fs.WriteDir"
+release-symbol = "hew_dir_write_close"
+discharge-depth = "shallow"
+result-retention = "resource-transfer"
+result-retention-basis = "returns one independently owned cap-std directory or directional child file as Box::into_raw; no retained owner or registry; consuming close drops that box"
+
+[[ownership.contracts]]
+symbol = "hew_dir_write_open_file"
+result = "fresh"
+params = ["borrow", "borrow"]
+resource-param-types = ["std.fs.WriteDir", ""]
+resource-result-type = "std.fs.WriteFile"
+release-symbol = "hew_file_write_close"
+discharge-depth = "shallow"
+result-retention = "resource-transfer"
+result-retention-basis = "returns one independently owned cap-std directory or directional child file as Box::into_raw; no retained owner or registry; consuming close drops that box"
+
+[[ownership.contracts]]
+symbol = "hew_dir_write_is_valid"
+result = "none"
+params = ["borrow"]
+resource-param-types = ["std.fs.WriteDir"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_dir_write_close"
+result = "none"
+params = ["consume"]
+resource-param-types = ["std.fs.WriteDir"]
 release-symbol = ""
 discharge-depth = "none"

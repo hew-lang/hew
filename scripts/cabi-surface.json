@@ -5727,6 +5727,136 @@
     },
     {
       "availability": [
+        "native"
+      ],
+      "classification": "stable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_dir_open_read( *const HewString) -> *mut HewReadDir"
+      },
+      "symbol": "hew_dir_open_read"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "stable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_dir_open_write( *const HewString) -> *mut HewWriteDir"
+      },
+      "symbol": "hew_dir_open_write"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "stable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_dir_read_close( *mut HewReadDir)"
+      },
+      "symbol": "hew_dir_read_close"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "stable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_dir_read_is_valid( *const HewReadDir) -> bool"
+      },
+      "symbol": "hew_dir_read_is_valid"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "stable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_dir_read_open_file( *const HewReadDir, *const HewString, ) -> *mut HewReadFile"
+      },
+      "symbol": "hew_dir_read_open_file"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "stable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_dir_read_subdir( *const HewReadDir, *const HewString, ) -> *mut HewReadDir"
+      },
+      "symbol": "hew_dir_read_subdir"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "stable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_dir_write_close( *mut HewWriteDir)"
+      },
+      "symbol": "hew_dir_write_close"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "stable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_dir_write_is_valid( *const HewWriteDir) -> bool"
+      },
+      "symbol": "hew_dir_write_is_valid"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "stable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_dir_write_open_file( *const HewWriteDir, *const HewString, ) -> *mut HewWriteFile"
+      },
+      "symbol": "hew_dir_write_open_file"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "stable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_dir_write_subdir( *const HewWriteDir, *const HewString, ) -> *mut HewWriteDir"
+      },
+      "symbol": "hew_dir_write_subdir"
+    },
+    {
+      "availability": [
         "native",
         "wasm32-wasip1"
       ],

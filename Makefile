@@ -1446,6 +1446,7 @@ test-build-harness:
 	$(PYTHON) scripts/tests/test_makefile_interfaces.py
 	$(PYTHON) scripts/tests/test_cargo_output_dir.py
 	$(PYTHON) scripts/tests/test_compiled_hew_shards.py
+	$(PYTHON) scripts/tests/test_release_qualification.py
 
 # Python and shell only; no artifacts.
 

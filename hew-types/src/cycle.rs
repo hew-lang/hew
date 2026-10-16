@@ -5,7 +5,7 @@
 //! components (cycles). Actors in cycles are returned as "cycle-capable"
 //! so the runtime can selectively enable cycle scanning for them.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use crate::check::{TypeDef, TypeDefKind, TypeDefView, VariantDef};
 use crate::ty::Ty;
@@ -16,23 +16,22 @@ use crate::NominalId;
 #[must_use]
 pub fn detect_actor_ref_cycles(types: TypeDefView<'_>) -> (HashSet<String>, Vec<Vec<String>>) {
     let path = |id: NominalId| types.defs.path(id.declaration()).to_string();
-    // Build adjacency list: actor -> set of actors it references
-    let mut adj: HashMap<NominalId, HashSet<NominalId>> = HashMap::new();
-
-    for (&id, td) in types.type_defs {
-        if td.kind != crate::check::TypeDefKind::Actor {
-            continue;
-        }
-        let mut refs = HashSet::new();
-        for field_ty in td.fields.values() {
-            collect_actor_refs(field_ty, types, &mut refs, &mut HashSet::new());
-        }
-        adj.insert(id, refs);
+    let mut actors: Vec<_> = types
+        .type_defs
+        .iter()
+        .filter_map(|(&id, definition)| (definition.kind == TypeDefKind::Actor).then_some(id))
+        .collect();
+    if actors.is_empty() {
+        return (HashSet::new(), Vec::new());
     }
+    let mut summaries = actor_reference_summaries(types);
+    let adj: HashMap<_, _> = actors
+        .iter()
+        .map(|id| (*id, summaries.remove(id).unwrap_or_default()))
+        .collect();
 
     // Run Tarjan's SCC over a path-ordered node list so diagnostics are
     // deterministic.
-    let mut actors: Vec<NominalId> = adj.keys().copied().collect();
     actors.sort_by_cached_key(|id| path(*id));
     let sccs = tarjan_scc(&actors, &adj);
 
@@ -619,63 +618,93 @@ fn is_value_type_node(td: &TypeDef) -> bool {
         )
 }
 
-/// Recursively collect actor names referenced via an actor-handle type,
-/// looking through containers (`Vec`, `Array`, `Slice`, `Tuple`, `Option`,
-/// `Result`, `HashMap`) and transitively through struct fields.
-fn collect_actor_refs(
+/// Summarize the finite declaration graph before answering actor field queries.
+/// All non-actor type arguments participate in discovery, including phantom
+/// arguments. Record fields and enum payloads add declaration dependencies;
+/// substituting generic arguments into them would repeat discovery and can
+/// create unbounded types.
+fn actor_reference_summaries(types: TypeDefView<'_>) -> HashMap<NominalId, HashSet<NominalId>> {
+    let mut summaries = HashMap::new();
+    let mut dependents: HashMap<NominalId, HashSet<NominalId>> = HashMap::new();
+    let mut pending = VecDeque::new();
+    for (&id, definition) in types.type_defs {
+        if !matches!(
+            definition.kind,
+            TypeDefKind::Actor | TypeDefKind::Struct | TypeDefKind::Record | TypeDefKind::Enum
+        ) {
+            continue;
+        }
+        let mut actors = HashSet::new();
+        let mut dependencies = HashSet::new();
+        let mut members: Vec<_> = definition.fields.values().collect();
+        for variant in definition.variants.values() {
+            match variant {
+                VariantDef::Unit => {}
+                VariantDef::Tuple(fields) => members.extend(fields),
+                VariantDef::Struct(fields) => members.extend(fields.iter().map(|(_, ty)| ty)),
+            }
+        }
+        for member in members {
+            collect_actor_reference_edges(member, types, &mut actors, &mut dependencies);
+        }
+        for actor in &actors {
+            pending.push_back((id, *actor));
+        }
+        for dependency in dependencies {
+            dependents.entry(dependency).or_default().insert(id);
+        }
+        summaries.insert(id, actors);
+    }
+    // Every (declaration, actor) fact crosses each dependency edge once. SCCs
+    // retain all reachable handles without recursive or instantiated expansion.
+    while let Some((id, actor)) = pending.pop_front() {
+        for dependent in dependents.get(&id).into_iter().flatten() {
+            if summaries
+                .get_mut(dependent)
+                .expect("registered reference summary")
+                .insert(actor)
+            {
+                pending.push_back((*dependent, actor));
+            }
+        }
+    }
+    summaries
+}
+
+fn collect_actor_reference_edges(
     ty: &Ty,
     types: TypeDefView<'_>,
-    out: &mut HashSet<NominalId>,
-    visited_structs: &mut HashSet<(NominalId, Vec<Ty>)>,
+    actors: &mut HashSet<NominalId>,
+    dependencies: &mut HashSet<NominalId>,
 ) {
-    match ty {
-        Ty::Slice(inner) | Ty::Array(inner, _) => {
-            collect_actor_refs(inner, types, out, visited_structs);
-        }
-        Ty::Tuple(elems) => {
-            for elem in elems {
-                collect_actor_refs(elem, types, out, visited_structs);
-            }
-        }
-        Ty::Named { head, args } => {
-            let target = head.nominal();
-            if head.is_actor() {
-                // An actor is the type of its handle, so the handle names the
-                // actor this reference reaches.
-                if let Some(actor) = target.filter(|id| types.type_defs.contains_key(id)) {
-                    out.insert(actor);
-                }
-            } else {
-                // Transitively follow struct fields
-                if let Some((id, td)) =
-                    target.and_then(|id| types.type_defs.get(&id).map(|td| (id, td)))
-                {
-                    let key = (id, args.clone());
-                    if (td.kind == crate::check::TypeDefKind::Struct
-                        || td.kind == crate::check::TypeDefKind::Record)
-                        && !visited_structs.contains(&key)
+    let mut pending = vec![ty];
+    while let Some(ty) = pending.pop() {
+        match ty {
+            Ty::Slice(inner) | Ty::Array(inner, _) => pending.push(inner),
+            Ty::Tuple(items) => pending.extend(items),
+            Ty::Named { head, args } => {
+                if head.is_actor() {
+                    if let Some(actor) =
+                        head.nominal().filter(|id| types.type_defs.contains_key(id))
                     {
-                        visited_structs.insert(key);
-                        let param_map: HashMap<crate::ParamHead, Ty> = td
-                            .type_params
-                            .iter()
-                            .zip(args.iter())
-                            .map(|(p, a)| (*p, a.clone()))
-                            .collect();
-                        for field_ty in td.fields.values() {
-                            let instantiated_field =
-                                field_ty.substitute_type_params_parallel(&param_map);
-                            collect_actor_refs(&instantiated_field, types, out, visited_structs);
-                        }
+                        actors.insert(actor);
                     }
+                    continue;
                 }
-                // Also check type arguments (e.g. Vec<B> where B is an actor)
-                for arg in args {
-                    collect_actor_refs(arg, types, out, visited_structs);
+                if let Some(value) = head.nominal().filter(|id| {
+                    types.type_defs.get(id).is_some_and(|definition| {
+                        matches!(
+                            definition.kind,
+                            TypeDefKind::Struct | TypeDefKind::Record | TypeDefKind::Enum
+                        )
+                    })
+                }) {
+                    dependencies.insert(value);
                 }
+                pending.extend(args);
             }
+            _ => {}
         }
-        _ => {}
     }
 }
 
@@ -772,6 +801,219 @@ mod tests {
     fn value_cycles(type_defs: &HashMap<NominalId, TypeDef>) -> Vec<ValueTypeCycle> {
         let defs = DefTable::fixture();
         detect_recursive_value_type_cycles(TypeDefView::new(&defs, type_defs))
+    }
+
+    #[test]
+    fn actor_reference_summaries_share_a_deep_record_dag() {
+        let mut definitions = HashMap::from([
+            make_struct(
+                "T0",
+                HashMap::from([("peer".to_string(), actor_handle("B"))]),
+            ),
+            make_actor(
+                "A",
+                HashMap::from([("value".to_string(), named_type("T28"))]),
+            ),
+            make_actor(
+                "B",
+                HashMap::from([("peer".to_string(), actor_handle("A"))]),
+            ),
+        ]);
+        for level in 1..=28 {
+            let child = Ty::builtin_named(
+                crate::BuiltinType::Vec,
+                vec![named_type(&format!("T{}", level - 1))],
+            );
+            let (id, definition) = make_struct(
+                &format!("T{level}"),
+                HashMap::from([
+                    ("left".to_string(), child.clone()),
+                    ("right".to_string(), child),
+                ]),
+            );
+            definitions.insert(id, definition);
+        }
+        let (capable, cycles) = actor_cycles(&definitions);
+        assert_eq!(capable, HashSet::from(["A".to_string(), "B".to_string()]));
+        assert_eq!(cycles.len(), 1);
+    }
+
+    #[test]
+    fn actor_reference_summaries_terminate_growing_generic_recursion() {
+        let parameter = crate::ParamHead::for_test("T");
+        let definitions = HashMap::from([
+            make_record(
+                "Grow",
+                vec![parameter],
+                HashMap::from([
+                    (
+                        "next".to_string(),
+                        Ty::builtin_named(
+                            crate::BuiltinType::Vec,
+                            vec![Ty::named_for_test(
+                                "Grow",
+                                vec![Ty::builtin_named(
+                                    crate::BuiltinType::Vec,
+                                    vec![Ty::param(parameter)],
+                                )],
+                            )],
+                        ),
+                    ),
+                    ("peer".to_string(), actor_handle("B")),
+                ]),
+            ),
+            make_actor(
+                "A",
+                HashMap::from([(
+                    "value".to_string(),
+                    Ty::named_for_test("Grow", vec![Ty::I64]),
+                )]),
+            ),
+            make_actor(
+                "B",
+                HashMap::from([("peer".to_string(), actor_handle("A"))]),
+            ),
+        ]);
+        let (capable, cycles) = actor_cycles(&definitions);
+        assert_eq!(capable, HashSet::from(["A".to_string(), "B".to_string()]));
+        assert_eq!(cycles.len(), 1);
+    }
+
+    #[test]
+    fn actor_reference_summaries_scan_nested_phantom_arguments() {
+        let parameter = crate::ParamHead::for_test("T");
+        let definitions = HashMap::from([
+            make_record("Phantom", vec![parameter], HashMap::new()),
+            make_actor(
+                "A",
+                HashMap::from([(
+                    "value".to_string(),
+                    Ty::named_for_test(
+                        "Phantom",
+                        vec![Ty::option(Ty::Tuple(vec![
+                            Ty::builtin_named(crate::BuiltinType::Vec, vec![actor_handle("B")]),
+                            Ty::Pointer {
+                                is_mutable: false,
+                                pointee: Box::new(actor_handle("C")),
+                            },
+                        ]))],
+                    ),
+                )]),
+            ),
+            make_actor(
+                "B",
+                HashMap::from([("peer".to_string(), actor_handle("A"))]),
+            ),
+            make_actor(
+                "C",
+                HashMap::from([("peer".to_string(), actor_handle("A"))]),
+            ),
+        ]);
+        let (capable, cycles) = actor_cycles(&definitions);
+        assert_eq!(capable, HashSet::from(["A".to_string(), "B".to_string()]));
+        assert_eq!(cycles.len(), 1);
+    }
+
+    #[test]
+    fn actor_reference_summaries_follow_generic_enum_payloads() {
+        let parameter = crate::ParamHead::for_test("T");
+        let payload_parameter = crate::ParamHead::for_test("P");
+        let mut payload = make_enum(
+            "Payload",
+            HashMap::from([
+                (
+                    "Tuple".to_string(),
+                    VariantDef::Tuple(vec![Ty::named_for_test(
+                        "Wrapper",
+                        vec![Ty::option(Ty::param(payload_parameter))],
+                    )]),
+                ),
+                (
+                    "Named".to_string(),
+                    VariantDef::Struct(vec![("peer".to_string(), actor_handle("C"))]),
+                ),
+            ]),
+        );
+        payload.1.type_params.push(payload_parameter);
+        let definitions = HashMap::from([
+            make_record(
+                "Wrapper",
+                vec![parameter],
+                HashMap::from([
+                    ("value".to_string(), Ty::param(parameter)),
+                    ("peer".to_string(), actor_handle("B")),
+                ]),
+            ),
+            payload,
+            make_actor(
+                "A",
+                HashMap::from([(
+                    "payload".to_string(),
+                    Ty::named_for_test("Payload", vec![Ty::I64]),
+                )]),
+            ),
+            make_actor(
+                "B",
+                HashMap::from([("peer".to_string(), actor_handle("A"))]),
+            ),
+            make_actor(
+                "C",
+                HashMap::from([("peer".to_string(), actor_handle("A"))]),
+            ),
+        ]);
+        let (capable, cycles) = actor_cycles(&definitions);
+        assert_eq!(
+            capable,
+            HashSet::from(["A".to_string(), "B".to_string(), "C".to_string()])
+        );
+        assert_eq!(cycles.len(), 1);
+    }
+
+    #[test]
+    fn actor_reference_summaries_stop_at_handles_and_borrowed_values() {
+        let parameter = crate::ParamHead::for_test("T");
+        let mut actor_b = make_actor("B", HashMap::new());
+        actor_b.1.type_params.push(parameter);
+        let definitions = HashMap::from([
+            actor_b,
+            make_actor(
+                "A",
+                HashMap::from([
+                    (
+                        "handle".to_string(),
+                        Ty::actor_for_test("B", vec![actor_handle("C")]),
+                    ),
+                    (
+                        "borrowed".to_string(),
+                        Ty::Borrow {
+                            pointee: Box::new(actor_handle("C")),
+                        },
+                    ),
+                    (
+                        "pointer".to_string(),
+                        Ty::Pointer {
+                            is_mutable: false,
+                            pointee: Box::new(actor_handle("C")),
+                        },
+                    ),
+                    (
+                        "callback".to_string(),
+                        Ty::Function {
+                            capabilities: crate::CallableCapabilities::default(),
+                            params: vec![actor_handle("C")],
+                            ret: Box::new(actor_handle("C")),
+                        },
+                    ),
+                ]),
+            ),
+            make_actor(
+                "C",
+                HashMap::from([("peer".to_string(), actor_handle("A"))]),
+            ),
+        ]);
+        let (capable, cycles) = actor_cycles(&definitions);
+        assert!(capable.is_empty());
+        assert!(cycles.is_empty());
     }
 
     fn make_actor(name: &str, fields: HashMap<String, Ty>) -> (NominalId, TypeDef) {
@@ -1265,15 +1507,9 @@ mod tests {
 
     #[test]
     fn two_distinct_generic_instantiations_both_walk_fields() {
-        // Regression for dedup-by-bare-name: prior code keyed visited_structs
-        // on `"Wrapper"` alone, so the second encounter of `Wrapper<_>` was
-        // skipped *within a single traversal*. With args-dependent substitution
-        // that meant C's actor handle was never recorded. Key is now (name, args)
-        // so both instantiations are followed.
-        //
-        // The two `Wrapper<_>` instantiations MUST share a single
-        // `visited_structs` traversal, so we nest them in one tuple field —
-        // separate fields would get fresh visited sets (see line 32).
+        // Both actual arguments in one tuple must contribute their actor
+        // handles. Declaration summaries are shared, while argument discovery
+        // remains specific to each authored use.
         let generic_wrapper = (
             NominalId::for_test("Wrapper"),
             TypeDef {

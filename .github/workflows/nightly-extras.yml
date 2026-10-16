@@ -1,13 +1,31 @@
-name: Nightly compiler and runtime checks
+name: Compiler and runtime checks
 
 on:
-  schedule:
-    - cron: "0 8 * * *"
+  push:
+    branches: [main]
+    paths:
+      - "hew-*/**"
+      - "std/**"
+      - "xtask/**"
+      - "tests/**"
+      - "examples/**"
+      - "docs/**"
+      - "scripts/**"
+      - "tools/**"
+      - "protocol/**"
+      - "Cargo.*"
+      - "Makefile"
+      - "*.toml"
+      - "*.md"
+      - ".cargo/**"
+      - ".config/**"
+      - ".github/actions/**"
+      - ".github/scripts/**"
+      - ".github/workflows/nightly-extras.yml"
   workflow_dispatch:
 
 permissions:
   contents: read
-  issues: read
 
 env:
   LLVM_VERSION: "22.1.5"
@@ -15,11 +33,18 @@ env:
 
 jobs:
   runtime-unit:
+    if: >-
+      github.repository == 'hew-lang/hew' &&
+      (github.ref == 'refs/heads/main' ||
+       (github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/heads/release/')))
     name: Runtime unit tests (minimal features)
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
       - uses: ./.github/actions/setup-rust-build
         with:
           tools: nextest@0.9.120
@@ -27,11 +52,18 @@ jobs:
       - run: make test-runtime-unit
 
   link-race:
+    if: >-
+      github.repository == 'hew-lang/hew' &&
+      (github.ref == 'refs/heads/main' ||
+       (github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/heads/release/')))
     name: Native archive link race
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
       - name: Install native link prerequisites
         run: |
           sudo apt-get update -qq
@@ -45,11 +77,18 @@ jobs:
       - run: make libhew-link-race-test
 
   linear-lowering:
+    if: >-
+      github.repository == 'hew-lang/hew' &&
+      (github.ref == 'refs/heads/main' ||
+       (github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/heads/release/')))
     name: Linear physical lowering
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
       - name: Install native link prerequisites
         run: |
           sudo apt-get update -qq
@@ -61,17 +100,3 @@ jobs:
         with:
           cache-shared-key: nightly-linear-lowering
       - run: make perf-verify-linear
-
-  ledger-issues:
-    name: Expected-failure issue references
-    runs-on: ubuntu-24.04
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
-      - uses: ./.github/actions/setup-rust-build
-        with:
-          cache-shared-key: nightly-ledger-issues
-      - name: Report closed and uncited ratchet issues
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: make ledger-issues

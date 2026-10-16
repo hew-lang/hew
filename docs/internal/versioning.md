@@ -161,11 +161,12 @@ the Hew language edition; it governs how the compiler's own source compiles.
 
 ## Tagging
 
-The release runbook is canonical. In short:
+The release runbook is canonical. Tag its qualified release-branch commit
+after the release PR merges into main:
 
 ```sh
-# After CHANGELOG + Cargo.toml bump commit is on main and CI is green:
-git tag -a vX.Y.Z -m "vX.Y.Z"
+git merge-base --is-ancestor origin/release/vX.Y.Z origin/main
+git tag -s vX.Y.Z origin/release/vX.Y.Z -m "Hew vX.Y.Z"
 git push origin vX.Y.Z
 ```
 

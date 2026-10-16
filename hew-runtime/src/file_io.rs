@@ -49,28 +49,32 @@ pub(crate) fn set_file_io_errno(operation: &str, message: impl std::fmt::Display
 }
 
 // Convert explicitly at the OS boundary. CString rejects interior NUL; the
-// owned OS path is dropped normally, never through a managed-string or libc
-// release function.
+// owned OS path is dropped normally, never through a managed-string release.
+pub(crate) unsafe fn managed_path(
+    path: *const HewString,
+) -> Result<std::path::PathBuf, &'static str> {
+    // SAFETY: the caller supplies a borrowed managed handle.
+    let foreign = unsafe { string_to_cstring(path) }.map_err(|_| "path contains interior NUL")?;
+    if foreign.as_bytes().is_empty() {
+        return Err("empty path");
+    }
+    Ok(foreign.into_string().expect("managed path is UTF-8").into())
+}
+
 pub(crate) unsafe fn file_path(
     path: *const HewString,
     operation: &str,
     access: Access,
 ) -> Option<std::path::PathBuf> {
     // SAFETY: the caller supplies a borrowed managed handle.
-    let foreign = match unsafe { string_to_cstring(path) } {
-        Ok(path) if !path.as_bytes().is_empty() => path,
-        Ok(_) => {
-            set_file_io_errno(operation, "empty path", libc::EINVAL);
-            return None;
-        }
-        Err(_) => {
-            set_file_io_errno(operation, "path contains interior NUL", libc::EINVAL);
+    let path = match unsafe { managed_path(path) } {
+        Ok(path) => path,
+        Err(message) => {
+            set_file_io_errno(operation, message, libc::EINVAL);
             return None;
         }
     };
-    // Managed strings are valid UTF-8, preserved by the copying adapter.
-    let path = foreign.into_string().expect("managed path is UTF-8");
-    match crate::generator::checked_path(std::path::Path::new(&path), access) {
+    match crate::generator::checked_path(&path, access) {
         Ok(path) => Some(path),
         Err(error) => {
             set_file_io_error(operation, &error);

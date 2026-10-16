@@ -9,11 +9,13 @@
   contextual macros and declared source generation.
 - Support deeper machine hierarchies and full-branch computed transitions.
 - Confine actors and functions around supplied services, with directional native
-  file resources and checked transitive authority.
+  file resources, rooted directory resources and checked transitive authority.
 - Preserve actor request deadlines through local and distributed calls, bound
   inbound asks per actor incarnation, and keep cancellation responsive during
   stalled transport.
 - Improve native coroutine lowering, synchronous calls and owned payload transfer.
+- Avoid redundant function-value allocations and align browser VM string
+  comparisons with native UTF-8 ordering.
 - Avoid repeated task-lifetime analysis of data types that cannot contain tasks
   or captured callbacks, fixing excessive checking time in large applications.
 - Compile parent-relative imports of generic actors without a mangling panic,

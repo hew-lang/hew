@@ -1,0 +1,11 @@
+import std.fs;
+
+fn read_cannot_write(root: fs.ReadDir) {
+    root.write("value", "no".to_bytes());
+}
+
+fn write_cannot_read(root: fs.WriteDir) {
+    root.read("value");
+}
+
+fn main() {}

@@ -63,6 +63,12 @@ test-group = "subprocess-intensive"
 filter = "binary(run_e2e) and test(/^run_actor_sent_string_not_double_freed$/)"
 threads-required = "num-test-threads"
 
+[[profile.default.overrides]]
+# Project rename cases launch checker processes over whole workspaces. Reserve
+# the pool so competing protocol sessions cannot exhaust their response deadline.
+filter = "package(hew-lsp) and binary(protocol_smoke)"
+threads-required = "num-test-threads"
+
 [profile.ci]
 # CI profile: runs all tests and produces JUnit XML for GitHub Actions reporting.
 # `test_runner_e2e` used to be excluded here against "the ctest E2E suite";

@@ -124,10 +124,17 @@ validator reads at load; it carries no verdict.
 
 ### `suspend_kinds`
 
-Every `SuspendKind` variant name the instruction stream reaches. A suspension is
+Every suspension or structural poll kind the instruction stream reaches. A suspension is
 not a call, so it appears in neither of the tables above; this list keeps
 load-time admission a walk of the package's own manifest rather than a scan of
 the instruction stream.
+
+`Safepoint` carries the SIR scheduling budget in `detail.budget`. It has no
+inputs, a unit result, one resume edge, a cancellation cleanup edge and no
+operation-failure edge. Invocations share their caller's budget; new tasks
+start a fresh budget. A spent budget advances virtual time by one replay tick
+and yields only when another frame is ready. Deferred regions suppress polls
+through their call chain.
 
 ### `value_capabilities`
 

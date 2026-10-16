@@ -28,8 +28,6 @@ impl FunctionEmitter<'_, '_> {
             .clone();
         let payload_ty = llvm_type(self.ctx, &payload_layout.repr)?;
         let ptr = self.ctx.ptr_type(AddressSpace::default());
-        let target = TargetData::create(&self.module.target.data_layout);
-        let size_ty = self.ctx.ptr_sized_int_type(&target, None);
         let symbol = family.row().symbol;
         match family {
             RuntimeCallFamily::RcNew => {
@@ -40,30 +38,34 @@ impl FunctionEmitter<'_, '_> {
                 // `hew_rc_new` copies the payload out of this slot without
                 // touching it, so the operand's own storage is the source.
                 let data = self.slots[source.0 as usize];
-                let drop_fn = self
-                    .llvm
-                    .get_function(&shared_payload_drop_symbol(glue_id))
-                    .map_or_else(
-                        || ptr.const_null(),
-                        |f| f.as_global_value().as_pointer_value(),
-                    );
+                let descriptor =
+                    self.descriptor_pointer(&format!("__hew_shared_payload_{}_layout", glue_id.0))?;
+                let type_name = c_string_literal(
+                    self.ctx,
+                    self.llvm,
+                    &glue.payload.ty.user_facing().to_string(),
+                    "rc.type",
+                );
                 let function = get_or_declare_external(
                     self.llvm,
                     symbol,
-                    ptr.fn_type(
-                        &[ptr.into(), size_ty.into(), size_ty.into(), ptr.into()],
-                        false,
-                    ),
+                    ptr.fn_type(&[ptr.into(); 4], false),
                 )?;
                 let value = self.runtime_call_value(
                     function,
                     &[
                         data.into(),
-                        size_ty.const_int(payload_layout.size, false).into(),
-                        size_ty
-                            .const_int(u64::from(payload_layout.align), false)
+                        descriptor.into(),
+                        type_name.into(),
+                        self.frame
+                            .as_ref()
+                            .ok_or_else(|| {
+                                CodegenError::FailClosed(
+                                    "Rc allocation lacks its invocation owner".into(),
+                                )
+                            })?
+                            .state
                             .into(),
-                        drop_fn.into(),
                     ],
                     "rc.new",
                 )?;

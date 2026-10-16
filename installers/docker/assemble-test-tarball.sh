@@ -33,6 +33,8 @@ echo "    libhew.a: $(du -h "${STAGING}/lib/libhew.a" | cut -f1)"
 
 # Standard library sources (all .hew files, including subdirectories)
 cp -r "${REPO_DIR}/std/." "${STAGING}/std/"
+mkdir -p "${STAGING}/share/hew"
+cp "${REPO_DIR}/scripts/debug/hew-gdb.py" "${REPO_DIR}/scripts/debug/hew_lldb.py" "${STAGING}/share/hew/"
 hew_count=$(find "${STAGING}/std" -name "*.hew" | wc -l)
 echo "    stdlib sources:    ${hew_count} .hew files"
 

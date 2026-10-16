@@ -1,0 +1,22 @@
+#[resource]
+type EmptyReceipt {
+}
+
+impl EmptyReceipt {
+    fn close(consume self) {
+        println("empty capture closed");
+    }
+}
+
+fn main() {
+    {
+        let receipt = EmptyReceipt {  };
+        let invoked: fn[once]() = move || receipt.close();
+        invoked();
+    };
+    {
+        let receipt = EmptyReceipt {  };
+        let discarded: fn[once]() = move || receipt.close();
+    };
+    println("empty captures complete");
+}

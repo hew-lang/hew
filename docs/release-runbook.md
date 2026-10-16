@@ -167,19 +167,18 @@ git log --oneline -5  # confirm expected HEAD
 
 **Handling breaks (pre-1.0):**
 
-1. **In the PR:** add `#[non_exhaustive]` to the enum before adding variants, or mark the whole surface `#[deprecated]` if a complete replacement is preferred. If adding enum variants or changing signatures is unavoidable without `#[non_exhaustive]`, document the migration in a comment.
+1. **In the PR:** describe the changed behaviour and migration. Use `#[non_exhaustive]` when an enum is designed for future extension; adding it to an existing exhaustive enum is itself a change that needs migration instructions.
 2. **In-tree callers:** update all tests, examples, probes, and docs in the same PR — never carry forward compatibility aliases. The break is immediate and clean.
 3. **CHANGELOG entry:** in the `[Unreleased]` section, add a `### Changed` entry listing the affected module paths, the old shape, and the new shape with a one-line migration note. Example:
 
    ```
    ### Changed
 
-   - **stdlib vec: `index_of` now returns `i64`:** changed from `fn index_of(elem: T) -> Option<i64>`
-     to `fn index_of(elem: T) -> i64` (returning `-1` if not found). Update call sites to
-     check `result < 0` instead of matching `Option`.
+   - **String iteration:** replace `text.chars()` with `text.iter()`.
+     The iterator still yields `char` values.
    ```
 
-4. **Version bump:** breaking changes trigger a **minor version bump** (e.g., 0.3.0 → 0.4.0).
+4. **Version:** approved language and stdlib changes may ship in the evolving 0.6.x series. Identify the first supporting compiler version and document affected versions and exact migration steps. See the [specification's version model](specs/HEW-SPEC-2026.md) and [versioning guidance](internal/versioning.md).
 
 **Rationale:** pre-1.0, breaking changes allow rapid stdlib refinement without long deprecation cycles. All in-tree code must be updated in the same PR so the break is visible at a glance. `#[non_exhaustive]` protects downstream code from silent miscompilation.
 
@@ -408,9 +407,11 @@ release blocker.
 
 ## Phase 5 — Candidate tag and publication order
 
-Tag the exact qualified release-branch commit after its release PR merges
-into `main`. Merge with a merge commit so the candidate remains reachable
-from `main`. Later development on `main` does not change the candidate.
+Tag the qualified release-branch commit after its release PR merges into
+`main`. Use a merge commit so that the candidate and its tag are reachable
+from `main` and `git describe` resolves for later commits. Main can continue
+receiving changes while the candidate is qualified; the published source stays
+the exact source that passed the release gate and dry run.
 
 Restore `release_sha` from the recorded, fully qualified candidate if using a
 new shell, then check out that commit. Run these guards from its clean checkout

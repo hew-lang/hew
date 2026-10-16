@@ -16,20 +16,21 @@ use hew_observe_protocol::{
 const FIXTURE_COUNTER_INCREMENTS: u64 = 7;
 const EXPECTED_COUNTER_MESSAGES: u64 = FIXTURE_COUNTER_INCREMENTS + 1;
 const EXPECTED_PINGER_MESSAGES: u64 = 1;
-const EXPECTED_ACTORS_LIVE: u64 = 2;
-const EXPECTED_ACTOR_TURNS: u64 = EXPECTED_COUNTER_MESSAGES + EXPECTED_PINGER_MESSAGES;
+// The stopped LocalCycle handle remains live until the fixture exits.
+const EXPECTED_ACTORS_LIVE: u64 = 3;
+const EXPECTED_ACTOR_TURNS: u64 = EXPECTED_COUNTER_MESSAGES + EXPECTED_PINGER_MESSAGES + 1;
 const EXPECTED_TASKS_SPAWNED: u64 = EXPECTED_ACTORS_LIVE;
 
 #[derive(Debug, Default)]
 struct Snapshot {
     metrics: Metrics,
     actors: Vec<ActorInfo>,
-    _memory: Memory,
+    memory: Memory,
     _history: Vec<HistoryEntry>,
     _cluster_members: Vec<ClusterMember>,
     _connections: Vec<ConnectionInfo>,
     _routing: RoutingSnapshot,
-    _traces: TraceBatch,
+    traces: TraceBatch,
     _supervisors: Vec<SupervisorRow>,
     _crashes: Vec<CrashEntry>,
     scrape: String,
@@ -40,7 +41,7 @@ struct ChildGuard {
 }
 
 struct BuiltFixture {
-    _dir: tempfile::TempDir,
+    dir: tempfile::TempDir,
     binary: PathBuf,
 }
 
@@ -86,6 +87,8 @@ fn profiler_endpoint_captures_fixture_observability_data() {
         Command::new(&fixture.binary)
             .env("HEW_PPROF", format!("127.0.0.1:{port}"))
             .env("HEW_OBSERVE", "hot")
+            .env("HEW_PROF_OUTPUT", "both")
+            .current_dir(fixture.dir.path())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
@@ -105,6 +108,48 @@ fn profiler_endpoint_captures_fixture_observability_data() {
             panic!("{error}\n{}", child.output_after_kill());
         }
     }
+    let mut child = child;
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while matches!(
+        child.child.as_mut().expect("owned fixture").try_wait(),
+        Ok(None)
+    ) {
+        assert!(
+            Instant::now() < deadline,
+            "fixture did not exit after its sleep"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let output = child
+        .child
+        .take()
+        .expect("owned fixture")
+        .wait_with_output()
+        .expect("collect fixture");
+    assert!(
+        output.status.success(),
+        "fixture failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let profile =
+        std::fs::read_to_string(fixture.dir.path().join("hew-profile.txt")).expect("exit profile");
+    assert!(profile.contains("Live Rc blocks by payload type (including weak-only headers):\n  1 Option<RootCycle>\n"), "{profile}");
+    assert!(
+        !profile.contains("WeakOnly")
+            && !profile.contains("FreedPayload")
+            && !profile.contains("RcNode"),
+        "{profile}"
+    );
+    assert!(
+        fixture
+            .dir
+            .path()
+            .join("hew-profile.pb.gz")
+            .metadata()
+            .expect("exit pprof")
+            .len()
+            > 0
+    );
 }
 
 /// `supervisor.restarts_by_child_total` reports each child's lifetime restart total
@@ -197,7 +242,7 @@ fn build_fixture_binary() -> BuiltFixture {
         String::from_utf8_lossy(&output.stderr)
     );
     BuiltFixture {
-        _dir: out_dir,
+        dir: out_dir,
         binary,
     }
 }
@@ -229,7 +274,7 @@ fn build_restarts_fixture_binary() -> BuiltFixture {
         String::from_utf8_lossy(&output.stderr)
     );
     BuiltFixture {
-        _dir: out_dir,
+        dir: out_dir,
         binary,
     }
 }
@@ -301,13 +346,13 @@ fn wait_for_valid_snapshot(
 fn fetch_snapshot(client: &reqwest::blocking::Client, base_url: &str) -> Result<Snapshot, String> {
     Ok(Snapshot {
         metrics: fetch_json(client, base_url, "/api/metrics")?,
-        _memory: fetch_json(client, base_url, "/api/memory")?,
+        memory: fetch_json(client, base_url, "/api/memory")?,
         actors: fetch_json(client, base_url, "/api/actors")?,
         _history: fetch_json(client, base_url, "/api/metrics/history")?,
         _cluster_members: fetch_json(client, base_url, "/api/cluster/members")?,
         _connections: fetch_json(client, base_url, "/api/connections")?,
         _routing: fetch_json(client, base_url, "/api/routing/table")?,
-        _traces: fetch_json(client, base_url, "/api/traces")?,
+        traces: fetch_json(client, base_url, "/api/traces")?,
         _supervisors: fetch_json(client, base_url, "/api/supervisors")?,
         _crashes: fetch_json(client, base_url, "/api/crashes")?,
         scrape: fetch_text(client, base_url, "/api/observe/scrape")?,
@@ -369,6 +414,35 @@ fn validate_snapshot(snapshot: &Snapshot) -> Result<(), String> {
             "Pinger processed {} messages, expected exactly {EXPECTED_PINGER_MESSAGES}",
             pinger.msgs
         ));
+    }
+
+    let sweep = snapshot
+        .traces
+        .events
+        .iter()
+        .find_map(|event| event.rc_sweep.as_ref())
+        .ok_or("actor-terminal Rc sweep is missing from the typed trace batch")?;
+    if sweep.count != 1
+        || sweep.by_type.len() != 1
+        || sweep.by_type[0].count != 1
+        || !sweep.by_type[0].type_name.contains("RcNode")
+    {
+        return Err(format!("unexpected Rc sweep summary: {sweep:?}"));
+    }
+
+    let live = snapshot
+        .memory
+        .rc_live_by_type
+        .as_ref()
+        .ok_or("Rc census missing from memory")?;
+    if live.len() != 2
+        || live.iter().any(|entry| entry.count != 1)
+        || !live.iter().any(|entry| entry.type_name == "WeakOnly")
+        || !live
+            .iter()
+            .any(|entry| entry.type_name == "Option<RootCycle>")
+    {
+        return Err(format!("unexpected live Rc census: {live:?}"));
     }
 
     validate_scheduler_metrics(&snapshot.metrics)?;

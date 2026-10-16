@@ -428,6 +428,7 @@ impl FunctionLowerer<'_> {
             unreachable!()
         };
         Ok(PhysicalTerminator::DynCall {
+            is_resumable: self.resumable_methods.contains(method),
             receiver: self.argument_transfer(receiver.operand.value, receiver.decision)?,
             word: crate::physical::VTABLE_PREFIX_WORDS + *slot,
             method: *method,

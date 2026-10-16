@@ -1,0 +1,47 @@
+trait Counter {
+    fn value(self) -> i64;
+    fn work(var self, busy: bool) -> i64;
+    fn[suspends] pause(self) -> i64;
+}
+
+type Immediate { count: i64; }
+impl Counter for Immediate {
+    fn pause(self) -> i64 { self.count }
+    fn value(self) -> i64 { self.count }
+    fn work(var self, busy: bool) -> i64 { self.count = 7; self.count }
+}
+
+#[resource]
+type Computing { count: i64; }
+impl Computing {
+    fn close(consume self) { println(f"closed {self.count}"); }
+}
+impl Counter for Computing {
+    fn pause(self) -> i64 { sleep(1ms); self.count }
+    fn value(self) -> i64 { self.count }
+    fn work(var self, busy: bool) -> i64 {
+        self.count = 9;
+        defer { println("work unwound"); }
+        while busy {}
+        self.count
+    }
+}
+
+fn exercise(consume input: dyn Counter, busy: bool) {
+    var counter = input;
+    println(counter.pause());
+    scope within 20ms {
+        println(counter.work(busy));
+    } handle failure {
+        match failure {
+            .Deadline { message } => println("deadline recovered"),
+            .Fault { message } => panic(message),
+        }
+    };
+    println(counter.value());
+}
+
+fn main() {
+    exercise(Immediate { count: 0 }, false);
+    exercise(Computing { count: 0 }, true);
+}

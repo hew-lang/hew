@@ -7,18 +7,24 @@ use inkwell::context::AsContextRef;
 use inkwell::intrinsics::Intrinsic;
 use inkwell::llvm_sys::{core::LLVMBuildCall2, prelude::LLVMValueRef};
 use inkwell::types::AsTypeRef;
-use inkwell::values::{AsValueRef, CallSiteValue};
+use inkwell::values::{AsValueRef, BasicValue, CallSiteValue};
 use std::cell::Cell;
 
 pub(super) struct Frame<'ctx> {
     pub state: PointerValue<'ctx>,
+    /// An authored close executes in private cleanup ancestry but completes
+    /// the invocation supplied by its caller.
+    pub completion_state: PointerValue<'ctx>,
+    pub owns_state: bool,
+    pub budget: PointerValue<'ctx>,
     destroying: PointerValue<'ctx>,
     pub finish: BasicBlock<'ctx>,
     entry: BasicBlock<'ctx>,
     suspend: FunctionValue<'ctx>,
     exit: BasicBlock<'ctx>,
-    invalid_destroy: BasicBlock<'ctx>,
+    pub invalid_destroy: BasicBlock<'ctx>,
     child: Cell<Option<(PointerValue<'ctx>, PointerValue<'ctx>)>>,
+    child_invocation: Cell<Option<PointerValue<'ctx>>>,
 }
 
 const _: () = {
@@ -75,6 +81,56 @@ pub(super) fn entry_storage<'ctx>(
     builder
         .build_alloca(ty, name)
         .llvm_ctx("allocate local storage")
+}
+
+fn invocation_type(ctx: &Context) -> inkwell::types::StructType<'_> {
+    // The exact HewCoroInvocation fields; LLVM applies the target's C padding
+    // and alignment rather than importing the host's size.
+    ctx.struct_type(
+        &[
+            ctx.ptr_type(AddressSpace::default()).into(),
+            ctx.i32_type().into(),
+            ctx.i32_type().into(),
+            ctx.i32_type().into(),
+            ctx.i32_type().into(),
+            ctx.i8_type().into(),
+            ctx.i8_type().into(),
+            ctx.i8_type().into(),
+        ],
+        false,
+    )
+}
+
+/// Checked child ramps publish a private result on every terminal exit. Acquire
+/// completion before observing outputs; after completion or synchronous child
+/// destruction, the private result needs only a relaxed load.
+pub(super) fn invocation_outcome<'ctx>(
+    ctx: &'ctx Context,
+    builder: &Builder<'ctx>,
+    state: PointerValue<'ctx>,
+    private: bool,
+) -> CodegenResult<IntValue<'ctx>> {
+    let field = builder
+        .build_struct_gep(
+            invocation_type(ctx),
+            state,
+            if private { 2 } else { 1 },
+            "call.outcome.slot",
+        )
+        .llvm_ctx("address invocation outcome")?;
+    let outcome = builder
+        .build_load(ctx.i32_type(), field, "call.outcome")
+        .llvm_ctx("read invocation outcome")?;
+    outcome
+        .as_instruction_value()
+        .ok_or_else(|| CodegenError::FailClosed("invocation outcome is not a load".into()))?
+        .set_atomic_ordering(if private {
+            inkwell::AtomicOrdering::Monotonic
+        } else {
+            inkwell::AtomicOrdering::Acquire
+        })
+        .llvm_ctx("observe invocation publication")?;
+    Ok(outcome.into_int_value())
 }
 
 pub(super) fn begin<'ctx>(
@@ -152,6 +208,23 @@ pub(super) fn begin<'ctx>(
     .try_as_basic_value()
     .basic()
     .unwrap()
+    .into_pointer_value();
+    let budget_fn = get_or_declare_external(
+        module,
+        "hew_coro_safepoint_budget",
+        pointer.fn_type(&[pointer.into(), ctx.i32_type().into()], false),
+    )?;
+    let budget = call_value(
+        builder,
+        budget_fn,
+        &[
+            state.into(),
+            ctx.i32_type()
+                .const_int(u64::from(hew_mir::SAFEPOINT_BUDGET), false)
+                .into(),
+        ],
+        "safepoint.budget",
+    )?
     .into_pointer_value();
     let body = ctx.append_basic_block(function, "coro.body");
     builder
@@ -250,6 +323,9 @@ pub(super) fn begin<'ctx>(
     builder.position_at_end(body);
     Ok(Frame {
         state,
+        completion_state: state,
+        owns_state: false,
+        budget,
         destroying,
         finish,
         entry,
@@ -257,10 +333,47 @@ pub(super) fn begin<'ctx>(
         exit,
         invalid_destroy,
         child: Cell::new(None),
+        child_invocation: Cell::new(None),
     })
 }
 
 impl<'ctx> Frame<'ctx> {
+    pub fn init_child(
+        &self,
+        ctx: &'ctx Context,
+        module: &Module<'ctx>,
+        builder: &Builder<'ctx>,
+    ) -> CodegenResult<PointerValue<'ctx>> {
+        self.init_child_with(ctx, module, builder, "hew_coro_state_init_child")
+    }
+
+    pub fn init_child_with(
+        &self,
+        ctx: &'ctx Context,
+        module: &Module<'ctx>,
+        builder: &Builder<'ctx>,
+        init_symbol: &str,
+    ) -> CodegenResult<PointerValue<'ctx>> {
+        let pointer = ctx.ptr_type(AddressSpace::default());
+        let storage = if let Some(storage) = self.child_invocation.get() {
+            storage
+        } else {
+            let record = invocation_type(ctx);
+            let storage = self.storage(ctx, record.into(), "call.child.invocation")?;
+            self.child_invocation.set(Some(storage));
+            storage
+        };
+        let init = get_or_declare_external(
+            module,
+            init_symbol,
+            ctx.void_type().fn_type(&[pointer.into(); 2], false),
+        )?;
+        builder
+            .build_call(init, &[storage.into(), self.state.into()], "")
+            .llvm_ctx("initialize the frame-owned child invocation")?;
+        Ok(storage)
+    }
+
     pub fn child_storage(
         &self,
         ctx: &'ctx Context,
@@ -368,4 +481,64 @@ pub(super) fn handle_operation<'ctx>(
         .llvm_ctx("finish coroutine operation")?;
     builder.position_at_end(done);
     Ok(())
+}
+
+#[cfg(test)]
+mod abi_tests {
+    use super::super::actor::{c_mirror_mismatch, field_size};
+    use super::*;
+    use hew_cabi::coro::HewCoroInvocation;
+    use std::mem::{align_of, offset_of, size_of};
+
+    #[test]
+    fn invocation_storage_matches_the_runtime_c_abi() {
+        let fields = [
+            (
+                offset_of!(HewCoroInvocation, context),
+                field_size(|record: &HewCoroInvocation| &record.context),
+            ),
+            (
+                offset_of!(HewCoroInvocation, status),
+                field_size(|record: &HewCoroInvocation| &record.status),
+            ),
+            (
+                offset_of!(HewCoroInvocation, private_status),
+                field_size(|record: &HewCoroInvocation| &record.private_status),
+            ),
+            (
+                offset_of!(HewCoroInvocation, poll_suppression),
+                field_size(|record: &HewCoroInvocation| &record.poll_suppression),
+            ),
+            (
+                offset_of!(HewCoroInvocation, lexical_depth),
+                field_size(|record: &HewCoroInvocation| &record.lexical_depth),
+            ),
+            (
+                offset_of!(HewCoroInvocation, flags),
+                field_size(|record: &HewCoroInvocation| &record.flags),
+            ),
+            (
+                offset_of!(HewCoroInvocation, cleanup_fault),
+                field_size(|record: &HewCoroInvocation| &record.cleanup_fault),
+            ),
+            (
+                offset_of!(HewCoroInvocation, cleanup_abandon_io),
+                field_size(|record: &HewCoroInvocation| &record.cleanup_abandon_io),
+            ),
+        ];
+        let ctx = Context::create();
+        let record = invocation_type(&ctx);
+        let mismatch = |mirror| {
+            c_mirror_mismatch(
+                mirror,
+                &fields,
+                size_of::<HewCoroInvocation>(),
+                align_of::<HewCoroInvocation>(),
+            )
+        };
+        assert_eq!(mismatch(record), None);
+        let mut reordered = record.get_field_types();
+        reordered.swap(0, 1);
+        assert!(mismatch(ctx.struct_type(&reordered, false)).is_some());
+    }
 }

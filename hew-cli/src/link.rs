@@ -2748,7 +2748,7 @@ mod tests {
     fn unresolved_hew_wasm_imports_reports_env_hew_symbols() {
         let wasm = wasm_with_func_imports(&[
             ("env", "hew_print_value"),
-            ("env", "hew_actor_cooperate"),
+            ("env", "hew_coro_safepoint"),
             ("wasi_snapshot_preview1", "fd_write"),
         ]);
         let imports = unresolved_hew_wasm_imports(&wasm).expect("parse imports");
@@ -2756,7 +2756,7 @@ mod tests {
         assert_eq!(
             imports,
             vec![
-                "env::hew_actor_cooperate".to_string(),
+                "env::hew_coro_safepoint".to_string(),
                 "env::hew_print_value".to_string()
             ]
         );

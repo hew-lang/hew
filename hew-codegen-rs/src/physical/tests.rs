@@ -42,12 +42,19 @@ fn borrowed_field_chain_emits_no_vector_clone_for_its_reads() {
         let llvm = build_module(&ctx, physical.module(), "field_loans", &machine).unwrap();
         llvm.verify().unwrap();
         let symbol = emitted_symbol(physical.module(), &physical.module().callables[0]);
-        llvm.get_function(&symbol)
-            .unwrap()
-            .print_to_string()
-            .to_string()
-            .matches("call ptr @hew_vec_clone_owned(")
-            .count()
+        llvm.get_functions()
+            .filter(|function| {
+                let name = function.get_name().to_string_lossy();
+                name == symbol || name.starts_with(&format!("{symbol}$resume"))
+            })
+            .map(|function| {
+                function
+                    .print_to_string()
+                    .to_string()
+                    .matches("call ptr @hew_vec_clone_owned(")
+                    .count()
+            })
+            .sum()
     }
 
     let borrowed = borrow_fixture::nested_borrow_module();

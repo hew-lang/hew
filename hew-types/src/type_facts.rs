@@ -690,6 +690,37 @@ impl TypeFactService {
             }))
     }
 
+    /// Bind an exact inherent method's impl parameters from its receiver.
+    ///
+    /// # Errors
+    /// Refuses missing registration facts or parameters not bound by self.
+    pub fn inherent_method_type_args(
+        &self,
+        method: crate::DefId,
+        receiver: &ResolvedTy,
+    ) -> Result<Vec<ResolvedTy>, ClassError> {
+        self.context
+            .method_binders
+            .get(&method)
+            .ok_or_else(|| ClassError::UnknownDeclaration {
+                name: self.context.defs.display(method).to_string(),
+            })?
+            .instantiate_with(
+                &self.context.defs,
+                method,
+                receiver,
+                &self.context.registry,
+                &mut |ty, bound| match bound {
+                    ImplMethodObligation::Serializable => {
+                        Ok(self.is_serializable(ty, &|_, _| false))
+                    }
+                    _ => self
+                        .select_display_method(ty, ty, &mut HashSet::new())
+                        .map(|selected| selected.is_some()),
+                },
+            )
+    }
+
     /// Select rendering by its source identity while binding the method to
     /// the normalized value type used by the callable ABI.
     ///

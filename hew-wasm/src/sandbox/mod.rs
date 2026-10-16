@@ -450,11 +450,7 @@ fn compile_from_semantics(
     // body instead of an unresolved binding.
     add_embedded_standard_library(&mut options);
     let state = hew_compile::run_source_frontend(source, source_label, &options);
-    let mut diagnostics = state
-        .parse_result
-        .as_ref()
-        .map(|parse| convert_parse_diagnostics(&parse.errors))
-        .unwrap_or_default();
+    let mut diagnostics: Vec<_> = state.diagnostics.iter().map(frontend_diagnostic).collect();
     if has_error_diagnostics(&diagnostics) {
         return Ok(CompileOutput {
             diagnostics,
@@ -467,25 +463,6 @@ fn compile_from_semantics(
         .as_ref()
         .and_then(|result| result.tco.as_ref())
     else {
-        if let Some(failure) = &state.stopped {
-            for diagnostic in &failure.diagnostics {
-                let mut converted = match &diagnostic.kind {
-                    hew_compile::FrontendDiagnosticKind::Parse(error) => {
-                        parse_error_to_diagnostic(error)
-                    }
-                    hew_compile::FrontendDiagnosticKind::Message(message) => {
-                        Diagnostic::profile_error(
-                            message.span.clone().unwrap_or(0..0),
-                            &message.code,
-                            &message.message,
-                        )
-                    }
-                    _ => continue,
-                };
-                converted.source_module.clone_from(&diagnostic.filename);
-                diagnostics.push(converted);
-            }
-        }
         if !has_error_diagnostics(&diagnostics) {
             diagnostics.push(Diagnostic::profile_error(
                 0..0,
@@ -503,7 +480,6 @@ fn compile_from_semantics(
             bytecode: None,
         });
     };
-    diagnostics.extend(convert_type_diagnostics(type_output));
     if has_error_diagnostics(&diagnostics) {
         return Ok(CompileOutput {
             diagnostics,
@@ -611,13 +587,40 @@ fn parse_error_to_diagnostic(err: &hew_parser::ParseError) -> Diagnostic {
     }
 }
 
-fn convert_type_diagnostics(type_output: &hew_types::TypeCheckOutput) -> Vec<Diagnostic> {
-    type_output
-        .errors
-        .iter()
-        .chain(type_output.warnings.iter())
-        .map(type_error_to_diagnostic)
-        .collect()
+fn frontend_diagnostic(diagnostic: &hew_compile::FrontendDiagnostic) -> Diagnostic {
+    use hew_compile::FrontendDiagnosticKind as Kind;
+    let mut converted = match &diagnostic.kind {
+        Kind::Parse(error) => parse_error_to_diagnostic(error),
+        Kind::Type(error) => type_error_to_diagnostic(error),
+        Kind::Hir(error) => Diagnostic::profile_error(
+            error.span.clone(),
+            super::hir_kind_str(&error.kind),
+            &error.note,
+        ),
+        Kind::Message(message) => {
+            let mut converted = Diagnostic::profile_error(
+                message.span.clone().unwrap_or(0..0),
+                &message.code,
+                &message.message,
+            );
+            converted.phase = "frontend".into();
+            converted.suggestions.clone_from(&message.help);
+            converted.notes = message
+                .notes
+                .iter()
+                .map(|note| DiagnosticNote {
+                    span: DiagnosticSpan::from_span(&note.span),
+                    start_offset: note.span.start,
+                    end_offset: note.span.end,
+                    message: note.message.clone(),
+                    source_module: Some(note.filename.clone()),
+                })
+                .collect();
+            converted
+        }
+    };
+    converted.source_module.clone_from(&diagnostic.filename);
+    converted
 }
 
 fn type_error_to_diagnostic(err: &hew_types::error::TypeError) -> Diagnostic {

@@ -2323,6 +2323,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                     self.ctx.i32_type().into(),
                     ptr.into(),
                     ptr.into(),
+                    ptr.into(),
                 ],
                 false,
             ),
@@ -2410,6 +2411,15 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                         .into(),
                     state_release.into(),
                     rejected.into(),
+                    self.frame
+                        .as_ref()
+                        .ok_or_else(|| {
+                            CodegenError::FailClosed(
+                                "actor construction lacks its invocation owner".into(),
+                            )
+                        })?
+                        .state
+                        .into(),
                 ],
                 "spawn.token",
             )

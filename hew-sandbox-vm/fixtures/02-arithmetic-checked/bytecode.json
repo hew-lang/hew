@@ -14,6 +14,35 @@
       "blocks": [
         {
           "id": 0,
+          "ops": [],
+          "params": [],
+          "term": {
+            "cancel": {
+              "args": [],
+              "to": 2
+            },
+            "detail": {
+              "budget": 4000
+            },
+            "error_shape": null,
+            "inputs": [],
+            "kind": "Safepoint",
+            "op": "suspend",
+            "request_shapes": null,
+            "result": null,
+            "result_shape": null,
+            "resumes": [
+              {
+                "args": [],
+                "to": 1
+              }
+            ],
+            "span": null,
+            "unwind": null
+          }
+        },
+        {
+          "id": 1,
           "ops": [
             {
               "dst": 0,
@@ -45,7 +74,7 @@
               {
                 "edge": {
                   "args": [],
-                  "to": 2
+                  "to": 7
                 },
                 "trap": "integer_overflow"
               }
@@ -55,7 +84,7 @@
               "args": [
                 2
               ],
-              "to": 1
+              "to": 6
             },
             "op": "checked.binary",
             "result": {
@@ -71,7 +100,55 @@
           }
         },
         {
-          "id": 1,
+          "id": 2,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 4
+            },
+            "op": "goto",
+            "span": null
+          }
+        },
+        {
+          "id": 3,
+          "ops": [],
+          "params": [],
+          "term": {
+            "op": "resume_unwind",
+            "span": null
+          }
+        },
+        {
+          "id": 4,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 5
+            },
+            "op": "goto",
+            "span": null
+          }
+        },
+        {
+          "id": 5,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 3
+            },
+            "op": "goto",
+            "span": null
+          }
+        },
+        {
+          "id": 6,
           "ops": [],
           "params": [
             {
@@ -90,7 +167,7 @@
             "family": 0,
             "normal": {
               "args": [],
-              "to": 7
+              "to": 9
             },
             "op": "runtime.call",
             "releases_contents": false,
@@ -106,13 +183,13 @@
           }
         },
         {
-          "id": 2,
+          "id": 7,
           "ops": [],
           "params": [],
           "term": {
             "cleanup": {
               "args": [],
-              "to": 3
+              "to": 8
             },
             "op": "checked_raise",
             "span": {
@@ -123,13 +200,13 @@
           }
         },
         {
-          "id": 3,
+          "id": 8,
           "ops": [],
           "params": [],
           "term": {
             "edge": {
               "args": [],
-              "to": 5
+              "to": 4
             },
             "op": "goto",
             "span": {
@@ -139,48 +216,13 @@
           }
         },
         {
-          "id": 4,
-          "ops": [],
-          "params": [],
-          "term": {
-            "op": "resume_unwind",
-            "span": null
-          }
-        },
-        {
-          "id": 5,
+          "id": 9,
           "ops": [],
           "params": [],
           "term": {
             "edge": {
               "args": [],
-              "to": 6
-            },
-            "op": "goto",
-            "span": null
-          }
-        },
-        {
-          "id": 6,
-          "ops": [],
-          "params": [],
-          "term": {
-            "edge": {
-              "args": [],
-              "to": 4
-            },
-            "op": "goto",
-            "span": null
-          }
-        },
-        {
-          "id": 7,
-          "ops": [],
-          "params": [],
-          "term": {
-            "edge": {
-              "args": [],
-              "to": 8
+              "to": 10
             },
             "op": "goto",
             "span": {
@@ -190,7 +232,7 @@
           }
         },
         {
-          "id": 8,
+          "id": 10,
           "ops": [],
           "params": [],
           "term": {
@@ -228,7 +270,9 @@
   "strings": [],
   "structural_render": [],
   "supervisors": [],
-  "suspend_kinds": [],
+  "suspend_kinds": [
+    "Safepoint"
+  ],
   "value_capabilities": [],
   "variants": [],
   "vtables": []

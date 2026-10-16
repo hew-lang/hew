@@ -1,0 +1,158 @@
+// Defaults and init allocate for the child, while explicit arguments run in
+// the caller. A later cleanup wave owns cycles allocated by a suspending close.
+#[resource]
+type Node {
+    id: i64;
+    again: bool;
+    edge: Rc<Option<Node>>;
+    observer: Weak<Option<Node>>;
+}
+
+impl Node {
+    fn close(consume self) {
+        assert(self.observer.upgrade().is_none());
+        if self.id != 0 {
+            println(f"close {self.id}");
+        }
+        if self.again {
+            sleep(1ms);
+            let fresh = cycle(4, false);
+            let _ = fresh;
+        }
+    }
+}
+
+fn cycle(id: i64, again: bool) -> Rc<Option<Node>> {
+    let empty: Option<Node> = .None;
+    let owner = Rc.new(empty);
+    let linked: Option<Node> = .Some(Node { id: id, again: again, edge: owner.clone(), observer: owner.downgrade() });
+    owner.set(linked);
+    owner
+}
+
+fn argument() -> i64 {
+    println("argument");
+    7
+}
+
+actor Worker {
+    let seed: i64;
+    let root: Rc<Option<Node>> = cycle(1, true);
+
+    init() {
+        assert(seed == 7);
+        let local = cycle(2, false);
+        let _ = local;
+        // Cross the release cursor's marking quantum without extra output.
+        for _ in 0..128 {
+            let quiet = cycle(0, false);
+            let _ = quiet;
+        }
+        scope {
+            fork {
+                let child = cycle(0, false);
+                let _ = child;
+            };
+        };
+        let plain = Rc.new(Plain { id: 3 });
+        let _ = plain;
+        println("init");
+    }
+
+    receive fn ready() -> i64 {
+        9
+    }
+}
+
+#[resource]
+type BadNode {
+    edge: Rc<Option<BadNode>>;
+}
+
+impl BadNode {
+    fn close(consume self) {
+        let copied = self.edge;
+        let remaining = self.edge;
+        let _ = remaining;
+        println("copied dead backedge");
+        let _ = copied.strong_count();
+        panic("dead backedge was read");
+    }
+}
+
+fn bad_cycle() -> Rc<Option<BadNode>> {
+    let empty: Option<BadNode> = .None;
+    let owner = Rc.new(empty);
+    let linked: Option<BadNode> = .Some(BadNode { edge: owner.clone() });
+    owner.set(linked);
+    owner
+}
+
+actor Faulting {
+    let root: Rc<Option<BadNode>> = bad_cycle();
+    init() {
+        let later = cycle(5, false);
+        let _ = later;
+    }
+    receive fn ready() {}
+}
+
+actor Broken {
+    let root: Rc<Option<Node>> = cycle(6, false);
+    init() {
+        let local = cycle(7, false);
+        let _ = local;
+        panic("construction failed");
+    }
+}
+
+#[resource]
+type Plain {
+    id: i64;
+}
+
+impl Plain {
+    fn close(consume self) {
+        println(f"plain {self.id}");
+    }
+}
+
+fn main() {
+    let external = Rc.new(Plain { id: 10 });
+    let observer = external.downgrade();
+    let worker = spawn Worker { seed: argument() };
+    assert(worker.ready().expect("ready") == 9);
+    stop(worker);
+    stopped(worker);
+    assert(external.strong_count() == 1);
+    assert(observer.upgrade().is_some());
+    println("stopped");
+    let faulting = spawn Faulting;
+    faulting.ready().expect("faulting ready");
+    scope {
+        stop(faulting);
+        stopped(faulting);
+        panic("cleanup must fail");
+    } handle failure {
+        match failure {
+            .Fault { message } => {
+                assert(message.contains("Rc payload is being released"));
+                assert(!message.contains("dead backedge was read"));
+                println("backedge refused");
+            }
+            .Deadline { message } => panic("unexpected cleanup deadline"),
+        }
+    };
+    scope {
+        let _broken = spawn Broken;
+        panic("construction must fail");
+    } handle failure {
+        match failure {
+            .Fault { message } => {
+                assert(message.contains("construction failed"));
+                println("construction refused");
+            }
+            .Deadline { message } => panic("unexpected construction deadline"),
+        }
+    };
+}

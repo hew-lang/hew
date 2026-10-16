@@ -1404,6 +1404,7 @@ fn demo_trace_event(
         timestamp_ns,
         handler_name: None,
         reason: None,
+        rc_sweep: None,
     }
 }
 

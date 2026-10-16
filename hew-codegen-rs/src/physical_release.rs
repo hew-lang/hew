@@ -1203,22 +1203,49 @@ fn drain_cursor_inline<'ctx>(
         .build_conditional_branch(present, next, done)
         .llvm_ctx("start consuming container")?;
     values.builder.position_at_end(next);
+    let slot = scratch(values, frame, pointer.into(), "release.cursor.slot")?;
+    let wait = values
+        .ctx
+        .append_basic_block(values.value, "release.cursor.wait");
+    let invalid = values
+        .ctx
+        .append_basic_block(values.value, "release.cursor.invalid");
     let advance = get_or_declare_external(
         values.llvm,
-        "hew_release_next",
-        pointer.fn_type(&[pointer.into()], false),
+        "hew_release_poll",
+        values.ctx.i32_type().fn_type(&[pointer.into(); 3], false),
     )?;
-    let source = suspend::call_value(values.builder, advance, &[cursor.into()], "release.slot")?
-        .into_pointer_value();
-    let present = values
-        .builder
-        .build_is_not_null(source, "release.item.present")
-        .llvm_ctx("test next release item")?;
+    let status = suspend::call_value(
+        values.builder,
+        advance,
+        &[cursor.into(), frame.state.into(), slot.into()],
+        "release.cursor.status",
+    )?
+    .into_int_value();
     values
         .builder
-        .build_conditional_branch(present, item, done)
+        .build_switch(
+            status,
+            done,
+            &[
+                (values.ctx.i32_type().const_zero(), wait),
+                (values.ctx.i32_type().const_int(1, false), item),
+            ],
+        )
         .llvm_ctx("select next release item")?;
+    values.builder.position_at_end(wait);
+    frame.suspend(values.ctx, values.builder, next, invalid)?;
+    values.builder.position_at_end(invalid);
+    values
+        .builder
+        .build_unreachable()
+        .llvm_ctx("refuse unfinished release destruction")?;
     values.builder.position_at_end(item);
+    let source = values
+        .builder
+        .build_load(pointer, slot, "release.slot")
+        .llvm_ctx("read current release slot")?
+        .into_pointer_value();
     let get_layout = get_or_declare_external(
         values.llvm,
         "hew_release_layout",

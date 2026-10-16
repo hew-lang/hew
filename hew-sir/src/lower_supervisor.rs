@@ -23,13 +23,11 @@ fn stop_deadline(
     role: SemSupervisedRole,
 ) -> Result<SemStopDeadline, String> {
     let Some(stop) = &child.stop else {
-        return Ok(SemStopDeadline::Literal(
-            if matches!(role, SemSupervisedRole::Actor(_)) {
-                5_000_000_000
-            } else {
-                -1
-            },
-        ));
+        return Ok(if matches!(role, SemSupervisedRole::Actor(_)) {
+            SemStopDeadline::DefaultActor
+        } else {
+            SemStopDeadline::Literal(-1)
+        });
     };
     if matches!(role, SemSupervisedRole::Supervisor(_)) {
         return Err("a nested supervisor uses its children's stop deadlines".into());

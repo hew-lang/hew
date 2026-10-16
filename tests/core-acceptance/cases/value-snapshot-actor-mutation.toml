@@ -1,0 +1,12 @@
+[[case]]
+id = "value-snapshot-actor-mutation"
+intent = "Saved aggregate values and actor payloads remain independent while local helpers and actor handlers mutate their vector fields repeatedly."
+source = "cases/value-snapshot-actor-mutation.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+env = { HEW_WORKERS = "4" }
+
+[case.expected]
+stdout = "snapshots=3000;current=3000;saved=0\n"
+stderr = ""
+exit = 0

@@ -2269,11 +2269,7 @@ impl Checker {
         self.env.push_scope();
 
         let qualified_name = format!("{actor_name}::{}", hook.name);
-        let previous_effect_body = self.enter_crash_hook_body(
-            &qualified_name,
-            format!("{actor_name}.{}", hook.name),
-            &hook.decl_span,
-        );
+        let previous_effect_body = self.enter_crash_hook_body(&qualified_name);
         let prev_function = self.current_function.take();
         self.current_function = Some(qualified_name);
 

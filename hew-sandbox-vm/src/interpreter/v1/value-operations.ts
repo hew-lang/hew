@@ -1,4 +1,10 @@
-import { UNIT, cloneValue, compareUtf8, type VmValue } from "../values.js";
+import {
+  UNIT,
+  cloneValue,
+  compareUtf8,
+  type VmValue,
+  type RcOwner,
+} from "../values.js";
 import {
   runtimeTag,
   type PackageV1,
@@ -7,6 +13,7 @@ import {
 import { ShimFault } from "./shims.js";
 
 export type ValueRequest =
+  | { kind: "fault"; message: string }
   | { kind: "call"; callee: number; args: VmValue[] }
   | { kind: "release"; value: VmValue; onFault?: VmValue };
 export type ValueProgram = Generator<ValueRequest, VmValue, VmValue>;
@@ -291,15 +298,45 @@ function option(
 export function* sharedOperation(
   operation: string,
   args: VmValue[],
+  owner: RcOwner | null,
+  typeName: string,
+  option: (value: VmValue | null) => VmValue,
 ): ValueProgram {
-  if (operation === "RcNew")
-    return { kind: "rc", cell: { value: args[0]!, refs: 1 }, closed: false };
+  if (operation === "RcNew") {
+    if (owner?.closed)
+      throw new Error("Rc allocation after actor cleanup quiesced");
+    const cell = {
+      value: args[0]!,
+      refs: 1,
+      weak: 0,
+      dying: false,
+      owner,
+      typeName,
+    };
+    owner?.blocks.add(cell);
+    return { kind: "rc", cell, closed: false };
+  }
   const receiver = args[0];
+  if (operation === "WeakCloneRc" || operation === "WeakUpgradeRc") {
+    if (receiver?.kind !== "weak" || receiver.closed)
+      throw new Error("shared operation has no live Weak");
+    if (operation === "WeakCloneRc") return cloneValue(receiver);
+    if (receiver.cell.dying || receiver.cell.refs === 0) return option(null);
+    receiver.cell.refs += 1;
+    return option({ kind: "rc", cell: receiver.cell, closed: false });
+  }
   if (receiver?.kind !== "rc" || receiver.closed)
     throw new Error("shared operation has no live Rc");
+  if (!receiver.cell || receiver.cell.dying) {
+    yield { kind: "fault", message: "Rc payload is being released" };
+    return UNIT;
+  }
   switch (operation) {
     case "RcClone":
       return cloneValue(receiver);
+    case "RcDowngrade":
+      receiver.cell.weak += 1;
+      return { kind: "weak", cell: receiver.cell, closed: false };
     case "RcGet":
       return cloneValue(receiver.cell.value);
     case "RcIsUnique":
@@ -307,7 +344,7 @@ export function* sharedOperation(
     case "RcStrongCount":
       return integer(BigInt(receiver.cell.refs));
     case "RcWeakCount":
-      return integer(0n);
+      return integer(BigInt(receiver.cell.weak));
     case "RcSet": {
       const old = receiver.cell.value;
       receiver.cell.value = args[1]!;

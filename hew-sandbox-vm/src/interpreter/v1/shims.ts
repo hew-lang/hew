@@ -95,6 +95,9 @@ export function resolveRuntimeShim(
       return printShim(entry.detail);
     case "RcNew":
     case "RcClone":
+    case "RcDowngrade":
+    case "WeakCloneRc":
+    case "WeakUpgradeRc":
     case "RcGet":
     case "RcIsUnique":
     case "RcSet":
@@ -168,6 +171,7 @@ export const SUPPORTED_SUSPEND_KINDS: ReadonlySet<string> = new Set([
   "GeneratorNext",
   "Yield",
   "Sleep",
+  "Safepoint",
   "Ask",
   "Await",
   "Join",

@@ -379,8 +379,8 @@ fail-closed on discovery errors).
 `hew debug` compiles the program with full debug information (no optimisation,
 no stripping) and immediately launches it under the system debugger (`gdb` on
 Linux, `lldb` on macOS). If a Hew helper script (`hew-gdb.py` / `hew_lldb.py`)
-is found next to the installed binary it is loaded automatically to improve
-pretty-printing of Hew types.
+is found in the installation's `share/hew` directory it is loaded automatically
+to display managed strings and bytes, including values retained across suspension.
 
 ```sh
 hew debug myapp.hew -- arg1 arg2   # debug myapp, passing args to the program

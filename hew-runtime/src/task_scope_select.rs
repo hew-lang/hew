@@ -107,7 +107,7 @@ pub unsafe extern "C" fn hew_checked_task_select_set_context(
     state: *const crate::coro_state::HewCoroState,
 ) {
     // SAFETY: the invocation state is borrowed only for this identity capture.
-    unsafe { (*selection).owner = (*state).actor_turn };
+    unsafe { (*selection).owner = (*state).execution().actor_turn };
 }
 
 /// Register a borrowed ephemeral actor completion in source order.

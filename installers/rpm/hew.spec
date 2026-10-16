@@ -52,6 +52,11 @@ if [ -d std ]; then
 fi
 
 # C headers
+if [ -d share ]; then
+  install -dm755 %{buildroot}%{_datadir}
+  cp -r share/. %{buildroot}%{_datadir}/
+fi
+
 install -dm755 %{buildroot}%{_includedir}
 cp -r include/. %{buildroot}%{_includedir}/
 

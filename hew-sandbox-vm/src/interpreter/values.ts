@@ -1,7 +1,22 @@
 import type { JsonValue } from "./types.js";
 
+/** One creator-owned membership list; payload destruction uses the ordinary VM release path. */
+export interface RcOwner {
+  blocks: Set<RcCell>;
+  closed: boolean;
+}
+export interface RcCell {
+  value: VmValue;
+  refs: number;
+  weak: number;
+  dying: boolean;
+  owner: RcOwner | null;
+  typeName: string;
+}
+
 export type VmValue =
-  | { kind: "rc"; cell: { value: VmValue; refs: number }; closed: boolean }
+  | { kind: "rc"; cell: RcCell | null; closed: boolean }
+  | { kind: "weak"; cell: RcCell; closed: boolean }
   | { kind: "unit" }
   | { kind: "bool"; value: boolean }
   | { kind: "i64"; value: bigint }
@@ -75,8 +90,14 @@ export function cloneValue(value: VmValue): VmValue {
   switch (value.kind) {
     case "rc":
       if (value.closed) throw new Error("cannot copy a released Rc");
+      if (!value.cell || value.cell.dying)
+        return { kind: "rc", cell: null, closed: false };
       value.cell.refs += 1;
       return { kind: "rc", cell: value.cell, closed: false };
+    case "weak":
+      if (value.closed) throw new Error("cannot copy a released Weak");
+      value.cell.weak += 1;
+      return { kind: "weak", cell: value.cell, closed: false };
     case "unit":
       return UNIT;
     case "bool":
@@ -291,7 +312,9 @@ export function renderStdout(value: VmValue): string {
     case "vector":
       return canonicalJson(value.items.map((item) => toJsonValue(item)));
     case "rc":
-      return renderStdout(value.cell.value);
+      return "Rc";
+    case "weak":
+      return "Weak";
     case "map":
       return canonicalJson(mapEntriesJson(value));
     case "dyn":
@@ -340,7 +363,9 @@ export function toJsonValue(value: VmValue): JsonValue {
     case "vector":
       return value.items.map(toJsonValue);
     case "rc":
-      return toJsonValue(value.cell.value);
+      return "Rc";
+    case "weak":
+      return "Weak";
     case "map":
       return mapEntriesJson(value);
     case "dyn":

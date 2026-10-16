@@ -36,17 +36,13 @@ $ hew --supported-editions
 2026
 ```
 
-Before v0.6.0, the native compiler cutover may make breaking changes within
-edition 2026 as the compiler, standard library and documentation converge on
-the agreed design.
-
-Starting with v0.6.0, the 0.6 series preserves existing valid programs and
-their specified behaviour. Compatible additions may extend edition 2026;
-each addition updates this specification and identifies its first supported
-compiler version. New syntax must preserve existing names and parsing, and
-new APIs must preserve existing resolution, ownership and error semantics.
-Incompatible language changes require a later edition. An older compiler
-need not support features introduced by a newer compiler in the same edition.
+Edition 2026 remains under development during the 0.6 series. Compatible
+additions identify their first supported compiler version. Intentional
+incompatible changes may also ship in 0.6.x while the language converges on
+its agreed design; release notes must identify the affected versions and give
+exact migration instructions, and in-tree consumers migrate with the change.
+Each surface change updates this specification. An older compiler need not
+support features introduced by a newer compiler in the same edition.
 
 Hew does not adopt per-file edition pragmas. The edition stamp is
 package-level. Migration tooling (`hew migrate --edition <year>`) is
@@ -2767,9 +2763,44 @@ lands, the checker refuses the projection with `E_LIMIT_RC_FIELD`
 (Limitation channel); `.get()` on a `T: Copy` payload is the accepted form in
 the meantime.
 
-Strong `Rc` cycles leak because Hew does not run a tracing collector. Use weak
-back-edges to break cycles. `Rc.new_cyclic`, dereference/borrow access to an Rc
-payload, and cross-actor transfer are not supported in edition 2026.
+**Actor-terminal survivors.** Each actor owns the Rc allocations it creates,
+including allocations in ordinary helpers, callbacks and scoped tasks. Explicit
+spawn arguments evaluate in the caller; field defaults, `init` and `on(start)`
+share one construction owner that transfers to the child on successful spawn.
+Failed construction releases that owner's survivors before reporting failure.
+
+After ordinary turns, scoped tasks and state cleanup have finished, actor exit
+consumes every surviving allocation through the normal release walker. Every
+block in a detached wave is marked dying before any payload is closed. Marking
+and release advance in bounded polls through that same walker. Strong
+backedge releases then do nothing, weak upgrades return `None`, and each payload
+closes exactly once. A suspending close may create new Rc values; subsequent
+waves drain them before terminal completion. Cleanup faults are reported through
+the ordinary failure path while remaining payloads still close.
+
+Access to a dying Rc payload fails with `Rc payload is being released`, including
+explicit clone, downgrade, get, set and count operations. Infallible descriptor
+copies during terminal cleanup may carry an internal inert dead handle; it has
+no strong owner, cannot resurrect storage, and every authored Rc operation on it
+fails before accessing storage. Dropping it is safe. This is not a source-visible
+handle mode.
+
+The `StrongRcCycle` warning identifies payload types with strong-only self-reach
+and suggests a `Weak<T>` backedge. Weak backedges allow prompt release rather
+than retaining a cycle until actor exit. Observe emits `actor.rc_sweep` with the
+reclaimed count and counts by payload type. Allocations belonging to another
+creator are not reclaimed by this actor's exit. Strong cycles outside an actor
+still require weak backedges; Hew does not run a tracing collector.
+
+Observe's memory response also reports live Rc blocks by payload type. These
+are allocation counts: a weak-only header remains live until its final weak
+owner is released. Counts change only at allocation and final header free.
+Orderly shutdown includes it in the existing `HEW_PROF_OUTPUT=flat` report, and pprof
+profiles include it as informational comments. A root-owned cycle remains
+visible there; it is not reclaimed by an actor's terminal sweep.
+
+`Rc.new_cyclic`, dereference/borrow access to an Rc payload, and cross-actor
+transfer are not supported in edition 2026.
 
 The compiler and runtime select internal reference-count implementations for
 ordinary values. Cross-actor transfer preserves isolation and the checked
@@ -2812,10 +2843,11 @@ produces identical results with or without them.
 | No double-free    | Single ownership; `drop()` runs exactly once                   |
 | No data races     | No shared mutable state; `Send` requires `Frozen` for sharing  |
 | No GC pauses      | No tracing GC; deterministic refcounting and scope-based drops |
-| No memory leaks\* | RAII ensures cleanup; cycles in `Rc` can leak (use weak refs)  |
+| Finite actor cleanup | RAII and actor-terminal Rc survivor reclamation consume owned payloads once |
 
-\*Strong reference cycles in `Rc<T>` can leak. Use `Weak<T>` back-edges; there
-is deliberately no empty `Weak.new()` constructor.
+Strong cycles retain payloads until actor exit; cycles outside actors still need
+`Weak<T>` backedges. Nonterminating authored cleanup remains nonterminating.
+There is deliberately no empty `Weak.new()` constructor.
 
 #### 3.7.8 Resource markers (`#[resource]` and `#[linear]`)
 
@@ -2879,11 +2911,36 @@ For example, a file-like resource may have `finish() -> Result<(), E>` to
 report a failed flush and a unit-returning close to release its descriptor.
 That is a resource API contract, not a second language cleanup mechanism.
 
+Field-bearing resource declarations may have type parameters. Each concrete
+instance uses its specialized consuming `close` and ordinary ownership rules
+for its payload. Returning or passing the wrapper to a `consume` parameter transfers
+that same cleanup obligation, including across imported modules. After the
+close body finishes, its remaining owned fields are released once.
+
+Generic opaque FFI resources are not yet admitted: each concrete instance
+needs a release ABI. The compiler reports `ResourceGenericUnsupported` for
+that boundary.
+
+```hew
+#[resource]
+type Wrapper<T> {
+    payload: T;
+}
+
+impl<T> Wrapper<T> {
+    fn close(consume self) {}
+}
+```
+
 ##### 3.7.8.2 `#[linear]` — single-owner with no implicit drop
 
 `#[linear]` marks a type that **must be consumed** by one of its declared
 consuming methods. There is no implicit drop. Letting a `#[linear]` value
 go out of scope without consuming it is a compile error.
+
+Field-bearing linear declarations may also have type parameters. Their
+consuming methods specialize for the concrete receiver and may transfer an
+owned payload to the caller; specialization does not introduce implicit drop.
 
 ```text
 #[linear]
@@ -2983,6 +3040,11 @@ through a declared `fails` edge, a fault or cancellation. Ordinary returned
 completion nor an ordinary `return`, `break` or `continue` triggers it. It binds
 no error. A fault raised by another deferred action activates remaining
 failure-only actions while preserving the primary fault.
+
+Once a resource's `close` starts, cancellation does not abandon its release
+obligation. Explicit and automatic close use the same protected cleanup
+ancestry. A close may suspend or yield to other work, and its helpers inherit
+that protection; a failure in the close still follows ordinary cleanup rules.
 
 A `close` that fails on a cancellation edge is not discarded. Cancellation
 marks a frame's fault rather than being a failure of its own, so the first real
@@ -3143,6 +3205,11 @@ implements the trait can be passed to a `dyn Trait` parameter, where calls to
 the trait's instance methods dispatch through the runtime vtable. See
 [`examples/types_and_traits.hew`](../../examples/types_and_traits.hew) for a
 runnable example.
+
+Dynamic dispatch preserves the method's checked suspension effects. A method
+may suspend, or yield during computation, through a trait object just as it
+does through a concrete receiver. Mutable receiver handback remains intact on
+success, failure and cancellation.
 
 The current subset does not yet fully enforce object-safety rules or support
 associated-type bounds and higher-ranked trait bounds in `dyn` position. See
@@ -5380,8 +5447,15 @@ faults, an enclosing lifetime is cancelled, or its `within` deadline expires.
 A race also cancels its losing operands (§4.11.2). Ordinary `Err` values do not
 trigger these transitions.
 
-Cancellation is observed at supported safepoints, including suspending calls
-and task waits. It is not preemption of an arbitrary instruction. The scope
+Cancellation is observed at suspending calls, task waits and compiler-inserted
+safepoints at loop headers and non-leaf function entry. A call-free,
+straight-line function performs bounded work and needs no structural poll.
+The scheduler checks cancellation after each budget of 4000 structural polls;
+nested and recursive calls share the same budget. When other work is runnable,
+a spent budget also yields the current continuation. Deferred actions and their
+callees suppress structural polls and run to completion. Extern calls contain
+no polls, so a long extern call delays cancellation and scheduling until it
+returns. This is not preemption of an arbitrary instruction. The scope
 waits for cancelled children to drain before returning or running its attached
 failure handler. Nested lifetimes receive the cancellation; unrelated actors
 do not become children of that scope.
@@ -7357,9 +7431,11 @@ Hew uses an **M:N work-stealing scheduler** inspired by Go, Tokio, and BEAM:
 The scheduler bounds an activation's message work and resumes parked
 continuations when their readiness source fires. Suspending calls, task waits
 and timer operations use this mechanism without a public yield keyword.
-Compute-only cancellation and fairness depend on the safepoints actually
-inserted; this specification does not promise a future reduction budget as a
-current execution guarantee (§4.5).
+Compute-only loops and recursive calls share a 4000-poll scheduling budget
+(§4.5). A spent budget yields only when another continuation or actor is runnable.
+This physical scheduling does not change a function's written suspension effect.
+The deterministic native driver and sandbox advance virtual time by one tick
+per spent budget, allowing deadlines to interrupt compute-only work.
 
 **Memory management:**
 
@@ -7482,7 +7558,7 @@ unrecovered and the child's role is spent.
 
 1. A hook is a plain `fn` declaration inside an actor body carrying exactly one `#[on(...)]` annotation whose kind is `start`, `stop`, `crash`, `exit`, or `down`.
 2. `#[on(start)]` and `#[on(stop)]` hooks take **no parameters**. Actor fields are in scope by bare name (the same convention as `init(...) { ... }` and ordinary actor methods).
-3. `#[on(crash)]` hooks take exactly one `CrashInfo` parameter and declare `CrashAction` as the return type. The supervisor applies the returned action as described above. A crash hook cannot suspend: it rules on the restart before cleanup, so a hook that sleeps, awaits or calls a suspending function is rejected at compile time.
+3. `#[on(crash)]` hooks take exactly one `CrashInfo` parameter and declare `CrashAction` as the return type. The supervisor applies the returned action as described above. A crash hook may suspend, including through helpers. Its invocation is bounded by the child's `stop:` budget (five seconds by default, also used for standalone actors). Expiry or a hook failure drains the hook's cleanup and falls back to `Restart`; actor-state cleanup then runs with fresh, shielded cancellation state before restart-policy handling.
 4. `#[on(start)]` and `#[on(stop)]` hooks return `()`.
 5. A hook is **not** generic and has no `where` clause.
 6. Hook functions are not invocable from message handlers; the runtime is the sole caller.

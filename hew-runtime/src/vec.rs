@@ -9,8 +9,7 @@
     unsafe_op_in_unsafe_fn,
     reason = "FFI entry-point module; SAFETY documented at fn signature."
 )]
-// Descriptor-backed buffers preserve the element's alignment. Legacy typed
-// buffers use libc's fundamental alignment for their supported scalar types.
+// Buffers preserve the element's alignment after their reference count.
 #![expect(
     clippy::cast_ptr_alignment,
     reason = "buffer allocation preserves the element type's alignment"
@@ -37,6 +36,7 @@ use core::ffi::c_void;
 use core::ptr;
 use hew_cabi::string::HewString;
 use std::alloc::{alloc, dealloc, realloc, Layout};
+use std::sync::atomic::{fence, AtomicUsize, Ordering};
 
 // ---------------------------------------------------------------------------
 // Internal helpers
@@ -44,21 +44,7 @@ use std::alloc::{alloc, dealloc, realloc, Layout};
 
 use crate::trap_code::write_stderr;
 
-/// Ensure `v` can hold at least `needed` elements, growing if necessary.
-///
-/// # Safety
-///
-/// `v` must point to a valid, non-null `HewVec` from the sized-block allocator.
-unsafe fn ensure_cap(v: *mut HewVec, needed: usize) {
-    // SAFETY: caller guarantees `v` is valid.
-    unsafe {
-        abort_if_layout_aware(v);
-        ensure_cap_raw(v, needed);
-    }
-}
-
-/// Ensure `v` can hold at least `needed` elements, without applying the
-/// legacy "no layout-aware ops" guard.
+/// Ensure `v` has unique storage for at least `needed` elements.
 ///
 /// # Safety
 ///
@@ -67,11 +53,12 @@ unsafe fn ensure_cap(v: *mut HewVec, needed: usize) {
 unsafe fn ensure_cap_raw(v: *mut HewVec, needed: usize) {
     // SAFETY: caller guarantees `v` is valid.
     unsafe {
-        let vec = &mut *v;
-        if vec.cap >= needed {
+        let capacity = (*v).cap;
+        if capacity >= needed {
+            hew_vec_make_unique(v);
             return;
         }
-        let mut new_cap = if vec.cap == 0 { 4 } else { vec.cap };
+        let mut new_cap = if capacity == 0 { 4 } else { capacity };
         while new_cap < needed {
             new_cap = if let Some(c) = new_cap.checked_mul(2) {
                 c
@@ -82,39 +69,130 @@ unsafe fn ensure_cap_raw(v: *mut HewVec, needed: usize) {
                 libc::abort();
             };
         }
-        let Some(alloc_size) = new_cap.checked_mul(vec.elem_size) else {
-            // SAFETY: writing to stderr and aborting is always safe.
-            let msg = b"PANIC: Vec allocation size overflow\n\0";
-            write_stderr(&msg[..msg.len() - 1]);
-            libc::abort();
-        };
-        // Keep a non-null, aligned backing address even for logical zero-sized
-        // values. Allocation and release use capacity, never the live length.
-        let new_data = if vec.layout.is_null() {
-            crate::mem::buf_realloc(vec.data.cast(), alloc_size.max(1)).cast::<u8>()
-        } else {
-            let layout = buffer_layout(alloc_size, (*vec.layout).align);
-            if vec.data.is_null() {
-                alloc(layout)
-            } else {
-                let old_layout = buffer_layout(vec.cap * vec.elem_size, (*vec.layout).align);
-                realloc(vec.data, old_layout, layout.size())
-            }
-        };
-        if new_data.is_null() {
-            libc::abort();
-        }
-        vec.data = new_data.cast();
-        vec.cap = new_cap;
+        resize_buffer(v, new_cap);
     }
 }
 
-/// Allocation geometry for a descriptor-backed buffer, including logical ZSTs.
-fn buffer_layout(size: usize, align: usize) -> Layout {
-    Layout::from_size_align(size.max(1), align).unwrap_or_else(|_| {
-        // SAFETY: an unrepresentable allocation cannot admit a live buffer.
-        unsafe { libc::abort() }
-    })
+/// Buffer references precede the aligned data. Each value retains its own
+/// `HewVec` header; only callback-free plain elements may share their bytes.
+unsafe fn buffer_allocation(v: *const HewVec, capacity: usize) -> (Layout, usize) {
+    // SAFETY: callers supply a live vector and an addressable capacity.
+    unsafe {
+        let size = capacity
+            .checked_mul((*v).elem_size)
+            .unwrap_or_else(|| allocation_size_overflow());
+        let align = (*v)
+            .layout
+            .as_ref()
+            .map_or(core::mem::align_of::<u128>(), |layout| layout.align);
+        let offset = align.max(core::mem::size_of::<AtomicUsize>());
+        let bytes = offset
+            .checked_add(size.max(1))
+            .unwrap_or_else(|| allocation_size_overflow());
+        let layout =
+            Layout::from_size_align(bytes, align.max(core::mem::align_of::<AtomicUsize>()))
+                .unwrap_or_else(|_| libc::abort());
+        (layout, offset)
+    }
+}
+
+unsafe fn allocation_size_overflow() -> ! {
+    // SAFETY: writing the existing capacity diagnostic precedes a terminal abort.
+    unsafe {
+        write_stderr(b"PANIC: Vec allocation size overflow\n");
+        libc::abort();
+    }
+}
+
+unsafe fn buffer_owner(v: *const HewVec) -> *mut AtomicUsize {
+    // SAFETY: the reference count is the word immediately before aligned data.
+    unsafe { (*v).data.sub(core::mem::size_of::<AtomicUsize>()).cast() }
+}
+
+unsafe fn allocate_buffer(v: *const HewVec, capacity: usize) -> *mut u8 {
+    // SAFETY: the checked layout includes the reference count and data region.
+    unsafe {
+        let (layout, offset) = buffer_allocation(v, capacity);
+        let base = alloc(layout);
+        if base.is_null() {
+            libc::abort();
+        }
+        let data = base.add(offset);
+        data.sub(core::mem::size_of::<AtomicUsize>())
+            .cast::<AtomicUsize>()
+            .write(AtomicUsize::new(1));
+        data
+    }
+}
+
+unsafe fn release_buffer(v: *const HewVec) {
+    // SAFETY: the caller releases one buffer reference, retaining its header.
+    unsafe {
+        let owner = buffer_owner(v);
+        if (*owner).fetch_sub(1, Ordering::Release) == 1 {
+            fence(Ordering::Acquire);
+            let (layout, offset) = buffer_allocation(v, (*v).cap);
+            dealloc((*v).data.sub(offset), layout); // ALLOCATOR-PAIRING: std::alloc
+        }
+    }
+}
+
+unsafe fn resize_buffer(v: *mut HewVec, capacity: usize) {
+    // SAFETY: the caller exclusively borrows the header. Shared bytes remain
+    // immutable until this value has copied its live range into private storage.
+    unsafe {
+        let data = if (*v).data.is_null() {
+            allocate_buffer(v, capacity)
+        } else if (*buffer_owner(v)).load(Ordering::Acquire) == 1 {
+            let (old_layout, old_offset) = buffer_allocation(v, (*v).cap);
+            let (new_layout, offset) = buffer_allocation(v, capacity);
+            let base = realloc((*v).data.sub(old_offset), old_layout, new_layout.size());
+            if base.is_null() {
+                libc::abort();
+            }
+            base.add(offset)
+        } else {
+            let data = allocate_buffer(v, capacity);
+            ptr::copy_nonoverlapping((*v).data, data, (*v).len * (*v).elem_size);
+            release_buffer(v);
+            data
+        };
+        (*v).data = data;
+        (*v).cap = capacity;
+    }
+}
+
+/// Preserve an input borrowed from this buffer across detachment or growth.
+unsafe fn ensure_cap_with_source(
+    v: *mut HewVec,
+    needed: usize,
+    source: *const c_void,
+) -> *const c_void {
+    // SAFETY: the input is readable through the operation. A source within
+    // this live range is copied with the range before its old storage releases.
+    unsafe {
+        let offset = source
+            .addr()
+            .checked_sub((*v).data.addr())
+            .filter(|offset| *offset < (*v).len * (*v).elem_size);
+        ensure_cap_raw(v, needed);
+        offset.map_or(source, |offset| (*v).data.add(offset).cast())
+    }
+}
+
+/// Detach a shared plain buffer before writing its elements.
+///
+/// # Safety
+/// `v` must be a live, exclusively borrowed vector from the runtime constructors.
+#[no_mangle]
+pub unsafe extern "C" fn hew_vec_make_unique(v: *mut HewVec) {
+    // SAFETY: the caller exclusively owns this header; other headers may read
+    // the shared buffer concurrently but cannot write it without detaching.
+    unsafe {
+        if !(*v).data.is_null() && (*buffer_owner(v)).load(Ordering::Acquire) != 1 {
+            resize_buffer(v, (*v).cap);
+        }
+    }
 }
 
 /// Trap with an out-of-bounds message.
@@ -1226,6 +1304,7 @@ pub unsafe extern "C-unwind" fn hew_vec_set_i32(v: *mut HewVec, index: i64, val:
         if index >= (*v).len {
             abort_oob("Vec.set()", index, (*v).len);
         }
+        hew_vec_make_unique(v);
         (*v).data.cast::<i32>().add(index).write(val);
     }
 }
@@ -1243,6 +1322,7 @@ pub unsafe extern "C-unwind" fn hew_vec_set_bool(v: *mut HewVec, index: i64, val
         if index >= (*v).len {
             abort_oob("Vec.set()", index, (*v).len);
         }
+        hew_vec_make_unique(v);
         (*v).data.cast::<bool>().add(index).write(val);
     }
 }
@@ -1262,6 +1342,7 @@ macro_rules! vec_set_primitive {
                 if index >= (*v).len {
                     abort_oob("Vec.set()", index, (*v).len);
                 }
+                hew_vec_make_unique(v);
                 (*v).data.cast::<$ty>().add(index).write(val);
             }
         }
@@ -1286,6 +1367,7 @@ pub unsafe extern "C-unwind" fn hew_vec_set_i64(v: *mut HewVec, index: i64, val:
         if index >= (*v).len {
             abort_oob("Vec.set()", index, (*v).len);
         }
+        hew_vec_make_unique(v);
         (*v).data.cast::<i64>().add(index).write(val);
     }
 }
@@ -1306,6 +1388,7 @@ pub unsafe extern "C-unwind" fn hew_vec_set_str(v: *mut HewVec, index: i64, val:
         if index >= (*v).len {
             abort_oob("Vec.set()", index, (*v).len);
         }
+        hew_vec_make_unique(v);
         let slot = (*v).data.cast::<*mut HewString>().add(index);
         let old = slot.read();
         // Copy in the new owner BEFORE releasing the old, so a `set` of an
@@ -1330,6 +1413,7 @@ pub unsafe extern "C-unwind" fn hew_vec_set_f64(v: *mut HewVec, index: i64, val:
         if index >= (*v).len {
             abort_oob("Vec.set()", index, (*v).len);
         }
+        hew_vec_make_unique(v);
         (*v).data.cast::<f64>().add(index).write(val);
     }
 }
@@ -1529,12 +1613,7 @@ pub(crate) unsafe fn free_vector_storage(v: *mut HewVec) {
     // SAFETY: caller guarantees the allocation contract.
     unsafe {
         if !(*v).data.is_null() {
-            if (*v).layout.is_null() {
-                crate::mem::buf_free((*v).data.cast()); // ALLOCATOR-PAIRING: GlobalAlloc
-            } else {
-                let layout = buffer_layout((*v).cap * (*v).elem_size, (*(*v).layout).align);
-                dealloc((*v).data, layout); // ALLOCATOR-PAIRING: std::alloc
-            }
+            release_buffer(v);
         }
         crate::mem::buf_free(v.cast()); // ALLOCATOR-PAIRING: GlobalAlloc
     }
@@ -1684,6 +1763,7 @@ pub unsafe extern "C" fn hew_vec_sort_i32(v: *mut HewVec) {
         if len <= 1 {
             return;
         }
+        hew_vec_make_unique(v);
         let slice = core::slice::from_raw_parts_mut((*v).data.cast::<i32>(), len);
         slice.sort_unstable();
     }
@@ -1703,6 +1783,7 @@ pub unsafe extern "C" fn hew_vec_sort_i64(v: *mut HewVec) {
         if len <= 1 {
             return;
         }
+        hew_vec_make_unique(v);
         let slice = core::slice::from_raw_parts_mut((*v).data.cast::<i64>(), len);
         slice.sort_unstable();
     }
@@ -1722,6 +1803,7 @@ pub unsafe extern "C" fn hew_vec_sort_f64(v: *mut HewVec) {
         if len <= 1 {
             return;
         }
+        hew_vec_make_unique(v);
         let slice = core::slice::from_raw_parts_mut((*v).data.cast::<f64>(), len);
         slice.sort_unstable_by(f64::total_cmp);
     }
@@ -1760,6 +1842,20 @@ unsafe fn clone_vec_descriptor(v: *const HewVec) -> *mut HewVec {
             hew_vec_new_with_elem_layout(src.layout)
         };
         if src.len == 0 {
+            return new_v;
+        }
+        if src.layout.as_ref().is_some_and(|layout| {
+            layout.ownership_kind == HewTypeOwnershipKind::Plain
+                && layout.clone_fn.is_none()
+                && layout.drop_fn.is_none()
+                && layout.release_start.is_none()
+        }) {
+            if (*buffer_owner(v)).fetch_add(1, Ordering::Relaxed) >= isize::MAX as usize {
+                libc::abort();
+            }
+            (*new_v).data = src.data;
+            (*new_v).len = src.len;
+            (*new_v).cap = src.cap;
             return new_v;
         }
         allocate_exact_capacity(new_v, src.len);
@@ -1803,7 +1899,8 @@ unsafe fn clone_vec_descriptor(v: *const HewVec) -> *mut HewVec {
     }
 }
 
-/// Deep-clone a `HewVec` through its stored element descriptor.
+/// Copy a `HewVec` through its stored element descriptor. Callback-free plain
+/// elements share immutable storage until mutation; other elements clone now.
 ///
 /// # Safety
 ///
@@ -1956,6 +2053,7 @@ macro_rules! vec_remove_primitive {
             // SAFETY: caller guarantees `v` is a valid HewVec for `$ty`.
             unsafe {
                 let len = (*v).len;
+                hew_vec_make_unique(v);
                 let data = (*v).data.cast::<$ty>();
                 for i in 0..len {
                     if data.add(i).read() == val {
@@ -2046,6 +2144,7 @@ pub unsafe extern "C-unwind" fn hew_vec_remove_at_layout(
         }
         // Move the removed element OUT into `out` before the shift. No drop —
         // possession transfers to the caller.
+        hew_vec_make_unique(v);
         let removed = (*v).data.add(idx * elem_size);
         core::ptr::copy_nonoverlapping(removed, out.cast::<u8>(), elem_size);
         let src = (*v).data.add((idx + 1) * elem_size);
@@ -2093,6 +2192,7 @@ macro_rules! vec_remove_at_primitive {
                 if idx >= len {
                     abort_oob("Vec.remove()", idx, len);
                 }
+                hew_vec_make_unique(v);
                 let data = (*v).data.cast::<$ty>();
                 let removed = data.add(idx).read();
                 // Shift the tail left over the vacated slot (element-typed
@@ -2134,6 +2234,7 @@ pub unsafe extern "C-unwind" fn hew_vec_remove_at_str(
         if idx >= len {
             abort_oob("Vec.remove()", idx, len);
         }
+        hew_vec_make_unique(v);
         let data = (*v).data.cast::<*const HewString>();
         let removed = data.add(idx).read();
         core::ptr::copy(data.add(idx + 1), data.add(idx), len - idx - 1);
@@ -2170,6 +2271,7 @@ pub unsafe extern "C-unwind" fn hew_vec_remove_at_ptr(v: *mut HewVec, index: i64
         if idx >= len {
             abort_oob("Vec.remove()", idx, len);
         }
+        hew_vec_make_unique(v);
         let data = (*v).data.cast::<*mut c_void>();
         let removed = data.add(idx).read();
         core::ptr::copy(data.add(idx + 1), data.add(idx), len - idx - 1);
@@ -2207,6 +2309,7 @@ pub unsafe extern "C-unwind" fn hew_vec_remove_at_owned(
         }
         // Move the removed element OUT into `out` before the shift. No drop —
         // possession transfers to the caller.
+        hew_vec_make_unique(v);
         let removed = (*v).data.add(idx * elem_size);
         core::ptr::copy_nonoverlapping(removed, out.cast::<u8>(), elem_size);
         let src = (*v).data.add((idx + 1) * elem_size);
@@ -2234,6 +2337,7 @@ pub unsafe extern "C-unwind" fn hew_vec_set_ptr(v: *mut HewVec, index: i64, val:
         if index >= (*v).len {
             abort_oob("Vec.set()", index, (*v).len);
         }
+        hew_vec_make_unique(v);
         if !(*v).layout.is_null() {
             if let Some(drop_fn) = (*(*v).layout).drop_fn {
                 let slot = (*v).data.add(index * (*v).elem_size);
@@ -2293,6 +2397,7 @@ pub unsafe extern "C-unwind" fn hew_vec_swap(v: *mut HewVec, i: i64, j: i64) {
         if i == j {
             return;
         }
+        hew_vec_make_unique(v);
         let elem_size = (*v).elem_size;
         let pi = (*v).data.add(i * elem_size);
         let pj = (*v).data.add(j * elem_size);
@@ -2401,7 +2506,7 @@ pub unsafe extern "C" fn hew_vec_push_generic(v: *mut HewVec, data: *const core:
         let Some(new_len) = len.checked_add(1) else {
             libc::abort();
         };
-        ensure_cap(v, new_len);
+        let data = ensure_cap_with_source(v, new_len, data);
         let elem_size = (*v).elem_size;
         let dst = (*v).data.add(len * elem_size);
         core::ptr::copy_nonoverlapping(data.cast::<u8>(), dst, elem_size);
@@ -2430,7 +2535,7 @@ pub unsafe extern "C" fn hew_vec_push_layout(
         let Some(new_len) = len.checked_add(1) else {
             libc::abort();
         };
-        ensure_cap_raw(v, new_len);
+        let data = ensure_cap_with_source(v, new_len, data);
         let elem_size = (*layout).size;
         let dst = (*v).data.add(len * elem_size);
         core::ptr::copy_nonoverlapping(data.cast::<u8>(), dst, elem_size);
@@ -2506,6 +2611,7 @@ pub unsafe extern "C-unwind" fn hew_vec_set_generic(
             abort_oob("Vec.set()", index, (*v).len);
         }
         let elem_size = (*v).elem_size;
+        let data = ensure_cap_with_source(v, (*v).cap, data);
         let dst = (*v).data.add(index * elem_size);
         core::ptr::copy_nonoverlapping(data.cast::<u8>(), dst, elem_size);
     }
@@ -2534,6 +2640,7 @@ pub unsafe extern "C-unwind" fn hew_vec_set_layout(
             abort_oob("Vec.set()", index, (*v).len);
         }
         let elem_size = (*layout).size;
+        let data = ensure_cap_with_source(v, (*v).cap, data);
         let dst = (*v).data.add(index * elem_size);
         core::ptr::copy_nonoverlapping(data.cast::<u8>(), dst, elem_size);
     }
@@ -2607,7 +2714,8 @@ pub unsafe extern "C" fn hew_vec_pop_layout(
 //             + `clone_fn(new, slot)`.
 //   * pop   — memcpy the last slot to `out` (move out), NO drop.
 //   * free  — `drop_fn(slot)` on every live slot exactly once, then free.
-//   * clone — alloc a fresh buffer, memcpy + `clone_fn` per element.
+//   * clone — share callback-free plain bytes; otherwise memcpy + `clone_fn`
+//             per element into a fresh buffer.
 //
 // `clone_fn` REQUIRES the caller to have memcpy'd `dst <- src` first so the
 // BitCopy fields and any enum tag/inactive bytes are correct; the thunk
@@ -2737,18 +2845,7 @@ unsafe fn allocate_exact_capacity(value: *mut HewVec, capacity: usize) {
         if capacity == 0 {
             return;
         }
-        let bytes = capacity
-            .checked_mul((*value).elem_size)
-            .unwrap_or_else(|| libc::abort());
-        let data = if (*value).layout.is_null() {
-            crate::mem::buf_try_alloc(bytes.max(1)).cast::<u8>()
-        } else {
-            alloc(buffer_layout(bytes, (*(*value).layout).align))
-        };
-        if data.is_null() {
-            libc::abort();
-        }
-        (*value).data = data;
+        (*value).data = allocate_buffer(value, capacity);
         (*value).cap = capacity;
     }
 }
@@ -2773,7 +2870,7 @@ pub unsafe extern "C" fn hew_vec_push_owned(v: *mut HewVec, data: *const core::f
         let Some(new_len) = len.checked_add(1) else {
             libc::abort();
         };
-        ensure_cap_raw(v, new_len);
+        let data = ensure_cap_with_source(v, new_len, data);
         let dst = (*v).data.add(len * elem_size);
         // Memcpy first so BitCopy fields / enum tag bytes are correct, then run
         // the clone thunk to deep-copy the owned heap (clone-fn contract).
@@ -2816,7 +2913,7 @@ pub unsafe extern "C" fn hew_vec_push_owned_move(v: *mut HewVec, data: *const co
         let Some(new_len) = len.checked_add(1) else {
             libc::abort();
         };
-        ensure_cap_raw(v, new_len);
+        let data = ensure_cap_with_source(v, new_len, data);
         let dst = (*v).data.add(len * elem_size);
         // Move-in: byte-copy transfers the element (BitCopy fields, enum tag
         // bytes, AND owned-heap pointers) into the slot. No `clone_fn` — the
@@ -2987,6 +3084,7 @@ pub unsafe extern "C" fn hew_vec_take_owned(
             return false;
         }
         let layout = owned_descriptor(v);
+        hew_vec_make_unique(v);
         let src = (*v).data.add(index as usize * layout.size);
         core::ptr::copy_nonoverlapping(src, out.cast::<u8>(), layout.size);
         core::ptr::write_bytes(src, 0, layout.size);
@@ -3056,6 +3154,7 @@ unsafe fn set_owned_release(
         if index >= (*v).len {
             abort_oob("Vec.set()", index, (*v).len);
         }
+        let data = ensure_cap_with_source(v, (*v).cap, data);
         let slot = (*v).data.add(index * layout.size);
         if layout.ownership_kind == HewTypeOwnershipKind::Plain
             && layout.clone_fn.is_none()
@@ -3443,6 +3542,7 @@ pub unsafe extern "C" fn hew_vec_reverse_i32(v: *mut HewVec) {
         if len <= 1 {
             return;
         }
+        hew_vec_make_unique(v);
         let slice = core::slice::from_raw_parts_mut((*v).data.cast::<i32>(), len);
         slice.reverse();
     }
@@ -4141,10 +4241,14 @@ mod tests {
             hew_vec_push_i32(v, 1);
             hew_vec_push_i32(v, 2);
             hew_vec_push_i32(v, 3);
+            let saved = hew_vec_clone(v);
             hew_vec_reverse_i32(v);
             assert_eq!(hew_vec_get_i32(v, 0), 3);
             assert_eq!(hew_vec_get_i32(v, 1), 2);
             assert_eq!(hew_vec_get_i32(v, 2), 1);
+            assert_eq!(hew_vec_get_i32(saved, 0), 1);
+            assert_eq!(hew_vec_get_i32(saved, 2), 3);
+            hew_vec_free(saved);
             hew_vec_free(v);
         }
     }
@@ -4652,7 +4756,7 @@ mod tests {
     /// `data` must be a live header-aware element produced by the `hew-cabi`
     /// allocator (every string vec element is, post-copy-in).
     unsafe fn element_refcount(data: *const HewString) -> u32 {
-        use core::sync::atomic::{AtomicU32, Ordering};
+        use core::sync::atomic::AtomicU32;
         // SAFETY: the handle is the header base and rc follows byte_len.
         let rc = unsafe {
             data.cast::<u8>()
@@ -5112,7 +5216,7 @@ mod tests {
 #[cfg(test)]
 mod vec_owned_tests {
     use super::*;
-    use core::sync::atomic::{AtomicI64, Ordering};
+    use core::sync::atomic::AtomicI64;
     use std::sync::{Mutex, MutexGuard};
 
     #[test]
@@ -5574,13 +5678,14 @@ mod vec_owned_tests {
             drop_fn: None,
             release_start: None,
         };
-        // SAFETY: each source names an initialized i64 and replacement does not
-        // grow the vector, so its borrowed element addresses remain valid.
+        // SAFETY: each source names an initialized i64. Replacement must keep
+        // its input valid even when detachment changes the buffer address.
         unsafe {
             let vector = hew_vec_new_with_elem_layout(&raw const layout);
             for value in [11_i64, 22] {
                 hew_vec_push_owned(vector, (&raw const value).cast());
             }
+            let snapshot = hew_vec_clone_owned(vector);
             let second = hew_vec_get_owned(vector, 1);
             hew_vec_set_owned(vector, 0, second);
             let first = hew_vec_get_owned(vector, 0);
@@ -5588,7 +5693,126 @@ mod vec_owned_tests {
             hew_vec_set_owned(vector, 0, first);
             assert_eq!(*hew_vec_get_owned(vector, 0).cast::<i64>(), 22);
             assert_eq!(*hew_vec_get_owned(vector, 1).cast::<i64>(), 22);
+            assert_eq!(*hew_vec_get_owned(snapshot, 0).cast::<i64>(), 11);
+            assert_eq!(*hew_vec_get_owned(snapshot, 1).cast::<i64>(), 22);
+            hew_vec_free_owned(snapshot);
             hew_vec_free_owned(vector);
+        }
+    }
+
+    #[test]
+    fn plain_snapshot_survives_each_buffer_mutation() {
+        // SAFETY: every operation receives a separately owned i64 vector;
+        // borrowed source pointers are used only by the immediately following call.
+        unsafe {
+            let saved = hew_vec_new_i64();
+            for value in [30, 10, 20] {
+                hew_vec_push_i64(saved, value);
+            }
+            for operation in 0..11 {
+                let value = hew_vec_clone_owned(saved);
+                match operation {
+                    0 => hew_vec_set_i64(value, 0, 99),
+                    1 => hew_vec_push_i64(value, 99),
+                    2 => {
+                        hew_vec_remove_at_i64(value, 0);
+                    }
+                    3 => hew_vec_swap(value, 0, 2),
+                    4 => hew_vec_sort_i64(value),
+                    5 => hew_vec_append(value, saved),
+                    6 => {
+                        let mut taken = 0_i64;
+                        assert!(hew_vec_take_owned(value, 0, (&raw mut taken).cast()));
+                        assert_eq!(taken, 30);
+                    }
+                    7 => {
+                        assert_eq!(hew_vec_pop_i64(value), 20);
+                        hew_vec_push_i64(value, 99);
+                    }
+                    8 => {
+                        hew_vec_clear(value);
+                        hew_vec_push_i64(value, 99);
+                    }
+                    9 => {
+                        crate::random::hew_random_seed(42);
+                        crate::random::hew_random_shuffle_i64(value);
+                        assert_eq!(hew_vec_get_i64(value, 0), 10);
+                    }
+                    10 => {
+                        let first = hew_vec_get_owned(value, 0);
+                        hew_vec_push_owned(value, first);
+                        assert_eq!(hew_vec_get_i64(value, 3), 30);
+                    }
+                    _ => unreachable!(),
+                }
+                assert_eq!(hew_vec_len(saved), 3, "mutation {operation}");
+                for (index, expected) in (0_i64..).zip([30, 10, 20]) {
+                    assert_eq!(
+                        hew_vec_get_i64(saved, index),
+                        expected,
+                        "mutation {operation}"
+                    );
+                }
+                hew_vec_free_owned(value);
+            }
+            hew_vec_free_owned(saved);
+        }
+    }
+
+    #[test]
+    fn plain_descriptor_callbacks_remain_immediate() {
+        let _guard = reset_counters();
+        let mut layout = owned_layout();
+        layout.ownership_kind = HewTypeOwnershipKind::Plain;
+        // SAFETY: the callbacks still own and clone the declared OwnedElem;
+        // the Plain classification alone must not bypass those callbacks.
+        unsafe {
+            let value = hew_vec_new_with_elem_layout(&raw const layout);
+            let source = make_source(7);
+            hew_vec_push_owned_move(value, (&raw const source).cast());
+            let snapshot = hew_vec_clone_owned(value);
+            assert_eq!(CLONE_CALLS.load(Ordering::SeqCst), 1);
+            hew_vec_free_owned(value);
+            assert_eq!(DROP_CALLS.load(Ordering::SeqCst), 1);
+            assert_eq!(
+                *(*hew_vec_get_owned(snapshot, 0).cast::<OwnedElem>()).payload,
+                7
+            );
+            hew_vec_free_owned(snapshot);
+            assert_eq!(DROP_CALLS.load(Ordering::SeqCst), 2);
+            assert_eq!(live_allocations(), 0);
+        }
+    }
+
+    #[test]
+    fn shared_plain_buffer_preserves_overaligned_elements() {
+        #[repr(C, align(64))]
+        struct Aligned([u8; 64]);
+        let layout = HewValueLayout {
+            size: size_of::<Aligned>(),
+            align: align_of::<Aligned>(),
+            ownership_kind: HewTypeOwnershipKind::Plain,
+            clone_fn: None,
+            drop_fn: None,
+            release_start: None,
+        };
+        // SAFETY: descriptor and initialized inputs use the same aligned type.
+        unsafe {
+            let value = hew_vec_new_with_elem_layout(&raw const layout);
+            let original = Aligned([7; 64]);
+            let replacement = Aligned([9; 64]);
+            hew_vec_push_owned(value, (&raw const original).cast());
+            let snapshot = hew_vec_clone_owned(value);
+            hew_vec_set_owned(value, 0, (&raw const replacement).cast());
+            assert_eq!((*value).data.addr() % 64, 0);
+            assert_eq!((*snapshot).data.addr() % 64, 0);
+            assert_eq!((*hew_vec_get_owned(value, 0).cast::<Aligned>()).0, [9; 64]);
+            hew_vec_free_owned(value);
+            assert_eq!(
+                (*hew_vec_get_owned(snapshot, 0).cast::<Aligned>()).0,
+                [7; 64]
+            );
+            hew_vec_free_owned(snapshot);
         }
     }
 

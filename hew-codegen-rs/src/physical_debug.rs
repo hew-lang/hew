@@ -572,9 +572,8 @@ impl<'ctx> DebugEmitter<'ctx> {
                 )
                 .ok()
                 .map(|basic| basic.as_type()),
-            // Every Hew reference handle is one machine pointer to bytes the
-            // runtime owns. Describing the pointee would claim a layout this
-            // stage does not have.
+            PhysicalRepr::Pointer if *ty == ResolvedTy::String => self.build_string(layout),
+            // Other reference handles remain opaque to the debugger.
             PhysicalRepr::Pointer => {
                 let byte = self
                     .builder
@@ -612,6 +611,79 @@ impl<'ctx> DebugEmitter<'ctx> {
         }
     }
 
+    /// Describe the canonical managed allocation without turning its handle
+    /// into a C string. Debugger summaries read the length and trailing bytes.
+    fn build_string(&self, layout: &PhysicalLayout) -> Option<DIType<'ctx>> {
+        let header_size = hew_cabi::string::string_debug_header_size(layout.size)?;
+        let length = self
+            .builder
+            .create_basic_type("usize", layout.size * 8, DW_ATE_UNSIGNED, DIFlags::ZERO)
+            .unwrap_or_else(|_| unreachable!("a basic type named `usize` is never empty"))
+            .as_type();
+        let byte = self
+            .builder
+            .create_basic_type("u8", 8, DW_ATE_UNSIGNED_CHAR, DIFlags::ZERO)
+            .unwrap_or_else(|_| unreachable!("a basic type named `u8` is never empty"))
+            .as_type();
+        let data = self
+            .builder
+            .create_array_type(byte, 0, 8, &[std::ops::Range { start: 0, end: 0 }])
+            .as_type();
+        let members = [
+            self.builder
+                .create_member_type(
+                    self.file.as_debug_info_scope(),
+                    "byte_len",
+                    self.file,
+                    0,
+                    layout.size * 8,
+                    layout.align * 8,
+                    hew_cabi::string::STRING_DEBUG_BYTE_LEN_OFFSET as u64 * 8,
+                    DIFlags::ZERO,
+                    length,
+                )
+                .as_type(),
+            self.builder
+                .create_member_type(
+                    self.file.as_debug_info_scope(),
+                    "data",
+                    self.file,
+                    0,
+                    0,
+                    8,
+                    header_size * 8,
+                    DIFlags::ZERO,
+                    data,
+                )
+                .as_type(),
+        ];
+        let header = self.builder.create_struct_type(
+            self.file.as_debug_info_scope(),
+            "hew_string",
+            self.file,
+            0,
+            header_size * 8,
+            layout.align * 8,
+            DIFlags::ZERO,
+            None,
+            &members,
+            0,
+            None,
+            "hew_string",
+        );
+        Some(
+            self.builder
+                .create_pointer_type(
+                    "",
+                    header.as_type(),
+                    layout.size * 8,
+                    layout.align * 8,
+                    AddressSpace::default(),
+                )
+                .as_type(),
+        )
+    }
+
     fn build_struct(
         &self,
         ty: &ResolvedTy,
@@ -638,7 +710,11 @@ impl<'ctx> DebugEmitter<'ctx> {
                     self.resolve_type(&rows[index].ty, field, target)?,
                 ),
                 None => (
-                    format!("f{index}"),
+                    if *ty == ResolvedTy::Bytes {
+                        ["ptr", "offset", "len"].get(index)?.to_string()
+                    } else {
+                        format!("f{index}")
+                    },
                     self.build_type(&ResolvedTy::Unit, field, target)?,
                 ),
             };
@@ -1003,6 +1079,7 @@ fn type_name(ty: &ResolvedTy) -> String {
     match ty {
         ResolvedTy::Named { head, .. } => head.registry_key().to_string(),
         ResolvedTy::Tuple(_) => "tuple".to_owned(),
+        ResolvedTy::Bytes => "bytes".to_owned(),
         other => format!("{other:?}"),
     }
 }

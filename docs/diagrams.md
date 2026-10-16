@@ -74,7 +74,7 @@ stateDiagram-v2
 | Level             | Budget                                       | Mechanism                                                                                      |
 | ----------------- | -------------------------------------------- | ---------------------------------------------------------------------------------------------- |
 | Message budget    | `HEW_MSG_BUDGET = 256` messages/activation   | Coarse scheduler preemption — yield after 256 messages                                         |
-| Reduction budget  | `HEW_DEFAULT_REDUCTIONS = 4000` per dispatch | Compiler-inserted `cooperate` safepoints at function entry and loop back-edges (targeted v0.7.0; not in this build) |
+| Compute budget | `SAFEPOINT_BUDGET = 4000` per invocation chain | SIR polls at non-leaf entry and loop headers observe cancellation and yield when other work is runnable |
 | Cooperative yield | Per-continuation                             | LLVM coroutine resumption through `hew_cont_resume`, including `await` of a `fork`-started task |
 
 **Actor dispatch signature** (§9.1.1):
@@ -216,7 +216,7 @@ block-beta
 | Constant                 | Value  | Source         |
 | ------------------------ | ------ | -------------- |
 | `HEW_MSG_BUDGET`         | 256    | `actor.rs`     |
-| `HEW_DEFAULT_REDUCTIONS` | 4000   | `actor.rs`     |
+| `SAFEPOINT_BUDGET` | 4000 | `hew-sir` |
 | `HEW_MAX_WORKERS`        | 256    | `actor.rs`     |
 | `MAX_CONNS`              | 64     | `transport.rs` |
 | `MAX_FRAME_SIZE`         | 16 MiB | `transport.rs` |

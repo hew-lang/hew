@@ -564,3 +564,56 @@ fn drop_descriptor_name_round_trips() {
 // in `hew-mir`. They moved to `hew-mir/tests/runtime_call_allowlist.rs`
 // alongside the re-export shim and run as integration tests against
 // the same substrate.
+
+#[test]
+fn deque_pop_contract_preserves_nominal_facts_and_rejects_foreign_lookalikes() {
+    let mut defs = crate::DefTable::new();
+    let identity = defs.mint_nominal_for_test("std.deque.DequeHandle");
+    let foreign = defs.mint_nominal_for_test("application.DequeHandle");
+    for family in [
+        RuntimeCallFamily::DequePopFront,
+        RuntimeCallFamily::DequePopBack,
+    ] {
+        let declaration = format!("std.deque.{}", family.c_symbol());
+        for is_opaque in [false, true] {
+            let handle = ResolvedTy::Named {
+                head: crate::TypeHead::Nominal(crate::NominalHead::new(
+                    identity,
+                    "std.deque.DequeHandle",
+                )),
+                args: vec![],
+                is_opaque,
+            };
+            let admits = |module: &str, declaration: &str, parameter: &ResolvedTy, consume| {
+                family.matches_deque_extern(
+                    &defs,
+                    module,
+                    declaration,
+                    family.c_symbol(),
+                    std::slice::from_ref(parameter),
+                    &ResolvedTy::I64,
+                    &[consume],
+                )
+            };
+            assert!(admits("std.deque", &declaration, &handle, false));
+            let instantiated = family
+                .semantic_contract()
+                .unwrap()
+                .instantiate(&defs, std::slice::from_ref(&handle), &ResolvedTy::I64)
+                .unwrap();
+            assert_eq!(instantiated.arguments, vec![handle.clone()]);
+            assert!(!admits("application", &declaration, &handle, false));
+            assert!(!admits("std.deque", "application.pop", &handle, false));
+            assert!(!admits("std.deque", &declaration, &handle, true));
+            let lookalike = ResolvedTy::Named {
+                head: crate::TypeHead::Nominal(crate::NominalHead::new(
+                    foreign,
+                    "std.deque.DequeHandle",
+                )),
+                args: vec![],
+                is_opaque,
+            };
+            assert!(!admits("std.deque", &declaration, &lookalike, false));
+        }
+    }
+}

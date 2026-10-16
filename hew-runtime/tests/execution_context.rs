@@ -74,32 +74,21 @@ fn run_ctx_null_reader_case(case: u8) {
             assert_context_not_installed_error();
         }
         4 => {
-            // hew_actor_cooperate is a fail-open checkpoint, deliberately
-            // NOT a typed-error emitter: it must leave the last-error slot
-            // untouched so a real diagnostic set by a prior operation
-            // survives to its reader (issue #2506).
-            assert_eq!(hew_runtime::scheduler::hew_actor_cooperate(), 0);
-            assert!(
-                hew_last_error().is_null(),
-                "cooperate checkpoint must not write the last-error slot"
-            );
-        }
-        5 => {
             assert!(hew_runtime::arena::set_current_arena(ptr::null_mut()).is_null());
             assert_context_not_installed_error();
         }
-        6 => {
+        5 => {
             assert!(unsafe { hew_runtime::arena::hew_arena_malloc(16) }.is_null());
             assert_context_not_installed_error();
         }
-        7 => {
+        6 => {
             assert!(unsafe {
                 hew_runtime::task_scope::hew_task_scope_set_current(ptr::null_mut())
             }
             .is_null());
             assert_context_not_installed_error();
         }
-        8 => {
+        7 => {
             let mut out = hew_runtime::tracing::HewTraceContext {
                 trace_id_hi: u64::MAX,
                 trace_id_lo: u64::MAX,
@@ -115,7 +104,7 @@ fn run_ctx_null_reader_case(case: u8) {
             assert_eq!(out.flags, 0);
             assert_context_not_installed_error();
         }
-        9 => {
+        8 => {
             let trace = hew_runtime::tracing::HewTraceContext {
                 trace_id_hi: 1,
                 trace_id_lo: 2,
@@ -126,19 +115,19 @@ fn run_ctx_null_reader_case(case: u8) {
             unsafe { hew_runtime::tracing::hew_trace_set_context(&raw const trace) };
             assert_context_not_installed_error();
         }
-        10 => {
+        9 => {
             hew_runtime::tracing::hew_trace_enable(1);
             hew_runtime::tracing::hew_trace_begin(11, 12);
             hew_runtime::tracing::hew_trace_enable(0);
             assert_context_not_installed_error();
         }
-        11 => {
+        10 => {
             hew_runtime::tracing::hew_trace_enable(1);
             hew_runtime::tracing::hew_trace_end(11, 12);
             hew_runtime::tracing::hew_trace_enable(0);
             assert_context_not_installed_error();
         }
-        12 => {
+        11 => {
             hew_runtime::tracing::hew_trace_enable(1);
             hew_runtime::tracing::hew_trace_lifecycle(11, hew_runtime::tracing::SPAN_STOP);
             hew_runtime::tracing::hew_trace_enable(0);
@@ -150,14 +139,14 @@ fn run_ctx_null_reader_case(case: u8) {
 
 proptest! {
     #[test]
-    fn ctx_null_readers_emit_typed_error(case in 0u8..13) {
+    fn ctx_null_readers_emit_typed_error(case in 0u8..12) {
         run_ctx_null_reader_case(case);
     }
 }
 
 #[test]
 fn ctx_null_reader_catalog_covers_every_case() {
-    for case in 0..13 {
+    for case in 0..12 {
         run_ctx_null_reader_case(case);
     }
 }

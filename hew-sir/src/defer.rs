@@ -134,7 +134,8 @@ pub(crate) fn plan(function: &SemFunction) -> Result<Plan, &'static str> {
                 SemTerminator::Return { .. }
                 | SemTerminator::ResumeUnwind { .. }
                 | SemTerminator::Trap { .. }
-                | SemTerminator::Suspend { .. } => {
+                | SemTerminator::Suspend { .. }
+                | SemTerminator::Safepoint { .. } => {
                     return Err("defer body escapes without its matching finish");
                 }
                 _ => block
@@ -296,8 +297,27 @@ pub(crate) fn verify_calls(
             .iter()
             .find(|f| f.callable == callee)
             .ok_or("defer call has no proven non-suspending body")?;
-        for block in &body.blocks {
-            inspect(module, &block.terminator, seen)?;
+        let mut pending = vec![body.entry];
+        let mut visited = BTreeSet::new();
+        while let Some(id) = pending.pop() {
+            if !visited.insert(id) {
+                continue;
+            }
+            let block = body
+                .blocks
+                .iter()
+                .find(|block| block.id == id)
+                .expect("verified block");
+            // Deferred invocation suppresses structural polls throughout its
+            // call chain; their cancellation exits cannot execute here.
+            if let SemTerminator::Safepoint { resume, .. } = &block.terminator {
+                pending.push(resume.target);
+            } else {
+                inspect(module, &block.terminator, seen)?;
+                block
+                    .terminator
+                    .visit_successors(|edge| pending.push(edge.target));
+            }
         }
         Ok(())
     }

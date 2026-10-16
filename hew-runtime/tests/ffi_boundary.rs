@@ -2833,9 +2833,16 @@ mod rc_arc_tests {
             let val: i32 = 42;
             let rc = hew_rc_new(
                 (&raw const val).cast(),
-                size_of::<i32>(),
-                align_of::<i32>(),
-                None,
+                &hew_cabi::value::HewValueLayout {
+                    size: size_of::<i32>(),
+                    align: align_of::<i32>(),
+                    ownership_kind: hew_cabi::value::HewTypeOwnershipKind::Plain,
+                    clone_fn: None,
+                    drop_fn: None,
+                    release_start: None,
+                },
+                c"test".as_ptr(),
+                std::ptr::null(),
             );
             assert!(!rc.is_null());
             assert_eq!(hew_rc_strong_count(rc), 1);
@@ -2866,9 +2873,16 @@ mod rc_arc_tests {
             let value = 11_i64;
             let rc = hew_rc_new(
                 (&raw const value).cast(),
-                size_of::<i64>(),
-                align_of::<i64>(),
-                None,
+                &hew_cabi::value::HewValueLayout {
+                    size: size_of::<i64>(),
+                    align: align_of::<i64>(),
+                    ownership_kind: hew_cabi::value::HewTypeOwnershipKind::Plain,
+                    clone_fn: None,
+                    drop_fn: None,
+                    release_start: None,
+                },
+                c"test".as_ptr(),
+                std::ptr::null(),
             );
             assert_eq!((hew_rc_strong_count(rc), hew_rc_weak_count(rc)), (1, 0));
 
@@ -2907,9 +2921,16 @@ mod rc_arc_tests {
             let val: i32 = 7;
             let rc = hew_rc_new(
                 (&raw const val).cast(),
-                size_of::<i32>(),
-                align_of::<i32>(),
-                None,
+                &hew_cabi::value::HewValueLayout {
+                    size: size_of::<i32>(),
+                    align: align_of::<i32>(),
+                    ownership_kind: hew_cabi::value::HewTypeOwnershipKind::Plain,
+                    clone_fn: None,
+                    drop_fn: None,
+                    release_start: None,
+                },
+                c"test".as_ptr(),
+                std::ptr::null(),
             );
             assert_eq!(hew_rc_is_unique(rc), 1);
 

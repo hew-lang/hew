@@ -160,7 +160,6 @@ stable = [
   "hew_actor_get_budget",
   "hew_actor_get_error",
   "hew_actor_get_priority",
-  "hew_actor_get_reductions",
   "hew_actor_group_add",
   "hew_actor_group_destroy",
   "hew_actor_group_new",
@@ -181,7 +180,6 @@ stable = [
   "hew_actor_set_hibernation",
   "hew_actor_set_message_drop",
   "hew_actor_set_priority",
-  "hew_actor_set_reductions",
   "hew_actor_set_state_clone",
   "hew_actor_set_state_drop",
   "hew_actor_set_terminate",
@@ -1370,7 +1368,7 @@ non-declarable = [
   "hew_coro_sleep_until_new",
   "hew_coro_state_cancel",
   "hew_coro_state_cancel_code",
-  "hew_coro_state_child",
+  "hew_coro_state_init_child",
   "hew_coro_state_cleanup_child",
   "hew_coro_state_set_cleanup_fault",
   "hew_fault_code",
@@ -1445,7 +1443,6 @@ non-declarable = [
   "hew_stream_write_start_native",
   "hew_stream_pipe_native",
   "hew_actor_await_send_by_id",
-  "hew_actor_cooperate",
   "hew_actor_detach_await_send_by_id",
   # SYSTEM-LANE PROVENANCE BOUNDARY (this entry and `hew_actor_monitor`).
   # Installing a link or a monitor on an ALREADY-TERMINAL peer synthesizes the
@@ -1621,9 +1618,14 @@ non-declarable = [
   "hew_checked_tcp_connect",
   "hew_checked_tcp_connect_timeout",
   "hew_coro_run_callable",
+  "hew_coro_safepoint",
+  "hew_coro_safepoint_budget",
+  "hew_coro_safepoint_suppress",
+  "hew_coro_safepoint_restore",
   "hew_coro_state_new",
   "hew_coro_state_resume_yield",
   "hew_fault_finish_cleanup",
+  "hew_vec_make_unique",
   "_start",
   "hew_actor_drain_outcome_free",
   # `hew_actor_free` is the actor-side twin of `hew_mailbox_free`: it destroys
@@ -2652,7 +2654,8 @@ params = ["borrow", "borrow"]
 release-symbol = "hew_vec_free"
 discharge-depth = "shallow"
 
-# hew-runtime/src/vec.rs:2964-3009 allocates a deep owned-element clone.
+# Allocates an independent vector header; plain callback-free buffers use CoW,
+# while owning elements follow their immediate descriptor clone protocol.
 [[ownership.contracts]]
 symbol = "hew_vec_clone_owned"
 result = "fresh"

@@ -711,8 +711,21 @@ fn draw_message_swimlanes(f: &mut Frame, app: &App, area: Rect) {
         let relative_s = (evt.correlated_unix_ns.saturating_sub(base_ns)) as f64 / 1_000_000_000.0;
         let time_str = format!("{relative_s:>6.2}s");
 
-        let event_label = trace_event_meta(&evt.event_type)
-            .swimlane_label(evt.msg_type, evt.handler_name.as_deref());
+        let event_label = if let Some(sweep) = &evt.rc_sweep {
+            format!(
+                "Rc survivors reclaimed: {} ({})",
+                sweep.count,
+                sweep
+                    .by_type
+                    .iter()
+                    .map(|entry| format!("{} {}", entry.count, entry.type_name))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        } else {
+            trace_event_meta(&evt.event_type)
+                .swimlane_label(evt.msg_type, evt.handler_name.as_deref())
+        };
 
         let mut row_spans = Vec::new();
         row_spans.push(Span::styled(format!("{time_str} "), theme::dim_style()));

@@ -1,0 +1,10 @@
+import "generic_resource_support/wrapper.hew";
+
+fn main() {
+    let value = wrap("owned".to_upper(), "moved");
+    discard(value);
+    println(value.payload);
+    let linear = Delivery<string> { payload: "linear".to_upper() };
+    linear.take();
+    println(linear.payload);
+}

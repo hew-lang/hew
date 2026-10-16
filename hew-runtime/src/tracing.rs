@@ -123,6 +123,8 @@ pub const SPAN_SUPERVISOR_MAX_RESTARTS: i32 = 20;
 pub const SPAN_SUPERVISOR_BACKOFF: i32 = 21;
 /// A compiled handler interceptor declined a delivery.
 pub const SPAN_DELIVERY_REFUSED: i32 = 22;
+/// Actor-terminal Rc survivors consumed by the typed release walker.
+pub const SPAN_RC_SWEEP: i32 = 23;
 
 /// Closed taxonomy of v0.5 concurrency trace event names emitted by this
 /// runtime. The entries pair each `SPAN_*` constant with the canonical
@@ -164,6 +166,7 @@ pub const EVENT_TYPE_NAMES: &[(i32, &str)] = &[
     (SPAN_SUPERVISOR_MAX_RESTARTS, "supervisor_max_restarts"),
     (SPAN_SUPERVISOR_BACKOFF, "supervisor_backoff"),
     (SPAN_DELIVERY_REFUSED, "actor.delivery_refused"),
+    (SPAN_RC_SWEEP, "actor.rc_sweep"),
 ];
 
 /// Resolve a span code to its canonical taxonomy name. Returns `None` for
@@ -275,6 +278,8 @@ pub struct TraceEventRecord {
     pub destination_dispatch_ptr: usize,
     /// Authored refusal text, retained only while the bounded record is live.
     pub reason: Option<std::sync::Arc<str>>,
+    /// Optional typed Rc reclamation summary for actor-terminal events.
+    pub rc_sweep: Option<hew_observe_protocol::RcSweep>,
 }
 
 /// Correlation between the producer's monotonic clock and Unix wall time.
@@ -848,6 +853,7 @@ fn record_event_with_attribution(
     source_attribution: TraceActorAttribution,
     destination_attribution: TraceActorAttribution,
     reason: Option<&str>,
+    rc_sweep: Option<hew_observe_protocol::RcSweep>,
 ) {
     #[cfg(test)]
     if let Some(barrier) = RECORD_PRE_LOCK_BARRIER.access(|slot| slot.clone()) {
@@ -892,6 +898,7 @@ fn record_event_with_attribution(
             source_dispatch_ptr,
             destination_dispatch_ptr,
             reason: reason.map(std::sync::Arc::from),
+            rc_sweep,
         });
     });
 }
@@ -926,6 +933,7 @@ fn record_event_for_generation(generation: u64, event: HewTraceEvent) {
         TraceActorAttribution::NotApplicable,
         TraceActorAttribution::NotApplicable,
         None,
+        None,
     );
 }
 
@@ -956,6 +964,48 @@ fn record_lifecycle_event(actor_id: u64, event_type: i32, msg_type: i32) {
             msg_type,
             timestamp_ns: monotonic_ns(),
         },
+    );
+}
+
+/// Disclose survivor reclamation before terminal actor completion.
+pub(crate) fn record_rc_survivors(
+    actor: &crate::actor::HewActor,
+    summary: hew_observe_protocol::RcSweep,
+) {
+    if summary.count == 0 {
+        return;
+    }
+    let Some(generation) = recording_generation() else {
+        return;
+    };
+    let ctx = system_context();
+    record_event_with_attribution(
+        generation,
+        HewTraceEvent {
+            trace_id_hi: ctx.trace_id_hi,
+            trace_id_lo: ctx.trace_id_lo,
+            span_id: ctx.span_id,
+            parent_span_id: ctx.parent_span_id,
+            actor_id: actor.id,
+            event_type: SPAN_RC_SWEEP,
+            msg_type: 0,
+            timestamp_ns: monotonic_ns(),
+        },
+        Some("actor"),
+        Some(actor.id),
+        Some(actor.id),
+        Some(actor.spawn_serial),
+        actor.dispatch.map_or(0, |dispatch| dispatch as usize),
+        None,
+        None,
+        None,
+        None,
+        0,
+        0,
+        TraceActorAttribution::NotApplicable,
+        TraceActorAttribution::NotApplicable,
+        None,
+        Some(summary),
     );
 }
 
@@ -1021,6 +1071,7 @@ pub(crate) fn record_delivery_refused(
         TraceActorAttribution::NotApplicable,
         TraceActorAttribution::NotApplicable,
         Some(reason),
+        None,
     );
 }
 
@@ -1315,6 +1366,7 @@ pub(crate) fn record_send(
         destination_dispatch_ptr,
         source_attribution,
         TraceActorAttribution::LocalActor,
+        None,
         None,
     );
 }
@@ -1873,6 +1925,7 @@ mod tests {
             SPAN_SUPERVISOR_MAX_RESTARTS,
             SPAN_SUPERVISOR_BACKOFF,
             SPAN_DELIVERY_REFUSED,
+            SPAN_RC_SWEEP,
         ];
         for code in all_spans {
             assert!(
@@ -1894,7 +1947,7 @@ mod tests {
         assert!(event_type_name(i32::MAX).is_none());
         assert!(event_type_name(-1).is_none());
         // Any code beyond the last assigned SPAN_* must not resolve.
-        assert!(event_type_name(SPAN_DELIVERY_REFUSED + 1).is_none());
+        assert!(event_type_name(SPAN_RC_SWEEP + 1).is_none());
     }
 
     /// S1 fail-closed: the producer drain must NEVER serialise an `event_type`

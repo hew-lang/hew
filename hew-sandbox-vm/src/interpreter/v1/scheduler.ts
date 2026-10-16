@@ -52,18 +52,34 @@ export class FrameScheduler {
     };
   }
 
+  hasRunnableWork(): boolean {
+    return this.ready.length > 0;
+  }
+
+  advanceSlice(): void {
+    this.trace.advanceVirtualClock(
+      this.trace.replay.virtual_clock.tick_ms,
+      null,
+    );
+    this.fireTimers();
+  }
+
+  private fireTimers(): void {
+    for (let index = 0; index < this.timers.length; ) {
+      if (this.timers[index]!.at <= this.trace.virtualTimeMs) {
+        this.timers.splice(index, 1)[0]!.wake();
+      } else {
+        index += 1;
+      }
+    }
+  }
+
   run(): void {
     while (this.ready.length > 0 || this.timers.length > 0) {
       if (this.ready.length === 0) {
         const next = Math.min(...this.timers.map((timer) => timer.at));
         this.trace.advanceVirtualClock(next - this.trace.virtualTimeMs, null);
-        for (let index = 0; index < this.timers.length; ) {
-          if (this.timers[index]!.at <= next) {
-            this.timers.splice(index, 1)[0]!.wake();
-          } else {
-            index += 1;
-          }
-        }
+        this.fireTimers();
       }
       if (this.ready.length === 0) continue;
       const replaying = this.replaySteps.length > 0;

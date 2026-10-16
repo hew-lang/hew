@@ -38,4 +38,3 @@ hew compile examples/v05/linear/reject/linear_consumed_only_some_branches.hew
 hew compile examples/v05/linear/accept/linear_consumed_both_branches.hew
 hew compile examples/v05/linear/accept/linear_consumed_via_rollback_on_err.hew
 ```
-

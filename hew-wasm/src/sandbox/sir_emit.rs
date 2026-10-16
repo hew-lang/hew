@@ -237,6 +237,10 @@ pub struct SupervisorChild {
     pub role: serde_json::Value,
     pub restart: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub stop_ns: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stop_config: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub pool_count: Option<u32>,
     pub spawn: u32,
 }
@@ -325,6 +329,8 @@ fn native_capability(symbol: &str) -> Option<String> {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Function {
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub actor_construction: bool,
     pub id: u32,
     pub name: String,
     pub params: Vec<Value>,
@@ -505,7 +511,8 @@ impl<'m> Walker<'m> {
                         }
                     }
                 }
-                SemTerminator::EnterDefer { .. }
+                SemTerminator::Safepoint { .. }
+                | SemTerminator::EnterDefer { .. }
                 | SemTerminator::FinishDefer { .. }
                 | SemTerminator::CleanupDispatch { .. }
                 | SemTerminator::CheckedRaiseFault { .. }
@@ -952,6 +959,14 @@ impl<'m> Walker<'m> {
                                     }
                                 },
                                 restart: restart_name(child.restart).to_string(),
+                                stop_ns: match child.stop_deadline {
+                                    hew_sir::SemStopDeadline::Literal(ns) if ns >= 0 => Some(ns),
+                                    _ => None,
+                                },
+                                stop_config: match child.stop_deadline {
+                                    hew_sir::SemStopDeadline::Config(index) => Some(index),
+                                    _ => None,
+                                },
                                 pool_count: child.pool_count,
                                 spawn: self.function_id(child.spawn)?,
                             })
@@ -1160,6 +1175,10 @@ impl<'m> Walker<'m> {
     fn function(&mut self, id: u32, function: &SemFunction) -> Result<Function, EmitError> {
         self.index_value_types(function);
         Ok(Function {
+            actor_construction: matches!(
+                self.module.callables[function.callable.0 as usize].instance,
+                hew_sir::CallableInstance::ActorConstruction { .. }
+            ),
             id,
             name: function.name.clone(),
             params: function.params.iter().map(block_arg).collect(),
@@ -1674,6 +1693,15 @@ impl<'m> Walker<'m> {
                     "normal": encode_edge(normal),
                     "unwind": encode_unwind(unwind),
                 });
+                if *family == hew_types::RuntimeCallFamily::RcNew {
+                    call["shared_payload_type"] = serde_json::Value::String(
+                        self.value_types
+                            .get(&args[0].operand.value)
+                            .ok_or_else(|| EmitError::new("Rc payload lacks its checked type"))?
+                            .user_facing()
+                            .to_string(),
+                    );
+                }
                 // A failure that leaves the inputs with the caller, whose
                 // unwind edge stores the moved receiver back.
                 if family
@@ -1758,6 +1786,17 @@ impl<'m> Walker<'m> {
                 "normal": encode_edge(normal),
                 "unwind": encode_edge(unwind),
             }),
+            SemTerminator::Safepoint { resume, cancel } => {
+                self.suspend_kind_id("Safepoint");
+                serde_json::json!({
+                    "op": "suspend", "kind": "Safepoint",
+                    "detail": { "budget": hew_sir::SAFEPOINT_BUDGET },
+                    "inputs": [], "result": null, "result_shape": null,
+                    "error_shape": null, "request_shapes": null,
+                    "resumes": [encode_edge(resume)], "cancel": cancel.as_ref().map(encode_edge),
+                    "unwind": null,
+                })
+            }
             // The VM has no pool: an offloaded extern runs as the call it wraps.
             SemTerminator::Suspend {
                 kind: SuspendKind::Offload { function },

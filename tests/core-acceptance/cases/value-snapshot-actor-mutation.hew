@@ -1,0 +1,55 @@
+type Payload {
+    values: Vec<i64>;
+}
+
+actor Snapshot {
+    var value: Payload;
+    receive fn replace(next: Payload) { value = next; }
+    receive fn first() -> i64 { value.values[0] }
+    receive fn change(next: i64) { value.values.set(0, next); }
+}
+
+fn replace_first(var value: Payload, next: i64) -> Payload {
+    value.values.set(0, next);
+    value
+}
+
+const ROUNDS: i64 = 3000;
+
+fn main() {
+    var values: Vec<i64> = [];
+    for i in 0..8192 { values.push(i); }
+    var current = Payload { values: values };
+    let saved = current;
+    let first = spawn Snapshot { value: current };
+    let second = spawn Snapshot { value: current };
+    for i in 0..ROUNDS {
+        first.replace(current).expect("first snapshot");
+        second.replace(current).expect("second snapshot");
+        current = replace_first(current, i + 1);
+        first.change(-(i + 1)).expect("first mutation");
+        if saved.values[0] != 0 || current.values[0] != i + 1 {
+            panic("local snapshot changed");
+        }
+        if first.first().expect("first read") != -(i + 1) {
+            panic("actor mutation was lost");
+        }
+        if second.first().expect("second read") != i {
+            panic("actor snapshot changed");
+        }
+    }
+    first.replace(current).expect("first concurrent snapshot");
+    second.replace(current).expect("second concurrent snapshot");
+    let (left, right) = await fork (first.change(-1), second.change(-2));
+    left.expect("first concurrent mutation");
+    right.expect("second concurrent mutation");
+    assert(first.first().expect("first concurrent read") == -1);
+    assert(second.first().expect("second concurrent read") == -2);
+    assert(current.values[0] == ROUNDS);
+    assert(saved.values[0] == 0);
+    println(f"snapshots={ROUNDS};current={current.values[0]};saved={saved.values[0]}");
+    stop(first);
+    stop(second);
+    stopped(first);
+    stopped(second);
+}

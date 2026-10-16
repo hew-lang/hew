@@ -136,6 +136,7 @@ fn canonicalize_verified_function(
             | SemTerminator::RecoverFault { .. }
             | SemTerminator::CheckedRaiseFault { .. }
             | SemTerminator::Panic { .. }
+            | SemTerminator::Safepoint { .. }
             | SemTerminator::Suspend { .. }
             | SemTerminator::ResumeUnwind { .. }
             | SemTerminator::Unreachable => None,

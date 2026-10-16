@@ -170,13 +170,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                 let field_layout = self.module.target.layout(&field.ty).ok_or_else(|| {
                     CodegenError::FailClosed("capture drop lacks its value layout".into())
                 })?;
-                let value = builder
-                    .build_load(
-                        llvm_type(self.ctx, &field_layout.repr)?,
-                        slot,
-                        "capture.owner",
-                    )
-                    .llvm_ctx("load initialized capture")?;
+                let value = emitter.load_value(slot, field_layout, "capture.owner")?;
                 emitter.destroy_loaded_value(value, field_layout, action)?;
             }
             builder
@@ -860,13 +854,10 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
             return Ok(function);
         }
         let status = if body.is_resumable {
-            let new_child = get_or_declare_external(
-                &self.llvm,
-                "hew_coro_state_child",
-                pointer.fn_type(&[pointer.into()], false),
-            )?;
-            let child = suspend::call_value(&builder, new_child, &[state.into()], "invoke.child")?
-                .into_pointer_value();
+            let child = frame
+                .as_ref()
+                .expect("borrowed adapter owns a frame")
+                .init_child(self.ctx, &self.llvm, &builder)?;
             arguments.push(child.into());
             let child_frame =
                 suspend::call_value(&builder, self.ramps[&body.id], &arguments, "invoke.frame")?
@@ -1245,9 +1236,8 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             let source = self.load(*field, "capture.acquire")?;
             let destination =
                 environment_field(self.ctx, &self.builder, layout, environment, index)?;
-            self.builder
-                .build_store(destination, source)
-                .llvm_ctx("initialize owned capture")?;
+            self.value_emitter()
+                .store_value(destination, &self.storage(*field)?.layout, source)?;
             self.clear_owned(*field)?;
             set_environment_mask_bit(self.ctx, &self.builder, environment, index, true)?;
         }
@@ -1473,18 +1463,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .build_unconditional_branch(complete)
             .llvm_ctx("finish synchronous invocation")?;
         self.builder.position_at_end(resumable);
-        let new_child = get_or_declare_external(
-            self.llvm,
-            "hew_coro_state_child",
-            pointer.fn_type(&[pointer.into()], false),
-        )?;
-        let child = suspend::call_value(
-            &self.builder,
-            new_child,
-            &[frame.state.into()],
-            "invoke.child",
-        )?
-        .into_pointer_value();
+        let child = frame.init_child(self.ctx, self.llvm, &self.builder)?;
         let child_frame = self
             .builder
             .build_indirect_call(

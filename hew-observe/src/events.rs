@@ -76,6 +76,14 @@ pub const CURRENT_TRACE_EVENT_METADATA: &[TraceEventMeta] = &[
         actionable: true,
     },
     TraceEventMeta {
+        name: "actor.rc_sweep",
+        label: "Rc survivors reclaimed",
+        glyph: '\u{21BB}',
+        tone: TraceEventTone::Warning,
+        group: TraceEventGroup::Lifecycle,
+        actionable: true,
+    },
+    TraceEventMeta {
         name: "spawn",
         label: "spawn",
         glyph: '\u{25C6}',

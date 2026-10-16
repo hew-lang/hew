@@ -23,6 +23,35 @@
       "blocks": [
         {
           "id": 0,
+          "ops": [],
+          "params": [],
+          "term": {
+            "cancel": {
+              "args": [],
+              "to": 2
+            },
+            "detail": {
+              "budget": 4000
+            },
+            "error_shape": null,
+            "inputs": [],
+            "kind": "Safepoint",
+            "op": "suspend",
+            "request_shapes": null,
+            "result": null,
+            "result_shape": null,
+            "resumes": [
+              {
+                "args": [],
+                "to": 1
+              }
+            ],
+            "span": null,
+            "unwind": null
+          }
+        },
+        {
+          "id": 1,
           "ops": [
             {
               "dst": 0,
@@ -73,7 +102,7 @@
               "args": [
                 2
               ],
-              "to": 1
+              "to": 6
             },
             "op": "call",
             "result": {
@@ -86,12 +115,60 @@
             },
             "unwind": {
               "args": [],
-              "to": 2
+              "to": 7
             }
           }
         },
         {
-          "id": 1,
+          "id": 2,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 4
+            },
+            "op": "goto",
+            "span": null
+          }
+        },
+        {
+          "id": 3,
+          "ops": [],
+          "params": [],
+          "term": {
+            "op": "resume_unwind",
+            "span": null
+          }
+        },
+        {
+          "id": 4,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 5
+            },
+            "op": "goto",
+            "span": null
+          }
+        },
+        {
+          "id": 5,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 3
+            },
+            "op": "goto",
+            "span": null
+          }
+        },
+        {
+          "id": 6,
           "ops": [],
           "params": [
             {
@@ -110,7 +187,7 @@
             "family": 0,
             "normal": {
               "args": [],
-              "to": 7
+              "to": 11
             },
             "op": "runtime.call",
             "releases_contents": false,
@@ -126,13 +203,13 @@
           }
         },
         {
-          "id": 2,
+          "id": 7,
           "ops": [],
           "params": [],
           "term": {
             "edge": {
               "args": [],
-              "to": 5
+              "to": 9
             },
             "op": "goto",
             "span": {
@@ -142,16 +219,7 @@
           }
         },
         {
-          "id": 3,
-          "ops": [],
-          "params": [],
-          "term": {
-            "op": "resume_unwind",
-            "span": null
-          }
-        },
-        {
-          "id": 4,
+          "id": 8,
           "ops": [
             {
               "dst": null,
@@ -171,33 +239,33 @@
           }
         },
         {
-          "id": 5,
+          "id": 9,
           "ops": [],
           "params": [],
           "term": {
             "edge": {
               "args": [],
-              "to": 6
+              "to": 10
             },
             "op": "goto",
             "span": null
           }
         },
         {
-          "id": 6,
+          "id": 10,
           "ops": [],
           "params": [],
           "term": {
             "edge": {
               "args": [],
-              "to": 4
+              "to": 8
             },
             "op": "goto",
             "span": null
           }
         },
         {
-          "id": 7,
+          "id": 11,
           "ops": [
             {
               "dst": null,
@@ -249,7 +317,7 @@
               "args": [
                 6
               ],
-              "to": 8
+              "to": 12
             },
             "op": "call",
             "result": {
@@ -264,12 +332,12 @@
               "args": [
                 8
               ],
-              "to": 9
+              "to": 13
             }
           }
         },
         {
-          "id": 8,
+          "id": 12,
           "ops": [
             {
               "aggregate": 7,
@@ -330,7 +398,7 @@
               "args": [
                 13
               ],
-              "to": 10
+              "to": 14
             },
             "op": "call",
             "result": {
@@ -343,12 +411,12 @@
             },
             "unwind": {
               "args": [],
-              "to": 11
+              "to": 15
             }
           }
         },
         {
-          "id": 9,
+          "id": 13,
           "ops": [],
           "params": [
             {
@@ -359,7 +427,7 @@
           "term": {
             "edge": {
               "args": [],
-              "to": 5
+              "to": 9
             },
             "op": "goto",
             "span": {
@@ -369,7 +437,7 @@
           }
         },
         {
-          "id": 10,
+          "id": 14,
           "ops": [],
           "params": [
             {
@@ -388,7 +456,7 @@
             "family": 0,
             "normal": {
               "args": [],
-              "to": 12
+              "to": 16
             },
             "op": "runtime.call",
             "releases_contents": false,
@@ -404,13 +472,13 @@
           }
         },
         {
-          "id": 11,
+          "id": 15,
           "ops": [],
           "params": [],
           "term": {
             "edge": {
               "args": [],
-              "to": 5
+              "to": 9
             },
             "op": "goto",
             "span": {
@@ -420,7 +488,7 @@
           }
         },
         {
-          "id": 12,
+          "id": 16,
           "ops": [
             {
               "dst": null,
@@ -433,7 +501,7 @@
           "term": {
             "edge": {
               "args": [],
-              "to": 13
+              "to": 17
             },
             "op": "goto",
             "span": {
@@ -443,7 +511,7 @@
           }
         },
         {
-          "id": 13,
+          "id": 17,
           "ops": [
             {
               "dst": null,
@@ -481,11 +549,24 @@
           "ops": [],
           "params": [],
           "term": {
+            "edge": {
+              "args": [],
+              "to": 1
+            },
+            "op": "goto",
+            "span": null
+          }
+        },
+        {
+          "id": 1,
+          "ops": [],
+          "params": [],
+          "term": {
             "arms": [
               {
                 "edge": {
                   "args": [],
-                  "to": 1
+                  "to": 2
                 },
                 "fields": [],
                 "variant": 0
@@ -493,7 +574,7 @@
               {
                 "edge": {
                   "args": [],
-                  "to": 2
+                  "to": 3
                 },
                 "fields": [],
                 "variant": 1
@@ -501,7 +582,7 @@
               {
                 "edge": {
                   "args": [],
-                  "to": 3
+                  "to": 4
                 },
                 "fields": [],
                 "variant": 2
@@ -517,7 +598,7 @@
           }
         },
         {
-          "id": 1,
+          "id": 2,
           "ops": [
             {
               "dst": 1,
@@ -536,7 +617,7 @@
               "args": [
                 1
               ],
-              "to": 4
+              "to": 5
             },
             "op": "goto",
             "span": {
@@ -546,7 +627,7 @@
           }
         },
         {
-          "id": 2,
+          "id": 3,
           "ops": [
             {
               "dst": 2,
@@ -565,7 +646,7 @@
               "args": [
                 2
               ],
-              "to": 4
+              "to": 5
             },
             "op": "goto",
             "span": {
@@ -575,7 +656,7 @@
           }
         },
         {
-          "id": 3,
+          "id": 4,
           "ops": [
             {
               "dst": 3,
@@ -594,7 +675,7 @@
               "args": [
                 3
               ],
-              "to": 4
+              "to": 5
             },
             "op": "goto",
             "span": {
@@ -604,7 +685,7 @@
           }
         },
         {
-          "id": 4,
+          "id": 5,
           "ops": [],
           "params": [
             {
@@ -615,7 +696,7 @@
           "term": {
             "edge": {
               "args": [],
-              "to": 5
+              "to": 6
             },
             "op": "goto",
             "span": {
@@ -625,7 +706,7 @@
           }
         },
         {
-          "id": 5,
+          "id": 6,
           "ops": [],
           "params": [],
           "term": {
@@ -673,20 +754,49 @@
           ],
           "params": [],
           "term": {
+            "cancel": {
+              "args": [],
+              "to": 2
+            },
+            "detail": {
+              "budget": 4000
+            },
+            "error_shape": null,
+            "inputs": [],
+            "kind": "Safepoint",
+            "op": "suspend",
+            "request_shapes": null,
+            "result": null,
+            "result_shape": null,
+            "resumes": [
+              {
+                "args": [],
+                "to": 1
+              }
+            ],
+            "span": null,
+            "unwind": null
+          }
+        },
+        {
+          "id": 1,
+          "ops": [],
+          "params": [],
+          "term": {
             "args": [],
             "callbacks": [],
             "family": 1,
             "normal": {
               "args": [
-                2
+                3
               ],
-              "to": 1
+              "to": 4
             },
             "op": "runtime.call",
             "releases_contents": false,
             "result": {
               "own": "owned",
-              "value": 2
+              "value": 3
             },
             "result_member_shapes": [],
             "result_shape": null,
@@ -699,7 +809,47 @@
           }
         },
         {
-          "id": 1,
+          "id": 2,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 3
+            },
+            "op": "goto",
+            "span": null
+          }
+        },
+        {
+          "id": 3,
+          "ops": [
+            {
+              "dst": 2,
+              "op": "load.copy",
+              "own": "none",
+              "place": 0,
+              "span": null
+            },
+            {
+              "dst": null,
+              "op": "end_lifetime",
+              "place": 0,
+              "span": null
+            }
+          ],
+          "params": [],
+          "term": {
+            "handback": {
+              "decision": "copy",
+              "value": 2
+            },
+            "op": "resume_unwind",
+            "span": null
+          }
+        },
+        {
+          "id": 4,
           "ops": [
             {
               "dst": null,
@@ -712,10 +862,10 @@
               "op": "store.init",
               "place": 1,
               "span": null,
-              "value": 3
+              "value": 4
             },
             {
-              "dst": 4,
+              "dst": 5,
               "op": "load.take",
               "own": "owned",
               "place": 1,
@@ -741,10 +891,10 @@
               "op": "store.init",
               "place": 2,
               "span": null,
-              "value": 4
+              "value": 5
             },
             {
-              "dst": 5,
+              "dst": 6,
               "fields": [],
               "op": "variant.make",
               "own": "none",
@@ -766,10 +916,10 @@
               "op": "store.init",
               "place": 3,
               "span": null,
-              "value": 5
+              "value": 6
             },
             {
-              "dst": 6,
+              "dst": 7,
               "op": "load.copy",
               "own": "none",
               "place": 0,
@@ -782,7 +932,7 @@
           "params": [
             {
               "own": "owned",
-              "value": 3
+              "value": 4
             }
           ],
           "term": {
@@ -790,7 +940,7 @@
               {
                 "edge": {
                   "args": [],
-                  "to": 2
+                  "to": 5
                 },
                 "fields": [],
                 "variant": 0
@@ -798,7 +948,7 @@
               {
                 "edge": {
                   "args": [],
-                  "to": 3
+                  "to": 6
                 },
                 "fields": [],
                 "variant": 1
@@ -806,14 +956,14 @@
               {
                 "edge": {
                   "args": [],
-                  "to": 4
+                  "to": 7
                 },
                 "fields": [],
                 "variant": 2
               }
             ],
             "op": "switch.variant",
-            "scrutinee": 6,
+            "scrutinee": 7,
             "shape": 0,
             "span": {
               "end": 43608,
@@ -822,7 +972,7 @@
           }
         },
         {
-          "id": 2,
+          "id": 5,
           "ops": [],
           "params": [],
           "term": {
@@ -830,7 +980,7 @@
               {
                 "edge": {
                   "args": [],
-                  "to": 5
+                  "to": 8
                 },
                 "fields": [],
                 "variant": 0
@@ -846,7 +996,7 @@
           }
         },
         {
-          "id": 3,
+          "id": 6,
           "ops": [],
           "params": [],
           "term": {
@@ -854,7 +1004,7 @@
               {
                 "edge": {
                   "args": [],
-                  "to": 11
+                  "to": 14
                 },
                 "fields": [],
                 "variant": 0
@@ -870,7 +1020,7 @@
           }
         },
         {
-          "id": 4,
+          "id": 7,
           "ops": [],
           "params": [],
           "term": {
@@ -878,7 +1028,7 @@
               {
                 "edge": {
                   "args": [],
-                  "to": 17
+                  "to": 20
                 },
                 "fields": [],
                 "variant": 0
@@ -894,10 +1044,10 @@
           }
         },
         {
-          "id": 5,
+          "id": 8,
           "ops": [
             {
-              "dst": 7,
+              "dst": 8,
               "fields": [],
               "op": "variant.make",
               "own": "none",
@@ -915,7 +1065,7 @@
               {
                 "edge": {
                   "args": [],
-                  "to": 6
+                  "to": 9
                 },
                 "fields": [],
                 "variant": 0
@@ -923,7 +1073,7 @@
               {
                 "edge": {
                   "args": [],
-                  "to": 7
+                  "to": 10
                 },
                 "fields": [],
                 "variant": 1
@@ -931,14 +1081,14 @@
               {
                 "edge": {
                   "args": [],
-                  "to": 8
+                  "to": 11
                 },
                 "fields": [],
                 "variant": 2
               }
             ],
             "op": "switch.variant",
-            "scrutinee": 7,
+            "scrutinee": 8,
             "shape": 0,
             "span": {
               "end": 43448,
@@ -947,10 +1097,10 @@
           }
         },
         {
-          "id": 6,
+          "id": 9,
           "ops": [
             {
-              "dst": 8,
+              "dst": 9,
               "fields": [],
               "op": "variant.make",
               "own": "none",
@@ -966,9 +1116,9 @@
           "term": {
             "edge": {
               "args": [
-                8
+                9
               ],
-              "to": 9
+              "to": 12
             },
             "op": "goto",
             "span": {
@@ -978,10 +1128,10 @@
           }
         },
         {
-          "id": 7,
+          "id": 10,
           "ops": [
             {
-              "dst": 9,
+              "dst": 10,
               "fields": [],
               "op": "variant.make",
               "own": "none",
@@ -997,9 +1147,9 @@
           "term": {
             "edge": {
               "args": [
-                9
+                10
               ],
-              "to": 9
+              "to": 12
             },
             "op": "goto",
             "span": {
@@ -1009,10 +1159,10 @@
           }
         },
         {
-          "id": 8,
+          "id": 11,
           "ops": [
             {
-              "dst": 10,
+              "dst": 11,
               "fields": [],
               "op": "variant.make",
               "own": "none",
@@ -1028,9 +1178,9 @@
           "term": {
             "edge": {
               "args": [
-                10
+                11
               ],
-              "to": 9
+              "to": 12
             },
             "op": "goto",
             "span": {
@@ -1040,30 +1190,7 @@
           }
         },
         {
-          "id": 9,
-          "ops": [],
-          "params": [
-            {
-              "own": "none",
-              "value": 11
-            }
-          ],
-          "term": {
-            "edge": {
-              "args": [
-                11
-              ],
-              "to": 10
-            },
-            "op": "goto",
-            "span": {
-              "end": 43450,
-              "start": 43450
-            }
-          }
-        },
-        {
-          "id": 10,
+          "id": 12,
           "ops": [],
           "params": [
             {
@@ -1076,7 +1203,30 @@
               "args": [
                 12
               ],
-              "to": 23
+              "to": 13
+            },
+            "op": "goto",
+            "span": {
+              "end": 43450,
+              "start": 43450
+            }
+          }
+        },
+        {
+          "id": 13,
+          "ops": [],
+          "params": [
+            {
+              "own": "none",
+              "value": 13
+            }
+          ],
+          "term": {
+            "edge": {
+              "args": [
+                13
+              ],
+              "to": 26
             },
             "op": "goto",
             "span": {
@@ -1086,10 +1236,10 @@
           }
         },
         {
-          "id": 11,
+          "id": 14,
           "ops": [
             {
-              "dst": 13,
+              "dst": 14,
               "fields": [],
               "op": "variant.make",
               "own": "none",
@@ -1107,7 +1257,7 @@
               {
                 "edge": {
                   "args": [],
-                  "to": 12
+                  "to": 15
                 },
                 "fields": [],
                 "variant": 0
@@ -1115,7 +1265,7 @@
               {
                 "edge": {
                   "args": [],
-                  "to": 13
+                  "to": 16
                 },
                 "fields": [],
                 "variant": 1
@@ -1123,14 +1273,14 @@
               {
                 "edge": {
                   "args": [],
-                  "to": 14
+                  "to": 17
                 },
                 "fields": [],
                 "variant": 2
               }
             ],
             "op": "switch.variant",
-            "scrutinee": 13,
+            "scrutinee": 14,
             "shape": 0,
             "span": {
               "end": 43522,
@@ -1139,10 +1289,10 @@
           }
         },
         {
-          "id": 12,
+          "id": 15,
           "ops": [
             {
-              "dst": 14,
+              "dst": 15,
               "fields": [],
               "op": "variant.make",
               "own": "none",
@@ -1158,9 +1308,9 @@
           "term": {
             "edge": {
               "args": [
-                14
+                15
               ],
-              "to": 15
+              "to": 18
             },
             "op": "goto",
             "span": {
@@ -1170,10 +1320,10 @@
           }
         },
         {
-          "id": 13,
+          "id": 16,
           "ops": [
             {
-              "dst": 15,
+              "dst": 16,
               "fields": [],
               "op": "variant.make",
               "own": "none",
@@ -1189,9 +1339,9 @@
           "term": {
             "edge": {
               "args": [
-                15
+                16
               ],
-              "to": 15
+              "to": 18
             },
             "op": "goto",
             "span": {
@@ -1201,10 +1351,10 @@
           }
         },
         {
-          "id": 14,
+          "id": 17,
           "ops": [
             {
-              "dst": 16,
+              "dst": 17,
               "fields": [],
               "op": "variant.make",
               "own": "none",
@@ -1220,9 +1370,9 @@
           "term": {
             "edge": {
               "args": [
-                16
+                17
               ],
-              "to": 15
+              "to": 18
             },
             "op": "goto",
             "span": {
@@ -1232,30 +1382,7 @@
           }
         },
         {
-          "id": 15,
-          "ops": [],
-          "params": [
-            {
-              "own": "none",
-              "value": 17
-            }
-          ],
-          "term": {
-            "edge": {
-              "args": [
-                17
-              ],
-              "to": 16
-            },
-            "op": "goto",
-            "span": {
-              "end": 43524,
-              "start": 43524
-            }
-          }
-        },
-        {
-          "id": 16,
+          "id": 18,
           "ops": [],
           "params": [
             {
@@ -1268,7 +1395,30 @@
               "args": [
                 18
               ],
-              "to": 23
+              "to": 19
+            },
+            "op": "goto",
+            "span": {
+              "end": 43524,
+              "start": 43524
+            }
+          }
+        },
+        {
+          "id": 19,
+          "ops": [],
+          "params": [
+            {
+              "own": "none",
+              "value": 19
+            }
+          ],
+          "term": {
+            "edge": {
+              "args": [
+                19
+              ],
+              "to": 26
             },
             "op": "goto",
             "span": {
@@ -1278,10 +1428,10 @@
           }
         },
         {
-          "id": 17,
+          "id": 20,
           "ops": [
             {
-              "dst": 19,
+              "dst": 20,
               "fields": [],
               "op": "variant.make",
               "own": "none",
@@ -1299,7 +1449,7 @@
               {
                 "edge": {
                   "args": [],
-                  "to": 18
+                  "to": 21
                 },
                 "fields": [],
                 "variant": 0
@@ -1307,7 +1457,7 @@
               {
                 "edge": {
                   "args": [],
-                  "to": 19
+                  "to": 22
                 },
                 "fields": [],
                 "variant": 1
@@ -1315,14 +1465,14 @@
               {
                 "edge": {
                   "args": [],
-                  "to": 20
+                  "to": 23
                 },
                 "fields": [],
                 "variant": 2
               }
             ],
             "op": "switch.variant",
-            "scrutinee": 19,
+            "scrutinee": 20,
             "shape": 0,
             "span": {
               "end": 43596,
@@ -1331,10 +1481,10 @@
           }
         },
         {
-          "id": 18,
+          "id": 21,
           "ops": [
             {
-              "dst": 20,
+              "dst": 21,
               "fields": [],
               "op": "variant.make",
               "own": "none",
@@ -1350,9 +1500,9 @@
           "term": {
             "edge": {
               "args": [
-                20
+                21
               ],
-              "to": 21
+              "to": 24
             },
             "op": "goto",
             "span": {
@@ -1362,10 +1512,10 @@
           }
         },
         {
-          "id": 19,
+          "id": 22,
           "ops": [
             {
-              "dst": 21,
+              "dst": 22,
               "fields": [],
               "op": "variant.make",
               "own": "none",
@@ -1381,9 +1531,9 @@
           "term": {
             "edge": {
               "args": [
-                21
+                22
               ],
-              "to": 21
+              "to": 24
             },
             "op": "goto",
             "span": {
@@ -1393,10 +1543,10 @@
           }
         },
         {
-          "id": 20,
+          "id": 23,
           "ops": [
             {
-              "dst": 22,
+              "dst": 23,
               "fields": [],
               "op": "variant.make",
               "own": "none",
@@ -1412,9 +1562,9 @@
           "term": {
             "edge": {
               "args": [
-                22
+                23
               ],
-              "to": 21
+              "to": 24
             },
             "op": "goto",
             "span": {
@@ -1424,30 +1574,7 @@
           }
         },
         {
-          "id": 21,
-          "ops": [],
-          "params": [
-            {
-              "own": "none",
-              "value": 23
-            }
-          ],
-          "term": {
-            "edge": {
-              "args": [
-                23
-              ],
-              "to": 22
-            },
-            "op": "goto",
-            "span": {
-              "end": 43598,
-              "start": 43598
-            }
-          }
-        },
-        {
-          "id": 22,
+          "id": 24,
           "ops": [],
           "params": [
             {
@@ -1460,7 +1587,30 @@
               "args": [
                 24
               ],
-              "to": 23
+              "to": 25
+            },
+            "op": "goto",
+            "span": {
+              "end": 43598,
+              "start": 43598
+            }
+          }
+        },
+        {
+          "id": 25,
+          "ops": [],
+          "params": [
+            {
+              "own": "none",
+              "value": 25
+            }
+          ],
+          "term": {
+            "edge": {
+              "args": [
+                25
+              ],
+              "to": 26
             },
             "op": "goto",
             "span": {
@@ -1470,10 +1620,10 @@
           }
         },
         {
-          "id": 23,
+          "id": 26,
           "ops": [
             {
-              "dst": 26,
+              "dst": 27,
               "op": "load.take",
               "own": "owned",
               "place": 2,
@@ -1483,7 +1633,7 @@
               }
             },
             {
-              "dst": 27,
+              "dst": 28,
               "op": "load.copy",
               "own": "none",
               "place": 3,
@@ -1493,10 +1643,10 @@
               }
             },
             {
-              "dst": 28,
+              "dst": 29,
               "fields": [
-                26,
-                27
+                27,
+                28
               ],
               "op": "aggregate.make",
               "own": "owned",
@@ -1517,7 +1667,7 @@
               "op": "store.init",
               "place": 4,
               "span": null,
-              "value": 28
+              "value": 29
             },
             {
               "dst": null,
@@ -1527,10 +1677,10 @@
                 "end": 43634,
                 "start": 43634
               },
-              "value": 25
+              "value": 26
             },
             {
-              "dst": 29,
+              "dst": 30,
               "op": "load.take",
               "own": "owned",
               "place": 4,
@@ -1540,7 +1690,7 @@
               }
             },
             {
-              "dst": 30,
+              "dst": 31,
               "op": "load.copy",
               "own": "none",
               "place": 0,
@@ -1550,10 +1700,10 @@
               }
             },
             {
-              "dst": 31,
+              "dst": 32,
               "fields": [
-                29,
-                30
+                30,
+                31
               ],
               "op": "aggregate.make",
               "own": "owned",
@@ -1567,13 +1717,13 @@
           "params": [
             {
               "own": "none",
-              "value": 25
+              "value": 26
             }
           ],
           "term": {
             "edge": {
               "args": [],
-              "to": 24
+              "to": 27
             },
             "op": "goto",
             "span": {
@@ -1583,7 +1733,7 @@
           }
         },
         {
-          "id": 24,
+          "id": 27,
           "ops": [
             {
               "dst": null,
@@ -1619,7 +1769,7 @@
             },
             "value": {
               "decision": "move",
-              "value": 31
+              "value": 32
             }
           }
         }
@@ -1688,7 +1838,9 @@
   ],
   "structural_render": [],
   "supervisors": [],
-  "suspend_kinds": [],
+  "suspend_kinds": [
+    "Safepoint"
+  ],
   "value_capabilities": [],
   "variants": [
     {

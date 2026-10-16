@@ -507,6 +507,22 @@ impl TypeError {
         }
     }
 
+    /// Diagnose an Rc payload that can retain itself without a Weak backedge.
+    #[must_use]
+    pub fn strong_rc_cycle(span: Span, cycle_desc: &str) -> Self {
+        Self {
+            severity: Severity::Warning,
+            kind: TypeErrorKind::StrongRcCycle,
+            span,
+            message: format!("strong Rc self-reach: {cycle_desc}"),
+            notes: Vec::new(),
+            suggestions: vec![
+                "use Weak<T> for the backedge to close promptly when the last external strong owner is released".into(),
+            ],
+            source_module: None,
+        }
+    }
+
     /// Create an actor reference cycle warning.
     #[must_use]
     pub fn actor_ref_cycle(span: Span, cycle_desc: &str) -> Self {
@@ -843,6 +859,8 @@ pub enum TypeErrorKind {
     BlockStatementValue,
     /// Actor types form a reference cycle via actor-handle fields
     ActorRefCycle,
+    /// A payload type can reach itself through strong Rc storage.
+    StrongRcCycle,
     /// A value-typed enum/record/struct contains itself by value, directly or
     /// through another inline value type, making its layout infinitely sized.
     RecursiveValueType {
@@ -1522,6 +1540,7 @@ impl TypeErrorKind {
             Self::FromInvalid => "E_FROM_INVALID",
             Self::BlockStatementValue => "E_BLOCK_STATEMENT_VALUE",
             Self::ActorRefCycle => "ActorRefCycle",
+            Self::StrongRcCycle => "StrongRcCycle",
             Self::RecursiveValueType { .. } => "RecursiveValueType",
             Self::UnusedVariable => "UnusedVariable",
             Self::UnusedMut => "UnusedMut",

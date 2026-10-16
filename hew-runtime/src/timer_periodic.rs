@@ -648,7 +648,6 @@ mod tests {
             supervisor: std::ptr::null_mut(),
             supervisor_child_index: 0,
             priority: AtomicI32::new(1),
-            reductions: AtomicI32::new(0),
             idle_count: AtomicI32::new(0),
             hibernation_threshold: AtomicI32::new(0),
             hibernating: AtomicI32::new(0),

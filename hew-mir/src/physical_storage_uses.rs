@@ -267,7 +267,8 @@ pub(super) fn terminator_storage(term: &PhysicalTerminator, used: &mut BTreeSet<
         PhysicalTerminator::PropagateFault { handback } => {
             used.extend(handback);
         }
-        PhysicalTerminator::TaskScopeJoin { .. }
+        PhysicalTerminator::Safepoint { .. }
+        | PhysicalTerminator::TaskScopeJoin { .. }
         | PhysicalTerminator::EnterDefer { .. }
         | PhysicalTerminator::FinishDefer { .. }
         | PhysicalTerminator::CleanupDispatch { .. }

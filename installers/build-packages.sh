@@ -209,6 +209,8 @@ build_tarball() {
 
     # Standard library sources (all .hew files, including subdirectories)
     cp -r "${REPO_DIR}/std/." "${staging}/std/"
+    mkdir -p "${staging}/share/hew"
+    cp "${REPO_DIR}/scripts/debug/hew-gdb.py" "${REPO_DIR}/scripts/debug/hew_lldb.py" "${staging}/share/hew/"
     cp "${REPO_DIR}/hew-cabi/include/hew.h" "${REPO_DIR}/hew-cabi/include/hew_host.h" "${staging}/include/"
 
     # Generate shell completions from built binaries

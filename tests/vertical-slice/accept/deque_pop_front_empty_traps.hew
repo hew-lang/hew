@@ -1,6 +1,4 @@
-// `Deque.pop_front()` on an empty deque fails closed through the runtime
-// bounds trap. In main context there is no actor recovery frame, so the
-// runtime trap helper aborts the process and run.sh pins exit 134.
+// Empty pops report a checked bounds fault after releasing local resources.
 import std.deque;
 
 fn main() -> i64 {

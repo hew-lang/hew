@@ -2,6 +2,20 @@
 
 use super::*;
 
+fn native_crash_context_type(ctx: &Context) -> StructType<'_> {
+    let ptr = ctx.ptr_type(AddressSpace::default());
+    ctx.struct_type(
+        &[
+            ptr.into(),
+            ctx.i64_type().into(),
+            ptr.into(),
+            ctx.i64_type().into(),
+            ctx.i32_type().into(),
+        ],
+        false,
+    )
+}
+
 impl<'ctx> ModuleEmitter<'ctx, '_> {
     fn lifecycle_word(
         &self,
@@ -290,129 +304,231 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         builder.position_at_end(done);
         Ok(())
     }
-    /// Adapt the supervisor's crash ABI to the typed `CrashInfo` / `CrashAction`
-    /// hook body. The diagnostic string is retained into the owned record and
-    /// released by the hook's normal aggregate drop path.
+    /// Run the restart ruling on the existing cleanup continuation. Its own
+    /// checked deadline is distinct from the later shielded state release.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one retained context spans deadline entry, checked invocation and drained release"
+    )]
     pub(super) fn emit_actor_crash(&self, actor: &SemActor) -> CodegenResult<()> {
         let hook = actor
             .crash
             .ok_or_else(|| CodegenError::FailClosed("crash descriptor lacks hook".into()))?;
         let callable = callable(self.module, hook)?;
         let ptr = self.ctx.ptr_type(AddressSpace::default());
-        let info = self.ctx.i64_type();
-        let action_ty = callable
-            .return_layout
-            .as_ref()
-            .ok_or_else(|| CodegenError::FailClosed("crash hook lacks action layout".into()))?;
-        let action_llvm = llvm_type(self.ctx, &action_ty.repr)?;
-        let function = self.llvm.add_function(
+        let i64_ty = self.ctx.i64_type();
+        let i32_ty = self.ctx.i32_type();
+        let context_ty = native_crash_context_type(self.ctx);
+        release::custom(
+            self.ctx,
+            &self.llvm,
+            self.module,
             &symbol(actor.id, "on_crash"),
-            self.ctx
-                .i32_type()
-                .fn_type(&[ptr.into(), info.into(), ptr.into()], false),
-            Some(Linkage::Internal),
-        );
-        let builder = self.ctx.create_builder();
-        builder.position_at_end(self.ctx.append_basic_block(function, "entry"));
-        let state = function.get_nth_param(0).unwrap().into_pointer_value();
-        let code = function.get_nth_param(1).unwrap();
-        let message = function.get_nth_param(2).unwrap().into_pointer_value();
-        let crash_layout = &callable
-            .params
-            .get(1)
-            .ok_or_else(|| CodegenError::FailClosed("crash hook lacks info parameter".into()))?
-            .layout;
-        let crash_object = builder
-            .build_alloca(llvm_type(self.ctx, &crash_layout.repr)?, "crash.info")
-            .llvm_ctx("allocate crash info")?;
-        let crash_struct = llvm_type(self.ctx, &crash_layout.repr)?.into_struct_type();
-        let code_ptr = builder
-            .build_struct_gep(crash_struct, crash_object, 0, "crash.code")
-            .llvm_ctx("address crash code")?;
-        builder
-            .build_store(code_ptr, code)
-            .llvm_ctx("store crash code")?;
-        let msg_ptr = builder
-            .build_struct_gep(crash_struct, crash_object, 1, "crash.message")
-            .llvm_ctx("address crash message")?;
-        let clone = get_or_declare_external(
-            &self.llvm,
-            "hew_string_clone",
-            ptr.fn_type(&[ptr.into()], false),
+            |values, frame, context| {
+                let builder = values.builder;
+                let (fault, status) = values.fault_sink.ok_or_else(|| {
+                    CodegenError::FailClosed("crash hook lacks fault output".into())
+                })?;
+                let field = |index, name| {
+                    builder
+                        .build_struct_gep(context_ty, context, index, name)
+                        .llvm_ctx("address retained crash context")
+                };
+                let token_fn = get_or_declare_external(
+                    &self.llvm,
+                    "hew_coro_state_token",
+                    ptr.fn_type(&[ptr.into()], false),
+                )?;
+                let token = call_value(
+                    builder,
+                    token_fn,
+                    &[frame.state.into()],
+                    "crash.enclosing.token",
+                )?;
+                let scope_new = get_or_declare_external(
+                    &self.llvm,
+                    "hew_checked_scope_new",
+                    ptr.fn_type(&[ptr.into()], false),
+                )?;
+                let scope = call_value(builder, scope_new, &[token.into()], "crash.scope")?;
+                let duration = builder
+                    .build_load(i64_ty, field(3, "crash.budget")?, "crash.budget.ns")
+                    .llvm_ctx("read child stop budget")?;
+                let deadline = get_or_declare_external(
+                    &self.llvm,
+                    "hew_checked_scope_deadline",
+                    self.ctx
+                        .void_type()
+                        .fn_type(&[ptr.into(), i64_ty.into()], false),
+                )?;
+                builder
+                    .build_call(deadline, &[scope.into(), duration.into()], "")
+                    .llvm_ctx("arm crash hook stop budget")?;
+                let scope_token = get_or_declare_external(
+                    &self.llvm,
+                    "hew_task_scope_cancel_token",
+                    ptr.fn_type(&[ptr.into()], false),
+                )?;
+                let token = call_value(builder, scope_token, &[scope.into()], "crash.scope.token")?;
+                let enter = get_or_declare_external(
+                    &self.llvm,
+                    "hew_coro_state_enter_token",
+                    self.ctx.void_type().fn_type(&[ptr.into(); 2], false),
+                )?;
+                builder
+                    .build_call(enter, &[frame.state.into(), token.into()], "")
+                    .llvm_ctx("enter crash hook deadline")?;
+                let cancelled = get_or_declare_external(
+                    &self.llvm,
+                    "hew_coro_state_is_cancelled",
+                    i32_ty.fn_type(&[ptr.into()], false),
+                )?;
+                let cancelled =
+                    call_value(builder, cancelled, &[frame.state.into()], "crash.expired")?
+                        .into_int_value();
+                let expired = builder
+                    .build_int_compare(
+                        IntPredicate::NE,
+                        cancelled,
+                        i32_ty.const_zero(),
+                        "crash.skip",
+                    )
+                    .llvm_ctx("check initial crash hook budget")?;
+                let run = self.ctx.append_basic_block(values.value, "crash.run");
+                let skip = self.ctx.append_basic_block(values.value, "crash.expired");
+                let done = self.ctx.append_basic_block(values.value, "crash.done");
+                builder
+                    .build_conditional_branch(expired, skip, run)
+                    .llvm_ctx("guard crash hook entry")?;
+                builder.position_at_end(skip);
+                let code = i32_ty.const_int(hew_runtime::fault::HEW_FAULT_DEADLINE as u64, true);
+                let new_fault = get_or_declare_external(
+                    &self.llvm,
+                    "hew_fault_new",
+                    ptr.fn_type(&[i32_ty.into()], false),
+                )?;
+                let raised =
+                    call_value(builder, new_fault, &[code.into()], "crash.deadline.fault")?;
+                builder
+                    .build_store(fault, raised)
+                    .llvm_ctx("retain crash deadline fault")?;
+                builder
+                    .build_store(status, code)
+                    .llvm_ctx("retain crash deadline status")?;
+                builder
+                    .build_unconditional_branch(done)
+                    .llvm_ctx("skip expired crash hook")?;
+                builder.position_at_end(run);
+                let state = builder
+                    .build_load(ptr, field(0, "crash.state")?, "crash.actor.state")
+                    .llvm_ctx("borrow initialized crash state")?;
+                let code = builder
+                    .build_load(i64_ty, field(1, "crash.code")?, "crash.code.value")
+                    .llvm_ctx("read crash code")?;
+                let message = builder
+                    .build_load(ptr, field(2, "crash.message")?, "crash.message.value")
+                    .llvm_ctx("borrow crash diagnostic")?;
+                let layout = &callable
+                    .params
+                    .get(1)
+                    .ok_or_else(|| {
+                        CodegenError::FailClosed("crash hook lacks info parameter".into())
+                    })?
+                    .layout;
+                let object_ty = llvm_type(self.ctx, &layout.repr)?.into_struct_type();
+                let object = frame.storage(self.ctx, object_ty.into(), "crash.info")?;
+                let code_ptr = builder
+                    .build_struct_gep(object_ty, object, 0, "crash.info.code")
+                    .llvm_ctx("address crash info code")?;
+                builder
+                    .build_store(code_ptr, code)
+                    .llvm_ctx("store crash info code")?;
+                let clone = get_or_declare_external(
+                    &self.llvm,
+                    "hew_string_clone",
+                    ptr.fn_type(&[ptr.into()], false),
+                )?;
+                let owned = call_value(builder, clone, &[message.into()], "crash.message.clone")?;
+                let message_ptr = builder
+                    .build_struct_gep(object_ty, object, 1, "crash.info.message")
+                    .llvm_ctx("address crash info message")?;
+                builder
+                    .build_store(message_ptr, owned)
+                    .llvm_ctx("store owned crash info message")?;
+                let output_ty = llvm_type(
+                    self.ctx,
+                    &callable
+                        .return_layout
+                        .as_ref()
+                        .ok_or_else(|| {
+                            CodegenError::FailClosed("crash hook lacks action layout".into())
+                        })?
+                        .repr,
+                )?;
+                let output = frame.storage(self.ctx, output_ty, "crash.action")?;
+                let args = [state.into(), object.into(), output.into(), fault.into()];
+                let outcome = if callable.is_resumable {
+                    suspend::invoke_child(
+                        self.ctx,
+                        &self.llvm,
+                        builder,
+                        values.value,
+                        frame,
+                        self.ramps[&hook],
+                        &args,
+                    )?
+                } else {
+                    call_value(builder, self.functions[&hook], &args, "crash.hook.status")?
+                        .into_int_value()
+                };
+                builder
+                    .build_store(status, outcome)
+                    .llvm_ctx("retain crash hook outcome")?;
+                let success = self.ctx.append_basic_block(values.value, "crash.success");
+                let ok = builder
+                    .build_int_compare(IntPredicate::EQ, outcome, i32_ty.const_zero(), "crash.ok")
+                    .llvm_ctx("check crash hook outcome")?;
+                builder
+                    .build_conditional_branch(ok, success, done)
+                    .llvm_ctx("accept only a completed crash ruling")?;
+                builder.position_at_end(success);
+                let action = builder
+                    .build_load(output_ty, output, "crash.action.value")
+                    .llvm_ctx("read crash ruling")?
+                    .into_struct_value();
+                let tag = builder
+                    .build_extract_value(action, 0, "crash.action.tag")
+                    .llvm_ctx("read crash ruling tag")?
+                    .into_int_value();
+                let tag = builder
+                    .build_int_cast(tag, i32_ty, "crash.action.abi")
+                    .llvm_ctx("convert crash ruling tag")?;
+                builder
+                    .build_store(field(4, "crash.action.out")?, tag)
+                    .llvm_ctx("publish crash ruling to its owner")?;
+                builder
+                    .build_unconditional_branch(done)
+                    .llvm_ctx("finish crash ruling")?;
+                builder.position_at_end(done);
+                let leave = get_or_declare_external(
+                    &self.llvm,
+                    "hew_coro_state_leave_token",
+                    self.ctx.void_type().fn_type(&[ptr.into()], false),
+                )?;
+                builder
+                    .build_call(leave, &[frame.state.into()], "")
+                    .llvm_ctx("leave drained crash hook deadline")?;
+                let close = get_or_declare_external(
+                    &self.llvm,
+                    "hew_checked_scope_close",
+                    self.ctx.void_type().fn_type(&[ptr.into()], false),
+                )?;
+                builder
+                    .build_call(close, &[scope.into()], "")
+                    .llvm_ctx("release drained crash hook deadline")?;
+                Ok(())
+            },
         )?;
-        let cloned = builder
-            .build_call(clone, &[message.into()], "crash.message.clone")
-            .llvm_ctx("retain crash message")?
-            .try_as_basic_value()
-            .basic()
-            .ok_or_else(|| CodegenError::FailClosed("crash message clone returned void".into()))?;
-        builder
-            .build_store(msg_ptr, cloned)
-            .llvm_ctx("store crash message")?;
-        let fault = builder
-            .build_alloca(ptr, "crash.fault")
-            .llvm_ctx("allocate crash hook fault")?;
-        builder
-            .build_store(fault, ptr.const_null())
-            .llvm_ctx("initialize crash hook fault")?;
-        let output = builder
-            .build_alloca(action_llvm, "crash.action")
-            .llvm_ctx("allocate crash action")?;
-        let mut args: Vec<BasicMetadataValueEnum<'ctx>> = vec![state.into(), crash_object.into()];
-        if callable.return_layout.is_some() {
-            args.push(output.into());
-        }
-        args.push(fault.into());
-        builder
-            .build_call(self.functions[&hook], &args, "crash.hook")
-            .llvm_ctx("invoke crash hook")?;
-        let returned_fault = builder
-            .build_load(ptr, fault, "crash.returned_fault")
-            .llvm_ctx("read crash hook fault")?
-            .into_pointer_value();
-        let failed = builder
-            .build_is_not_null(returned_fault, "crash.failed")
-            .llvm_ctx("test crash hook fault")?;
-        let success = self.ctx.append_basic_block(function, "success");
-        let failure = self.ctx.append_basic_block(function, "failure");
-        builder
-            .build_conditional_branch(failed, failure, success)
-            .llvm_ctx("branch on crash hook completion")?;
-        builder.position_at_end(failure);
-        let report_fault = get_or_declare_external(
-            &self.llvm,
-            "hew_fault_report",
-            self.ctx.i32_type().fn_type(&[ptr.into()], false),
-        )?;
-        builder
-            .build_call(report_fault, &[returned_fault.into()], "")
-            .llvm_ctx("report the failed crash hook before escalation")?;
-        let drop_fault = get_or_declare_external(
-            &self.llvm,
-            "hew_fault_drop",
-            self.ctx.void_type().fn_type(&[ptr.into()], false),
-        )?;
-        builder
-            .build_call(drop_fault, &[returned_fault.into()], "")
-            .llvm_ctx("release failed crash hook")?;
-        builder
-            .build_return(Some(&self.ctx.i32_type().const_int(1, false)))
-            .llvm_ctx("escalate a failed crash hook")?;
-        builder.position_at_end(success);
-        let result = builder
-            .build_load(action_llvm, output, "crash.action.value")
-            .llvm_ctx("read crash action")?
-            .into_struct_value();
-        let tag = builder
-            .build_extract_value(result, 0, "crash.action.tag")
-            .llvm_ctx("read crash action tag")?
-            .into_int_value();
-        let action = builder
-            .build_int_cast(tag, self.ctx.i32_type(), "crash.action.abi")
-            .llvm_ctx("convert crash action tag")?;
-        builder
-            .build_return(Some(&action))
-            .llvm_ctx("return crash action")?;
         Ok(())
     }
 
@@ -858,5 +974,62 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         }
         args.push(fault.into());
         Ok(args)
+    }
+}
+
+#[cfg(test)]
+mod abi_tests {
+    use super::super::actor::{c_mirror_mismatch, field_size};
+    use super::*;
+    use hew_runtime::actor_native::HewNativeCrashContext;
+    use std::mem::{align_of, offset_of, size_of};
+
+    #[test]
+    fn native_crash_context_matches_the_runtime_c_abi() {
+        let ctx = Context::create();
+        let fields = [
+            (
+                offset_of!(HewNativeCrashContext, state),
+                field_size(|c: &HewNativeCrashContext| &c.state),
+            ),
+            (
+                offset_of!(HewNativeCrashContext, code),
+                field_size(|c: &HewNativeCrashContext| &c.code),
+            ),
+            (
+                offset_of!(HewNativeCrashContext, message),
+                field_size(|c: &HewNativeCrashContext| &c.message),
+            ),
+            (
+                offset_of!(HewNativeCrashContext, stop_ns),
+                field_size(|c: &HewNativeCrashContext| &c.stop_ns),
+            ),
+            (
+                offset_of!(HewNativeCrashContext, action),
+                field_size(|c: &HewNativeCrashContext| &c.action),
+            ),
+        ];
+        let mismatch = |mirror| {
+            c_mirror_mismatch(
+                mirror,
+                &fields,
+                size_of::<HewNativeCrashContext>(),
+                align_of::<HewNativeCrashContext>(),
+            )
+        };
+        assert_eq!(mismatch(native_crash_context_type(&ctx)), None);
+        // A misplaced narrow action must be rejected.
+        let ptr = ctx.ptr_type(AddressSpace::default());
+        let reordered = ctx.struct_type(
+            &[
+                ptr.into(),
+                ctx.i32_type().into(),
+                ptr.into(),
+                ctx.i64_type().into(),
+                ctx.i64_type().into(),
+            ],
+            false,
+        );
+        assert!(mismatch(reordered).is_some());
     }
 }

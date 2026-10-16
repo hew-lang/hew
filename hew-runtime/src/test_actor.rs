@@ -17,7 +17,7 @@
 use std::ptr;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, AtomicU32, AtomicU64, Ordering};
 
-use crate::actor::{HewActor, HEW_DEFAULT_REDUCTIONS, HEW_MSG_BUDGET, HEW_PRIORITY_NORMAL};
+use crate::actor::{HewActor, HEW_MSG_BUDGET, HEW_PRIORITY_NORMAL};
 use crate::internal::types::{ContTag, HewActorState};
 use crate::lifetime::live_actors::{self, ActorIncarnation};
 use crate::scheduler::NoWorkerSchedulerForTest;
@@ -47,7 +47,6 @@ pub(crate) fn stub_actor() -> HewActor {
         supervisor: ptr::null_mut(),
         supervisor_child_index: -1,
         priority: AtomicI32::new(HEW_PRIORITY_NORMAL),
-        reductions: AtomicI32::new(HEW_DEFAULT_REDUCTIONS),
         idle_count: AtomicI32::new(0),
         hibernation_threshold: AtomicI32::new(0),
         hibernating: AtomicI32::new(0),

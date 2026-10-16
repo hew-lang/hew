@@ -467,7 +467,7 @@ try {
         }
 
         # Create standard directories
-        foreach ($dir in @("bin", "lib", "std", "include", "completions")) {
+        foreach ($dir in @("bin", "lib", "std", "include", "completions", "share")) {
             New-Item -ItemType Directory -Path (Join-Path $InstallDir $dir) -Force | Out-Null
         }
 
@@ -499,6 +499,11 @@ try {
         $includeSrc = Join-Path $innerDir.FullName "include"
         if (Test-Path $includeSrc) {
             Copy-Item -Path (Join-Path $includeSrc "*") -Destination (Join-Path $InstallDir "include") -Recurse -Force
+        }
+
+        $shareSrc = Join-Path $innerDir.FullName "share"
+        if (Test-Path $shareSrc) {
+            Copy-Item -Path (Join-Path $shareSrc "*") -Destination (Join-Path $InstallDir "share") -Recurse -Force
         }
 
         # Generate shell completions from installed binaries

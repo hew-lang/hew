@@ -234,6 +234,12 @@ pub(super) fn semantic_callables(checked: &hew_sir::CheckedModule<'_>) -> BTreeS
     let mut resumable = BTreeSet::new();
     let mut calls = BTreeMap::<_, Vec<_>>::new();
     for function in &module.functions {
+        if matches!(
+            module.callables[function.callable.0 as usize].instance,
+            hew_sir::CallableInstance::ActorConstruction { .. }
+        ) {
+            resumable.insert(function.callable);
+        }
         let mut types = BTreeMap::new();
         for parameter in &function.params {
             types.insert(parameter.value, parameter.ty.clone());
@@ -355,6 +361,7 @@ pub(super) fn semantic_callables(checked: &hew_sir::CheckedModule<'_>) -> BTreeS
                     resumable.insert(function.callable);
                 }
                 hew_sir::SemTerminator::RecoverFault { .. }
+                | hew_sir::SemTerminator::Safepoint { .. }
                 | hew_sir::SemTerminator::Suspend { .. }
                 | hew_sir::SemTerminator::ActorCall {
                     operation:
@@ -412,6 +419,9 @@ pub(super) fn semantic_callables(checked: &hew_sir::CheckedModule<'_>) -> BTreeS
                     });
                 }
                 hew_sir::SemTerminator::RtCall { family, args, .. } => {
+                    if *family == hew_types::RuntimeCallFamily::RcNew {
+                        resumable.insert(function.callable);
+                    }
                     if family.releases_receiver_contents() {
                         let (intrinsic, dependencies) = semantic_release_dependencies(
                             module,
@@ -437,6 +447,16 @@ pub(super) fn semantic_callables(checked: &hew_sir::CheckedModule<'_>) -> BTreeS
                             .extend(semantic_value_callees(module, &arguments[0], *capability));
                     }
                 }
+                hew_sir::SemTerminator::DynCall { method, .. } => {
+                    calls.entry(function.callable).or_default().extend(
+                        module
+                            .vtables
+                            .iter()
+                            .flat_map(|table| &table.slots)
+                            .filter(|slot| slot.method == *method)
+                            .map(|slot| slot.callee),
+                    );
+                }
                 hew_sir::SemTerminator::Call { callee, .. } => {
                     calls.entry(function.callable).or_default().push(*callee);
                 }
@@ -456,6 +476,12 @@ pub(super) fn verify_callables(module: &PhysicalModule) -> Result<(), PhysicalEr
     let mut calls = BTreeMap::<_, Vec<_>>::new();
     let releases = super::release::ReleaseEffects::compute(module);
     for function in &module.functions {
+        if matches!(
+            module.callables[function.callable.0 as usize].instance,
+            hew_sir::CallableInstance::ActorConstruction { .. }
+        ) {
+            resumable.insert(function.callable);
+        }
         for block in &function.blocks {
             for operation in &block.ops {
                 let action = match operation {
@@ -508,6 +534,7 @@ pub(super) fn verify_callables(module: &PhysicalModule) -> Result<(), PhysicalEr
                 PhysicalTerminator::RecoverFault { .. }
                 | PhysicalTerminator::NativeIo { .. }
                 | PhysicalTerminator::Offload { .. }
+                | PhysicalTerminator::Safepoint { .. }
                 | PhysicalTerminator::Sleep { .. }
                 | PhysicalTerminator::SleepUntil { .. }
                 | PhysicalTerminator::TaskSelect { .. }
@@ -548,6 +575,9 @@ pub(super) fn verify_callables(module: &PhysicalModule) -> Result<(), PhysicalEr
                     resumable.insert(function.callable);
                 }
                 PhysicalTerminator::RuntimeCall { action, args, .. } => {
+                    if action.family == hew_types::RuntimeCallFamily::RcNew {
+                        resumable.insert(function.callable);
+                    }
                     if super::runtime_receiver_release(module, action)?
                         .is_some_and(|action| releases.suspends(action))
                     {
@@ -612,6 +642,16 @@ pub(super) fn verify_callables(module: &PhysicalModule) -> Result<(), PhysicalEr
                             .extend(dependency?);
                     }
                 }
+                PhysicalTerminator::DynCall { method, .. } => {
+                    calls.entry(function.callable).or_default().extend(
+                        module
+                            .vtables
+                            .iter()
+                            .flat_map(|table| &table.slots)
+                            .filter(|slot| slot.method == *method)
+                            .map(|slot| slot.callee),
+                    );
+                }
                 PhysicalTerminator::Call { callee, .. } => {
                     calls.entry(function.callable).or_default().push(*callee);
                 }
@@ -620,6 +660,38 @@ pub(super) fn verify_callables(module: &PhysicalModule) -> Result<(), PhysicalEr
         }
     }
     let expected = close_callers(resumable, &calls);
+    let resumable_methods: BTreeSet<_> = module
+        .vtables
+        .iter()
+        .flat_map(|table| &table.slots)
+        .filter(|slot| expected.contains(&slot.callee))
+        .map(|slot| slot.method)
+        .collect();
+    for slot in module.vtables.iter().flat_map(|table| &table.slots) {
+        if slot.is_resumable != resumable_methods.contains(&slot.method) {
+            return Err(PhysicalError::new(
+                "vtable slot has an inconsistent resumable ABI",
+            ));
+        }
+    }
+    for block in module
+        .functions
+        .iter()
+        .flat_map(|function| &function.blocks)
+    {
+        if let PhysicalTerminator::DynCall {
+            method,
+            is_resumable,
+            ..
+        } = &block.terminator
+        {
+            if *is_resumable != resumable_methods.contains(method) {
+                return Err(PhysicalError::new(
+                    "dynamic dispatch has an inconsistent resumable ABI",
+                ));
+            }
+        }
+    }
     for glue in &module.structural_glue {
         let may_suspend = super::structural::display_callees(&module.structural_glue, glue.id)?
             .iter()
@@ -641,22 +713,21 @@ pub(super) fn verify_callables(module: &PhysicalModule) -> Result<(), PhysicalEr
         }
     }
     for callable in &module.callables {
+        if callable.is_authored_close
+            != module
+                .resources
+                .iter()
+                .any(|resource| resource.release.close_callable() == Some(callable.id))
+        {
+            return Err(PhysicalError::new(
+                "callable cleanup ancestry differs from its authored close lifecycle",
+            ));
+        }
         if callable.is_resumable != expected.contains(&callable.id) {
             return Err(PhysicalError::new(format!(
                 "callable {} (`{}`) has an inconsistent resumable ABI",
                 callable.id.0, callable.symbol
             )));
-        }
-    }
-    // Spawn invokes init and start through its caller's continuation,
-    // terminal cleanup drives stop hooks as a resumable release, and the
-    // system lane parks a suspending EXIT or DOWN hook like a handler. The
-    // crash hook still runs through the runtime's synchronous callback ABI.
-    for actor in &module.actors {
-        if actor.crash.iter().any(|body| expected.contains(body)) {
-            return Err(PhysicalError::new(
-                "native actor crash hook suspension is not implemented",
-            ));
         }
     }
     Ok(())

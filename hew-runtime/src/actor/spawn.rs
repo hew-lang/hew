@@ -92,15 +92,15 @@ pub(crate) unsafe fn deep_copy_state(src: *mut c_void, size: usize) -> *mut c_vo
     }
 }
 
-/// Configuration for the internal actor spawn helper.
-///
-/// All three public spawn functions build one of these and delegate to
-/// [`spawn_actor_internal`].
-/// A native crash hook borrows initialized state and a managed diagnostic.
-pub type HewNativeCrashFn =
-    unsafe extern "C" fn(*mut c_void, i64, *const hew_cabi::string::HewString) -> i32;
+/// A native crash hook borrows retained inputs through its release continuation.
+pub type HewNativeCrashFn = hew_cabi::value::HewValueReleaseStart;
 
+/// Default graceful-stop budget shared by declared children and crash hooks.
+pub const DEFAULT_STOP_BUDGET_NS: i64 = 5_000_000_000;
+
+/// Configuration shared by the public actor spawn functions.
 struct ActorSpawnConfig {
+    rc_owner: Option<std::sync::Arc<crate::rc::RcAllocations>>,
     native_crash: Option<HewNativeCrashFn>,
     native_state_release: Option<hew_cabi::value::HewValueReleaseStart>,
     /// The generated `#[on(stop)]` sequence as a resumable continuation that
@@ -249,7 +249,6 @@ fn build_spawned_actor(
         supervisor: ptr::null_mut(),
         supervisor_child_index: -1,
         priority: AtomicI32::new(HEW_PRIORITY_NORMAL),
-        reductions: AtomicI32::new(HEW_DEFAULT_REDUCTIONS),
         idle_count: AtomicI32::new(0),
         hibernation_threshold: AtomicI32::new(0),
         hibernating: AtomicI32::new(0),
@@ -281,8 +280,11 @@ fn build_spawned_actor(
         pending_external_trap_code: AtomicI32::new(0),
         native_completion: (config.dispatch_ownership == HewDispatchOwnership::UniqueEnvelope)
             .then(|| {
-                let completion =
+                let mut completion =
                     crate::actor_native::NativeActorCompletion::with_crash(config.native_crash);
+                if let Some(owner) = &config.rc_owner {
+                    completion.cleanup.rc = owner.clone();
+                }
                 completion
                     .cleanup
                     .set_state_release(config.native_state_release);
@@ -523,6 +525,7 @@ pub unsafe extern "C" fn hew_actor_spawn(
     // SAFETY: actor_state is a fresh deep-copy; mailbox is valid.
     unsafe {
         spawn_actor_internal(ActorSpawnConfig {
+            rc_owner: None,
             native_crash: None,
             native_state_release: None,
             native_stop_release: None,
@@ -597,6 +600,7 @@ pub unsafe extern "C" fn hew_actor_spawn_opts(opts: *const HewActorOpts) -> *mut
     // SAFETY: actor_state is a fresh deep-copy; mailbox is valid.
     unsafe {
         spawn_actor_internal(ActorSpawnConfig {
+            rc_owner: None,
             native_crash: None,
             native_state_release: None,
             native_stop_release: None,
@@ -707,6 +711,7 @@ pub unsafe extern "C" fn hew_actor_spawn_opts_adopt(
     // SAFETY: cloned_state ownership has been transferred to us; mailbox is valid.
     unsafe {
         spawn_actor_internal(ActorSpawnConfig {
+            rc_owner: None,
             native_crash: None,
             native_state_release: None,
             native_stop_release: None,
@@ -751,6 +756,7 @@ pub struct HewNativePeriodicHandler {
 #[no_mangle]
 #[allow(
     clippy::too_many_arguments,
+    clippy::too_many_lines,
     reason = "private generated actor ABI publishes one complete state contract"
 )]
 pub unsafe extern "C" fn hew_actor_spawn_native(
@@ -772,6 +778,7 @@ pub unsafe extern "C" fn hew_actor_spawn_native(
     coalesce_fallback: i32,
     state_release: Option<hew_cabi::value::HewValueReleaseStart>,
     rejected_state_release: *mut *mut crate::release_walker::HewReleaseCursor,
+    construction: *mut crate::coro_state::HewCoroState,
 ) -> crate::lifetime::local_handles::HewLocalPidId {
     // SAFETY: generated code supplies an empty cursor output.
     if !rejected_state_release.is_null() {
@@ -821,6 +828,10 @@ pub unsafe extern "C" fn hew_actor_spawn_native(
     // SAFETY: ownership and callbacks are supplied atomically before publication.
     let actor = unsafe {
         spawn_actor_internal(ActorSpawnConfig {
+            // SAFETY: construction remains live through publication.
+            rc_owner: construction
+                .as_ref()
+                .and_then(|state| state.execution().rc_owner.clone()),
             native_crash,
             native_state_release: state_release,
             native_stop_release: stop_release,
@@ -848,6 +859,10 @@ pub unsafe extern "C" fn hew_actor_spawn_native(
         };
         crate::lifetime::local_handles::HewLocalPidId::INVALID
     } else {
+        if !construction.is_null() {
+            // SAFETY: successful publication transferred this exact list to the child.
+            unsafe { (*construction).execution_mut().rc_owner = None };
+        }
         // No external handle exists yet. Pin before the first timer can run,
         // since a periodic handler may immediately fault and retire this actor.
         // SAFETY: successful construction returns a live actor before timer arming.
@@ -1068,6 +1083,7 @@ pub unsafe extern "C" fn hew_actor_spawn_bounded(
     // SAFETY: actor_state is a fresh deep-copy; mailbox is valid.
     unsafe {
         spawn_actor_internal(ActorSpawnConfig {
+            rc_owner: None,
             native_crash: None,
             native_state_release: None,
             native_stop_release: None,

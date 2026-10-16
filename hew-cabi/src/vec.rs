@@ -51,7 +51,11 @@ pub enum ElemKind {
 #[repr(C)]
 #[derive(Debug)]
 pub struct HewVec {
-    /// Pointer to the backing buffer.
+    /// Pointer to the backing buffer. Runtime allocations store an atomic
+    /// pointer-sized reference count in the word immediately before this
+    /// address. The data preserves the element descriptor's alignment.
+    /// Plain elements without clone or release callbacks may share a buffer;
+    /// mutation must make it unique first. Each vector owns a separate header.
     pub data: *mut u8,
     /// Number of elements currently stored.
     pub len: usize,
@@ -127,6 +131,8 @@ const _: () = {
 // ---------------------------------------------------------------------------
 
 extern "C" {
+    /// Detach shared element storage before writing it through a unique header.
+    pub fn hew_vec_make_unique(v: *mut HewVec);
     // Constructors
     pub fn hew_vec_new() -> *mut HewVec;
     pub fn hew_vec_new_bool() -> *mut HewVec;

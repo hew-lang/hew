@@ -25,6 +25,30 @@ actor Pinger {
     }
 }
 
+type RcNode {
+    next: Rc<Option<RcNode>>;
+    back: Weak<Option<RcNode>>;
+}
+
+type RootCycle {
+    next: Rc<Option<RootCycle>>;
+}
+
+type WeakOnly {
+}
+
+type FreedPayload {
+}
+
+actor LocalCycle {
+    receive fn allocate() {
+        let empty: Option<RcNode> = .None;
+        let owner = Rc.new(empty);
+        let linked: Option<RcNode> = .Some(RcNode { next: owner.clone(), back: owner.downgrade() });
+        owner.set(linked);
+    }
+}
+
 fn main() {
     let counter = spawn Counter { count: 0 };
     let pinger = spawn Pinger { target: counter };
@@ -37,6 +61,24 @@ fn main() {
         .Err(_) => -1,
     };
     println(f"observe fixture sent={sent} total={total}");
+    let local = spawn LocalCycle;
+    local.allocate().expect("cycle allocated");
+    stop(local);
+    stopped(local);
+    let weak_only = {
+        let value = Rc.new(WeakOnly {  });
+        value.downgrade()
+    };
+    assert(weak_only.upgrade().is_none());
+    {
+        let freed = Rc.new(FreedPayload {  });
+        let _ = freed;
+    };
+    // This root-owned cycle is disclosed at orderly process exit, not swept.
+    let empty: Option<RootCycle> = .None;
+    let root = Rc.new(empty);
+    let linked: Option<RootCycle> = .Some(RootCycle { next: root.clone() });
+    root.set(linked);
     let _barrier = observe.barrier().expect("barrier succeeds");
     sleep(15s);
 }

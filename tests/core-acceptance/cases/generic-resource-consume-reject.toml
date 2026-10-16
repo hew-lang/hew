@@ -1,0 +1,19 @@
+[[case]]
+id = "generic-resource-consume-reject"
+intent = "A generic consuming helper transfers the imported resource wrapper, so its former owner cannot read the payload."
+source = "cases/generic-resource-consume-reject.hew"
+suites = ["acceptance"]
+timeout_seconds = 15
+kind = "reject"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "UseAfterMove"
+line = 6
+column = 13
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "UseAfterConsume"
+line = 9
+column = 13

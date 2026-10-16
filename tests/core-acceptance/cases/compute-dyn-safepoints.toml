@@ -1,0 +1,12 @@
+[[case]]
+id = "compute-dyn-safepoints"
+intent = "One erased method ABI handles synchronous, timer-suspending and compute-resumable implementations; deadline cancellation returns the mutated resource receiver before recovery and closes it once."
+source = "cases/compute-dyn-safepoints.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+env = { HEW_WORKERS = "1" }
+
+[case.expected]
+stdout = "0\n7\n7\n0\nwork unwound\ndeadline recovered\n9\nclosed 9\n"
+stderr = ""
+exit = 0

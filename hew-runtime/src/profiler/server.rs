@@ -341,16 +341,16 @@ fn current_metrics_json(snap: &crate::profiler::metrics::MetricsSnapshot) -> Str
 /// `GET /api/memory` — current allocator stats.
 fn serve_memory() -> Response<Full<Bytes>> {
     let stats = allocator::snapshot();
-    let json = format!(
-        r#"{{"alloc_count":"{}","dealloc_count":"{}","bytes_allocated":"{}","bytes_freed":"{}","bytes_live":"{}","peak_bytes_live":"{}"}}"#,
-        stats.alloc_count,
-        stats.dealloc_count,
-        stats.bytes_allocated,
-        stats.bytes_freed,
-        stats.bytes_live,
-        stats.peak_bytes_live,
-    );
-    json_response(&json)
+    let memory = hew_observe_protocol::Memory {
+        alloc_count: stats.alloc_count,
+        dealloc_count: stats.dealloc_count,
+        bytes_allocated: stats.bytes_allocated,
+        bytes_freed: stats.bytes_freed,
+        bytes_live: stats.bytes_live,
+        peak_bytes_live: stats.peak_bytes_live,
+        rc_live_by_type: Some(crate::observe::rc_live_by_type()),
+    };
+    json_response(&serde_json::to_string(&memory).expect("memory model serializes"))
 }
 
 /// `GET /api/metrics/history` — time-series from ring buffer.
@@ -671,6 +671,7 @@ fn trace_event_model(record: &crate::tracing::TraceEventRecord) -> TraceEvent {
         timestamp_ns: event.timestamp_ns,
         handler_name,
         reason: record.reason.as_deref().map(str::to_owned),
+        rc_sweep: record.rc_sweep.clone(),
     }
 }
 

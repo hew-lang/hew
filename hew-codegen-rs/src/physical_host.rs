@@ -122,6 +122,7 @@ impl<'a> HostExport<'a> {
                     | PhysicalTerminator::CheckedRaiseFault { .. }
                     | PhysicalTerminator::Trap(_)
                     | PhysicalTerminator::PropagateFault { .. }
+                    | PhysicalTerminator::Safepoint { .. }
                     | PhysicalTerminator::Unreachable => {}
                 }
             }

@@ -23,6 +23,35 @@
       "blocks": [
         {
           "id": 0,
+          "ops": [],
+          "params": [],
+          "term": {
+            "cancel": {
+              "args": [],
+              "to": 2
+            },
+            "detail": {
+              "budget": 4000
+            },
+            "error_shape": null,
+            "inputs": [],
+            "kind": "Safepoint",
+            "op": "suspend",
+            "request_shapes": null,
+            "result": null,
+            "result_shape": null,
+            "resumes": [
+              {
+                "args": [],
+                "to": 1
+              }
+            ],
+            "span": null,
+            "unwind": null
+          }
+        },
+        {
+          "id": 1,
           "ops": [
             {
               "dst": 0,
@@ -47,7 +76,7 @@
             "callee": 1,
             "normal": {
               "args": [],
-              "to": 1
+              "to": 6
             },
             "op": "call",
             "result": null,
@@ -57,12 +86,60 @@
             },
             "unwind": {
               "args": [],
-              "to": 2
+              "to": 7
             }
           }
         },
         {
-          "id": 1,
+          "id": 2,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 4
+            },
+            "op": "goto",
+            "span": null
+          }
+        },
+        {
+          "id": 3,
+          "ops": [],
+          "params": [],
+          "term": {
+            "op": "resume_unwind",
+            "span": null
+          }
+        },
+        {
+          "id": 4,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 5
+            },
+            "op": "goto",
+            "span": null
+          }
+        },
+        {
+          "id": 5,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 3
+            },
+            "op": "goto",
+            "span": null
+          }
+        },
+        {
+          "id": 6,
           "ops": [
             {
               "dst": 1,
@@ -104,7 +181,7 @@
               "args": [
                 3
               ],
-              "to": 6
+              "to": 8
             },
             "op": "call",
             "result": {
@@ -117,12 +194,12 @@
             },
             "unwind": {
               "args": [],
-              "to": 7
+              "to": 9
             }
           }
         },
         {
-          "id": 2,
+          "id": 7,
           "ops": [],
           "params": [],
           "term": {
@@ -135,6 +212,306 @@
               "end": 48,
               "start": 48
             }
+          }
+        },
+        {
+          "id": 8,
+          "ops": [],
+          "params": [
+            {
+              "own": "none",
+              "value": 4
+            }
+          ],
+          "term": {
+            "args": [
+              {
+                "decision": "copy",
+                "value": 4
+              }
+            ],
+            "callbacks": [],
+            "family": 0,
+            "normal": {
+              "args": [],
+              "to": 10
+            },
+            "op": "runtime.call",
+            "releases_contents": false,
+            "result": null,
+            "result_member_shapes": [],
+            "result_shape": null,
+            "span": {
+              "end": 64,
+              "start": 64
+            },
+            "structural": null,
+            "unwind": null
+          }
+        },
+        {
+          "id": 9,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 4
+            },
+            "op": "goto",
+            "span": {
+              "end": 82,
+              "start": 82
+            }
+          }
+        },
+        {
+          "id": 10,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 11
+            },
+            "op": "goto",
+            "span": {
+              "end": 64,
+              "start": 64
+            }
+          }
+        },
+        {
+          "id": 11,
+          "ops": [],
+          "params": [],
+          "term": {
+            "op": "return",
+            "span": {
+              "end": 64,
+              "start": 64
+            },
+            "value": null
+          }
+        }
+      ],
+      "entry": 0,
+      "id": 0,
+      "name": "__hew_fn_main",
+      "params": [],
+      "places": []
+    },
+    {
+      "blocks": [
+        {
+          "id": 0,
+          "ops": [],
+          "params": [],
+          "term": {
+            "cancel": {
+              "args": [],
+              "to": 2
+            },
+            "detail": {
+              "budget": 4000
+            },
+            "error_shape": null,
+            "inputs": [],
+            "kind": "Safepoint",
+            "op": "suspend",
+            "request_shapes": null,
+            "result": null,
+            "result_shape": null,
+            "resumes": [
+              {
+                "args": [],
+                "to": 1
+              }
+            ],
+            "span": null,
+            "unwind": null
+          }
+        },
+        {
+          "id": 1,
+          "ops": [],
+          "params": [],
+          "term": {
+            "args": [
+              {
+                "decision": "copy",
+                "value": 0
+              }
+            ],
+            "extern": 0,
+            "normal": {
+              "args": [],
+              "to": 6
+            },
+            "op": "extern.call",
+            "result": null,
+            "result_shape": null,
+            "span": null,
+            "unwind": null
+          }
+        },
+        {
+          "id": 2,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 4
+            },
+            "op": "goto",
+            "span": null
+          }
+        },
+        {
+          "id": 3,
+          "ops": [],
+          "params": [],
+          "term": {
+            "op": "resume_unwind",
+            "span": null
+          }
+        },
+        {
+          "id": 4,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 5
+            },
+            "op": "goto",
+            "span": null
+          }
+        },
+        {
+          "id": 5,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 3
+            },
+            "op": "goto",
+            "span": null
+          }
+        },
+        {
+          "id": 6,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 7
+            },
+            "op": "goto",
+            "span": null
+          }
+        },
+        {
+          "id": 7,
+          "ops": [],
+          "params": [],
+          "term": {
+            "op": "return",
+            "span": null,
+            "value": null
+          }
+        }
+      ],
+      "entry": 0,
+      "id": 1,
+      "name": "__hew_fn_std$random$seed",
+      "params": [
+        {
+          "own": "none",
+          "value": 0
+        }
+      ],
+      "places": []
+    },
+    {
+      "blocks": [
+        {
+          "id": 0,
+          "ops": [],
+          "params": [],
+          "term": {
+            "cancel": {
+              "args": [],
+              "to": 2
+            },
+            "detail": {
+              "budget": 4000
+            },
+            "error_shape": null,
+            "inputs": [],
+            "kind": "Safepoint",
+            "op": "suspend",
+            "request_shapes": null,
+            "result": null,
+            "result_shape": null,
+            "resumes": [
+              {
+                "args": [],
+                "to": 1
+              }
+            ],
+            "span": null,
+            "unwind": null
+          }
+        },
+        {
+          "id": 1,
+          "ops": [],
+          "params": [],
+          "term": {
+            "args": [
+              {
+                "decision": "copy",
+                "value": 0
+              },
+              {
+                "decision": "copy",
+                "value": 1
+              }
+            ],
+            "extern": 1,
+            "normal": {
+              "args": [
+                2
+              ],
+              "to": 6
+            },
+            "op": "extern.call",
+            "result": {
+              "own": "none",
+              "value": 2
+            },
+            "result_shape": null,
+            "span": null,
+            "unwind": null
+          }
+        },
+        {
+          "id": 2,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 4
+            },
+            "op": "goto",
+            "span": null
           }
         },
         {
@@ -178,201 +555,20 @@
           "params": [
             {
               "own": "none",
-              "value": 4
-            }
-          ],
-          "term": {
-            "args": [
-              {
-                "decision": "copy",
-                "value": 4
-              }
-            ],
-            "callbacks": [],
-            "family": 0,
-            "normal": {
-              "args": [],
-              "to": 8
-            },
-            "op": "runtime.call",
-            "releases_contents": false,
-            "result": null,
-            "result_member_shapes": [],
-            "result_shape": null,
-            "span": {
-              "end": 64,
-              "start": 64
-            },
-            "structural": null,
-            "unwind": null
-          }
-        },
-        {
-          "id": 7,
-          "ops": [],
-          "params": [],
-          "term": {
-            "edge": {
-              "args": [],
-              "to": 4
-            },
-            "op": "goto",
-            "span": {
-              "end": 82,
-              "start": 82
-            }
-          }
-        },
-        {
-          "id": 8,
-          "ops": [],
-          "params": [],
-          "term": {
-            "edge": {
-              "args": [],
-              "to": 9
-            },
-            "op": "goto",
-            "span": {
-              "end": 64,
-              "start": 64
-            }
-          }
-        },
-        {
-          "id": 9,
-          "ops": [],
-          "params": [],
-          "term": {
-            "op": "return",
-            "span": {
-              "end": 64,
-              "start": 64
-            },
-            "value": null
-          }
-        }
-      ],
-      "entry": 0,
-      "id": 0,
-      "name": "__hew_fn_main",
-      "params": [],
-      "places": []
-    },
-    {
-      "blocks": [
-        {
-          "id": 0,
-          "ops": [],
-          "params": [],
-          "term": {
-            "args": [
-              {
-                "decision": "copy",
-                "value": 0
-              }
-            ],
-            "extern": 0,
-            "normal": {
-              "args": [],
-              "to": 1
-            },
-            "op": "extern.call",
-            "result": null,
-            "result_shape": null,
-            "span": null,
-            "unwind": null
-          }
-        },
-        {
-          "id": 1,
-          "ops": [],
-          "params": [],
-          "term": {
-            "edge": {
-              "args": [],
-              "to": 2
-            },
-            "op": "goto",
-            "span": null
-          }
-        },
-        {
-          "id": 2,
-          "ops": [],
-          "params": [],
-          "term": {
-            "op": "return",
-            "span": null,
-            "value": null
-          }
-        }
-      ],
-      "entry": 0,
-      "id": 1,
-      "name": "__hew_fn_std$random$seed",
-      "params": [
-        {
-          "own": "none",
-          "value": 0
-        }
-      ],
-      "places": []
-    },
-    {
-      "blocks": [
-        {
-          "id": 0,
-          "ops": [],
-          "params": [],
-          "term": {
-            "args": [
-              {
-                "decision": "copy",
-                "value": 0
-              },
-              {
-                "decision": "copy",
-                "value": 1
-              }
-            ],
-            "extern": 1,
-            "normal": {
-              "args": [
-                2
-              ],
-              "to": 1
-            },
-            "op": "extern.call",
-            "result": {
-              "own": "none",
-              "value": 2
-            },
-            "result_shape": null,
-            "span": null,
-            "unwind": null
-          }
-        },
-        {
-          "id": 1,
-          "ops": [],
-          "params": [
-            {
-              "own": "none",
               "value": 3
             }
           ],
           "term": {
             "edge": {
               "args": [],
-              "to": 2
+              "to": 7
             },
             "op": "goto",
             "span": null
           }
         },
         {
-          "id": 2,
+          "id": 7,
           "ops": [],
           "params": [],
           "term": {
@@ -419,7 +615,9 @@
   "strings": [],
   "structural_render": [],
   "supervisors": [],
-  "suspend_kinds": [],
+  "suspend_kinds": [
+    "Safepoint"
+  ],
   "value_capabilities": [],
   "variants": [],
   "vtables": []

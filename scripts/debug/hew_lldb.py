@@ -4,10 +4,12 @@ LLDB Python extension for Hew programs.
 Provides type summaries for Hew runtime types and convenience commands
 for inspecting actor state. Load manually with:
 
-    (lldb) command script import scripts/debug/hew-lldb.py
+    (lldb) command script import scripts/debug/hew_lldb.py
 
 Or automatically via `hew debug <file.hew>`.
 """
+
+import json
 
 import lldb  # type: ignore[import-untyped]
 
@@ -17,28 +19,50 @@ import lldb  # type: ignore[import-untyped]
 # ---------------------------------------------------------------------------
 
 
+def _unsigned_member(value, name):
+    field = value.GetChildMemberWithName(name)
+    result = field.GetValueAsUnsigned()
+    if not field.IsValid() or field.GetError().Fail():
+        raise ValueError("unavailable member: " + name)
+    return result
+
+
 def hew_string_summary(valobj, _internal_dict):
-    """Pretty-print hew_string_t { data: *const char, len: usize } as "string content"."""
+    """Read the managed UTF-8 allocation described by the compiler."""
     try:
-        data = valobj.GetChildMemberWithName("data")
-        length = valobj.GetChildMemberWithName("len")
-        n = length.GetValueAsUnsigned(0)
-        if n == 0:
+        pointer = valobj.GetValueAsUnsigned()
+        if not valobj.IsValid() or valobj.GetError().Fail():
+            return "<unavailable Hew string>"
+        if pointer == 0:
             return '""'
+        header = valobj.Dereference()
+        length = _unsigned_member(header, "byte_len")
+        address = header.GetChildMemberWithName("data").GetLoadAddress()
         error = lldb.SBError()
-        content = data.GetPointeeData(0, n).GetString(error, 0)
+        content = (
+            valobj.GetProcess().ReadMemory(address, length, error) if length else b""
+        )
         if error.Fail():
-            # Fallback: read raw bytes from the pointer address
-            process = valobj.GetProcess()
-            addr = data.GetValueAsUnsigned(0)
-            if addr == 0:
-                return '""'
-            content = process.ReadCStringFromMemory(addr, n + 1, error)
-            if error.Fail():
-                return "<hew string>"
-        return f'"{content[:n]}"'
-    except Exception:
-        return "<hew string>"
+            return "<unavailable Hew string>"
+        return json.dumps(content.decode("utf-8"), ensure_ascii=False)
+    except (ValueError, UnicodeError):
+        return "<unavailable Hew string>"
+
+
+def hew_bytes_summary(valobj, _internal_dict):
+    """Read only the active region of the canonical bytes triple."""
+    try:
+        length = _unsigned_member(valobj, "len")
+        address = _unsigned_member(valobj, "ptr") + _unsigned_member(valobj, "offset")
+        error = lldb.SBError()
+        content = (
+            valobj.GetProcess().ReadMemory(address, length, error) if length else b""
+        )
+        if error.Fail():
+            return "<unavailable Hew bytes>"
+        return "bytes[" + ", ".join(str(byte) for byte in content) + "]"
+    except ValueError:
+        return "<unavailable Hew bytes>"
 
 
 def hew_vec_summary(valobj, _internal_dict):
@@ -299,8 +323,9 @@ def __lldb_init_module(debugger, _internal_dict):
     """Called by LLDB when this script is imported."""
     # Type summaries
     debugger.HandleCommand(
-        'type summary add -F hew_lldb.hew_string_summary -x "hew_string"'
+        'type summary add -v -F hew_lldb.hew_string_summary "hew_string *"'
     )
+    debugger.HandleCommand('type summary add -F hew_lldb.hew_bytes_summary "bytes"')
     debugger.HandleCommand('type summary add -F hew_lldb.hew_vec_summary -x "hew_vec"')
     debugger.HandleCommand(
         'type summary add -F hew_lldb.hew_hashmap_summary -x "hew_hashmap"'

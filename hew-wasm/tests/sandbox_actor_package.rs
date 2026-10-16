@@ -977,6 +977,18 @@ fn imported_associated_projection_bounds_execute() {
     assert_native_manifest("associated-projection-bounds", inputs);
 }
 
+#[test]
+fn parent_relative_generic_actor_imports_execute() {
+    let mut inputs = hew_compile::SourceSet::in_memory();
+    inputs.insert(
+        "../worker.hew",
+        "pub actor Worker<T> { let value: T; receive fn read() -> i64 { 1 } }",
+    );
+    let source = "import \"../worker.hew\"; fn main() { let worker = spawn Worker { value: 1 }; assert(worker.read().expect(\"read\") == 1); stop(worker); stopped(worker); }";
+    let trace = execute_options(source, "ok", "{}", inputs);
+    assert_eq!(trace["final_state"]["exit_code"], 0);
+}
+
 fn assert_native_manifest(name: &str, inputs: hew_compile::SourceSet) {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../tests/core-acceptance");
     let manifest = std::fs::read_to_string(root.join(format!("cases/{name}.toml")))

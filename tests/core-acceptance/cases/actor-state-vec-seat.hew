@@ -79,7 +79,9 @@ fn main() {
     println(plugins.drain("m2").expect("drain"));
     let faulting = spawn Labels;
     let _ = faulting.fail_in_transform();
+    stopped(faulting);
     let quiet = spawn Labels;
     let _ = quiet.fail_before_transform();
+    stopped(quiet);
     println("done");
 }

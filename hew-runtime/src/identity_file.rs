@@ -70,7 +70,8 @@ fn validate(_: &File) -> io::Result<()> {
 
 fn read(file: File, maximum: usize) -> io::Result<Zeroizing<Vec<u8>>> {
     validate(&file)?;
-    let mut bytes = Zeroizing::new(Vec::new());
+    // Spare capacity beyond the read limit prevents reallocating secret bytes.
+    let mut bytes = Zeroizing::new(Vec::with_capacity(maximum + 2));
     file.take(maximum as u64 + 1).read_to_end(&mut bytes)?;
     if bytes.len() > maximum {
         return Err(invalid("identity file exceeds its format bound"));

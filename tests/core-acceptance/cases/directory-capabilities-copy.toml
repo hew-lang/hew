@@ -1,0 +1,10 @@
+[[case]]
+id = "directory-capabilities-copy"
+intent = "Directionally narrowed directory roots survive parent close and feed the imported confined actor and captured helper through ordinary file operations."
+source = "fixtures/construction-capabilities/directory.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 20
+
+[case.expected]
+stdout = "rooted directories copied the order\n"
+exit = 0

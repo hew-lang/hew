@@ -1,0 +1,11 @@
+[[case]]
+id = "directory-capabilities-containment"
+intent = "Opened directory authority follows the object across rename, retains child owners and permits contained relative symlinks while refusing absolute, parent and sibling escapes without touching the outside sentinel."
+source = "fixtures/directory-capabilities/containment.hew"
+suites = ["acceptance", "safety"]
+platforms = ["linux", "macos", "freebsd"]
+timeout_seconds = 20
+
+[case.expected]
+stdout = "rooted paths and symlinks remain contained\n"
+exit = 0

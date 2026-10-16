@@ -686,8 +686,16 @@ pub unsafe extern "C-unwind" fn hew_release_sync(cursor: *mut HewReleaseCursor) 
     // SAFETY: the caller transfers exclusive ownership of all pending items.
     let cursor = unsafe { Box::from_raw(cursor) };
     assert!(cursor.current_layout.is_none());
+    // SAFETY: the caller transfers every pending owner in consuming order.
+    unsafe { release_sync_items(cursor.pending.into_iter().rev()) };
+}
+
+/// Consume detached obligations in order, retaining faults until all finish.
+/// # Safety
+/// Every item is uniquely owned and has no consuming continuation.
+pub(crate) unsafe fn release_sync_items(items: impl IntoIterator<Item = ReleaseItem>) {
     arm_release_sink();
-    for item in cursor.pending.into_iter().rev() {
+    for item in items {
         // SAFETY: each detached item and its storage remain owned by this walk.
         unsafe { release_now(item) };
     }

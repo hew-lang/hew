@@ -15,14 +15,18 @@ fn main() {
     assert("a" < "a\0");
     assert("é" < "Ω");
     assert("Ω" < "🙂");
-    let values: Vec<string> = ["🙂", "Ω", second, "é", first, ""];
+    let bmp = "\u{E000}";
+    assert(bmp < "🙂");
+    assert("🙂" > bmp);
+    let values: Vec<string> = ["🙂", "Ω", second, "é", first, "", bmp];
     let ordered = sort.sort_strings(values);
     assert(ordered[0] == "");
     assert(ordered[1] == first);
     assert(ordered[2] == second);
     assert(ordered[3] == "é");
     assert(ordered[4] == "Ω");
-    assert(ordered[5] == "🙂");
+    assert(ordered[5] == bmp);
+    assert(ordered[6] == "🙂");
     assert(values[0] == "🙂");
     println("ordered");
 }

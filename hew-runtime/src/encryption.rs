@@ -9,36 +9,14 @@
     reason = "FFI entry-point module; SAFETY documented at fn signature."
 )]
 
-#[cfg(windows)]
-use std::ffi::c_void;
 use std::ffi::{c_char, c_int};
+#[cfg(test)]
 use std::fs;
-#[cfg(not(windows))]
-use std::fs::OpenOptions;
-use std::io::{self, Write};
-#[cfg(unix)]
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-#[cfg(windows)]
-use std::os::windows::io::FromRawHandle;
+use std::io;
 use std::ptr;
 
-#[cfg(windows)]
-use windows_sys::Win32::Foundation::{CloseHandle, LocalFree, INVALID_HANDLE_VALUE};
-#[cfg(windows)]
-use windows_sys::Win32::Security::Authorization::{
-    ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
-};
-#[cfg(windows)]
-use windows_sys::Win32::Security::{
-    DACL_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION, SECURITY_ATTRIBUTES,
-};
-#[cfg(windows)]
-use windows_sys::Win32::Storage::FileSystem::{
-    CreateFileW, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, FILE_GENERIC_WRITE, WRITE_DAC,
-};
-
 use snow::Builder;
-use zeroize::Zeroize;
+use zeroize::{Zeroize, Zeroizing};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -47,118 +25,44 @@ use zeroize::Zeroize;
 const NOISE_PATTERN: &str = "Noise_XX_25519_ChaChaPoly_BLAKE2s";
 const KEY_LEN: usize = 32;
 const KEYPAIR_FILE_LEN: usize = KEY_LEN * 2;
-#[cfg(windows)]
-const OWNER_ONLY_KEY_SDDL: &str = "D:P(A;;FA;;;OW)";
-
-// ---------------------------------------------------------------------------
-// Key-file persistence
-// ---------------------------------------------------------------------------
-
-#[cfg(windows)]
-struct LocalSecurityDescriptor(*mut c_void);
-
-#[cfg(windows)]
-impl Drop for LocalSecurityDescriptor {
-    fn drop(&mut self) {
-        if !self.0.is_null() {
-            // SAFETY: the pointer was allocated by ConvertStringSecurityDescriptorToSecurityDescriptorW.
-            unsafe { LocalFree(self.0) };
-        }
+fn validate_keypair(bytes: &[u8]) -> io::Result<()> {
+    use snow::resolvers::{CryptoResolver, DefaultResolver};
+    if bytes.len() != KEYPAIR_FILE_LEN {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "noise keyfile has unexpected size",
+        ));
     }
+    let mut dh = DefaultResolver
+        .resolve_dh(&snow::params::DHChoice::Curve25519)
+        .ok_or_else(|| io::Error::other("Noise identity primitive unavailable"))?;
+    dh.set(&bytes[KEY_LEN..]);
+    if dh.pubkey() != &bytes[..KEY_LEN] {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "noise public/private key mismatch",
+        ));
+    }
+    Ok(())
 }
 
-#[cfg(windows)]
-fn owner_only_key_security_descriptor() -> io::Result<LocalSecurityDescriptor> {
-    let sddl: Vec<u16> = OWNER_ONLY_KEY_SDDL
-        .encode_utf16()
-        .chain(std::iter::once(0))
-        .collect();
-    let mut descriptor = ptr::null_mut();
-    // SAFETY: sddl is null-terminated and descriptor points to writable storage for the result.
-    let ok = unsafe {
-        ConvertStringSecurityDescriptorToSecurityDescriptorW(
-            sddl.as_ptr(),
-            SDDL_REVISION_1,
-            &raw mut descriptor,
-            ptr::null_mut(),
-        )
-    };
-    if ok == 0 {
-        return Err(io::Error::last_os_error());
-    }
-    Ok(LocalSecurityDescriptor(descriptor))
-}
-
-#[cfg(windows)]
 fn write_noise_key_file(path_str: &str, public: &[u8], private: &[u8]) -> io::Result<()> {
-    let path_wide: Vec<u16> = path_str.encode_utf16().chain(std::iter::once(0)).collect();
-    let descriptor = owner_only_key_security_descriptor()?;
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "SECURITY_ATTRIBUTES size fits in u32 on Windows"
-    )]
-    let security_attributes = SECURITY_ATTRIBUTES {
-        nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
-        lpSecurityDescriptor: descriptor.0,
-        bInheritHandle: 0,
-    };
-
-    // SAFETY: path_wide is null-terminated; security_attributes and its descriptor
-    // remain valid until after CreateFileW returns.
-    let handle = unsafe {
-        CreateFileW(
-            path_wide.as_ptr(),
-            FILE_GENERIC_WRITE | WRITE_DAC,
-            0,
-            &raw const security_attributes,
-            CREATE_ALWAYS,
-            FILE_ATTRIBUTE_NORMAL,
-            ptr::null_mut(),
-        )
-    };
-    if handle == INVALID_HANDLE_VALUE {
-        return Err(io::Error::last_os_error());
+    let mut requested = Zeroizing::new(Vec::with_capacity(KEYPAIR_FILE_LEN));
+    requested.extend_from_slice(public);
+    requested.extend_from_slice(private);
+    validate_keypair(&requested)?;
+    let stored = crate::identity_file::load_or_create(
+        std::path::Path::new(path_str),
+        KEYPAIR_FILE_LEN,
+        || Ok(requested.clone()),
+        validate_keypair,
+    )?;
+    if *stored != *requested {
+        return Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "refusing to replace an existing identity",
+        ));
     }
-
-    // CREATE_ALWAYS truncates an existing file before bytes are written, but Windows
-    // ignores lpSecurityAttributes for existing files. Replace the DACL on the open
-    // handle before persisting private key material so overwrites are not left with
-    // inherited/world-readable ACLs.
-    // SAFETY: handle is valid and descriptor contains a valid protected DACL.
-    let secured = unsafe {
-        windows_sys::Win32::Security::SetKernelObjectSecurity(
-            handle,
-            DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
-            descriptor.0,
-        )
-    };
-    if secured == 0 {
-        // SAFETY: handle was returned by CreateFileW and has not been transferred to File.
-        unsafe { CloseHandle(handle) };
-        return Err(io::Error::last_os_error());
-    }
-
-    // SAFETY: handle is uniquely owned and will be closed when file is dropped.
-    let mut file = unsafe { fs::File::from_raw_handle(handle) };
-    file.write_all(public)?;
-    file.write_all(private)?;
-    file.flush()
-}
-
-#[cfg(not(windows))]
-fn write_noise_key_file(path_str: &str, public: &[u8], private: &[u8]) -> io::Result<()> {
-    let mut opts = OpenOptions::new();
-    opts.create(true).truncate(true).write(true);
-    #[cfg(unix)]
-    opts.mode(0o600);
-
-    let mut file = opts.open(path_str)?;
-    file.write_all(public)?;
-    file.write_all(private)?;
-
-    #[cfg(unix)]
-    fs::set_permissions(path_str, fs::Permissions::from_mode(0o600))?;
-
     Ok(())
 }
 
@@ -178,56 +82,26 @@ pub fn noise_identity_load_or_create(
     path: &std::path::Path,
 ) -> Result<crate::peer_binding::StableNoiseIdentity, String> {
     use crate::peer_binding::StableNoiseIdentity;
-    let path_str = path
-        .to_str()
-        .ok_or_else(|| "load_keys: non-UTF-8 keyfile path".to_string())?;
-    if path.exists() {
-        let mut bytes = read_noise_keyfile_bounded(path)?;
-        if bytes.len() != KEYPAIR_FILE_LEN {
-            bytes.zeroize();
-            return Err("load_keys: noise keyfile has unexpected size".into());
-        }
-        let mut public = [0u8; KEY_LEN];
-        let mut private = [0u8; KEY_LEN];
-        public.copy_from_slice(&bytes[..KEY_LEN]);
-        private.copy_from_slice(&bytes[KEY_LEN..]);
-        bytes.zeroize();
-        return Ok(StableNoiseIdentity::from_raw(public, private));
-    }
-    let builder = Builder::new(
-        NOISE_PATTERN
-            .parse()
-            .map_err(|e| format!("load_keys: invalid noise pattern: {e}"))?,
-    );
-    let mut keypair = builder
-        .generate_keypair()
-        .map_err(|e| format!("load_keys: mint noise identity: {e}"))?;
-    if keypair.public.len() != KEY_LEN || keypair.private.len() != KEY_LEN {
-        keypair.private.zeroize();
-        return Err("load_keys: noise keygen produced unexpected key length".into());
-    }
+    let bytes = crate::identity_file::load_or_create(
+        path,
+        KEYPAIR_FILE_LEN,
+        || {
+            let builder = Builder::new(NOISE_PATTERN.parse().map_err(io::Error::other)?);
+            let mut keypair = builder.generate_keypair().map_err(io::Error::other)?;
+            let mut bytes = Zeroizing::new(Vec::with_capacity(KEYPAIR_FILE_LEN));
+            bytes.extend_from_slice(&keypair.public);
+            bytes.extend_from_slice(&keypair.private);
+            keypair.private.zeroize();
+            Ok(bytes)
+        },
+        validate_keypair,
+    )
+    .map_err(|error| format!("load_keys: {}: {error}", path.display()))?;
     let mut public = [0u8; KEY_LEN];
-    let mut private = [0u8; KEY_LEN];
-    public.copy_from_slice(&keypair.public);
-    private.copy_from_slice(&keypair.private);
-    keypair.private.zeroize();
-    write_noise_key_file(path_str, &public, &private)
-        .map_err(|e| format!("load_keys: write {}: {e}", path.display()))?;
-    Ok(StableNoiseIdentity::from_raw(public, private))
-}
-
-/// Bounded read of a Noise keyfile: cap the read at one byte past the exact
-/// keypair length so a truncated-but-huge or corrupt file cannot drive an
-/// unbounded allocation before the length check rejects it.
-fn read_noise_keyfile_bounded(path: &std::path::Path) -> Result<Vec<u8>, String> {
-    use std::io::Read;
-    let file =
-        fs::File::open(path).map_err(|e| format!("load_keys: read {}: {e}", path.display()))?;
-    let mut buf = Vec::new();
-    file.take((KEYPAIR_FILE_LEN + 1) as u64)
-        .read_to_end(&mut buf)
-        .map_err(|e| format!("load_keys: read {}: {e}", path.display()))?;
-    Ok(buf)
+    let mut private = Zeroizing::new([0u8; KEY_LEN]);
+    public.copy_from_slice(&bytes[..KEY_LEN]);
+    private.copy_from_slice(&bytes[KEY_LEN..]);
+    Ok(StableNoiseIdentity::from_raw(public, *private))
 }
 
 // ---------------------------------------------------------------------------
@@ -265,7 +139,8 @@ pub unsafe extern "C" fn hew_noise_keygen(
     0
 }
 
-/// Save a keypair to a raw binary file (`32-byte public || 32-byte private`).
+/// Persist a keypair (`32-byte public || 32-byte private`) without replacing
+/// another identity. An existing owner-only file succeeds only for the same key.
 ///
 /// # Safety
 ///
@@ -320,11 +195,12 @@ pub unsafe extern "C" fn hew_noise_key_load(
     let Some(path_str) = (unsafe { crate::util::cstr_to_str(&path, "hew_noise_key_load") }) else {
         return -1;
     };
-    let Ok(mut bytes) = fs::read(path_str) else {
+    let Ok(mut bytes) =
+        crate::identity_file::load(std::path::Path::new(path_str), KEYPAIR_FILE_LEN)
+    else {
         return -1;
     };
-    if bytes.len() != KEYPAIR_FILE_LEN {
-        bytes.zeroize();
+    if validate_keypair(&bytes).is_err() {
         return -1;
     }
 
@@ -379,16 +255,23 @@ pub unsafe extern "C" fn hew_noise_keypair_generate() -> *mut u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[cfg(not(windows))]
     use std::ffi::c_void;
     use std::ffi::CString;
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
     use tempfile::tempdir;
     #[cfg(windows)]
+    use windows_sys::Win32::Foundation::LocalFree;
+    #[cfg(windows)]
     use windows_sys::Win32::Foundation::ERROR_SUCCESS;
+    #[cfg(windows)]
+    use windows_sys::Win32::Security::Authorization::SDDL_REVISION_1;
     #[cfg(windows)]
     use windows_sys::Win32::Security::Authorization::{
         ConvertSecurityDescriptorToStringSecurityDescriptorW, GetNamedSecurityInfoW, SE_FILE_OBJECT,
     };
+    #[cfg(windows)]
+    use windows_sys::Win32::Security::DACL_SECURITY_INFORMATION;
 
     #[cfg(windows)]
     struct LocalAllocString(*mut u16);
@@ -468,10 +351,6 @@ mod tests {
         assert!(
             sddl.starts_with("D:P"),
             "key file DACL must be protected from inherited broad ACEs: {sddl}"
-        );
-        assert!(
-            sddl.contains("OW") || sddl.contains("S-1-3-4"),
-            "key file DACL must grant owner rights only: {sddl}"
         );
         assert_eq!(
             sddl.matches('(').count(),
@@ -562,7 +441,26 @@ mod tests {
         let dir = tempdir().unwrap();
         let key_file = dir.path().join("noise_id.key");
 
-        let first = noise_identity_load_or_create(&key_file).expect("mint stable noise identity");
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(8));
+        let creators: Vec<_> = (0..8)
+            .map(|_| {
+                let key_file = key_file.clone();
+                let barrier = std::sync::Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    noise_identity_load_or_create(&key_file)
+                        .expect("create or adopt stable identity")
+                })
+            })
+            .collect();
+        let identities: Vec<_> = creators
+            .into_iter()
+            .map(|thread| thread.join().unwrap())
+            .collect();
+        let first = identities[0].clone();
+        assert!(identities
+            .iter()
+            .all(|identity| identity.public() == first.public()));
         assert!(key_file.exists(), "first call must persist the keyfile");
         assert_eq!(
             fs::read(&key_file).unwrap().len(),
@@ -587,6 +485,69 @@ mod tests {
             "reload must yield the same private key"
         );
 
+        let original = Zeroizing::new(fs::read(&key_file).unwrap());
+        let mut mismatched = original.clone();
+        mismatched[0] ^= 1;
+        fs::write(&key_file, &mismatched).unwrap();
+        assert!(noise_identity_load_or_create(&key_file)
+            .unwrap_err()
+            .contains("mismatch"));
+        assert_eq!(fs::read(&key_file).unwrap(), *mismatched);
+        fs::write(&key_file, &original).unwrap();
+        let replacement = noise_identity_load_or_create(&dir.path().join("other.key")).unwrap();
+        assert!(write_noise_key_file(
+            key_file.to_str().unwrap(),
+            &replacement.public(),
+            &replacement.private()
+        )
+        .is_err());
+        assert_eq!(fs::read(&key_file).unwrap(), *original);
+        assert!(noise_identity_load_or_create(dir.path()).is_err());
+        #[cfg(windows)]
+        {
+            use std::os::windows::ffi::OsStrExt;
+            use windows_sys::Win32::Security::Authorization::SetNamedSecurityInfoW;
+            use windows_sys::Win32::Security::PROTECTED_DACL_SECURITY_INFORMATION;
+            let insecure = dir.path().join("insecure.key");
+            fs::write(&insecure, &original).unwrap();
+            let path: Vec<u16> = insecure.as_os_str().encode_wide().chain([0]).collect();
+            // SAFETY: the path is terminated. A null DACL deliberately grants
+            // everyone access to this test file without changing its contents.
+            let status = unsafe {
+                SetNamedSecurityInfoW(
+                    path.as_ptr(),
+                    SE_FILE_OBJECT,
+                    DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+                    ptr::null_mut(),
+                    ptr::null_mut(),
+                    ptr::null_mut(),
+                    ptr::null_mut(),
+                )
+            };
+            assert_eq!(status, ERROR_SUCCESS);
+            assert!(noise_identity_load_or_create(&insecure).is_err());
+            assert_eq!(fs::read(&insecure).unwrap(), *original);
+        }
+        #[cfg(unix)]
+        {
+            fs::set_permissions(&key_file, fs::Permissions::from_mode(0o640)).unwrap();
+            assert!(noise_identity_load_or_create(&key_file).is_err());
+            fs::set_permissions(&key_file, fs::Permissions::from_mode(0o600)).unwrap();
+            let alias = dir.path().join("linked.key");
+            std::os::unix::fs::symlink(&key_file, &alias).unwrap();
+            assert!(noise_identity_load_or_create(&alias).is_err());
+            let missing = dir.path().join("missing.key");
+            let dangling = dir.path().join("dangling.key");
+            std::os::unix::fs::symlink(&missing, &dangling).unwrap();
+            assert!(noise_identity_load_or_create(&dangling).is_err());
+            assert!(!missing.exists());
+            let fifo = dir.path().join("fifo.key");
+            let name = CString::new(fifo.as_os_str().as_encoded_bytes()).unwrap();
+            // SAFETY: the terminated name is owned and the mode is valid.
+            assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+            assert!(noise_identity_load_or_create(&fifo).is_err());
+        }
+
         // A truncated / wrong-size file is rejected, never silently re-minted.
         fs::write(&key_file, [0xAB; KEYPAIR_FILE_LEN - 1]).unwrap();
         let err =
@@ -596,7 +557,7 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn noise_key_save_replaces_existing_windows_dacl_before_writing_private_key() {
+    fn noise_key_save_refuses_existing_windows_identity_without_changing_it() {
         let mut public = [0u8; KEY_LEN];
         let mut private = [0u8; KEY_LEN];
 
@@ -612,12 +573,8 @@ mod tests {
         // SAFETY: path and key pointers are valid.
         let save_rc =
             unsafe { hew_noise_key_save(path.as_ptr(), public.as_ptr(), private.as_ptr()) };
-        assert_eq!(save_rc, 0);
-
-        assert_owner_only_key_acl(&path_buf);
-        let on_disk = fs::read(&path_buf).unwrap();
-        assert_eq!(&on_disk[..KEY_LEN], public);
-        assert_eq!(&on_disk[KEY_LEN..], private);
+        assert_eq!(save_rc, -1);
+        assert_eq!(fs::read(&path_buf).unwrap(), [0xAA; KEYPAIR_FILE_LEN]);
     }
 
     #[test]

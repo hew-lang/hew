@@ -788,8 +788,8 @@ pub mod tracing;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod encryption;
 
-#[cfg(all(feature = "quic", not(target_arch = "wasm32")))]
-pub mod quic_transport;
+#[cfg(not(target_arch = "wasm32"))]
+mod identity_file;
 
 #[cfg(all(feature = "quic", not(target_arch = "wasm32")))]
 pub mod quic_mesh;

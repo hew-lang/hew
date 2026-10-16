@@ -112,6 +112,19 @@ There is no public provenance-free constructor. A program obtains a
 `RemotePid<T>` only from authenticated runtime discovery or another typed value
 that already carries a validated location.
 
+### Identity files
+
+Native node identities are created exclusively and published only after their complete
+contents are validated and synced. Concurrent creators adopt the same validated winner;
+loading never replaces or truncates an existing identity. Loads reject symbolic links,
+Windows reparse points, non-regular files, unsafe ownership and non-private permissions
+or ACLs. Public and private key material must agree. Private mesh keys share zeroizing
+storage and are omitted from diagnostic formatting.
+
+The supported node transports are TCP with Noise and mutually authenticated QUIC mesh.
+The legacy unbound QUIC selector and insecure opt-in are unavailable. Ordinary
+`std.net.quic` endpoints remain a separate socket API.
+
 ## 3. Stable credentials and peer configuration
 
 Node setup is one call. `Node.start(config: NodeConfig) -> Result<(), NodeError>`

@@ -720,7 +720,6 @@ stable = [
   "hew_transport_quic_free",
   "hew_transport_quic_mesh_free",
   "hew_transport_quic_mesh_new",
-  "hew_transport_quic_new",
   "hew_transport_tcp_new",
   "hew_transport_unix_new",
   "hew_trap_with_code",

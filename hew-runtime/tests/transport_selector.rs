@@ -93,11 +93,6 @@ fn stop_node(node: &TestNode) -> i32 {
     unsafe { hew_node_stop(node.as_ptr()) }
 }
 
-fn is_quic_transport(node: &TestNode) -> bool {
-    // SAFETY: TestNode owns a live node and exposes its current transport pointer.
-    unsafe { hew_runtime::quic_transport::hew_transport_is_quic(node.transport()) }
-}
-
 fn is_quic_mesh_transport(node: &TestNode) -> bool {
     // SAFETY: TestNode owns a live node and exposes its current transport pointer.
     unsafe { hew_runtime::quic_mesh::hew_transport_is_quic_mesh(node.transport()) }
@@ -113,12 +108,11 @@ fn hew_transport_quic_mesh_selects_native_mesh_transport() {
     let node = TestNode::new(601);
     assert_eq!(start_node(&node), 0, "{}", last_error());
     assert!(is_quic_mesh_transport(&node));
-    assert!(!is_quic_transport(&node));
     assert_eq!(stop_node(&node), 0, "{}", last_error());
 }
 
 #[test]
-fn hew_transport_tcp_and_legacy_quic_selectors_still_work() {
+fn hew_transport_tcp_works_and_legacy_quic_refuses() {
     let _lock = ENV_TEST_LOCK
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -128,18 +122,15 @@ fn hew_transport_tcp_and_legacy_quic_selectors_still_work() {
         let node = TestNode::new(602);
         assert_eq!(start_node(&node), 0, "{}", last_error());
         assert!(!is_quic_mesh_transport(&node));
-        assert!(!is_quic_transport(&node));
         assert_eq!(stop_node(&node), 0, "{}", last_error());
     }
 
     {
         let _transport = EnvRestore::set("HEW_TRANSPORT", "quic");
-        let _allow_insecure = EnvRestore::set("HEW_QUIC_ALLOW_INSECURE", "1");
         let node = TestNode::new(603);
-        assert_eq!(start_node(&node), 0, "{}", last_error());
-        assert!(is_quic_transport(&node));
-        assert!(!is_quic_mesh_transport(&node));
-        assert_eq!(stop_node(&node), 0, "{}", last_error());
+        assert_eq!(start_node(&node), -1);
+        assert!(last_error().contains("unknown transport 'quic'"));
+        assert!(node.transport().is_null());
     }
 }
 

@@ -139,44 +139,11 @@ fn opaque_resource_c_abi_releases_once_on_return_close_and_fault_at_o0_o2() {
         let engine = llvm
             .create_jit_execution_engine(inkwell::OptimizationLevel::None)
             .unwrap();
-        // MCJIT resolves the whole module, including the process-entry adapter.
-        // Map its runtime imports even though this oracle calls the body directly.
+        super::test_runtime::bind_runtime(&llvm, &engine);
         for (symbol, address) in [
             ("selected_case", selected_case as *const () as usize),
             ("fixture_create", create_owner as *const () as usize),
             ("fixture_release", release_owner as *const () as usize),
-            (
-                "hew_string_literal_new",
-                hew_runtime::string::hew_string_literal_new as *const () as usize,
-            ),
-            (
-                "hew_string_drop",
-                hew_runtime::string::hew_string_drop as *const () as usize,
-            ),
-            (
-                "hew_fault_new",
-                hew_runtime::fault::hew_fault_new as *const () as usize,
-            ),
-            (
-                "hew_fault_drop",
-                hew_runtime::fault::hew_fault_drop as *const () as usize,
-            ),
-            (
-                "hew_fault_combine",
-                hew_runtime::fault::hew_fault_combine as *const () as usize,
-            ),
-            (
-                "hew_fault_set_site",
-                hew_runtime::fault::hew_fault_set_site as *const () as usize,
-            ),
-            (
-                "hew_fault_report_entry",
-                hew_runtime::fault::hew_fault_report_entry as *const () as usize,
-            ),
-            (
-                "hew_process_exit_byte",
-                hew_runtime::exit_status::hew_process_exit_byte as *const () as usize,
-            ),
         ] {
             if let Some(function) = llvm.get_function(symbol) {
                 engine.add_global_mapping(&function, address);

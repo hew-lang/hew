@@ -46,6 +46,11 @@ package() {
   fi
 
   # C headers
+  if [ -d "${_srcdir}/share" ]; then
+    install -dm755 "${pkgdir}/usr/share"
+    cp -r "${_srcdir}/share/." "${pkgdir}/usr/share/"
+  fi
+
   install -dm755 "${pkgdir}/usr/include"
   cp -r "${_srcdir}/include/." "${pkgdir}/usr/include/"
 

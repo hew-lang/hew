@@ -12,7 +12,11 @@ fn write_fixture(source: &str) -> (tempfile::TempDir, std::path::PathBuf) {
     fs::write(&path, source).expect("write fixture");
     let path = path.canonicalize().expect("canonical fixture path");
     let text = path.to_str().expect("fixture path");
-    let path = std::path::PathBuf::from(text.strip_prefix(r"\\?\").unwrap_or(text));
+    let text = text.strip_prefix(r"\\?\UNC\").map_or_else(
+        || text.strip_prefix(r"\\?\").unwrap_or(text).to_owned(),
+        |rest| format!(r"\\{rest}"),
+    );
+    let path = std::path::PathBuf::from(text);
     (dir, path)
 }
 

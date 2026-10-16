@@ -195,13 +195,12 @@ pub(super) fn validate(file: &File) -> io::Result<()> {
     let mut control = 0;
     let mut revision = 0;
     // SAFETY: the OS supplied descriptor and owner SID remain owned above.
-    if unsafe { EqualSid(owner, user.sid()) } == 0
-        || dacl.is_null()
-        || unsafe {
-            GetSecurityDescriptorControl(descriptor.0, &raw mut control, &raw mut revision)
-        } == 0
-        || control & SE_DACL_PROTECTED == 0
-    {
+    let current_owner = unsafe { EqualSid(owner, user.sid()) } != 0;
+    // SAFETY: the descriptor is live and both control outputs are writable.
+    let has_control =
+        unsafe { GetSecurityDescriptorControl(descriptor.0, &raw mut control, &raw mut revision) }
+            != 0;
+    if !current_owner || dacl.is_null() || !has_control || control & SE_DACL_PROTECTED == 0 {
         return Err(invalid(
             "identity requires a protected current-user-only DACL",
         ));
@@ -222,9 +221,11 @@ pub(super) fn validate(file: &File) -> io::Result<()> {
         }
         // SAFETY: the OS validates the ACE; SidStart begins its variable SID.
         let sid = unsafe { (&raw const (*allowed).SidStart).cast_mut().cast() };
-        if unsafe { EqualSid(sid, owner) } == 0
-            && unsafe { IsWellKnownSid(sid, WinCreatorOwnerRightsSid) } == 0
-        {
+        // SAFETY: both SIDs are initialized within the OS-supplied descriptor.
+        let matches_owner = unsafe { EqualSid(sid, owner) } != 0;
+        // SAFETY: the SID is initialized within the OS-supplied ACE.
+        let owner_rights = unsafe { IsWellKnownSid(sid, WinCreatorOwnerRightsSid) } != 0;
+        if !matches_owner && !owner_rights {
             return Err(invalid("identity DACL grants access beyond its owner"));
         }
     }

@@ -327,6 +327,7 @@ impl MeshIdentityMaterial {
         &self.inner.private_key_der
     }
 
+    #[cfg(feature = "quic")]
     pub(crate) fn shared_private_key(&self) -> Arc<Zeroizing<Vec<u8>>> {
         Arc::clone(&self.inner.private_key_der)
     }

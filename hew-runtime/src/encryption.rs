@@ -437,6 +437,10 @@ mod tests {
     /// bindable via `Node::allow_peer` across restarts. A corrupt/wrong-size
     /// file is rejected fail-closed rather than silently re-minted.
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "One persisted identity covers racing publication and platform file refusals"
+    )]
     fn noise_identity_load_or_create_persists_stable_identity() {
         let dir = tempdir().unwrap();
         let key_file = dir.path().join("noise_id.key");

@@ -40,10 +40,8 @@ fn validate(file: &File) -> io::Result<()> {
     use std::os::unix::fs::MetadataExt;
     let metadata = file.metadata()?;
     // SAFETY: geteuid has no preconditions.
-    if !metadata.is_file()
-        || metadata.uid() != unsafe { libc::geteuid() }
-        || metadata.mode() & 0o077 != 0
-    {
+    let current_user = unsafe { libc::geteuid() };
+    if !metadata.is_file() || metadata.uid() != current_user || metadata.mode() & 0o077 != 0 {
         return Err(invalid(
             "identity must be a regular, current-owner-only file",
         ));

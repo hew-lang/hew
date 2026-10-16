@@ -156,9 +156,13 @@ pub unsafe extern "C" fn hew_callable_clone(
 /// valid until cleanup completes, and callbacks cannot unwind across C.
 #[no_mangle]
 pub unsafe extern "C" fn hew_callable_drop(value: *mut HewCallableValue) {
+    // SAFETY: the caller transfers this carrier's unique environment owner.
+    let Some(items) = (unsafe { take_release_items(value) }) else {
+        return;
+    };
     // SAFETY: foreign synchronous callers transfer the same carrier ownership
     // as checked callers; the shared driver rejects suspending descriptors.
-    unsafe { crate::release_walker::hew_release_sync(hew_callable_release_begin(value)) };
+    unsafe { crate::release_walker::release_sync_items(items.into_iter().flatten()) };
 }
 
 /// Transfer a callable environment to its exact consuming release traversal.
@@ -169,8 +173,22 @@ pub unsafe extern "C" fn hew_callable_drop(value: *mut HewCallableValue) {
 pub unsafe extern "C" fn hew_callable_release_begin(
     value: *mut HewCallableValue,
 ) -> *mut crate::release_walker::HewReleaseCursor {
-    use crate::release_walker::{HewReleaseCursor, ReleaseItem};
+    use crate::release_walker::HewReleaseCursor;
     let mut pending = Vec::new();
+    // SAFETY: the caller transfers this carrier's unique environment owner.
+    if let Some(items) = unsafe { take_release_items(value) } {
+        pending.extend(items.into_iter().flatten().rev());
+    }
+    HewReleaseCursor::new(pending)
+}
+
+/// Detach the environment and return its obligations in consuming order.
+/// # Safety
+/// The caller transfers a null, cleared, or uniquely owned valid carrier.
+unsafe fn take_release_items(
+    value: *mut HewCallableValue,
+) -> Option<[Option<crate::release_walker::ReleaseItem>; 2]> {
+    use crate::release_walker::ReleaseItem;
     if !value.is_null() {
         // SAFETY: detach ownership before any callback may execute.
         let carrier = unsafe {
@@ -188,21 +206,23 @@ pub unsafe extern "C" fn hew_callable_release_begin(
                 std::process::abort();
             }
             if layout.size != 0 {
-                pending.push(ReleaseItem::Allocation {
-                    pointer: carrier.environment,
-                    size: layout.size,
-                    align: layout.align,
-                });
-                if layout.drop_fn.is_some() || layout.release_start.is_some() {
-                    pending.push(ReleaseItem::Value {
-                        slot: carrier.environment,
-                        layout,
-                    });
-                }
+                return Some([
+                    (layout.drop_fn.is_some() || layout.release_start.is_some()).then_some(
+                        ReleaseItem::Value {
+                            slot: carrier.environment,
+                            layout,
+                        },
+                    ),
+                    Some(ReleaseItem::Allocation {
+                        pointer: carrier.environment,
+                        size: layout.size,
+                        align: layout.align,
+                    }),
+                ]);
             }
         }
     }
-    HewReleaseCursor::new(pending)
+    None
 }
 
 #[cfg(test)]

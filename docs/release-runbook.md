@@ -167,19 +167,18 @@ git log --oneline -5  # confirm expected HEAD
 
 **Handling breaks (pre-1.0):**
 
-1. **In the PR:** add `#[non_exhaustive]` to the enum before adding variants, or mark the whole surface `#[deprecated]` if a complete replacement is preferred. If adding enum variants or changing signatures is unavoidable without `#[non_exhaustive]`, document the migration in a comment.
+1. **In the PR:** describe the changed behaviour and migration. Use `#[non_exhaustive]` when an enum is designed for future extension; adding it to an existing exhaustive enum is itself a change that needs migration instructions.
 2. **In-tree callers:** update all tests, examples, probes, and docs in the same PR — never carry forward compatibility aliases. The break is immediate and clean.
 3. **CHANGELOG entry:** in the `[Unreleased]` section, add a `### Changed` entry listing the affected module paths, the old shape, and the new shape with a one-line migration note. Example:
 
    ```
    ### Changed
 
-   - **stdlib vec: `index_of` now returns `i64`:** changed from `fn index_of(elem: T) -> Option<i64>`
-     to `fn index_of(elem: T) -> i64` (returning `-1` if not found). Update call sites to
-     check `result < 0` instead of matching `Option`.
+   - **String iteration:** replace `text.chars()` with `text.iter()`.
+     The iterator still yields `char` values.
    ```
 
-4. **Version bump:** breaking changes trigger a **minor version bump** (e.g., 0.3.0 → 0.4.0).
+4. **Version:** approved language and stdlib changes may ship in the evolving 0.6.x series. Identify the first supporting compiler version and document affected versions and exact migration steps. See the [specification's version model](specs/HEW-SPEC-2026.md) and [versioning guidance](internal/versioning.md).
 
 **Rationale:** pre-1.0, breaking changes allow rapid stdlib refinement without long deprecation cycles. All in-tree code must be updated in the same PR so the break is visible at a glance. `#[non_exhaustive]` protects downstream code from silent miscompilation.
 
@@ -375,21 +374,21 @@ release blocker.
 
 ## Phase 5 — Candidate tag and publication order
 
-The candidate is tagged on `main`, after its release PR merges, so that the
-tag is reachable from `main` and `git describe` resolves for every later
-commit. Merge the release PR with a merge commit rather than a squash: the
-commit the cross-platform gate verified must remain an ancestor of the tag,
-which a squash does not preserve. This is what `v0.6.0-rc2` did.
+Tag the qualified release-branch commit after its release PR merges into
+`main`. Use a merge commit so that the candidate and its tag are reachable
+from `main` and `git describe` resolves for later commits. Main can continue
+receiving changes while the candidate is qualified; the published source stays
+the exact source that passed the release gate and dry run.
 
-All identities below are derived from the checked-out candidate, on `main`
-after the merge:
+Derive the release identity from the checked-out, qualified candidate, then
+confirm its release PR has merged:
 
 ```bash
 release_tag="$(scripts/release-identity.sh)"
-release_sha="$(git rev-parse HEAD)"
+release_sha="$(git rev-parse "origin/release/${release_tag}")"
 test "$(git status --porcelain)" = ""
-test "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)"
-git merge-base --is-ancestor "origin/release/${release_tag}" HEAD
+test "$(git rev-parse HEAD)" = "$release_sha"
+git merge-base --is-ancestor "$release_sha" origin/main
 ```
 
 1. Confirm every release bar and the final-candidate checklist are green on
@@ -398,7 +397,7 @@ git merge-base --is-ancestor "origin/release/${release_tag}" HEAD
 2. Create the signed tag and push it only after the preceding evidence is recorded:
 
    ```bash
-   git tag -s "$release_tag" -m "Hew $release_tag"
+   git tag -s "$release_tag" "$release_sha" -m "Hew $release_tag"
    git push origin "$release_tag"
    ```
 

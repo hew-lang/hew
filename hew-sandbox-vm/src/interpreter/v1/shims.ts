@@ -8,7 +8,13 @@ import type { Pipes } from "./pipes.js";
 /// absence, and a `NativeIo` suspension by an operation missing from
 /// [`SUPPORTED_NATIVE_IO`].
 
-import { UNIT, cloneValue, renderStdout, type VmValue } from "../values.js";
+import {
+  UNIT,
+  cloneValue,
+  compareUtf8,
+  renderStdout,
+  type VmValue,
+} from "../values.js";
 import { Mt19937, seededMt } from "./mt19937.js";
 import type {
   RuntimeFamilyEntry,
@@ -228,6 +234,8 @@ const UNIT_FAMILY_SHIMS: Record<string, RuntimeShim | undefined> = {
   StringConcat: (_host, args) => str(`${text(args, 0)}${text(args, 1)}`),
   StringClone: (_host, args) => str(text(args, 0)),
   StringEquals: (_host, args) => bool(text(args, 0) === text(args, 1)),
+  StringCompare: (_host, args) =>
+    int(BigInt(compareUtf8(text(args, 0), text(args, 1)))),
   StringContains: (_host, args) => bool(text(args, 0).includes(text(args, 1))),
   StringTrim: (_host, args) =>
     str(text(args, 0).replace(/^\p{White_Space}+|\p{White_Space}+$/gu, "")),

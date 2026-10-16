@@ -36,17 +36,13 @@ $ hew --supported-editions
 2026
 ```
 
-Before v0.6.0, the native compiler cutover may make breaking changes within
-edition 2026 as the compiler, standard library and documentation converge on
-the agreed design.
-
-Starting with v0.6.0, the 0.6 series preserves existing valid programs and
-their specified behaviour. Compatible additions may extend edition 2026;
-each addition updates this specification and identifies its first supported
-compiler version. New syntax must preserve existing names and parsing, and
-new APIs must preserve existing resolution, ownership and error semantics.
-Incompatible language changes require a later edition. An older compiler
-need not support features introduced by a newer compiler in the same edition.
+Edition 2026 remains under development during the 0.6 series. Compatible
+additions identify their first supported compiler version. Intentional
+incompatible changes may also ship in 0.6.x while the language converges on
+its agreed design; release notes must identify the affected versions and give
+exact migration instructions, and in-tree consumers migrate with the change.
+Each surface change updates this specification. An older compiler need not
+support features introduced by a newer compiler in the same edition.
 
 Hew does not adopt per-file edition pragmas. The edition stamp is
 package-level. Migration tooling (`hew migrate --edition <year>`) is
@@ -5488,6 +5484,23 @@ open another path or perform the other direction's operation. Moving or
 replacing the original path does not redirect an already supplied resource.
 Their ordinary consuming `close` methods also run through required cleanup.
 
+`std.fs.open_read_dir(path)` and `std.fs.open_write_dir(path)` acquire native
+`ReadDir` and `WriteDir` resources over existing directories. A root retains
+the opened directory object. Child operations accept relative paths beneath
+that object; traversal above the root, absolute paths and escaping symlinks are refused.
+Relative symlinks that stay within the supplied root are permitted. Renaming a
+root does not redirect its authority to a replacement at the original path;
+an operating system may refuse the rename while the root is open.
+
+`ReadDir.read(path)` reads a child file's bytes, and `WriteDir.write(path, bytes)`
+creates or truncates a child file. `subdir(path)` narrows either resource to an
+existing child directory without changing its direction. `ReadDir.open_read`
+and `WriteDir.open_write` return the ordinary directional file resources above.
+Narrowed roots and opened files own independent handles and remain valid after
+the parent closes. No directory operation grants the other direction or ambient
+path access. Required cleanup consumes these resources just as it consumes
+opened files; acquisition and narrowing do not suspend.
+
 `#[confined]` on an actor or free function forbids transitive ambient authority
 acquisition and opaque raw escapes. It takes no arguments. The compiler follows
 checked calls, imported helpers, callable origins, selected trait
@@ -5543,7 +5556,8 @@ Confinement is independent of suspension and deterministic execution. Existing
 `fn[suspends]` types retain their meaning; no public effect-row syntax is
 introduced. An in-memory implementation can satisfy the same ordinary domain
 trait as a native resource adapter. Native file resources remain native-only;
-the in-memory implementation is available to the shared browser VM.
+directory resources are also native-only. The in-memory implementation is
+available to the shared browser VM. Hosted directory grants are not provided.
 
 Application source roots and the configured standard library remain trusted.
 This is a checked source boundary, not an operating-system sandbox or a

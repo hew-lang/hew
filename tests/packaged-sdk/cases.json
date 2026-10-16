@@ -41,11 +41,9 @@
     "contract": "tests/core-acceptance/cases/process-pipe-readiness.toml"
   },
   {
-    "contract": "tests/core-acceptance/cases/match-divergent-failure-tail.toml",
-    "expects_resume_frame": false
+    "contract": "tests/core-acceptance/cases/match-divergent-failure-tail.toml"
   },
   {
-    "contract": "tests/core-acceptance/cases/resource-receiver-fallible-argument.toml",
-    "expects_resume_frame": false
+    "contract": "tests/core-acceptance/cases/resource-receiver-fallible-argument.toml"
   }
 ]

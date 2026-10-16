@@ -1657,7 +1657,7 @@ impl Checker {
                         },
                         sub_span,
                         format!(
-                            "payload subpattern `{label}` in `{short_name}(...)` is not yet supported"
+                            "payload subpattern `{label}` in `{short_name}(...)` is unsupported"
                         ),
                         pattern_span,
                         "v0.5 payload subpatterns support plain bindings (`x`), wildcards (`_`), \
@@ -1965,7 +1965,7 @@ impl Checker {
                                         },
                                         sub_span,
                                         format!(
-                                            "payload subpattern `nested constructor` in `{short_name} {{ {} }}` is not yet supported",
+                                            "payload subpattern `nested constructor` in `{short_name} {{ {} }}` is unsupported",
                                             pf.name
                                         ),
                                         pattern_span,
@@ -1989,7 +1989,7 @@ impl Checker {
                                     },
                                     sub_span,
                                     format!(
-                                        "payload subpattern `{label}` in `{short_name} {{ {} }}` is not yet supported",
+                                        "payload subpattern `{label}` in `{short_name} {{ {} }}` is unsupported",
                                         pf.name
                                     ),
                                     pattern_span,
@@ -2041,7 +2041,7 @@ impl Checker {
                                 crate::error::TypeErrorKind::InvalidOperation,
                                 sub_span,
                                 format!(
-                                    "field subpattern `{label}` in `{name} {{ {} }}` is not yet supported",
+                                    "field subpattern `{label}` in `{name} {{ {} }}` is unsupported",
                                     pf.name
                                 ),
                                 pattern_span,
@@ -2145,7 +2145,7 @@ impl Checker {
                             crate::error::TypeErrorKind::InvalidOperation,
                             sub_span,
                             format!(
-                                "tuple subpattern `{label}` in match destructure is not yet supported"
+                                "tuple subpattern `{label}` in match destructure is unsupported"
                             ),
                             pattern_span,
                             "tuple match destructure supports element bindings (`x`), wildcards (`_`), \
@@ -2347,7 +2347,7 @@ impl Checker {
                                             },
                                             sub_span,
                                             format!(
-                                                "payload subpattern `{label}` in `{name} {{ {} }}` is not yet supported",
+                                                "payload subpattern `{label}` in `{name} {{ {} }}` is unsupported",
                                                 source_field.name
                                             ),
                                             pattern_span,
@@ -2571,7 +2571,7 @@ impl Checker {
                         },
                         inner_span,
                         format!(
-                            "payload subpattern `{label}` in `{short_name}(...)` is not yet supported"
+                            "payload subpattern `{label}` in `{short_name}(...)` is unsupported"
                         ),
                         pattern_span,
                         "nested constructor payloads support literal predicates, plain bindings (`x`), wildcards \

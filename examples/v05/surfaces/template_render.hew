@@ -5,8 +5,8 @@
 //! `Ctx.set_bool`) and list (`Ctx.set_list`) bindings, parses a template using
 //! `{{.key}}` substitution, an `{{if .key}}…{{end}}` conditional, and a
 //! `{{range .key}}…{{end}}` loop, then renders with `render_try` and matches the
-//! `Result`. Method-style `t.render(ctx)` is deferred in v0.5, so the
-//! free-function `template.render_try(t, ctx)` form is used.
+//! `Result`. Templates render through the free function
+//! `template.render_try(t, ctx)`.
 
 import std.text.template;
 

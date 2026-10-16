@@ -823,10 +823,9 @@ fn build_hir_lsp_diagnostics(
 
 fn hir_diagnostic_message(kind: &HirDiagnosticKind, note: &str) -> String {
     let base = match kind {
-        HirDiagnosticKind::NotYetImplemented {
-            construct,
-            owning_pass,
-        } => format!("not yet implemented: {construct} (planned: {owning_pass})"),
+        HirDiagnosticKind::NotYetImplemented { construct, .. } => {
+            format!("compiler limitation: unsupported construct: {construct}")
+        }
         _ => kind.kind_string(),
     };
 
@@ -899,6 +898,23 @@ pub(super) mod tests {
     use tower_lsp_server::ls_types::Position;
 
     use super::*;
+
+    #[test]
+    fn unsupported_hir_construct_is_identified_as_a_compiler_limitation() {
+        let message = hir_diagnostic_message(
+            &HirDiagnosticKind::NotYetImplemented {
+                construct: "example form".to_string(),
+                owning_pass: "internal-pass-name".to_string(),
+            },
+            "",
+        );
+
+        assert_eq!(
+            message,
+            "compiler limitation: unsupported construct: example form"
+        );
+        assert!(!message.contains("internal-pass-name"));
+    }
 
     #[test]
     fn hir_root_diagnostics_render_to_root_uri() {

@@ -95,7 +95,7 @@ impl<'a> HostExport<'a> {
                     | PhysicalTerminator::ExternCall { .. }
                     | PhysicalTerminator::SwitchVariant { .. } => {
                         return Err(fail(
-                            "C host export does not yet admit indirect calls or callbacks",
+                            "C host exports cannot contain indirect calls or callbacks",
                         ));
                     }
                     PhysicalTerminator::ActorCall { .. } => {

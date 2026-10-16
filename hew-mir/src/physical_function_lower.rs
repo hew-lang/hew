@@ -1242,7 +1242,7 @@ impl FunctionLowerer<'_> {
                 SnapshotDecision::Share | SnapshotDecision::DeepCopy | SnapshotDecision::Transfer,
             ) => {
                 return Err(PhysicalError::new(
-                    "snapshot boundaries are not yet admitted by physical MIR",
+                    "physical MIR does not admit snapshot boundaries",
                 ));
             }
         })
@@ -1268,7 +1268,7 @@ impl FunctionLowerer<'_> {
             },
             BoundaryDecision::Snapshot(_) => {
                 return Err(PhysicalError::new(
-                    "snapshot returns are not yet admitted by physical MIR",
+                    "physical MIR does not admit snapshot returns",
                 ));
             }
         })

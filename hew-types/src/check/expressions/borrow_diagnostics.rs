@@ -1055,15 +1055,12 @@ impl Checker {
             notes: vec![(
                 span.clone(),
                 "handle-bearing structs are dropped field-by-field; returning the raw handle \
-                 bypasses that ownership proof"
+                 bypasses that cleanup path"
                     .to_string(),
                 self.current_module.clone(),
             )],
             suggestions: vec![
                 "use a dedicated consume/release API instead of returning the raw handle field"
-                    .to_string(),
-                "prefer a borrow-style accessor once mutable receivers / borrow returns land \
-                 (#1295)"
                     .to_string(),
             ],
             source_module: self.current_module.clone(),

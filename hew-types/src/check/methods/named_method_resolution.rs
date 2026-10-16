@@ -626,8 +626,8 @@ impl Checker {
                             TypeErrorKind::UndefinedMethod,
                             span,
                             format!(
-                                "cloning generic record `{name}` is not yet supported; \
-                                 only monomorphic (non-generic) records can be cloned"
+                                "generic record `{name}` has no clone operation; \
+                                 cloning requires a monomorphic record"
                             ),
                         );
                         return Ty::Error;

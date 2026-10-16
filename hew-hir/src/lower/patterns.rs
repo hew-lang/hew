@@ -518,7 +518,7 @@ impl LowerCtx {
             | Pattern::ContextVariant(_) => {
                 self.diagnostics.push(HirDiagnostic::new(
                     HirDiagnosticKind::NotYetImplemented {
-                        construct: "unsupported nested let pattern".into(),
+                        construct: "nested let pattern".into(),
                         owning_pass: "pattern-matching".into(),
                     },
                     pattern.1.clone(),
@@ -582,7 +582,7 @@ impl LowerCtx {
             | Pattern::ContextVariant(_) => {
                 self.diagnostics.push(HirDiagnostic::new(
                     HirDiagnosticKind::NotYetImplemented {
-                        construct: "unsupported nested let pattern".into(),
+                        construct: "nested let pattern".into(),
                         owning_pass: "pattern-matching".into(),
                     },
                     pattern.1.clone(),

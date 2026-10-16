@@ -54,18 +54,17 @@ message flow across nodes, and distributed actor placement.
 
 ![Messages tab](docs/screenshots/observer-tab6-messages.png)
 
-Live actionable trace events grouped by the actor ID currently recorded on
-each event. The v1 producer does not expose a message destination, so this is
-not yet a complete source-to-destination flow graph.
+Live trace events grouped by the actor identity recorded on each event. Events
+carry nullable subject, source, and destination fields; unknown attribution is
+shown as unknown rather than inferred.
 
 ### 7. Timeline — temporal view
 
 ![Timeline tab](docs/screenshots/observer-tab7-timeline.png)
 
-Time-ordered trace of scheduler and mailbox events so causality and
-ordering can be inspected within the events retained by the runtime queue.
-Fetching traces destructively drains a process-global queue; multiple viewers
-divide the stream rather than each receiving a copy.
+Time-ordered trace of scheduler and mailbox events within the runtime's bounded
+retention window. Each viewer advances its own cursor, so multiple viewers can
+read the same retained events independently.
 
 ## Protocol contract
 

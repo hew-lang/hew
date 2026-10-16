@@ -1444,8 +1444,8 @@ impl Checker {
                         TypeErrorKind::InvalidOperation,
                         span,
                         format!(
-                            "explicit type arguments on enum variant struct initializer `{name}` \
-                             are not yet supported when the expected type is already known"
+                            "enum variant struct initializer `{name}` cannot include explicit \
+                             type arguments when the surrounding expression provides the type"
                         ),
                     );
                 }

@@ -443,7 +443,7 @@ unsafe fn resume_suspended_activation(actor: *mut HewActor) {
             (Some(_), Some(drop)) => Some(drop),
             (None, None) => None,
             _ => {
-                eprintln!("fatal: actor state has half-registered clone/drop classifier proof");
+                eprintln!("fatal: actor state has incomplete clone/drop registration");
                 std::process::abort();
             }
         }
@@ -888,9 +888,7 @@ pub(crate) fn activate_queued_actor(actor: *mut HewActor) {
                         (Some(_), Some(drop)) => Some(drop),
                         (None, None) => None,
                         _ => {
-                            eprintln!(
-                                "fatal: actor state has half-registered clone/drop classifier proof"
-                            );
+                            eprintln!("fatal: actor state has incomplete clone/drop registration");
                             std::process::abort();
                         }
                     }
@@ -2289,8 +2287,8 @@ pub(crate) unsafe fn enqueue_resume_pinned(actor: *mut HewActor, cont: *mut c_vo
         return;
     }
 
-    // W6.010 caller-actor UAF guard (S1). This entry point is reached not only by
-    // a live reply but also by the orphan-retire teardown
+    // This entry point is reached not only by a live reply but also by orphan
+    // teardown
     // (`hew_reply_channel_retire_orphaned_ask_sender_ref`), which the CALLEE
     // mailbox runs during its own teardown. `cleanup_all_actors` frees actors in
     // nondeterministic `HashMap` order, so the caller box can already be freed
@@ -2310,12 +2308,12 @@ pub(crate) unsafe fn enqueue_resume_pinned(actor: *mut HewActor, cont: *mut c_vo
     // already destroyed by its own C1 teardown, so dropping the wake is correct.
     let enqueued = crate::lifetime::live_actors::with_live_actor(actor, |a| {
         // Capture the actor's owning-runtime id under the registry lock (the
-        // actor is guaranteed live here). The R4 wake-routing net is asserted
+        // actor is guaranteed live here). The wake-routing check runs
         // AFTER `with_live_actor` returns and the lock is released (below), so a
         // trap never poisons the registry lock.
         let actor_runtime_id = a.runtime_id;
-        // If the park has not yet stored a handle, the suspend edge is mid-park
-        // (the FG3 window). Record the wake so the suspend edge re-enqueues; do
+        // If the park has not yet stored a handle, the suspend edge is mid-park.
+        // Record the wake so the suspend edge re-enqueues; do
         // NOT store the handle ourselves (the suspend edge owns the slot write).
         let parked = a.suspended_cont.load(Ordering::Acquire);
         if parked.is_null() {
@@ -2421,12 +2419,11 @@ pub(crate) unsafe fn enqueue_resume_pinned(actor: *mut HewActor, cont: *mut c_vo
     // The owned entry keeps the allocation live after dropping the registry
     // lock and until the queue consumer claims dispatch ownership.
     //
-    // R4 wake-routing net: `sched_enqueue` resolves its scheduler through
+    // `sched_enqueue` resolves its scheduler through
     // `get_scheduler()` → `rt_default()`, which `enter()` does not reroute, so an
     // actor owned by a non-default runtime would wake on the WRONG scheduler.
-    // Fail closed before the enqueue (single-runtime actors pass straight
-    // through). The runtime id was captured under the registry lock above, so
-    // this reads no freed memory.
+    // Refuse the enqueue when the actor belongs to another runtime. The runtime
+    // id was captured under the registry lock above, so this reads no freed memory.
     if let Some((Some(entry), actor_runtime_id)) = enqueued {
         assert_wake_routes_to_owning_runtime(actor_runtime_id);
         sched_enqueue_owned(entry);
@@ -2463,21 +2460,17 @@ pub(crate) fn enqueue_resume_by_incarnation(target: ActorIncarnation) {
         unsafe { enqueue_resume_pinned(pin.as_ptr(), std::ptr::null_mut()) };
     });
 }
-/// Fail-closed wake-routing net (R4).
+/// Verify that a wake uses the actor's owning runtime.
 ///
 /// The scheduler wake path resolves its scheduler through [`get_scheduler`] →
-/// [`runtime::rt_default`], **independent** of `rt_current()`, so an `enter()`
-/// (or [`runtime::enter_actor_runtime`]) does NOT reroute the wake. Until M4
-/// reroutes the wake to the actor's owning runtime, a wake for a non-default
-/// actor would silently enqueue on the default runtime's scheduler — the same
-/// silent-default hazard `enter_actor_runtime` traps on the send/teardown side.
+/// [`runtime::rt_default`], independently of `rt_current()`, so an `enter()`
+/// (or [`runtime::enter_actor_runtime`]) does not reroute the wake. A wake for
+/// a non-default actor must therefore resolve to that actor's runtime before it
+/// reaches the default scheduler.
 ///
-/// This asserts the resolved (default) scheduler's runtime owns the actor about
-/// to be enqueued, and traps otherwise (`no-fail-open-fallback-after-authority`:
-/// assert-net first, reroute/delete at M4). A single-runtime
-/// (`RuntimeId::DEFAULT`) actor never trips it — `rt_default()` IS its runtime —
-/// so the production hot path is unaffected. Full rerouting of the wake to the
-/// owning runtime's scheduler is M4; this change only installs the trap.
+/// This asserts that the resolved scheduler owns the actor before enqueueing.
+/// A single-runtime (`RuntimeId::DEFAULT`) actor returns immediately because
+/// `rt_default()` is its runtime.
 #[inline]
 fn assert_wake_routes_to_owning_runtime(actor_runtime_id: crate::runtime_id::RuntimeId) {
     if actor_runtime_id == crate::runtime_id::RuntimeId::DEFAULT {
@@ -2495,10 +2488,8 @@ fn assert_wake_routes_to_owning_runtime(actor_runtime_id: crate::runtime_id::Run
     assert_eq!(
         resolved,
         Some(actor_runtime_id),
-        "hew-runtime: enqueue_resume: a wake for an actor owned by runtime {} would route \
-         through the default scheduler (runtime {:?}); the scheduler wake path is not yet \
-         rerouted to the owning runtime (M4) — failing closed rather than waking on a \
-         foreign scheduler",
+        "hew-runtime: enqueue_resume: runtime {} owns this actor, but the wake resolved \
+         to the default scheduler for runtime {:?}",
         actor_runtime_id.as_u64(),
         resolved.map(crate::runtime_id::RuntimeId::as_u64),
     );

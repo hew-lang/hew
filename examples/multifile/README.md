@@ -170,10 +170,10 @@ import shapes.{Circle};    // <-- warning: "unused import: shapes"
 let c = Circle { ... };    //     even though Circle came from this import
 ```
 
-**Workaround:** ensure at least one imported name is also called as a
-function (`shapes.make_circle(...)`, or add the function to the selective
-list). Using a bare import (`import shapes;`) with a qualified call
-(`shapes.some_fn(...)`) is the most reliable style until this is fixed.
+To avoid the false positive, call at least one imported function
+(`shapes.make_circle(...)`, or add the function to the selective list). A bare
+import with a qualified call (`import shapes; shapes.some_fn(...)`) also marks
+the import as used.
 
 This affects both import forms: bare and selective.
 The false positive is filed as a known issue.

@@ -139,7 +139,7 @@ job still builds the compiler and support binaries natively, links a real Hew
 consumer against the downloaded archive, and runs the packaged compile/run
 smoke before that cross-built library can ship. Zig currently targets the
 FreeBSD 14 ABI baseline for the library; this does not lower the tools'
-FreeBSD 15.1 minimum. The native FreeBSD 15.1 proof is required.
+FreeBSD 15.1 minimum. Release validation runs on native FreeBSD 15.1.
 
 ### Prerequisites
 
@@ -291,7 +291,7 @@ Test-Path 'C:\llvm-22\bin\clang.exe'
 If the host cannot use MSVC, override the validator/compiler environment with
 `HEW_WINDOWS_CC` / `HEW_WINDOWS_CXX` and point `HEW_WINDOWS_LLVM_PREFIX` at the
 matching install root. Such an override must still pass the complete release
-and external-consumer proof; `clang-cl` is not assumed to be interchangeable
+and external-consumer validation; `clang-cl` is not assumed to be interchangeable
 with `cl` for every native dependency.
 
 ### Build

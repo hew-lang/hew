@@ -103,10 +103,7 @@ impl Checker {
 
         match expr {
             Expr::ForkChild { .. } | Expr::ForkBlock { .. } | Expr::Race(_) => {
-                IndirectCallCandidates::single(CallableCandidate::TaskProducer(SpanKey::in_module(
-                    span,
-                    self.current_module_idx,
-                )))
+                IndirectCallCandidates::single(CallableCandidate::TaskProducer(key))
             }
             Expr::Await(value) => self
                 .callable_candidates_for_expr(&value.0, &value.1)

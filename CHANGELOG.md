@@ -14,6 +14,10 @@
   inbound asks per actor incarnation, and keep cancellation responsive during
   stalled transport.
 - Improve native coroutine lowering, synchronous calls and owned payload transfer.
+- Avoid repeated task-lifetime analysis of data types that cannot contain tasks
+  or captured callbacks, fixing excessive checking time in large applications.
+- Compile parent-relative imports of generic actors without a mangling panic,
+  and reject scoped tasks escaping inside positional records.
 - Upgrade rustls to 0.23.46 to address four upstream security advisories.
 
 See the [release notes](docs/releases/v0.6.1.md) for upgrade steps and details.

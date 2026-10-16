@@ -4,6 +4,7 @@
     reason = "submodule split from a single large file; re-exports its parent scope"
 )]
 use super::*;
+use crate::util::MutexExt;
 
 /// Actor spawn options for [`hew_actor_spawn_opts`].
 #[repr(C)]
@@ -100,6 +101,7 @@ pub const DEFAULT_STOP_BUDGET_NS: i64 = 5_000_000_000;
 
 /// Configuration shared by the public actor spawn functions.
 struct ActorSpawnConfig {
+    initial_state: HewActorState,
     rc_owner: Option<std::sync::Arc<crate::rc::RcAllocations>>,
     native_crash: Option<HewNativeCrashFn>,
     native_state_release: Option<hew_cabi::value::HewValueReleaseStart>,
@@ -234,7 +236,7 @@ fn build_spawned_actor(
         state_size: config.state_size,
         dispatch: config.dispatch,
         mailbox: config.mailbox,
-        actor_state: AtomicI32::new(HewActorState::Idle as i32),
+        actor_state: AtomicI32::new(config.initial_state as i32),
         budget: AtomicI32::new(config.budget),
         init_state,
         init_state_size: config.state_size,
@@ -525,6 +527,7 @@ pub unsafe extern "C" fn hew_actor_spawn(
     // SAFETY: actor_state is a fresh deep-copy; mailbox is valid.
     unsafe {
         spawn_actor_internal(ActorSpawnConfig {
+            initial_state: HewActorState::Idle,
             rc_owner: None,
             native_crash: None,
             native_state_release: None,
@@ -600,6 +603,7 @@ pub unsafe extern "C" fn hew_actor_spawn_opts(opts: *const HewActorOpts) -> *mut
     // SAFETY: actor_state is a fresh deep-copy; mailbox is valid.
     unsafe {
         spawn_actor_internal(ActorSpawnConfig {
+            initial_state: HewActorState::Idle,
             rc_owner: None,
             native_crash: None,
             native_state_release: None,
@@ -711,6 +715,7 @@ pub unsafe extern "C" fn hew_actor_spawn_opts_adopt(
     // SAFETY: cloned_state ownership has been transferred to us; mailbox is valid.
     unsafe {
         spawn_actor_internal(ActorSpawnConfig {
+            initial_state: HewActorState::Idle,
             rc_owner: None,
             native_crash: None,
             native_state_release: None,
@@ -742,7 +747,10 @@ pub struct HewNativePeriodicHandler {
     pub interval_ms: u64,
 }
 
-/// Publish initialized native state together with both lifetime callbacks.
+/// Reserve actor identity and cleanup before init and start run.
+///
+/// # Panics
+/// Panics if the native actor allocation loses its required completion owner.
 ///
 /// # Safety
 /// State is a unique malloc allocation of `size` bytes, with initialized
@@ -751,15 +759,15 @@ pub struct HewNativePeriodicHandler {
 /// outcome. `stop_release` is null or the generated `#[on(stop)]` sequence,
 /// which terminal cleanup runs once on the live state after a cooperative
 /// stop, suspending as its hooks do, before the state is released. `fault`
-/// is a writable, initially null fault slot. `periodic` points to
-/// `periodic_count` valid descriptors, or is null when the count is zero.
+/// is a writable, initially null fault slot. `construction` is the live, unique
+/// constructor invocation and remains live until publication or rollback.
 #[no_mangle]
 #[allow(
     clippy::too_many_arguments,
     clippy::too_many_lines,
     reason = "private generated actor ABI publishes one complete state contract"
 )]
-pub unsafe extern "C" fn hew_actor_spawn_native(
+pub unsafe extern "C" fn hew_actor_construct_native(
     state: *mut c_void,
     size: usize,
     dispatch: HewDispatchFn,
@@ -769,8 +777,6 @@ pub unsafe extern "C" fn hew_actor_spawn_native(
     capacity: i32,
     overflow: i32,
     cap_bytes: usize,
-    periodic: *const HewNativePeriodicHandler,
-    periodic_count: usize,
     sys_dispatch: Option<HewSysDispatchFn>,
     native_crash: Option<HewNativeCrashFn>,
     fault: *mut *mut crate::fault::HewFault,
@@ -828,6 +834,7 @@ pub unsafe extern "C" fn hew_actor_spawn_native(
     // SAFETY: ownership and callbacks are supplied atomically before publication.
     let actor = unsafe {
         spawn_actor_internal(ActorSpawnConfig {
+            initial_state: HewActorState::Constructing,
             // SAFETY: construction remains live through publication.
             rc_owner: construction
                 .as_ref()
@@ -859,50 +866,143 @@ pub unsafe extern "C" fn hew_actor_spawn_native(
         };
         crate::lifetime::local_handles::HewLocalPidId::INVALID
     } else {
-        if !construction.is_null() {
-            // SAFETY: successful publication transferred this exact list to the child.
-            unsafe { (*construction).execution_mut().rc_owner = None };
-        }
-        // No external handle exists yet. Pin before the first timer can run,
-        // since a periodic handler may immediately fault and retire this actor.
-        // SAFETY: successful construction returns a live actor before timer arming.
-        let (id, token) = unsafe { ((*actor).id, (*actor).local_pid_id) };
-        let armed = live_actors::with_actor_send_by_id(id, |actor| {
-            // SAFETY: the compiler supplies this static descriptor slice, and
-            // the send guard pins the actor through the complete arming sequence.
-            let handlers = if periodic_count == 0 {
-                &[]
-            } else {
-                // SAFETY: the caller supplies this complete static descriptor slice.
-                unsafe { std::slice::from_raw_parts(periodic, periodic_count) }
-            };
-            handlers.iter().all(|handler| {
-                // SAFETY: the actor is pinned and each checked interval is positive.
-                !unsafe {
-                    crate::timer_periodic::hew_actor_schedule_periodic(
-                        actor,
-                        handler.message,
-                        handler.interval_ms,
-                    )
-                }
-                .is_null()
-            })
-        })
-        .unwrap_or(false);
-        if armed {
-            token
-        } else {
-            // Stop owns timer cancellation and typed state cleanup, including
-            // timers already armed before a later allocation failed.
-            crate::actor_native::hew_actor_stop_native(token);
-            // SAFETY: the caller supplies an empty writable fault slot.
-            unsafe {
-                *fault =
-                    crate::fault::hew_fault_new(crate::internal::types::HewError::ErrOom as i32);
-            };
-            crate::lifetime::local_handles::HewLocalPidId::INVALID
+        // SAFETY: construction owns its context and the new actor cannot dispatch.
+        unsafe {
+            let actor = &*actor;
+            let construction = &mut *construction;
+            construction.execution_mut().actor_turn =
+                live_actors::ActorIncarnation::of(std::ptr::from_ref(actor).cast_mut());
+            *actor
+                .native_completion
+                .as_ref()
+                .expect("native completion")
+                .construction
+                .lock_or_recover() = Some(crate::coro_state::ConstructionWake::new(construction));
+            if mailbox::mailbox_is_closed(actor.mailbox.cast()) {
+                actor
+                    .native_completion
+                    .as_ref()
+                    .expect("native completion")
+                    .cancel_construction(crate::fault::HEW_FAULT_CANCELLED);
+            }
+            actor.local_pid_id
         }
     }
+}
+
+/// Publish a successfully initialized actor and enable its queued messages.
+/// # Panics
+/// Panics if the supplied actor has no native completion owner.
+/// # Safety
+/// The construction invocation still uniquely owns the actor's initialized state.
+#[no_mangle]
+pub unsafe extern "C" fn hew_actor_publish_native(
+    token: crate::lifetime::local_handles::HewLocalPidId,
+    periodic: *const HewNativePeriodicHandler,
+    periodic_count: usize,
+    construction: *mut crate::coro_state::HewCoroState,
+    fault: *mut *mut crate::fault::HewFault,
+) -> i32 {
+    let Some(id) = crate::lifetime::local_handles::resolve_current_actor(token) else {
+        return 1;
+    };
+    live_actors::with_actor_send_by_id(id, |raw| {
+        // SAFETY: the guard pins the actor; its constructor is the sole state owner.
+        let actor = unsafe { &*raw };
+        let completion = actor.native_completion.as_ref().expect("native completion");
+        let mut registration = completion.construction.lock_or_recover();
+        // SAFETY: construction retains its context and the actor retains its mailbox.
+        let cancelled = unsafe {
+            crate::coro_state::hew_coro_state_is_cancelled(construction) != 0
+                || mailbox::mailbox_is_closed(actor.mailbox.cast())
+        };
+        if cancelled {
+            // SAFETY: the caller supplies an empty fault output.
+            unsafe {
+                *fault = crate::fault::hew_fault_new(
+                    crate::coro_state::hew_coro_state_cancel_code(construction),
+                );
+            }
+            return 1;
+        }
+        let handlers = if periodic_count == 0 {
+            &[]
+        } else {
+            // SAFETY: generated code provides this static descriptor slice.
+            unsafe { std::slice::from_raw_parts(periodic, periodic_count) }
+        };
+        for handler in handlers {
+            // SAFETY: the actor is pinned and remains undispatchable until publication.
+            if unsafe {
+                crate::timer_periodic::hew_actor_schedule_periodic(
+                    raw,
+                    handler.message,
+                    handler.interval_ms,
+                )
+            }
+            .is_null()
+            {
+                // SAFETY: the caller provides an empty fault output.
+                unsafe {
+                    *fault = crate::fault::hew_fault_new(
+                        crate::internal::types::HewError::ErrOom as i32,
+                    );
+                }
+                return 1;
+            }
+        }
+        // SAFETY: successful construction transfers the exact Rc list to the actor.
+        unsafe {
+            (*construction).execution_mut().rc_owner = None;
+        }
+        registration.take();
+        actor
+            .actor_state
+            .store(HewActorState::Runnable as i32, Ordering::Release);
+        drop(registration);
+        crate::resume::sched_enqueue(raw);
+        0
+    })
+    .unwrap_or(1)
+}
+
+/// Return failed construction to the actor's ordinary terminal cleanup owner.
+/// # Panics
+/// Panics if the supplied actor has no native completion owner.
+/// # Safety
+/// Init/start have finished and no frame still borrows the actor's state.
+#[no_mangle]
+pub unsafe extern "C" fn hew_actor_abort_construction(
+    token: crate::lifetime::local_handles::HewLocalPidId,
+    construction: *mut crate::coro_state::HewCoroState,
+) {
+    let Some(id) = crate::lifetime::local_handles::resolve_current_actor(token) else {
+        return;
+    };
+    live_actors::with_actor_send_by_id(id, |raw| {
+        // SAFETY: the guard retains the exclusively constructed actor.
+        let actor = unsafe { &*raw };
+        let completion = actor.native_completion.as_ref().expect("native completion");
+        completion.construction.lock_or_recover().take();
+        completion.cleanup.set_stop_release(None);
+        // SAFETY: construction relinquishes its Rc list and self identity before joining cleanup.
+        unsafe {
+            let execution = (*construction).execution_mut();
+            execution.rc_owner = None;
+            execution.actor_turn = live_actors::ActorIncarnation::NONE;
+            mailbox::mailbox_close(actor.mailbox.cast());
+            mailbox::mailbox_request_terminate(actor.mailbox.cast());
+            mailbox::mailbox_request_stop(actor.mailbox.cast());
+        }
+        crate::timer_periodic::cancel_all_timers_for_actor(raw);
+        // Timer cancellation joins every winning fault handoff. The constructor
+        // already owns its failure; rollback must not run a crash hook on it.
+        actor.pending_external_trap_code.store(0, Ordering::Release);
+        actor
+            .actor_state
+            .store(HewActorState::Runnable as i32, Ordering::Release);
+        crate::resume::sched_enqueue(raw);
+    });
 }
 
 /// Transfer one native message envelope through a stable actor incarnation.
@@ -1012,32 +1112,11 @@ unsafe fn submit_native_request(
         if !unsafe { crate::cow_envelope::bind_receiver(envelope, a) } {
             return mailbox::SendOutcome::Closed;
         }
-        // EXIT(drop-fault-injection): the deterministic harness asks us to lose
-        // this message. The receiver never consumes it, so this path releases
-        // the envelope itself, and the loss reports as a loss rather than as
-        // delivery - the same seam the copy-mode send carries.
-        if crate::deterministic::check_drop_fault(a.id) {
-            // SAFETY: the caller transferred one refcount on `envelope`.
-            unsafe { crate::mailbox::hew_msg_envelope_release(envelope) };
-            // SAFETY: an unadmitted ask still owns one sender-side reference.
-            unsafe { crate::mailbox::retire_orphaned_ask_sender_ref(reply) };
-            return mailbox::SendOutcome::Dropped;
-        }
-        // SAFETY: the pinned mailbox consumes only an admitted envelope.
+        // SAFETY: the send pin and receiver binding cover publication.
         let outcome = unsafe {
-            if terminal {
-                mailbox::admit_native_terminal(&*a.mailbox.cast(), message, envelope)
-            } else {
-                mailbox::try_admit_native_request(
-                    &*a.mailbox.cast(),
-                    message,
-                    envelope,
-                    reply,
-                    obligated,
-                    caller,
-                )
-            }
+            admit_bound_native_request(actor, message, envelope, reply, obligated, terminal, caller)
         };
+
         if matches!(
             outcome,
             mailbox::SendOutcome::Failed | mailbox::SendOutcome::Closed | mailbox::SendOutcome::Oom
@@ -1045,13 +1124,81 @@ unsafe fn submit_native_request(
             // SAFETY: refusal preserved the unpublished envelope with its caller.
             unsafe { crate::cow_envelope::unbind_receiver(envelope, a) };
         }
-        if matches!(outcome, mailbox::SendOutcome::Enqueued) {
-            // SAFETY: a message reached the live, pinned actor's mailbox.
-            unsafe { schedule_actor_after_enqueue(actor, a, message) };
-        }
+
         outcome
     })
     .unwrap_or(mailbox::SendOutcome::Closed)
+}
+
+/// Admit a timer's already-bound payload through the ordinary mailbox rules.
+/// # Safety
+/// The caller pins this actor and transfers one receiver-bound envelope only
+/// on an Enqueued or Dropped outcome.
+pub(crate) unsafe fn submit_bound_native_envelope(
+    actor: *mut HewActor,
+    message: i32,
+    envelope: *mut crate::mailbox::HewMsgEnvelope,
+    caller: crate::actor_caller::HewCallerStamp,
+) -> crate::mailbox::SendOutcome {
+    // SAFETY: the timer's incarnation pin and cleanup registration remain live.
+    unsafe {
+        admit_bound_native_request(
+            actor,
+            message,
+            envelope,
+            ptr::null_mut(),
+            false,
+            false,
+            caller,
+        )
+    }
+}
+
+unsafe fn admit_bound_native_request(
+    actor: *mut HewActor,
+    message: i32,
+    envelope: *mut crate::mailbox::HewMsgEnvelope,
+    reply: *mut c_void,
+    obligated: bool,
+    terminal: bool,
+    caller: crate::actor_caller::HewCallerStamp,
+) -> crate::mailbox::SendOutcome {
+    // SAFETY: the caller retains this exact actor allocation.
+    let a = unsafe { &*actor };
+    if actor_send_is_terminal(a) {
+        return mailbox::SendOutcome::Closed;
+    }
+    // EXIT(drop-fault-injection): the deterministic harness asks us to lose
+    // this message. The receiver never consumes it, so this path releases
+    // the envelope itself, and the loss reports as a loss rather than as
+    // delivery - the same seam the copy-mode send carries.
+    if crate::deterministic::check_drop_fault(a.id) {
+        // SAFETY: the caller transferred one refcount on `envelope`.
+        unsafe { crate::mailbox::hew_msg_envelope_release(envelope) };
+        // SAFETY: an unadmitted ask still owns one sender-side reference.
+        unsafe { crate::mailbox::retire_orphaned_ask_sender_ref(reply) };
+        return mailbox::SendOutcome::Dropped;
+    }
+    // SAFETY: the pinned mailbox consumes only an admitted envelope.
+    let outcome = unsafe {
+        if terminal {
+            mailbox::admit_native_terminal(&*a.mailbox.cast(), message, envelope)
+        } else {
+            mailbox::try_admit_native_request(
+                &*a.mailbox.cast(),
+                message,
+                envelope,
+                reply,
+                obligated,
+                caller,
+            )
+        }
+    };
+    if matches!(outcome, mailbox::SendOutcome::Enqueued) {
+        // SAFETY: a message reached the live, pinned actor's mailbox.
+        unsafe { schedule_actor_after_enqueue(actor, a, message) };
+    }
+    outcome
 }
 
 /// Spawn a new actor with a bounded mailbox.
@@ -1083,6 +1230,7 @@ pub unsafe extern "C" fn hew_actor_spawn_bounded(
     // SAFETY: actor_state is a fresh deep-copy; mailbox is valid.
     unsafe {
         spawn_actor_internal(ActorSpawnConfig {
+            initial_state: HewActorState::Idle,
             rc_owner: None,
             native_crash: None,
             native_state_release: None,

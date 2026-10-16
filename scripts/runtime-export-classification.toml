@@ -174,7 +174,6 @@ stable = [
   "hew_actor_schedule_periodic",
   "hew_actor_self",
   "hew_actor_self_pid",
-  "hew_actor_self_token",
   "hew_actor_self_stop",
   "hew_actor_send",
   "hew_actor_send_by_id",
@@ -1277,6 +1276,7 @@ non-declarable = [
   "hew_ser_variant",
   "hew_ser_variant_end",
   "hew_actor_ask_submit_native",
+  "hew_actor_abort_construction",
   "hew_actor_ask_wait_free",
   "hew_actor_ask_wait_new",
   "hew_actor_ask_wait_poll",
@@ -1291,20 +1291,25 @@ non-declarable = [
   "hew_actor_call_take",
   "hew_actor_coro_set_fault",
   "hew_actor_coro_state_new",
+  "hew_actor_construct_native",
   "hew_actor_dispatch_set_fault",
   "hew_actor_payload_alloc",
   "hew_actor_payload_free",
   "hew_actor_payload_try_alloc",
+  "hew_actor_publish_native",
   "hew_actor_reply_native",
   "hew_actor_send_wait_free",
   "hew_actor_send_wait_new",
   "hew_actor_send_wait_poll",
-  "hew_actor_spawn_native",
+  "hew_actor_self_token",
   "hew_actor_stop_native",
   "hew_actor_submit_native",
   "hew_actor_submit_native_terminal",
   "hew_actor_terminate",
   "hew_actor_terminate_native",
+  "hew_actor_timer_cancel",
+  "hew_actor_timer_new",
+  "hew_actor_timer_release",
   "hew_actor_wait_edge_fault",
   "hew_actor_wait_edge_free",
   "hew_actor_wait_edge_new",
@@ -1378,6 +1383,7 @@ non-declarable = [
   "hew_coro_state_init_child",
   "hew_coro_state_cleanup_child",
   "hew_coro_state_set_cleanup_fault",
+  "hew_coro_state_sender",
   "hew_fault_code",
   "hew_vec_release_begin",
   "hew_array_release_begin",
@@ -1434,6 +1440,7 @@ non-declarable = [
   "hew_hashset_probe_insert_take",
   "hew_hashset_probe_remove",
   "hew_native_runtime_finish",
+  "hew_local_sender",
   "hew_process_exit_byte",
   "hew_reply_channel_new_native",
   "hew_reply_channel_poll_native",
@@ -1923,6 +1930,24 @@ non-declarable = [
 ]
 
 [ownership]
+
+# Timer methods borrow or release the cancellation handle. The actor registry
+# owns the pending request independently of that handle.
+[[ownership.contracts]]
+symbol = "hew_actor_timer_cancel"
+result = "none"
+params = ["borrow"]
+resource-param-types = ["std.builtins.Timer"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_actor_timer_release"
+result = "none"
+params = ["consume"]
+resource-param-types = ["std.builtins.Timer"]
+release-symbol = ""
+discharge-depth = "none"
 
 # Allocation returns zeroed storage with no initialized captures. Raw cleanup
 # uses the exact descriptor layout; initialized callable cleanup wraps the

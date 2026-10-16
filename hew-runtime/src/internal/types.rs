@@ -175,6 +175,8 @@ pub enum HewActorState {
     /// `docs/internal/engineering-invariants.md`
     /// and `raii-null-after-move`.
     Crashing = 8,
+    /// Init and start own the state; admission queues without dispatch.
+    Constructing = 9,
 }
 
 /// Semantic terminal cause, independent of the scheduler's physical state.
@@ -597,6 +599,8 @@ pub const HEW_TRAP_USER_PANIC: i32 = 212;
 /// the failure has no caller to answer: it becomes the actor's own fault and
 /// reaches its supervisor. The diagnostic carries the error's `Display` text.
 pub const HEW_TRAP_ACTOR_UNHANDLED_FAILURE: i32 = 213;
+/// An actor-owned one-shot request missed its handler-start deadline.
+pub const HEW_TRAP_ACTOR_TIMER_OVERDUE: i32 = 214;
 
 // ── Reply-failure classification ─────────────────────────────────────────
 //
@@ -706,6 +710,8 @@ pub enum ExitReason {
     /// A `fails` handler submitted through a mailbox view returned its
     /// declared error with no caller to receive it (error code 213).
     ActorUnhandledFailure,
+    /// An actor-owned one-shot request did not start before its overdue deadline.
+    ActorTimerOverdue,
     /// Actor crashed with a hardware signal or via `hew_panic`. The raw
     /// signal number is preserved.
     Signal(i32),
@@ -738,6 +744,7 @@ impl ExitReason {
             ExitReason::JoinBranchFailed => "JoinBranchFailed",
             ExitReason::UserPanic => "UserPanic",
             ExitReason::ActorUnhandledFailure => "ActorUnhandledFailure",
+            ExitReason::ActorTimerOverdue => "ActorTimerOverdue",
             ExitReason::Signal(_) => "Signal",
             ExitReason::Normal => "Normal",
         }
@@ -763,6 +770,7 @@ impl ExitReason {
             HEW_TRAP_JOIN_BRANCH_FAILED => ExitReason::JoinBranchFailed,
             HEW_TRAP_USER_PANIC => ExitReason::UserPanic,
             HEW_TRAP_ACTOR_UNHANDLED_FAILURE => ExitReason::ActorUnhandledFailure,
+            HEW_TRAP_ACTOR_TIMER_OVERDUE => ExitReason::ActorTimerOverdue,
             sig => ExitReason::Signal(sig),
         }
     }
@@ -783,6 +791,7 @@ impl ExitReason {
     /// Current mapping (per `std/failure.hew::CrashKind` contract):
     /// - `HeapExceeded` → `CrashKind::HeapExceeded` (the per-actor arena cap).
     /// - `ActorUnhandledFailure` → `CrashKind::HandlerFailed`.
+    /// - `ActorTimerOverdue` → `CrashKind::TimerOverdue`.
     /// - every other fault class (traps, signals, send failures, internal
     ///   compiler-invariant traps, wire-decode failures) → `CrashKind::Crashed`.
     /// - `Normal` is not a crash; it projects to `Crashed` defensively but a
@@ -796,6 +805,7 @@ impl ExitReason {
         match self {
             ExitReason::HeapExceeded => CrashKind::HeapExceeded,
             ExitReason::ActorUnhandledFailure => CrashKind::HandlerFailed,
+            ExitReason::ActorTimerOverdue => CrashKind::TimerOverdue,
             ExitReason::IntegerOverflow
             | ExitReason::DivideByZero
             | ExitReason::SignedMinDivNegOne
@@ -819,7 +829,7 @@ impl ExitReason {
 ///
 /// The discriminants match the std enum's DECLARATION ORDER (the tagged-union
 /// tag a Hew `CrashKind` value carries): `Fault = 0`, `HeapExceeded = 1`,
-/// `PartitionDetected = 2`, `HandlerFailed = 3`. M-7 delivers this tag in a typed
+/// `PartitionDetected = 2`, `HandlerFailed = 3`, `TimerOverdue = 4`. M-7 delivers this tag in a typed
 /// `CrashNotification { target, kind }` to a linked actor's exit hook; the
 /// `as i32` tag is the wire value.
 ///
@@ -837,6 +847,8 @@ pub enum CrashKind {
     PartitionDetected = 2,
     /// A mailbox handler returned a declared error without a waiting caller.
     HandlerFailed = 3,
+    /// An actor-owned timer missed its handler-start deadline.
+    TimerOverdue = 4,
 }
 
 impl CrashKind {
@@ -870,6 +882,11 @@ mod crash_kind_projection_tests {
         assert_eq!(CrashKind::HeapExceeded.tag(), 1);
         assert_eq!(CrashKind::PartitionDetected.tag(), 2);
         assert_eq!(CrashKind::HandlerFailed.tag(), 3);
+        assert_eq!(CrashKind::TimerOverdue.tag(), 4);
+        assert_eq!(
+            CrashKind::tag_from_error_code(HEW_TRAP_ACTOR_TIMER_OVERDUE),
+            4
+        );
     }
 
     /// Distinct public failure classes retain their canonical tags.

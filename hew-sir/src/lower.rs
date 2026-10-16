@@ -1067,6 +1067,7 @@ pub(crate) fn runtime_variant_tags(
             (Role::CrashKindHeapExceeded, "HeapExceeded"),
             (Role::CrashKindPartitionDetected, "PartitionDetected"),
             (Role::CrashKindHandlerFailed, "HandlerFailed"),
+            (Role::CrashKindTimerOverdue, "TimerOverdue"),
         ],
         head if *head == KnownDecl::Delivery.head() => &[
             (Role::DeliveryAccepted, "Accepted"),

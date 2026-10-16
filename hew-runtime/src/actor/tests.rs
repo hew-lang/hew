@@ -4709,8 +4709,14 @@ fn native_graceful_stop_drains_accepted_turns_before_completion() {
     }
     let mut fault = ptr::null_mut();
     // SAFETY: all callback signatures and state ownership match native spawn.
+    let (_construction_ready, construction_waker) = crate::wake::blocking::Readiness::new();
+    // SAFETY: the test retains this descriptor throughout synchronous construction.
+    let construction = unsafe {
+        crate::coro_state::hew_coro_state_new(construction_waker.descriptor(), ptr::null_mut())
+    };
+    // SAFETY: the callbacks and initialized state obey the native construction ABI.
     let token = unsafe {
-        crate::actor::hew_actor_spawn_native(
+        crate::actor::hew_actor_construct_native(
             state.cast(),
             std::mem::size_of::<StopState>(),
             dispatch,
@@ -4720,8 +4726,6 @@ fn native_graceful_stop_drains_accepted_turns_before_completion() {
             0,
             0,
             0,
-            ptr::null(),
-            0,
             None,
             None,
             &raw mut fault,
@@ -4729,9 +4733,23 @@ fn native_graceful_stop_drains_accepted_turns_before_completion() {
             0,
             None,
             ptr::null_mut(),
-            ptr::null_mut(),
+            construction,
         )
     };
+    // SAFETY: test state is initialized and construction has no suspended borrower.
+    unsafe {
+        assert_eq!(
+            crate::actor::hew_actor_publish_native(
+                token,
+                ptr::null(),
+                0,
+                construction,
+                &raw mut fault
+            ),
+            0
+        );
+        crate::coro_state::hew_coro_state_free(construction);
+    }
     assert!(fault.is_null());
     assert_ne!(
         token,

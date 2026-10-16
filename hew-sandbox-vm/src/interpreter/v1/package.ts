@@ -75,6 +75,7 @@ export type RuntimeVariantRole =
   | "CrashKindHeapExceeded"
   | "CrashKindPartitionDetected"
   | "CrashKindHandlerFailed"
+  | "CrashKindTimerOverdue"
   | "OptionSome"
   | "OptionNone"
   | "ResultOk"
@@ -598,6 +599,13 @@ export type ActorOperation =
   | { op: "call_start" | "call_take"; protocol: ActorProtocol }
   | { op: "submit"; actor: number; policy: ActorProtocol["policy"] }
   | { op: "stream_start"; actor: number; message: number }
+  | {
+      op: "timer_schedule";
+      actor: number;
+      message: number;
+      resource: number;
+      policy: "reject" | "drop_newest";
+    }
   | { op: "local_observation"; kind: string }
   | {
       op:

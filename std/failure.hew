@@ -68,4 +68,6 @@ pub enum CrashKind {
     PartitionDetected;
     /// A mailbox handler returned a declared error without a waiting caller.
     HandlerFailed;
+    /// An actor-owned timer was discarded or missed its handler-start deadline.
+    TimerOverdue;
 }

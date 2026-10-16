@@ -1,0 +1,55 @@
+#[resource]
+type Ticket {
+    label: string;
+}
+
+impl Ticket {
+    fn close(consume self) {
+        sleep(1ms);
+        println("closed " + self.label);
+    }
+}
+
+actor Worker {
+    receive fn run() {
+        let active = Ticket { label: "active" };
+        defer {
+            assert(active.label == "active");
+        }
+        let _ = mailbox(self, after: 1ms, overdue: 1ms).tick(Ticket { label: "queued" });
+        loop {}
+    }
+
+    receive fn tick(ticket: Ticket) {
+        panic("overdue handler started");
+    }
+    receive fn ping() -> i64 {
+        42
+    }
+
+    #[on(crash)]
+    fn crashed(info: CrashInfo) -> CrashAction {
+        assert(match info.kind {
+            .TimerOverdue => true,
+            _ => false,
+        });
+        println("TimerOverdue");
+        CrashAction.Restart
+    }
+}
+
+supervisor App {
+    strategy: one_for_one;
+    intensity: 3 within 60s;
+    child worker: Worker;
+}
+
+fn main() {
+    let app = spawn App;
+    assert(app.worker.run().is_err());
+    restarted(app.worker);
+    assert(app.worker.ping().expect("fresh worker") == 42);
+    stop(app);
+    stopped(app);
+    println("compute timer recovered");
+}

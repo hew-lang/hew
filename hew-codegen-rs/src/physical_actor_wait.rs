@@ -217,6 +217,16 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         role_wait: Option<bool>,
         unwind: Option<&PhysicalEdge>,
     ) -> CodegenResult<()> {
+        self.emit_actor_wait(source, role_wait, unwind, false)
+    }
+
+    pub(super) fn emit_actor_wait(
+        &self,
+        source: StorageId,
+        role_wait: Option<bool>,
+        unwind: Option<&PhysicalEdge>,
+        mandatory_cleanup: bool,
+    ) -> CodegenResult<()> {
         let frame = self.frame.as_ref().ok_or_else(|| {
             CodegenError::FailClosed("actor wait requires a resumable invocation".into())
         })?;
@@ -290,17 +300,21 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             "hew_actor_wait_edge_new_for_wait",
             ptr.fn_type(&[ptr.into(), ptr.into(), self.ctx.i32_type().into()], false),
         )?;
-        let edge = call_value(
-            &self.builder,
-            edge_new,
-            &[
-                frame.state.into(),
-                wait.into(),
-                self.ctx.i32_type().const_int(2, false).into(),
-            ],
-            "actor.wait.edge",
-        )?
-        .into_pointer_value();
+        let edge = if mandatory_cleanup {
+            ptr.const_null()
+        } else {
+            call_value(
+                &self.builder,
+                edge_new,
+                &[
+                    frame.state.into(),
+                    wait.into(),
+                    self.ctx.i32_type().const_int(2, false).into(),
+                ],
+                "actor.wait.edge",
+            )?
+            .into_pointer_value()
+        };
         let poll = self.ctx.append_basic_block(self.value, "actor.wait.poll");
         let inspect = self
             .ctx
@@ -323,7 +337,11 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .llvm_ctx("poll actor termination")?;
         self.builder.position_at_end(poll);
         self.free_handle("hew_actor_wait_edge_prepare", edge)?;
-        let cancellation = self.state_value("hew_coro_state_is_cancelled", frame.state)?;
+        let cancellation = if mandatory_cleanup {
+            self.ctx.i32_type().const_zero()
+        } else {
+            self.state_value("hew_coro_state_is_cancelled", frame.state)?
+        };
         let cancelled_now = self
             .builder
             .build_int_compare(
@@ -349,7 +367,9 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             )
             .llvm_ctx("inspect terminal cleanup")?;
         self.builder.position_at_end(pending);
-        self.check_actor_wait_cycle(edge, cycle)?;
+        if !mandatory_cleanup {
+            self.check_actor_wait_cycle(edge, cycle)?;
+        }
         frame.suspend(self.ctx, &self.builder, poll, destroyed)?;
         self.builder.position_at_end(destroyed);
         self.reject_invalid_task_state()?;
@@ -367,9 +387,33 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             &[wait.into()],
             "actor.close.fault",
         )?;
-        let code = self.state_value("hew_fault_code", fault.into_pointer_value())?;
-        self.store_active_fault_value(fault, code)?;
-        self.leave(&mut join, suspend::EXIT_UNWIND)?;
+        if mandatory_cleanup {
+            let primary = self
+                .builder
+                .build_load(ptr, self.active_fault, "spawn.original.fault")
+                .llvm_ctx("retain the construction fault")?;
+            let combine = get_or_declare_external(
+                self.llvm,
+                "hew_fault_combine",
+                ptr.fn_type(&[ptr.into(), ptr.into()], false),
+            )?;
+            let combined = call_value(
+                &self.builder,
+                combine,
+                &[primary.into(), fault.into()],
+                "spawn.combined.fault",
+            )?;
+            self.builder
+                .build_store(self.active_fault, combined)
+                .llvm_ctx("append construction cleanup diagnostics")?;
+            self.builder
+                .build_unconditional_branch(complete)
+                .llvm_ctx("finish construction cleanup")?;
+        } else {
+            let code = self.state_value("hew_fault_code", fault.into_pointer_value())?;
+            self.store_active_fault_value(fault, code)?;
+            self.leave(&mut join, suspend::EXIT_UNWIND)?;
+        }
         self.builder.position_at_end(cancelled);
         self.initialize_cancellation_fault()?;
         self.leave(&mut join, suspend::EXIT_UNWIND)?;
@@ -422,6 +466,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                     ptr.into(),
                     ptr.into(),
                     self.ctx.i32_type().into(),
+                    ptr.into(),
                 ],
                 false,
             ),
@@ -437,6 +482,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 .const_int(u64::from(obligated), false)
                 .into(),
         );
+        args.push(self.sender_stamp()?.into());
         let wait = call_value(&self.builder, new, &args, "send.wait")?.into_pointer_value();
         let poll = self.ctx.append_basic_block(self.value, "send.poll");
         let inspect = self.ctx.append_basic_block(self.value, "send.inspect");

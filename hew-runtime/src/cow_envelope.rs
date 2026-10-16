@@ -35,6 +35,8 @@ pub struct HewMsgEnvelope {
     pub release_serial: u64,
     /// Queued ask sender reference retired after its payload finishes cleanup.
     pub release_reply: *mut c_void,
+    /// One-shot start/loss claim, attached only after the timer releases its payload.
+    pub(crate) timer: Option<std::sync::Arc<crate::timer_actor::OneShot>>,
 }
 
 impl std::fmt::Debug for HewMsgEnvelope {
@@ -87,6 +89,7 @@ pub unsafe fn new(
         (*env).release_actor = 0;
         (*env).release_serial = 0;
         (*env).release_reply = ptr::null_mut();
+        ptr::write(&raw mut (*env).timer, None);
     }
     env
 }
@@ -127,6 +130,9 @@ pub unsafe fn release(env: *mut HewMsgEnvelope) {
         let prev = (*env).refcount.fetch_sub(1, Ordering::AcqRel);
         debug_assert!(prev >= 1, "release on a zero-count envelope");
         if prev == 1 {
+            if let Some(timer) = (*env).timer.take() {
+                timer.discarded();
+            }
             header_validate((*env).header_bits.load(Ordering::Acquire));
             if let Some(start) = (*env).release_start {
                 let cursor = crate::release_walker::HewReleaseCursor::payload(

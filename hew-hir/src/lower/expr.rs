@@ -328,6 +328,17 @@ impl LowerCtx {
                     self.lower_expr(args[0].expr(), IntentKind::Read),
                     Vec::new(),
                 ),
+                (ActorDeliveryCall::TimerView { after, overdue, .. }, Expr::Call { args, .. }) => {
+                    // Preserve the written timing order; the operation carries
+                    // the positions that determine the view's canonical fields.
+                    let timing = args
+                        .iter()
+                        .enumerate()
+                        .filter(|(index, _)| *index == *after || Some(*index) == *overdue)
+                        .map(|(_, arg)| self.lower_expr(arg.expr(), IntentKind::Read))
+                        .collect();
+                    (self.lower_expr(args[0].expr(), IntentKind::Read), timing)
+                }
                 // `view(actor)` derives its admission from the destination's
                 // declaration; `view(actor, on_full: ..)` overrides it. The
                 // checker resolved both to one policy, so only the target

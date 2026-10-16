@@ -586,6 +586,7 @@ unsafe fn start_local_call(
             1,
             None,
             None,
+            &crate::actor_caller::local_sender(),
         )
     };
     operation(RemoteCallRoute::Local(call))

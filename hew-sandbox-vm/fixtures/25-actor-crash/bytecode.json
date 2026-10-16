@@ -1339,6 +1339,10 @@
         {
           "fields": [],
           "name": "HandlerFailed"
+        },
+        {
+          "fields": [],
+          "name": "TimerOverdue"
         }
       ],
       "id": 0,
@@ -1347,7 +1351,8 @@
         "CrashKindFault": 0,
         "CrashKindHandlerFailed": 3,
         "CrashKindHeapExceeded": 1,
-        "CrashKindPartitionDetected": 2
+        "CrashKindPartitionDetected": 2,
+        "CrashKindTimerOverdue": 4
       }
     },
     {

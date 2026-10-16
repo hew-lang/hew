@@ -90,6 +90,7 @@ type Fault = (
       cancelled?: boolean;
       deadline?: boolean;
       handlerFailed?: boolean;
+      timerOverdue?: boolean;
     }
   | { kind: "trap"; trap: TrapName; message?: string }
 ) & { primary?: Fault; secondary?: Fault[] };
@@ -151,7 +152,14 @@ interface SenderEndpoint {
   open: boolean;
 }
 
+interface ActorTimer {
+  cancel(): void;
+  started(): boolean;
+  discarded(): void;
+}
+
 interface ActorMessage {
+  timer?: ActorTimer;
   requestDeadline?: number;
   caller: CallerStamp;
   handler: ActorShape["handlers"][number];
@@ -172,9 +180,11 @@ interface ActorInstance {
   layout: ActorShape;
   state: VmValue;
   mailbox: ActorMessage[];
+  timers: Set<ActorTimer>;
   disposals: VmValue[];
   admission: Array<() => void>;
   busy: boolean;
+  constructing: boolean;
   alive: boolean;
   completed: boolean;
   closing: boolean;
@@ -3138,6 +3148,21 @@ class ExecutorV1 {
               value.cell.weak -= 1;
             }
             break;
+          case "timer": {
+            if (value.closed) break;
+            const resource = this.pkg.resources?.[value.resource];
+            if (resource?.close === undefined)
+              throw new Error("timer lost its selected close");
+            this.invokeFrame(
+              actor,
+              resource.close,
+              [value],
+              () => next(),
+              next,
+              rcOwner,
+            );
+            return;
+          }
           case "task": {
             // Dropping a handle does not cancel scoped work. Join drains the
             // task, and scope close releases any result that was never taken.
@@ -3418,9 +3443,11 @@ class ExecutorV1 {
             ),
           },
           mailbox: [],
+          timers: new Set(),
           disposals: [],
           admission: [],
           busy: true,
+          constructing: true,
           alive: true,
           completed: false,
           closing: false,
@@ -3439,23 +3466,49 @@ class ExecutorV1 {
         const handle: VmValue = { kind: "actor", id: actor.id };
         this.running = false;
         const failed = (fault: Fault) => {
+          actor.active = null;
           actor.alive = false;
-          this.closeValueAsync(
-            actor.state,
-            this.faultText(fault),
-            () => {
-              actor.completed = true;
-              for (const message of actor.mailbox.splice(0))
-                message.complete(null, "Dead");
-              for (const closed of actor.closed.splice(0)) closed();
-              this.raiseFault(act, fault, term.unwind);
-              this.scheduler.enqueue(act.context.id, () => this.runFrame(act));
-            },
-            actor,
-            actor.rcOwner,
-          );
+          actor.constructing = false;
+          act.rcOwner = null;
+          this.cancelActorTimers(actor);
+          this.drainMailbox(actor, this.faultText(fault), (payloadFault) => {
+            const primary = combineFaults(fault, payloadFault)!;
+            this.closeValueAsync(
+              actor.state,
+              this.faultText(primary),
+              (stateFault) => {
+                const retained = combineFaults(primary, stateFault)!;
+                this.sweepRcOwner(actor.rcOwner, actor, (sweepFault) => {
+                  actor.completed = true;
+                  for (const closed of actor.closed.splice(0)) closed();
+                  this.raiseFault(
+                    act,
+                    combineFaults(retained, sweepFault)!,
+                    term.unwind,
+                  );
+                  this.scheduler.enqueue(act.context.id, () =>
+                    this.runFrame(act),
+                  );
+                });
+              },
+              actor,
+              actor.rcOwner,
+            );
+          });
         };
         const started = () => {
+          if (actor.closing) {
+            failed(
+              actor.active?.pendingCancellation ?? {
+                kind: "panic",
+                message: "actor construction cancelled",
+                cancelled: true,
+              },
+            );
+            return;
+          }
+          actor.constructing = false;
+          actor.active = null;
           act.rcOwner = null;
           actor.busy = false;
           this.dispatchActor(actor);
@@ -3464,7 +3517,7 @@ class ExecutorV1 {
         };
         const start = () => {
           if (layout.start !== undefined)
-            this.invokeFrame(
+            actor.active = this.invokeFrame(
               actor,
               layout.start,
               [actor.state],
@@ -3474,7 +3527,7 @@ class ExecutorV1 {
           else started();
         };
         if (layout.init !== undefined)
-          this.invokeFrame(
+          actor.active = this.invokeFrame(
             actor,
             layout.init,
             [actor.state, ...args.slice(supplied)],
@@ -3482,6 +3535,110 @@ class ExecutorV1 {
             failed,
           );
         else start();
+        return;
+      }
+      case "timer_schedule": {
+        const [target, after, overdue, hasOverdue, payload] = args;
+        const actor = this.actorFor(target!);
+        if (
+          actor !== act.context.actor ||
+          after?.kind !== "i64" ||
+          overdue?.kind !== "i64" ||
+          hasOverdue?.kind !== "bool" ||
+          payload?.kind !== "record"
+        )
+          throw new Error("timer schedule lost its checked owner or timing");
+        const handler = actor.layout.handlers.find(
+          (handler) => handler.message_id === operation.message,
+        );
+        if (!handler) throw new Error("timer schedule lost its handler");
+        let phase: "scheduled" | "fired" | "started" | "cancelled" | "overdue" =
+          "scheduled";
+        let pending: VmValue | null = payload;
+        let overdueAt: number | null = null;
+        let disarm: (() => void) | null = null;
+        const forget = () => {
+          disarm?.();
+          disarm = null;
+          actor.timers.delete(timer);
+        };
+        const miss = (discarded: boolean) => {
+          if (phase !== "fired") return;
+          phase = hasOverdue.value ? "overdue" : "cancelled";
+          forget();
+          if (discarded && !hasOverdue.value)
+            this.trace.writeStderr(
+              "actor.timer_discarded: the one-shot handler did not start\n",
+              null,
+            );
+          if (!hasOverdue.value || !actor.alive) return;
+          const fault: Fault = {
+            kind: "panic",
+            timerOverdue: true,
+            message: "actor timer did not start before its overdue deadline",
+          };
+          if (actor.active) {
+            actor.active.pendingCancellation ??= fault;
+            actor.active.cancel?.(actor.active.pendingCancellation);
+          } else this.crashActor(actor, fault);
+        };
+        const timer: ActorTimer = {
+          cancel: () => {
+            if (phase !== "overdue") phase = "cancelled";
+            forget();
+            if (pending) {
+              actor.disposals.push(pending);
+              pending = null;
+              this.dispatchActor(actor);
+            }
+          },
+          started: () => {
+            if (
+              phase === "fired" &&
+              overdueAt !== null &&
+              this.trace.virtualTimeMs >= overdueAt
+            )
+              miss(false);
+            const allowed = phase !== "overdue";
+            if (phase === "fired") phase = "started";
+            forget();
+            return allowed;
+          },
+          discarded: () => miss(true),
+        };
+        actor.timers.add(timer);
+        disarm = this.scheduler.after(after.value, () => {
+          disarm = null;
+          if (phase !== "scheduled") return;
+          phase = "fired";
+          pending = null;
+          if (hasOverdue.value) {
+            overdueAt =
+              this.trace.virtualTimeMs + Number(overdue.value) / 1_000_000;
+            disarm = this.scheduler.after(overdue.value, () => miss(false));
+          }
+          const message: ActorMessage = {
+            timer,
+            caller: { kind: "Timer" },
+            handler,
+            payload: payload.fields,
+            reply: false,
+            obligated: false,
+            complete: (_value, _error, drained) => drained?.(null),
+          };
+          const status = this.admitActorMessage(actor, message);
+          if (status === "full" || status === "closed") {
+            actor.disposals.push(payload);
+            timer.discarded();
+            this.dispatchActor(actor);
+          }
+        });
+        this.completeShim(act, term, {
+          kind: "timer",
+          resource: operation.resource,
+          cancel: () => timer.cancel(),
+          closed: false,
+        });
         return;
       }
       case "stream_start": {
@@ -3617,107 +3774,42 @@ class ExecutorV1 {
             finish(rejected("Dead"));
             return;
           }
-          const full =
-            actor.layout.mailbox_capacity !== undefined &&
-            actor.mailbox.length >= actor.layout.mailbox_capacity;
-          // Declared loss transfers cleanup to the receiver. Sender-selected
-          // loss still closes the sender's unadmitted request in its own frame.
-          const discardAtReceiver = (value: VmValue, report: VmValue) => {
-            actor.disposals.push(value);
-            this.dispatchActor(actor);
-            finish(report);
+          const message: ActorMessage = {
+            caller,
+            handler,
+            payload: payload.fields,
+            reply: false,
+            obligated: false,
+            complete: (_value, _error, drained) => drained?.(null),
           };
-          const discard = (value: VmValue, report: VmValue) => {
-            let settled = false;
-            let waiting = false;
-            this.closeValueAsync(
-              value,
-              this.pipeFault(act),
-              (fault) => {
-                act.fault ??= fault;
-                settled = true;
-                if (waiting) finish(report);
-                else this.completeShim(act, term, report);
-              },
-              act.context.actor,
-              act.rcOwner,
-            );
-            if (!settled) {
-              waiting = true;
-              parked = true;
-              this.running = false;
-            }
-          };
-          let declared = full ? actor.layout.overflow : null;
-          const coalesce = actor.layout.coalesce;
-          if (declared === "coalesce" && coalesce) {
-            const key = coalesce.keys.find(
-              (key) => key.message === handler.message_id,
-            );
-            const queued = key
-              ? actor.mailbox.findIndex(
-                  (message) =>
-                    !message.obligated &&
-                    message.handler.message_id === handler.message_id &&
-                    equals(
-                      message.payload[key.param]!,
-                      payload.fields[key.param]!,
-                    ),
-                )
-              : -1;
-            if (queued >= 0) {
-              const superseded = actor.mailbox[queued]!;
-              actor.mailbox[queued] = {
-                ...superseded,
-                caller,
-                payload: payload.fields,
-              };
-              discardAtReceiver(
-                { kind: "record", typeId: "", fields: superseded.payload },
-                accepted(false),
-              );
-              return;
-            }
-            declared = coalesce.fallback;
-          }
-          if (declared === "drop_new") {
-            discardAtReceiver(payload, accepted(true));
-            return;
-          }
-          // A queued completion call owes its caller a reply, so `drop_old`
-          // evicts only a one-way message and refuses when there is none.
-          const oldest =
-            declared === "drop_old"
-              ? actor.mailbox.findIndex((message) => !message.obligated)
-              : -1;
-          if (oldest >= 0) {
-            const [evicted] = actor.mailbox.splice(oldest, 1);
-            actor.mailbox.push({
-              caller,
-              handler,
-              payload: payload.fields,
-              reply: false,
-              obligated: false,
-              complete: (_value, _error, drained) => drained?.(null),
-            });
-            this.dispatchActor(actor);
-            discardAtReceiver(
-              { kind: "record", typeId: "", fields: evicted!.payload },
-              accepted(false),
-            );
-            return;
-          }
-          if (full) {
+          const status = this.admitActorMessage(actor, message);
+          if (status === "full") {
             if (operation.policy === "drop_newest") {
-              discard(payload, accepted(true));
+              let settled = false;
+              let waiting = false;
+              this.closeValueAsync(
+                payload,
+                this.pipeFault(act),
+                (fault) => {
+                  act.fault ??= fault;
+                  settled = true;
+                  if (waiting) finish(accepted(true));
+                  else this.completeShim(act, term, accepted(true));
+                },
+                act.context.actor,
+                act.rcOwner,
+              );
+              if (!settled) {
+                waiting = true;
+                parked = true;
+                this.running = false;
+              }
               return;
             }
             if (operation.policy === "reject") {
               finish(rejected("Full"));
               return;
             }
-            // The checker already resolved declaration defaults and explicit
-            // overrides; the declaration's own resolution happened above.
             if (operation.policy !== "wait")
               throw new Error("submission has no admitted policy");
             parked = true;
@@ -3725,20 +3817,8 @@ class ExecutorV1 {
             actor.admission.push(submit);
             return;
           }
-          actor.mailbox.push({
-            caller,
-            handler,
-            payload: payload.fields,
-            reply: false,
-            obligated: false,
-            complete: (_value, _error, drained) => drained?.(null),
-          });
-          this.trace.snapshot("actor.send", {
-            actor_id: actor.id,
-            handler: handler.name,
-          });
-          this.dispatchActor(actor);
-          finish(accepted(false));
+          if (status === "closed") finish(rejected("Dead"));
+          else finish(accepted(status === "discarded"));
         };
         submit();
         return;
@@ -4158,6 +4238,73 @@ class ExecutorV1 {
     };
   }
 
+  private admitActorMessage(
+    actor: ActorInstance,
+    message: ActorMessage,
+  ): "accepted" | "discarded" | "full" | "closed" {
+    if (!actor.alive || actor.closing) return "closed";
+    const full =
+      actor.layout.mailbox_capacity !== undefined &&
+      actor.mailbox.length >= actor.layout.mailbox_capacity;
+    let declared = full ? actor.layout.overflow : null;
+    const discard = (lost: ActorMessage) => {
+      actor.disposals.push({
+        kind: "record",
+        typeId: "",
+        fields: lost.payload,
+      });
+      lost.timer?.discarded();
+      this.dispatchActor(actor);
+    };
+    const coalesce = actor.layout.coalesce;
+    if (declared === "coalesce" && coalesce) {
+      const key = coalesce.keys.find(
+        (key) => key.message === message.handler.message_id,
+      );
+      const queued = key
+        ? actor.mailbox.findIndex(
+            (queued) =>
+              !queued.obligated &&
+              queued.handler.message_id === message.handler.message_id &&
+              equals(queued.payload[key.param]!, message.payload[key.param]!),
+          )
+        : -1;
+      if (queued >= 0) {
+        const superseded = actor.mailbox[queued]!;
+        actor.mailbox[queued] = message;
+        discard(superseded);
+        return "accepted";
+      }
+      declared = coalesce.fallback;
+    }
+    if (declared === "drop_new") {
+      discard(message);
+      return "discarded";
+    }
+    const oldest =
+      declared === "drop_old"
+        ? actor.mailbox.findIndex((queued) => !queued.obligated)
+        : -1;
+    if (oldest >= 0) {
+      const [evicted] = actor.mailbox.splice(oldest, 1);
+      actor.mailbox.push(message);
+      discard(evicted!);
+      return "accepted";
+    }
+    if (full) return "full";
+    actor.mailbox.push(message);
+    this.trace.snapshot("actor.send", {
+      actor_id: actor.id,
+      handler: message.handler.name,
+    });
+    this.dispatchActor(actor);
+    return "accepted";
+  }
+
+  private cancelActorTimers(actor: ActorInstance): void {
+    for (const timer of [...actor.timers]) timer.cancel();
+  }
+
   private dispatchActor(actor: ActorInstance): void {
     if (actor.busy || !actor.alive || actor.drainingMailbox) return;
     if (actor.disposals.length > 0) {
@@ -4195,12 +4342,20 @@ class ExecutorV1 {
         this.dispatchActor(actor);
         return;
       }
-      const message = actor.mailbox.shift();
+      const message = actor.mailbox[0];
       if (!message || !actor.alive) {
         actor.busy = false;
         if (actor.closing && actor.alive) this.dispatchActor(actor);
         return;
       }
+      // An overdue claim can synchronously begin terminal cleanup. Keep the
+      // payload in its mailbox until that claim succeeds.
+      if (message.timer && !message.timer.started()) {
+        actor.busy = false;
+        this.dispatchActor(actor);
+        return;
+      }
+      actor.mailbox.shift();
       for (const admit of actor.admission.splice(0)) admit();
       if (
         message.requestDeadline !== undefined &&
@@ -4301,6 +4456,7 @@ class ExecutorV1 {
     actor.crashing ??= fault;
     actor.alive = false;
     actor.busy = false;
+    this.cancelActorTimers(actor);
     this.trace.snapshot("actor.crash", {
       actor_id: actor.id,
       message: this.faultText(fault),
@@ -4337,67 +4493,78 @@ class ExecutorV1 {
         actor,
       );
     };
-    if (actor.layout.crash !== undefined) {
-      const [code, message] = faultInfo(fault);
-      const info: VmValue = {
-        kind: "record",
-        typeId: this.aggregateName(actor.layout.crash_info!),
-        shape: actor.layout.crash_info!,
-        fields: [
-          {
-            kind: "enum",
-            typeId: this.variantName(actor.layout.crash_kind!),
-            shape: actor.layout.crash_kind!,
-            tag: runtimeTag(
-              this.pkg.variants[actor.layout.crash_kind!]!,
-              code === 213 ? "CrashKindHandlerFailed" : "CrashKindFault",
-            ),
-            payload: [],
-          },
-          stringValue(String(message)),
-        ],
-      };
-      let cancelTimer: (() => void) | undefined;
-      const complete = (action: string) => {
-        cancelTimer?.();
-        actor.terminalHook = null;
-        finished(action);
-      };
-      const hook = this.invokeFrame(
-        actor,
-        actor.layout.crash,
-        [actor.state, info],
-        (value) => {
-          const shape = this.pkg.variants[actor.layout.crash_action!];
-          const action =
-            value.kind === "enum" ? shape?.cases[value.tag]?.name : undefined;
-          if (!action)
-            throw new Error("crash hook returned no declared action");
-          complete(action);
-        },
-        (hookFault) => {
-          fault = combineFaults(fault, hookFault)!;
-          actor.crashing = fault;
-          complete("Restart");
-        },
-      );
-      actor.terminalHook = hook;
-      const parent = actor.supervisor;
-      const stopNs = parent
-        ? this.childStopBudget(parent.owner, parent.child)!
-        : DEFAULT_ACTOR_STOP_NS;
-      hook.requestDeadline = this.trace.virtualTimeMs + stopNs / 1_000_000;
-      const expire = () => {
-        hook.pendingCancellation ??= {
-          kind: "panic",
-          message: "crash hook deadline elapsed",
-          deadline: true,
+    const runHook = () => {
+      if (actor.layout.crash !== undefined) {
+        const [code, message] = faultInfo(fault);
+        const info: VmValue = {
+          kind: "record",
+          typeId: this.aggregateName(actor.layout.crash_info!),
+          shape: actor.layout.crash_info!,
+          fields: [
+            {
+              kind: "enum",
+              typeId: this.variantName(actor.layout.crash_kind!),
+              shape: actor.layout.crash_kind!,
+              tag: runtimeTag(
+                this.pkg.variants[actor.layout.crash_kind!]!,
+                code === 214
+                  ? "CrashKindTimerOverdue"
+                  : code === 213
+                    ? "CrashKindHandlerFailed"
+                    : "CrashKindFault",
+              ),
+              payload: [],
+            },
+            stringValue(String(message)),
+          ],
         };
-        hook.cancel?.(hook.pendingCancellation);
-      };
-      if (stopNs <= 0) expire();
-      else cancelTimer = this.scheduler.after(BigInt(stopNs), expire);
-    } else finished("Restart");
+        let cancelTimer: (() => void) | undefined;
+        const complete = (action: string) => {
+          cancelTimer?.();
+          actor.terminalHook = null;
+          finished(action);
+        };
+        const hook = this.invokeFrame(
+          actor,
+          actor.layout.crash,
+          [actor.state, info],
+          (value) => {
+            const shape = this.pkg.variants[actor.layout.crash_action!];
+            const action =
+              value.kind === "enum" ? shape?.cases[value.tag]?.name : undefined;
+            if (!action)
+              throw new Error("crash hook returned no declared action");
+            complete(action);
+          },
+          (hookFault) => {
+            fault = combineFaults(fault, hookFault)!;
+            actor.crashing = fault;
+            complete("Restart");
+          },
+        );
+        actor.terminalHook = hook;
+        const parent = actor.supervisor;
+        const stopNs = parent
+          ? this.childStopBudget(parent.owner, parent.child)!
+          : DEFAULT_ACTOR_STOP_NS;
+        hook.requestDeadline = this.trace.virtualTimeMs + stopNs / 1_000_000;
+        const expire = () => {
+          hook.pendingCancellation ??= {
+            kind: "panic",
+            message: "crash hook deadline elapsed",
+            deadline: true,
+          };
+          hook.cancel?.(hook.pendingCancellation);
+        };
+        if (stopNs <= 0) expire();
+        else cancelTimer = this.scheduler.after(BigInt(stopNs), expire);
+      } else finished("Restart");
+    };
+    this.drainMailbox(actor, this.faultText(fault), (cleanupFault) => {
+      fault = combineFaults(fault, cleanupFault)!;
+      actor.crashing = fault;
+      runHook();
+    });
   }
 
   private supervisorFor(value: VmValue): SupervisorInstance {
@@ -4698,6 +4865,15 @@ class ExecutorV1 {
   private requestActorStop(actor: ActorInstance): void {
     if (actor.closing || actor.completed) return;
     actor.closing = true;
+    this.cancelActorTimers(actor);
+    if (actor.constructing && actor.active) {
+      actor.active.pendingCancellation ??= {
+        kind: "panic",
+        message: "actor construction stopped",
+        cancelled: true,
+      };
+      actor.active.cancel?.(actor.active.pendingCancellation);
+    }
     // Admission closes immediately. The active turn and every accepted queued
     // turn finish before stop hooks and state release.
     this.dispatchActor(actor);
@@ -4708,6 +4884,7 @@ class ExecutorV1 {
     if (actor.completed || actor.terminating) return;
     actor.closing = true;
     actor.terminating = true;
+    this.cancelActorTimers(actor);
     for (const context of [actor.active, actor.terminalHook]) {
       if (!context) continue;
       context.pendingCancellation ??= {
@@ -4881,6 +5058,7 @@ function combineFaults(
 function faultInfo(fault: Fault): [number, string] {
   if (fault.kind === "panic") {
     if (fault.handlerFailed) return [213, "ActorUnhandledFailure"];
+    if (fault.timerOverdue) return [214, "ActorTimerOverdue"];
     if (fault.cancelled) return [-1, "Cancelled"];
     if (fault.deadline) return [-2, "Deadline"];
     return [212, "UserPanic"];

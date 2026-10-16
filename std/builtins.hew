@@ -137,6 +137,43 @@ pub type ActorMailbox<Target, Policy> {
     target: Target;
 }
 
+/// An actor-owned one-shot submission view. Construct with
+/// `mailbox(self, after: delay, overdue: limit)`; `overdue` is optional.
+pub type ActorTimerMailbox<Target, Policy> {
+    target: Target;
+    after: duration;
+    overdue: duration;
+    has_overdue: bool;
+}
+
+/// A cancellation handle for an actor-owned one-shot request.
+/// Dropping this handle does not cancel the request. The handle cannot be sent
+/// to another actor; stopping or restarting its owner cancels pending timers.
+#[resource]
+#[opaque]
+pub type Timer {
+}
+
+impl Timer {
+    /// Before firing, cancel delivery. After firing, disarm only the overdue check.
+    fn cancel(self) {
+        unsafe {
+            hew_actor_timer_cancel(self)
+        };
+    }
+
+    fn close(consume self) {
+        unsafe {
+            hew_actor_timer_release(self)
+        };
+    }
+}
+
+extern "C" {
+    fn hew_actor_timer_cancel(timer: Timer);
+    fn hew_actor_timer_release(consume timer: Timer);
+}
+
 /// An immutable completion view choosing how its own calls are admitted.
 /// Construct one with `policy(target, on_full: ...)`. A call through the view
 /// waits for the handler exactly as a call on the actor handle does; the

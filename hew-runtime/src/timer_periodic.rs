@@ -132,7 +132,38 @@ pub unsafe extern "C" fn hew_global_timer_wheel() -> *mut HewTimerWheel {
 /// double-free) and never neither (no leak). Because the wheel's strong
 /// reference keeps the ctx alive until it is reclaimed, no party ever
 /// dereferences a freed ctx (no use-after-free).
-type TimerRegistry = HashMap<usize, Vec<Arc<PeriodicCtx>>>;
+#[derive(Clone)]
+enum ActorTimer {
+    Periodic(Arc<PeriodicCtx>),
+    OneShot(Arc<crate::timer_actor::OneShot>),
+}
+
+impl ActorTimer {
+    fn address(&self) -> usize {
+        match self {
+            Self::Periodic(ctx) => Arc::as_ptr(ctx) as usize,
+            Self::OneShot(ctx) => Arc::as_ptr(ctx) as usize,
+        }
+    }
+
+    fn cancel(&self) {
+        match self {
+            Self::Periodic(ctx) => ctx.cancelled.store(true, Ordering::SeqCst),
+            Self::OneShot(ctx) => ctx.cancel(),
+        }
+    }
+
+    fn drain(&self) {
+        if let Self::Periodic(ctx) = self {
+            while ctx.in_flight.load(Ordering::SeqCst) {
+                std::hint::spin_loop();
+            }
+            reclaim_pending_wheel_ref(ctx);
+        }
+    }
+}
+
+type TimerRegistry = HashMap<usize, Vec<ActorTimer>>;
 static ACTOR_TIMERS: PoisonSafe<Option<TimerRegistry>> = PoisonSafe::new(None);
 
 fn register_timer(actor: *mut HewActor, ctx: Arc<PeriodicCtx>) {
@@ -140,16 +171,44 @@ fn register_timer(actor: *mut HewActor, ctx: Arc<PeriodicCtx>) {
         lock.get_or_insert_with(HashMap::new)
             .entry(actor as usize)
             .or_default()
-            .push(ctx);
+            .push(ActorTimer::Periodic(ctx));
     });
 }
 
+/// Publish a one-shot while the shared timer admission gate is held.
+/// The registry lock orders publication against actor-local stop cancellation.
+/// # Safety
+/// The caller pins the actor and owns the unpublished timer request.
+pub(crate) unsafe fn register_one_shot(
+    actor: *mut HewActor,
+    ctx: Arc<crate::timer_actor::OneShot>,
+) -> bool {
+    ACTOR_TIMERS.access(|lock| {
+        // SAFETY: the caller retains the actor and mailbox through publication.
+        if unsafe { crate::mailbox::mailbox_is_closed((*actor).mailbox.cast()) } {
+            return false;
+        }
+        lock.get_or_insert_with(HashMap::new)
+            .entry(actor as usize)
+            .or_default()
+            .push(ActorTimer::OneShot(ctx));
+        true
+    })
+}
+
+pub(crate) fn admit_timer<T>(operation: impl FnOnce() -> T) -> Option<T> {
+    let _admission = PERIODIC_ADMISSION
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    PERIODIC_ACCEPTING.load(Ordering::Acquire).then(operation)
+}
+
 /// Drop the registry's strong reference to the ctx at `ctx_addr` for `actor`.
-fn unregister_timer(actor: *mut HewActor, ctx_addr: usize) {
+pub(crate) fn unregister_timer(actor: *mut HewActor, ctx_addr: usize) {
     ACTOR_TIMERS.access(|lock| {
         if let Some(map) = lock.as_mut() {
             if let Some(timers) = map.get_mut(&(actor as usize)) {
-                timers.retain(|c| Arc::as_ptr(c) as usize != ctx_addr);
+                timers.retain(|c| c.address() != ctx_addr);
                 if timers.is_empty() {
                     map.remove(&(actor as usize));
                 }
@@ -194,7 +253,6 @@ fn reclaim_pending_wheel_ref(ctx: &Arc<PeriodicCtx>) {
 /// have fired. The `Arc` refcount guarantees exactly one free across the
 /// callback and this function; ctxs are kept alive by the registry references
 /// held in `timers` for the whole duration, so no raw ctx is ever dangling.
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn cancel_all_timers_for_actor(actor: *mut HewActor) {
     let timers = ACTOR_TIMERS.access(|lock| {
         lock.as_mut()
@@ -202,28 +260,12 @@ pub(crate) fn cancel_all_timers_for_actor(actor: *mut HewActor) {
             .unwrap_or_default()
     });
 
-    // Phase 1: mark all as cancelled. A callback that reaches its re-arm under
-    // the pending lock after this store will not re-arm; a callback already
-    // past the cancelled-check is bounded by the in-flight guard below.
-    for ctx in &timers {
-        ctx.cancelled.store(true, Ordering::SeqCst);
+    for timer in &timers {
+        timer.cancel();
     }
-
-    // Phase 2: wait for any in-flight callbacks to finish their send (Dekker
-    // protocol — keeps the actor alive until the send completes).
-    for ctx in &timers {
-        while ctx.in_flight.load(Ordering::SeqCst) {
-            std::hint::spin_loop();
-        }
+    for timer in &timers {
+        timer.drain();
     }
-
-    // Phase 3: reclaim each pending wheel reference (the single atomic claim).
-    for ctx in &timers {
-        reclaim_pending_wheel_ref(ctx);
-    }
-
-    // Dropping `timers` releases the registry references; any ctx whose wheel
-    // reference was reclaimed above now reaches refcount zero and is freed.
 }
 
 /// Close periodic-timer admission and cancel every timer already registered.
@@ -248,31 +290,30 @@ pub(crate) fn cancel_all_timers_for_actor(actor: *mut HewActor) {
 /// The shared timer wheel and ticker remain alive because suspended `sleep`
 /// activations still need them during the drain and parked-frame retirement.
 pub(crate) fn quiesce_periodic_timers() {
-    let all: Vec<Arc<PeriodicCtx>> = {
+    let all: Vec<(usize, ActorTimer)> = {
         let _admission = PERIODIC_ADMISSION
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         PERIODIC_ACCEPTING.store(false, Ordering::Release);
         ACTOR_TIMERS.access(|lock| {
             lock.as_ref()
-                .map(|map| map.values().flatten().cloned().collect())
+                .map(|map| {
+                    map.iter()
+                        .flat_map(|(actor, timers)| {
+                            timers.iter().cloned().map(|timer| (*actor, timer))
+                        })
+                        .collect()
+                })
                 .unwrap_or_default()
         })
     };
 
-    for ctx in &all {
-        ctx.cancelled.store(true, Ordering::SeqCst);
+    for (_, timer) in &all {
+        timer.cancel();
     }
-    for ctx in &all {
-        while ctx.in_flight.load(Ordering::SeqCst) {
-            std::hint::spin_loop();
-        }
-    }
-    for ctx in &all {
-        reclaim_pending_wheel_ref(ctx);
-    }
-    for ctx in &all {
-        unregister_timer(ctx.actor, Arc::as_ptr(ctx) as usize);
+    for (actor, timer) in &all {
+        timer.drain();
+        unregister_timer(*actor as *mut HewActor, timer.address());
     }
 }
 
@@ -546,10 +587,12 @@ pub unsafe extern "C" fn hew_actor_cancel_periodic(handle: *mut c_void) {
     let addr = handle as usize;
     let ctx = ACTOR_TIMERS.access(|lock| {
         lock.as_ref().and_then(|map| {
-            map.values()
-                .flatten()
-                .find(|c| Arc::as_ptr(c) as usize == addr)
-                .map(Arc::clone)
+            map.values().flatten().find_map(|timer| match timer {
+                ActorTimer::Periodic(ctx) if Arc::as_ptr(ctx) as usize == addr => {
+                    Some(Arc::clone(ctx))
+                }
+                _ => None,
+            })
         })
     });
     let Some(ctx) = ctx else {
@@ -954,12 +997,15 @@ mod tests {
         assert!(!handle.is_null());
 
         let ctx = ACTOR_TIMERS.access(|lock| {
-            Arc::clone(
-                lock.as_ref()
-                    .and_then(|map| map.get(&(actor_ptr as usize)))
-                    .and_then(|timers| timers.first())
-                    .expect("scheduled timer must be registered"),
-            )
+            let ActorTimer::Periodic(timer) = lock
+                .as_ref()
+                .and_then(|map| map.get(&(actor_ptr as usize)))
+                .and_then(|timers| timers.first())
+                .expect("scheduled timer must be registered")
+            else {
+                panic!("expected the registered periodic timer");
+            };
+            Arc::clone(timer)
         });
         let wheel = ctx.wheel;
         let first_fire = ctx.next_fire_ms.load(Ordering::SeqCst);
@@ -1008,12 +1054,15 @@ mod tests {
         let handle = unsafe { hew_actor_schedule_periodic(actor_ptr, 7, 60_000) };
         assert!(!handle.is_null());
         let ctx = ACTOR_TIMERS.access(|lock| {
-            Arc::clone(
-                lock.as_ref()
-                    .and_then(|map| map.get(&(actor_ptr as usize)))
-                    .and_then(|timers| timers.first())
-                    .expect("scheduled timer must be registered"),
-            )
+            let ActorTimer::Periodic(timer) = lock
+                .as_ref()
+                .and_then(|map| map.get(&(actor_ptr as usize)))
+                .and_then(|timers| timers.first())
+                .expect("scheduled timer must be registered")
+            else {
+                panic!("expected the registered periodic timer");
+            };
+            Arc::clone(timer)
         });
 
         // Model a callback that passed its cancellation check and still owns the

@@ -407,6 +407,13 @@ pub(crate) unsafe fn hew_actor_request_stop(actor: *mut HewActor) {
         // SAFETY: the mailbox remains live with this actor.
         unsafe { mailbox::mailbox_close(mb) };
     }
+    crate::timer_periodic::cancel_all_timers_for_actor(actor);
+    if a.native_completion
+        .as_ref()
+        .is_some_and(|completion| completion.cancel_construction(crate::fault::HEW_FAULT_CANCELLED))
+    {
+        return;
+    }
     if a.actor_state
         .compare_exchange(
             HewActorState::Idle as i32,
@@ -434,6 +441,13 @@ pub unsafe extern "C" fn hew_actor_stop(actor: *mut HewActor) {
     if !mb.is_null() {
         // SAFETY: the mailbox belongs to the actor.
         unsafe { mailbox::mailbox_close(mb) };
+    }
+    crate::timer_periodic::cancel_all_timers_for_actor(actor);
+    if a.native_completion
+        .as_ref()
+        .is_some_and(|completion| completion.cancel_construction(crate::fault::HEW_FAULT_CANCELLED))
+    {
+        return;
     }
     // SAFETY: actor and mailbox are one live allocation.
     if unsafe { try_terminalize_idle_actor(actor, a, mb, true) } {
@@ -485,6 +499,13 @@ pub unsafe extern "C" fn hew_actor_terminate(actor: *mut HewActor) {
         unsafe { mailbox::mailbox_request_terminate(mb) };
         // SAFETY: the flag is a nonallocating out-of-band cancellation request.
         unsafe { mailbox::mailbox_request_stop(mb) };
+    }
+    crate::timer_periodic::cancel_all_timers_for_actor(actor);
+    if a.native_completion
+        .as_ref()
+        .is_some_and(|completion| completion.cancel_construction(crate::fault::HEW_FAULT_CANCELLED))
+    {
+        return;
     }
     crate::actor_native::cleanup::cancel_stop_hook(a);
 

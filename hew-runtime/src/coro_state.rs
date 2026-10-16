@@ -60,6 +60,42 @@ pub(crate) struct InvocationContext {
     previous: *mut InvocationContext,
 }
 
+/// Retained readiness and cancellation for a construction owned by its caller.
+/// It never points into the caller's frame.
+#[derive(Debug)]
+pub(crate) struct ConstructionWake {
+    token: *mut HewCancellationToken,
+    waker: OwnedWaker,
+}
+
+// SAFETY: the retained token and readiness descriptor support concurrent requests.
+unsafe impl Send for ConstructionWake {}
+
+impl ConstructionWake {
+    pub(crate) fn new(state: &HewCoroState) -> Self {
+        let execution = state.execution();
+        // SAFETY: the live invocation retains this token through the increment.
+        unsafe { hew_cancel_token_retain(execution.token) };
+        Self {
+            token: execution.token,
+            waker: execution.waker.clone(),
+        }
+    }
+
+    pub(crate) fn cancel(&self, reason: i32) {
+        // SAFETY: this registration retains the independent construction token.
+        unsafe { hew_cancel_token_cancel(self.token, reason) };
+        self.waker.wake();
+    }
+}
+
+impl Drop for ConstructionWake {
+    fn drop(&mut self) {
+        // SAFETY: this registration owns one retained reference.
+        unsafe { hew_cancel_token_release(self.token) };
+    }
+}
+
 #[repr(u8)]
 enum CleanupFault {
     None,
@@ -254,18 +290,18 @@ pub unsafe extern "C" fn hew_coro_state_init_construction(
     // SAFETY: the suspended caller retains its execution context and token.
     let parent = unsafe { &*parent };
     let execution = parent.execution();
-    // SAFETY: this owned context retains the same cancellation ancestry.
-    unsafe { hew_cancel_token_retain(execution.token) };
+    // SAFETY: construction can be cancelled independently of its spawning caller.
+    let token = unsafe { hew_cancel_token_new_child(execution.token) };
     // SAFETY: parent retains the descriptor through initialization.
     let mut context = unsafe {
         context_with_token(
             execution.waker.descriptor(),
-            execution.token,
+            token,
             execution.budget.clone(),
             std::ptr::null_mut(),
         )
     };
-    context.actor_turn = execution.actor_turn;
+    context.actor_turn = crate::lifetime::live_actors::ActorIncarnation::NONE;
     context.actor_message_type = execution.actor_message_type;
     context.actor_caller = execution.actor_caller;
     context.request_deadline = execution.request_deadline;
@@ -601,6 +637,20 @@ pub unsafe extern "C" fn hew_coro_state_is_cancelled(state: *const HewCoroState)
 pub unsafe extern "C" fn hew_coro_state_cancel_code(state: *const HewCoroState) -> i32 {
     // SAFETY: the live state's retained token owns its complete ancestry.
     let reason = unsafe { cancel_token_reason((*state).execution().token) };
+    // The actor's existing latch is the authority for an external construction fault.
+    // SAFETY: the caller retains this live invocation throughout the query.
+    let target = unsafe { &*state }.execution().actor_turn;
+    let external = crate::lifetime::live_actors::with_live_incarnation(target, |actor| {
+        // SAFETY: the send guard pins this incarnation.
+        actor
+            .actor()
+            .pending_external_trap_code
+            .load(Ordering::Acquire)
+    })
+    .unwrap_or(0);
+    if external != 0 {
+        return external;
+    }
     match reason {
         crate::fault::HEW_FAULT_DEADLINE | crate::fault::HEW_FAULT_RACE_LOST => reason,
         _ => crate::fault::HEW_FAULT_CANCELLED,

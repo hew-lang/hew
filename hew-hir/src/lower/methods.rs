@@ -78,6 +78,23 @@ impl LowerCtx {
                         ResolvedTy::Unit,
                     );
                 };
+                if hew_types::actor_delivery::timer_view_parts(&lowered_receiver.ty.to_ty())
+                    .is_some()
+                {
+                    return (
+                        HirExprKind::ActorDelivery {
+                            receiver: Box::new(lowered_receiver),
+                            args: lowered_args,
+                            operation:
+                                hew_types::actor_delivery::ActorDeliveryCall::TimerSchedule {
+                                    method: handler,
+                                    policy,
+                                    evaluation_order,
+                                },
+                        },
+                        ty,
+                    );
+                }
                 // The call IS the send: a `receive fn` without a reply
                 // builds its addressed description and submits it at the
                 // same site. The description is an internal temporary.

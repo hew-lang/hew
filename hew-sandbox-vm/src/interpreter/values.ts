@@ -30,6 +30,7 @@ export type VmValue =
   | { kind: "reply"; id: string }
   | { kind: "channel"; id: string }
   | { kind: "task"; id: string }
+  | { kind: "timer"; resource: number; cancel(): void; closed: boolean }
   | { kind: "generator"; id: string }
   | { kind: "stream"; channelId: string }
   | { kind: "sink"; channelId: string }
@@ -100,6 +101,8 @@ export function cloneValue(value: VmValue): VmValue {
       if (value.closed) throw new Error("cannot copy a released Weak");
       value.cell.weak += 1;
       return { kind: "weak", cell: value.cell, closed: false };
+    case "timer":
+      throw new Error("a timer cancellation handle cannot be copied");
     case "unit":
       return UNIT;
     case "bool":
@@ -275,6 +278,8 @@ export function renderF64(value: number): string {
 
 export function renderStdout(value: VmValue): string {
   switch (value.kind) {
+    case "timer":
+      return "Timer";
     case "unit":
       return "()";
     case "bool":
@@ -331,6 +336,8 @@ export function renderStdout(value: VmValue): string {
 
 export function toJsonValue(value: VmValue): JsonValue {
   switch (value.kind) {
+    case "timer":
+      return "Timer";
     case "unit":
       return null;
     case "bool":

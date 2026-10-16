@@ -226,6 +226,11 @@ fn actor_release_types<'a>(
     match operation {
         hew_sir::ActorOperation::Spawn(id) => vec![&actors[id.0 as usize].state_ty],
         hew_sir::ActorOperation::Submit { message_ty, .. } => vec![message_ty],
+        hew_sir::ActorOperation::TimerSchedule { actor, message, .. } => actors[actor.0 as usize]
+            .handlers
+            .iter()
+            .find(|handler| handler.message_id == *message)
+            .map_or_else(Vec::new, |handler| handler.params.iter().collect()),
         _ => Vec::new(),
     }
 }
@@ -321,12 +326,38 @@ pub(super) fn semantic_callables(checked: &hew_sir::CheckedModule<'_>) -> BTreeS
                 }
             }
             if let hew_sir::SemTerminator::ActorCall { operation, .. } = &block.terminator {
+                if matches!(
+                    operation,
+                    hew_sir::ActorOperation::SelfHandle(_)
+                        | hew_sir::ActorOperation::Submit { .. }
+                        | hew_sir::ActorOperation::TimerSchedule { .. }
+                ) {
+                    resumable.insert(function.callable);
+                }
                 if let hew_sir::ActorOperation::Spawn(actor) = operation {
                     let actor = &module.actors[actor.0 as usize];
                     calls
                         .entry(function.callable)
                         .or_default()
                         .extend(actor.init.iter().chain(&actor.start).copied());
+                    if let Some(init) = actor.init {
+                        for param in module.callables[init.0 as usize]
+                            .signature
+                            .params
+                            .iter()
+                            .skip(1)
+                        {
+                            let (intrinsic, dependencies) =
+                                semantic_release_dependencies(module, &param.ty, None);
+                            if intrinsic || !dependencies.is_empty() {
+                                resumable.insert(function.callable);
+                            }
+                            calls
+                                .entry(function.callable)
+                                .or_default()
+                                .extend(dependencies);
+                        }
+                    }
                 }
                 for ty in actor_release_types(&module.actors, operation) {
                     let (intrinsic, dependencies) = semantic_release_dependencies(module, ty, None);
@@ -552,12 +583,34 @@ pub(super) fn verify_callables(module: &PhysicalModule) -> Result<(), PhysicalEr
                 }
             }
             if let PhysicalTerminator::ActorCall { operation, .. } = &block.terminator {
+                if matches!(
+                    operation,
+                    hew_sir::ActorOperation::SelfHandle(_)
+                        | hew_sir::ActorOperation::Submit { .. }
+                        | hew_sir::ActorOperation::TimerSchedule { .. }
+                ) {
+                    resumable.insert(function.callable);
+                }
                 if let hew_sir::ActorOperation::Spawn(actor) = operation {
                     let actor = &module.actors[actor.0 as usize];
                     calls
                         .entry(function.callable)
                         .or_default()
                         .extend(actor.init.iter().chain(&actor.start).copied());
+                    if let Some(init) = actor.init {
+                        for param in module.callables[init.0 as usize].params.iter().skip(1) {
+                            if module
+                                .actor_recipes
+                                .get(&param.ty)
+                                .and_then(|recipe| recipe.destroy)
+                                .is_some_and(|action| {
+                                    releases.suspends(action) || releases.raises_fault(action)
+                                })
+                            {
+                                resumable.insert(function.callable);
+                            }
+                        }
+                    }
                 }
                 for ty in actor_release_types(&module.actors, operation) {
                     if module

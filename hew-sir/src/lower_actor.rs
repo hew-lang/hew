@@ -1647,6 +1647,88 @@ impl Builder<'_, '_> {
         self.make_delivery_record(expression, vec![target, message, payload])
     }
 
+    fn lower_actor_timer(
+        &mut self,
+        expression: &HirExpr,
+        receiver: &HirExpr,
+        args: &[HirExpr],
+        method: hew_types::DefId,
+        policy: hew_types::actor_delivery::SendPolicy,
+        evaluation_order: &[usize],
+    ) -> Result<ValueId, String> {
+        let view_ty = self.ty(&receiver.ty);
+        let source_ty = view_ty.to_ty();
+        let (target_ty, selected) = hew_types::actor_delivery::timer_view_parts(&source_ty)
+            .ok_or("timer schedule has no checked timer view")?;
+        if policy != selected || policy.may_suspend() {
+            return Err("timer schedule changes its admission policy".into());
+        }
+        let target_ty = ResolvedTy::from_ty(target_ty).map_err(|error| error.to_string())?;
+        let actor = self.service.require_actor(&target_ty)?;
+        let handler = self.service.actors[actor.0 as usize]
+            .handlers
+            .iter()
+            .find(|handler| handler.declaration == method && handler.owes_no_reply())
+            .cloned()
+            .ok_or("timer schedule has no exact one-way handler")?;
+        let view =
+            lower_initial_value_transfer(self, receiver, "timer view", OwnedBindingUse::Copy)?;
+        if !self.is_open() {
+            return Ok(view);
+        }
+        let shape = self.service.require_aggregate_shape(&view_ty)?;
+        let mut inputs = Vec::new();
+        for (field, ty) in [
+            target_ty,
+            ResolvedTy::Duration,
+            ResolvedTy::Duration,
+            ResolvedTy::Bool,
+        ]
+        .iter()
+        .enumerate()
+        {
+            inputs.push(self.emit_typed(
+                crate::Provenance::Site(expression.site),
+                ty,
+                crate::SemOpKind::AggregateProjectCopy {
+                    shape,
+                    aggregate: Operand { value: view },
+                    field: u32::try_from(field).map_err(|_| "timer field index")?,
+                },
+            )?);
+        }
+        let values = match self.lower_actor_payload(args, &handler.params, evaluation_order)? {
+            std::ops::ControlFlow::Continue(values) => values,
+            std::ops::ControlFlow::Break(value) => return Ok(value),
+        };
+        let payload_ty = ResolvedTy::Tuple(handler.params);
+        let shape = self.service.require_aggregate_shape(&payload_ty)?;
+        let payload = self.emit_typed(
+            crate::Provenance::Site(expression.site),
+            &payload_ty,
+            crate::SemOpKind::AggregateMake {
+                shape,
+                fields: values
+                    .iter()
+                    .map(|value| Operand { value: *value })
+                    .collect(),
+            },
+        )?;
+        for value in values {
+            self.owned_live.remove(&value);
+        }
+        inputs.push(payload);
+        let operation = crate::ActorOperation::TimerSchedule {
+            actor,
+            message: handler.message_id,
+            policy,
+        };
+        let signature = self.actor_signature(&operation)?;
+        self.service.require_signature_shapes(&signature)?;
+        self.emit_actor_call(operation, signature, inputs)?
+            .ok_or_else(|| "timer schedule has no cancellation handle".into())
+    }
+
     fn make_delivery_record(
         &mut self,
         expression: &HirExpr,
@@ -1797,6 +1879,54 @@ impl Builder<'_, '_> {
                 ];
                 self.finish_actor_ask(expression, actor, message, *policy, true, inputs)
             }
+            ActorDeliveryCall::TimerView { after, overdue, .. } => {
+                let (target, _) = self.delivery_target(receiver)?;
+                let mut timing = Vec::new();
+                for arg in args {
+                    timing.push(lower_initial_value_transfer(
+                        self,
+                        arg,
+                        "timer timing",
+                        OwnedBindingUse::Copy,
+                    )?);
+                }
+                let after_index = usize::from(overdue.is_some_and(|index| index < *after));
+                let after_value = *timing
+                    .get(after_index)
+                    .ok_or("timer view lacks its delay")?;
+                let overdue_value = if overdue.is_some() {
+                    *timing
+                        .get(1 - after_index)
+                        .ok_or("timer view lacks its overdue duration")?
+                } else {
+                    self.emit_typed(
+                        crate::Provenance::Site(expression.site),
+                        &ResolvedTy::Duration,
+                        crate::SemOpKind::ConstDuration(0),
+                    )?
+                };
+                let has_overdue = self.emit_typed(
+                    crate::Provenance::Site(expression.site),
+                    &ResolvedTy::Bool,
+                    crate::SemOpKind::ConstBool(overdue.is_some()),
+                )?;
+                self.make_delivery_record(
+                    expression,
+                    vec![target, after_value, overdue_value, has_overdue],
+                )
+            }
+            ActorDeliveryCall::TimerSchedule {
+                method,
+                policy,
+                evaluation_order,
+            } => self.lower_actor_timer(
+                expression,
+                receiver,
+                args,
+                *method,
+                *policy,
+                evaluation_order,
+            ),
             ActorDeliveryCall::Policy { .. } => {
                 let (target, _) = self.delivery_target(receiver)?;
                 self.make_delivery_record(expression, vec![target])

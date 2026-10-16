@@ -704,6 +704,7 @@ pub mod blocking_pool;
 pub mod driver;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod task_scope;
+pub mod timer_actor;
 pub mod timer_periodic;
 pub mod wake;
 // timer_wheel compiles on every target: native uses it with the background

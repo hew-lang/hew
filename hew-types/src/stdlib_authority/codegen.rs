@@ -78,8 +78,8 @@ const BUILTIN_ENUM_ABI: &[BuiltinEnumAbi] = &[
     BuiltinEnumAbi {
         module: "std.failure",
         name: "CrashKind",
-        variant_count: 4,
-        order_fingerprint: 0x5b2e_b33e_7278_1ad3,
+        variant_count: 5,
+        order_fingerprint: 0xdf72_537c_328f_482d,
         suppress_from_sandbox_emit: true,
     },
 ];

@@ -336,6 +336,7 @@ pub(crate) fn submission_status(outcome: crate::mailbox::SendOutcome) -> HewSubm
 /// [`SUBMIT_DROP_NEWEST`] policy discards the message instead.
 ///
 /// # Safety
+/// `caller` points to a live stamp copied before this function returns.
 /// `payload` is an unpublished malloc wrapper containing shallowly transferred
 /// typed fields. Acceptance or discard consumes those fields; rejection frees
 /// only the wrapper bytes, leaving the original typed message with the caller.
@@ -349,6 +350,7 @@ pub unsafe extern "C" fn hew_actor_submit_native(
     policy: i32,
     payload_release: Option<hew_cabi::value::HewValueReleaseStart>,
     discarded_release_out: *mut *mut crate::release_walker::HewReleaseCursor,
+    caller: *const crate::actor_caller::HewCallerStamp,
 ) -> i32 {
     // SAFETY: forwards the unpublished wrapper and typed ownership contract.
     unsafe {
@@ -362,7 +364,7 @@ pub unsafe extern "C" fn hew_actor_submit_native(
             false,
             payload_release,
             discarded_release_out,
-            crate::actor_caller::local_sender(),
+            *caller,
         )
     }
 }
@@ -370,6 +372,7 @@ pub unsafe extern "C" fn hew_actor_submit_native(
 /// Submit an attachment close event after queued data without capacity refusal.
 ///
 /// # Safety
+/// `caller` points to a live stamp copied before this function returns.
 /// The wrapper is uniquely owned, with the same contract as native submission.
 #[no_mangle]
 pub unsafe extern "C" fn hew_actor_submit_native_terminal(
@@ -380,6 +383,7 @@ pub unsafe extern "C" fn hew_actor_submit_native_terminal(
     drop_payload: crate::mailbox::HewMsgEnvelopeDropFn,
     payload_release: Option<hew_cabi::value::HewValueReleaseStart>,
     discarded_release_out: *mut *mut crate::release_walker::HewReleaseCursor,
+    caller: *const crate::actor_caller::HewCallerStamp,
 ) -> i32 {
     // SAFETY: forwards the unpublished wrapper and typed ownership contract.
     unsafe {
@@ -393,7 +397,7 @@ pub unsafe extern "C" fn hew_actor_submit_native_terminal(
             true,
             payload_release,
             discarded_release_out,
-            crate::actor_caller::local_sender(),
+            *caller,
         )
     }
 }

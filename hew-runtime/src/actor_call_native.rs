@@ -163,6 +163,7 @@ impl Drop for HewActorCall {
 /// monotonic expiry, or -1 for no request deadline.
 ///
 /// # Safety
+/// `caller` points to a live stamp copied before this function returns.
 /// `payload` is null or an owned malloc wrapper with matching size/destructor.
 /// The reply descriptor and retained waker obey their native contracts.
 #[no_mangle]
@@ -183,6 +184,7 @@ pub unsafe extern "C" fn hew_actor_call_new(
     policy: i32,
     payload_release: Option<HewValueReleaseStart>,
     reply_release: Option<HewValueReleaseStart>,
+    caller: *const crate::actor_caller::HewCallerStamp,
 ) -> *mut HewActorCall {
     // SAFETY: forwards the owned request and captures its local sender.
     unsafe {
@@ -199,7 +201,7 @@ pub unsafe extern "C" fn hew_actor_call_new(
             policy,
             payload_release,
             reply_release,
-            crate::actor_caller::local_sender(),
+            *caller,
             #[cfg(not(target_arch = "wasm32"))]
             None,
         )
@@ -275,6 +277,7 @@ pub(crate) unsafe fn actor_call_new(
 /// Start the same operation using a sealed request, preserving its identity.
 ///
 /// # Safety
+/// `caller` points to a live stamp copied before this function returns.
 /// `envelope` is null or uniquely owns the checked target's request protocol.
 /// The reply descriptor and retained waker obey their native contracts.
 #[no_mangle]
@@ -292,6 +295,7 @@ pub unsafe extern "C" fn hew_actor_call_resume(
     deadline_ns: i64,
     policy: i32,
     reply_release: Option<HewValueReleaseStart>,
+    caller: *const crate::actor_caller::HewCallerStamp,
 ) -> *mut HewActorCall {
     // SAFETY: forwards the owned request and captures its local sender.
     unsafe {
@@ -305,7 +309,7 @@ pub unsafe extern "C" fn hew_actor_call_resume(
             deadline_ns,
             policy,
             reply_release,
-            crate::actor_caller::local_sender(),
+            *caller,
             #[cfg(not(target_arch = "wasm32"))]
             None,
         )

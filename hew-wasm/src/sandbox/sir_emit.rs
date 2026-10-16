@@ -108,6 +108,7 @@ fn runtime_role_name(role: RuntimeVariantRole) -> &'static str {
         Role::CrashKindHeapExceeded => "CrashKindHeapExceeded",
         Role::CrashKindPartitionDetected => "CrashKindPartitionDetected",
         Role::CrashKindHandlerFailed => "CrashKindHandlerFailed",
+        Role::CrashKindTimerOverdue => "CrashKindTimerOverdue",
         Role::OptionSome => "OptionSome",
         Role::OptionNone => "OptionNone",
         Role::ResultOk => "ResultOk",
@@ -1905,18 +1906,33 @@ impl<'m> Walker<'m> {
                 normal,
                 unwind,
                 ..
-            } => serde_json::json!({
-                "op": "actor.call",
-                "operation": actor_operation(operation),
-                "submission_shapes": self.submission_shapes(result),
-                "error_shape": self.error_shape(result),
+            } => {
+                let mut operation_json = actor_operation(operation);
+                if matches!(operation, hew_sir::ActorOperation::TimerSchedule { .. }) {
+                    let CallResult::Value(result) = result else {
+                        return Err(EmitError::new("timer has no resource result"));
+                    };
+                    let resource = self
+                        .module
+                        .resources
+                        .keys()
+                        .position(|ty| *ty == result.ty)
+                        .ok_or_else(|| EmitError::new("timer has no checked release recipe"))?;
+                    operation_json["resource"] = serde_json::json!(resource);
+                }
+                serde_json::json!({
+                    "op": "actor.call",
+                    "operation": operation_json,
+                    "submission_shapes": self.submission_shapes(result),
+                    "error_shape": self.error_shape(result),
                     "request_shapes": self.request_shapes(result),
-                "args": boundaries(args),
-                "result": call_result(result),
-                "result_shape": self.result_shape(result),
-                "normal": encode_edge(normal),
-                "unwind": encode_unwind(unwind),
-            }),
+                    "args": boundaries(args),
+                    "result": call_result(result),
+                    "result_shape": self.result_shape(result),
+                    "normal": encode_edge(normal),
+                    "unwind": encode_unwind(unwind),
+                })
+            }
             SemTerminator::WireCodec {
                 codec,
                 plan,
@@ -2181,6 +2197,14 @@ fn actor_operation(operation: &hew_sir::ActorOperation) -> serde_json::Value {
         Op::Submit { actor, policy, .. } => serde_json::json!({
             "op": "submit",
             "actor": actor.0,
+            "policy": send_policy_name(*policy),
+        }),
+        Op::TimerSchedule {
+            actor,
+            message,
+            policy,
+        } => serde_json::json!({
+            "op": "timer_schedule", "actor": actor.0, "message": message,
             "policy": send_policy_name(*policy),
         }),
         Op::StreamStart { actor, message, .. } => serde_json::json!({

@@ -854,6 +854,17 @@ pub(crate) fn activate_queued_actor(actor: *mut HewActor) {
                     msgs_processed += 1;
                     continue;
                 }
+                // A timer's start claim races its one overdue deadline. Losing
+                // the claim leaves this payload to ordinary node cleanup.
+                // SAFETY: this worker exclusively owns the dequeued envelope.
+                let timer = unsafe { msg_ref.envelope.as_ref() }
+                    .and_then(|envelope| envelope.timer.as_ref());
+                if timer.is_some_and(|timer| !timer.started()) {
+                    // SAFETY: no handler has borrowed this request.
+                    unsafe { hew_msg_node_free(msg) };
+                    msgs_processed += 1;
+                    continue;
+                }
                 let observe_dispatch_ticket = crate::observe::observe_dispatch_begin();
                 // Check for injected crash fault (testing only).
                 if crate::deterministic::check_crash_fault(a.id) {

@@ -1,0 +1,15 @@
+type WrappedTimer {
+    timer: Timer;
+}
+
+actor Receiver {
+    receive fn take(timer: WrappedTimer) {}
+}
+
+pub fn require_send<T: Send>(value: T) {}
+
+pub fn reject(timer: WrappedTimer) {
+    require_send(timer);
+}
+
+fn main() {}

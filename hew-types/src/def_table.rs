@@ -416,10 +416,12 @@ pub enum KnownDecl {
     PeerSession,
     Service,
     ServiceExport,
+    ActorTimerMailbox,
+    Timer,
 }
 
 impl KnownDecl {
-    pub const ALL: [Self; 26] = [
+    pub const ALL: [Self; 28] = [
         Self::ActorError,
         Self::Never,
         Self::ActorMailbox,
@@ -446,6 +448,8 @@ impl KnownDecl {
         Self::PeerSession,
         Self::Service,
         Self::ServiceExport,
+        Self::ActorTimerMailbox,
+        Self::Timer,
     ];
 
     /// The declaration's canonical path in `std.builtins`.
@@ -456,6 +460,8 @@ impl KnownDecl {
             Self::ActorError => "std.builtins.ActorError",
             Self::Never => "std.builtins.Never",
             Self::ActorMailbox => "std.builtins.ActorMailbox",
+            Self::ActorTimerMailbox => "std.builtins.ActorTimerMailbox",
+            Self::Timer => "std.builtins.Timer",
             Self::ActorPolicy => "std.builtins.ActorPolicy",
             Self::Message => "std.builtins.Message",
             Self::SendFailure => "std.builtins.SendFailure",
@@ -487,6 +493,8 @@ impl KnownDecl {
             Self::ActorError => "ActorError",
             Self::Never => "Never",
             Self::ActorMailbox => "ActorMailbox",
+            Self::ActorTimerMailbox => "ActorTimerMailbox",
+            Self::Timer => "Timer",
             Self::ActorPolicy => "ActorPolicy",
             Self::Message => "Message",
             Self::SendFailure => "SendFailure",

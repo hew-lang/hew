@@ -114,6 +114,7 @@ const ACTOR_OPS = new Set([
   "call_take",
   "submit",
   "stream_start",
+  "timer_schedule",
   "supervisor_spawn",
   "supervisor_child",
   "supervisor_pool_view",
@@ -166,6 +167,7 @@ export function admitPackage(pkg: PackageV1): SandboxRejection | null {
     };
   }
 
+  const timerResources = new Set<number>();
   for (const function_ of pkg.functions) {
     for (const block of function_.blocks) {
       if (block.ops.some((op) => op.op === "actor.ingress_adapter"))
@@ -237,6 +239,33 @@ export function admitPackage(pkg: PackageV1): SandboxRejection | null {
             span: null,
           };
       }
+      if (term.op === "actor.call" && term.operation.op === "timer_schedule") {
+        const operation = term.operation;
+        const handler = pkg.actors
+          ?.find((actor) => actor.id === operation.actor)
+          ?.handlers.find(
+            (handler) => handler.message_id === operation.message,
+          );
+        const resource = pkg.resources?.[operation.resource];
+        if (
+          !handler ||
+          handler.streams ||
+          term.args.length !== 5 ||
+          !["reject", "drop_newest"].includes(operation.policy) ||
+          resource?.kind !== "opaque" ||
+          resource.close === undefined ||
+          !pkg.functions.some((fn) => fn.id === resource.close)
+        )
+          return {
+            category: "invalid_package",
+            code: "sandbox.package.invalid_timer",
+            capability: "actor.timer_schedule",
+            message:
+              "timer schedule lacks its checked handler, timing or non-waiting admission",
+            span: null,
+          };
+        timerResources.add(operation.resource);
+      }
       if (term.op === "suspend") {
         const mandatoryClose = (pkg.resources ?? []).some(
           (resource) => resource.close === function_.id,
@@ -269,7 +298,7 @@ export function admitPackage(pkg: PackageV1): SandboxRejection | null {
     }
   }
 
-  for (const resource of pkg.resources ?? []) {
+  for (const [index, resource] of (pkg.resources ?? []).entries()) {
     if (
       resource.kind === "record" &&
       (resource.shape === undefined ||
@@ -282,7 +311,8 @@ export function admitPackage(pkg: PackageV1): SandboxRejection | null {
         message: "record resource has no exact aggregate shape",
         span: null,
       };
-    if (resource.kind === "opaque") return unavailable("resource.opaque_close");
+    if (resource.kind === "opaque" && !timerResources.has(index))
+      return unavailable("resource.opaque_close");
     if (
       resource.kind === "nominal" &&
       !resolveExternShim(resource.release ?? "")

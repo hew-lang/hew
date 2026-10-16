@@ -716,9 +716,7 @@ pub(super) fn is_builtin_source_body_impl(item: &Item) -> bool {
         && matches!(&decl.target_type.0, TypeExpr::Named { type_args: None, .. })
         && !decl.methods.is_empty()
         && decl.methods.iter().all(|method| {
-            method.body.stmts.is_empty()
-                && method.body.trailing_expr.is_some()
-                && !method.attributes.iter().any(|attr| attr.name == "extern_symbol")
+            !method.attributes.iter().any(|attr| attr.name == "extern_symbol")
         }))
 }
 

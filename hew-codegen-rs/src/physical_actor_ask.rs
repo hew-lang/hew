@@ -303,6 +303,8 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         arguments.push(
             actor_value_release(self.ctx, self.llvm, self.module, &handler.return_ty)?.into(),
         );
+        types.push(ptr.into());
+        arguments.push(self.sender_stamp()?.into());
         let start = get_or_declare_external(
             self.llvm,
             if sealed {

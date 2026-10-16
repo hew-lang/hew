@@ -703,18 +703,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 let mut arguments = Vec::new();
                 for index in 0..5 {
                     let value = self.load(source(index)?, "string.range.argument")?;
-                    arguments.push(if index >= 3 {
-                        self.builder
-                            .build_int_truncate(
-                                value.into_int_value(),
-                                self.ctx.bool_type(),
-                                "string.range.flag",
-                            )
-                            .llvm_ctx("convert stored bool to C bool")?
-                            .into()
-                    } else {
-                        value.into()
-                    });
+                    arguments.push(value.into());
                 }
                 let value = self
                     .runtime_call_value(function, &arguments, "string.range.value")?
@@ -1983,9 +1972,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 CodegenError::FailClosed("caller identity lacks its variant shape".into())
             })?;
         let word = self.ctx.i64_type();
-        let stamp_ty = self
-            .ctx
-            .struct_type(&[word.into(), word.into(), word.into()], false);
+        let stamp_ty = super::actor::caller_stamp_type(self.ctx);
         let stamp = self
             .value_emitter()
             .entry_scratch(stamp_ty.into(), "caller.stamp")?;

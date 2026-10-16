@@ -17,6 +17,7 @@ pub struct NativeActorCompletion {
     pub(crate) cleanup: super::cleanup::Cleanup,
     pub(crate) crash: Option<crate::actor::HewNativeCrashFn>,
     pub(crate) crash_action: AtomicI32,
+    pub(crate) construction: Mutex<Option<crate::coro_state::ConstructionWake>>,
     phase: AtomicU8,
     code: AtomicI32,
     ready: ReadinessRegistrations,
@@ -30,6 +31,16 @@ impl NativeActorCompletion {
         Self {
             crash,
             ..Self::default()
+        }
+    }
+
+    pub(crate) fn cancel_construction(&self, reason: i32) -> bool {
+        let construction = self.construction.lock_or_recover();
+        if let Some(wake) = construction.as_ref() {
+            wake.cancel(reason);
+            true
+        } else {
+            false
         }
     }
 
@@ -119,6 +130,9 @@ pub(crate) unsafe fn finish_native_terminal_after_terminate(actor: &HewActor) {
     {
         return;
     }
+    // A pending timer owns a registered payload. Retire it before terminal
+    // cleanup closes the inbox and waits for its remaining owners.
+    crate::timer_periodic::cancel_all_timers_for_actor(std::ptr::from_ref(actor).cast_mut());
     debug_assert_eq!(
         actor.dispatch_ownership,
         HewDispatchOwnership::UniqueEnvelope

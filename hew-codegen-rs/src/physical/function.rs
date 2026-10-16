@@ -798,8 +798,9 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     }
                 ) {
                     if let Some(action) = destroy {
-                        let value = self.load(*storage, "seat.release")?;
-                        self.release_loaded(value, &self.storage(*storage)?.layout, *action)?;
+                        self.destroy_value(*storage, *action, cleanup)?;
+                    } else {
+                        self.clear_owned(*storage)?;
                     }
                     return Ok(());
                 }

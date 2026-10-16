@@ -148,6 +148,9 @@ impl Cleanup {
 
 /// Wake queued cleanup without taking the actor away from an active handler.
 pub(crate) fn wake(actor: &HewActor) {
+    if actor.actor_state.load(Ordering::Acquire) == HewActorState::Constructing as i32 {
+        return;
+    }
     let raw = ptr::from_ref(actor).cast_mut();
     if actor
         .actor_state

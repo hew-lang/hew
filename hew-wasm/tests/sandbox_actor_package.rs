@@ -692,6 +692,50 @@ fn crash_info_uses_the_native_public_crash_kind() {
 }
 
 #[test]
+fn actor_one_shot_timers_preserve_ownership_and_overdue_faults() {
+    for name in [
+        "actor-one-shot-lifetime",
+        "actor-timer-overdue-compute",
+        "actor-timer-discard-overdue",
+    ] {
+        assert_native_manifest(name, hew_compile::SourceSet::in_memory());
+    }
+    let failed = execute_options(
+        include_str!("../../tests/core-acceptance/cases/actor-timer-construction-overdue.hew"),
+        "panic",
+        "{}",
+        hew_compile::SourceSet::in_memory(),
+    );
+    let closed = stdout(&failed);
+    let mut closed: Vec<_> = closed.lines().collect();
+    assert_eq!(closed.pop(), Some("closed state"));
+    closed.sort_unstable();
+    assert_eq!(
+        closed,
+        ["closed overdue", "closed pending", "closed queued"]
+    );
+    let mut module = semantics(include_str!(
+        "../../tests/core-acceptance/cases/actor-one-shot-lifetime.hew"
+    ));
+    let operation = module
+        .module
+        .functions
+        .iter_mut()
+        .flat_map(|function| &mut function.blocks)
+        .find_map(|block| match &mut block.terminator {
+            hew_sir::SemTerminator::ActorCall {
+                operation: hew_sir::ActorOperation::TimerSchedule { policy, .. },
+                ..
+            } => Some(policy),
+            _ => None,
+        })
+        .expect("source demanded a timer operation");
+    *operation = hew_types::actor_delivery::SendPolicy::Wait;
+    let diagnostics = hew_sir::verify_module(&module.module);
+    assert!(format!("{diagnostics:?}").contains("a timer cannot wait for mailbox capacity"));
+}
+
+#[test]
 fn indexed_unicode_values_preserve_scalar_operations_and_snapshots() {
     let trace = execute(include_str!(
         "../../tests/core-acceptance/cases/string-indexed-unicode.hew"

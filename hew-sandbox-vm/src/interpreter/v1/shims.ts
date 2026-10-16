@@ -906,6 +906,20 @@ function bigMax(left: bigint, right: bigint): bigint {
 // ── externs ─────────────────────────────────────────────────────────────────
 
 const EXTERN_SHIMS: Record<string, RuntimeShim | undefined> = {
+  hew_actor_timer_cancel: (_host, args) => {
+    const timer = arg(args, 0);
+    if (timer.kind !== "timer" || timer.closed)
+      throw new Error("invalid timer handle");
+    timer.cancel();
+    return UNIT;
+  },
+  hew_actor_timer_release: (_host, args) => {
+    const timer = arg(args, 0);
+    if (timer.kind !== "timer" || timer.closed)
+      throw new Error("invalid timer handle");
+    timer.closed = true;
+    return UNIT;
+  },
   hew_msg_envelope_release: (host, args) => {
     host.releaseValue!(arg(args, 0));
     return UNIT;

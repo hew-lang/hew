@@ -972,6 +972,12 @@ pub enum ActorOperation {
         /// The handle or role the request addresses.
         target: ResolvedTy,
     },
+    /// Transfer one checked request to its actor-owned one-shot timer.
+    TimerSchedule {
+        actor: ActorId,
+        message: u32,
+        policy: hew_types::actor_delivery::SendPolicy,
+    },
     Submit {
         actor: ActorId,
         policy: hew_types::actor_delivery::SendPolicy,
@@ -1216,7 +1222,8 @@ impl ActorOperation {
             Self::Spawn(id)
             | Self::SelfHandle(id)
             | Self::StreamStart { actor: id, .. }
-            | Self::Submit { actor: id, .. } => *id,
+            | Self::Submit { actor: id, .. }
+            | Self::TimerSchedule { actor: id, .. } => *id,
             Self::RemoteSend {
                 actor,
                 message,
@@ -1280,6 +1287,34 @@ impl ActorOperation {
                     .collect::<Vec<_>>(),
                 actor.handle_ty.clone(),
             ),
+            Self::TimerSchedule {
+                message, policy, ..
+            } => {
+                if policy.may_suspend() {
+                    return Err("a timer cannot wait for mailbox capacity".into());
+                }
+                let handler = actor
+                    .handlers
+                    .iter()
+                    .find(|handler| handler.message_id == *message && handler.owes_no_reply())
+                    .ok_or("timer requires an exact one-way handler protocol")?;
+                (
+                    vec![
+                        actor.handle_ty.clone(),
+                        ResolvedTy::Duration,
+                        ResolvedTy::Duration,
+                        ResolvedTy::Bool,
+                        ResolvedTy::Tuple(handler.params.clone()),
+                    ],
+                    ResolvedTy::named_opaque(
+                        hew_types::NominalHead::new(
+                            hew_types::KnownDecl::Timer.nominal(),
+                            hew_types::KnownDecl::Timer.path(),
+                        ),
+                        Vec::new(),
+                    ),
+                )
+            }
             Self::Submit {
                 policy,
                 message_ty,

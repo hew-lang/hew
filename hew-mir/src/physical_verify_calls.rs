@@ -306,6 +306,16 @@ pub(crate) fn actor_value_recipes(
     }
     for actor in &module.actors {
         types.push(actor.state_ty.clone());
+        if let Some(init) = actor.init {
+            types.extend(
+                module.callables[init.0 as usize]
+                    .signature
+                    .params
+                    .iter()
+                    .skip(1)
+                    .map(|param| param.ty.clone()),
+            );
+        }
         // A rejected completion returns its addressed target with the request.
         // Include the exact handle/role instances already admitted by SIR.
         types.extend(
@@ -337,7 +347,9 @@ pub(crate) fn actor_value_recipes(
                     ..
                 } => Some(message_ty.clone()),
                 SemTerminator::ActorCall {
-                    operation: ActorOperation::StreamStart { actor, message, .. },
+                    operation:
+                        ActorOperation::StreamStart { actor, message, .. }
+                        | ActorOperation::TimerSchedule { actor, message, .. },
                     ..
                 } => module
                     .actor(*actor)

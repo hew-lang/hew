@@ -348,14 +348,14 @@ pub(super) fn semantic_callables(checked: &hew_sir::CheckedModule<'_>) -> BTreeS
                     inputs,
                     ..
                 } => {
-                    let (intrinsic, dependencies) = semantic_release_dependencies(
+                    // A non-parking send can still yield while invoking an
+                    // encoder. Its operation never waits for sink capacity.
+                    resumable.insert(function.callable);
+                    let (_, dependencies) = semantic_release_dependencies(
                         module,
                         &types[&inputs[1].operand.value],
                         None,
                     );
-                    if intrinsic {
-                        resumable.insert(function.callable);
-                    }
                     calls
                         .entry(function.callable)
                         .or_default()
@@ -573,18 +573,6 @@ pub(super) fn verify_callables(module: &PhysicalModule) -> Result<(), PhysicalEr
                 }
             }
             match &block.terminator {
-                PhysicalTerminator::StreamSend {
-                    park: false,
-                    element,
-                    ..
-                } => {
-                    if element
-                        .destroy
-                        .is_some_and(|action| releases.suspends(action))
-                    {
-                        resumable.insert(function.callable);
-                    }
-                }
                 PhysicalTerminator::RecoverFault { .. }
                 | PhysicalTerminator::NativeIo { .. }
                 | PhysicalTerminator::ServiceAcquire { .. }
@@ -596,7 +584,7 @@ pub(super) fn verify_callables(module: &PhysicalModule) -> Result<(), PhysicalEr
                 | PhysicalTerminator::GeneratorYield { .. }
                 | PhysicalTerminator::GeneratorNext { .. }
                 | PhysicalTerminator::StreamNext { park: true, .. }
-                | PhysicalTerminator::StreamSend { park: true, .. }
+                | PhysicalTerminator::StreamSend { .. }
                 | PhysicalTerminator::TaskAwait { .. }
                 | PhysicalTerminator::ActorAsk { .. }
                 | PhysicalTerminator::RemoteAsk { .. }

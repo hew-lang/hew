@@ -145,8 +145,15 @@ fn native_prebuilt_sqlite_without_cargo() {
         identity.target, identity.hew, identity.rustc_release, identity.rustc_host
     );
     let checksum = tarball::checksum_bytes(&artifact);
-    let native_record = json!({ "cksum": checksum, "sig": signers.publisher.sign(checksum.as_bytes()),
-        "key_fp": signers.publisher.fingerprint(), "dl": format!("{}/native.tar.zst", server.origin) });
+    let signature = signers.publisher.sign(checksum.as_bytes());
+    let canonical = format!(
+        "registry:native:v1:hew.db.sqlite@0.3.0:{}:{}:{}:{}:{}:{checksum}:{signature}:{PUBLISHED_AT}",
+        identity.target, identity.hew, identity.rustc_release, identity.rustc_host, package.checksum
+    );
+    let native_record = json!({ "cksum": checksum, "sig": signature,
+        "key_fp": signers.publisher.fingerprint(), "dl": format!("{}/native.tar.zst", server.origin),
+        "source_checksum": package.checksum, "registry_sig": signers.registry.sign(canonical.as_bytes()),
+        "registry_key_fp": "fixture-registry", "published_at": PUBLISHED_AT });
     server.json(&native, &native_record);
     server.reply("/native.tar.zst", 200, artifact.clone());
     let tools = tempfile::tempdir().unwrap();
@@ -304,6 +311,36 @@ fn native_prebuilt_sqlite_without_cargo() {
     bad_signature["sig"] = json!("ed25519:00");
     server.json(&native, &bad_signature);
     assert_failure(&run(&profile, &project, &["install"]), "signature invalid");
+    for (field, value, expected) in [
+        ("registry_sig", "", "complete registry countersignature"),
+        ("registry_sig", "ed25519:00", "registry signature invalid"),
+        (
+            "source_checksum",
+            "sha256:wrong",
+            "registry source checksum mismatch",
+        ),
+        (
+            "registry_key_fp",
+            "wrong-key",
+            "registry signing key fingerprint mismatch",
+        ),
+    ] {
+        let mut invalid = native_record.clone();
+        invalid[field] = json!(value);
+        server.json(&native, &invalid);
+        assert_failure(&run(&profile, &project, &["install"]), expected);
+    }
+    let mut wrong_identity = native_record.clone();
+    wrong_identity["registry_sig"] = json!(signers.registry.sign(
+        canonical
+            .replace(&identity.target, "aarch64-unknown-linux-gnu")
+            .as_bytes()
+    ));
+    server.json(&native, &wrong_identity);
+    assert_failure(
+        &run(&profile, &project, &["install"]),
+        "registry signature invalid",
+    );
     server.reply(&native, 404, b"no native artifact".to_vec());
     assert_success(&run(&corrupt, &project, &["install"]));
     let missing_tools = run(&corrupt, &project, &["build"]);

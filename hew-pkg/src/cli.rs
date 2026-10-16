@@ -1781,11 +1781,25 @@ fn verify_registry_signature(
     published_at: &str,
     registry_sig: &str,
 ) -> Result<(), String> {
+    let canonical =
+        format!("registry:v1:{name}@{version}:{checksum}:{publisher_sig}:{published_at}");
+    verify_registry_message(api_client, &canonical, registry_sig, None)
+}
+
+pub(crate) fn verify_registry_message(
+    api_client: &client::RegistryClient,
+    canonical: &str,
+    registry_sig: &str,
+    key_fingerprint: Option<&str>,
+) -> Result<(), String> {
     use base64::Engine as _;
 
     let key_resp = api_client
         .get_registry_key()
         .map_err(|e| format!("could not fetch registry key: {e}"))?;
+    if key_fingerprint.is_some_and(|fingerprint| fingerprint != key_resp.key_id) {
+        return Err("registry signing key fingerprint mismatch".to_string());
+    }
     let pub_bytes = base64::engine::general_purpose::STANDARD
         .decode(&key_resp.public_key)
         .map_err(|e| format!("invalid registry public key encoding: {e}"))?;
@@ -1793,9 +1807,6 @@ fn verify_registry_signature(
     let pub_arr: [u8; 32] = pub_bytes
         .try_into()
         .map_err(|_| "registry public key is not 32 bytes".to_string())?;
-
-    let canonical =
-        format!("registry:v1:{name}@{version}:{checksum}:{publisher_sig}:{published_at}");
 
     signing::verify(canonical.as_bytes(), registry_sig, &pub_arr)
         .map_err(|e| format!("registry signature invalid: {e}"))

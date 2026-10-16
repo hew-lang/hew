@@ -149,7 +149,10 @@ build version and runtime rustc release/host stamp. The Rust compiler host stamp
 is independent of the selected native target, including for cross-built SDKs.
 The package name, version,
 source archive checksum and compatibility identity are inside the archive
-covered by the ordinary publisher checksum signature. `hew.lock` records the
+covered by the ordinary publisher checksum signature. The registry countersigns
+the source checksum, compatibility identity, archive checksum, publisher
+signature and publication time using its existing signing key. Missing or
+invalid countersignatures refuse installation. `hew.lock` records the
 selected qualified archive checksum alongside the source package. Offline
 linking verifies the cached archive against this pin.
 

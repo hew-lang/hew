@@ -211,6 +211,44 @@ impl RegistryClient {
         ))
     }
 
+    pub(crate) fn verify_native_registry_signature(
+        &self,
+        name: &str,
+        version: &str,
+        source_checksum: &str,
+        identity: &crate::native_prebuilt::NativeIdentity,
+        record: &crate::native_prebuilt::NativeRecord,
+    ) -> Result<(), String> {
+        if record.registry_sig.is_empty()
+            || record.registry_key_fp.is_empty()
+            || record.published_at.is_empty()
+        {
+            return Err(
+                "native artifact requires a complete registry countersignature".to_string(),
+            );
+        }
+        if record.source_checksum != source_checksum {
+            return Err("native registry source checksum mismatch".to_string());
+        }
+        let name = package_name::to_wire(name, self.wire_names)?;
+        let canonical = format!(
+            "registry:native:v1:{name}@{version}:{}:{}:{}:{}:{source_checksum}:{}:{}:{}",
+            identity.target,
+            identity.hew,
+            identity.rustc_release,
+            identity.rustc_host,
+            record.cksum,
+            record.sig,
+            record.published_at,
+        );
+        crate::cli::verify_registry_message(
+            self,
+            &canonical,
+            &record.registry_sig,
+            Some(&record.registry_key_fp),
+        )
+    }
+
     /// Publish a signed native archive through the ordinary publisher grant.
     ///
     /// # Errors

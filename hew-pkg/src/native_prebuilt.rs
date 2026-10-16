@@ -66,12 +66,20 @@ pub struct NativeDescriptor {
     pub library: String,
 }
 
-/// Uses the ordinary publisher signature over the archive checksum.
+/// Publisher and registry proofs for one qualified native archive.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct NativeRecord {
     pub cksum: String,
     pub sig: String,
     pub key_fp: String,
+    #[serde(default)]
+    pub source_checksum: String,
+    #[serde(default)]
+    pub registry_sig: String,
+    #[serde(default)]
+    pub registry_key_fp: String,
+    #[serde(default)]
+    pub published_at: String,
     pub dl: String,
 }
 
@@ -288,6 +296,13 @@ pub(crate) fn fetch(
         return Err("native artifact requires a publisher signature".to_string());
     }
     crate::cli::verify_package_signature(client, &record.cksum, &record.sig, &record.key_fp)?;
+    client.verify_native_registry_signature(
+        &manifest.package.name,
+        &manifest.package.version,
+        source_checksum,
+        identity,
+        &record,
+    )?;
     let (cache, namespace) = cache_location(client.registry_identity(), source_checksum, identity)?;
     let name = &manifest.package.name;
     let version = &manifest.package.version;

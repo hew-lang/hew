@@ -2129,9 +2129,10 @@ pub enum SemTerminator {
     },
     /// A compiler-authored scheduling boundary. Cancellation follows the
     /// current lexical cleanup; polling has no operation-failure edge.
+    /// An authored close has private cleanup ancestry and no cancellation exit.
     Safepoint {
         resume: Edge,
-        cancel: Edge,
+        cancel: Option<Edge>,
     },
     /// A suspension (§1.5).
     ///
@@ -2399,11 +2400,15 @@ impl SemTerminator {
             Self::EnterDefer { body: edge, .. }
             | Self::FinishDefer { next: edge, .. }
             | Self::CheckedRaiseFault { cleanup: edge, .. }
+            | Self::Safepoint {
+                resume: edge,
+                cancel: None,
+            }
             | Self::Goto(edge) => edge.visit_operands(visit),
             Self::CleanupDispatch { normal, fault }
             | Self::Safepoint {
                 resume: normal,
-                cancel: fault,
+                cancel: Some(fault),
             }
             | Self::RecoverFault {
                 normal,
@@ -2585,11 +2590,15 @@ impl SemTerminator {
             Self::EnterDefer { body: edge, .. }
             | Self::FinishDefer { next: edge, .. }
             | Self::CheckedRaiseFault { cleanup: edge, .. }
+            | Self::Safepoint {
+                resume: edge,
+                cancel: None,
+            }
             | Self::Goto(edge) => edge.visit_operands_mut(visit),
             Self::CleanupDispatch { normal, fault }
             | Self::Safepoint {
                 resume: normal,
-                cancel: fault,
+                cancel: Some(fault),
             }
             | Self::RecoverFault {
                 normal,
@@ -2762,7 +2771,7 @@ impl SemTerminator {
             Self::CleanupDispatch { normal, fault }
             | Self::Safepoint {
                 resume: normal,
-                cancel: fault,
+                cancel: Some(fault),
             }
             | Self::RecoverFault {
                 normal,
@@ -2779,6 +2788,10 @@ impl SemTerminator {
             Self::EnterDefer { body: edge, .. }
             | Self::FinishDefer { next: edge, .. }
             | Self::CheckedRaiseFault { cleanup: edge, .. }
+            | Self::Safepoint {
+                resume: edge,
+                cancel: None,
+            }
             | Self::Goto(edge)
             | Self::Panic { cleanup: edge, .. } => visit(SuccessorSlot(0), edge),
             Self::Branch {
@@ -2866,7 +2879,7 @@ impl SemTerminator {
             Self::CleanupDispatch { normal, fault }
             | Self::Safepoint {
                 resume: normal,
-                cancel: fault,
+                cancel: Some(fault),
             }
             | Self::RecoverFault {
                 normal,
@@ -2883,6 +2896,10 @@ impl SemTerminator {
             Self::EnterDefer { body: edge, .. }
             | Self::FinishDefer { next: edge, .. }
             | Self::CheckedRaiseFault { cleanup: edge, .. }
+            | Self::Safepoint {
+                resume: edge,
+                cancel: None,
+            }
             | Self::Goto(edge)
             | Self::Panic { cleanup: edge, .. } => visit(SuccessorSlot(0), edge),
             Self::Branch {
@@ -2967,7 +2984,7 @@ impl SemTerminator {
             Self::CleanupDispatch { normal, fault }
             | Self::Safepoint {
                 resume: normal,
-                cancel: fault,
+                cancel: Some(fault),
             }
             | Self::RecoverFault {
                 normal,
@@ -2981,6 +2998,10 @@ impl SemTerminator {
             Self::EnterDefer { body: edge, .. }
             | Self::FinishDefer { next: edge, .. }
             | Self::CheckedRaiseFault { cleanup: edge, .. }
+            | Self::Safepoint {
+                resume: edge,
+                cancel: None,
+            }
             | Self::Goto(edge)
             | Self::Panic { cleanup: edge, .. }
                 if slot == SuccessorSlot(0) =>
@@ -3043,6 +3064,7 @@ impl SemTerminator {
             | Self::CheckedRaiseFault { .. }
             | Self::Return { .. }
             | Self::Goto(_)
+            | Self::Safepoint { cancel: None, .. }
             | Self::Panic { .. }
             | Self::Trap { .. }
             | Self::ResumeUnwind { .. }
@@ -3057,7 +3079,7 @@ impl SemTerminator {
             Self::CleanupDispatch { normal, fault }
             | Self::Safepoint {
                 resume: normal,
-                cancel: fault,
+                cancel: Some(fault),
             }
             | Self::RecoverFault {
                 normal,
@@ -3071,6 +3093,10 @@ impl SemTerminator {
             Self::EnterDefer { body: edge, .. }
             | Self::FinishDefer { next: edge, .. }
             | Self::CheckedRaiseFault { cleanup: edge, .. }
+            | Self::Safepoint {
+                resume: edge,
+                cancel: None,
+            }
             | Self::Goto(edge)
             | Self::Panic { cleanup: edge, .. }
                 if slot == SuccessorSlot(0) =>
@@ -3133,6 +3159,7 @@ impl SemTerminator {
             | Self::CheckedRaiseFault { .. }
             | Self::Return { .. }
             | Self::Goto(_)
+            | Self::Safepoint { cancel: None, .. }
             | Self::Panic { .. }
             | Self::Trap { .. }
             | Self::ResumeUnwind { .. }

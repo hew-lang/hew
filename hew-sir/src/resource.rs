@@ -100,6 +100,15 @@ pub enum ResourceCarrier {
 }
 
 impl ResourceRelease {
+    /// Exact authored body responsible for completing this release.
+    #[must_use]
+    pub fn close_callable(&self) -> Option<crate::CallableId> {
+        match self {
+            Self::RecordClose { close, .. } | Self::OpaqueClose { close, .. } => Some(*close),
+            _ => None,
+        }
+    }
+
     /// Return the scalar carrier of the admitted release protocol.
     ///
     /// # Errors

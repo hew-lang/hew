@@ -1241,9 +1241,11 @@ impl<'a> Flow<'a> {
             SemTerminator::Safepoint { resume, cancel } => {
                 Self::require_fault(id, DEAD, &state, emit);
                 successors.extend(self.edge(id, resume, state.clone(), emit));
-                state.exit = (state.exit & !ORDINARY) | CANCEL;
-                state.fault = LIVE;
-                successors.extend(self.edge(id, cancel, state, emit));
+                if let Some(cancel) = cancel {
+                    state.exit = (state.exit & !ORDINARY) | CANCEL;
+                    state.fault = LIVE;
+                    successors.extend(self.edge(id, cancel, state, emit));
+                }
             }
             SemTerminator::Suspend {
                 kind:

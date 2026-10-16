@@ -1871,7 +1871,7 @@ fn safepoints_cannot_abandon_cancellation_without_cleanup() {
     };
     function.blocks[0].terminator = SemTerminator::Safepoint {
         resume: edge(1),
-        cancel: edge(2),
+        cancel: Some(edge(2)),
     };
     for (id, terminator) in [
         (1, SemTerminator::Return { value: None }),
@@ -1895,10 +1895,19 @@ fn safepoints_cannot_abandon_cancellation_without_cleanup() {
     else {
         unreachable!()
     };
-    *cancel = edge(1);
+    *cancel = Some(edge(1));
     assert!(verify_module(&checked).iter().any(|diagnostic| matches!(
         &diagnostic.kind, SirDiagnosticKind::InvalidTerminator { reason }
             if reason == "safepoint cancellation must leave through fault cleanup"
+    )));
+    let SemTerminator::Safepoint { cancel, .. } = &mut checked.functions[0].blocks[0].terminator
+    else {
+        unreachable!()
+    };
+    *cancel = None;
+    assert!(verify_module(&checked).iter().any(|diagnostic| matches!(
+        &diagnostic.kind, SirDiagnosticKind::InvalidTerminator { reason }
+            if reason == "safepoint cancellation ancestry must match its authored close lifecycle"
     )));
 }
 

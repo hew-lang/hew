@@ -253,8 +253,18 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                     .fn_type(&[pointer.into(), self.ctx.i32_type().into()], false),
             )?;
             self.builder
-                .build_call(finish, &[frame.state.into(), status.into()], "")
+                .build_call(finish, &[frame.completion_state.into(), status.into()], "")
                 .llvm_ctx("publish checked coroutine outcome")?;
+            if frame.owns_state {
+                let free = get_or_declare_external(
+                    self.llvm,
+                    "hew_coro_state_free",
+                    self.ctx.void_type().fn_type(&[pointer.into()], false),
+                )?;
+                self.builder
+                    .build_call(free, &[frame.state.into()], "")
+                    .llvm_ctx("release authored close context after completion")?;
+            }
             self.builder
                 .build_unconditional_branch(frame.finish)
                 .llvm_ctx("finish checked coroutine")?;
@@ -296,7 +306,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
     pub(super) fn emit_safepoint(
         &self,
         normal: &PhysicalEdge,
-        cancel: &PhysicalEdge,
+        cancel: Option<&PhysicalEdge>,
     ) -> CodegenResult<()> {
         let frame = self.frame.as_ref().ok_or_else(|| {
             CodegenError::FailClosed("safepoint requires a resumable body".into())
@@ -371,7 +381,9 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         .into_int_value();
         let yielding = self.ctx.append_basic_block(self.value, "safepoint.yield");
         let resumed = self.ctx.append_basic_block(self.value, "safepoint.resume");
-        let cancelled = self.ctx.append_basic_block(self.value, "safepoint.cancel");
+        let cancelled = cancel.map_or(frame.invalid_destroy, |_| {
+            self.ctx.append_basic_block(self.value, "safepoint.cancel")
+        });
         self.builder
             .build_switch(
                 status,
@@ -385,22 +397,28 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         self.builder.position_at_end(yielding);
         frame.suspend(self.ctx, &self.builder, resumed, cancelled)?;
         self.builder.position_at_end(resumed);
-        let cancellation = self.state_value("hew_coro_state_is_cancelled", frame.state)?;
-        let cancellation = self
-            .builder
-            .build_int_compare(
-                IntPredicate::NE,
-                cancellation,
-                self.ctx.i32_type().const_zero(),
-                "safepoint.cancelled",
-            )
-            .llvm_ctx("test resumed safepoint cancellation")?;
-        self.builder
-            .build_conditional_branch(cancellation, cancelled, continuing)
-            .llvm_ctx("select resumed safepoint outcome")?;
-        self.builder.position_at_end(cancelled);
-        self.initialize_cancellation_fault()?;
-        self.emit_edge(cancel)?;
+        if let Some(cancel) = cancel {
+            let cancellation = self.state_value("hew_coro_state_is_cancelled", frame.state)?;
+            let cancellation = self
+                .builder
+                .build_int_compare(
+                    IntPredicate::NE,
+                    cancellation,
+                    self.ctx.i32_type().const_zero(),
+                    "safepoint.cancelled",
+                )
+                .llvm_ctx("test resumed safepoint cancellation")?;
+            self.builder
+                .build_conditional_branch(cancellation, cancelled, continuing)
+                .llvm_ctx("select resumed safepoint outcome")?;
+            self.builder.position_at_end(cancelled);
+            self.initialize_cancellation_fault()?;
+            self.emit_edge(cancel)?;
+        } else {
+            self.builder
+                .build_unconditional_branch(continuing)
+                .llvm_ctx("continue mandatory close after yielding")?;
+        }
         self.builder.position_at_end(continuing);
         self.emit_edge(normal)
     }

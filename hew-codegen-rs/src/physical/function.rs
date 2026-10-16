@@ -49,7 +49,22 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     CodegenError::FailClosed("resumable body has no invocation state".into())
                 })?
                 .into_pointer_value();
-            Some(coro::begin(ctx, &module.llvm, &builder, value, state)?)
+            let execution = if callable.is_authored_close {
+                let pointer = ctx.ptr_type(AddressSpace::default());
+                let create = get_or_declare_external(
+                    &module.llvm,
+                    "hew_coro_state_cleanup_child",
+                    pointer.fn_type(&[pointer.into()], false),
+                )?;
+                suspend::call_value(&builder, create, &[state.into()], "close.context")?
+                    .into_pointer_value()
+            } else {
+                state
+            };
+            let mut frame = coro::begin(ctx, &module.llvm, &builder, value, execution)?;
+            frame.completion_state = state;
+            frame.owns_state = callable.is_authored_close;
+            Some(frame)
         } else {
             None
         };

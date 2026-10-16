@@ -181,7 +181,9 @@ pub(super) fn edges(term: &PhysicalTerminator) -> Vec<&PhysicalEdge> {
             unwind,
             ..
         } => vec![normal, cancel, unwind],
-        PhysicalTerminator::Safepoint { normal, cancel } => vec![normal, cancel],
+        PhysicalTerminator::Safepoint { normal, cancel } => {
+            std::iter::once(normal).chain(cancel.iter()).collect()
+        }
         PhysicalTerminator::TaskAwait {
             normal,
             cancel,

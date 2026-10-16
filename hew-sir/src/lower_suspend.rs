@@ -11,17 +11,36 @@ impl Builder<'_, '_> {
         let saved = self.control_state();
         let recovery = self.recovery_bodies.clone();
         let normal = self.new_block(Vec::new());
-        let cancel = self.new_block(Vec::new());
+        let mandatory_close = self
+            .callable
+            .signature
+            .params
+            .first()
+            .is_some_and(|receiver| {
+                crate::resource::record_resource_lifecycle(self.service.module, &receiver.ty)
+                    .map(|lifecycle| lifecycle.close_declaration)
+                    .or_else(|| {
+                        crate::resource::authored_opaque_lifecycle(
+                            self.service.module,
+                            &receiver.ty,
+                        )
+                        .map(|lifecycle| lifecycle.close_declaration)
+                    })
+                    == Some(self.callable.declaration)
+            });
+        let cancel = (!mandatory_close).then(|| self.new_block(Vec::new()));
         let edge = |target| Edge {
             target,
             args: Vec::new(),
         };
         self.set_terminator(SemTerminator::Safepoint {
             resume: edge(normal),
-            cancel: edge(cancel),
+            cancel: cancel.map(edge),
         })?;
-        self.current = cancel;
-        self.finish_fault_exit()?;
+        if let Some(cancel) = cancel {
+            self.current = cancel;
+            self.finish_fault_exit()?;
+        }
         self.restore_control_state(&saved);
         self.recovery_bodies = recovery;
         self.current = normal;

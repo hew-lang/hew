@@ -12,13 +12,17 @@ use std::cell::Cell;
 
 pub(super) struct Frame<'ctx> {
     pub state: PointerValue<'ctx>,
+    /// An authored close executes in private cleanup ancestry but completes
+    /// the invocation supplied by its caller.
+    pub completion_state: PointerValue<'ctx>,
+    pub owns_state: bool,
     pub budget: PointerValue<'ctx>,
     destroying: PointerValue<'ctx>,
     pub finish: BasicBlock<'ctx>,
     entry: BasicBlock<'ctx>,
     suspend: FunctionValue<'ctx>,
     exit: BasicBlock<'ctx>,
-    invalid_destroy: BasicBlock<'ctx>,
+    pub invalid_destroy: BasicBlock<'ctx>,
     child: Cell<Option<(PointerValue<'ctx>, PointerValue<'ctx>)>>,
     child_invocation: Cell<Option<PointerValue<'ctx>>>,
 }
@@ -287,6 +291,8 @@ pub(super) fn begin<'ctx>(
     builder.position_at_end(body);
     Ok(Frame {
         state,
+        completion_state: state,
+        owns_state: false,
         budget,
         destroying,
         finish,

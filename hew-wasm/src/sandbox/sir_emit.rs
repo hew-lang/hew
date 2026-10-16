@@ -1778,7 +1778,7 @@ impl<'m> Walker<'m> {
                     "detail": { "budget": hew_sir::SAFEPOINT_BUDGET },
                     "inputs": [], "result": null, "result_shape": null,
                     "error_shape": null, "request_shapes": null,
-                    "resumes": [encode_edge(resume)], "cancel": encode_edge(cancel),
+                    "resumes": [encode_edge(resume)], "cancel": cancel.as_ref().map(encode_edge),
                     "unwind": null,
                 })
             }

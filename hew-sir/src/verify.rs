@@ -1579,6 +1579,16 @@ fn check_function_with_context(
                 }
             }
         });
+        if let SemTerminator::Safepoint { cancel, .. } = &block.terminator {
+            let mandatory_close = resources
+                .values()
+                .any(|release| release.close_callable() == Some(function.callable));
+            if cancel.is_none() != mandatory_close {
+                diagnostics.push(diag(function, SirDiagnosticKind::InvalidTerminator {
+                    reason: "safepoint cancellation ancestry must match its authored close lifecycle".into(),
+                }));
+            }
+        }
         verify_terminator_shape(
             function,
             block,
@@ -5346,7 +5356,10 @@ fn verify_terminator_shape(
 ) {
     let terminator = &block.terminator;
     match terminator {
-        SemTerminator::Safepoint { cancel, .. } => {
+        SemTerminator::Safepoint {
+            cancel: Some(cancel),
+            ..
+        } => {
             if !failure_cfg_matches_exit(cancel, None, blocks) {
                 diagnostics.push(diag(
                     function,
@@ -5777,7 +5790,8 @@ fn verify_terminator_shape(
                 ));
             }
         }
-        SemTerminator::EnterDefer { .. }
+        SemTerminator::Safepoint { cancel: None, .. }
+        | SemTerminator::EnterDefer { .. }
         | SemTerminator::Return { .. }
         | SemTerminator::Goto(_)
         | SemTerminator::Trap { .. }

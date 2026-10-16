@@ -659,6 +659,10 @@
       "type": "object",
       "required": ["op"],
       "properties": {
+        "cancel": {
+          "description": "Safepoints in authored close bodies have private cleanup ancestry and no cancellation edge; admission verifies the lifecycle identity.",
+          "oneOf": [{ "$ref": "#/$defs/edge" }, { "type": "null" }]
+        },
         "op": {
           "enum": [
             "return",

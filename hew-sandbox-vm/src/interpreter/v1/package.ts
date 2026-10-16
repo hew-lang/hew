@@ -548,7 +548,7 @@ export type TermV1 =
       inputs: BoundaryOperand[];
       result: CallResult;
       resumes: Edge[];
-      cancel: Edge;
+      cancel: Edge | null;
       unwind: Edge | null;
     });
 

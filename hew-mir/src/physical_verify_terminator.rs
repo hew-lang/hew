@@ -437,9 +437,11 @@ pub(crate) fn terminator_successors(
                 ));
             }
             let mut successors = vec![apply_edge(function, borrows, normal, state.clone(), block)?];
-            state.fault = FaultState::Active;
-            state.exit = defer::CANCEL;
-            successors.push(apply_edge(function, borrows, cancel, state, block)?);
+            if let Some(cancel) = cancel {
+                state.fault = FaultState::Active;
+                state.exit = defer::CANCEL;
+                successors.push(apply_edge(function, borrows, cancel, state, block)?);
+            }
             Ok(successors)
         }
         PhysicalTerminator::Sleep {
@@ -1310,8 +1312,20 @@ pub(crate) fn verify_terminator(
             edge(unwind)
         }
         PhysicalTerminator::Safepoint { normal, cancel } => {
+            let mandatory_close = module
+                .resources
+                .iter()
+                .any(|resource| resource.release.close_callable() == Some(function.callable));
+            if cancel.is_none() != mandatory_close {
+                return Err(PhysicalError::new(
+                    "safepoint cancellation ancestry must match its authored close lifecycle",
+                ));
+            }
             edge(normal)?;
-            edge(cancel)
+            if let Some(cancel) = cancel {
+                edge(cancel)?;
+            }
+            Ok(())
         }
         PhysicalTerminator::Sleep {
             duration,
@@ -1377,6 +1391,7 @@ pub(crate) fn verify_terminator(
             edge(fault)
         }
         PhysicalTerminator::DynCall {
+            is_resumable: _,
             receiver,
             word,
             method,

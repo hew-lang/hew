@@ -948,7 +948,10 @@ impl FunctionLowerer<'_> {
             }),
             SemTerminator::Safepoint { resume, cancel } => Ok(PhysicalTerminator::Safepoint {
                 normal: self.lower_edge(resume)?,
-                cancel: self.lower_edge(cancel)?,
+                cancel: cancel
+                    .as_ref()
+                    .map(|edge| self.lower_edge(edge))
+                    .transpose()?,
             }),
             SemTerminator::Suspend {
                 kind: hew_sir::SuspendKind::Sleep,

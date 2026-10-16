@@ -92,7 +92,7 @@ type CallerStamp =
 const DEFAULT_ACTOR_STOP_NS = 5_000_000_000;
 
 interface FrameContext {
-  pollBudget?: number;
+  pollBudget?: { remaining: number };
   pollSuppression?: number;
   pendingCancellation?: Fault;
   requestDeadline?: number;
@@ -468,11 +468,20 @@ class ExecutorV1 {
     unwind: Edge | null,
     context?: FrameContext,
   ): Activation {
-    if (
-      (this.pkg.resources ?? []).some((resource) => resource.close === fn.id) &&
-      args[0]
-    )
-      this.closingResources.add(args[0]);
+    const mandatoryClose = (this.pkg.resources ?? []).some(
+      (resource) => resource.close === fn.id,
+    );
+    const parentContext = caller?.context ?? context!;
+    parentContext.pollBudget ??= { remaining: 0 };
+    if (mandatoryClose && args[0]) this.closingResources.add(args[0]);
+    const executionContext = mandatoryClose
+      ? {
+          ...parentContext,
+          cancel: undefined,
+          pendingCancellation: undefined,
+          requestDeadline: undefined,
+        }
+      : parentContext;
     const env = new Map<number, Ref>();
     for (const [at, param] of fn.params.entries()) {
       env.set(param.value, ownedRef(args[at] ?? UNIT));
@@ -495,7 +504,7 @@ class ExecutorV1 {
         for (const arm of term.arms) arm.fields.forEach(record);
     }
     return {
-      context: caller?.context ?? context!,
+      context: executionContext,
       fn,
       block: this.blockAt(fn, fn.entry),
       opIndex: 0,
@@ -2265,19 +2274,24 @@ class ExecutorV1 {
           throw new Error(
             "safepoint requires a positive compiler-authored budget",
           );
-        act.context.pollBudget = (act.context.pollBudget ?? budget) - 1;
-        if (act.context.pollBudget > 0) {
+        const countdown = act.context.pollBudget!;
+        countdown.remaining = (countdown.remaining || budget) - 1;
+        if (countdown.remaining > 0) {
           this.takeEdge(act, term.resumes[0]!);
           return;
         }
-        act.context.pollBudget = budget;
+        countdown.remaining = budget;
         this.scheduler.advanceSlice();
         let fault = act.context.pendingCancellation;
-        for (let frame: Activation | null = act; frame; frame = frame.caller) {
+        for (
+          let frame: Activation | null = act;
+          frame?.context === act.context;
+          frame = frame.caller
+        ) {
           for (const scope of frame.scopes.values())
             fault ??= scope.deadline ?? undefined;
         }
-        if (fault) {
+        if (fault && term.cancel) {
           act.fault = fault;
           this.takeEdge(act, term.cancel);
         } else if (this.scheduler.hasRunnableWork()) {
@@ -2328,7 +2342,7 @@ class ExecutorV1 {
               act,
               term.kind === "Safepoint" ||
                 (fault.kind === "panic" && fault.cancelled)
-                ? term.cancel
+                ? term.cancel!
                 : term.unwind!,
             );
           } else {
@@ -2357,6 +2371,7 @@ class ExecutorV1 {
     act.context.cancel = (
       fault = { kind: "panic", message: "task cancelled", cancelled: true },
     ) => {
+      if (term.cancel == null) return;
       if (pending) pending.fault ??= fault;
       else resume(UNIT, fault);
     };
@@ -2602,6 +2617,12 @@ class ExecutorV1 {
     returned: (value: VmValue) => void,
     failed: (fault: Fault) => void,
   ): FrameContext {
+    const context: FrameContext = {
+      id: actor?.id ?? "actor:root",
+      actor,
+      returned,
+      failed,
+    };
     const frame = this.activate(
       this.functionAt(callable),
       args,
@@ -2609,25 +2630,20 @@ class ExecutorV1 {
       null,
       undefined,
       null,
-      {
-        id: actor?.id ?? "actor:root",
-        actor,
-        returned,
-        failed,
-      },
+      context,
     );
     let cancelled: Fault | null = null;
-    frame.context.cancel = (
+    context.cancel = (
       fault = { kind: "panic", message: "task cancelled", cancelled: true },
     ) => {
       cancelled = fault;
     };
     this.scheduler.enqueue(frame.context.id, () => {
-      frame.context.cancel = undefined;
-      if (cancelled) frame.context.failed(cancelled);
+      context.cancel = undefined;
+      if (cancelled && frame.context === context) context.failed(cancelled);
       else this.runFrame(frame);
     });
-    return frame.context;
+    return context;
   }
 
   private variant(

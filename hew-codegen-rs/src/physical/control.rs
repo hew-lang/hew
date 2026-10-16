@@ -84,7 +84,9 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 cancel,
                 unwind,
             } => self.emit_offload(*function, args, *result, normal, cancel, unwind),
-            PhysicalTerminator::Safepoint { normal, cancel } => self.emit_safepoint(normal, cancel),
+            PhysicalTerminator::Safepoint { normal, cancel } => {
+                self.emit_safepoint(normal, cancel.as_ref())
+            }
             PhysicalTerminator::Sleep {
                 duration,
                 normal,
@@ -125,6 +127,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 self.emit_edge(cleanup)
             }
             PhysicalTerminator::DynCall {
+                is_resumable,
                 receiver,
                 word,
                 method: _,
@@ -134,6 +137,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 normal,
                 unwind,
             } => self.emit_dyn_call(
+                *is_resumable,
                 *receiver,
                 *word,
                 signature,

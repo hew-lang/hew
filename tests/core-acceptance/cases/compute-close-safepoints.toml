@@ -1,0 +1,12 @@
+[[case]]
+id = "compute-close-safepoints"
+intent = "Explicit and implicit authored close calls yield from a nested compute helper to a queued peer, then complete exactly once despite cancellation of their losing race operand."
+source = "cases/compute-close-safepoints.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+env = { HEW_WORKERS = "1" }
+
+[case.expected]
+stdout = "peer progressed\nfinished 40000\nclosed explicit\n7\npeer progressed\nfinished 40000\nclosed implicit\n7\n"
+stderr = ""
+exit = 0

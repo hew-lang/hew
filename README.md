@@ -370,11 +370,10 @@ compatibility alias for the same gate.
 
 ### Browser / Playground Validation
 
-The browser runtime provides deterministic execution for its admitted subset.
-The current native cutover changes actor calls, suspension, ownership and
-collections; browser and WASM parity for that surface remains pending. Existing
-sandbox capabilities are not proof that a current native program runs there.
-See the [capability reference](docs/wasm-capability-matrix.md).
+The browser runtime provides deterministic execution within its documented
+[sandbox boundaries](docs/sandbox-vm-divergences.md). Its loader checks a
+program's declared operations before execution and reports unsupported host or
+runtime capabilities.
 
 This repo carries the analysis-side browser tooling (`hew-wasm`) plus the sandbox bytecode emission crate (`hew-sandbox-wasm`); the downstream browser app and the `hew-sandbox-vm` TypeScript worker are in `hew-lang/playground`.
 
@@ -386,7 +385,7 @@ make playground-wasi-check      # focused manifest-driven WASI runtime preflight
 make sandbox-parity             # full Node VM plus Rust native/sandbox parity suite
 ```
 
-Use `make playground-manifest-check` when you only need to confirm the checked-in manifest is current. Use `make playground-check` for the repo-local browser/tooling slice: curated `hew-wasm` analysis smoke plus the repo-local `hew-wasm` build (`make wasm`) that powers browser-side diagnostics tooling. Use `make playground-wasi-check` in codegen-capable environments when you also want the focused manifest-driven WASI runtime proof. The `hew-wasm` crate in this repo is analysis-only; the sandbox VM execution target and downstream browser app live in `hew-lang/playground`.
+Use `make playground-manifest-check` to confirm the checked-in manifest is current. Use `make playground-check` for curated `hew-wasm` analysis smoke and the browser diagnostics build. In codegen-capable environments, `make playground-wasi-check` compiles and executes every curated WASI example. `make sandbox-parity` runs the native and browser-sandbox programs side by side. The downstream browser app and TypeScript worker live in `hew-lang/playground`.
 
 ### Development tools
 

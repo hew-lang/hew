@@ -14,10 +14,7 @@
 //   * record-state brace-init at `Holding { handle: f }` typed
 //     against the machine self-type (Path 1 — record-state init)
 //
-// Per-substitution machine layout (per-monomorphisation `MachineLayout`
-// entries under mangled names) is future work; this fixture is the
-// compile-time surface companion exercising the bound-enforcement
-// pipeline that those later substrate changes will sit underneath.
+// This fixture checks bound enforcement at each annotated use site.
 trait Resource {
     fn close(self);
 }

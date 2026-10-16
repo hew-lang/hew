@@ -1,11 +1,10 @@
 # Hew WASM capability manifest.
 #
-# The [[feature]] rows are the sole editable authority for checker reject/warn
-# identity and native-only stdlib module classification. [[backlog]] ids own
-# every actionable WASM-TODO(<id>): marker. [[playground_wasi]] owns only
-# non-runnable curated-example decisions; runnable examples remain proven by
-# the real WASI E2E loop. `hew-capability-gen` validates this typed schema and
-# generates the Rust checker carrier, playground decision input, and the full
+# The [[feature]] rows define checker reject/warn identity and native-only
+# stdlib module classification. [[backlog]] ids identify unsupported
+# capabilities referenced by source markers. [[playground_wasi]] records
+# non-runnable curated-example decisions. `hew-capability-gen` validates this
+# typed schema and generates the Rust checker carrier, playground decision input, and the full
 # feature-policy and current WASI summary tables in
 # docs/wasm-capability-matrix.md.
 #
@@ -15,7 +14,7 @@
 #
 #   [[tier]]            one per WASM compilation target tier.
 #   [[feature]]         one per row of the "Feature disposition table".
-#   [[backlog]]         one per row of the "WASM-TODO backlog" table.
+#   [[backlog]]         one per unsupported capability identity used by source markers.
 #     marker_disposition = "source" (default) requires at least one actionable
 #       source marker. "non-source" requires a non_source_reason and rejects
 #       actionable source markers for that row.
@@ -111,9 +110,8 @@ checker = "pass"
 runtime = "implemented"
 runtime_status = "Scalar-parameter and `fn[clone]`-parameter `gen fn` forms execute through checked continuation frames on Tier 2; full consumption and early-break cleanup verified under wasmtime at O0 and O2"
 categories = ["runtime", "generators"]
-checker_detail = "Pass (not checker-gated — Tier 2 has no dedicated `WasmUnsupportedFeature` guard)"
 tracking_label = "Note below"
-note = "`gen fn` uses explicit continuation frames emitted by `hew-codegen-rs/src/physical_coro.rs` and `physical_frames.rs`, with checked polling and cleanup through `hew-runtime/src/generator_checked.rs` and `cont.rs`. The emitter uses the target data layout, and these runtime modules are compiled for wasm32. WASI execution at O0 and O2 verifies scalar parameters and a named function supplied to a `fn[clone]` parameter through full consumption and early break, including producer defer cleanup. Generator forms not yet implemented on any target are tracked in HEW-FUTURE.md §1.6. Generators that depend on stream I/O encounter the Streams reject at the point of the stream call."
+note = "`gen fn` uses explicit continuation frames emitted by `hew-codegen-rs/src/physical_coro.rs` and `physical_frames.rs`, with checked polling and cleanup through `hew-runtime/src/generator_checked.rs` and `cont.rs`. The emitter uses the target data layout, and these runtime modules are compiled for wasm32. WASI execution at O0 and O2 verifies scalar parameters and a named function supplied to a `fn[clone]` parameter through full consumption and early break, including producer defer cleanup. Generators that depend on stream I/O encounter the Streams reject at the point of the stream call."
 
 [[feature]]
 id = "patterns-adts-generics"
@@ -151,18 +149,16 @@ categories = ["runtime", "actors"]
 
 [[feature]]
 id = "wasi-sockets"
-label = "Raw WASI socket capability (host-provided, no stable Hew stdlib surface yet)"
+label = "Raw host-provided WASI socket capability"
 checker = "todo"
 runtime = "host-dependent"
-runtime_status = "Host-/runtime-dependent; Hew does not yet expose a supported cross-target socket layer"
+runtime_status = "Host- and runtime-dependent; Hew's stdlib has no cross-target socket layer"
 categories = ["stdlib", "networking"]
 tracking = "WASM-TODO"
 tracking_label = "WASM-TODO(wasi-sockets):"
 note = """\
-Some WASI hosts may expose socket APIs, but Hew does not yet provide a stable \
-socket abstraction that spans browser Tier 1, WASI Tier 2, and native builds. \
-The matrix keeps raw host socket capability in the backlog rather than marking \
-it pass.\
+Some WASI hosts expose socket APIs, but Hew's stdlib socket surfaces are \
+native-only. Raw host sockets remain outside the supported Tier 2 surface.\
 """
 
 [[feature]]
@@ -186,7 +182,7 @@ prose_label = "Supervision trees (`supervisor`, `supervisor_child`, `supervisor_
 reason = "they require OS threads for restart strategies and child supervision"
 checker = "reject"
 runtime = "native-only"
-runtime_status = "Educational sandbox subset implements deterministic restart trees; native runtime parity remains gated"
+runtime_status = "The browser sandbox implements deterministic restart trees; Tier 2 rejects this surface"
 categories = ["runtime", "supervision"]
 tracking = "WASM-TODO"
 tracking_label = "WASM-TODO(supervision):"
@@ -199,7 +195,7 @@ prose_label = "Actor `link` / `unlink` / `monitor` / `demonitor`"
 reason = "they rely on OS threads to watch linked actors and propagate exits"
 checker = "reject"
 runtime = "native-only"
-runtime_status = "Educational sandbox subset implements deterministic graph state, exit signals, and monitor notifications; native runtime parity remains gated"
+runtime_status = "The browser sandbox implements deterministic graph state, exit signals, and monitor notifications; Tier 2 rejects this surface"
 categories = ["runtime", "actors"]
 tracking = "WASM-TODO"
 tracking_label = "WASM-TODO(link-monitor):"
@@ -216,7 +212,7 @@ runtime_status = "Native scheduler-owned task continuations and scope joins; the
 categories = ["runtime", "scope"]
 tracking = "WASM-TODO"
 tracking_label = "WASM-TODO(scope):"
-note = "Deferred from v0.6.0-rc1 to a later v0.6.x. A synchronous shim would erase concurrency and can deadlock task/actor coordination; parity requires scheduler-owned task work, completion wakeups, and non-blocking joins."
+note = "Tier 2 requires scheduler-owned task work, completion wakeups, and non-blocking joins; a synchronous shim would erase concurrency and can deadlock task/actor coordination."
 
 [[feature]]
 id = "tasks"
@@ -366,7 +362,7 @@ deterministic_endpoints = ["hew_http_request_hew"]
 enum_variant = "HttpClient"
 label = "std.net.http.http_client operations"
 prose_label = "`std.net.http.http_client.*`, `http_client.Response.*`"
-reason = "the std.net.http.http_client wrappers are still native-only; no wasm32 networking bridge exists yet"
+reason = "the std.net.http.http_client wrappers are native-only and have no wasm32 networking bridge"
 checker = "reject"
 runtime = "native-only"
 runtime_status = "Native-only wrapper module"
@@ -410,7 +406,7 @@ deterministic_endpoints = [
 enum_variant = "Smtp"
 label = "std.net.smtp operations"
 prose_label = "`std.net.smtp.*`, `smtp.Conn.*`"
-reason = "the std.net.smtp transport is still native-only; no wasm32 SMTP bridge exists yet"
+reason = "the std.net.smtp transport is native-only and has no wasm32 SMTP bridge"
 checker = "reject"
 runtime = "native-only"
 runtime_status = "Native-only transport wrapper"
@@ -442,7 +438,7 @@ deterministic_endpoints = [
 enum_variant = "WebSocket"
 label = "std.net.websocket operations"
 prose_label = "`std.net.websocket.*`, `websocket.Conn.*`, `websocket.Server.*`"
-reason = "the std.net.websocket transport uses native sockets and OS threads; no wasm32 WebSocket bridge exists yet"
+reason = "the std.net.websocket transport uses native sockets and OS threads and has no wasm32 WebSocket bridge"
 checker = "reject"
 runtime = "native-only"
 runtime_status = "Native-only socket and reader-thread transport"
@@ -474,7 +470,7 @@ deterministic_endpoints = [
 enum_variant = "HttpServer"
 label = "HTTP server operations"
 prose_label = "`http.listen`, `http.Server.*`, `http.Request.*`"
-reason = "the std.net.http server is backed by native sockets and tiny_http; no cooperative wasm32 server implementation exists yet"
+reason = "the std.net.http server is backed by native sockets and tiny_http and has no cooperative wasm32 implementation"
 checker = "reject"
 runtime = "native-only"
 runtime_status = "Native-only runtime module"
@@ -604,7 +600,7 @@ deterministic_endpoints = [
 enum_variant = "Tls"
 label = "std.net.tls operations"
 prose_label = "`std.net.tls.connect/read/write/close`, `tls.TlsStream.*`"
-reason = "the std.net.tls transport is backed by rustls over native sockets; no wasm32 TLS bridge exists yet"
+reason = "the std.net.tls transport is backed by rustls over native sockets and has no wasm32 TLS bridge"
 checker = "reject"
 runtime = "native-only"
 runtime_status = "Native TLS-over-TCP stack today; no documented wasm32 path"
@@ -648,7 +644,7 @@ deterministic_endpoints = [
 enum_variant = "Quic"
 label = "std.net.quic operations"
 prose_label = "`std.net.quic.*`, `quic.QUICEndpoint.*`, `quic.QUICConnection.*`, `quic.QUICStream.*`, `quic.QUICEvent.*`"
-reason = "the std.net.quic transport is backed by quinn over native sockets; no wasm32 QUIC bridge exists yet"
+reason = "the std.net.quic transport is backed by quinn over native sockets and has no wasm32 QUIC bridge"
 checker = "reject"
 runtime = "native-only"
 runtime_status = "native QUIC is feature-gated and not compiled for wasm32"
@@ -678,7 +674,7 @@ deterministic_endpoints = ["hew_dns_resolve", "hew_dns_lookup_host"]
 enum_variant = "Dns"
 label = "std.net.dns resolver operations"
 prose_label = "`std.net.dns.resolve`, `dns.lookup_host`"
-reason = "the std.net.dns resolver uses the native OS resolver; no wasm32 implementation exists yet"
+reason = "the std.net.dns resolver uses the native OS resolver and has no wasm32 implementation"
 checker = "reject"
 runtime = "native-only"
 runtime_status = "Native OS resolver; not compiled for wasm32"
@@ -769,7 +765,7 @@ deterministic_endpoints = [
 enum_variant = "Distributed"
 label = "Distributed node and remote-actor operations"
 prose_label = "`Node.*` (`start`, `shutdown`, `connect`, `set_transport`, `load_keys`, `identity_key`, `id`, `allow_peer`, `register`, `lookup`), remote actor calls, and remote monitor/link operations"
-reason = "the Node cluster API and remote actor calls route through the native mesh transport (hew_node_api_* / hew_remote_call_*), which is not compiled for wasm32; no wasm32 distributed runtime exists yet"
+reason = "the Node cluster API and remote actor calls route through the native mesh transport (hew_node_api_* / hew_remote_call_*), which is not compiled for wasm32"
 checker = "reject"
 runtime = "native-only"
 runtime_status = "Key-derived identity, durable sessions, authenticated mesh routing, registry/SWIM, and cross-node lifecycle are native-only"
@@ -807,7 +803,7 @@ generate_endpoints = ["hew_random_bytes_hew", "hew_random_bytes"]
 enum_variant = "CryptoRandom"
 label = "std.crypto.crypto.random_bytes operations"
 prose_label = "`std.crypto.crypto.random_bytes`"
-reason = "the std.crypto.random_bytes secure entropy source (ring::SystemRandom) is native-only and absent from the wasm32 link set; no cryptographically secure wasm32 implementation exists yet; generating key material on wasm32 would not be secure"
+reason = "the std.crypto.random_bytes secure entropy source (ring::SystemRandom) is native-only and absent from the wasm32 link set; generating key material without a cryptographic entropy source would be unsafe"
 checker = "reject"
 runtime = "native-only"
 runtime_status = "Secure entropy source is native-only; fail-closed rejection until wasm32 cryptographic entropy exists"
@@ -823,7 +819,7 @@ generate_endpoints = ["hew_encrypt_try_seal_base64_hew", "hew_encrypt_seal"]
 enum_variant = "CryptoEncrypt"
 label = "std.crypto.encrypt operations"
 prose_label = "`std.crypto.encrypt.*`"
-reason = "the std.crypto.encrypt module is backed by a native-only staticlib companion crate (std/crypto/encrypt) that is absent from the wasm32 link set; no wasm32 AES-GCM seal/open implementation exists yet"
+reason = "the std.crypto.encrypt module is backed by a native-only staticlib companion crate (std/crypto/encrypt) that is absent from the wasm32 link set"
 checker = "reject"
 runtime = "native-only"
 runtime_status = "Native-only AES-256-GCM companion crate; not linked for wasm32"
@@ -837,7 +833,7 @@ id = "crypto-sign"
 enum_variant = "CryptoSign"
 label = "std.crypto.sign operations"
 prose_label = "`std.crypto.sign.*`"
-reason = "the std.crypto.sign module is backed by a native-only staticlib companion crate (std/crypto/sign) that is absent from the wasm32 link set; no wasm32 Ed25519 implementation exists yet"
+reason = "the std.crypto.sign module is backed by a native-only staticlib companion crate (std/crypto/sign) that is absent from the wasm32 link set"
 checker = "reject"
 runtime = "native-only"
 runtime_status = "Native-only Ed25519 companion crate; not linked for wasm32"
@@ -879,7 +875,7 @@ generate_functions = ["std.path.glob", "std.path.is_file", "std.path.is_dir"]
 generate_endpoints = ["hew_glob", "hew_path_is_file", "hew_path_is_dir"]
 
 # ---------------------------------------------------------------------------
-# WASM-TODO backlog (mirror of the backlog table).
+# Unsupported capability identities used by source-marker validation.
 # ---------------------------------------------------------------------------
 
 [[backlog]]
@@ -1136,4 +1132,4 @@ tracking_label = "WASM-TODO(wasi-errno):"
 id = "concurrency/supervisor"
 status = "unsupported"
 capability = "supervision-trees"
-reason = "Uses the manifest-owned supervision-trees reject capability"
+reason = "Uses supervision trees, which Tier 2 rejects"

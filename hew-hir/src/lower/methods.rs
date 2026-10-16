@@ -355,17 +355,13 @@ impl LowerCtx {
                 },
                 span.clone(),
                 format!(
-                    "`.clone()` on `{receiver_ty}` is not yet wired to a copy path \
-                     in this phase (M-COW P0). The runtime deep-copy for heap types \
-                     will be connected in P2. Restructure to avoid `.clone()` for now, \
-                     or pass by value (which already retains under M-COW)."
+                    "`.clone()` on `{receiver_ty}` has no copy path; pass the value \
+                     directly or restructure the code to avoid cloning it"
                 ),
             ));
             let ret_ty = lowered_receiver.ty.clone();
             return (
-                HirExprKind::Unsupported(format!(
-                    "`.clone()` on `{receiver_ty}` not yet supported"
-                )),
+                HirExprKind::Unsupported(format!("`.clone()` on `{receiver_ty}` is unsupported")),
                 ret_ty,
             );
         }

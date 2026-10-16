@@ -3,9 +3,8 @@
 //! Build and inspect Protocol Buffers messages using a field-number
 //! based API. Supports string and varint (integer) fields.
 //!
-//! **Note:** Encoding/decoding to wire format and byte-typed field
-//! operations (`set_bytes`, `get_bytes`) require byte array support
-//! not yet available in Hew.
+//! This API supports in-memory string and varint fields. It does not expose
+//! wire-format encoding, decoding, or byte-typed fields.
 //!
 //! # Examples
 //!
@@ -140,6 +139,5 @@ extern "C" {
     fn hew_proto_msg_get_varint(msg: MessageHandle, field_number: i32, fallback: i64) -> i64;
     fn hew_proto_msg_has_field(msg: MessageHandle, field_number: i32) -> i32;
     fn hew_proto_msg_free(msg: MessageHandle);
-    // Note: encode, decode, set_bytes, and get_bytes require byte array
-    // support not yet available in Hew.
+    // The public surface is limited to string and varint fields.
 }

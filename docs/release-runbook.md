@@ -573,4 +573,4 @@ that missing evidence or establish safety sign-off.
   semantics on WASM (actor parks at message boundary) and emit a warning rather
   than an error. See
   [`docs/wasm-capability-matrix.md`](wasm-capability-matrix.md) for the full
-  Tier 1 / Tier 2 disposition table and the WASM-TODO backlog.
+  Tier 1 / Tier 2 disposition table.

@@ -2026,7 +2026,7 @@ impl Checker {
                     format!(
                         "ambiguous associated-type projection `{base}.{assoc_name}`: \
                          declared by multiple bounds on `{base}`: [{cites}]. \
-                         Same-name binding syntax `<Trait.Item>` is not yet supported"
+                         qualify the use so it selects one trait"
                     ),
                 );
                 Some(Ty::Error)
@@ -2611,7 +2611,7 @@ impl Checker {
                     self.report_error(
                         TypeErrorKind::PathKindMismatch,
                         &te.1,
-                        "multi-segment qualified associated type projections are not yet supported"
+                        "a qualified associated type projection must name exactly one member"
                             .to_string(),
                     );
                     return Ty::Error;

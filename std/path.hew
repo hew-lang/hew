@@ -287,7 +287,7 @@ pub fn is_dir(p: string) -> bool {
 /// NOT resolve `..` or symlinks. `absolute("../../etc/passwd")` returns
 /// `<cwd>/../../etc/passwd`, not a collapsed or containment-checked path.
 /// Pass the result through `normalize` for a lexically clean path, or use
-/// a real symlink-aware `canonicalize` (not yet in std) before treating a
+/// a host-provided, symlink-aware canonicalization step before treating a
 /// path as safe to open — `normalize` alone does not guard against `..`
 /// escaping through a symlinked directory.
 pub fn absolute(p: string) -> string {

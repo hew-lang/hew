@@ -73,51 +73,30 @@ pub fn sign(x: i64) -> i64 {
 }
 
 // ── Floating-point operations ─────────────────────────────────────────
-// Codegen emits LLVM math intrinsics for these. The bodies
-// below are compile-time stubs that satisfy the type-checker.
-// WHY: `#[intrinsic("math.sqrt")]` is the typed-declaration substrate introduced
-// in the stdlib-refactor early-substrate work. The attribute names the catalog key
-// so HIR can skip body lowering and route to the existing CompilerIntrinsic entry.
-// WHEN OBSOLETE: once the mass-migration slices (4-7) land and the catalog entry is
-// removed, this comment becomes the authoritative declaration and the WHY/WHEN block
-// can be dropped in favour of a plain doc-comment.
-// WHAT: slices 4-7 remove the parallel catalog entry and make this declaration the
-// sole source of truth; codegen emits the LLVM intrinsic by intrinsic key.
+// Codegen emits LLVM math intrinsics for these declarations. The attribute
+// names the intrinsic key, so HIR skips the empty body.
 /// Return the square root of a float.
 #[intrinsic("math.sqrt")]
 pub fn sqrt(x: f64) -> f64 {}
 
-// WHY the stub body: HIR resolves these functions to a typed math intrinsic
-// carried through MIR; codegen emits the corresponding LLVM intrinsic
-// (`llvm.pow.f64`, `llvm.floor.f64`, etc.) directly at the call site,
-// bypassing the body entirely. This is the
-// call-site interception path, distinct from the `#[intrinsic]` attribute
-// path used by `sqrt`, `exp`, `log`, `sin`, and `cos`. The `0.0` body is
-// never executed; it satisfies the type-checker only.
 /// Raise `base` to the power `exp`.
 #[intrinsic("math.pow")]
 pub fn pow(base: f64, exp: f64) -> f64 {
     0.0
 }
 
-// WHY the stub body: typed call-site interception emits `llvm.floor.f64`.
-// See comment on `pow` above for the full explanation.
 /// Return the largest integer value less than or equal to `x`.
 #[intrinsic("math.floor")]
 pub fn floor(x: f64) -> f64 {
     0.0
 }
 
-// WHY the stub body: typed call-site interception emits `llvm.ceil.f64`.
-// See comment on `pow` above for the full explanation.
 /// Return the smallest integer value greater than or equal to `x`.
 #[intrinsic("math.ceil")]
 pub fn ceil(x: f64) -> f64 {
     0.0
 }
 
-// WHY the stub body: typed call-site interception emits `llvm.round.f64`.
-// See comment on `pow` above for the full explanation.
 /// Round to the nearest integer, with ties rounding away from zero.
 #[intrinsic("math.round")]
 pub fn round(x: f64) -> f64 {
@@ -125,9 +104,7 @@ pub fn round(x: f64) -> f64 {
 }
 
 // ── Transcendental functions ──────────────────────────────────────────
-// These lower to LLVM math intrinsics via `#[intrinsic]` the same way
-// `sqrt` does. The empty body satisfies the type-checker; codegen routes
-// through `emit_math_intrinsic_call` using the `llvm.*.f64` name.
+// These lower to the LLVM math intrinsic named by `#[intrinsic]`.
 /// Return e raised to the power `x`.
 #[intrinsic("math.exp")]
 pub fn exp(x: f64) -> f64 {}

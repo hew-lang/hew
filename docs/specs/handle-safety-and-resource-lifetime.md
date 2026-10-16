@@ -61,7 +61,7 @@ analysis, and no receiver mutability primitive (issue #1295).
 This spec does **not** rewind that decision. The manual-`free()` model is
 the current supported user contract. The destination — automatic single-release
 at scope exit — is reached only after the substrate work in §§ 7–8 lands and
-is calibrated on a single pilot handle (the calibration milestone — see §7).
+is calibrated on a single pilot handle (see §7).
 
 The migration guide marks the manual-`free()` state as transitional and
 forward-links to this spec.
@@ -79,7 +79,7 @@ the ownership constraints defined in this specification.
 | B | Linear (must-use, must-consume) types — compile error on implicit drop. | `let _ = h;` required to discard. | **Stdlib-internal opt-in only.** Too verbose as the user default; reserved for resources where forgetting is a correctness bug, not a hygiene bug (e.g. transactional commit/abort tokens). |
 | C | Affine types — implicit drop allowed, double-use forbidden. | Same as A from the user's seat. | **Adopted as the user-facing default.** Affine + RAII = "no manual free" in practice; matches the prime invariant directly. |
 | D | Ownership tokens / capability handles. | `Token<H>` value passed to consumer. | **Adopted, but only for shutdown / cancellation / session lifetime** — not per-call resources. |
-| E | Stdlib-level `OwnedHandle<T>` wrappers; user never sees the raw FFI handle. | Existing tier-2 owned-handle struct discipline. | **Required as transition substrate.** Pairs with C during the per-handle migration milestone. |
+| E | Stdlib-level `OwnedHandle<T>` wrappers; user never sees the raw FFI handle. | Existing tier-2 owned-handle struct discipline. | **Required as transition substrate.** Pairs with C during each handle migration. |
 | F | Idempotent FFI close + `closed: bool` flag in `impl Drop`. | The canonical Rust pattern. | **Rejected as primary.** Rev1/rev2 of PR #1292 demonstrated the address-reuse failure mode this pattern admits without language support; permitted only as last-resort escape hatch behind explicit annotation. |
 | G | `defer` / scope-guard syntax. | `defer h.close();` | **Reserved as narrow opt-in.** Useful for conditional release in state machines; never the default and never the recommended teaching shape. |
 | H | Codegen drop tables (per-type drop-fn registry). | Invisible. | **Required emission substrate** under A/C/E. Already partly built (`registerDroppable` / `emitDropForVariable`). |
@@ -107,7 +107,7 @@ the ownership constraints defined in this specification.
 - **Required substrate:** E (wrappers as transition state), H (drop emission),
   I (session/actor hooks).
 
-This verdict gates the calibration milestone (a single pilot handle migrated
+This verdict applies first to a single pilot handle migrated
 under the new model). If calibration shows the affine model produces
 unacceptable false positives, the verdict is reopened; per-handle migration
 may not begin until the verdict survives calibration.
@@ -163,7 +163,7 @@ Of the 387 handle-receiver methods, the migration breakdown is:
   in §7, with `websocket` accounting for three). These are the only methods
   that are *consuming* in v0.4.0 today, and they become redundant under the
   new model — the affine drop replaces them. They remain callable as a no-op
-  or annotated as `#[deprecated]` through the per-handle migration milestone,
+  or annotated as `#[deprecated]` during each handle migration,
   then are removed in v0.6.x.
 - **Read-only methods** (`get_field`, `get_string`, `find_all`, `len`, etc.):
   the large majority. Re-classified as borrow-receiver; no user-visible change.
@@ -278,8 +278,8 @@ which mechanism applies and the order of the per-handle migration PRs.
 | `std/net/websocket` | `Server` | `close()` | 3 — long-lived | C + H + I | 8 | Same shape as `http.Server`. |
 | `std/net/quic` | `QUICEvent` | `close()` | 1 — per-event allocation | C + H | **B-1 safe set — landed** | Event accessors borrow; release is a single `Box::from_raw`. |
 | `std/net/websocket` | `Message` | `close()` | 1 — per-recv allocation | C + H, scoped to the read-loop iteration | **B-1 safe set — landed** | Independent per-recv allocation; affine drop fires per loop iteration. |
-| Runtime actor / scheduler | implicit | `hew_runtime_cleanup` (`hew-runtime/src/scheduler.rs:459-490`) | 4 — runtime scope | I (session-reset registry) only; not affine | runtime-scope cleanup milestone | Process-scoped; the session-reset hook registry is the canonical teardown (LESSONS `cleanup-all-exits`). No user-facing release call; no per-binding affinity. Tracked under issue #1228. |
-| wasm32 | same runtime | `hew-runtime/src/driver.rs` drives `scheduler.rs` | 4 — runtime scope | I, same registry | runtime-scope cleanup milestone | One runtime, one session-reset registry: wasm32 reaches it through the same `hew_sched_shutdown` path. See §10. |
+| Runtime actor / scheduler | implicit | `hew_runtime_cleanup` (`hew-runtime/src/scheduler.rs:459-490`) | 4 — runtime scope | I (session-reset registry) only; not affine | runtime-scope cleanup | Process-scoped; the session-reset hook registry is the canonical teardown (LESSONS `cleanup-all-exits`). No user-facing release call; no per-binding affinity. Tracked under issue #1228. |
+| wasm32 | same runtime | `hew-runtime/src/driver.rs` drives `scheduler.rs` | 4 — runtime scope | I, same registry | runtime-scope cleanup | One runtime, one session-reset registry: wasm32 reaches it through the same `hew_sched_shutdown` path. See §10. |
 
 Tiers explained:
 
@@ -316,16 +316,16 @@ hook, sanitiser test), not just *what* the failure is.
 | FM-1 | Double-free (explicit release + automatic drop both fire) | Checker (move-checker, issue #1399) | Reject at compile time; LESSONS `field-alias-fail-closed`, `raii-null-after-move`. |
 | FM-2 | Use-after-close (binding referenced after consuming call) | Checker (move-checker) | Reject at compile time; null-after-move enforces. |
 | FM-3 | Leak — sync return path (silent forget; binding goes out of scope and no drop fires) | Codegen drop emission (H) + sanitiser test in CI | Affine drop is unconditional at scope exit; LSAN run on every per-handle migration fixture. |
-| FM-4 | Leak — async cancel / future drop | Codegen + async cancel path | Cancellation runs the same scope-exit drop sequence as a normal return; LESSONS `cleanup-all-exits` "cleanup must mirror setup on every exit path". An `async_cancel_cleanup` fixture is mandatory at the calibration milestone. |
-| FM-5 | Leak — actor shutdown / mailbox drain | Runtime session-reset hook (I) + per-actor fixture | `hew_sched_shutdown` calls the session-reset registry; tier-2/3 handles register a release entry. An `actor_shutdown_cleanup` fixture is mandatory at the calibration milestone. |
+| FM-4 | Leak — async cancel / future drop | Codegen + async cancel path | Cancellation runs the same scope-exit drop sequence as a normal return; LESSONS `cleanup-all-exits` "cleanup must mirror setup on every exit path". The pilot requires an `async_cancel_cleanup` fixture. |
+| FM-5 | Leak — actor shutdown / mailbox drain | Runtime session-reset hook (I) + per-actor fixture | `hew_sched_shutdown` calls the session-reset registry; tier-2/3 handles register a release entry. The pilot requires an `actor_shutdown_cleanup` fixture. |
 | FM-6 | Leak — runtime cleanup / session reset | Session-reset hook registry (`hew-runtime/src/session.rs`) | Every subsystem registers unconditionally at init; `hew_runtime_cleanup` invokes the registry from every shutdown path. LESSONS `cleanup-all-exits` PR #1271 evidence. |
-| FM-7 | Leak — panic unwind | Codegen drop emission on the unwind path | Same drop table as normal return; verified by a panic-path fixture at the calibration milestone. |
+| FM-7 | Leak — panic unwind | Codegen drop emission on the unwind path | Same drop table as normal return; the pilot verifies it with a panic-path fixture. |
 | FM-8 | FFI-side last-error race (a release function clobbers thread-local last-error after its caller observed an error) | Runtime `hew_*_free` wrapper convention | Release functions never read or write last-error; LESSONS `ffi-ownership-contracts`. |
 | FM-9 | WASM parity gap (native target gets the cleanup, WASM target does not) | `make playground-wasi-check` per per-handle PR | LESSONS `native-wasm-parity`; either parity green or named `WASM-TODO` (§10). |
 | FM-10 | Field-alias double-free (struct field passed as call arg whose callee drops it) | Checker pre-scan (LESSONS `field-alias-fail-closed`) | Reject at compile time before call IR is emitted; `errorCount_` incremented alongside `emitError`. |
 | FM-11 | Closure-capture leak (handle captured by long-lived closure that is never invoked) | Checker move-classification (`ClosureCapture`) | The move-checker substrate (issue #1399) publishes the classification; codegen emits a drop on closure deallocation. Reject if the captured handle's affine semantics cannot be satisfied. |
 | FM-12 | Generator suspend/resume use-after-free (retired-backend DROP-TODO D6) | Checker move-classification (`YieldedAcrossSuspend`) | The move-checker substrate (issue #1399) must publish this category before any per-handle migration that touches a generator. Until then, generators that hold handle bindings are checker-rejected. |
-| FM-13 | C ABI consumer double-free with **address reuse** — a C caller invokes `hew_*_free` after Hew already released, the underlying allocator hands the same address back to a *different* live allocation, and the second free corrupts the new allocation (the failure mode that drove rejection of mechanism F in §3) | C ABI test harness in `hew-cabi/tests/` | Calibration-milestone deliverable; release functions guarded by an FFI-side `closed` flag *only when proven idempotent and regression-tested* (LESSONS `ffi-ownership-contracts`). |
+| FM-13 | C ABI consumer double-free with **address reuse** — a C caller invokes `hew_*_free` after Hew already released, the underlying allocator hands the same address back to a *different* live allocation, and the second free corrupts the new allocation (the failure mode that drove rejection of mechanism F in §3) | C ABI test harness in `hew-cabi/tests/` | Pilot requirement; release functions guarded by an FFI-side `closed` flag *only when proven idempotent and regression-tested* (LESSONS `ffi-ownership-contracts`). |
 
 ---
 
@@ -363,14 +363,14 @@ For this work specifically:
   before native/WASM target emission in the Rust HIR/MIR/codegen-rs path. WASM
   parity is automatic for tier 1 once the shared MIR facts are accepted.
 - The **actor cleanup hook** (I) is duplicated across the two scheduler files.
-  The runtime-scope cleanup milestone touches the one scheduler, so a
+  Runtime-scope cleanup touches the one scheduler, so a
   per-handle migration PR that introduces a new hook entry updates it once.
 - The **session-reset registry** is invoked from the one `hew_sched_shutdown`
   in `scheduler.rs`, which both targets reach. PR #1271 fixed the analogous
   gap for `hew_trace_reset` and `clear_dispatch_registry`; this spec inherits
   that discipline.
 - **Explicit WASM-TODO carve-outs allowed in this work:** none at spec time.
-  If the calibration milestone discovers a WASM-only gap (e.g. async cancel
+  If the pilot discovers a WASM-only gap (e.g. async cancel
   paths not yet implemented under `wasm32-wasip1`), the `WASM-TODO` is named
   in the calibration notes and tracked in a follow-on issue, *not* hidden by
   silent divergence.

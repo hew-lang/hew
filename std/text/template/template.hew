@@ -23,33 +23,21 @@
 //!
 //! # Method-style rendering
 //!
-//! Method calls such as `t.render(ctx)` and `t.render_try(ctx)` are deferred
-//! pending cross-module trait-method dispatch support for imported stdlib user
-//! records. Use `template.render_template(t, ctx)` or
-//! `template.render_try(t, ctx)` instead.
+//! Render with `template.render_template(t, ctx)` or
+//! `template.render_try(t, ctx)`; `Template` has no method-form renderer.
 //!
 //! # Data model
 //!
-//! Because Hew has no reflection and recursive enum/vec nesting is not yet
-//! supported by the v0.5 codegen-front, the context is a flat `Ctx` value
-//! with two independent parallel-vector maps:
+//! The context is a flat `Ctx` value with two independent parallel-vector
+//! maps:
 //!
 //! - **scalar map** — `string` keys to `string` values (integers and bools
 //!   are stored pre-rendered via `Ctx.set_int` / `Ctx.set_bool`).
 //! - **list map** — `string` keys to flat-stored lists of `string` items,
 //!   indexed by per-entry start/length metadata.
 //!
-//! WHY (flat design): `Vec<Entry>` where `Entry` carries a `Vec` field is
-//! rejected by the v0.5 codegen-front ("recursive owned clone/drop thunk
-//! synthesis not implemented").  Recursive enum variants (`Value.List(Vec<Value>)`)
-//! trigger the same limit.  The flat parallel-vec layout works within these
-//! constraints with no expressiveness loss for the basic template surface.
-//!
-//! WHEN: replace with a proper recursive `Value` type once the codegen-front
-//! lifts the recursive-clone restriction.
-//!
-//! WHAT: the real model is `enum Value { Str(string), Num(i64), Bool(bool),
-//! Null, List(Vec<Value>), Map(Ctx) }` with `Ctx` as `HashMap<string, Value>`.
+//! Values are strings, integers, booleans, or flat lists of strings. Nested
+//! lists and maps are outside this API.
 //!
 //! # Examples
 //!
@@ -79,12 +67,7 @@
 
 // ── Context type ──────────────────────────────────────────────────────
 //
-// SHIM (flat parallel-vec design):
-// WHY: Hew v0.5 codegen-front rejects `Vec<T>` when `T` contains a `Vec`
-//      field, and recursive enum variants hit the same clone/drop limit.
-//      Two independent parallel-vec maps avoid both constraints.
-// WHEN: replace with `HashMap<string, Value>` once recursive owned types land.
-// WHAT: the real shape is a single generic map from string to a recursive Value.
+// Scalars and lists use independent parallel-vector maps.
 /// Template rendering context.
 ///
 /// Construct with `new_ctx()`, then populate through the `var self` methods

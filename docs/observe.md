@@ -375,24 +375,18 @@ hew-observe --addr 127.0.0.1:6067
 delegation fails; run `hew-observe` directly or build/install it alongside
 `hew`.
 
-## Limitations / not yet
+## Choosing an observation surface
 
-- **No custom application metrics.** Hew programs can read runtime-owned metrics,
-  but cannot define counters, gauges, histograms, labels, spans, or traces
-  through `std.observe`.
-- **Fragmented surfaces.** `observe.read`, `observe.scrape`, `/api/metrics`,
-  `/api/actors`, and `/api/metrics/history` do not expose one identical schema.
-  In particular, `/api/metrics` currently omits several fields that the runtime
-  captures internally and that are visible through scrape or actor-specific
-  endpoints.
-- **Metric metadata is minimal.** `series()` lists names and `scrape()` includes
-  `# TYPE`, but there is no API for descriptions, units, stability, or hot-tier
-  requirements.
-- **No programmatic hot-tier check in Hew.** The runtime has an internal hot-tier
-  flag, but `std.observe` does not expose `hot_enabled()`.
-- **`observe.barrier` is narrow.** It is present as a synchronization helper for
-  attribution visibility, but it is not a custom metric or flush API.
-- **`hew observe` depends on a sibling binary.** The main `hew` CLI delegates to
-  `hew-observe`; it does not embed the TUI.
-- **The TUI is terminal-oriented.** Use HTTP endpoints directly for scripts,
-  CI, or non-TTY contexts.
+- Use `std.metrics` to define application counters, gauges, and histograms;
+  `std.observe` reads runtime-owned measurements.
+- Choose the endpoint for the shape you need: `observe.read`,
+  `observe.scrape`, `/api/metrics`, `/api/actors`, and
+  `/api/metrics/history` expose purpose-specific schemas.
+- `series()` lists metric names and `scrape()` includes names and `# TYPE`.
+  The current API has no description or unit fields; document those alongside
+  the application that defines each metric.
+- `observe.barrier` waits for attribution visibility. It does not flush or
+  publish custom metrics.
+- `hew observe` delegates to the separately installed `hew-observe` binary.
+- The TUI targets interactive terminals. Use the HTTP endpoints for scripts,
+  CI, and other non-TTY clients.

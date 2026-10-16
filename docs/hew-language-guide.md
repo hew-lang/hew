@@ -70,7 +70,7 @@ for the documented resolver precedence.
 
 - Primitive types are lowercase: `i64`, `string`, `f64`, `bool`, `char` — never `Int`, `String`, `Float`.
 - Integer literals default to `i64`, float literals to `f64`. Contextual types select the integer range, including the full `u64` range; there is no bigint source type.
-- Interpolate `Display` values with `f"x={x}"`. Structural debug rendering is a future idea, not a current formatting contract.
+- Interpolate `Display` values with `f"x={x}"`. Use explicit formatting methods for structural debug output.
 - Convert numbers with `as`: `x as i64`, `pi as i32`. It is the only conversion mechanism.
 - Never mix integer widths in one expression; cast the narrower operand up first: `x as i64 + 1`.
 - **`var` for mutable bindings, `let` for immutable.** Hew does not have `let mut` — use `var` whenever you need to reassign a name, assign through a place (`p.x`, `v[0]`, `m["k"]`, `t.0`), or call a method that mutates its receiver. Collections are values, so `var v: Vec<i64> = Vec.new(); v.push(1)` is the mutating form and `let v` refuses it. Handles are the exception by category, not by syntax: `let d = deque.new(); d.push_back(1)` is fine because `d` names a resource rather than holding a value.
@@ -2206,7 +2206,8 @@ handle only when it is needed. For named local actors, store the non-owning
 actor handle shown above instead of a strong handle. Keep ownership flowing in
 one direction when neither form is available.
 
-Do not rely on a future cycle collector to reclaim an ownership cycle.
+Use `Weak<T>` for graph back-edges; a cycle made entirely of `Rc<T>` values
+retains every member.
 
 ### Timers and scheduling — sleep and sleep_until
 
@@ -3681,7 +3682,7 @@ refused today (`E_LIMIT_INHERENT_VAR_SELF`), because an inherent method receives
 the value and the mutation would not reach the caller — declare the method on a
 trait with a `var self` receiver and implement that trait for your type.
 
-A trait method can carry a default body (`fn shout(self) -> string { self.greet() + "!!!" }` inside the trait declaration); an `impl` only needs to supply the methods it overrides, and an uncalled default falls back to the trait's body, dispatching through `self.method()` like any other trait call. Defaults work within a single file and across a file import (`import "other.hew";`, including a default that dispatches back through a required method declared in another file). Defaults also work when only the _trait_ comes from a directory module (`import mymod.{ Greet };`) and the implementing type is local. They do not yet resolve when the implementing type is ALSO imported from a directory module (e.g. `import gm.{ Dog };` where `Dog` and its `impl Greet for Dog` both live in `gm`) — calling an inherited default on that receiver fails with `no method 'greet' on 'gm.Dog'` rather than falling back to the trait's default body; that gap is tracked separately.
+A trait method can carry a default body (`fn shout(self) -> string { self.greet() + "!!!" }` inside the trait declaration); an `impl` only needs to supply the methods it overrides, and an uncalled default falls back to the trait's body, dispatching through `self.method()` like any other trait call. Defaults work within a single file and across a file import (`import "other.hew";`, including a default that dispatches back through a required method declared in another file). Defaults also work when only the _trait_ comes from a directory module (`import mymod.{ Greet };`) and the implementing type is local. When both the implementing type and its impl come from a directory module (for example, `import gm.{ Dog };`), inherited defaults are unavailable and the call reports `no method 'greet' on 'gm.Dog'`.
 
 ### Choosing between methods with the same name
 
@@ -4818,8 +4819,7 @@ Build a flat `Ctx` with `new_ctx()` in a `var` binding, then call its
 Go-style template — `{{.key}}` substitutes, `{{if .key}}…{{end}}` is conditional,
 `{{range .list}}…{{.}}…{{end}}` iterates with `.` bound to each item. Render with
 the free function `template.render_template(t, ctx)` (panics on error) or
-`template.render_try(t, ctx)` (returns `Result`); the method form `t.render(ctx)`
-is not yet implemented. `TemplateError` has no `Display`, so handle the `Err` arm
+`template.render_try(t, ctx)` (returns `Result`). `TemplateError` has no `Display`, so handle the `Err` arm
 with a literal message rather than interpolating it. Full example:
 [`examples/v05/surfaces/template_render.hew`](../examples/v05/surfaces/template_render.hew).
 
@@ -4907,7 +4907,7 @@ replies with `parse_response` → `status()` / `body()` / `header(name)` /
 handler LOCALS — an opaque handle in actor state is rejected by the
 supervisor-restart clone gate. Full client+server program (two routes):
 [`examples/net/http_await_service.hew`](../examples/net/http_await_service.hew)
-(run with `HEW_WORKERS=1` to see the single-worker serve+fetch proof).
+(run with `HEW_WORKERS=1` to exercise serving and fetching on one worker).
 
 ### Deadline forms — `scope within d`, a `select` timer arm, and socket timeouts
 
@@ -4998,11 +4998,10 @@ as bytes, so each is a scalar, a collection of such values, or a `#[wire]`
 type with tagged fields. A plain record is refused at the call with a
 suggestion to declare its wire schema.
 
-> **Not yet in this build.** A local handle is the actor's own type
-> (HEW-SPEC-2026 §2.1.1), but a handle obtained from a node lookup is still
-> written `RemotePid<A>`: a remote handle has its own runtime representation,
-> so unifying it under the actor's own type waits on the location-aware
-> delivery path. That is why the example above writes `RemotePid<Echo>`.
+> A local handle uses the actor's own type (HEW-SPEC-2026 §2.1.1). A handle
+> obtained from a node lookup uses `RemotePid<A>` because remote handles have a
+> distinct runtime representation. The example above therefore writes
+> `RemotePid<Echo>`.
 
 Full example:
 [`examples/distributed/kv_client.hew`](../examples/distributed/kv_client.hew)

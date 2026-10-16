@@ -89,8 +89,7 @@ pub type Gauge {
 ///
 /// This handle records observations; the scrape exposes the running
 /// observation count and sum as valid `name_count` / `name_sum` lines.
-/// Bucketed histograms (custom `le` upper bounds, the `name_bucket` lines) are
-/// not yet expressible from the stdlib surface and arrive in a later release.
+/// The stdlib surface exposes count and sum; it has no custom bucket API.
 pub type Histogram {
     id: i64;
 }
@@ -224,8 +223,8 @@ pub fn gauge(name: string) -> Result<Gauge, MetricsError> {
 /// Register (or get) a histogram named `name`.
 ///
 /// The histogram records observations; the scrape exposes the running count
-/// and sum as `name_count` / `name_sum`. Custom bucket upper bounds (the
-/// `name_bucket` lines) arrive in a later release.
+/// and sum as `name_count` / `name_sum`. This API does not register custom
+/// bucket upper bounds or emit `name_bucket` lines.
 /// Returns a structured error if the registry rejects the name.
 pub fn histogram(name: string) -> Result<Histogram, MetricsError> {
     let id = unsafe {

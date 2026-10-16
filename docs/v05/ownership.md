@@ -1,21 +1,16 @@
-# Hew Value-Semantics and Ownership Contract
+# Values and ownership
 
-The short code fences in this v0.5 design note are illustrative fragments; they
-refer to surrounding declarations and are not standalone examples.
+The short code fences are illustrative fragments that refer to their
+surrounding declarations.
 
 ## Core principle: copy-on-write, immutable by default
 
-Values in Hew are immutable views shared by refcount; a copy is made only on
-mutation of shared data. Passing an owned value to a function is a **borrow** —
-the caller retains ownership and drops the value at its scope exit; the callee
-gets an immutable copy-on-write view. Reuse after a call (`f(p); g(p)`) and
-value-receiver method chains are legal. There is no use-of-moved-value error for
-function calls, no ordinary reference syntax, and no lifetimes — ownership and
-sharing are inferred. The entire binding surface is two keywords, `let`
-(immutable) and `var` (mutable), and a method that mutates its receiver says so
-with `var self`; there are no ownership annotations to write. Lifetimes, mutable
-references, and a capability lattice are permanent refusals, not deferred
-features.
+Values in Hew are immutable views shared by refcount; mutation makes a private
+copy when the data is shared. Passing a value to a function borrows it: the
+caller keeps ownership and the callee receives an immutable copy-on-write view.
+Calls such as `f(p); g(p)` and value-receiver method chains therefore keep `p`
+available. Hew infers ownership and sharing from `let`, `var`, and receiver
+forms; `var self` marks a method that mutates its receiver.
 
 ```hew,ignore
 let p = build_point();
@@ -26,57 +21,38 @@ println(p.describe());  // value-receiver chain — still legal
 
 Reaching for a second _independent, divergent_ copy is a `clone`: `clone val`
 (prefix form, the natural spelling) or `val.clone()` (method form) — see below.
-`clone` is a cost operation, not an ownership keyword: you never need it to keep
-using a value after passing or sending it somewhere. Copy-on-write already keeps
-your binding valid.
+`clone` requests an independent eager copy. Passing or sending an ordinary
+value already leaves the sender's binding valid through borrow or snapshot
+semantics.
 
-## How the compiler manages memory: the drop-obligation invariant
+## How the compiler manages memory
 
-The user-facing promise is simple: **you never free, annotate, or move — the
-compiler balances the books.**
+The compiler inserts retains, copies, and releases from the program's value
+flow.
 
 Under the hood, every live heap value carries exactly one _drop obligation_.
 Creating a value — or retaining a share of one — mints an obligation; scope
 exit, consumption, or hand-off discharges it, recursively through everything the
-value owns. Sharing a value (reading a field out of a live composite, reading a
-collection element, passing it by value while the caller continues) is a
-refcount **retain**, not a raw alias and not a deep copy. Mutating a value whose
-buffer is shared **forks** it first (copy-on-write). Every one of these
-obligations is inferred by the compiler; none is written by you.
+value owns. Sharing a value (reading a field from a live composite, reading a
+collection element, or passing it while the caller continues) retains its
+refcount. Mutating a shared buffer forks it first. These obligations require no
+source annotations.
 
 Ordinary Hew syntax has no references; the separate extern-signature-only FFI
 view spelling is documented in the language guide's
 [FFI boundary appendix](../hew-language-guide.md#appendix-a---ffi-boundary-types).
 
-### The leak-never-double-free order
+### Release safety
 
-Release bugs are not all equal: a double-free corrupts memory another owner
-still holds, while a leak wastes memory the program has already paid for. The
-model, its runtime, and its gates enforce that severity difference as a total
-order:
-
-- **Over-release is unconditionally rejected.** Discharging an obligation that
-  was never minted — a refcount that would go below zero — aborts the program
-  rather than wrapping (the shared-refcount release assert in
-  `hew-runtime/src/arc.rs` is the canonical site). There is no build mode in
-  which a double-free proceeds.
-- **Under-release is tracked and ratcheted shrink-only.** A known leak is
-  recorded in the sanitizer and leak-oracle expectations (the ASan/LSan
-  fixture gate on Linux, the `leaks --atExit` oracle on macOS), and the
-  tracked set may only shrink: a new leak is a gate failure, and a fixed leak
-  deletes its entry so it cannot silently return.
-- **Abort and trap paths may leak-at-abort, never double-free.** A runtime
-  trap abandons outstanding obligations rather than force-discharging them:
-  an abandoned obligation is a bounded leak in a dying process, while a
-  speculative release on a trap path risks freeing a value another owner
-  still holds.
+A refcount release that would underflow aborts instead of wrapping. Normal
+scope exits and handled failure paths discharge their live obligations. A
+process-wide abort may leave allocations for the operating system to reclaim;
+it never speculatively releases memory still owned by another value.
 
 ## `clone x` — the eager-copy cost operation
 
-`clone` is not an ownership keyword. It is a stdlib **cost operation** that means
-"make an independent, eager copy of this value _now_" — the opposite of
-copy-on-write's lazy, on-demand fork. `clone x` (prefix form, the natural and
-primary spelling) and `x.clone()` (method form) are equivalent:
+`clone` is a stdlib cost operation that makes an independent eager copy.
+`clone x` and `x.clone()` are equivalent:
 
 ```hew,ignore
 var a: Vec<i64> = Vec.new();
@@ -87,21 +63,13 @@ println(a.len());     // 2
 println(b.len());     // 3
 ```
 
-You reach for `clone` only when you want a **second, divergent** copy that
-mutates independently of the original — as above, where `b` grows while `a` does
-not. You never need it for correctness: passing a value to a function borrows it,
-and sending a value to an actor takes a snapshot, so your binding stays valid
-either way (see the two sections above and below). Because it eagerly duplicates,
-`clone` is a cost you opt into, never a ceremony the compiler demands.
+Use `clone` when two copies must mutate independently, as above where `b` grows
+while `a` stays unchanged. Function calls borrow values and actor sends take
+snapshots, so both operations keep the caller's binding available.
 
 `string`, `Vec<T>`, `HashMap<K,V>`, `HashSet<T>`, and records (via the
-`RecordCloneInplace`/`CopyCloneNoop` MIR rewrites) all have a wired copy path
-and clone correctly. The `CloneNotYetSupported` diagnostic is a fail-closed
-backstop: it fires for a `clone` the checker cannot map to any real copy path (a
-type with no clone method at all, or a heap type whose runtime copy path
-genuinely isn't wired yet, e.g. `bytes`). It never fires for already-resolved
-clones, and it never silently aliases — every unresolved `clone` is a
-compile-time error, not a runtime surprise.
+`RecordCloneInplace`/`CopyCloneNoop` MIR rewrites) have copy paths. A clone of a
+type without a copy path is a compile-time error.
 
 ## Snapshot on send
 
@@ -214,18 +182,14 @@ heap, closed by its drop glue when the actor stops — and may be a `receive fn`
 parameter on a local send, where the send consumes it. That is how one actor
 holds one connection and serves many requests over it.
 
-> **Not yet: `E_LIMIT_OPAQUE_ACTOR`.** Today an `#[opaque]` type in a
-> `receive fn` parameter or an actor init field is refused, with the wire rule's
-> "message payloads must be CBOR-serializable" applied to a local send that
-> never serializes. The refusal carries this Limitation code so it is
-> distinguishable from the rule, and it lifts when local sends carry the
-> transfer-last-use move. Until then, open the handle inside the handler.
+> **Compiler limitation: `E_LIMIT_OPAQUE_ACTOR`.** An `#[opaque]` type in a
+> `receive fn` parameter or actor init field is rejected. Open the handle
+> inside the actor handler instead.
 
-## The complete rejection surface: four walls
+## Common ownership errors
 
-The entire ownership model rejects your program in exactly **four** places. Each
-wall names the binding, its state, and the span that put it there, and each ships
-a one-line escape:
+Ownership diagnostics name the binding, its state, and the source span that
+caused the conflict:
 
 | Wall                       | When it fires                                                                                     | Escape                                                                                |
 | -------------------------- | ------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
@@ -234,12 +198,9 @@ a one-line escape:
 | send of a non-sendable     | you send an `Rc`, a `Weak`, a `LambdaPid`, or a closure, or you send any handle to a remote actor | use the [owning-actor pattern](../hew-language-guide.md#own-a-resource-with-an-actor) |
 | use after send of a handle | you send an opaque or resource handle locally and then use the binding                            | send it last, or reopen the handle in the receiving actor                             |
 
-The fourth wall is for **handles only**. Use-after-send of a _value_ is still
-not an error (send takes a snapshot) and use-after-call is still not an error
-(calls borrow) — but a handle cannot be snapshotted, because there is nothing to
-snapshot but the resource itself, so a local send of one is a move and the
-sender's binding is dead afterwards (`E_USE_AFTER_SEND`). The model still has no
-lifetime errors, no borrow-checker vocabulary, and no capability terms to learn.
+Use-after-send applies to handles. A value send takes a snapshot and a function
+call borrows, while a local send of an opaque or resource handle moves it. The
+`E_USE_AFTER_SEND` diagnostic points to the consuming send and the later use.
 
 ## Equality: structural by default, yours if you say so (Q322)
 

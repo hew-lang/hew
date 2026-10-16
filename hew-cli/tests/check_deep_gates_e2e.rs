@@ -10,6 +10,9 @@ fn write_fixture(source: &str) -> (tempfile::TempDir, std::path::PathBuf) {
     let dir = support::tempdir();
     let path = dir.path().join("main.hew");
     fs::write(&path, source).expect("write fixture");
+    let path = path.canonicalize().expect("canonical fixture path");
+    let text = path.to_str().expect("fixture path");
+    let path = std::path::PathBuf::from(text.strip_prefix(r"\\?\").unwrap_or(text));
     (dir, path)
 }
 

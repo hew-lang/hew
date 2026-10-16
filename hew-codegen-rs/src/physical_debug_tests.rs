@@ -190,34 +190,6 @@ fn shadowed_locals_emit_nested_lexical_block_dies() {
     let object = artefacts.native_obj_path.expect("native object");
     let dies = dwarf_dies(&object);
 
-    let shadowed: Vec<&Die> = dies
-        .iter()
-        .filter(|die| die.tag == "DW_TAG_variable" && die.name.as_deref() == Some("first"))
-        .collect();
-    assert_eq!(
-        shadowed.len(),
-        2,
-        "both shadowed bindings must survive as their own DIEs"
-    );
-    let outer = shadowed[0];
-    let inner = shadowed[1];
-    assert_eq!(
-        outer.decl_line,
-        Some(2),
-        "outer `first` is declared on line 2"
-    );
-    assert_eq!(
-        inner.decl_line,
-        Some(4),
-        "inner `first` is declared on line 4"
-    );
-    assert!(
-        inner.depth > outer.depth,
-        "the inner binding must sit in a deeper scope than the outer one"
-    );
-
-    // Each binding's parent DIE is a lexical block, and the inner block is a
-    // child of the outer one. A flat subprogram scope fails both.
     let parent_tag = |child: &Die| {
         dies.iter()
             .take_while(|die| !std::ptr::eq(*die, child))
@@ -225,15 +197,40 @@ fn shadowed_locals_emit_nested_lexical_block_dies() {
             .last()
             .map(|die| die.tag.clone())
     };
-    assert_eq!(
-        parent_tag(outer).as_deref(),
-        Some("DW_TAG_lexical_block"),
-        "the outer binding is scoped to the body's lexical block"
-    );
-    assert_eq!(
-        parent_tag(inner).as_deref(),
-        Some("DW_TAG_lexical_block"),
-        "the inner binding is scoped to the nested block"
+    let mut checked = 0;
+    for (index, subprogram) in dies.iter().enumerate() {
+        if subprogram.tag != "DW_TAG_subprogram" {
+            continue;
+        }
+        let shadowed: Vec<_> = dies[index + 1..]
+            .iter()
+            .take_while(|die| die.depth > subprogram.depth)
+            .filter(|die| die.tag == "DW_TAG_variable" && die.name.as_deref() == Some("first"))
+            .collect();
+        if shadowed.is_empty() {
+            continue;
+        }
+        assert_eq!(
+            shadowed.len(),
+            2,
+            "both bindings survive in each coroutine part"
+        );
+        let outer = shadowed[0];
+        let inner = shadowed[1];
+        assert_eq!(outer.decl_line, Some(2));
+        assert_eq!(inner.decl_line, Some(4));
+        assert!(
+            inner.depth > outer.depth,
+            "inner binding has a deeper scope"
+        );
+        for binding in shadowed {
+            assert_eq!(parent_tag(binding).as_deref(), Some("DW_TAG_lexical_block"));
+        }
+        checked += 1;
+    }
+    assert!(
+        checked > 0,
+        "source bindings must survive coroutine splitting"
     );
 }
 

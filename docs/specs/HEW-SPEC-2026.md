@@ -5839,6 +5839,10 @@ prepared. Cancellation does not undo those effects. Shared inputs require
 finished cleanup, including when later source preparation faults. Those loans
 end before the selected arm runs. This private lifetime applies only to newly
 prepared calls; an explicitly forked task keeps the task-arm rules below.
+Mutable method receivers are restored before that invocation completes, on
+success, fault and cancellation. Staged machine receivers commit only on
+success. Trait-object calls use their checked receiver mode and vtable slot;
+their erased type must retain the `Send` or `Sync` bounds required above.
 
 **Only the winning task arm consumes the task (normative).** A task arm takes
 the task's result only when it wins, so only the winning arm's body sees the

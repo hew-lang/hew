@@ -111,7 +111,7 @@ interface FrameContext {
   cancel?: (fault?: Fault) => void;
   generator?: GeneratorEntry;
   returned(value: VmValue): void;
-  failed(fault: Fault): void;
+  failed(fault: Fault, handback?: VmValue | null): void;
 }
 
 interface GeneratorEntry {
@@ -1180,19 +1180,43 @@ class ExecutorV1 {
         const consuming =
           op.op === "task.spawn" ||
           ("receiver" in op.callee && op.callee.receiver.decision === "move");
+        const dynamic =
+          op.op === "task.invoke" && "dyn" in op.callee ? op.callee : null;
+        const dynamicReceiver = dynamic
+          ? this.boundary(act, dynamic.receiver)
+          : null;
+        if (dynamicReceiver && dynamicReceiver.kind !== "dyn")
+          throw new TypeError(
+            "prepared dynamic receiver is not a trait object",
+          );
+        const dynamicEntry =
+          dynamicReceiver?.kind === "dyn" && dynamic
+            ? this.dynamicEntry(dynamicReceiver, dynamic.dyn)
+            : null;
+        if (dynamic && dynamicEntry?.method !== dynamic.method)
+          throw new Error(
+            "prepared dynamic slot differs from its checked method",
+          );
         const callable =
           op.op === "task.spawn"
             ? this.read(act, op.callable)
             : "direct" in op.callee
               ? { kind: "function" as const, id: String(op.callee.direct) }
-              : this.boundary(act, op.callee.receiver);
+              : "mutable" in op.callee
+                ? { kind: "function" as const, id: String(op.callee.mutable) }
+                : "dyn" in op.callee
+                  ? {
+                      kind: "function" as const,
+                      id: String(dynamicEntry!.callee),
+                    }
+                  : this.boundary(act, op.callee.receiver);
         if (op.op === "task.spawn") this.invalidate(act, op.callable);
         const args =
           op.op === "task.invoke"
             ? op.args.map((arg) => this.boundary(act, arg))
             : [];
         const specialization =
-          op.op === "task.invoke" && "receiver" in op.callee
+          op.op === "task.invoke" && "specialization" in op.callee
             ? op.callee.specialization
             : null;
         const task = this.newTask();
@@ -1235,13 +1259,106 @@ class ExecutorV1 {
             act.rcOwner,
           );
         };
+        const mutable =
+          op.op === "task.invoke" && "mutable" in op.callee ? op.callee : null;
+        const receiverRef = mutable
+          ? this.refOf(act, mutable.receiver.value)
+          : null;
+        if (dynamicReceiver?.kind === "dyn" && dynamicEntry && dynamic)
+          args.unshift(
+            this.erasedReceiver(
+              act,
+              dynamic.receiver,
+              dynamicReceiver.value,
+              dynamicEntry.receiver,
+            ),
+          );
+        if (receiverRef)
+          args.unshift(
+            mutable!.staged
+              ? cloneValue(readRef(receiverRef))
+              : readRef(receiverRef),
+          );
+        const handback = (
+          value: VmValue | null,
+          fault: Fault | null,
+          result: VmValue,
+        ) => {
+          if (!receiverRef || !mutable || value === null)
+            throw new Error(
+              "prepared mutable method omitted its receiver handback",
+            );
+          if (mutable.staged && fault) {
+            this.closeValueAsync(
+              value,
+              this.faultText(fault),
+              (closeFault) => settle(UNIT, combineFaults(fault, closeFault)),
+              act.context.actor,
+              act.rcOwner,
+            );
+          } else {
+            const previous = readRef(receiverRef);
+            writeRef(receiverRef, value);
+            if (mutable.staged)
+              this.closeValueAsync(
+                previous,
+                null,
+                (closeFault) => {
+                  if (closeFault)
+                    this.closeValueAsync(
+                      result,
+                      this.faultText(closeFault),
+                      (resultFault) =>
+                        settle(UNIT, combineFaults(closeFault, resultFault)),
+                      act.context.actor,
+                      act.rcOwner,
+                    );
+                  else settle(result, null);
+                },
+                act.context.actor,
+                act.rcOwner,
+              );
+            else settle(result, fault);
+          }
+        };
         const context: FrameContext = {
           id: task.id,
           actor: act.context.actor,
           rcOwner: act.rcOwner,
           requestDeadline: this.requestDeadline(act),
-          returned: (value) => settle(value, null),
-          failed: (fault) => settle(UNIT, fault),
+          returned: (value) => {
+            if (
+              dynamicEntry?.receiver_handback &&
+              dynamicReceiver?.kind === "dyn"
+            ) {
+              if (value.kind !== "record" || value.fields.length !== 2)
+                throw new Error(
+                  "prepared dynamic method omitted its dual result",
+                );
+              dynamicReceiver.value = value.fields[1]!;
+              settle(value.fields[0]!, null);
+            } else if (!mutable) settle(value, null);
+            else if (value.kind === "record" && value.fields.length === 2)
+              handback(value.fields[1]!, null, value.fields[0]!);
+            else
+              throw new Error(
+                "prepared mutable method returned no dual result",
+              );
+          },
+          failed: (fault, value) => {
+            if (
+              dynamicEntry?.receiver_handback &&
+              dynamicReceiver?.kind === "dyn"
+            ) {
+              if (!value)
+                throw new Error(
+                  "prepared dynamic method omitted its fault handback",
+                );
+              dynamicReceiver.value = value;
+            }
+            if (mutable) handback(value ?? null, fault, UNIT);
+            else settle(UNIT, fault);
+          },
         };
         const frame = this.activate(
           this.functionAt(calleeFunction(callable, specialization)),
@@ -1382,19 +1499,7 @@ class ExecutorV1 {
             `dyn.call expected a trait object, got ${receiver.kind}`,
           );
         }
-        const vtable =
-          this.pkg.vtables[receiver.vtable] ??
-          this.pkg.vtables.find(
-            (candidate) => candidate.id === receiver.vtable,
-          );
-        // The slot number is the checker's own index, so it is matched rather
-        // than used as a position in the slot array.
-        const entry = vtable?.slots.find(
-          (candidate) => candidate.slot === term.slot,
-        );
-        if (!entry) {
-          throw new Error(`vtable ${receiver.vtable} has no slot ${term.slot}`);
-        }
+        const entry = this.dynamicEntry(receiver, term.slot);
         // The wrapped value is the method's receiver, ahead of the call's own
         // arguments, passed under the decision the slot records: the erasure
         // the concrete type was made under, not something read off the method.
@@ -2092,6 +2197,19 @@ class ExecutorV1 {
     this.takeEdge(caller, act.normal);
   }
 
+  private dynamicEntry(
+    receiver: Extract<VmValue, { kind: "dyn" }>,
+    slot: number,
+  ) {
+    const table =
+      this.pkg.vtables[receiver.vtable] ??
+      this.pkg.vtables.find((table) => table.id === receiver.vtable);
+    const entry = table?.slots.find((entry) => entry.slot === slot);
+    if (!entry)
+      throw new Error(`vtable ${receiver.vtable} has no slot ${slot}`);
+    return entry;
+  }
+
   /// The wrapped value on its way to a trait method's `self`. A `copy` receiver
   /// deep-clones, a `move` invalidates the trait object it came out of, and a
   /// borrow passes the live value.
@@ -2135,7 +2253,7 @@ class ExecutorV1 {
     const caller = act.caller;
     if (!caller) {
       this.running = false;
-      act.context.failed(fault);
+      act.context.failed(fault, handback);
       return;
     }
     if (!act.unwind) {

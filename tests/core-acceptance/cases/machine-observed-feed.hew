@@ -136,6 +136,141 @@ fn prepared_calls() {
     assert(generic_answer == 12);
 }
 
+type Meter {
+    count: i64;
+}
+
+impl Meter {
+    fn advance(var self, delay: duration) -> i64 {
+        self.count += 1;
+        sleep(delay);
+        self.count
+    }
+}
+
+#[resource]
+type MeterOwner {
+    meter: Meter;
+    label: string;
+}
+
+impl MeterOwner {
+    fn close(consume self) {
+        assert(self.meter.count == 1);
+    }
+}
+
+trait Gauge {
+    fn[suspends] advance(var self, delay: duration, fail: bool) -> i64;
+    fn value(self) -> i64;
+    fn finish(consume self) -> string;
+}
+
+#[resource]
+type Reading {
+    count: i64;
+    label: string;
+}
+
+impl Reading {
+    fn close(consume self) {
+        assert(self.count == 3);
+    }
+}
+
+impl Gauge for Reading {
+    fn advance(var self, delay: duration, fail: bool) -> i64 {
+        self.count += 1;
+        sleep(delay);
+        if fail {
+            panic("gauge failed");
+        }
+        self.count
+    }
+    fn value(self) -> i64 {
+        self.count
+    }
+    fn finish(consume self) -> string {
+        self.label
+    }
+}
+
+fn prepared_methods() {
+    var meter = Meter { count: 0 };
+    let one = select {
+        result from meter.advance(1ms) => result,
+        after 1s => panic("method timed out"),
+    };
+    assert(one == 1 && meter.count == 1);
+    let timeout = select {
+        result from meter.advance(1s) => false,
+        after 1ms => true,
+    };
+    assert(timeout && meter.count == 2);
+    let cancelled = scope within 1ms {
+        select {
+            result from meter.advance(1s) => {}
+            after 2s => {}
+        };
+        false
+    } handle failure { true };
+    assert(cancelled && meter.count == 3);
+    let pair = (Meter { count: 0 }, 0);
+    var captured = move capture(var pair) || -> i64 {
+        let timed_out = select {
+            result from pair.0.advance(1s) => false,
+            after 1ms => true,
+        };
+        assert(timed_out);
+        pair.0.count
+    };
+    assert(captured() == 1 && captured() == 2);
+    var field = MeterOwner { meter: Meter { count: 0 }, label: "held".to_upper() };
+    let field_timeout = select {
+        result from field.meter.advance(1s) => false,
+        after 1ms => true,
+    };
+    assert(field_timeout && field.meter.count == 1);
+    var staged: Counter = .Ready { value: 0 };
+    let report = select {
+        result from staged.step(.Add { value: 5 }) => result,
+        after 1s => panic("staged step timed out"),
+    };
+    assert(value(staged) == 5 && report.outputs.len() == 1);
+    let staged_failed = scope {
+        select {
+            result from staged.step(.Add { value: -1 }) => {}
+            after 1s => {}
+        };
+        false
+    } handle failure { true };
+    assert(staged_failed && value(staged) == 5);
+    var gauge: dyn (Gauge + Send + Sync) = Reading { count: 0, label: "retained".to_upper() };
+    let dynamic_one = select {
+        result from gauge.advance(1ms, false) => result,
+        after 1s => panic("dynamic method timed out"),
+    };
+    assert(dynamic_one == 1 && gauge.value() == 1);
+    let dynamic_timeout = select {
+        result from gauge.advance(1s, false) => false,
+        after 1ms => true,
+    };
+    assert(dynamic_timeout && gauge.value() == 2);
+    let failed = scope {
+        select {
+            result from gauge.advance(1ms, true) => {}
+            after 1s => {}
+        };
+        false
+    } handle failure { true };
+    assert(failed && gauge.value() == 3);
+    let label = select {
+        result from gauge.finish() => result,
+        after 1s => panic("consuming method timed out"),
+    };
+    assert(label == "RETAINED");
+}
+
 fn reusable_select() {
     let (owner, feed) = watch.observe(Counter.Ready { value: 0 }, capacity: 2, subscribers: 1).expect("select owner");
     var live = owner;
@@ -168,6 +303,7 @@ fn reusable_select() {
 fn main() {
     reusable_select();
     prepared_calls();
+    prepared_methods();
     let original: Counter = .Ready { value: 0 };
     let (owner, feed) = watch.observe(original, capacity: 2, subscribers: 3).expect("observe");
     var live = owner;

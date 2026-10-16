@@ -40,7 +40,7 @@ impl Builder<'_, '_> {
         select: &HirSelect,
     ) -> Result<Option<ValueId>, String> {
         let outer_live = self.owned_live.clone();
-        let has_calls = select.arms.iter().any(|arm| matches!(&arm.kind, HirSelectArmKind::Call { call } if matches!(call.kind, hew_hir::HirExprKind::Call { .. } | hew_hir::HirExprKind::CallTraitMethodStatic { .. })));
+        let has_calls = select.arms.iter().any(|arm| matches!(&arm.kind, HirSelectArmKind::Call { call } if matches!(call.kind, hew_hir::HirExprKind::Call { .. } | hew_hir::HirExprKind::CallTraitMethodStatic { .. } | hew_hir::HirExprKind::VarSelfMethodCall { .. } | hew_hir::HirExprKind::CallDynMethod { .. })));
         let call_scope = if has_calls {
             self.open_scope();
             let scope = self.enter_task_scope()?;
@@ -140,6 +140,8 @@ impl Builder<'_, '_> {
                         call.kind,
                         hew_hir::HirExprKind::Call { .. }
                             | hew_hir::HirExprKind::CallTraitMethodStatic { .. }
+                            | hew_hir::HirExprKind::VarSelfMethodCall { .. }
+                            | hew_hir::HirExprKind::CallDynMethod { .. }
                     ) {
                         let scope =
                             call_scope.ok_or("prepared call has no private select scope")?;

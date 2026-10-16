@@ -388,11 +388,7 @@ pub(crate) fn verify_whole_value_borrow(
 ) -> Result<(), PhysicalError> {
     require_same_storage_type(function, dest, source, "physical borrow")?;
     let ty = &storage(function, source)?.ty;
-    if OwnKind::of_class(semantic_type_facts(module, ty)?.class) != OwnKind::Owned {
-        return Err(PhysicalError::new(
-            "physical borrow requires an owning value",
-        ));
-    }
+    semantic_type_facts(module, ty)?;
     verify_borrow_dependency(function, dest, source)
 }
 

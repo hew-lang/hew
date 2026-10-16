@@ -1525,6 +1525,8 @@ impl<'m> Walker<'m> {
                 "scope": scope.0,
                 "callee": match callee {
                     hew_sir::InvocationCallee::Direct(target) => serde_json::json!({ "direct": target.0 }),
+                    hew_sir::InvocationCallee::Mutable { target, receiver, update } => serde_json::json!({ "mutable": target.0, "receiver": boundary(receiver), "staged": *update == hew_types::ReceiverUpdate::Staged }),
+                    hew_sir::InvocationCallee::Dyn { receiver, slot, method } => serde_json::json!({ "dyn": slot, "method": self.module.defs.name(*method), "receiver": boundary(receiver) }),
                     hew_sir::InvocationCallee::Indirect { receiver, specialization } => serde_json::json!({ "receiver": boundary(receiver), "specialization": specialization.map(|id| id.0) }),
                 },
                 "args": args.iter().map(boundary).collect::<Vec<_>>(),

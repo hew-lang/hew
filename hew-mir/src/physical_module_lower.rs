@@ -211,6 +211,7 @@ pub fn lower_physical_module(
                         Some(required_layout(&target, &slot.signature.return_ty)?.clone())
                     };
                     Ok(PhysicalVtableSlot {
+                        receiver: slot.receiver,
                         slot: slot.slot,
                         is_resumable: resumable_methods.contains(&slot.method),
                         method: slot.method,

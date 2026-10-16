@@ -3165,10 +3165,15 @@ impl Checker {
                     | CallTarget::ImplMethod(_)
                     | CallTarget::StaticTraitMethod { .. }
                     | CallTarget::IndirectFunctionValue
+                    | CallTarget::DynamicVtable { .. }
             )
         ) {
             let declaration = self.selected_callable_declaration_at(&key);
-            let signature = declaration.and_then(|id| self.fn_sigs.get(&id)).cloned();
+            let signature = self
+                .dyn_trait_method_calls
+                .get(&key)
+                .map(|call| call.signature.clone())
+                .or_else(|| declaration.and_then(|id| self.fn_sigs.get(&id)).cloned());
             let argument_slots = self.call_argument_slots.get(&key).cloned();
             match operand {
                 Expr::MethodCall {
@@ -3222,7 +3227,10 @@ impl Checker {
                             .map(|sig| sig.requires_mutable_receiver);
                         self.check_select_call_transfer(&receiver.0, &receiver.1, shared, loan);
                     }
-                    let offset = usize::from(signature.as_ref().is_some_and(|sig| !sig.associated));
+                    let offset = usize::from(
+                        !self.dyn_trait_method_calls.contains_key(&key)
+                            && signature.as_ref().is_some_and(|sig| !sig.associated),
+                    );
                     for (index, arg) in args.iter().enumerate() {
                         let slot = argument_slots
                             .as_ref()

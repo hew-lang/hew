@@ -662,6 +662,16 @@ impl Checker {
         // object-safe (and the caller's type-implements check would already
         // have rejected it).
         let trait_id = bound.trait_id?;
+        if let Some(predicate) = crate::DefTable::as_predicate(trait_id) {
+            return (matches!(predicate, crate::Predicate::Send | crate::Predicate::Sync)
+                && bound.args.is_empty()
+                && bound.assoc_bindings.is_empty()
+                && self.type_has_marker(
+                    concrete_type,
+                    crate::traits::MarkerTrait::of_predicate(predicate),
+                ))
+            .then_some(false);
+        }
         let trait_info = self.trait_info(trait_id).cloned()?;
         if !Self::dyn_assoc_bindings_complete(&trait_info, bound) {
             return None;

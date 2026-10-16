@@ -57,10 +57,20 @@ fn race_rejects_non_send_fork_inputs() {
         "fn use_value(value: Rc<i64>) -> i64 { 1 } fn main() { let value = Rc.new(1); let result = race [ use_value(value), use_value(value) ]; }",
         "fn use_value(value: Rc<i64>) -> i64 { sleep(1ms); 1 } fn main() { let value = Rc.new(1); let result = select { answer from use_value(value) => answer, after 1s => 0 }; }",
         "type Reader { value: Rc<i64>; } impl Reader { fn read(self) -> i64 { sleep(1ms); 1 } } fn main() { let reader = Reader { value: Rc.new(1) }; let result = select { answer from reader.read() => answer, after 1s => 0 }; }",
+        "trait Reader { fn[suspends] read(self) -> i64; } type Counter {} impl Reader for Counter { fn read(self) -> i64 { sleep(1ms); 1 } } fn main() { let reader: dyn Reader = Counter {}; let result = select { answer from reader.read() => answer, after 1s => 0 }; }",
     ] {
         let output = check_source(source);
         assert!(output.errors.iter().any(|error| error.kind == TypeErrorKind::InvalidSend), "{source}: {:?}", output.errors);
     }
+    let output = check_source("trait Reader { fn read(self) -> i64; } type Counter { value: Rc<i64>; } impl Reader for Counter { fn read(self) -> i64 { 1 } } fn main() { let reader: dyn (Reader + Send + Sync) = Counter { value: Rc.new(1) }; }");
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|error| matches!(error.kind, TypeErrorKind::Mismatch { .. })),
+        "{:?}",
+        output.errors
+    );
 }
 
 #[test]
@@ -68,6 +78,7 @@ fn race_consumed_input_is_unusable_after_the_race() {
     for source in [
         "fn take(consume value: string) -> string { value } fn hold() -> string { \"other\" } fn main() { let text = \"hello\"; let result = race [ take(text), hold() ]; println(text); }",
         "fn take(consume value: string) -> string { sleep(1ms); value } fn main() { let text = \"hello\"; let result = select { answer from take(text) => answer, after 1s => \"timer\" }; println(text); }",
+        "trait Finish { fn finish(consume self) -> string; } type Label { text: string; } impl Finish for Label { fn finish(consume self) -> string { self.text } } fn main() { let job: dyn (Finish + Send) = Label { text: \"hello\" }; let result = select { answer from job.finish() => answer, after 1s => \"timer\" }; println(job); }",
     ] {
         let output = check_source(source);
         assert!(output.errors.iter().any(|error| matches!(error.kind, TypeErrorKind::UseAfterMove | TypeErrorKind::UseAfterConsume)), "{source}: {:?}", output.errors);

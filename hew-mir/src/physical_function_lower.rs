@@ -385,6 +385,7 @@ impl FunctionLowerer<'_> {
                 scope,
                 callee,
                 args,
+                signature,
                 ..
             } => {
                 let dest = self.one_result(operation)?;
@@ -397,6 +398,45 @@ impl FunctionLowerer<'_> {
                         hew_sir::InvocationCallee::Direct(target) => {
                             super::PhysicalInvocationCallee::Direct(*target)
                         }
+                        hew_sir::InvocationCallee::Mutable {
+                            target,
+                            receiver,
+                            update,
+                        } => super::PhysicalInvocationCallee::Mutable {
+                            target: *target,
+                            receiver: self
+                                .argument_transfer(receiver.operand.value, receiver.decision)?,
+                            update: *update,
+                            recipe: physical_value_recipe(
+                                self.module,
+                                self.glue_ids,
+                                &self.storage[self.value(receiver.operand.value)?.0 as usize].ty,
+                            )?,
+                        },
+                        hew_sir::InvocationCallee::Dyn {
+                            receiver,
+                            slot,
+                            method,
+                        } => super::PhysicalInvocationCallee::Dyn {
+                            receiver: self
+                                .argument_transfer(receiver.operand.value, receiver.decision)?,
+                            slot: *slot,
+                            method: *method,
+                            is_resumable: self.resumable_methods.contains(method),
+                            signature: super::PhysicalCallSignature {
+                                failure_domain: signature.failure_domain,
+                                params: self.call_params(signature)?,
+                                return_ty: signature.return_ty.clone(),
+                                return_layout: (!matches!(
+                                    signature.return_ty,
+                                    ResolvedTy::Unit | ResolvedTy::Never
+                                ))
+                                .then(|| {
+                                    required_layout(self.target, &signature.return_ty).cloned()
+                                })
+                                .transpose()?,
+                            },
+                        },
                         hew_sir::InvocationCallee::Indirect {
                             receiver,
                             specialization,

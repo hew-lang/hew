@@ -329,6 +329,16 @@ impl SemFunction {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InvocationCallee {
     Direct(CallableId),
+    Mutable {
+        target: CallableId,
+        receiver: BoundaryOperand,
+        update: hew_types::ReceiverUpdate,
+    },
+    Dyn {
+        receiver: BoundaryOperand,
+        slot: u32,
+        method: hew_types::DefId,
+    },
     Indirect {
         receiver: BoundaryOperand,
         specialization: Option<crate::CallableSpecializationId>,
@@ -340,13 +350,17 @@ impl InvocationCallee {
     pub fn receiver(&self) -> Option<&BoundaryOperand> {
         match self {
             Self::Direct(_) => None,
-            Self::Indirect { receiver, .. } => Some(receiver),
+            Self::Indirect { receiver, .. }
+            | Self::Mutable { receiver, .. }
+            | Self::Dyn { receiver, .. } => Some(receiver),
         }
     }
     pub fn receiver_mut(&mut self) -> Option<&mut BoundaryOperand> {
         match self {
             Self::Direct(_) => None,
-            Self::Indirect { receiver, .. } => Some(receiver),
+            Self::Indirect { receiver, .. }
+            | Self::Mutable { receiver, .. }
+            | Self::Dyn { receiver, .. } => Some(receiver),
         }
     }
 }

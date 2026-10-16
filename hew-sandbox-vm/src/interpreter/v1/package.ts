@@ -408,6 +408,8 @@ export type OpV1 =
       scope: number;
       callee:
         | { direct: number }
+        | { mutable: number; receiver: BoundaryOperand; staged: boolean }
+        | { dyn: number; method: string; receiver: BoundaryOperand }
         | { receiver: BoundaryOperand; specialization: number | null };
       args: BoundaryOperand[];
     });

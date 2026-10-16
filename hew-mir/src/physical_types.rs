@@ -435,6 +435,7 @@ pub struct PhysicalVtableId(pub u32);
 /// One dispatchable slot of a realized trait-object table.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PhysicalVtableSlot {
+    pub receiver: hew_sir::SemParamPassing,
     pub slot: u32,
     /// Every table implementing this method uses the same completion ABI.
     pub is_resumable: bool,
@@ -660,6 +661,19 @@ impl PhysicalSetOp {}
 #[derive(Debug, Clone, PartialEq)]
 pub enum PhysicalInvocationCallee {
     Direct(CallableId),
+    Mutable {
+        target: CallableId,
+        receiver: ArgumentTransfer,
+        update: hew_types::ReceiverUpdate,
+        recipe: PhysicalValueRecipe,
+    },
+    Dyn {
+        receiver: ArgumentTransfer,
+        slot: u32,
+        method: hew_types::DefId,
+        is_resumable: bool,
+        signature: PhysicalCallSignature,
+    },
     Indirect {
         receiver: ArgumentTransfer,
         specialization: Option<hew_sir::CallableSpecializationId>,
@@ -671,7 +685,9 @@ impl PhysicalInvocationCallee {
     pub fn receiver(&self) -> Option<ArgumentTransfer> {
         match self {
             Self::Direct(_) => None,
-            Self::Indirect { receiver, .. } => Some(*receiver),
+            Self::Indirect { receiver, .. }
+            | Self::Mutable { receiver, .. }
+            | Self::Dyn { receiver, .. } => Some(*receiver),
         }
     }
 }

@@ -204,6 +204,71 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                     .llvm_ctx("prepare direct invocation")?;
                 (carrier, None, false)
             }
+            hew_mir::physical::PhysicalInvocationCallee::Mutable {
+                target,
+                receiver,
+                update,
+                ..
+            } => {
+                let descriptor = self
+                    .llvm
+                    .get_global(&super::callable::prepared_mutable_symbol(*target, *update))
+                    .ok_or_else(|| {
+                        CodegenError::FailClosed("prepared mutable call has no descriptor".into())
+                    })?;
+                let source = argument_source(receiver);
+                let value = super::callable::callable_carrier(
+                    self.ctx,
+                    &self.builder,
+                    self.borrowed_slot(source)?,
+                    descriptor.as_pointer_value(),
+                )?;
+                let carrier = self
+                    .value_emitter()
+                    .entry_scratch(value.get_type(), "prepared.method")?;
+                self.builder
+                    .build_store(carrier, value)
+                    .llvm_ctx("prepare mutable invocation")?;
+                (carrier, None, false)
+            }
+            hew_mir::physical::PhysicalInvocationCallee::Dyn { receiver, .. } => {
+                let descriptor = self
+                    .llvm
+                    .get_global(&super::dyn_object::prepared_dyn_symbol(
+                        self.function.callable,
+                        dest,
+                    ))
+                    .ok_or_else(|| {
+                        CodegenError::FailClosed("prepared dispatch has no descriptor".into())
+                    })?;
+                let source = argument_source(receiver);
+                let consuming = matches!(receiver, ArgumentTransfer::Move(_));
+                let environment = if consuming {
+                    let value = self.load(source, "prepared.dyn.receiver")?;
+                    let slot = self
+                        .value_emitter()
+                        .entry_scratch(value.get_type(), "prepared.dyn.input")?;
+                    self.builder
+                        .build_store(slot, value)
+                        .llvm_ctx("retain moved trait object until invocation")?;
+                    slot
+                } else {
+                    self.borrowed_slot(source)?
+                };
+                let value = super::callable::callable_carrier(
+                    self.ctx,
+                    &self.builder,
+                    environment,
+                    descriptor.as_pointer_value(),
+                )?;
+                let carrier = self
+                    .value_emitter()
+                    .entry_scratch(value.get_type(), "prepared.dyn")?;
+                self.builder
+                    .build_store(carrier, value)
+                    .llvm_ctx("prepare dynamic invocation")?;
+                (carrier, Some(source), consuming)
+            }
             hew_mir::physical::PhysicalInvocationCallee::Indirect {
                 receiver,
                 specialization,

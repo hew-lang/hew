@@ -1,4 +1,4 @@
-import { UNIT, type VmValue } from "../values.js";
+import { UNIT, stringValue, type VmValue } from "../values.js";
 import { runtimeTag, type PackageV1, type TermV1 } from "./package.js";
 import { collectionOperation, type ValueProgram } from "./value-operations.js";
 
@@ -140,8 +140,7 @@ function* fromBridge(
   const variant = shape.variants[id];
   if (node === "Unit") return UNIT;
   if (node === "Bool") return { kind: "bool", value: Boolean(value) };
-  if (node === "Char" || node === "String")
-    return { kind: "string", value: String(value) };
+  if (node === "Char" || node === "String") return stringValue(String(value));
 
   if (node === "Bytes")
     return {
@@ -296,13 +295,12 @@ export function* executeCodec(
           elementType: "u8",
           items: bytes.map((byte) => ({ kind: "i64", value: BigInt(byte) })),
         }
-      : {
-          kind: "string",
-          value: new TextDecoder("utf-8", {
+      : stringValue(
+          new TextDecoder("utf-8", {
             fatal: true,
             ignoreBOM: true,
           }).decode(new Uint8Array(bytes)),
-        };
+        );
   }
   const root = result.ok ? shape.root : term.decoded!.error_root;
   const context = {

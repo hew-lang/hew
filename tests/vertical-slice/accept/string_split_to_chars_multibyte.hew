@@ -7,7 +7,7 @@
 import std.string;
 
 fn main() {
-    let parts = string.split("café", "");
+    let parts = ("café").split("");
     assert(parts.len() == 4);
     assert(parts[0] == "c");
     assert(parts[1] == "a");

@@ -4583,7 +4583,7 @@ The `string_*` builtin family — the `string_*`-prefixed names, `substring`,
 the free `len`, and the four `*_to_string` conversions — is deleted, together
 with the free-function twins in `std.string` that shadowed the same methods
 and the aliases in `std.fmt` that shadowed them again. `s.len()`,
-`s.slice(a, b)`, `s.contains(t)`, and `f"{v}"` are the spellings; there is no
+`s[a..b]`, `s.contains(t)`, and `f"{v}"` are the spellings; there is no
 second name for any of them. A type renders itself through `Display`
 (§3.10.2), never through a per-type `to_string` builtin.
 
@@ -4591,6 +4591,39 @@ second name for any of them. A type renders itself through `Display`
 index and range-slice surface. `s[i]` reads the `i`th codepoint of a string,
 the `i`th byte of a `bytes` value, and the `i`th element of a vector.
 String `len()` counts Unicode scalars; `byte_len()` counts encoded UTF-8 bytes.
+Both lengths and scalar indexing take O(1) time, including on non-ASCII text.
+`get(i)`, `first()` and `last()` return `Option<char>` in O(1) time. A range
+such as `s[a..=b]` copies the selected scalars in O(result length) time;
+`get(range)` returns `None` for invalid bounds and `Some("")` for a valid empty
+range. Negative bounds, reversed ranges and inclusive endpoints that cannot
+name a scalar are invalid; an inclusive maximum integer is a bounds failure,
+not an arithmetic overflow. Signed narrow indices widen to `i64` through the
+ordinary parameter coercion. Unsigned indices require an explicit cast.
+
+Strings have value semantics. `s += suffix` and `s.push(c)` update a writable
+string and preserve earlier copies and iterators as snapshots. Unique storage
+grows in amortized O(added length) time; `s + suffix` creates a new string.
+`clear()` empties a writable string. Indexed assignment is refused with
+`E_STRING_INDEX_ASSIGN`. `s.iter()` yields scalars in linear time without
+first building a vector. `find(needle)` and `find_from(needle, start)` return
+scalar positions; the latter searches from `start` without copying the tail.
+The clamping `slice`, `char_at`, `chars`, `char_count_utf8`,
+`codepoint_at_utf8` and whole-string classification aliases are absent.
+
+Character classification belongs to `char`: `is_digit` means ASCII digits,
+`is_letter` means Unicode Alphabetic, and `is_alphanumeric` is their union.
+`is_whitespace`, `is_upper`, `is_lower`, `is_punctuation`, `is_control` and
+`is_ascii` expose their Unicode or ASCII properties. `to_upper`, `to_lower`
+and `to_title` return a single scalar, leaving it unchanged when the full
+mapping expands; string case conversion performs full mapping. `to_digit`
+accepts radices 2 through 36 and returns `Option<i64>`. `len_utf8` reports a
+scalar's encoded width. `as u32`, `as i64`, `as_u32()` and `as_i64()` preserve
+the scalar value. Casts to 8-bit or 16-bit integers are refused; use an exact
+integer conversion such as `(c as u32).try_to_u8()`. Every integer type has
+`try_to_char()`, returning `None` for a negative value, surrogate or value
+above U+10FFFF. Integer `as char` casts remain refused. `std.text.unicode`
+is replaced by these character methods and string scalar access.
+
 `x[a..b]`, `x[a..]`, `x[..b]` and `x[..]` select a range: a string slice is a
 fresh owned string of codepoints, a bytes slice is an independent handle onto
 the same buffer, and a `Vec<T>` slice is a fresh vector holding a copy of each

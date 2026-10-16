@@ -29,19 +29,13 @@ fn string_methods_resolve_through_std_string_extern_symbols() {
             let _: string = s.to_upper();
             let _: string = s.to_lower();
             let _: string = s.trim();
-            let _: bool = s.is_digit();
-            let _: bool = s.is_alpha();
-            let _: bool = s.is_alphanumeric();
             let _: string = s.clone();
             let _: string = s.replace("l", "x");
             let _: Vec<string> = s.split("l");
             let _: Vec<string> = s.lines();
             let _: Option<i64> = s.find("e");
-            let _: string = s.slice(0, 1);
             let _: string = s.repeat(2);
-            let _: Option<char> = s.char_at(0);
             let _: Option<char> = s.get(0);
-            let _: Vec<char> = s.chars();
             let _: bytes = s.to_bytes();
         }
     "#;
@@ -60,18 +54,13 @@ fn string_methods_resolve_through_std_string_extern_symbols() {
         "hew_string_to_uppercase",
         "hew_string_to_lowercase",
         "hew_string_trim",
-        "hew_string_is_digit",
-        "hew_string_is_alpha",
-        "hew_string_is_alphanumeric",
         "hew_string_clone",
         "hew_string_replace",
         "hew_string_split",
         "hew_string_lines",
         "hew_string_find",
-        "hew_string_slice",
         "hew_string_repeat",
-        "hew_string_char_at",
-        "hew_string_chars",
+        "hew_string_get",
         "hew_string_to_bytes",
     ] {
         assert!(

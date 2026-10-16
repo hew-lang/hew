@@ -36,9 +36,6 @@ impl Checker {
         // Numeric conversion. The math functions live in `std.math`; there is
         // no bare spelling for them (A409).
 
-        // String operations
-        self.register_builtin_fn("len", vec![Ty::Var(TypeVar::fresh())], Ty::I64);
-
         // I/O and system
         // `instant::now` has no source declaration, but it is an ordinary
         // compiler-provided runtime call.  Register its joined parser spelling

@@ -114,7 +114,7 @@ fn main() {
     let probe = spawn Probe;
     mailbox(service.acceptor, on_full: .Wait).start().expect("start acceptor");
     let port_event = next(event_input);
-    let address = "127.0.0.1:" + port_event.slice(5, port_event.len());
+    let address = "127.0.0.1:" + port_event[5..port_event.len()];
     let first = net.connect(address).expect("first client");
     expect(event_input, "session 1");
     let second = net.connect(address).expect("second client");

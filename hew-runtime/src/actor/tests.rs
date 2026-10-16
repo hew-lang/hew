@@ -5922,7 +5922,7 @@ fn live_borrow_receive_retains_escaping_payload_releases_once() {
         // load it and release one owner.
         let handle = unsafe { *payload.cast::<*mut hew_cabi::string::HewString>() };
         // SAFETY: `handle` is a live header-aware String produced by
-        // `hew_string_from_char` (or a clone of it), released exactly once.
+        // `hew_char_to_string` (or a clone of it), released exactly once.
         unsafe { crate::string::hew_string_drop(handle) };
         DROP_COUNT.fetch_add(1, Ordering::SeqCst);
     }
@@ -5935,7 +5935,7 @@ fn live_borrow_receive_retains_escaping_payload_releases_once() {
         // retain/drop, then release the envelope. Every pointer is live for
         // the block and freed exactly once.
         unsafe {
-            let s = crate::string::hew_string_from_char(i32::from(b'x'));
+            let s = crate::string::hew_char_to_string(i32::from(b'x'));
             let slot = std::mem::size_of::<*mut hew_cabi::string::HewString>();
             let buf = crate::mem::buf_try_alloc(slot).cast::<*mut hew_cabi::string::HewString>();
             assert!(!buf.is_null());
@@ -5966,7 +5966,7 @@ fn live_borrow_receive_retains_escaping_payload_releases_once() {
         // SAFETY: same self-contained envelope lifecycle as the borrow arm;
         // copy mode emits no clone, so the envelope release is the sole free.
         unsafe {
-            let s = crate::string::hew_string_from_char(i32::from(b'y'));
+            let s = crate::string::hew_char_to_string(i32::from(b'y'));
             let slot = std::mem::size_of::<*mut hew_cabi::string::HewString>();
             let buf = crate::mem::buf_try_alloc(slot).cast::<*mut hew_cabi::string::HewString>();
             assert!(!buf.is_null());

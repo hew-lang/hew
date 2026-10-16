@@ -1,7 +1,7 @@
 //! Exhaustive Hew-surface punctuation oracle executed as real WASI WebAssembly.
 //!
 //! The runtime unit test proves the native Rust export. This test compiles a
-//! Hew program that calls `std::text::unicode.is_punct` for every Unicode code
+//! Hew program that calls `char.is_punctuation` for every Unicode code
 //! point, runs that program through wasmtime, and compares the complete set to
 //! the pinned Unicode 18 category tables.
 
@@ -19,12 +19,12 @@ fn hew_wasi_unicode_is_punct_matches_all_unicode_18_punctuation_scalars() {
     let source = dir.path().join("punctuation_oracle.hew");
     fs::write(
         &source,
-        r"import std.text.unicode;
-
-fn main() {
+        r"fn main() {
     for cp in 0 .. 1114112 {
-        if unicode.is_punct(cp) {
-            println(cp);
+        if let .Some(scalar) = cp.try_to_char() {
+            if scalar.is_punctuation() {
+                println(cp);
+            }
         }
     }
 }

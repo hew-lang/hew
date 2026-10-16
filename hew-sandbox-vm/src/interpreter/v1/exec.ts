@@ -19,6 +19,7 @@ import type {
 import {
   UNIT,
   cloneValue,
+  stringValue,
   toJsonValue,
   type VmValue,
   type RcOwner,
@@ -696,7 +697,7 @@ class ExecutorV1 {
         this.define(act, op.dst, { kind: "f64", value: floatConst(op) });
         return;
       case "const.char":
-        this.define(act, op.dst, { kind: "string", value: op.value });
+        this.define(act, op.dst, stringValue(op.value));
         return;
       case "const.unit":
         this.define(act, op.dst, UNIT);
@@ -705,10 +706,7 @@ class ExecutorV1 {
         this.define(act, op.dst, { kind: "i64", value: BigInt(op.nanos) });
         return;
       case "const.str":
-        this.define(act, op.dst, {
-          kind: "string",
-          value: this.pkg.strings[op.str] ?? "",
-        });
+        this.define(act, op.dst, stringValue(this.pkg.strings[op.str] ?? ""));
         return;
       case "const.bytes":
         this.define(act, op.dst, bytesValue(this.pkg.bytes[op.bytes] ?? []));
@@ -1679,12 +1677,7 @@ class ExecutorV1 {
           typeId: shape.name,
           shape: shape.id,
           tag: deadline ? term.deadline_variant : term.fault_variant,
-          payload: [
-            {
-              kind: "string",
-              value: faultReport(fault),
-            },
-          ],
+          payload: [stringValue(faultReport(fault))],
         };
         act.fault = null;
         if (act.context.actor) act.context.actor.crashing = null;
@@ -1923,7 +1916,7 @@ class ExecutorV1 {
     const continueRendering = () => {
       const next = renderer.next();
       if (typeof next === "string") {
-        this.completeShim(act, term, { kind: "string", value: next });
+        this.completeShim(act, term, stringValue(next));
         this.scheduler.enqueue(act.context.id, () => this.runFrame(act));
         return;
       }
@@ -2650,6 +2643,9 @@ class ExecutorV1 {
       while (pending.length) {
         const value = pending.pop()!;
         switch (value.kind) {
+          case "string":
+            value.release();
+            break;
           case "rc":
             if (!value.closed) {
               value.closed = true;
@@ -2743,6 +2739,7 @@ class ExecutorV1 {
   }
 
   private closeValue(value: VmValue, fault: string | null): void {
+    if (value.kind === "string") value.release();
     if (value.kind === "closure") this.closeValue(value.environment, fault);
     else if (value.kind === "sink" || value.kind === "stream")
       this.pipes.close(value, fault);
@@ -3808,7 +3805,7 @@ class ExecutorV1 {
         shape: actor.layout.crash_info!,
         fields: [
           { kind: "i64", value: BigInt(code!) },
-          { kind: "string", value: String(message) },
+          stringValue(String(message)),
         ],
       };
       let cancelTimer: (() => void) | undefined;
@@ -4735,7 +4732,7 @@ function applyBinary(
     };
   }
   if (lhs.kind === "string") {
-    return { kind: "string", value: lhs.value + asString(rhs) };
+    return stringValue(lhs.value + asString(rhs));
   }
   return {
     kind: "i64",
@@ -4804,7 +4801,7 @@ function applyCast(value: VmValue, to: string): VmValue {
       return { kind: "bool", value: truth(value) };
     case "char":
     case "string":
-      return { kind: "string", value: asString(value) };
+      return stringValue(asString(value));
     default:
       break;
   }

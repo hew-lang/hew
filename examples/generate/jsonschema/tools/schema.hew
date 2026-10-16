@@ -22,7 +22,7 @@ type Schema {
 }
 
 fn identifier(name: string) -> bool {
-    let chars = name.chars();
+    let chars = name;
     if chars.is_empty() {
         return false;
     }

@@ -189,11 +189,8 @@ fn host_runtime(action: PhysicalRuntimeAction) -> bool {
             | RuntimeCallFamily::StringStartsWith
             | RuntimeCallFamily::StringEndsWith
             | RuntimeCallFamily::StringIsEmpty
-            | RuntimeCallFamily::StringIsDigit
-            | RuntimeCallFamily::StringIsAlpha
-            | RuntimeCallFamily::StringIsAlphanumeric
-            | RuntimeCallFamily::StringSlice
             | RuntimeCallFamily::StringIndex
+            | RuntimeCallFamily::StringSliceRange
             | RuntimeCallFamily::StringSliceCodepoints
             | RuntimeCallFamily::StringSliceCodepointsFrom
             | RuntimeCallFamily::StringToLowercase

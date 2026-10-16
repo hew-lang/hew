@@ -6,11 +6,11 @@ fn rle_count(s: string) -> i64 {
     var runs = 0;
     var i = 0;
     while i < n {
-        let ch = s.char_at(i);
+        let ch = s.get(i);
         var run_len = 1;
         var j = i + 1;
         while j < n {
-            if s.char_at(j) != ch {
+            if s.get(j) != ch {
                 j = n;
             } else {
                 run_len = run_len + 1;

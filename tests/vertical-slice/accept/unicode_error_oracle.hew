@@ -1,29 +1,9 @@
-import std.text.unicode;
-
 fn main() {
-    match unicode.codepoint_at("hi", 2) {
-        .Ok(v) => println(f"unexpected-codepoint={v}"),
-        .Err(e) => println(e),
-    }
-    match unicode.codepoint_at("hi", -1) {
-        .Ok(v) => println(f"unexpected-negative={v}"),
-        .Err(e) => println(e),
-    }
-    match unicode.rune_len(-1) {
-        .Ok(n) => println(f"unexpected-rune-len={n}"),
-        .Err(e) => println(e),
-    }
-    match unicode.rune_len(0x110000) {
-        .Ok(n) => println(f"unexpected-rune-len-high={n}"),
-        .Err(e) => println(e),
-    }
-    let missing = match unicode.codepoint_at("hi", 2) {
-        .Ok(value) => value,
-        .Err(_) => -1,
-    };
-    let invalid_len = match unicode.rune_len(-1) {
-        .Ok(value) => value,
-        .Err(_) => -1,
-    };
-    println(f"sentinels={missing},{invalid_len}");
+    assert("hi".get(2).is_none());
+    assert("hi".get(-1).is_none());
+    assert((-1).try_to_char().is_none());
+    assert((0x110000).try_to_char().is_none());
+    assert((0xD800).try_to_char().is_none());
+    assert((4294967329).try_to_char().is_none());
+    println("invalid scalar conversions and missing indices return None");
 }

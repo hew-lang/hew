@@ -470,7 +470,10 @@ fn actor_task_and_pipe_selection_compose_without_consuming_losers() {
     let trace = execute(include_str!(
         "../../tests/core-acceptance/cases/select-actor-call-arm.hew"
     ));
-    assert_eq!(stdout(&trace), "OWNED ACTOR REPLY\ntask still joinable\nreceiver still usable\nreceiver evaluated once\nprepared receiver\n");
+    assert_eq!(
+        stdout(&trace),
+        "OWNED ACTOR REPLY\ntask still joinable\nreceiver still usable\nreceiver evaluated once\nprepared receiver\n"
+    );
 }
 
 #[test]
@@ -647,7 +650,10 @@ fn rejected_completion_requests_keep_owned_payloads_for_retry_and_redirection() 
     let trace = execute(include_str!(
         "../../tests/core-acceptance/cases/actor-policy-reject.hew"
     ));
-    assert_eq!(stdout(&trace), "submitted: accepted\nrejected: Full: the destination mailbox is full\ntrue\n2\n2\ntrue\ntrue\nclosed\n");
+    assert_eq!(
+        stdout(&trace),
+        "submitted: accepted\nrejected: Full: the destination mailbox is full\ntrue\n2\n2\ntrue\ntrue\nclosed\n"
+    );
 }
 
 #[test]
@@ -679,10 +685,27 @@ fn crash_info_uses_the_native_fault_code_and_class() {
 }
 
 #[test]
+fn indexed_unicode_values_preserve_scalar_operations_and_snapshots() {
+    let trace = execute(include_str!(
+        "../../tests/core-acceptance/cases/string-indexed-unicode.hew"
+    ));
+    assert_eq!(
+        stdout(&trace),
+        "222:407\n222:407\nindexed Unicode preserved\n"
+    );
+}
+
+#[test]
 fn structural_display_preserves_checked_nested_and_alias_selections() {
     for (source, expected) in [
-        (include_str!("../../tests/core-acceptance/cases/structural-rendering-display.hew"), "Report { current: west=3C, history: [Some(west=3C), None], tagged: reviewed:9 }\n(west=3C, archived:kept)\n[Circle { radius: 3 }, Square(1), Sample { reading: west=3C }, Missing]\n{latest: west=3C}\nwest=3C\nwest\n"),
-        (include_str!("../../tests/core-acceptance/cases/structural-rendering-aliases.hew"), "Report { readings: readings(2), archived: Some(readings(2)), plain: [3, 5], pair: (readings(2), west) }\n[Update { readings: readings(2) }, History(Some(readings(2)))]\nStations { values: {west: readings(2)} }\nreadings(2)\n"),
+        (
+            include_str!("../../tests/core-acceptance/cases/structural-rendering-display.hew"),
+            "Report { current: west=3C, history: [Some(west=3C), None], tagged: reviewed:9 }\n(west=3C, archived:kept)\n[Circle { radius: 3 }, Square(1), Sample { reading: west=3C }, Missing]\n{latest: west=3C}\nwest=3C\nwest\n",
+        ),
+        (
+            include_str!("../../tests/core-acceptance/cases/structural-rendering-aliases.hew"),
+            "Report { readings: readings(2), archived: Some(readings(2)), plain: [3, 5], pair: (readings(2), west) }\n[Update { readings: readings(2) }, History(Some(readings(2)))]\nStations { values: {west: readings(2)} }\nreadings(2)\n",
+        ),
     ] {
         assert_eq!(stdout(&execute(source)), expected);
     }
@@ -714,7 +737,10 @@ fn generators_close_through_records_variants_captures_and_lazy_owners() {
     let trace = execute(include_str!(
         "../../tests/core-acceptance/cases/generator-nested-values.hew"
     ));
-    assert_eq!(stdout(&trace), "record\nrecord cleaned\nenum\nenum cleaned\nclosure\nclosure cleaned\npartial\nEXTRACTED\npartial cleaned\nlazy\nlazy cleaned\ndone\n");
+    assert_eq!(
+        stdout(&trace),
+        "record\nrecord cleaned\nenum\nenum cleaned\nclosure\nclosure cleaned\npartial\nEXTRACTED\npartial cleaned\nlazy\nlazy cleaned\ndone\n"
+    );
 }
 
 #[test]
@@ -882,7 +908,10 @@ fn nested_display_resumes_peer_calls_and_drains_actor_close_cancellation() {
     let trace = execute(include_str!(
         "../../tests/core-acceptance/cases/structural-rendering-actor-lifecycle.hew"
     ));
-    assert_eq!(stdout(&trace), "start [1, 2]\nfinished ONE\n{west: [ONE]}\nfinished ONE\nfault returned\nstart [1, 2]\nfinished CANCELLED\ncancelled formatter closed\n");
+    assert_eq!(
+        stdout(&trace),
+        "start [1, 2]\nfinished ONE\n{west: [ONE]}\nfinished ONE\nfault returned\nstart [1, 2]\nfinished CANCELLED\ncancelled formatter closed\n"
+    );
     assert_eq!(trace["final_state"]["exit_code"], 1);
     assert_eq!(trace["final_state"]["virtual_clock"]["current_ms"], 0);
 }
@@ -1744,7 +1773,10 @@ fn actor_interceptor_chain_specializes_only_supervised_instances() {
     let trace = execute(include_str!(
         "../../tests/core-acceptance/cases/actor-interceptor-chain.hew"
     ));
-    assert_eq!(stdout(&trace), "root before\nbranch before\nactor before\nhandler\nactor after\nbranch after\nroot after\nactor before\nhandler\nactor after\n");
+    assert_eq!(
+        stdout(&trace),
+        "root before\nbranch before\nactor before\nhandler\nactor after\nbranch after\nroot after\nactor before\nhandler\nactor after\n"
+    );
 }
 
 #[test]

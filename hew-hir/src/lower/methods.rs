@@ -944,6 +944,46 @@ impl LowerCtx {
                 returns_receiver_identity,
                 ..
             }) => {
+                if descriptor.as_ref().is_some_and(|descriptor| {
+                    descriptor.family() == hew_types::RuntimeCallFamily::StringGetRange
+                }) {
+                    self.try_register_enum_instantiation(&span);
+                    let result_ty = self
+                        .checker_expr_ty(&span, "string range get")
+                        .unwrap_or(ResolvedTy::Unit);
+                    let container = self.lower_expr(receiver, IntentKind::Read);
+                    let (start, end, inclusive) = match &args[0].expr().0 {
+                        Expr::Range {
+                            start,
+                            end,
+                            inclusive,
+                        } => (start.as_deref(), end.as_deref(), *inclusive),
+                        Expr::Binary {
+                            left,
+                            op: op @ (BinaryOp::Range | BinaryOp::RangeInclusive),
+                            right,
+                        } => (
+                            Some(left.as_ref()),
+                            Some(right.as_ref()),
+                            *op == BinaryOp::RangeInclusive,
+                        ),
+                        _ => {
+                            return (
+                                HirExprKind::Unsupported("string range get has no range".into()),
+                                result_ty,
+                            )
+                        }
+                    };
+                    let kind = self.lower_string_range_call(
+                        container,
+                        (start, end),
+                        inclusive,
+                        true,
+                        &result_ty,
+                        &span,
+                    );
+                    return (kind, result_ty);
+                }
                 if !self.ensure_executable_target(&target, &c_symbol, &span) {
                     return (
                         HirExprKind::Unsupported(

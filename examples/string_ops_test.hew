@@ -10,16 +10,16 @@ fn main() {
     let s = "hello world";
     let len = s.len();
     println(len); // 11
-    let ch = s.char_at(0) ?? '?';
+    let ch = s.get(0) ?? '?';
     println(to_string(ch)); // h
     let eq = s == "hello world";
     println(eq); // true
     let cat = "foo" + "bar";
     println(cat); // foobar
     println("=== Slice ===");
-    let sub = s.slice(0, 5);
+    let sub = s[0..5];
     println(sub); // hello
-    let sub2 = s.slice(6, 11);
+    let sub2 = s[6..11];
     println(sub2); // world
     println("=== Find ===");
     let idx = s.find("world") ?? -1;
@@ -36,7 +36,7 @@ fn main() {
     let no_ct = s.contains("xyz");
     println(no_ct); // false
     println("=== Conversions ===");
-    let num_str = string.from_int(42);
+    let num_str = f"{42}";
     println(num_str); // 42
     let num = string.to_int("123") handle _ { 0 };
     println(num); // 123
@@ -46,7 +46,7 @@ fn main() {
     let replaced = "aabbcc".replace("bb", "XX");
     println(replaced); // aaXXcc
     println("=== Char ===");
-    let code = "ABC".char_at(0) ?? '?';
+    let code = "ABC".get(0) ?? '?';
     println(to_string(code)); // A
     let is_a = code == 'A';
     println(is_a);

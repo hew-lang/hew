@@ -1,27 +1,26 @@
-//! Tests for std::text::unicode codepoint boundaries.
+//! Unicode scalar conversion and classification boundaries.
 
-import std.text.unicode;
 
 #[test]
 fn test_valid_codepoint_case_mapping_still_works() {
-    assert(unicode.to_upper(97) == 65);
+    assert('a'.to_upper() == 'A');
 }
 
 #[test]
 fn test_invalid_i64_codepoint_does_not_narrow_to_ascii() {
-    assert(unicode.to_upper(4294967393) == 4294967393);
-    assert(!unicode.is_upper(4294967361));
+    assert((4294967393).try_to_char().is_none());
+    assert((4294967361).try_to_char().is_none());
 }
 
 // ── Punctuation is the Unicode P* category group ──────────────────────
 fn assert_punct(cp: i64, what: string) {
-    if !unicode.is_punct(cp) {
+    if !cp.try_to_char().expect("valid scalar").is_punctuation() {
         panic(f"expected {what} (U+{cp}) to be punctuation");
     }
 }
 
 fn assert_not_punct(cp: i64, what: string) {
-    if unicode.is_punct(cp) {
+    if cp.try_to_char().expect("valid scalar").is_punctuation() {
         panic(f"expected {what} (U+{cp}) not to be punctuation");
     }
 }
@@ -79,12 +78,8 @@ fn test_is_punct_rejects_non_punctuation() {
 }
 
 #[test]
-fn test_is_punct_rejects_values_that_are_not_unicode_scalars() {
-    assert_not_punct(-1, "a negative codepoint");
-    assert_not_punct(0xD800, "a high surrogate");
-    assert_not_punct(0xDFFF, "a low surrogate");
-    assert_not_punct(0x110000, "one past the last scalar");
-    // Beyond i32: narrowing before validating would wrap this onto U+0021.
-    assert_not_punct(4294967296 + 33, "a value that wraps to `!` when narrowed");
-    assert_not_punct(9223372036854775807, "i64::MAX");
+fn test_integer_conversion_rejects_invalid_scalars_before_narrowing() {
+    for cp in [-1, 0xD800, 0xDFFF, 0x110000, 4294967296 + 33, 9223372036854775807] {
+        assert(cp.try_to_char().is_none());
+    }
 }

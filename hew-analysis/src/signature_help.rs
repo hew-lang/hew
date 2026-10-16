@@ -166,7 +166,7 @@ fn find_call_sig(context: &CallContext, tc: &TypeCheckOutput) -> Option<FnSig> {
 /// Resolve `<binding>.<fn>` through the importer's own binding table.
 ///
 /// `fn_sigs` is keyed by the declaring module's canonical path
-/// (`std.text.unicode.is_upper`), while the source spells the lexical import
+/// (`std.string.to_int`), while the source spells the lexical import
 /// binding (`unicode.is_upper`). `module_import_bindings` is the checker's
 /// record of exactly which module each binding names, so the surface spelling
 /// resolves to one identity without the LSP inventing an owner or scanning

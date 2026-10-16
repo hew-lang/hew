@@ -170,7 +170,7 @@ pub fn field(key: string, val: string) -> string {
 /// }
 /// ```
 pub fn field_int(key: string, val: i64) -> string {
-    key + "=" + string.from_int(val)
+    key + "=" + f"{val}"
 }
 
 /// Build a `key=X` field from a string key and an f64 value.
@@ -185,7 +185,7 @@ pub fn field_int(key: string, val: i64) -> string {
 /// }
 /// ```
 pub fn field_float(key: string, val: f64) -> string {
-    key + "=" + string.from_float(val)
+    key + "=" + f"{val}"
 }
 
 /// Build a `key=true` or `key=false` field.
@@ -200,7 +200,7 @@ pub fn field_float(key: string, val: f64) -> string {
 /// }
 /// ```
 pub fn field_bool(key: string, val: bool) -> string {
-    key + "=" + string.from_bool(val)
+    key + "=" + f"{val}"
 }
 
 // ── Internal: assemble message + fields into one string ──────────────

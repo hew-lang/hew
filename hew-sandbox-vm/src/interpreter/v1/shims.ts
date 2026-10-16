@@ -1,3 +1,4 @@
+import { charProperty, charCase } from "../unicode.js";
 import type { Pipes } from "./pipes.js";
 /// The VM's runtime-family and extern shim table.
 ///
@@ -12,6 +13,7 @@ import {
   UNIT,
   cloneValue,
   compareUtf8,
+  stringValue,
   renderStdout,
   type VmValue,
 } from "../values.js";
@@ -88,9 +90,7 @@ export function resolveRuntimeShim(
         throw new Error("StructuralFormat requires its resumable executor");
       };
     case "FileRead":
-      return entry.detail === "LastError"
-        ? () => ({ kind: "string", value: "" })
-        : undefined;
+      return entry.detail === "LastError" ? () => str("") : undefined;
     case "Print":
       return printShim(entry.detail);
     case "RcNew":
@@ -212,18 +212,10 @@ const UNIT_FAMILY_SHIMS: Record<string, RuntimeShim | undefined> = {
   StringToBytes: (_host, args) => ({
     kind: "vector",
     elementType: "u8",
-    items: [...new TextEncoder().encode(text(args, 0))].map((byte) =>
-      int(BigInt(byte)),
-    ),
+    items: [...indexed(args, 0).encoded()].map((byte) => int(BigInt(byte))),
   }),
-  StringToUppercase: (_host, args) => ({
-    kind: "string",
-    value: text(args, 0).toUpperCase(),
-  }),
-  StringToLowercase: (_host, args) => ({
-    kind: "string",
-    value: text(args, 0).toLowerCase(),
-  }),
+  StringToUppercase: (_host, args) => str(text(args, 0).toUpperCase()),
+  StringToLowercase: (_host, args) => str(text(args, 0).toLowerCase()),
   StreamPairSink: (host, args) => host.pipes!.extract(arg(args, 0), "sink"),
   StreamPairStream: (host, args) => host.pipes!.extract(arg(args, 0), "stream"),
   SinkClone: (host, args) => host.pipes!.cloneSink(arg(args, 0)),
@@ -236,35 +228,96 @@ const UNIT_FAMILY_SHIMS: Record<string, RuntimeShim | undefined> = {
     return UNIT;
   },
   StringConcat: (_host, args) => str(`${text(args, 0)}${text(args, 1)}`),
-  StringClone: (_host, args) => str(text(args, 0)),
+  StringClone: (_host, args) => cloneValue(arg(args, 0)),
   StringEquals: (_host, args) => bool(text(args, 0) === text(args, 1)),
   StringCompare: (_host, args) =>
     int(BigInt(compareUtf8(text(args, 0), text(args, 1)))),
-  StringContains: (_host, args) => bool(text(args, 0).includes(text(args, 1))),
+  StringContains: (_host, args) =>
+    bool(indexed(args, 0).find(indexed(args, 1)) !== undefined),
   StringTrim: (_host, args) =>
     str(text(args, 0).replace(/^\p{White_Space}+|\p{White_Space}+$/gu, "")),
-  // Native string length counts codepoints, not bytes.
-  StringLen: (_host, args) => int(BigInt([...text(args, 0)].length)),
+  StringLen: (_host, args) => int(BigInt(indexed(args, 0).scalarLength)),
+  StringByteLen: (_host, args) => int(BigInt(indexed(args, 0).byteLength)),
   StringIndex: (_host, args) => {
-    const chars = [...text(args, 0)];
+    const value = indexed(args, 0);
     const at = index(args, 1);
-    if (at < 0 || at >= chars.length) {
+    const scalar = value.at(at);
+    if (scalar === undefined)
       throw new ShimFault(
         "vector_bounds",
-        `string index ${at} out of bounds for length ${chars.length}`,
+        `string index ${at} out of bounds for length ${value.scalarLength}`,
       );
-    }
-    return str(chars[at]!);
+    return str(scalar);
   },
-  StringIsEmpty: (_host, args) => bool(text(args, 0).length === 0),
+  StringGet: (host, args, shape) => {
+    if (!shape) throw new TypeError("string get requires its Option shape");
+    const scalar = indexed(args, 0).at(index(args, 1));
+    return scalar === undefined
+      ? host.enumValue(shape, "OptionNone", [])
+      : host.enumValue(shape, "OptionSome", [str(scalar)]);
+  },
+  StringFind: (host, args, shape) => {
+    if (!shape) throw new TypeError("string find requires its Option shape");
+    const found = indexed(args, 0).find(indexed(args, 1));
+    return found === undefined
+      ? host.enumValue(shape, "OptionNone", [])
+      : host.enumValue(shape, "OptionSome", [int(BigInt(found))]);
+  },
+  StringFindFrom: (host, args, shape) => {
+    if (!shape)
+      throw new TypeError("string find_from requires its Option shape");
+    const found = indexed(args, 0).find(indexed(args, 1), index(args, 2));
+    return found === undefined
+      ? host.enumValue(shape, "OptionNone", [])
+      : host.enumValue(shape, "OptionSome", [int(BigInt(found))]);
+  },
+  StringAppend: (_host, args) => indexed(args, 0).append(indexed(args, 1)),
+  StringPush: (_host, args) => indexed(args, 0).append(indexed(args, 1)),
+  StringClear: (_host, args) => {
+    indexed(args, 0).release();
+    return str("");
+  },
+  StringIsEmpty: (_host, args) => bool(indexed(args, 0).scalarLength === 0),
   StringReplace: (_host, args) =>
     str(text(args, 0).split(text(args, 1)).join(text(args, 2))),
-  // Native slicing is by codepoint and clamps rather than trapping.
-  StringSlice: (_host, args) => {
-    const chars = [...text(args, 0)];
-    const start = Math.min(Math.max(index(args, 1), 0), chars.length);
-    const end = Math.min(Math.max(index(args, 2), start), chars.length);
-    return str(chars.slice(start, end).join(""));
+  StringRepeat: (_host, args) =>
+    str(text(args, 0).repeat(Math.max(0, index(args, 1)))),
+  StringGetRange: (host, args, shape) => {
+    if (!shape)
+      throw new TypeError("string range get requires its Option shape");
+    const value = stringRange(args);
+    return value === undefined
+      ? host.enumValue(shape, "OptionNone", [])
+      : host.enumValue(shape, "OptionSome", [value]);
+  },
+  StringSliceRange: (_host, args) => {
+    const value = stringRange(args);
+    if (value === undefined)
+      throw new ShimFault("vector_bounds", "string range out of bounds");
+    return value;
+  },
+  StringSliceCodepoints: (_host, args) => {
+    const value = indexed(args, 0);
+    const start = index(args, 1);
+    const end = index(args, 2);
+    const sliced = value.slice(start, end);
+    if (!sliced)
+      throw new ShimFault(
+        "vector_bounds",
+        `string slice ${start}..${end} out of bounds for length ${value.scalarLength}`,
+      );
+    return sliced;
+  },
+  StringSliceCodepointsFrom: (_host, args) => {
+    const value = indexed(args, 0);
+    const start = index(args, 1);
+    const sliced = value.slice(start, value.scalarLength);
+    if (!sliced)
+      throw new ShimFault(
+        "vector_bounds",
+        `string slice ${start}.. out of bounds for length ${value.scalarLength}`,
+      );
+    return sliced;
   },
   I64ToString: (_host, args) => str(renderStdout(arg(args, 0))),
   U64ToString: (_host, args) => str(renderStdout(arg(args, 0))),
@@ -273,6 +326,37 @@ const UNIT_FAMILY_SHIMS: Record<string, RuntimeShim | undefined> = {
   U8ToString: (_host, args) => str(renderStdout(arg(args, 0))),
   BoolToString: (_host, args) => str(renderStdout(arg(args, 0))),
   F64ToString: (_host, args) => str(renderStdout(arg(args, 0))),
+  CharIsDigit: (_host, args) => bool(charProperty(text(args, 0), 0)),
+  CharIsLetter: (_host, args) => bool(charProperty(text(args, 0), 1)),
+  CharIsAlphanumeric: (_host, args) => bool(charProperty(text(args, 0), 2)),
+  CharIsWhitespace: (_host, args) => bool(charProperty(text(args, 0), 3)),
+  CharIsUpper: (_host, args) => bool(charProperty(text(args, 0), 4)),
+  CharIsLower: (_host, args) => bool(charProperty(text(args, 0), 5)),
+  CharIsPunctuation: (_host, args) => bool(charProperty(text(args, 0), 6)),
+  CharIsControl: (_host, args) => bool(charProperty(text(args, 0), 7)),
+  CharIsAscii: (_host, args) => bool(charProperty(text(args, 0), 8)),
+  CharLenUtf8: (_host, args) => int(BigInt(indexed(args, 0).byteLength)),
+  CharToUpper: (_host, args) => str(charCase(text(args, 0), "upper")),
+  CharToLower: (_host, args) => str(charCase(text(args, 0), "lower")),
+  CharToTitle: (_host, args) => str(charCase(text(args, 0), "title")),
+  CharToDigit: (host, args, shape) => {
+    if (!shape) throw new TypeError("char to_digit requires its Option shape");
+    const radix = index(args, 1);
+    const scalar = text(args, 0).codePointAt(0)!;
+    const digit =
+      scalar >= 48 && scalar <= 57
+        ? scalar - 48
+        : scalar >= 65 && scalar <= 90
+          ? scalar - 65 + 10
+          : scalar >= 97 && scalar <= 122
+            ? scalar - 97 + 10
+            : -1;
+    return radix < 2 || radix > 36 || digit < 0 || digit >= radix
+      ? host.enumValue(shape, "OptionNone", [])
+      : host.enumValue(shape, "OptionSome", [int(BigInt(digit))]);
+  },
+  CharFromI64: checkedChar,
+  CharFromU64: checkedChar,
   CharToString: (_host, args) => str(renderStdout(arg(args, 0))),
   BytesDecodeUtf8: (_host, args) => str(decodeUtf8(arg(args, 0))),
   // TextDecoder replaces each maximal invalid subsequence with U+FFFD, as
@@ -824,7 +908,7 @@ const EXTERN_SHIMS: Record<string, RuntimeShim | undefined> = {
     host.pipes!.freePair(arg(args, 0));
     return UNIT;
   },
-  hew_stream_last_error: () => ({ kind: "string", value: "" }),
+  hew_stream_last_error: () => str(""),
 
   hew_regex_new: (host, args) => compileRegex(host, args),
   hew_regex_clone: (_host, args) => cloneValue(arg(args, 0)),
@@ -913,6 +997,18 @@ function arg(args: VmValue[], at: number): VmValue {
   return args[at] ?? UNIT;
 }
 
+function indexed(
+  args: VmValue[],
+  at: number,
+): Extract<VmValue, { kind: "string" }> {
+  const value = arg(args, at);
+  if (value.kind !== "string")
+    throw new TypeError(
+      `runtime call expected a string operand, got ${value.kind}`,
+    );
+  return value;
+}
+
 function text(args: VmValue[], at: number): string {
   const value = arg(args, at);
   return value.kind === "string" ? value.value : renderStdout(value);
@@ -954,7 +1050,7 @@ function comparable(value: VmValue): string {
 }
 
 function str(value: string): VmValue {
-  return { kind: "string", value };
+  return stringValue(value);
 }
 
 function bool(value: boolean): VmValue {
@@ -963,4 +1059,35 @@ function bool(value: boolean): VmValue {
 
 function int(value: bigint): VmValue {
   return { kind: "i64", value };
+}
+
+function checkedChar(
+  host: ShimHost,
+  args: VmValue[],
+  shape: VariantShape | null,
+): VmValue {
+  if (!shape) throw new TypeError("try_to_char requires its Option shape");
+  const value = integer(args, 0);
+  return value < 0n ||
+    value > 0x10ffffn ||
+    (value >= 0xd800n && value <= 0xdfffn)
+    ? host.enumValue(shape, "OptionNone", [])
+    : host.enumValue(shape, "OptionSome", [
+        str(String.fromCodePoint(Number(value))),
+      ]);
+}
+
+function stringRange(args: VmValue[]): VmValue | undefined {
+  const value = indexed(args, 0);
+  const inclusive = arg(args, 3);
+  const openEnd = arg(args, 4);
+  if (inclusive.kind !== "bool" || openEnd.kind !== "bool")
+    throw new TypeError("string range flags must be bool");
+  const start = integer(args, 1);
+  const end = openEnd.value
+    ? BigInt(value.scalarLength)
+    : integer(args, 2) + (inclusive.value ? 1n : 0n);
+  if (start < 0n || end < start || end > BigInt(value.scalarLength))
+    return undefined;
+  return value.slice(Number(start), Number(end));
 }

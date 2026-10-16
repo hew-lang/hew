@@ -816,18 +816,35 @@ fn pure_runtime(family: RuntimeCallFamily) -> bool {
             | R::HashMapNew
             | R::HashMapNewWithLayout
             | R::MathIntrinsic(_)
-            | R::StringCharAt
-            | R::StringCharAtUtf8
-            | R::StringCharCount
+            | R::CharIsDigit
+            | R::CharIsLetter
+            | R::CharIsAlphanumeric
+            | R::CharIsWhitespace
+            | R::CharIsUpper
+            | R::CharIsLower
+            | R::CharIsPunctuation
+            | R::CharIsControl
+            | R::CharIsAscii
+            | R::CharToUpper
+            | R::CharToLower
+            | R::CharToTitle
+            | R::CharLenUtf8
+            | R::CharToDigit
+            | R::CharFromI64
+            | R::CharFromU64
+            | R::StringGet
+            | R::StringGetRange
+            | R::StringSliceRange
+            | R::StringAppend
+            | R::StringPush
+            | R::StringClear
+            | R::StringFindFrom
             | R::StringByteLen
             | R::StringConcat
             | R::StringEquals
             | R::StringStartsWith
             | R::StringEndsWith
             | R::StringIsEmpty
-            | R::StringIsDigit
-            | R::StringIsAlpha
-            | R::StringIsAlphanumeric
             | R::StringFind
             | R::StringIndex
             | R::StringLen

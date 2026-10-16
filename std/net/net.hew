@@ -263,8 +263,8 @@ pub fn parse_endpoint(context: string, addr: string) -> Endpoint fails NetError 
     let colon = addr.find(":");
     match colon {
         .Some(i) => {
-            let host = addr.slice(0, i);
-            let port_text = addr.slice(i + 1, addr.len());
+            let host = addr[0..i];
+            let port_text = addr[i + 1 .. addr.len()];
             // A second colon outside brackets is an unbracketed IPv6 literal:
             // its grammar is ambiguous with `host:port` and it is rejected
             // rather than silently split at the first colon.
@@ -286,18 +286,18 @@ fn try_parse_bracketed_endpoint(context: string, addr: string) -> Endpoint fails
     let close = addr.find("]");
     match close {
         .Some(end) => {
-            let host = addr.slice(1, end);
+            let host = addr[1..end];
             if host == "" {
                 return error endpoint_reject(context, addr, "empty bracketed host");
             }
-            let rest = addr.slice(end + 1, addr.len());
+            let rest = addr[end + 1 .. addr.len()];
             if rest == "" {
                 return error endpoint_reject(context, addr, "missing ':port'");
             }
             if !rest.starts_with(":") {
                 return error endpoint_reject(context, addr, "expected ':port' after ']'");
             }
-            let port = try_endpoint_port(context, addr, rest.slice(1, rest.len()))?;
+            let port = try_endpoint_port(context, addr, rest[1..rest.len()])?;
             Endpoint { host: host, port: port }
         }
         .None => return error endpoint_reject(context, addr, "unterminated '[' in IPv6 literal"),

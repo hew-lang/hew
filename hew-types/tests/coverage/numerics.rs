@@ -238,13 +238,18 @@ fn resolved_numeric_cast_matrix_matches_checker_admission() {
     }
 
     // `char as <integer>` extracts the Unicode scalar value and is admitted
-    // for every integer width. The reverse (`<integer> as char`) stays
+    // only for integer widths that hold every scalar. The reverse stays
     // closed: not every integer is a valid scalar value, so it needs a
     // checked conversion rather than an `as` cast.
     for integer in numeric.iter().filter(|ty| ty.is_integer()) {
-        assert!(
+        let lossless = !matches!(
+            integer,
+            ResolvedTy::I8 | ResolvedTy::I16 | ResolvedTy::U8 | ResolvedTy::U16
+        );
+        assert_eq!(
             ResolvedTy::Char.can_explicitly_numeric_cast_to(integer),
-            "char -> {integer:?} must be admitted (codepoint cast)"
+            lossless,
+            "char -> {integer:?} must preserve every Unicode scalar"
         );
         assert!(
             !integer.can_explicitly_numeric_cast_to(&ResolvedTy::Char),

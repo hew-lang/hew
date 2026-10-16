@@ -16,7 +16,7 @@ type T {
 }
 
 fn mk() -> T {
-    T { pair: (Wrapper { inner: (.Some(Leaf { label: string.repeat("k", 32), n: 1 }), 9), tag: string.repeat("w", 32) }, 5), churn: string.repeat("a", 32) }
+    T { pair: (Wrapper { inner: (.Some(Leaf { label: ("k").repeat(32), n: 1 }), 9), tag: ("w").repeat(32) }, 5), churn: ("a").repeat(32) }
 }
 
 fn main() -> i64 {

@@ -257,7 +257,7 @@ fn test_encode_url_safe_index_62_is_dash() {
     data.push(251); // 0xfb
     data.push(255); // 0xff
     let encoded = base64.encode_url(data);
-    assert(encoded.slice(0, 1) == "-");
+    assert(encoded[0..1] == "-");
     assert(encoded == "-_8=");
 }
 

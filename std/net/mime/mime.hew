@@ -206,12 +206,12 @@ fn extract_extension(path: string) -> string {
     var last_dot = dot_pos;
     var search_from = dot_pos + 1;
     while search_from < path.len() {
-        let next = match path.slice(search_from, path.len()).find(".") {
+        let next = match path[search_from..path.len()].find(".") {
             .Some(i) => i,
-            .None => return path.slice(last_dot + 1, path.len()),
+            .None => return path[last_dot + 1 .. path.len()],
         };
         last_dot = search_from + next;
         search_from = last_dot + 1;
     }
-    path.slice(last_dot + 1, path.len())
+    path[last_dot + 1 .. path.len()]
 }

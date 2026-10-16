@@ -84,7 +84,7 @@ pub(super) fn cast_is_valid(actual: &Ty, target: &Ty) -> bool {
         // The reverse (`<integer> as char`) is deliberately NOT admitted: not
         // every integer is a valid scalar value, so it would need a checked
         // conversion rather than an `as` cast.
-        || (*actual == Ty::Char && target.is_integer())
+        || (*actual == Ty::Char && matches!(target, Ty::I32 | Ty::I64 | Ty::U32 | Ty::U64 | Ty::Isize | Ty::Usize))
 }
 
 impl Checker {

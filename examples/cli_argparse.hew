@@ -75,8 +75,8 @@ fn main() {
             let eq_pos = arg.find("=");
             if let .Some(pos) = eq_pos {
                 // Key-value option: --key=value
-                let key = arg.slice(2, pos);
-                let val = arg.slice(pos + 1, arg.len());
+                let key = arg[2..pos];
+                let val = arg[pos + 1 .. arg.len()];
                 opt_keys.push(key);
                 opt_vals.push(val);
             } else {

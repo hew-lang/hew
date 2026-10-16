@@ -9,9 +9,9 @@
 // placed alongside words.hew (e.g. words/stopwords.hew) would also merge
 // into this sub-module automatically.
 //
-// Note: this scanner intentionally walks byte offsets with `slice`: `len()`
+// Note: this scanner intentionally walks Unicode scalar offsets: `len()`
 // and `slice()` are byte-oriented. For Unicode codepoint iteration, use
-// `std.text.unicode.runes()` instead.
+// `text.iter()` instead.
 pub fn word_count(text: string) -> i64 {
     if text.is_empty() {
         return 0;
@@ -19,7 +19,7 @@ pub fn word_count(text: string) -> i64 {
     var count = 1;
     var i = 0;
     while i < text.len() {
-        if text.slice(i, i + 1) == " " {
+        if text[i .. i + 1] == " " {
             count = count + 1;
         }
         i = i + 1;
@@ -30,8 +30,8 @@ pub fn word_count(text: string) -> i64 {
 pub fn first_word(text: string) -> string {
     var i = 0;
     while i < text.len() {
-        if text.slice(i, i + 1) == " " {
-            return text.slice(0, i);
+        if text[i .. i + 1] == " " {
+            return text[0..i];
         }
         i = i + 1;
     }

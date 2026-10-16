@@ -1233,6 +1233,16 @@ impl LowerCtx {
         let mut target_write = self.lower_expr(target, IntentKind::Modify);
         let mut prelude = Vec::new();
         self.capture_compound_place_indices(&mut target_read, &mut target_write, &mut prelude);
+        if target_write.ty == ResolvedTy::String && op == CompoundAssignOp::Add {
+            let kind = self.collection_call_kind(
+                hew_types::RuntimeCallFamily::StringAppend,
+                vec![target_write, rhs],
+                &ResolvedTy::Unit,
+                span,
+            );
+            let call = self.make_expr(kind, ResolvedTy::Unit, IntentKind::Read, span.clone());
+            return self.assignment_with_prelude(prelude, HirStmtKind::Expr(call), span);
+        }
         let value = HirExpr {
             node: self.ids.node(),
             site: self.ids.site(),

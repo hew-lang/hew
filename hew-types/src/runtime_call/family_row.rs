@@ -65,7 +65,12 @@ impl RuntimeCallFamily {
                 contract: Some(op.contract(format)),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
-                c_return: RuntimeCReturn::Storage,
+                c_return: match op {
+                    EncodingOp::ObjectSet | EncodingOp::ArrayPush => {
+                        RuntimeCReturn::ReceiverInPlace
+                    }
+                    _ => RuntimeCReturn::Storage,
+                },
                 physical: RuntimePhysicalForm::Direct,
             },
             Self::SupervisorPool(op) => RuntimeOpRow {
@@ -5960,33 +5965,75 @@ impl RuntimeCallFamily {
                 physical: RuntimePhysicalForm::NotAnAction,
                 c_return: RuntimeCReturn::Storage,
             },
-            Self::StringCharAt => RuntimeOpRow {
+            Self::StringAppend => RuntimeOpRow {
                 authority: RuntimeAuthority::Value,
-                symbol: "hew_string_char_at",
+                symbol: "hew_string_append",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::String,
+                            effect: E::Move,
+                        },
+                        A {
+                            ty: K::String,
+                            effect: E::Borrow,
+                        },
+                    ],
+                    result: R::UpdatedReceiver(K::String),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::StringPush => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
+                symbol: "hew_string_push",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::String,
+                            effect: E::Move,
+                        },
+                        A {
+                            ty: K::Char,
+                            effect: E::Copy,
+                        },
+                    ],
+                    result: R::UpdatedReceiver(K::String),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::StringClear => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
+                symbol: "hew_string_clear",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::String,
+                        effect: E::Move,
+                    }],
+                    result: R::UpdatedReceiver(K::String),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::StringFindFrom => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
+                symbol: "hew_string_find_from",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[
                         A {
                             ty: K::String,
                             effect: E::Borrow,
                         },
-                        A {
-                            ty: K::I64,
-                            effect: E::Copy,
-                        },
-                    ],
-                    result: R::IndependentValue(K::Applied(BuiltinType::Option, &[K::Char])),
-                    failures: &[],
-                }),
-                staging: RuntimeStaging::Declared,
-                abi_shape: RuntimeCallAbiShape::Other,
-                physical: RuntimePhysicalForm::VariantResult,
-                c_return: RuntimeCReturn::Storage,
-            },
-            Self::StringCharAtUtf8 => RuntimeOpRow {
-                authority: RuntimeAuthority::Value,
-                symbol: "hew_string_char_at_utf8",
-                contract: Some(RuntimeSemanticContract {
-                    arguments: &[
                         A {
                             ty: K::String,
                             effect: E::Borrow,
@@ -6004,13 +6051,356 @@ impl RuntimeCallFamily {
                 physical: RuntimePhysicalForm::VariantResult,
                 c_return: RuntimeCReturn::Storage,
             },
-            Self::StringCharCount => RuntimeOpRow {
+            Self::CharIsDigit => RuntimeOpRow {
                 authority: RuntimeAuthority::Value,
-                symbol: "hew_string_char_count",
-                contract: None,
+                symbol: "hew_char_is_digit",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::Char,
+                        effect: E::Copy,
+                    }],
+                    result: R::BitCopy(K::Bool),
+                    failures: &[],
+                }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
-                physical: RuntimePhysicalForm::NotAnAction,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::CharIsLetter => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
+                symbol: "hew_char_is_letter",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::Char,
+                        effect: E::Copy,
+                    }],
+                    result: R::BitCopy(K::Bool),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::CharIsAlphanumeric => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
+                symbol: "hew_char_is_alphanumeric",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::Char,
+                        effect: E::Copy,
+                    }],
+                    result: R::BitCopy(K::Bool),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::CharIsWhitespace => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
+                symbol: "hew_char_is_whitespace",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::Char,
+                        effect: E::Copy,
+                    }],
+                    result: R::BitCopy(K::Bool),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::CharIsUpper => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
+                symbol: "hew_char_is_upper",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::Char,
+                        effect: E::Copy,
+                    }],
+                    result: R::BitCopy(K::Bool),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::CharIsLower => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
+                symbol: "hew_char_is_lower",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::Char,
+                        effect: E::Copy,
+                    }],
+                    result: R::BitCopy(K::Bool),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::CharIsPunctuation => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
+                symbol: "hew_char_is_punctuation",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::Char,
+                        effect: E::Copy,
+                    }],
+                    result: R::BitCopy(K::Bool),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::CharIsControl => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
+                symbol: "hew_char_is_control",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::Char,
+                        effect: E::Copy,
+                    }],
+                    result: R::BitCopy(K::Bool),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::CharIsAscii => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
+                symbol: "hew_char_is_ascii",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::Char,
+                        effect: E::Copy,
+                    }],
+                    result: R::BitCopy(K::Bool),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::CharToUpper => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
+                symbol: "hew_char_to_upper",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::Char,
+                        effect: E::Copy,
+                    }],
+                    result: R::BitCopy(K::Char),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::CharToLower => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
+                symbol: "hew_char_to_lower",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::Char,
+                        effect: E::Copy,
+                    }],
+                    result: R::BitCopy(K::Char),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::CharToTitle => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
+                symbol: "hew_char_to_title",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::Char,
+                        effect: E::Copy,
+                    }],
+                    result: R::BitCopy(K::Char),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::CharLenUtf8 => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
+                symbol: "hew_char_len_utf8",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::Char,
+                        effect: E::Copy,
+                    }],
+                    result: R::BitCopy(K::I64),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::CharToDigit => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
+                symbol: "hew_char_to_digit",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::Char,
+                            effect: E::Copy,
+                        },
+                        A {
+                            ty: K::I64,
+                            effect: E::Copy,
+                        },
+                    ],
+                    result: R::IndependentValue(K::Applied(BuiltinType::Option, &[K::I64])),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::VariantResult,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::CharFromI64 => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
+                symbol: "hew_char_from_i64",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::I64,
+                        effect: E::Copy,
+                    }],
+                    result: R::IndependentValue(K::Applied(BuiltinType::Option, &[K::Char])),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::VariantResult,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::CharFromU64 => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
+                symbol: "hew_char_from_u64",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::U64,
+                        effect: E::Copy,
+                    }],
+                    result: R::IndependentValue(K::Applied(BuiltinType::Option, &[K::Char])),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::VariantResult,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::StringGetRange => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
+                symbol: "hew_string_get_range",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::String,
+                            effect: E::Borrow,
+                        },
+                        A {
+                            ty: K::I64,
+                            effect: E::Copy,
+                        },
+                        A {
+                            ty: K::I64,
+                            effect: E::Copy,
+                        },
+                        A {
+                            ty: K::Bool,
+                            effect: E::Copy,
+                        },
+                        A {
+                            ty: K::Bool,
+                            effect: E::Copy,
+                        },
+                    ],
+                    result: R::IndependentValue(K::Applied(BuiltinType::Option, &[K::String])),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::VariantResult,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::StringSliceRange => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
+                symbol: "hew_string_slice_range",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::String,
+                            effect: E::Borrow,
+                        },
+                        A {
+                            ty: K::I64,
+                            effect: E::Copy,
+                        },
+                        A {
+                            ty: K::I64,
+                            effect: E::Copy,
+                        },
+                        A {
+                            ty: K::Bool,
+                            effect: E::Copy,
+                        },
+                        A {
+                            ty: K::Bool,
+                            effect: E::Copy,
+                        },
+                    ],
+                    result: R::FreshOwned(K::String),
+                    failures: &[RuntimeLogicalFailure::IndexOutOfBounds],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::StringGet => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
+                symbol: "hew_string_get",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::String,
+                            effect: E::Borrow,
+                        },
+                        A {
+                            ty: K::I64,
+                            effect: E::Copy,
+                        },
+                    ],
+                    result: R::IndependentValue(K::Applied(BuiltinType::Option, &[K::Char])),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::VariantResult,
                 c_return: RuntimeCReturn::Storage,
             },
             Self::StringByteLen => RuntimeOpRow {
@@ -6164,54 +6554,6 @@ impl RuntimeCallFamily {
             Self::StringIsEmpty => RuntimeOpRow {
                 authority: RuntimeAuthority::Value,
                 symbol: "hew_string_is_empty",
-                contract: Some(RuntimeSemanticContract {
-                    arguments: &[A {
-                        ty: K::String,
-                        effect: E::Borrow,
-                    }],
-                    result: R::BitCopy(K::Bool),
-                    failures: &[],
-                }),
-                staging: RuntimeStaging::Declared,
-                abi_shape: RuntimeCallAbiShape::Other,
-                physical: RuntimePhysicalForm::Direct,
-                c_return: RuntimeCReturn::TruthBool,
-            },
-            Self::StringIsDigit => RuntimeOpRow {
-                authority: RuntimeAuthority::Value,
-                symbol: "hew_string_is_digit",
-                contract: Some(RuntimeSemanticContract {
-                    arguments: &[A {
-                        ty: K::String,
-                        effect: E::Borrow,
-                    }],
-                    result: R::BitCopy(K::Bool),
-                    failures: &[],
-                }),
-                staging: RuntimeStaging::Declared,
-                abi_shape: RuntimeCallAbiShape::Other,
-                physical: RuntimePhysicalForm::Direct,
-                c_return: RuntimeCReturn::TruthBool,
-            },
-            Self::StringIsAlpha => RuntimeOpRow {
-                authority: RuntimeAuthority::Value,
-                symbol: "hew_string_is_alpha",
-                contract: Some(RuntimeSemanticContract {
-                    arguments: &[A {
-                        ty: K::String,
-                        effect: E::Borrow,
-                    }],
-                    result: R::BitCopy(K::Bool),
-                    failures: &[],
-                }),
-                staging: RuntimeStaging::Declared,
-                abi_shape: RuntimeCallAbiShape::Other,
-                physical: RuntimePhysicalForm::Direct,
-                c_return: RuntimeCReturn::TruthBool,
-            },
-            Self::StringIsAlphanumeric => RuntimeOpRow {
-                authority: RuntimeAuthority::Value,
-                symbol: "hew_string_is_alphanumeric",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
                         ty: K::String,
@@ -6410,22 +6752,6 @@ impl RuntimeCallFamily {
                 physical: RuntimePhysicalForm::Direct,
                 c_return: RuntimeCReturn::Storage,
             },
-            Self::StringChars => RuntimeOpRow {
-                authority: RuntimeAuthority::Value,
-                symbol: "hew_string_chars",
-                contract: Some(RuntimeSemanticContract {
-                    arguments: &[A {
-                        ty: K::String,
-                        effect: E::Borrow,
-                    }],
-                    result: R::FreshOwned(K::Applied(BuiltinType::Vec, &[K::Char])),
-                    failures: &[],
-                }),
-                staging: RuntimeStaging::Declared,
-                abi_shape: RuntimeCallAbiShape::Other,
-                physical: RuntimePhysicalForm::Direct,
-                c_return: RuntimeCReturn::Storage,
-            },
             Self::StringSliceCodepoints => RuntimeOpRow {
                 authority: RuntimeAuthority::Value,
                 symbol: "hew_string_slice_codepoints",
@@ -6468,32 +6794,6 @@ impl RuntimeCallFamily {
                     ],
                     result: R::FreshOwned(K::String),
                     failures: &[RuntimeLogicalFailure::IndexOutOfBounds],
-                }),
-                staging: RuntimeStaging::Declared,
-                abi_shape: RuntimeCallAbiShape::Other,
-                physical: RuntimePhysicalForm::Direct,
-                c_return: RuntimeCReturn::Storage,
-            },
-            Self::StringSlice => RuntimeOpRow {
-                authority: RuntimeAuthority::Value,
-                symbol: "hew_string_slice",
-                contract: Some(RuntimeSemanticContract {
-                    arguments: &[
-                        A {
-                            ty: K::String,
-                            effect: E::Borrow,
-                        },
-                        A {
-                            ty: K::I64,
-                            effect: E::Copy,
-                        },
-                        A {
-                            ty: K::I64,
-                            effect: E::Copy,
-                        },
-                    ],
-                    result: R::FreshOwned(K::String),
-                    failures: &[],
                 }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,

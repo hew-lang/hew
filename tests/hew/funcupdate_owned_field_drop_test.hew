@@ -47,30 +47,30 @@ type SetHolder {
 /// The non-overridden `count` field carries over via functional-update base.
 #[test]
 fn test_funcupdate_string_field_override_drops_old() {
-    var c = FlatConfig { label: string.repeat("a", 32), count: 7 };
+    var c = FlatConfig { label: ("a").repeat(32), count: 7 };
     var i = 0;
     while i < 20 {
-        c = FlatConfig { ..c, label: string.repeat("b", 32) };
+        c = FlatConfig { ..c, label: ("b").repeat(32) };
         i = i + 1;
     }
     // Non-overridden `count` carries over from base each iteration.
     assert(c.count == 7);
     // Final value of `label` is the replacement.
-    assert(c.label == string.repeat("b", 32));
+    assert(c.label == ("b").repeat(32));
 }
 
 /// Overriding the `count` (BitCopy) field leaves `label` intact.
 /// BitCopy fields need no drop; non-BitCopy `label` carries over as-is.
 #[test]
 fn test_funcupdate_bitcopy_field_override_carries_label() {
-    var c = FlatConfig { label: string.repeat("x", 16), count: 0 };
+    var c = FlatConfig { label: ("x").repeat(16), count: 0 };
     var i = 0;
     while i < 5 {
         c = FlatConfig { ..c, count: c.count + 1 };
         i = i + 1;
     }
     assert(c.count == 5);
-    assert(c.label == string.repeat("x", 16));
+    assert(c.label == ("x").repeat(16));
 }
 
 /// Overriding a `Vec<i64>` field: old Vec buffer is released each iteration.
@@ -97,16 +97,16 @@ fn test_funcupdate_vec_field_override_drops_old() {
 fn test_funcupdate_multi_field_override_drops_old() {
     var init: Vec<i64> = Vec.new();
     init.push(0);
-    var s = VecHolder { items: init, tag: string.repeat("z", 8) };
+    var s = VecHolder { items: init, tag: ("z").repeat(8) };
     var i = 0;
     while i < 10 {
         var next: Vec<i64> = Vec.new();
         next.push(i);
-        s = VecHolder { ..s, items: next, tag: string.repeat("y", 8) };
+        s = VecHolder { ..s, items: next, tag: ("y").repeat(8) };
         i = i + 1;
     }
     assert(s.items.len() == 1);
-    assert(s.tag == string.repeat("y", 8));
+    assert(s.tag == ("y").repeat(8));
 }
 
 /// Overriding a `HashMap` field releases the old map (single-pointer COW

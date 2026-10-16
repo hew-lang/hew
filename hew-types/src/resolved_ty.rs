@@ -655,7 +655,7 @@ impl ResolvedTy {
             // Mirrors the `Ty::Char` arm in `cast_is_valid`; lowered by
             // `lower_numeric_cast`'s dedicated char->int arm (zero-extend /
             // truncate from the i32 codepoint storage).
-            || (*self == Self::Char && target.is_integer())
+            || (*self == Self::Char && matches!(target, Self::I32 | Self::I64 | Self::U32 | Self::U64 | Self::Isize | Self::Usize))
     }
 
     /// Whether a checker-selected common numeric type may normalize this value

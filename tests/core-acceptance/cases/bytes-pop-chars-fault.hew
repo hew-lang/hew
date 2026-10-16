@@ -1,9 +1,11 @@
+import std.iter;
+
 // A fault after a pop and a `chars` call releases both owned results: the
 // shrunk buffer, the scalars vector and the retained alias.
 fn main() -> i64 {
     var value = "abc".to_bytes();
     let alias = value;
-    let scalars = "hold".to_upper().chars();
+    let scalars = iter.collect("hold".to_upper().iter());
     match value.pop() {
         .Some(byte) => println(byte as i64),
         .None => panic("expected a popped byte"),

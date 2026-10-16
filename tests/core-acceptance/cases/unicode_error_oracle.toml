@@ -9,5 +9,5 @@ timeout_seconds = 30
 HEW_WORKERS = "4"
 
 [case.expected]
-stdout = "IndexOutOfBounds: 2\nIndexOutOfBounds: -1\nInvalidRune: -1\nInvalidRune: 1114112\nsentinels=-1,-1\n"
+stdout = "invalid scalar conversions and missing indices return None\n"
 exit = 0

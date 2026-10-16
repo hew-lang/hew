@@ -43,7 +43,6 @@ pub mod mem;
 pub mod mime;
 pub mod random;
 pub mod semver;
-pub mod unicode;
 
 // ── Native-only modules ───────────────────────────────────────────────────
 

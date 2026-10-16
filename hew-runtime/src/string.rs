@@ -1,10 +1,10 @@
 //! Hew runtime: `string` module.
 //!
 //! String operations exposed with C ABI for use by compiled Hew programs.
-//! Every ordinary Hew string is an immutable, length-carrying, valid UTF-8
+//! Every ordinary Hew string is a value with indexed, valid UTF-8
 //! [`HewString`] allocation. Null is the canonical empty value. Owned handles
 //! are released through [`hew_string_drop`], and [`hew_string_clone`] retains
-//! the same immutable allocation. Foreign C strings cross only explicitly
+//! the same allocation; unique owners may grow in place. Foreign C strings cross only explicitly
 //! named adapter boundaries; they are never accepted as managed handles.
 #![allow(
     unsafe_op_in_unsafe_fn,
@@ -14,8 +14,10 @@
 use crate::internal::types::HEW_TRAP_INDEX_OUT_OF_BOUNDS;
 use crate::trap_code::{fmt_decimal_i64, fmt_decimal_usize, runtime_bounds_trap};
 use hew_cabi::string::{
-    string_alloc_utf8_unchecked, string_as_bytes, string_as_str, string_from_str, string_release,
-    string_retain, HewString,
+    string_alloc_utf8_unchecked, string_append, string_as_bytes, string_as_str,
+    string_byte_scalar_offset, string_from_str, string_from_str_nonnull, string_push,
+    string_release, string_retain, string_scalar_at, string_scalar_byte_offset, string_scalar_len,
+    HewString,
 };
 use std::ffi::{c_void, CStr};
 use std::fmt::Write as _;
@@ -240,19 +242,6 @@ pub unsafe extern "C" fn hew_string_builder_finish(builder: *mut c_void) -> *mut
 
 use crate::trap_code::write_stderr;
 
-/// Emit a string bounds diagnostic and route through the trap seam.
-///
-/// # Safety
-///
-/// Call only from a fail-closed string bounds path.
-unsafe fn string_bounds_trap(message: &str) -> ! {
-    // SAFETY: writing the diagnostic and trapping is the terminal failure path.
-    unsafe {
-        write_stderr(message.as_bytes());
-        runtime_bounds_trap(HEW_TRAP_INDEX_OUT_OF_BOUNDS);
-    }
-}
-
 /// Concatenate two managed strings. Caller owns the result.
 ///
 /// # Safety
@@ -274,32 +263,6 @@ pub unsafe extern "C" fn hew_string_concat(
     string_from_str(&joined)
 }
 
-/// Extract a substring by codepoint range `[start, end)`. The caller owns the result.
-///
-/// # Safety
-///
-/// `s` must be null or a live managed string handle.
-#[no_mangle]
-pub unsafe extern "C" fn hew_string_slice(
-    s: *const HewString,
-    start: i64,
-    end: i64,
-) -> *mut HewString {
-    // SAFETY: `s` is a live managed string handle; null is empty.
-    let text = unsafe { string_as_str(s) };
-    let len = i64::try_from(text.chars().count()).unwrap_or_else(|_| std::process::abort());
-    let start = start.max(0);
-    let end = end.min(len);
-    if start >= end {
-        return core::ptr::null_mut();
-    }
-    let (Ok(start), Ok(count)) = (usize::try_from(start), usize::try_from(end - start)) else {
-        return core::ptr::null_mut();
-    };
-    let result: String = text.chars().skip(start).take(count).collect();
-    string_from_str(&result)
-}
-
 /// Find the first occurrence of `substr` in `s`. Returns its codepoint offset or -1.
 ///
 /// # Safety
@@ -312,7 +275,10 @@ pub unsafe extern "C" fn hew_string_find(s: *const HewString, substr: *const Hew
     let Some(byte_offset) = text.find(needle) else {
         return -1;
     };
-    i64::try_from(text[..byte_offset].chars().count()).unwrap_or_else(|_| std::process::abort())
+    // SAFETY: a UTF-8 substring search returns a scalar boundary in `s`.
+    let scalar = unsafe { string_byte_scalar_offset(s, byte_offset) }
+        .unwrap_or_else(|| std::process::abort());
+    i64::try_from(scalar).unwrap_or_else(|_| std::process::abort())
 }
 
 /// Check if `s` starts with `prefix`.
@@ -355,42 +321,6 @@ pub unsafe extern "C" fn hew_string_contains(
 ) -> bool {
     // SAFETY: both arguments are live managed handles.
     unsafe { string_as_str(s) }.contains(unsafe { string_as_str(substr) })
-}
-
-/// Check if all bytes in `s` are ASCII digits. Returns `false` for empty strings.
-///
-/// # Safety
-///
-/// `s` must be null or a live managed string handle.
-#[no_mangle]
-pub unsafe extern "C" fn hew_string_is_digit(s: *const HewString) -> bool {
-    // SAFETY: `s` is a live managed handle.
-    let text = unsafe { string_as_str(s) };
-    !text.is_empty() && text.chars().all(char::is_numeric)
-}
-
-/// Check if all bytes in `s` are ASCII alphabetic. Returns `false` for empty strings.
-///
-/// # Safety
-///
-/// `s` must be null or a live managed string handle.
-#[no_mangle]
-pub unsafe extern "C" fn hew_string_is_alpha(s: *const HewString) -> bool {
-    // SAFETY: `s` is a live managed handle.
-    let text = unsafe { string_as_str(s) };
-    !text.is_empty() && text.chars().all(char::is_alphabetic)
-}
-
-/// Check if all bytes in `s` are ASCII alphanumeric. Returns `false` for empty strings.
-///
-/// # Safety
-///
-/// `s` must be null or a live managed string handle.
-#[no_mangle]
-pub unsafe extern "C" fn hew_string_is_alphanumeric(s: *const HewString) -> bool {
-    // SAFETY: `s` is a live managed handle.
-    let text = unsafe { string_as_str(s) };
-    !text.is_empty() && text.chars().all(char::is_alphanumeric)
 }
 
 /// Check if a string is empty (zero length).
@@ -627,7 +557,7 @@ pub unsafe extern "C" fn hew_char_to_string(c: i32) -> *mut HewString {
 #[no_mangle]
 pub unsafe extern "C" fn hew_string_length(s: *const HewString) -> i64 {
     // SAFETY: the caller supplies a live managed string handle.
-    let length = unsafe { string_as_str(s) }.chars().count();
+    let length = unsafe { string_scalar_len(s) };
     i64::try_from(length).unwrap_or_else(|_| std::process::abort())
 }
 
@@ -739,25 +669,6 @@ pub unsafe extern "C" fn hew_string_lines(s: *const HewString) -> *mut crate::ve
     v
 }
 
-/// Returns a `Vec<i32>` containing the Unicode scalar value of each character in `s`.
-///
-/// # Safety
-///
-/// `s` must be null or a live managed string handle.
-#[no_mangle]
-pub unsafe extern "C" fn hew_string_chars(s: *const HewString) -> *mut crate::vec::HewVec {
-    // SAFETY: hew_vec_new has no preconditions.
-    let v = unsafe { crate::vec::hew_vec_new() };
-    // SAFETY: `s` is a live managed handle; null is empty.
-    let rust_str = unsafe { string_as_str(s) };
-    for ch in rust_str.chars() {
-        // SAFETY: v is a valid HewVec allocated above.
-        // ch as i32: Unicode scalar values are ≤ 0x10_FFFF, which fits in i32.
-        unsafe { crate::vec::hew_vec_push_i32(v, ch as i32) };
-    }
-    v
-}
-
 /// Join a `Vec<String>` into a single string with `sep` between elements.
 /// An empty vector joins to the empty string. Caller must free the result
 /// with `hew_string_drop`.
@@ -823,7 +734,7 @@ pub unsafe extern "C" fn hew_string_to_uppercase(s: *const HewString) -> *mut He
 ///
 /// `s` must be null or a live managed string handle.
 #[no_mangle]
-pub unsafe extern "C" fn hew_string_char_at(s: *const HewString, idx: i64) -> i32 {
+pub unsafe extern "C" fn hew_string_get(s: *const HewString, idx: i64) -> i32 {
     if idx < 0 {
         return -1;
     }
@@ -831,42 +742,69 @@ pub unsafe extern "C" fn hew_string_char_at(s: *const HewString, idx: i64) -> i3
         return -1;
     };
     // SAFETY: `s` is a live managed handle; null is empty.
-    unsafe { string_as_str(s) }
-        .chars()
-        .nth(idx)
-        .map_or(-1, |ch| ch as i32)
+    unsafe { string_scalar_at(s, idx) }.map_or(-1, |ch| ch as i32)
 }
 
-/// Legacy exported abort for byte-indexed string access.
-///
-/// The compiler does not emit calls to this symbol for user-facing string
-/// index/slice operations; those route through `hew_string_abort_index_oob`.
+/// Append a borrowed suffix, consuming and returning the receiver owner.
 ///
 /// # Safety
-///
-/// Always aborts — safe to call from any context.
+/// `s` is an owned live handle; `suffix` is a borrowed live handle. Null is empty.
 #[no_mangle]
-pub unsafe extern "C" fn hew_string_abort_oob(index: i64, len: i64) -> ! {
-    // SAFETY: writing to stderr and aborting is always safe.
+pub unsafe extern "C" fn hew_string_append(
+    s: *mut HewString,
+    suffix: *const HewString,
+) -> *mut HewString {
+    // SAFETY: the caller transfers the receiver and borrows the suffix.
+    unsafe { string_append(s, suffix) }
+}
+
+/// Append a Unicode scalar, consuming and returning the receiver owner.
+///
+/// # Safety
+/// `s` is an owned live handle; `scalar` is a valid Unicode scalar. Null is empty.
+#[no_mangle]
+pub unsafe extern "C" fn hew_string_push(s: *mut HewString, scalar: u32) -> *mut HewString {
+    let scalar = char::from_u32(scalar).unwrap_or_else(|| std::process::abort());
+    // SAFETY: the caller transfers the receiver owner.
+    unsafe { string_push(s, scalar) }
+}
+
+/// Clear a string, consuming its owner and returning the canonical empty value.
+///
+/// # Safety
+/// `s` is an owned live handle or null.
+#[no_mangle]
+pub unsafe extern "C" fn hew_string_clear(s: *mut HewString) -> *mut HewString {
+    // SAFETY: the caller transfers one owner.
+    unsafe { string_release(s) };
+    std::ptr::null_mut()
+}
+
+/// Find a suffix occurrence at or after a scalar offset; return -1 on a miss.
+///
+/// # Safety
+/// Both handles are live borrowed strings or null.
+#[no_mangle]
+pub unsafe extern "C" fn hew_string_find_from(
+    s: *const HewString,
+    needle: *const HewString,
+    start: i64,
+) -> i64 {
+    let Ok(start) = usize::try_from(start) else {
+        return -1;
+    };
+    // SAFETY: both handles are live borrowed strings; null is empty.
     unsafe {
-        write_stderr(b"PANIC: String index out of bounds\n");
-        let _ = (index, len);
-        libc::abort();
+        let Some(byte_start) = string_scalar_byte_offset(s, start) else {
+            return -1;
+        };
+        let Some(found) = string_as_str(s)[byte_start..].find(string_as_str(needle)) else {
+            return -1;
+        };
+        string_byte_scalar_offset(s, byte_start + found)
+            .and_then(|offset| i64::try_from(offset).ok())
+            .unwrap_or(-1)
     }
-}
-
-/// Create a UTF-8 string from a Unicode codepoint. Caller must free the result with `hew_string_drop`.
-///
-/// `c` is a Unicode scalar value passed as `i32`. Invalid codepoints produce U+FFFD.
-///
-/// # Safety
-///
-/// Called from compiled Hew programs via C ABI. No preconditions beyond a valid `i32`.
-#[no_mangle]
-pub unsafe extern "C" fn hew_string_from_char(c: i32) -> *mut HewString {
-    // Delegate to the canonical codepoint-to-string function.
-    // SAFETY: hew_char_to_string has the same ABI contract and handles all codepoints.
-    unsafe { hew_char_to_string(c) }
 }
 
 /// Repeat a string `count` times. Caller must free the result with `hew_string_drop`.
@@ -919,20 +857,6 @@ pub unsafe extern "C" fn hew_string_clone(s: *const HewString) -> *mut HewString
 // UTF-8 aware string operations
 // ---------------------------------------------------------------------------
 
-/// Count Unicode codepoints (not bytes) in a managed string.
-///
-/// For ASCII strings this equals the byte length. Null is canonical empty.
-///
-/// # Safety
-///
-/// `s` must be null or a live managed string handle.
-#[no_mangle]
-pub unsafe extern "C" fn hew_string_char_count(s: *const HewString) -> i64 {
-    // SAFETY: `s` is a live managed handle; null is empty.
-    let count = unsafe { string_as_str(s) }.chars().count();
-    i64::try_from(count).unwrap_or_else(|_| std::process::abort())
-}
-
 /// Return the UTF-8 byte length of a managed string.
 ///
 /// This differs from [`hew_string_length`] for multibyte codepoints.
@@ -957,69 +881,6 @@ pub unsafe extern "C" fn hew_string_byte_length(s: *const HewString) -> i64 {
 pub unsafe extern "C" fn hew_string_is_ascii(s: *const HewString) -> i32 {
     // SAFETY: `s` is a live managed handle; null is empty.
     i32::from(unsafe { string_as_bytes(s) }.is_ascii())
-}
-
-/// Get the Unicode codepoint at the given codepoint index. Returns -1 if
-/// `index` is out of bounds. Null is canonical empty.
-///
-/// # Safety
-///
-/// `s` must be null or a live managed string handle.
-#[no_mangle]
-pub unsafe extern "C" fn hew_string_char_at_utf8(s: *const HewString, index: i64) -> i32 {
-    if index < 0 {
-        return -1;
-    }
-    let Ok(index) = usize::try_from(index) else {
-        return -1;
-    };
-    // SAFETY: `s` is a live managed handle; null is empty.
-    let rust_str = unsafe { string_as_str(s) };
-    match rust_str.chars().nth(index) {
-        Some(ch) => ch as i32,
-        None => -1,
-    }
-}
-
-/// Slice a string by codepoint indices `[start, end)`. Returns null for invalid
-/// indices; null input is canonical empty.
-///
-/// Caller must free the result with `hew_string_drop`.
-///
-/// # Safety
-///
-/// `s` must be null or a live managed string handle.
-#[no_mangle]
-pub unsafe extern "C" fn hew_string_substring_utf8(
-    s: *const HewString,
-    start: i64,
-    end: i64,
-) -> *mut HewString {
-    if start < 0 || end < 0 || start > end {
-        return core::ptr::null_mut();
-    }
-    let (Ok(start), Ok(count)) = (usize::try_from(start), usize::try_from(end - start)) else {
-        return core::ptr::null_mut();
-    };
-    // SAFETY: `s` is a live managed handle; null is empty.
-    let rust_str = unsafe { string_as_str(s) };
-    let result: String = rust_str.chars().skip(start).take(count).collect();
-    string_from_str(&result)
-}
-
-/// Reverse a managed string by codepoints (not bytes).
-///
-/// Caller must free the result with `hew_string_drop`.
-///
-/// # Safety
-///
-/// `s` must be null or a live managed string handle.
-#[no_mangle]
-pub unsafe extern "C" fn hew_string_reverse_utf8(s: *const HewString) -> *mut HewString {
-    // SAFETY: `s` is a live managed handle; null is empty.
-    let rust_str = unsafe { string_as_str(s) };
-    let reversed: String = rust_str.chars().rev().collect();
-    string_from_str(&reversed)
 }
 
 /// Convert a string to a `bytes` value (the canonical by-value
@@ -1081,32 +942,72 @@ pub unsafe extern "C" fn hew_string_join(
     unsafe { hew_vec_join_str(v, sep) }
 }
 
-// ---------------------------------------------------------------------------
-// W3 collections-sugar S2 — fail-closed codepoint indexing / slicing
-// ---------------------------------------------------------------------------
-//
-// These four runtime entries back the compiler-emitted `s[i]` and `s[a..b]`
-// sugar (Q-CS1 locked semantics): codepoint-offset, panic on invalid bounds,
-// fresh owned slice. They intentionally do NOT reuse:
-//
-// - `hew_string_char_at`        — codepoint-indexed + returns -1.
-// - `hew_string_char_at_utf8`   — codepoint-indexed but returns -1 sentinel.
-// - `hew_string_slice`          — codepoint-clamping + returns empty on OOB.
-// - `hew_string_substring_utf8` — codepoint-based but returns null on error.
-//
-// LESSONS: boundary-fail-closed (P0) — sentinel/clamp returns silently
-// corrupted user code; the new intrinsics abort the process on any invalid
-// input rather than producing a poisoned value.
-
-/// Trap with a string-indexing panic message (codepoint OOB / invalid bounds).
+/// Return the selected scalar range as a fresh, non-null string, or null on invalid bounds.
 ///
 /// # Safety
-///
-/// Always aborts — safe to call from any context.
+/// `s` is a live borrowed managed handle or null.
 #[no_mangle]
-pub unsafe extern "C-unwind" fn hew_string_abort_index_oob() -> ! {
-    // SAFETY: this exported fallback has no operand context.
-    unsafe { string_bounds_trap("PANIC: string index/slice out of bounds\n") }
+pub unsafe extern "C" fn hew_string_get_range(
+    s: *const HewString,
+    start: i64,
+    end: i64,
+    inclusive: bool,
+    open_end: bool,
+) -> *mut HewString {
+    // SAFETY: the caller supplies a live borrowed handle; null is empty.
+    unsafe {
+        let Some((start, end)) = string_range_offsets(s, start, end, inclusive, open_end) else {
+            return std::ptr::null_mut();
+        };
+        string_from_str_nonnull(&string_as_str(s)[start..end])
+    }
+}
+
+/// Copy a scalar range, returning null for the compiler's checked bounds-failure edge.
+///
+/// # Safety
+/// `s` is a live borrowed managed handle or null. The caller must check the result.
+#[no_mangle]
+pub unsafe extern "C" fn hew_string_slice_range(
+    s: *const HewString,
+    start: i64,
+    end: i64,
+    inclusive: bool,
+    open_end: bool,
+) -> *mut HewString {
+    // SAFETY: the same borrowed-string and nullable-result contract applies.
+    unsafe { hew_string_get_range(s, start, end, inclusive, open_end) }
+}
+
+unsafe fn string_range_offsets(
+    s: *const HewString,
+    start: i64,
+    end: i64,
+    inclusive: bool,
+    open_end: bool,
+) -> Option<(usize, usize)> {
+    let start = usize::try_from(start).ok()?;
+    let end = if open_end {
+        // SAFETY: the caller holds a live managed owner.
+        unsafe { string_scalar_len(s) }
+    } else {
+        let end = usize::try_from(end).ok()?;
+        if inclusive {
+            end.checked_add(1)?
+        } else {
+            end
+        }
+    };
+    if start > end {
+        return None;
+    }
+    // SAFETY: both offsets are validated by the indexed accessors.
+    unsafe {
+        Some((
+            string_scalar_byte_offset(s, start)?,
+            string_scalar_byte_offset(s, end)?,
+        ))
+    }
 }
 
 unsafe fn string_index_oob_trap(index: i64, len: Option<usize>) -> ! {
@@ -1156,147 +1057,68 @@ unsafe fn string_slice_oob_trap(start: i64, end: i64, len: Option<usize>) -> ! {
     }
 }
 
-/// Return the Unicode codepoint at codepoint offset `index` in `s`.
-///
-/// Semantics (Q-CS1):
-/// - O(n) walk of the UTF-8 stream.
-/// - Aborts if `index < 0` or
-///   `index >= char_count(s)`. No `-1` sentinel.
-/// - Returns a Unicode scalar value as `i32` (1:1 with Hew's `char`).
+/// Read the Unicode scalar at `index` in constant time.
+/// Out-of-range indices fault; the compiler's normal path supplies its own
+/// checked cleanup edge before calling this entry.
 ///
 /// # Safety
-///
 /// `s` must be null or a live managed string handle.
-#[expect(
-    clippy::cast_sign_loss,
-    reason = "index is bounds-checked >= 0 above before cast to usize"
-)]
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "i64 -> usize: usize >= 32 bits on all supported targets; \
-              real string codepoint counts never exceed usize::MAX"
-)]
 #[no_mangle]
 pub unsafe extern "C-unwind" fn hew_string_index(s: *const HewString, index: i64) -> i32 {
-    if index < 0 {
-        // SAFETY: this is the terminal index bounds path.
-        unsafe { string_index_oob_trap(index, None) };
+    let scalar = usize::try_from(index).ok().and_then(|index| {
+        // SAFETY: the caller keeps the managed string live for this read.
+        unsafe { string_scalar_at(s, index) }
+    });
+    if let Some(scalar) = scalar {
+        return scalar as i32;
     }
-    // SAFETY: `s` is a live managed handle; null is empty and UTF-8 is invariant.
-    let rust_str = unsafe { string_as_str(s) };
-    // i64 -> usize: index is non-negative; truncation only matters when
-    // index > usize::MAX which is unrepresentable in a real string.
-    let idx = index as usize;
-    let Some(ch) = rust_str.chars().nth(idx) else {
-        let len = rust_str.chars().count();
-        // SAFETY: this is the terminal index bounds path.
-        unsafe { string_index_oob_trap(index, Some(len)) };
-    };
-    ch as i32
+    // SAFETY: the string is live, and this is the terminal bounds path.
+    unsafe { string_index_oob_trap(index, Some(string_scalar_len(s))) }
 }
 
-/// Slice `s` by codepoint range `[start, end)`, returning a fresh managed
-/// string owner.
-///
-/// Semantics (Q-CS1):
-/// - O(n) walk; fresh owned allocation (LESSONS:
-///   stdlib-borrowed-param-return-guard P0 — the returned pointer never
-///   aliases the input).
-/// - Aborts if `start < 0`, `end < 0`,
-///   `start > end`, or `end > char_count(s)`. No null / empty fallback.
+/// Copy the scalar range `[start, end)` into a fresh managed string.
+/// Endpoints take constant time; copying and indexing the result are linear
+/// in the selected range's length.
 ///
 /// # Safety
-///
 /// `s` must be null or a live managed string handle.
-#[expect(
-    clippy::cast_sign_loss,
-    reason = "start and end are bounds-checked >= 0 above before cast to usize"
-)]
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "i64 -> usize: usize >= 32 bits on all supported targets; \
-              real string codepoint counts never exceed usize::MAX"
-)]
 #[no_mangle]
 pub unsafe extern "C-unwind" fn hew_string_slice_codepoints(
     s: *const HewString,
     start: i64,
     end: i64,
 ) -> *mut HewString {
-    if start < 0 || end < 0 || start > end {
-        // SAFETY: this is the terminal slice bounds path.
-        unsafe { string_slice_oob_trap(start, end, None) };
-    }
-    // SAFETY: `s` is a live managed handle; null is empty and UTF-8 is invariant.
-    let rust_str = unsafe { string_as_str(s) };
-    let start_idx = start as usize;
-    let end_idx = end as usize;
-    let char_len = rust_str.chars().count();
-    if start_idx > char_len || end_idx > char_len {
-        // SAFETY: this is the terminal slice bounds path.
-        unsafe { string_slice_oob_trap(start, end, Some(char_len)) };
-    }
-    let take_n = end_idx - start_idx;
-    let mut buf = String::new();
-    for ch in rust_str.chars().skip(start_idx).take(take_n) {
-        buf.push(ch);
-    }
-    string_from_str(&buf)
+    let bounds = usize::try_from(start)
+        .ok()
+        .zip(usize::try_from(end).ok())
+        .filter(|(start, end)| start <= end)
+        .and_then(|(start, end)| {
+            // SAFETY: the caller keeps the string live for both boundary reads.
+            unsafe { string_scalar_byte_offset(s, start).zip(string_scalar_byte_offset(s, end)) }
+        });
+    let Some((start_byte, end_byte)) = bounds else {
+        // SAFETY: the string is live, and this is the terminal bounds path.
+        unsafe { string_slice_oob_trap(start, end, Some(string_scalar_len(s))) }
+    };
+    // SAFETY: the checked boundaries enclose valid UTF-8 within the live owner.
+    string_from_str(&unsafe { string_as_str(s) }[start_byte..end_byte])
 }
 
-/// Slice `s` from codepoint offset `start` to its end, returning a fresh
-/// managed string owner.
-///
-/// This is the open-ended `s[a..]` form. It exists as its own entry because
-/// the caller has no length to pass: computing one would mean evaluating the
-/// receiver expression twice.
-///
-/// Semantics match [`hew_string_slice_codepoints`]: O(n) walk, fresh owned
-/// allocation that never aliases the input, and an abort when `start < 0` or
-/// `start > char_count(s)`.
+/// Copy the scalar range from `start` to the end of `s`.
 ///
 /// # Safety
-///
 /// `s` must be null or a live managed string handle.
-#[expect(
-    clippy::cast_sign_loss,
-    reason = "start is bounds-checked >= 0 above before cast to usize"
-)]
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "i64 -> usize: usize >= 32 bits on all supported targets; \
-              real string codepoint counts never exceed usize::MAX"
-)]
-#[expect(
-    clippy::cast_possible_wrap,
-    reason = "char_len comes from an in-memory string, far below i64::MAX"
-)]
 #[no_mangle]
 pub unsafe extern "C-unwind" fn hew_string_slice_codepoints_from(
     s: *const HewString,
     start: i64,
 ) -> *mut HewString {
-    if start < 0 {
-        // SAFETY: this is the terminal slice bounds path.
-        unsafe { string_slice_oob_trap(start, start, None) };
-    }
-    // SAFETY: `s` is a live managed handle; null is empty and UTF-8 is invariant.
-    let rust_str = unsafe { string_as_str(s) };
-    let start_idx = start as usize;
-    let char_len = rust_str.chars().count();
-    if start_idx > char_len {
-        // SAFETY: this is the terminal slice bounds path.
-        unsafe { string_slice_oob_trap(start, char_len as i64, Some(char_len)) };
-    }
-    let mut buf = String::new();
-    for ch in rust_str.chars().skip(start_idx) {
-        buf.push(ch);
-    }
-    string_from_str(&buf)
+    // SAFETY: the caller holds the same string throughout both operations.
+    unsafe { hew_string_slice_codepoints(s, start, hew_string_length(s)) }
 }
 
 // ---------------------------------------------------------------------------
-// Unicode codepoint classification — std::text::unicode
+// Unicode scalar classification and conversion
 // ---------------------------------------------------------------------------
 //
 // These functions operate on a Unicode scalar value (Unicode codepoint) passed
@@ -1325,7 +1147,7 @@ pub unsafe extern "C-unwind" fn hew_string_slice_codepoints_from(
               the sign-loss is the intentional invalid-codepoint guard"
 )]
 #[no_mangle]
-pub unsafe extern "C" fn hew_unicode_is_upper(cp: i32) -> bool {
+pub unsafe extern "C" fn hew_char_is_upper(cp: i32) -> bool {
     char::from_u32(cp as u32).is_some_and(char::is_uppercase)
 }
 
@@ -1342,7 +1164,7 @@ pub unsafe extern "C" fn hew_unicode_is_upper(cp: i32) -> bool {
               the sign-loss is the intentional invalid-codepoint guard"
 )]
 #[no_mangle]
-pub unsafe extern "C" fn hew_unicode_is_lower(cp: i32) -> bool {
+pub unsafe extern "C" fn hew_char_is_lower(cp: i32) -> bool {
     char::from_u32(cp as u32).is_some_and(char::is_lowercase)
 }
 
@@ -1359,7 +1181,7 @@ pub unsafe extern "C" fn hew_unicode_is_lower(cp: i32) -> bool {
               the sign-loss is the intentional invalid-codepoint guard"
 )]
 #[no_mangle]
-pub unsafe extern "C" fn hew_unicode_is_space(cp: i32) -> bool {
+pub unsafe extern "C" fn hew_char_is_whitespace(cp: i32) -> bool {
     char::from_u32(cp as u32).is_some_and(char::is_whitespace)
 }
 
@@ -1376,7 +1198,7 @@ pub unsafe extern "C" fn hew_unicode_is_space(cp: i32) -> bool {
               the sign-loss is the intentional invalid-codepoint guard"
 )]
 #[no_mangle]
-pub unsafe extern "C" fn hew_unicode_is_digit(cp: i32) -> bool {
+pub unsafe extern "C" fn hew_char_is_digit(cp: i32) -> bool {
     char::from_u32(cp as u32).is_some_and(|c| c.is_ascii_digit())
 }
 
@@ -1393,7 +1215,7 @@ pub unsafe extern "C" fn hew_unicode_is_digit(cp: i32) -> bool {
               the sign-loss is the intentional invalid-codepoint guard"
 )]
 #[no_mangle]
-pub unsafe extern "C" fn hew_unicode_is_letter(cp: i32) -> bool {
+pub unsafe extern "C" fn hew_char_is_letter(cp: i32) -> bool {
     char::from_u32(cp as u32).is_some_and(char::is_alphabetic)
 }
 
@@ -1410,8 +1232,8 @@ pub unsafe extern "C" fn hew_unicode_is_letter(cp: i32) -> bool {
               the sign-loss is the intentional invalid-codepoint guard"
 )]
 #[no_mangle]
-pub unsafe extern "C" fn hew_unicode_is_alnum(cp: i32) -> bool {
-    char::from_u32(cp as u32).is_some_and(char::is_alphanumeric)
+pub unsafe extern "C" fn hew_char_is_alphanumeric(cp: i32) -> bool {
+    char::from_u32(cp as u32).is_some_and(|c| c.is_alphabetic() || c.is_ascii_digit())
 }
 
 /// Test whether the Unicode codepoint `cp` is Unicode punctuation.
@@ -1430,7 +1252,7 @@ pub unsafe extern "C" fn hew_unicode_is_alnum(cp: i32) -> bool {
               the sign-loss is the intentional invalid-codepoint guard"
 )]
 #[no_mangle]
-pub unsafe extern "C" fn hew_unicode_is_punct(cp: i32) -> bool {
+pub unsafe extern "C" fn hew_char_is_punctuation(cp: i32) -> bool {
     use finl_unicode::categories::CharacterCategories;
     char::from_u32(cp as u32).is_some_and(CharacterCategories::is_punctuation)
 }
@@ -1454,16 +1276,20 @@ pub unsafe extern "C" fn hew_unicode_is_punct(cp: i32) -> bool {
               the sign-loss is the intentional invalid-codepoint guard"
 )]
 #[no_mangle]
-pub unsafe extern "C" fn hew_unicode_to_upper(cp: i32) -> i32 {
+pub unsafe extern "C" fn hew_char_to_upper(cp: i32) -> i32 {
     let Some(ch) = char::from_u32(cp as u32) else {
         return cp;
     };
-    ch.to_uppercase().next().map_or(cp, |u| u as i32)
+    let mut mapping = ch.to_uppercase();
+    match (mapping.next(), mapping.next()) {
+        (Some(value), None) => value as i32,
+        _ => cp,
+    }
 }
 
 /// Convert the Unicode codepoint `cp` to its lowercase equivalent.
 ///
-/// Returns the first codepoint in the Unicode to-lowercase mapping.
+/// Returns the one-scalar mapping, or `cp` when the mapping expands.
 /// Returns `cp` unchanged for codepoints with no lowercase mapping or for
 /// invalid codepoints.
 ///
@@ -1476,11 +1302,85 @@ pub unsafe extern "C" fn hew_unicode_to_upper(cp: i32) -> i32 {
               the sign-loss is the intentional invalid-codepoint guard"
 )]
 #[no_mangle]
-pub unsafe extern "C" fn hew_unicode_to_lower(cp: i32) -> i32 {
+pub unsafe extern "C" fn hew_char_to_lower(cp: i32) -> i32 {
     let Some(ch) = char::from_u32(cp as u32) else {
         return cp;
     };
-    ch.to_lowercase().next().map_or(cp, |u| u as i32)
+    let mut mapping = ch.to_lowercase();
+    match (mapping.next(), mapping.next()) {
+        (Some(value), None) => value as i32,
+        _ => cp,
+    }
+}
+
+/// Test whether a Unicode scalar is an ASCII character.
+#[no_mangle]
+pub extern "C" fn hew_char_is_ascii(cp: u32) -> bool {
+    cp <= 0x7f
+}
+
+/// Test whether a Unicode scalar is a control character.
+#[no_mangle]
+pub extern "C" fn hew_char_is_control(cp: u32) -> bool {
+    char::from_u32(cp).is_some_and(char::is_control)
+}
+
+/// Return the number of UTF-8 bytes encoding a Unicode scalar.
+#[no_mangle]
+pub extern "C" fn hew_char_len_utf8(cp: u32) -> i64 {
+    char::from_u32(cp).map_or(0, |value| i64::try_from(value.len_utf8()).unwrap_or(0))
+}
+
+/// Return an ASCII digit's value in radix 2 through 36, or -1.
+#[no_mangle]
+pub extern "C" fn hew_char_to_digit(cp: u32, radix: i64) -> i64 {
+    let Ok(radix @ 2..=36) = u32::try_from(radix) else {
+        return -1;
+    };
+    char::from_u32(cp)
+        .and_then(|value| value.to_digit(radix))
+        .map_or(-1, i64::from)
+}
+
+/// Validate an integer as a Unicode scalar, returning -1 on failure.
+#[no_mangle]
+pub extern "C" fn hew_char_from_i64(value: i64) -> i32 {
+    u32::try_from(value)
+        .ok()
+        .and_then(char::from_u32)
+        .map_or(-1, |value| value as i32)
+}
+
+/// Validate an unsigned integer as a Unicode scalar, returning -1 on failure.
+#[no_mangle]
+pub extern "C" fn hew_char_from_u64(value: u64) -> i32 {
+    u32::try_from(value)
+        .ok()
+        .and_then(char::from_u32)
+        .map_or(-1, |value| value as i32)
+}
+
+/// Convert a scalar to its one-scalar titlecase mapping.
+///
+/// # Safety
+/// `cp` is a Unicode scalar value.
+#[no_mangle]
+pub unsafe extern "C" fn hew_char_to_title(cp: i32) -> i32 {
+    match cp {
+        0x1c4..=0x1c6 => 0x1c5,
+        0x1c7..=0x1c9 => 0x1c8,
+        0x1ca..=0x1cc => 0x1cb,
+        0x1f1..=0x1f3 => 0x1f2,
+        0x10d0..=0x10fa | 0x10fd..=0x10ff => cp,
+        0x1f80..=0x1f87 | 0x1f90..=0x1f97 | 0x1fa0..=0x1fa7 => cp + 8,
+        0x1fb3 => 0x1fbc,
+        0x1fc3 => 0x1fcc,
+        0x1ff3 => 0x1ffc,
+        _ => {
+            // SAFETY: uppercase conversion accepts every codepoint.
+            unsafe { hew_char_to_upper(cp) }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1634,32 +1534,6 @@ mod tests {
         let result = unsafe { hew_string_concat(a.as_ptr(), core::ptr::null()) };
         // SAFETY: result is a valid header-aware string.
         assert_eq!(unsafe { read_and_free(result) }, "hello");
-    }
-
-    #[test]
-    fn test_string_slice_basic() {
-        let s = CString::new("hello world").unwrap();
-        // SAFETY: s is a valid C string; indices are within bounds.
-        let result = unsafe { hew_string_slice(s.as_ptr(), 0, 5) };
-        // SAFETY: result is a valid header-aware string.
-        assert_eq!(unsafe { read_and_free(result) }, "hello");
-    }
-
-    #[test]
-    fn test_string_slice_null() {
-        // SAFETY: Null input is explicitly handled by hew_string_slice.
-        let result = unsafe { hew_string_slice(core::ptr::null(), 0, 5) };
-        // SAFETY: result is a valid header-aware string (empty).
-        assert_eq!(unsafe { read_and_free(result) }, "");
-    }
-
-    #[test]
-    fn test_string_slice_start_past_end() {
-        let s = CString::new("hello").unwrap();
-        // SAFETY: s is a valid C string; out-of-bounds indices are handled.
-        let result = unsafe { hew_string_slice(s.as_ptr(), 10, 20) };
-        // SAFETY: result is a valid header-aware string (empty).
-        assert_eq!(unsafe { read_and_free(result) }, "");
     }
 
     #[test]
@@ -1885,13 +1759,6 @@ mod tests {
     }
 
     #[test]
-    fn test_string_char_count() {
-        let s = CString::new("hello").unwrap();
-        // SAFETY: s is a valid NUL-terminated C string.
-        assert_eq!(unsafe { hew_string_char_count(s.as_ptr()) }, 5);
-    }
-
-    #[test]
     fn test_string_is_ascii() {
         let ascii = CString::new("hello").unwrap();
         let non_ascii = CString::new("héllo").unwrap();
@@ -1899,22 +1766,6 @@ mod tests {
         assert_eq!(unsafe { hew_string_is_ascii(ascii.as_ptr()) }, 1);
         // SAFETY: Both args are valid NUL-terminated C strings.
         assert_eq!(unsafe { hew_string_is_ascii(non_ascii.as_ptr()) }, 0);
-    }
-
-    #[test]
-    fn test_string_reverse_utf8() {
-        let s = CString::new("hello").unwrap();
-        // SAFETY: s is a valid NUL-terminated C string.
-        let result = unsafe { hew_string_reverse_utf8(s.as_ptr()) };
-        // SAFETY: result is a valid header-aware string.
-        assert_eq!(unsafe { read_and_free(result) }, "olleh");
-    }
-
-    #[test]
-    fn test_string_reverse_utf8_null() {
-        // SAFETY: Null input is explicitly handled by hew_string_reverse_utf8.
-        let result = unsafe { hew_string_reverse_utf8(core::ptr::null()) };
-        assert!(result.is_null());
     }
 
     #[test]
@@ -2022,69 +1873,6 @@ mod tests {
         assert_eq!(unsafe { CStr::from_ptr(part) }.to_str().unwrap(), "line1");
         // SAFETY: release the caller's retained ref from hew_vec_get_str.
         unsafe { hew_string_drop(part.cast_mut()) };
-        // SAFETY: v is a valid HewVec.
-        unsafe { crate::vec::hew_vec_free(v) };
-    }
-
-    #[test]
-    fn test_string_chars_ascii() {
-        let s = CString::new("abc").unwrap();
-        // SAFETY: s is a valid NUL-terminated C string.
-        let v = unsafe { hew_string_chars(s.as_ptr()) };
-        assert!(!v.is_null());
-        // SAFETY: v is a valid HewVec from hew_string_chars.
-        assert_eq!(unsafe { crate::vec::hew_vec_len(v) }, 3);
-        // SAFETY: index 0 is within bounds.
-        let c0 = unsafe { crate::vec::hew_vec_get_i32(v, 0) };
-        // SAFETY: index 1 is within bounds.
-        let c1 = unsafe { crate::vec::hew_vec_get_i32(v, 1) };
-        // SAFETY: index 2 is within bounds.
-        let c2 = unsafe { crate::vec::hew_vec_get_i32(v, 2) };
-        assert_eq!(c0, i32::from(b'a'));
-        assert_eq!(c1, i32::from(b'b'));
-        assert_eq!(c2, i32::from(b'c'));
-        // SAFETY: v is a valid HewVec.
-        unsafe { crate::vec::hew_vec_free(v) };
-    }
-
-    #[test]
-    fn test_string_chars_multibyte() {
-        // "é" is U+00E9 (two UTF-8 bytes), "中" is U+4E2D (three bytes).
-        let s = CString::new("é中").unwrap();
-        // SAFETY: s is a valid NUL-terminated C string.
-        let v = unsafe { hew_string_chars(s.as_ptr()) };
-        assert!(!v.is_null());
-        // SAFETY: v is a valid HewVec from hew_string_chars.
-        assert_eq!(unsafe { crate::vec::hew_vec_len(v) }, 2);
-        // SAFETY: index 0 is within bounds.
-        let c0 = unsafe { crate::vec::hew_vec_get_i32(v, 0) };
-        // SAFETY: index 1 is within bounds.
-        let c1 = unsafe { crate::vec::hew_vec_get_i32(v, 1) };
-        assert_eq!(c0, 0x00E9); // é
-        assert_eq!(c1, 0x4E2D); // 中
-                                // SAFETY: v is a valid HewVec.
-        unsafe { crate::vec::hew_vec_free(v) };
-    }
-
-    #[test]
-    fn test_string_chars_empty() {
-        let s = CString::new("").unwrap();
-        // SAFETY: s is a valid NUL-terminated C string.
-        let v = unsafe { hew_string_chars(s.as_ptr()) };
-        assert!(!v.is_null());
-        // SAFETY: v is a valid HewVec from hew_string_chars.
-        assert_eq!(unsafe { crate::vec::hew_vec_len(v) }, 0);
-        // SAFETY: v is a valid HewVec.
-        unsafe { crate::vec::hew_vec_free(v) };
-    }
-
-    #[test]
-    fn test_string_chars_null() {
-        // SAFETY: null is the documented "skip" sentinel.
-        let v = unsafe { hew_string_chars(core::ptr::null()) };
-        assert!(!v.is_null());
-        // SAFETY: v is a valid HewVec from hew_string_chars.
-        assert_eq!(unsafe { crate::vec::hew_vec_len(v) }, 0);
         // SAFETY: v is a valid HewVec.
         unsafe { crate::vec::hew_vec_free(v) };
     }
@@ -2281,117 +2069,117 @@ mod tests {
     #[test]
     fn unicode_is_upper_ascii_uppercase() {
         // 'A' = 0x41
-        // SAFETY: hew_unicode_is_upper takes only an i32; no pointers.
-        assert!(unsafe { hew_unicode_is_upper(0x41) });
+        // SAFETY: hew_char_is_upper takes only an i32; no pointers.
+        assert!(unsafe { hew_char_is_upper(0x41) });
     }
 
     #[test]
     fn unicode_is_upper_ascii_lowercase_is_false() {
         // 'a' = 0x61
-        // SAFETY: hew_unicode_is_upper takes only an i32; no pointers.
-        assert!(!unsafe { hew_unicode_is_upper(0x61) });
+        // SAFETY: hew_char_is_upper takes only an i32; no pointers.
+        assert!(!unsafe { hew_char_is_upper(0x61) });
     }
 
     #[test]
     fn unicode_is_upper_latin_extended() {
         // 'É' (U+00C9) is uppercase
-        // SAFETY: hew_unicode_is_upper takes only an i32; no pointers.
-        assert!(unsafe { hew_unicode_is_upper(0xC9) });
+        // SAFETY: hew_char_is_upper takes only an i32; no pointers.
+        assert!(unsafe { hew_char_is_upper(0xC9) });
     }
 
     #[test]
     fn unicode_is_upper_invalid_codepoint_is_false() {
         // -1 cast to u32 = 0xFFFFFFFF, not a valid Unicode scalar
-        // SAFETY: hew_unicode_is_upper takes only an i32; no pointers.
-        assert!(!unsafe { hew_unicode_is_upper(-1) });
+        // SAFETY: hew_char_is_upper takes only an i32; no pointers.
+        assert!(!unsafe { hew_char_is_upper(-1) });
     }
 
     #[test]
     fn unicode_is_lower_ascii_lowercase() {
         // 'a' = 0x61
-        // SAFETY: hew_unicode_is_lower takes only an i32; no pointers.
-        assert!(unsafe { hew_unicode_is_lower(0x61) });
+        // SAFETY: hew_char_is_lower takes only an i32; no pointers.
+        assert!(unsafe { hew_char_is_lower(0x61) });
     }
 
     #[test]
     fn unicode_is_lower_ascii_uppercase_is_false() {
-        // SAFETY: hew_unicode_is_lower takes only an i32; no pointers.
-        assert!(!unsafe { hew_unicode_is_lower(0x41) });
+        // SAFETY: hew_char_is_lower takes only an i32; no pointers.
+        assert!(!unsafe { hew_char_is_lower(0x41) });
     }
 
     #[test]
     fn unicode_is_lower_latin_extended() {
         // 'é' (U+00E9) is lowercase
-        // SAFETY: hew_unicode_is_lower takes only an i32; no pointers.
-        assert!(unsafe { hew_unicode_is_lower(0xE9) });
+        // SAFETY: hew_char_is_lower takes only an i32; no pointers.
+        assert!(unsafe { hew_char_is_lower(0xE9) });
     }
 
     #[test]
     fn unicode_is_space_ascii_space() {
-        // SAFETY: hew_unicode_is_space takes only an i32; no pointers.
-        assert!(unsafe { hew_unicode_is_space(0x20) });
+        // SAFETY: hew_char_is_whitespace takes only an i32; no pointers.
+        assert!(unsafe { hew_char_is_whitespace(0x20) });
     }
 
     #[test]
     fn unicode_is_space_tab_and_newline() {
-        // SAFETY: hew_unicode_is_space takes only an i32; no pointers.
-        assert!(unsafe { hew_unicode_is_space(0x09) }); // \t
-                                                        // SAFETY: hew_unicode_is_space takes only an i32; no pointers.
-        assert!(unsafe { hew_unicode_is_space(0x0A) }); // \n
+        // SAFETY: hew_char_is_whitespace takes only an i32; no pointers.
+        assert!(unsafe { hew_char_is_whitespace(0x09) }); // \t
+                                                          // SAFETY: hew_char_is_whitespace takes only an i32; no pointers.
+        assert!(unsafe { hew_char_is_whitespace(0x0A) }); // \n
     }
 
     #[test]
     fn unicode_is_space_letter_is_false() {
-        // SAFETY: hew_unicode_is_space takes only an i32; no pointers.
-        assert!(!unsafe { hew_unicode_is_space(0x41) }); // 'A'
+        // SAFETY: hew_char_is_whitespace takes only an i32; no pointers.
+        assert!(!unsafe { hew_char_is_whitespace(0x41) }); // 'A'
     }
 
     #[test]
     fn unicode_is_digit_zero_through_nine() {
         for cp in 0x30..=0x39 {
-            // SAFETY: hew_unicode_is_digit takes only an i32; no pointers.
-            assert!(unsafe { hew_unicode_is_digit(cp) });
+            // SAFETY: hew_char_is_digit takes only an i32; no pointers.
+            assert!(unsafe { hew_char_is_digit(cp) });
         }
     }
 
     #[test]
     fn unicode_is_digit_letter_is_false() {
-        // SAFETY: hew_unicode_is_digit takes only an i32; no pointers.
-        assert!(!unsafe { hew_unicode_is_digit(0x41) }); // 'A'
+        // SAFETY: hew_char_is_digit takes only an i32; no pointers.
+        assert!(!unsafe { hew_char_is_digit(0x41) }); // 'A'
     }
 
     #[test]
     fn unicode_is_letter_ascii_alpha() {
-        // SAFETY: hew_unicode_is_letter takes only an i32; no pointers.
-        assert!(unsafe { hew_unicode_is_letter(0x41) }); // 'A'
-                                                         // SAFETY: hew_unicode_is_letter takes only an i32; no pointers.
-        assert!(unsafe { hew_unicode_is_letter(0x61) }); // 'a'
+        // SAFETY: hew_char_is_letter takes only an i32; no pointers.
+        assert!(unsafe { hew_char_is_letter(0x41) }); // 'A'
+                                                      // SAFETY: hew_char_is_letter takes only an i32; no pointers.
+        assert!(unsafe { hew_char_is_letter(0x61) }); // 'a'
     }
 
     #[test]
     fn unicode_is_letter_cjk() {
         // CJK Unified Ideographs block — 日 = U+65E5
-        // SAFETY: hew_unicode_is_letter takes only an i32; no pointers.
-        assert!(unsafe { hew_unicode_is_letter(0x65E5) });
+        // SAFETY: hew_char_is_letter takes only an i32; no pointers.
+        assert!(unsafe { hew_char_is_letter(0x65E5) });
     }
 
     #[test]
     fn unicode_is_letter_digit_is_false() {
-        // SAFETY: hew_unicode_is_letter takes only an i32; no pointers.
-        assert!(!unsafe { hew_unicode_is_letter(0x31) }); // '1'
+        // SAFETY: hew_char_is_letter takes only an i32; no pointers.
+        assert!(!unsafe { hew_char_is_letter(0x31) }); // '1'
     }
 
     #[test]
     fn unicode_is_alnum_letter_and_digit() {
-        // SAFETY: hew_unicode_is_alnum takes only an i32; no pointers.
-        assert!(unsafe { hew_unicode_is_alnum(0x41) }); // 'A'
-                                                        // SAFETY: hew_unicode_is_alnum takes only an i32; no pointers.
-        assert!(unsafe { hew_unicode_is_alnum(0x31) }); // '1'
-                                                        // SAFETY: hew_unicode_is_alnum takes only an i32; no pointers.
-        assert!(!unsafe { hew_unicode_is_alnum(0x20) }); // space
+        // SAFETY: hew_char_is_alphanumeric takes only an i32; no pointers.
+        assert!(unsafe { hew_char_is_alphanumeric(0x41) }); // 'A'
+                                                            // SAFETY: hew_char_is_alphanumeric takes only an i32; no pointers.
+        assert!(unsafe { hew_char_is_alphanumeric(0x31) }); // '1'
+                                                            // SAFETY: hew_char_is_alphanumeric takes only an i32; no pointers.
+        assert!(!unsafe { hew_char_is_alphanumeric(0x20) }); // space
     }
 
-    /// `hew_unicode_is_punct` must answer for the Unicode `P*` category group
+    /// `hew_char_is_punctuation` must answer for the Unicode `P*` category group
     /// exactly, over every scalar value, not for a hand-maintained subset of
     /// ranges. The pinned Unicode 18 tables are the authority.
     #[test]
@@ -2415,8 +2203,8 @@ mod tests {
                     | MinorCategory::Pf
                     | MinorCategory::Po
             );
-            // SAFETY: hew_unicode_is_punct takes only an i32; no pointers.
-            let actual = unsafe { hew_unicode_is_punct(cp.cast_signed()) };
+            // SAFETY: hew_char_is_punctuation takes only an i32; no pointers.
+            let actual = unsafe { hew_char_is_punctuation(cp.cast_signed()) };
             assert_eq!(
                 actual, expected,
                 "U+{cp:04X} punctuation classification disagrees with the Unicode tables"
@@ -2443,8 +2231,8 @@ mod tests {
     #[test]
     fn unicode_is_punct_refuses_scalars_that_are_not_codepoints() {
         for cp in [-1_i32, i32::MIN, 0xD800, 0xDFFF, 0x0011_0000, i32::MAX] {
-            // SAFETY: hew_unicode_is_punct takes only an i32; no pointers.
-            let is_punct = unsafe { hew_unicode_is_punct(cp) };
+            // SAFETY: hew_char_is_punctuation takes only an i32; no pointers.
+            let is_punct = unsafe { hew_char_is_punctuation(cp) };
             assert!(!is_punct, "{cp} is not a Unicode scalar value");
         }
     }
@@ -2452,54 +2240,54 @@ mod tests {
     #[test]
     fn unicode_to_upper_ascii() {
         // 'a' -> 'A'
-        // SAFETY: hew_unicode_to_upper takes only an i32; no pointers.
-        assert_eq!(unsafe { hew_unicode_to_upper(0x61) }, 0x41);
+        // SAFETY: hew_char_to_upper takes only an i32; no pointers.
+        assert_eq!(unsafe { hew_char_to_upper(0x61) }, 0x41);
     }
 
     #[test]
     fn unicode_to_upper_already_upper() {
         // 'A' stays 'A'
-        // SAFETY: hew_unicode_to_upper takes only an i32; no pointers.
-        assert_eq!(unsafe { hew_unicode_to_upper(0x41) }, 0x41);
+        // SAFETY: hew_char_to_upper takes only an i32; no pointers.
+        assert_eq!(unsafe { hew_char_to_upper(0x41) }, 0x41);
     }
 
     #[test]
     fn unicode_to_upper_latin_extended() {
         // 'é' (U+00E9) -> 'É' (U+00C9)
-        // SAFETY: hew_unicode_to_upper takes only an i32; no pointers.
-        assert_eq!(unsafe { hew_unicode_to_upper(0xE9) }, 0xC9);
+        // SAFETY: hew_char_to_upper takes only an i32; no pointers.
+        assert_eq!(unsafe { hew_char_to_upper(0xE9) }, 0xC9);
     }
 
     #[test]
     fn unicode_to_upper_invalid_returns_unchanged() {
-        // SAFETY: hew_unicode_to_upper takes only an i32; no pointers.
-        assert_eq!(unsafe { hew_unicode_to_upper(-1) }, -1);
+        // SAFETY: hew_char_to_upper takes only an i32; no pointers.
+        assert_eq!(unsafe { hew_char_to_upper(-1) }, -1);
     }
 
     #[test]
     fn unicode_to_lower_ascii() {
         // 'A' -> 'a'
-        // SAFETY: hew_unicode_to_lower takes only an i32; no pointers.
-        assert_eq!(unsafe { hew_unicode_to_lower(0x41) }, 0x61);
+        // SAFETY: hew_char_to_lower takes only an i32; no pointers.
+        assert_eq!(unsafe { hew_char_to_lower(0x41) }, 0x61);
     }
 
     #[test]
     fn unicode_to_lower_already_lower() {
-        // SAFETY: hew_unicode_to_lower takes only an i32; no pointers.
-        assert_eq!(unsafe { hew_unicode_to_lower(0x61) }, 0x61);
+        // SAFETY: hew_char_to_lower takes only an i32; no pointers.
+        assert_eq!(unsafe { hew_char_to_lower(0x61) }, 0x61);
     }
 
     #[test]
     fn unicode_to_lower_latin_extended() {
         // 'É' (U+00C9) -> 'é' (U+00E9)
-        // SAFETY: hew_unicode_to_lower takes only an i32; no pointers.
-        assert_eq!(unsafe { hew_unicode_to_lower(0xC9) }, 0xE9);
+        // SAFETY: hew_char_to_lower takes only an i32; no pointers.
+        assert_eq!(unsafe { hew_char_to_lower(0xC9) }, 0xE9);
     }
 
     #[test]
     fn unicode_to_lower_invalid_returns_unchanged() {
-        // SAFETY: hew_unicode_to_lower takes only an i32; no pointers.
-        assert_eq!(unsafe { hew_unicode_to_lower(-1) }, -1);
+        // SAFETY: hew_char_to_lower takes only an i32; no pointers.
+        assert_eq!(unsafe { hew_char_to_lower(-1) }, -1);
     }
 
     // ── hew_char_to_string UTF-8 correctness ─────────────────────────────────

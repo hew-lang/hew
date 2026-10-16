@@ -91,7 +91,7 @@ impl Status {
 /// (not an interned literal), so a missing drop would leak it.
 #[test]
 fn test_dyn_string_field_record_drops_clean() {
-    let heaped = string.repeat("x", 64);
+    let heaped = ("x").repeat(64);
     let p = Person { tag: heaped };
     let _d: dyn Named = p;
     assert(true);
@@ -103,7 +103,7 @@ fn test_dyn_string_field_record_drops_clean() {
 /// borrow and must not acquire a competing drop.
 #[test]
 fn test_borrowed_dyn_argument_temporary_drops_clean() {
-    let n = inspect_named(Person { tag: string.repeat("b", 64) });
+    let n = inspect_named(Person { tag: ("b").repeat(64) });
     assert(n == 64);
 }
 
@@ -127,7 +127,7 @@ fn test_dyn_vec_field_record_drops_clean() {
 /// at codegen-front regardless of payload.
 #[test]
 fn test_dyn_enum_owned_payload_drops_clean() {
-    let heaped = string.repeat("y", 64);
+    let heaped = ("y").repeat(64);
     let s = Status.Active(heaped);
     let _d: dyn Describe = s;
     assert(true);

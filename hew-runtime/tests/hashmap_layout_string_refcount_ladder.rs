@@ -63,19 +63,16 @@ fn make_string(s: &str) -> *mut HewString {
     string_from_str(s)
 }
 
-/// Read the live refcount of a header-aware string element WITHOUT perturbing
-/// it. The 16-byte header is `[magic:u64 | rc:AtomicU32 | reserved:u32]`, so
-/// the refcount sits at offset 8, i.e. `data - CSTRING_HEADER_SIZE + 8`.
+/// Read the live owner count at the offset supplied by the managed carrier.
 ///
 /// # Safety
 /// `data` must be a live header-aware element produced by the `hew-cabi`
 /// allocator.
 unsafe fn element_refcount(data: *const HewString) -> u32 {
-    // SAFETY: the managed handle is the header base and the refcount follows
-    // its native-width byte-length field.
+    // SAFETY: the live header contains the atomic field at its declared offset.
     let rc = unsafe {
         data.cast::<u8>()
-            .add(core::mem::size_of::<usize>())
+            .add(hew_cabi::string::STRING_DEBUG_REFCOUNT_OFFSET)
             .cast::<AtomicU32>()
     };
     unsafe { (*rc).load(Ordering::Relaxed) }

@@ -409,7 +409,6 @@ const F64_I32: &[BuiltinTy] = &[BuiltinTy::F64, BuiltinTy::I32];
 const STRING_STRING: &[BuiltinTy] = &[BuiltinTy::String, BuiltinTy::String];
 const NODE_CONFIG: &[BuiltinTy] = &[BuiltinTy::NodeConfig];
 const STRING_I64: &[BuiltinTy] = &[BuiltinTy::String, BuiltinTy::I64];
-const STRING_I64_I64: &[BuiltinTy] = &[BuiltinTy::String, BuiltinTy::I64, BuiltinTy::I64];
 const STRING_STRING_STRING: &[BuiltinTy] =
     &[BuiltinTy::String, BuiltinTy::String, BuiltinTy::String];
 const STRING_STRING_STRING_STRING: &[BuiltinTy] = &[
@@ -660,16 +659,6 @@ const HANDWRITTEN_CATALOG: &[BuiltinEntry] = &[
             symbol: "hew_string_concat",
         },
     ),
-    // Class A: monomorphic len overloads.
-    overload(
-        "len_str",
-        "len",
-        STRING,
-        BuiltinTy::I64,
-        BuiltinLinkage::RuntimeFfiShim {
-            symbol: "hew_string_length",
-        },
-    ),
     direct(
         "hew_string_byte_length",
         BuiltinClass::ClassB,
@@ -677,15 +666,6 @@ const HANDWRITTEN_CATALOG: &[BuiltinEntry] = &[
         BuiltinTy::I64,
         BuiltinLinkage::RuntimeFfiShim {
             symbol: "hew_string_byte_length",
-        },
-    ),
-    overload(
-        "len_vec",
-        "len",
-        VEC_ANY,
-        BuiltinTy::I64,
-        BuiltinLinkage::RuntimeFfiShim {
-            symbol: "vec.value.len",
         },
     ),
     // Class A: string predicate overloads (ABI-safe: bool return, no i32/i64 conflict).
@@ -723,33 +703,6 @@ const HANDWRITTEN_CATALOG: &[BuiltinEntry] = &[
         BuiltinTy::Bool,
         BuiltinLinkage::RuntimeFfiShim {
             symbol: "hew_string_is_empty",
-        },
-    ),
-    overload(
-        "is_digit_str",
-        "is_digit",
-        STRING,
-        BuiltinTy::Bool,
-        BuiltinLinkage::RuntimeFfiShim {
-            symbol: "hew_string_is_digit",
-        },
-    ),
-    overload(
-        "is_alpha_str",
-        "is_alpha",
-        STRING,
-        BuiltinTy::Bool,
-        BuiltinLinkage::RuntimeFfiShim {
-            symbol: "hew_string_is_alpha",
-        },
-    ),
-    overload(
-        "is_alphanumeric_str",
-        "is_alphanumeric",
-        STRING,
-        BuiltinTy::Bool,
-        BuiltinLinkage::RuntimeFfiShim {
-            symbol: "hew_string_is_alphanumeric",
         },
     ),
     // Class A: string transform overloads (return String via the C-string-clone path).
@@ -839,15 +792,6 @@ const HANDWRITTEN_CATALOG: &[BuiltinEntry] = &[
         BuiltinLinkage::CalleeNameDispatchOnly,
     ),
     overload(
-        "slice_str",
-        "slice",
-        STRING_I64_I64,
-        BuiltinTy::String,
-        BuiltinLinkage::RuntimeFfiShim {
-            symbol: "hew_string_slice",
-        },
-    ),
-    overload(
         "repeat_str",
         "repeat",
         STRING_I64,
@@ -856,46 +800,15 @@ const HANDWRITTEN_CATALOG: &[BuiltinEntry] = &[
             symbol: "hew_string_repeat",
         },
     ),
-    // `string.char_at(i) -> Option<char>` — sentinel->Option (D46), the
+    // `string.get(i) -> Option<char>` — sentinel->Option (D46), the
     // byte-indexed sibling of the codepoint-indexed `string.get`. Codegen
-    // intercepts the callee, calls the unchanged runtime `hew_string_char_at`
+    // intercepts the callee, calls the unchanged runtime `hew_string_get`
     // (i32 byte, `-1` OOB), and wraps the sentinel as `None`.
     direct(
-        "hew_string_char_at",
+        "hew_string_get",
         BuiltinClass::ClassA,
         STRING_I64,
         BuiltinTy::Char,
-        BuiltinLinkage::CalleeNameDispatchOnly,
-    ),
-    overload(
-        "chars_str",
-        "chars",
-        STRING,
-        BuiltinTy::VecAny,
-        BuiltinLinkage::RuntimeFfiShim {
-            symbol: "hew_string_chars",
-        },
-    ),
-    // UTF-8 codepoint helpers — bound by `std::string`'s `impl string` block
-    // and used by `std::text::unicode` for rune_count / runes / codepoint_at.
-    overload(
-        "char_count_utf8_str",
-        "char_count_utf8",
-        STRING,
-        BuiltinTy::I64,
-        BuiltinLinkage::RuntimeFfiShim {
-            symbol: "hew_string_char_count",
-        },
-    ),
-    // `string.codepoint_at_utf8(i) -> Option<i64>` — sentinel->Option (D46).
-    // Codegen intercepts the callee, calls the unchanged runtime
-    // `hew_string_char_at_utf8` (i32 codepoint, `-1` OOB/invalid), and wraps
-    // the sentinel as `None`.
-    direct(
-        "hew_string_char_at_utf8",
-        BuiltinClass::ClassA,
-        STRING_I64,
-        BuiltinTy::I64,
         BuiltinLinkage::CalleeNameDispatchOnly,
     ),
     // Class A: declarative bytes receiver bridge. Keep every symbol named by

@@ -217,7 +217,7 @@ fn main() {
 
 The available methods are `.try_to_i8()`, `.try_to_i16()`, `.try_to_i32()`, `.try_to_i64()`, `.try_to_u8()`, `.try_to_u16()`, `.try_to_u32()`, `.try_to_u64()`, `.try_to_isize()`, `.try_to_usize()`, `.try_to_f32()`, and `.try_to_f64()`. They return `None` for out-of-range values, negative values converted to unsigned targets, `NaN`, infinities, nonzero fractional parts in float→integer conversions, and inexact integer→float or float→float conversions.
 
-`char as <integer>` extracts the Unicode scalar value — the codepoint. `'A' as i64` is `65`, and `s[i] as i64` reads the codepoint of the char at codepoint offset `i` (the read primitive for text/byte parsers). Wider integer targets zero-extend; narrower ones truncate to the low byte (`'€' as u8` is `172`), following the same width rules as above. The reverse — `<integer> as char` — is not an `as` cast (not every integer is a valid scalar value); build a one-character string with `string.from_char(code)` instead.
+`char as u32` and `char as i64` extract the Unicode scalar value without loss. Casts to 8-bit or 16-bit integers are refused: use `(c as u32).try_to_u8()` for an exact optional conversion. Every integer type supports `n.try_to_char()`, which returns `None` for negative values, surrogates and values above U+10FFFF. Integer `as char` casts remain refused. Render a character with `f"{c}"`.
 
 ### Mixed-width arithmetic requires a cast
 
@@ -3564,13 +3564,13 @@ Trims leading/trailing whitespace, returns a new string.
 fn main() {
     let path = "src/main.hew";
     if path.starts_with("src/") {
-        let rest = path.slice(4, path.len());
+        let rest = path[4..];
         println(rest);   // main.hew
     }
 }
 ```
 
-`.starts_with`/`.ends_with` return `bool`. `.slice(a, b)` is half-open `[a, b)`; use `s.slice(start, s.len())` to slice to the end. No negative-index support.
+`.starts_with`/`.ends_with` return `bool`. `s[a..b]` is half-open; use `s[start..]` to slice to the end. Invalid bounds fault; `s.get(a..b)` returns `None` instead. No negative-index support.
 
 ### .find returns Option<i64>
 
@@ -3607,21 +3607,21 @@ fn main() {
 ```hew
 import std.string;
 fn main() {
-    println(string.from_int(42));            // 42
+    println(f"{42}");            // 42
     let n = match string.to_int("42") {
         .Ok(v) => v,
         .Err(_) => 0,
     };
     println(f"n={n}");                        // 42
     println(string.pad_left("7", 3, "0"));   // 007
-    println(string.join(["a", "b", "c"], ", "));  // a, b, c
+    println(["a", "b", "c"].join(", "));  // a, b, c
     let c = string.count("abcabc", "abc");
     println(f"count={c}");                    // 2
 }
 ```
 
-Import `std.string` and call via the module name. `from_int`/`to_float` for conversions; `to_int` and `to_float` return Results: match, propagate or recover the error.
-`string.join(Vec<string>, sep)` assembles text; it is unrelated to task joining.
+Import `std.string` and call via the module name. Use f-strings to format values; `to_int` and `to_float` return Results: match, propagate or recover the error.
+`parts.join(sep)` assembles text; it is unrelated to task joining.
 
 ### Concatenation, char round-trip, escapes
 
@@ -3630,17 +3630,17 @@ import std.string;
 fn main() {
     let g = "Hello" + ", " + "world";
     println(g);
-    match "Z".char_at(0) {
-        .Some(ch) => println(string.from_char(ch as i64)),   // Z
+    match "Z".get(0) {
+        .Some(ch) => println(f"{ch}"),   // Z
         .None => println("out of bounds"),
     }
     var acc = "";
-    for i in 0 .. 3 { acc = acc + "x"; }
+    for i in 0 .. 3 { acc += "x"; }
     println(acc);                       // xxx
 }
 ```
 
-Build strings with `+`. `char_at` returns `Option<char>` — `Some` of the Unicode scalar at that codepoint offset, or `None` when out of bounds; consume it with `match`. Cast a `char` to its codepoint with `as i64`, then `string.from_char` renders it back. Strings are immutable — concatenation produces new strings.
+`+` creates a new string. Use `+=` to append a string and `push` to append a `char`; earlier copies keep their values. `get(i)` returns the Unicode scalar at index `i`, or `None` when out of bounds. String lengths and scalar indexing take O(1) time on both ASCII and non-ASCII text. `iter()` yields scalars without creating a vector. `find_from(needle, start)` searches from a scalar offset without copying the tail.
 
 ## Traits and stdlib
 
@@ -3937,7 +3937,7 @@ Use `?` to short-circuit a failure and propagate it; the enclosing fn declares i
 ```hew
 import std.string;
 fn main() {
-    println(string.from_int(42));            // 42
+    println(f"{42}");            // 42
     println(string.to_int("100") handle _ { 0 });  // 100
     println(string.repeat("*", 3));          // ***
     println(string.pad_left("7", 3, "0"));   // 007
@@ -4157,7 +4157,7 @@ import std.string;
 import std.math;
 import std.iter;
 fn main() {
-    println(string.from_int(math.max(2, 9)));   // 9
+    println(f"{math.max(2, 9)}");   // 9
     let v: Vec<i64> = [1, 2, 3];
     println(iter.sum(v.iter()));                 // 6
 }
@@ -4227,7 +4227,7 @@ as `c.function_name()` /
 import std.string;
 
 fn main() {
-    println(string.from_int(42));
+    println(f"{42}");
 }
 ```
 
@@ -4828,32 +4828,26 @@ is not yet implemented. `TemplateError` has no `Display`, so handle the `Err` ar
 with a literal message rather than interpolating it. Full example:
 [`examples/v05/surfaces/template_render.hew`](../examples/v05/surfaces/template_render.hew).
 
-### Unicode — rune helpers + classification predicates
+### Unicode scalars and character methods
 
 ```hew
-import std.text.unicode;
-
 fn main() {
-    let s = "Aé!";
-    println(f"runes={unicode.rune_count(s)} bytes={s.byte_len()}");   // runes=3 bytes=4
-    let runes = unicode.runes(s);
-    for cp in runes {
-        let up = unicode.is_upper(cp);
-        let width = unicode.rune_len(cp).expect("decoded codepoint is valid");
-        println(f"cp={cp} upper={up} width={width}");
+    let text = "Aé!";
+    println(f"scalars={text.len()} bytes={text.byte_len()}");
+    for c in text.iter() {
+        println(f"cp={c.as_i64()} upper={c.is_upper()} width={c.len_utf8()}");
     }
+    assert('f'.to_digit(16).expect("hex digit") == 15);
+    assert((0xD800).try_to_char().is_none());
 }
 ```
 
-`rune_count(s)` and `s.len()` count codepoints; `s.byte_len()` counts UTF-8
-bytes. `runes(s)` decodes a string into a `Vec<i64>` of codepoints.
-`codepoint_at(s, i)` returns the codepoint at codepoint index `i` as a `Result`;
-`rune_len(cp)` returns a valid codepoint's UTF-8 width as a `Result`. Classify a
-codepoint with the predicates `is_upper` / `is_lower` / `is_digit` / `is_letter`
-/ `is_space` / `is_punct` / `is_alnum` / `is_valid_rune`, and case-fold with
-`to_upper` / `to_lower` / `to_title` (all over `i64` codepoints). Dispatch with
-`match` guards over the predicates rather than range checks. Full example:
-[`examples/v05/surfaces/unicode_runes.hew`](../examples/v05/surfaces/unicode_runes.hew).
+`is_digit` recognises ASCII digits; `is_letter` recognises Unicode Alphabetic.
+`is_alphanumeric` combines those two. Other character predicates are
+`is_whitespace`, `is_upper`, `is_lower`, `is_punctuation`, `is_control` and
+`is_ascii`. Character `to_upper`, `to_lower` and `to_title` preserve one scalar;
+use string case conversion for mappings that expand, such as `"ß".to_upper()`.
+Full example: [`examples/v05/surfaces/unicode_runes.hew`](../examples/v05/surfaces/unicode_runes.hew).
 
 ### Scanner — line and word tokenisation
 

@@ -1,37 +1,22 @@
-//! Status: runnable (v0.5 std.text.unicode rune helpers + predicates)
-//! Description: Unicode runes — decode a UTF-8 string into codepoints and classify each one.
-//!
-//! Uses `rune_count` (vs the byte `byte_len()`), `runes` to decode a string into a
-//! `Vec<i64>` of codepoints, `rune_len` for each rune's UTF-8 width, the
-//! classification predicates (`is_space` / `is_digit` / `is_upper` / `is_lower`
-//! / `is_letter` / `is_punct`) dispatched with `match` guards, and `to_upper`
-//! case folding on a per-rune basis.
-
-import std.text.unicode;
-
-fn classify(cp: i64) -> string {
+//! Classify the Unicode scalars in a UTF-8 string.
+fn classify(cp: char) -> string {
     match cp {
-        c if unicode.is_space(c) => "space",
-        c if unicode.is_digit(c) => "digit",
-        c if unicode.is_upper(c) => "upper",
-        c if unicode.is_lower(c) => "lower",
-        c if unicode.is_letter(c) => "letter",
-        c if unicode.is_punct(c) => "punct",
+        c if c.is_whitespace() => "space",
+        c if c.is_digit() => "digit",
+        c if c.is_upper() => "upper",
+        c if c.is_lower() => "lower",
+        c if c.is_letter() => "letter",
+        c if c.is_punctuation() => "punct",
         _ => "other",
     }
 }
 
 fn main() {
     let text = "Hé 9世!";
-    println(f"runes={unicode.rune_count(text)} bytes={text.byte_len()}");
-    let runes = unicode.runes(text);
-    for cp in runes {
+    println(f"runes={text.len()} bytes={text.byte_len()}");
+    for cp in text.iter() {
         let kind = classify(cp);
-        let upper = unicode.to_upper(cp);
-        let width = match unicode.rune_len(cp) {
-            .Ok(width) => width,
-            .Err(error) => panic(f"{error}"),
-        };
-        println(f"cp={cp} width={width} kind={kind} upper_cp={upper}");
+        let upper = cp.to_upper().as_i64();
+        println(f"cp={cp.as_i64()} width={cp.len_utf8()} kind={kind} upper_cp={upper}");
     }
 }

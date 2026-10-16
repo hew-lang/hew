@@ -31,8 +31,8 @@ type Carrier {
 
 fn mk_carrier() -> Carrier {
     var v: Vec<string> = Vec.new();
-    v.push(string.repeat("k", 48));
-    Carrier { pair: (v, 7), tag: string.repeat("y", 48) }
+    v.push(("k").repeat(48));
+    Carrier { pair: (v, 7), tag: ("y").repeat(48) }
 }
 
 fn main() {

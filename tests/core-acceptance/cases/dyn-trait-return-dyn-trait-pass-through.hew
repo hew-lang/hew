@@ -15,7 +15,7 @@ impl Labeled for Person {
 }
 
 fn make_labeled(seed: string) -> dyn Labeled {
-    Person { label: string.repeat(seed, 64) }
+    Person { label: (seed).repeat(64) }
 }
 
 fn identity(consume value: dyn Labeled) -> dyn Labeled {

@@ -21,6 +21,8 @@ use strum::IntoEnumIterator;
 pub enum RuntimeCReturn {
     /// The C return is the result storage's representation, or void.
     Storage,
+    /// C returns void after mutating argument zero; that same handle is the result owner.
+    ReceiverInPlace,
     /// A 32-bit status: nonzero is true.
     TruthI32,
     /// A 1-bit truth.

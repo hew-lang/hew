@@ -31,7 +31,7 @@ fn test_decode_invalid_utf8_returns_empty_string() {
 
 #[test]
 fn test_decode_preserves_decoded_nul_and_unicode() {
-    let nul = string.from_char(0);
+    let nul = f"{(0).try_to_char().expect("valid Unicode scalar")}";
     assert(url.decode("%00") == nul);
     assert(url.decode("a%00b") == "a" + nul + "b");
     assert(url.decode("%C3%A9x%F0%9F%99%82z") == "éx🙂z");
@@ -62,7 +62,7 @@ fn test_decode_query_decodes_form_pairs_in_order() {
 #[test]
 fn test_decode_query_preserves_nul_and_rejects_invalid_utf8() {
     let pairs = url.decode_query("value=a%00b&invalid=%FF&incomplete=%E2%82");
-    assert(pairs[0].1 == "a" + string.from_char(0) + "b");
+    assert(pairs[0].1 == "a" + f"{(0).try_to_char().expect("valid Unicode scalar")}" + "b");
     assert(pairs[1].1 == "");
     assert(pairs[2].1 == "");
 }

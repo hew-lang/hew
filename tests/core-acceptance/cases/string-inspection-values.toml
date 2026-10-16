@@ -1,6 +1,6 @@
 [[case]]
 id = "string-inspection-values"
-intent = "Unicode string predicates distinguish empty and mixed input, and returned line vectors retain their owned elements after the source string leaves scope."
+intent = "Returned line vectors retain their owned Unicode elements after the source string leaves scope."
 source = "cases/string-inspection-values.hew"
 suites = ["acceptance", "safety"]
 timeout_seconds = 30

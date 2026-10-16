@@ -908,6 +908,35 @@ impl Checker {
                 );
                 Ty::Error
             }
+            (Ty::Char, _) => {
+                if let Some(result) = self.dispatch_monomorphic_extern_symbol_method(
+                    "char",
+                    &[],
+                    method,
+                    args,
+                    span,
+                    &Ty::Char,
+                ) {
+                    return result;
+                }
+                self.check_primitive_receiver_method_fallback(&Ty::Char, "char", method, args, span)
+            }
+            (resolved, "try_to_char") if resolved.is_integer() => {
+                let resolved = resolved.materialize_literal_defaults();
+                let name =
+                    Self::dispatch_primitive_pattern_name(&resolved).expect("integer receiver");
+                if let Some(result) = self.dispatch_monomorphic_extern_symbol_method(
+                    name,
+                    &[],
+                    method,
+                    args,
+                    span,
+                    &resolved,
+                ) {
+                    return result;
+                }
+                self.check_primitive_receiver_method_fallback(&resolved, name, method, args, span)
+            }
             // Exact fallible numeric conversion: `.try_to_<W>() -> Option<W>`.
             (resolved, method) if resolved.is_numeric() && method.starts_with("try_to_") => {
                 let suffix = &method["try_to_".len()..];

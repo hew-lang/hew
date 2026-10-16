@@ -6,7 +6,7 @@ import std.net;
 import std.process;
 import std.stream;
 import std.string;
-import std.text.unicode;
+// Character classification is provided by char methods.
 import std.time.datetime;
 
 fn main() {
@@ -15,7 +15,7 @@ fn main() {
     let _ = string.try_to_int;
     let _ = net.try_connect;
     let _ = crypto.try_random_bytes;
-    let _ = unicode.try_codepoint_at;
+
     let _ = datetime.try_parse;
     let _ = metrics.try_counter;
     let _ = json.try_parse;

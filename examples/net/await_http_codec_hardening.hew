@@ -26,13 +26,13 @@ fn check_f2_size_caps() {
 
     // An unbounded head with no terminator is rejected once it crosses the
     // header ceiling (no unbounded buffering of a header flood).
-    let huge_head = f"GET / HTTP/1.1{nl}X: " + string.repeat("a", 70000);
+    let huge_head = f"GET / HTTP/1.1{nl}X: " + ("a").repeat(70000);
     assert(http_async_server.over_limit(huge_head));
     let req_head = http_async_server.parse_request(huge_head);
     assert(req_head.reject_status() == 413);
 
     // The client side fails closed identically on an oversized response head.
-    let huge_resp = f"HTTP/1.1 200 OK{nl}X: " + string.repeat("b", 70000);
+    let huge_resp = f"HTTP/1.1 200 OK{nl}X: " + ("b").repeat(70000);
     assert(http_async_client.response_over_limit(huge_resp));
     let resp = http_async_client.parse_response(huge_resp);
     assert(resp.status() == -1);
@@ -75,34 +75,34 @@ fn check_f4_crlf() {
     // A path carrying an embedded CRLF would inject a header / split the request
     // line — the client builder rejects it (empty string, request never sent).
     let injected_path = http_async_client.build_request("GET", "h", "/x\r\nEvil: 1", "", "");
-    assert(string.is_empty(injected_path));
-    assert(!string.contains(injected_path, "Evil"));
+    assert((injected_path).is_empty());
+    assert(!(injected_path).contains("Evil"));
 
     // A host carrying an embedded CRLF is likewise rejected.
     let injected_host = http_async_client.build_request("GET", "h\r\nEvil: 1", "/x", "", "");
-    assert(string.is_empty(injected_host));
+    assert((injected_host).is_empty());
 
     // A method carrying a control character is rejected.
     let injected_method = http_async_client.build_request("GE\nT", "h", "/x", "", "");
-    assert(string.is_empty(injected_method));
+    assert((injected_method).is_empty());
 
     // A bare-LF in a content type is rejected.
     let injected_ct = http_async_client.build_request("POST", "h", "/x", "data", "text/plain\nEvil: 1");
-    assert(string.is_empty(injected_ct));
+    assert((injected_ct).is_empty());
 
     // A clean request still builds and carries no injected header.
     let clean = http_async_client.build_get("h", "/x");
-    assert(!string.is_empty(clean));
-    assert(string.contains(clean, "GET /x HTTP/1.1"));
+    assert(!(clean).is_empty());
+    assert((clean).contains("GET /x HTTP/1.1"));
 
     // The server response builder rejects a CRLF-bearing content type.
     let injected_resp = http_async_server.build_response(200, "text/plain\r\nEvil: 1", "ok");
-    assert(string.is_empty(injected_resp));
-    assert(!string.contains(injected_resp, "Evil"));
+    assert((injected_resp).is_empty());
+    assert(!(injected_resp).contains("Evil"));
 
     // A clean response still builds.
     let clean_resp = http_async_server.response_text(200, "ok");
-    assert(!string.is_empty(clean_resp));
+    assert(!(clean_resp).is_empty());
 }
 
 // ── SF1: overflowing numeric Content-Length fails closed (not bypass) ──

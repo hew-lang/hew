@@ -11,10 +11,10 @@ type Pair {
 }
 
 fn main() -> i64 {
-    var p = Pair { keep: Inner { label: string.repeat("k", 32), n: 1 }, churn: string.repeat("a", 32) };
+    var p = Pair { keep: Inner { label: ("k").repeat(32), n: 1 }, churn: ("a").repeat(32) };
     var i: i64 = 0;
     while i < 50 {
-        p = Pair { ..p, churn: string.repeat("b", 32) };
+        p = Pair { ..p, churn: ("b").repeat(32) };
         i = i + 1;
     }
     p.keep.n

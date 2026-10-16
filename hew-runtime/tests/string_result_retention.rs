@@ -15,22 +15,21 @@ use hew_runtime::log_core::hew_log_encode_field_value;
 use hew_runtime::observe::{hew_observe_scrape, hew_observe_series};
 use hew_runtime::string::{hew_char_to_string, hew_string_clone, hew_string_drop};
 
-/// Read the refcount from the documented 16-byte Hew string header. The
-/// atomic count occupies bytes 8..12, immediately eight bytes before `data`.
+/// Read the owner count at the offset supplied by the managed string carrier.
 ///
 /// # Safety
 ///
 /// `data` must point to a live header-aware Hew string allocation.
 #[expect(
     clippy::cast_ptr_alignment,
-    reason = "the documented string header sits in a 16-byte-aligned allocation; AtomicU32 needs four-byte alignment"
+    reason = "the carrier supplies the aligned AtomicU32 field offset"
 )]
 unsafe fn string_owner_count(data: *mut HewString) -> u32 {
-    // SAFETY: the managed handle is the header base; rc follows byte_len.
+    // SAFETY: the live header contains the atomic field at its declared offset.
     unsafe {
         &*data
             .cast::<u8>()
-            .add(core::mem::size_of::<usize>())
+            .add(hew_cabi::string::STRING_DEBUG_REFCOUNT_OFFSET)
             .cast::<AtomicU32>()
     }
     .load(Ordering::Acquire)

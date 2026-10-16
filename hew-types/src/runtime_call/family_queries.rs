@@ -864,9 +864,29 @@ impl RuntimeCallFamily {
             | F::ReplyPayloadFree
             | F::ReplyWait
             | F::SelectFirst
-            | F::StringCharAt
-            | F::StringCharAtUtf8
-            | F::StringCharCount
+            | F::CharIsDigit
+            | F::CharIsLetter
+            | F::CharIsAlphanumeric
+            | F::CharIsWhitespace
+            | F::CharIsUpper
+            | F::CharIsLower
+            | F::CharIsPunctuation
+            | F::CharIsControl
+            | F::CharIsAscii
+            | F::CharToUpper
+            | F::CharToLower
+            | F::CharToTitle
+            | F::CharLenUtf8
+            | F::CharToDigit
+            | F::CharFromI64
+            | F::CharFromU64
+            | F::StringGet
+            | F::StringGetRange
+            | F::StringSliceRange
+            | F::StringAppend
+            | F::StringPush
+            | F::StringClear
+            | F::StringFindFrom
             | F::StringByteLen
             | F::StringConcat
             | F::ProcessExit
@@ -878,20 +898,15 @@ impl RuntimeCallFamily {
             | F::StringStartsWith
             | F::StringEndsWith
             | F::StringIsEmpty
-            | F::StringIsDigit
-            | F::StringIsAlpha
-            | F::StringIsAlphanumeric
             | F::StructuralFormat
             | F::StringFind
             | F::StringIndex
             | F::StringLen
-            | F::StringSlice
             | F::StringRepeat
             | F::StringReplace
             | F::StringClone
             | F::StringSplit
             | F::StringLines
-            | F::StringChars
             | F::StringToLowercase
             | F::StringSliceCodepoints
             | F::StringSliceCodepointsFrom

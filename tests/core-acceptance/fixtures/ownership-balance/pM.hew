@@ -11,7 +11,7 @@ type Config {
 }
 
 fn assemble(number: i64, early: bool) -> string {
-    let admission = Admission { message: "early-" + string.from_int(number), token: "token-" + string.from_int(number) };
+    let admission = Admission { message: "early-" + f"{number}", token: "token-" + f"{number}" };
     if early {
         return "stopped";
     }

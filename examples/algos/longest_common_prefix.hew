@@ -7,12 +7,12 @@ fn common_prefix(a: string, b: string) -> string {
     }
     var i = 0;
     while i < len {
-        if a.char_at(i) != b.char_at(i) {
-            return a.slice(0, i);
+        if a.get(i) != b.get(i) {
+            return a[0..i];
         }
         i = i + 1;
     }
-    a.slice(0, i)
+    a[0..i]
 }
 
 fn main() {

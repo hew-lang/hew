@@ -1,3 +1,5 @@
+import std.iter;
+
 import std.os;
 
 import std.process;
@@ -28,7 +30,7 @@ fn main() {
     lines[1] = "changed";
     assert(lines.contains("changed"));
     assert(lines[2] == "");
-    var characters = "Aé🙂".chars();
+    var characters = iter.collect("Aé🙂".iter());
     let original = characters;
     characters.push('雪');
     characters.push('\0');

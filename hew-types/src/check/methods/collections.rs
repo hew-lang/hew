@@ -402,6 +402,27 @@ impl Checker {
         args: &[CallArg],
         span: &Span,
     ) -> Ty {
+        if method == "get" && args.len() == 1 {
+            let bounds = match &args[0].expr().0 {
+                Expr::Range { start, end, .. } => Some((start.as_deref(), end.as_deref())),
+                Expr::Binary {
+                    left,
+                    op: hew_parser::ast::BinaryOp::Range | hew_parser::ast::BinaryOp::RangeInclusive,
+                    right,
+                } => Some((Some(left.as_ref()), Some(right.as_ref()))),
+                _ => None,
+            };
+            if let Some((start, end)) = bounds {
+                for bound in [start, end].into_iter().flatten() {
+                    self.check_against(&bound.0, &bound.1, &Ty::I64);
+                }
+                self.record_runtime_method_family_rewrite(
+                    span,
+                    crate::RuntimeCallFamily::StringGetRange,
+                );
+                return Ty::option(Ty::String);
+            }
+        }
         if let Some(ret_ty) = self.dispatch_monomorphic_extern_symbol_method(
             "string",
             &[],

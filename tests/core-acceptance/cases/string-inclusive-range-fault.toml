@@ -1,0 +1,11 @@
+[[case]]
+id = "string-inclusive-range-fault"
+intent = "An inclusive maximum endpoint is an index bounds fault, and the grown string, its snapshot and retained copies clean up on that edge."
+source = "cases/string-inclusive-range-fault.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = ""
+stderr = "hew: failure: IndexOutOfBounds (205)\n"
+exit = 1

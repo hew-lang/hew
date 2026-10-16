@@ -1630,19 +1630,16 @@ pub(super) mod tests {
     }
 
     #[test]
-    fn coverage_text_unicode_surface() {
-        let source = "import std.text.unicode;\n\
-                      fn probe(cp: i64) {\n\
-                      \x20   let up = unicode.is_upper(cp);\n\
-                      }\n";
+    fn coverage_char_unicode_surface() {
+        let source = "fn probe(cp: char) { let up = cp.is_upper(); }";
         let doc = analyze_repo_rooted("lsp_cov_unicode", source);
 
         assert_eq!(hard_type_diagnostic(&doc), None);
-        let sig = surface_sighelp(&doc, source, "unicode.is_upper");
+        let sig = surface_sighelp(&doc, source, "cp.is_upper");
         assert!(
             sig.iter()
                 .any(|s| s.contains("is_upper(") && s.contains("bool")),
-            "signature help should label unicode.is_upper -> bool, got: {sig:?}",
+            "signature help should label cp.is_upper -> bool, got: {sig:?}",
         );
         assert!(
             surface_inlays(&doc).iter().any(|l| l.contains("bool")),

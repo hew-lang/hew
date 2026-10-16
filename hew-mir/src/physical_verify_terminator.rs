@@ -2108,11 +2108,14 @@ pub(crate) fn verify_terminator(
             // variant results carry their own checked type and are verified by
             // their operation's contract.
             let scalar_optional = match action.family {
-                RuntimeCallFamily::StringCharAt => Some(ResolvedTy::Char),
-                RuntimeCallFamily::StringFind | RuntimeCallFamily::StringCharAtUtf8 => {
-                    Some(ResolvedTy::I64)
-                }
+                RuntimeCallFamily::StringGet
+                | RuntimeCallFamily::CharFromI64
+                | RuntimeCallFamily::CharFromU64 => Some(ResolvedTy::Char),
+                RuntimeCallFamily::CharToDigit
+                | RuntimeCallFamily::StringFind
+                | RuntimeCallFamily::StringFindFrom => Some(ResolvedTy::I64),
                 RuntimeCallFamily::BytesGet => Some(ResolvedTy::U8),
+                RuntimeCallFamily::StringGetRange => Some(ResolvedTy::String),
                 _ => None,
             };
             if let (PhysicalRuntimeCarrier::Variant(descriptor), Some(payload)) =

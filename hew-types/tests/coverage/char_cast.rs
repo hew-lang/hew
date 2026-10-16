@@ -1,7 +1,7 @@
 //! Checker-level coverage for the `char as <integer>` codepoint cast.
 //!
 //! A `char` is a Unicode scalar value; `as <integer>` extracts the codepoint
-//! (zero-extended / truncated by the standard width rules). The reverse
+//! without truncation. The reverse
 //! (`<integer> as char`) and `char -> float` stay rejected — they need a
 //! checked conversion, not an `as` cast.
 
@@ -27,12 +27,8 @@ fn char_to_i64_cast_typechecks() {
 }
 
 #[test]
-fn char_to_every_integer_width_typechecks() {
-    // The codepoint cast is admitted for every integer width — wider targets
-    // zero-extend, narrower ones truncate (matching `c as u8`).
-    for target in [
-        "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "isize", "usize",
-    ] {
+fn char_to_lossless_integer_width_typechecks() {
+    for target in ["i32", "i64", "u32", "u64", "isize", "usize"] {
         let source = format!(
             r"
             fn f(c: char) -> {target} {{
@@ -82,7 +78,7 @@ fn integer_to_char_cast_rejected() {
         out.errors
             .iter()
             .any(|e| matches!(e.kind, TypeErrorKind::Mismatch { .. })
-                && e.message.contains("cannot cast")),
+                && e.message.contains("try_to_char")),
         "`i64 as char` must be rejected, got: {:?}",
         out.errors
     );
@@ -107,4 +103,44 @@ fn char_to_float_cast_rejected() {
         "`char as f64` must be rejected, got: {:?}",
         out.errors
     );
+}
+
+#[test]
+fn narrow_char_casts_require_checked_integer_conversion() {
+    for target in ["i8", "i16", "u8", "u16"] {
+        let out = typecheck(&format!(
+            "fn narrow(c: char) -> {target} {{ c as {target} }}"
+        ));
+        assert!(
+            out.errors
+                .iter()
+                .any(|error| error.message.contains("try_to_")),
+            "{target}: {:?}",
+            out.errors
+        );
+    }
+}
+
+#[test]
+fn string_index_assignment_has_a_specific_diagnostic() {
+    for assignment in ["text[0] = 'H'", "text[0..1] = \"H\""] {
+        let output = typecheck(&format!(
+            "fn main() {{ var text = \"hello\"; {assignment}; }}"
+        ));
+        assert!(
+            output.errors.iter().any(|error| {
+                error.kind == TypeErrorKind::StringIndexAssign
+                    && error.kind.as_kind_str() == "E_STRING_INDEX_ASSIGN"
+            }),
+            "{:?}",
+            output.errors
+        );
+    }
+}
+
+#[test]
+fn string_satisfies_the_scalar_index_bound() {
+    let output =
+        typecheck("fn accepts<T: Index<i64>>(_value: T) {} fn main() { accepts(\"Aé\"); }");
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
 }

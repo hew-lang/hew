@@ -41,19 +41,19 @@ fn is_id_head_str(c: string) -> bool {
 fn extract_ids_in_line(line: string, var out: Vec<string>) -> Vec<string> {
     let n = line.len();
     for i in 0..n {
-        let head = line.slice(i, i + 1);
+        let head = line[i .. i + 1];
         if is_id_head_str(head) {
             // Walk the digit run.
             var end = i + 1;
             for j in i + 1 .. n {
-                if is_digit_str(line.slice(j, j + 1)) {
+                if is_digit_str(line[j .. j + 1]) {
                     end = j + 1;
                 } else {
                     break;
                 }
             }
             if end > i + 1 {
-                out.push(line.slice(i, end));
+                out.push(line[i..end]);
                 break;
             }
         }

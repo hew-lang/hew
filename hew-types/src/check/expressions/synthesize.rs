@@ -886,11 +886,21 @@ impl Checker {
                     actual: actual_resolved.user_facing().to_string(),
                 },
                 span,
-                format!(
-                    "cannot cast `{}` to `{}`",
-                    actual_resolved.user_facing(),
-                    target_resolved.user_facing()
-                ),
+                if actual_resolved.is_integer() && target_resolved == Ty::Char {
+                    "integer-to-char conversion is fallible; use `.try_to_char()`".to_string()
+                } else if actual_resolved == Ty::Char && target_resolved.is_integer() {
+                    format!(
+                        "char does not fit every `{}` value; use `.as_u32().try_to_{}()`",
+                        target_resolved.user_facing(),
+                        target_resolved.user_facing()
+                    )
+                } else {
+                    format!(
+                        "cannot cast `{}` to `{}`",
+                        actual_resolved.user_facing(),
+                        target_resolved.user_facing()
+                    )
+                },
             );
         }
 
@@ -1626,6 +1636,15 @@ impl Checker {
         ctx: IndexContext,
     ) -> Ty {
         let obj_ty = self.synthesize(&object.0, &object.1);
+        if ctx == IndexContext::AssignTarget && self.subst.resolve(&obj_ty) == Ty::String {
+            self.report_error(
+                TypeErrorKind::StringIndexAssign,
+                span,
+                "strings do not support indexed assignment; build a new string or use push"
+                    .to_string(),
+            );
+            return Ty::Error;
+        }
 
         // C-3 range-slice (`xs[a..b]`, `xs[a..=b]`, `xs[..b]`, `xs[a..]`,
         // `xs[..]`): when the index is a range expression, the result type
@@ -1856,10 +1875,19 @@ impl Checker {
                 }
             }
             // W3 collections-sugar S2: `s[i]` over `string` returns a `char`
-            // at codepoint offset, O(n), panic on OOB. Index is i64. The
+            // at a scalar offset in O(1), fault on OOB. Index is i64. The
             // checker is authoritative; MIR will route to `hew_string_index`.
             Ty::String => {
-                self.check_against(&index.0, &index.1, &Ty::I64);
+                let actual = self.synthesize(&index.0, &index.1);
+                let resolved = self.subst.resolve(&actual);
+                if Self::is_narrower_signed_int(&resolved) {
+                    self.numeric_operand_coercions.insert(
+                        SpanKey::in_module(&index.1, self.current_module_idx),
+                        Ty::I64,
+                    );
+                } else {
+                    self.check_against(&index.0, &index.1, &Ty::I64);
+                }
                 Ty::Char
             }
             // W3 collections-sugar S2: `b[i]` over `bytes` returns a `u8`

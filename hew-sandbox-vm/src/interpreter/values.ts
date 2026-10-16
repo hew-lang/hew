@@ -1,4 +1,6 @@
 import type { JsonValue } from "./types.js";
+import { IndexedString, stringValue } from "./strings.js";
+export { stringValue } from "./strings.js";
 
 /** One creator-owned membership list; payload destruction uses the ordinary VM release path. */
 export interface RcOwner {
@@ -21,7 +23,7 @@ export type VmValue =
   | { kind: "bool"; value: boolean }
   | { kind: "i64"; value: bigint }
   | { kind: "f64"; value: number }
-  | { kind: "string"; value: string }
+  | IndexedString
   | { kind: "actor"; id: string }
   | { kind: "supervisor"; id: string }
   | { kind: "monitor"; id: string }
@@ -103,7 +105,6 @@ export function cloneValue(value: VmValue): VmValue {
     case "bool":
     case "i64":
     case "f64":
-    case "string":
     case "actor":
     case "supervisor":
     case "monitor":
@@ -116,6 +117,8 @@ export function cloneValue(value: VmValue): VmValue {
     case "duplex":
     case "function": // function values are immutable — identity clone
       return { ...value };
+    case "string":
+      return value.clone();
     case "regex":
       return {
         kind: "regex",
@@ -187,9 +190,9 @@ export function valueFromLiteral(value: JsonValue): VmValue {
         ? { kind: "i64", value: BigInt(value) }
         : { kind: "f64", value };
     case "string":
-      return { kind: "string", value };
+      return stringValue(value);
     default:
-      return { kind: "string", value: canonicalJson(value) };
+      return stringValue(canonicalJson(value));
   }
 }
 

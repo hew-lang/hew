@@ -1238,6 +1238,17 @@ impl LowerCtx {
                     inclusive,
                 } = &index.0
                 {
+                    if container.ty == ResolvedTy::String {
+                        let kind = self.lower_string_range_call(
+                            container,
+                            (start.as_deref(), end.as_deref()),
+                            *inclusive,
+                            false,
+                            &result_ty,
+                            &span,
+                        );
+                        return self.make_expr(kind, result_ty, intent, span);
+                    }
                     // C-3 range-slice: result type is Vec<T> (checker-authoritative).
                     let lowered_start = start
                         .as_ref()

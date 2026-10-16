@@ -2,7 +2,7 @@
 fn find_in(alphabet: string, ch: string) -> i32 {
     var pos: i64 = 0;
     while pos < alphabet.len() {
-        if alphabet.char_at(pos) == ch.char_at(0) {
+        if alphabet.get(pos) == ch.get(0) {
             return pos as i32;
         }
         pos = pos + 1;
@@ -15,18 +15,18 @@ fn caesar_encode(s: string, shift: i32) -> string {
     let upper = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
     var result = "";
     for i in 0..s.len() {
-        let ch = s.slice(i, i + 1);
+        let ch = s[i .. i + 1];
         let lpos = find_in(lower, ch);
         if lpos >= 0 {
             let np_i32: i32 = (lpos + shift) % 26;
             let np: i64 = np_i32 as i64;
-            result = result + lower.slice(np, np + 1);
+            result = result + lower[np .. np + 1];
         } else {
             let upos = find_in(upper, ch);
             if upos >= 0 {
                 let np_i32: i32 = (upos + shift) % 26;
                 let np: i64 = np_i32 as i64;
-                result = result + upper.slice(np, np + 1);
+                result = result + upper[np .. np + 1];
             } else {
                 result = result + ch;
             }

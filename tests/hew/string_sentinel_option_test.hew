@@ -1,12 +1,11 @@
 //! Tests for the D46 sentinel->Option sweep on string inspectors:
-//! `find -> Option<i64>`, `char_at -> Option<char>`,
-//! `codepoint_at_utf8 -> Option<i64>`. Hits assert the exact index/value;
+//! `find -> Option<i64>` and `get -> Option<char>`. Hits assert the exact index/value;
 //! misses assert `None`; the index-0 hit pins that `Some(0)` is distinct
 //! from `None` (the old `-1` sentinel's footgun neighbourhood).
 
 // ── find ────────────────────────────────────────────────────────────────────
 #[test]
-fn test_find_hit_returns_exact_byte_index() {
+fn test_find_hit_returns_exact_scalar_index() {
     assert(("hello world".find("world") ?? -1) == 6);
     assert(("abcabc".find("bc") ?? -1) == 1);
 }
@@ -32,38 +31,23 @@ fn test_find_empty_needle_is_some_zero() {
     assert(("abc".find("") ?? -1) == 0);
 }
 
-// ── char_at (byte-indexed) ──────────────────────────────────────────────────
+// ── get (scalar-indexed) ──────────────────────────────────────────────────
 #[test]
-fn test_char_at_in_range_returns_exact_byte() {
-    let c = "abc".char_at(1);
+fn test_get_in_range_returns_exact_scalar() {
+    let c = "abc".get(1);
     assert(c.is_some());
     assert((c ?? '?') == 'b');
 }
 
 #[test]
-fn test_char_at_index_zero_is_some() {
-    assert(("abc".char_at(0) ?? '?') == 'a');
+fn test_get_index_zero_is_some() {
+    assert(("abc".get(0) ?? '?') == 'a');
 }
 
 #[test]
-fn test_char_at_out_of_bounds_returns_none_not_trap() {
-    assert("abc".char_at(3).is_none());
-    assert("abc".char_at(99).is_none());
-    assert("abc".char_at(-1).is_none());
-    assert("".char_at(0).is_none());
-}
-
-// ── codepoint_at_utf8 (codepoint-indexed) ───────────────────────────────────
-#[test]
-fn test_codepoint_at_utf8_in_range_returns_exact_codepoint() {
-    // "a" = U+0061; "é" = U+00E9 (2 bytes in UTF-8, one codepoint).
-    assert(("aé".codepoint_at_utf8(0) ?? -1) == 97);
-    assert(("aé".codepoint_at_utf8(1) ?? -1) == 233);
-}
-
-#[test]
-fn test_codepoint_at_utf8_out_of_bounds_returns_none() {
-    assert("ab".codepoint_at_utf8(2).is_none());
-    assert("ab".codepoint_at_utf8(-1).is_none());
-    assert("".codepoint_at_utf8(0).is_none());
+fn test_get_out_of_bounds_returns_none_not_trap() {
+    assert("abc".get(3).is_none());
+    assert("abc".get(99).is_none());
+    assert("abc".get(-1).is_none());
+    assert("".get(0).is_none());
 }

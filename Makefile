@@ -667,6 +667,13 @@ sandbox-vm-deps:
 		echo "hew-sandbox-vm dependencies are fresh; skipping install"; \
 	fi
 
+.PHONY: unicode-tables unicode-tables-check
+unicode-tables: ## Generate: export native Unicode character operations for the sandbox VM
+	cargo run -p hew-runtime --example unicode_tables -- hew-sandbox-vm/src/interpreter/unicode-data.ts
+
+unicode-tables-check: ## Check: verify sandbox Unicode tables match the native runtime
+	cargo run -p hew-runtime --example unicode_tables -- --check hew-sandbox-vm/src/interpreter/unicode-data.ts
+
 sandbox-vm-test: sandbox-vm-deps
 	npm --prefix hew-sandbox-vm test
 

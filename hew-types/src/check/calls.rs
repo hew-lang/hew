@@ -2515,21 +2515,6 @@ impl Checker {
                 }
             }
 
-            if resolved_fn_name == "len" {
-                if let Some(Ty::Named {
-                    args,
-                    head: crate::TypeHead::Builtin(crate::BuiltinType::HashSet),
-                    ..
-                }) = applied_sig.params.first().map(|ty| self.subst.resolve(ty))
-                {
-                    let elem_ty = args.first().cloned().unwrap_or(Ty::Var(TypeVar::fresh()));
-                    if !self.validate_hashset_element_type(&elem_ty, span) {
-                        return Ty::Error;
-                    }
-                    self.record_hashset_lowering_fact(span, &elem_ty);
-                }
-            }
-
             // A dotted static call with method-level type arguments (for
             // example `Node.lookup<Worker>(name)`) parses as an ordinary call
             // whose callee is a `FieldAccess`, rather than as `MethodCall`.

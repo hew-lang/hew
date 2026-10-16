@@ -56,7 +56,7 @@ fn main() {
 
     // Retained payload control: the parent still owns everything it started
     // with, so both its fields survive the destructure.
-    let r = OuterRetained { other: [4, 5], value: .Some(Retained { s: string.repeat("z", 40) }) };
+    let r = OuterRetained { other: [4, 5], value: .Some(Retained { s: ("z").repeat(40) }) };
     match r.value {
         .Some(held) => println(held.s.len()),
         .None => println("none"),

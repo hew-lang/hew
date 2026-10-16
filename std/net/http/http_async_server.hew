@@ -30,7 +30,7 @@
 //!                 .None => "",
 //!             };    // suspends the worker
 //!             reads = reads + 1;
-//!             if string.is_empty(chunk) {
+//!             if (chunk).is_empty() {
 //!                 done = true;
 //!             } else {
 //!                 raw = raw + chunk;
@@ -150,7 +150,7 @@ pub fn request_complete(raw: string) -> bool {
         .Some(i) => i,
         .None => return false,
     };
-    let head = raw.slice(0, sep);
+    let head = raw[0..sep];
     let body_start = sep + 4;
     let have_body = raw.len() - body_start;
     let want_body = content_length_of(header_section_after_request_line(head));
@@ -172,7 +172,7 @@ pub fn over_limit(raw: string) -> bool {
         // No header terminator yet: bound the head we are willing to buffer.
         .None => return raw.len() > MAX_HEADER_BYTES,
     };
-    let head = raw.slice(0, sep);
+    let head = raw[0..sep];
     if head.len() > MAX_HEADER_BYTES {
         return true;
     }
@@ -190,14 +190,14 @@ pub fn over_limit(raw: string) -> bool {
 pub fn parse_request(raw: string) -> AsyncRequest {
     let sep = raw.find("\r\n\r\n");
     let head = match sep {
-        .Some(i) => raw.slice(0, i),
+        .Some(i) => raw[0..i],
         .None => raw,
     };
     let body = match sep {
-        .Some(i) => raw.slice(i + 4, raw.len()),
+        .Some(i) => raw[i + 4 .. raw.len()],
         .None => "",
     };
-    let head_lines = string.split(head, "\r\n");
+    let head_lines = (head).split("\r\n");
     let request_line = if head_lines.len() > 0 {
         head_lines[0]
     } else {
@@ -319,10 +319,10 @@ fn status_text(status: i64) -> string {
 // ── Internal parsing helpers ──────────────────────────────────────────
 /// The `index`-th space-separated token of `line`, or the empty string.
 fn token_at(line: string, index: i64) -> string {
-    if string.is_empty(line) {
+    if (line).is_empty() {
         return "";
     }
-    let parts = string.split(line, " ");
+    let parts = (line).split(" ");
     if parts.len() > index {
         parts[index]
     } else {
@@ -334,7 +334,7 @@ fn token_at(line: string, index: i64) -> string {
 /// re-joined with CRLF for header lookups + Content-Length framing.
 fn header_section_after_request_line(head: string) -> string {
     match head.find("\r\n") {
-        .Some(first) => head.slice(first + 2, head.len()),
+        .Some(first) => head[first + 2 .. head.len()],
         .None => "",
     }
 }
@@ -348,7 +348,7 @@ fn header_section_after_request_line(head: string) -> string {
 /// returning `0` and the huge body bypassing the cap.
 fn content_length_of(header_section: string) -> i64 {
     let value = find_header(header_section, "Content-Length");
-    if string.is_empty(value) {
+    if (value).is_empty() {
         return 0;
     }
     if !string.is_numeric(value) {
@@ -362,11 +362,11 @@ fn content_length_of(header_section: string) -> i64 {
 
 /// Case-insensitive header lookup over a CRLF-separated header section.
 fn find_header(header_section: string, name: string) -> string {
-    if string.is_empty(header_section) {
+    if (header_section).is_empty() {
         return "";
     }
     let target = name.to_lower();
-    let lines = string.split(header_section, "\r\n");
+    let lines = (header_section).split("\r\n");
     let n = lines.len();
     var found = "";
     for i in 0..n {
@@ -375,9 +375,9 @@ fn find_header(header_section: string, name: string) -> string {
         // the old `colon > 0` guard did.
         match line.find(":") {
             .Some(colon) if colon > 0 => {
-                let key = string.trim(line.slice(0, colon)).to_lower();
+                let key = (line[0..colon]).trim().to_lower();
                 if key == target {
-                    found = string.trim(line.slice(colon + 1, line.len()));
+                    found = (line[colon + 1 .. line.len()]).trim();
                 }
             }
             _ => {}
@@ -389,18 +389,18 @@ fn find_header(header_section: string, name: string) -> string {
 /// Number of header lines whose name (case-insensitive) equals `name`. Used to
 /// reject duplicate/conflicting `Content-Length` and any `Transfer-Encoding`.
 fn header_count(header_section: string, name: string) -> i64 {
-    if string.is_empty(header_section) {
+    if (header_section).is_empty() {
         return 0;
     }
     let target = name.to_lower();
-    let lines = string.split(header_section, "\r\n");
+    let lines = (header_section).split("\r\n");
     let n = lines.len();
     var count: i64 = 0;
     for i in 0..n {
         let line = lines[i];
         match line.find(":") {
             .Some(colon) if colon > 0 => {
-                let key = string.trim(line.slice(0, colon)).to_lower();
+                let key = (line[0..colon]).trim().to_lower();
                 if key == target {
                     count = count + 1;
                 }
@@ -416,14 +416,14 @@ fn header_count(header_section: string, name: string) -> i64 {
 /// with any non-empty header line lacking a `:` (e.g. a bare `BadHeader`) is
 /// malformed and must be rejected with `400` rather than silently skipped.
 fn headers_have_colons(header_section: string) -> bool {
-    if string.is_empty(header_section) {
+    if (header_section).is_empty() {
         return true;
     }
-    let lines = string.split(header_section, "\r\n");
+    let lines = (header_section).split("\r\n");
     let n = lines.len();
     for i in 0..n {
         let line = lines[i];
-        if !string.is_empty(line) {
+        if !(line).is_empty() {
             // Both a MISSING colon and a colon at index 0 (empty header name)
             // are malformed — the old `<= 0` guard covered both; a blind
             // `is_some()` here would wrongly accept `:value`.
@@ -439,7 +439,7 @@ fn headers_have_colons(header_section: string) -> bool {
 /// The first CRLF-terminated line of a head block (the request line).
 fn first_line(head: string) -> string {
     match head.find("\r\n") {
-        .Some(nl) => head.slice(0, nl),
+        .Some(nl) => head[0..nl],
         .None => head,
     }
 }
@@ -449,10 +449,10 @@ fn first_line(head: string) -> string {
 /// gate for F3: anything else (wrong token count, non-alphabetic method, a
 /// non-origin target, a version other than HTTP/1.1) is rejected.
 fn valid_request_line(line: string) -> bool {
-    if string.is_empty(line) {
+    if (line).is_empty() {
         return false;
     }
-    let parts = string.split(line, " ");
+    let parts = (line).split(" ");
     if parts.len() != 3 {
         return false;
     }
@@ -462,10 +462,10 @@ fn valid_request_line(line: string) -> bool {
     if !is_alpha_token(method) {
         return false;
     }
-    if string.is_empty(target) {
+    if (target).is_empty() {
         return false;
     }
-    if !(string.starts_with(target, "/") || target == "*") {
+    if !((target).starts_with("/") || target == "*") {
         return false;
     }
     version == "HTTP/1.1"
@@ -480,7 +480,7 @@ fn is_alpha_token(s: string) -> bool {
     for i in 0..n {
         // In-bounds loop: char_at(i) is always Some; the unreachable None
         // fails CLOSED (not a valid method token).
-        let b = match s.char_at(i) {
+        let b = match s.get(i) {
             .Some(c) => c as i64,
             .None => return false,
         };
@@ -502,7 +502,7 @@ fn has_control_char(s: string) -> bool {
     for i in 0..n {
         // In-bounds loop: char_at(i) is always Some; the unreachable None
         // fails CLOSED (treat as a control character -> reject).
-        let b = match s.char_at(i) {
+        let b = match s.get(i) {
             .Some(c) => c as i64,
             .None => return true,
         };

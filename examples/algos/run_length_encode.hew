@@ -10,15 +10,15 @@ fn rle_encode(s: string) -> string {
     var count = 1;
     var i = 1;
     while i < n {
-        if s.char_at(i) == s.char_at(i - 1) {
+        if s.get(i) == s.get(i - 1) {
             count = count + 1;
         } else {
-            result = result + string.from_int(count) + s.slice(i - 1, i);
+            result = result + f"{count}" + s[i - 1 .. i];
             count = 1;
         }
         i = i + 1;
     }
-    result = result + string.from_int(count) + s.slice(n - 1, n);
+    result = result + f"{count}" + s[n - 1 .. n];
     result
 }
 

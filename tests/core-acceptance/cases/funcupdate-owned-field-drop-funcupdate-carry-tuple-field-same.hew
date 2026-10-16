@@ -9,8 +9,8 @@ fn main() -> i64 {
     var total: i64 = 0;
     var i: i64 = 0;
     while i < 50 {
-        let b = Pair { keep: (string.repeat("k", 32), 1), churn: string.repeat("a", 32) };
-        let s = Pair { ..b, churn: string.repeat("b", 32) };
+        let b = Pair { keep: (("k").repeat(32), 1), churn: ("a").repeat(32) };
+        let s = Pair { ..b, churn: ("b").repeat(32) };
         total = total + s.churn.len();
         i = i + 1;
     }

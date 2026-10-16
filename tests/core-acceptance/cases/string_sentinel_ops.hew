@@ -15,20 +15,20 @@ fn main() {
         .Some(i) => println(i),
         .None => println(-1),
     }
-    match s.char_at(0) {
+    match s.get(0) {
         .Some(c) => println(c as i64),
         .None => println(-1),
     }
-    match s.char_at(99) {
+    match s.get(99) {
         .Some(c) => println(c as i64),
         .None => println(-1),
     }
-    match s.codepoint_at_utf8(1) {
-        .Some(cp) => println(cp),
+    match s.get(1) {
+        .Some(cp) => println(cp.as_i64()),
         .None => println(-1),
     }
-    match s.codepoint_at_utf8(99) {
-        .Some(cp) => println(cp),
+    match s.get(99) {
+        .Some(cp) => println(cp.as_i64()),
         .None => println(-1),
     }
 }

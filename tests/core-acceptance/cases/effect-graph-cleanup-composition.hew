@@ -13,7 +13,8 @@ type Wrapper<T> { value: T; }
 
 impl<T> Wrapper<T> {
     fn close(consume self) {
-        discard(self.value);
+        let Wrapper { value } = self;
+        discard(value);
     }
 }
 

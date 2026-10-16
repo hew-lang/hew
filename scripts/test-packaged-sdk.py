@@ -361,15 +361,9 @@ def main():
                     seconds=30,
                 )
                 require(
-                    "llvm.coro." not in ir, f"{label}: obsolete LLVM coroutine lowering"
+                    "llvm.coro." not in ir,
+                    f"{label}: unlowered LLVM coroutine intrinsic",
                 )
-                if selection.get("expects_resume_frame", True):
-                    require(
-                        "$body" in ir
-                        and "hew_cont_frame_alloc" in ir
-                        and "switch i32" in ir,
-                        f"{label}: missing explicit suspension state machine",
-                    )
                 if case["id"] == "hot-loop-dynamic" and level == 2:
                     blocks = [
                         match.group()

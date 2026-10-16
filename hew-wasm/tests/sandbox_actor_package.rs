@@ -947,6 +947,7 @@ fn shared_native_manifests_execute_with_matching_results() {
         "generator-callable-view",
         "generic-closure-composition",
         "float-sort-values",
+        "string-ordering",
     ] {
         assert_native_manifest(name, hew_compile::SourceSet::in_memory());
     }

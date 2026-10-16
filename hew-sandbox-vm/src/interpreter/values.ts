@@ -71,6 +71,19 @@ export type VmValue =
 
 export const UNIT: VmValue = { kind: "unit" };
 
+const UTF8_ENCODER = new TextEncoder();
+
+export function compareUtf8(a: string, b: string): number {
+  const left = UTF8_ENCODER.encode(a);
+  const right = UTF8_ENCODER.encode(b);
+  const length = Math.min(left.length, right.length);
+  for (let i = 0; i < length; i++) {
+    if (left[i]! < right[i]!) return -1;
+    if (left[i]! > right[i]!) return 1;
+  }
+  return left.length < right.length ? -1 : left.length > right.length ? 1 : 0;
+}
+
 const I64_LITERAL_DECIMAL = /^(?:0|-?[1-9]\d*)$/;
 
 export function cloneValue(value: VmValue): VmValue {

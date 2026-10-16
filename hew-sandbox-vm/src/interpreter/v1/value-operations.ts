@@ -1,4 +1,10 @@
-import { UNIT, cloneValue, type VmValue, type RcOwner } from "../values.js";
+import {
+  UNIT,
+  cloneValue,
+  compareUtf8,
+  type VmValue,
+  type RcOwner,
+} from "../values.js";
 import {
   runtimeTag,
   type PackageV1,
@@ -47,15 +53,6 @@ function orderingResult(
     case "GreaterEqual":
       return boolean(comparison >= 0);
   }
-}
-
-function compareBytes(left: Uint8Array, right: Uint8Array): number {
-  const length = Math.min(left.length, right.length);
-  for (let i = 0; i < length; i++) {
-    if (left[i]! < right[i]!) return -1;
-    if (left[i]! > right[i]!) return 1;
-  }
-  return left.length < right.length ? -1 : left.length > right.length ? 1 : 0;
 }
 
 function scalarOrdering(
@@ -145,13 +142,7 @@ export function* selectedValue(
     if (hash) return integer(bytesHash(new TextEncoder().encode(left.value)));
     if (right?.kind !== "string") return boolean(false);
     if (equality) return boolean(left.value === right.value);
-    return orderingResult(
-      ordering!,
-      compareBytes(
-        new TextEncoder().encode(left.value),
-        new TextEncoder().encode(right.value),
-      ),
-    );
+    return orderingResult(ordering!, compareUtf8(left.value, right.value));
   }
   if (plan.ty === "bytes") {
     if (left.kind !== "vector")

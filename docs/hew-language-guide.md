@@ -3939,12 +3939,12 @@ import std.string;
 fn main() {
     println(f"{42}");            // 42
     println(string.to_int("100") handle _ { 0 });  // 100
-    println(string.repeat("*", 3));          // ***
+    println("*".repeat(3));          // ***
     println(string.pad_left("7", 3, "0"));   // 007
 }
 ```
 
-Import `std.string` and call via the module name. Most case/slice/trim/find operations are builtin methods on `string` itself; `std.string` is for conversions and padding. `to_int` fails with `string.NumberError` (`Invalid` or `OutOfRange`, carrying the text) — use `?`, `handle` or `match` to deal with a parse failure.
+Import `std.string` and call via the module name. Use ranges for slicing and methods for operations such as trimming and searching; `std.string` provides parsing and padding. `to_int` fails with `string.NumberError` (`Invalid` or `OutOfRange`, carrying the text) — use `?`, `handle` or `match` to deal with a parse failure.
 
 ### std.math helpers
 

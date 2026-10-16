@@ -10,7 +10,7 @@ Or automatically via `hew debug <file.hew>`.
 """
 
 import gdb  # type: ignore[import-untyped]
-import re
+import json
 
 
 # ---------------------------------------------------------------------------
@@ -19,20 +19,47 @@ import re
 
 
 class HewStringPrinter:
-    """Pretty-print hew_string_t (a { char* data; size_t len; } struct)."""
+    """Read the managed UTF-8 allocation described by the compiler."""
 
     def __init__(self, val):
         self.val = val
 
     def to_string(self):
         try:
-            data = self.val["data"]
-            length = int(self.val["len"])
-            if length == 0:
+            if int(self.val) == 0:
                 return '""'
-            return data.string("utf-8", length=length)
+            header = self.val.dereference()
+            length = int(header["byte_len"])
+            content = (
+                bytes(
+                    gdb.selected_inferior().read_memory(header["data"].address, length)
+                )
+                if length
+                else b""
+            )
+            return json.dumps(content.decode("utf-8"), ensure_ascii=False)
+        except (gdb.error, UnicodeError):
+            return "<unavailable Hew string>"
+
+
+class HewBytesPrinter:
+    """Read only the active region of the canonical bytes triple."""
+
+    def __init__(self, val):
+        self.val = val
+
+    def to_string(self):
+        try:
+            length = int(self.val["len"])
+            address = int(self.val["ptr"]) + int(self.val["offset"])
+            content = (
+                bytes(gdb.selected_inferior().read_memory(address, length))
+                if length
+                else b""
+            )
+            return "bytes[" + ", ".join(str(byte) for byte in content) + "]"
         except gdb.error:
-            return "<hew string>"
+            return "<unavailable Hew bytes>"
 
 
 class HewVecPrinter:
@@ -63,10 +90,15 @@ class HewHashMapPrinter:
 
 def hew_lookup_function(val):
     """GDB pretty-printer lookup for Hew types."""
-    tag = str(val.type.strip_typedefs())
+    value_type = val.type.strip_typedefs()
 
-    if "hew_string" in tag:
+    if (
+        value_type.code == gdb.TYPE_CODE_PTR
+        and value_type.target().strip_typedefs().tag == "hew_string"
+    ):
         return HewStringPrinter(val)
+    if value_type.tag == "bytes":
+        return HewBytesPrinter(val)
 
     return None
 

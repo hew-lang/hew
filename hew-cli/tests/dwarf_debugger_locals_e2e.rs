@@ -725,67 +725,42 @@ fn two_stop_sleep_cmd(dbg: &str, src: &str, bin: &str) -> Command {
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
 const STOP_SPLIT: &str = "HEW_STOP_SPLIT";
 
-/// Read a managed string through the debugger's memory API, without resuming
-/// the inferior or treating its opaque header pointer as a C string. The
-/// native header offsets come from the allocation's owning CABI definition.
+/// Load the same summaries as `hew debug`; fixtures use ordinary variable
+/// commands rather than a second implementation of the allocation layout.
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
-fn debugger_print_s(debugger: &str) -> String {
-    let reader = if debugger == "lldb" {
-        r#"frame = lldb.debugger.GetSelectedTarget().GetProcess().GetSelectedThread().GetSelectedFrame()
-value = frame.FindVariable("s")
-unavailable = not value.IsValid() or value.GetValue() is None
-if not unavailable:
-    pointer = value.GetValueAsUnsigned()
-    def read(address, length):
-        error = lldb.SBError()
-        data = value.GetProcess().ReadMemory(address, length, error)
-        if error.Fail():
-            raise RuntimeError(str(error))
-        return data
-"#
+fn debugger_summaries(debugger: &str) -> String {
+    let scripts = Path::new(env!("CARGO_MANIFEST_DIR")).join("../scripts/debug");
+    if debugger == "lldb" {
+        format!(
+            "command script import {}",
+            debugger_quote(scripts.join("hew_lldb.py").to_str().expect("script path"))
+        )
     } else {
-        r#"value = gdb.parse_and_eval("s")
-unavailable = value.is_optimized_out or getattr(value, "is_unavailable", False)
-if not unavailable:
-    pointer = int(value)
-    def read(address, length):
-        return bytes(gdb.selected_inferior().read_memory(address, length))
-"#
-    };
-    let script = format!(
-        r#"import json, sys
-{reader}
-if unavailable:
-    print("s = <optimized out>")
-else:
-    length = int.from_bytes(read(pointer + {length_offset}, {word_bytes}), sys.byteorder) if pointer else 0
-    if length > 4096:
-        raise RuntimeError("fixture string length exceeds observation bound")
-    content = read(pointer + {data_offset}, length).decode("utf-8") if length else ""
-    print("s = 0x%x %s" % (pointer, json.dumps(content, ensure_ascii=False)))
-"#,
-        length_offset = hew_cabi::string::STRING_DEBUG_BYTE_LEN_OFFSET,
-        word_bytes = size_of::<usize>(),
-        data_offset = hew_cabi::string::STRING_DEBUG_DATA_OFFSET,
-    );
-    let command = if debugger == "lldb" {
-        "script"
-    } else {
-        "python"
-    };
-    format!("{command} exec({script:?})")
+        // GDB's source command consumes the entire remainder as a path;
+        // quotation marks become literal filename characters.
+        format!("source {}", scripts.join("hew-gdb.py").display())
+    }
 }
 
-/// A debugger's read of a pointer variable renders as `s = 0x…` (`frame
-/// variable` and `info locals` both do). Requiring the `0x` is what keeps
-/// these matches meaningful: the debuggee's own stdout AND the source listing
-/// the debugger echoes at a stop both contain `s = "after"`-shaped text, but
-/// neither ever contains a pointer render.
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
-fn s_pointer_reads(section: &str) -> Vec<&str> {
+fn debugger_print_s(debugger: &str) -> &'static str {
+    if debugger == "lldb" {
+        "frame variable s"
+    } else {
+        "info locals"
+    }
+}
+
+/// Restrict assertions to variable output, excluding source listings and
+/// the inferior's own output.
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
+fn s_value_reads(section: &str) -> Vec<&str> {
     section
         .lines()
-        .filter(|line| line.contains("s = 0x"))
+        .filter(|line| {
+            let line = line.trim_start();
+            line.starts_with("s = ") || line.starts_with("(hew_string *) s = ")
+        })
         .collect()
 }
 
@@ -794,7 +769,7 @@ fn s_pointer_reads(section: &str) -> Vec<&str> {
 /// debugger's exact rendering width.
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
 fn s_reads_null(section: &str) -> bool {
-    s_pointer_reads(section).iter().any(|line| {
+    s_value_reads(section).iter().any(|line| {
         line.split_once("s = 0x").is_some_and(|(_, rest)| {
             let hex: String = rest.chars().take_while(char::is_ascii_hexdigit).collect();
             !hex.is_empty() && hex.chars().all(|c| c == '0')
@@ -822,6 +797,8 @@ fn two_stop_reassign_cmd(dbg: &str, src: &str, bin: &str) -> Command {
         command.args([
             "-b",
             "-o",
+            &debugger_summaries(dbg),
+            "-o",
             &format!("breakpoint set -H --file {src} --line 8"),
             "-o",
             &format!("breakpoint set -H --file {src} --line 9"),
@@ -830,7 +807,7 @@ fn two_stop_reassign_cmd(dbg: &str, src: &str, bin: &str) -> Command {
             "-o",
             "frame variable k",
             "-o",
-            &debugger_print_s(dbg),
+            debugger_print_s(dbg),
             "-o",
             &format!("script print(\"{STOP_SPLIT}\")"),
             "-o",
@@ -840,7 +817,7 @@ fn two_stop_reassign_cmd(dbg: &str, src: &str, bin: &str) -> Command {
             "-o",
             "frame variable k",
             "-o",
-            &debugger_print_s(dbg),
+            debugger_print_s(dbg),
             "-o",
             "quit",
             bin,
@@ -851,19 +828,21 @@ fn two_stop_reassign_cmd(dbg: &str, src: &str, bin: &str) -> Command {
         command.args([
             "--batch",
             "-ex",
+            &debugger_summaries(dbg),
+            "-ex",
             &format!("break {src}:8"),
             "-ex",
             &format!("break {src}:9"),
             "-ex",
             "run",
-            // Scalar expressions use C syntax; string bytes are read through
-            // the debugger API using the canonical managed allocation layout.
+            // Scalar expressions use C syntax; ordinary local displays use
+            // the shipped managed-value summaries.
             "-ex",
             "set language c",
             "-ex",
             "printf \"k = %ld\\n\", k",
             "-ex",
-            &debugger_print_s(dbg),
+            debugger_print_s(dbg),
             "-ex",
             &format!("echo {STOP_SPLIT}\\n"),
             "-ex",
@@ -873,10 +852,137 @@ fn two_stop_reassign_cmd(dbg: &str, src: &str, bin: &str) -> Command {
             "-ex",
             "printf \"k = %ld\\n\", k",
             "-ex",
-            &debugger_print_s(dbg),
+            debugger_print_s(dbg),
             bin,
         ]);
         command
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
+const MANAGED_VALUES_SRC: &str = r#"fn main() {
+    var s: string = "hé\0🦀";
+    let empty: string = "";
+    var raw: bytes = bytes.new();
+    raw.push(99);
+    raw.push(0);
+    raw.push(255);
+    raw.push(128);
+    var b = raw[1..3];
+    let empty_bytes = bytes.new();
+    println(empty_bytes.len());
+    println(1);
+    sleep(1ms);
+    s = "après 🧭";
+    b = raw[2..4];
+    println(2);
+    println(s);
+    println(b.len());
+    println(empty);
+    println(empty_bytes.len());
+}
+"#;
+
+/// Ordinary debugger displays must follow the current owners across a real
+/// suspension and reassignment, including embedded NUL and a bytes slice.
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
+#[test]
+fn debugger_displays_managed_values_before_and_after_suspension() {
+    require_codegen();
+    let dbg = require_debugger();
+    let fixture = build_debug_fixture("managed-values", MANAGED_VALUES_SRC);
+    let src = debugger_quote(fixture.src.to_str().expect("source path"));
+    let mut command = Command::new(dbg);
+    if dbg == "lldb" {
+        command.args([
+            "-b",
+            "-o",
+            &debugger_summaries(dbg),
+            "-o",
+            &format!("breakpoint set --file {src} --line 12"),
+            "-o",
+            &format!("breakpoint set --file {src} --line 16"),
+            "-o",
+            "run",
+            "-o",
+            "frame variable s b empty empty_bytes",
+            "-o",
+            &format!("script print(\"{STOP_SPLIT}\")"),
+            "-o",
+            "breakpoint disable 1",
+            "-o",
+            "continue",
+            "-o",
+            "frame variable s b empty empty_bytes",
+            "-o",
+            "quit",
+        ]);
+    } else {
+        command.args([
+            "--batch",
+            "-ex",
+            &debugger_summaries(dbg),
+            "-ex",
+            &format!("break {src}:12"),
+            "-ex",
+            &format!("break {src}:16"),
+            "-ex",
+            "run",
+            "-ex",
+            "info locals",
+            "-ex",
+            &format!("echo {STOP_SPLIT}\\n"),
+            "-ex",
+            "disable 1",
+            "-ex",
+            "continue",
+            "-ex",
+            "info locals",
+        ]);
+    }
+    command.arg(&fixture.binary);
+    let out = run_debugger_query(command, format!("{dbg} managed value summaries"));
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success(),
+        "{text}\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let (before, after) = text.split_once(STOP_SPLIT).expect("both debugger stops");
+    for (section, string, bytes) in [
+        (before, r#""hé\u0000🦀""#, "bytes[0, 255]"),
+        (after, "\"après 🧭\"", "bytes[255, 128]"),
+    ] {
+        assert!(
+            s_value_reads(section)
+                .iter()
+                .any(|line| line.ends_with(string)),
+            "current string missing from {}:\n{text}",
+            debugger_identity(dbg)
+        );
+        assert!(
+            section
+                .lines()
+                .any(|line| line.contains("b = ") && line.ends_with(bytes)),
+            "current slice missing:\n{text}"
+        );
+        assert!(
+            section
+                .lines()
+                .any(|line| line.contains("empty_bytes = bytes[]")),
+            "empty bytes missing:\n{text}"
+        );
+        // LLDB renders null pointers before consulting summaries. Null is
+        // the canonical empty string; GDB lets the summary spell it as "".
+        let empty = if dbg == "lldb" {
+            "empty = NULL"
+        } else {
+            "empty = \"\""
+        };
+        assert!(
+            section.lines().any(|line| line.ends_with(empty)),
+            "empty string missing:\n{text}"
+        );
     }
 }
 
@@ -917,7 +1023,7 @@ fn debugger_never_reads_reassigned_reference_local_as_interior_null() {
         // The released pre-suspend value shown after the reassignment line
         // would equally be a lie.
         assert!(
-            !s_pointer_reads(section)
+            !s_value_reads(section)
                 .iter()
                 .any(|line| line.trim_end().ends_with("\"before\"")),
             "`s` must never read the released pre-suspend \"before\" at {label}:\n{text}"
@@ -948,7 +1054,7 @@ fn debugger_never_reads_reassigned_reference_local_as_interior_null() {
     // range has begun at that PC is machine-dependent, so the honest states
     // are exactly "unavailable" or the real replacement — each matched in its
     // specific line-scoped form, never satisfiable by stdout or the listing.
-    let stop1_after = s_pointer_reads(stop1)
+    let stop1_after = s_value_reads(stop1)
         .iter()
         .any(|line| line.trim_end().ends_with("\"after\""));
     assert!(
@@ -958,7 +1064,7 @@ fn debugger_never_reads_reassigned_reference_local_as_interior_null() {
     // By stop 2 (the next statement) the replacement range HAS begun: the
     // read must be the real value, not absence.
     assert!(
-        s_pointer_reads(stop2)
+        s_value_reads(stop2)
             .iter()
             .any(|line| line.trim_end().ends_with("\"after\"")),
         "`s` must read the replacement string at stop 2:\n{text}"
@@ -986,13 +1092,15 @@ fn debugger_reports_untaken_conditional_reassignment_unavailable_not_wrong() {
         command.args([
             "-b",
             "-o",
+            &debugger_summaries(dbg),
+            "-o",
             &format!("breakpoint set -H --file {src} --line 8"),
             "-o",
             "run",
             "-o",
             "frame variable n",
             "-o",
-            &debugger_print_s(dbg),
+            debugger_print_s(dbg),
             "-o",
             "quit",
             bin,
@@ -1003,17 +1111,19 @@ fn debugger_reports_untaken_conditional_reassignment_unavailable_not_wrong() {
         command.args([
             "--batch",
             "-ex",
+            &debugger_summaries(dbg),
+            "-ex",
             &format!("break {src}:8"),
             "-ex",
             "run",
-            // Use the same scalar language and managed string observer as
+            // Use the same scalar language and managed string summary as
             // the two-stop reassignment fixture.
             "-ex",
             "set language c",
             "-ex",
             "info args",
             "-ex",
-            &debugger_print_s(dbg),
+            debugger_print_s(dbg),
             bin,
         ]);
         command
@@ -1029,7 +1139,7 @@ fn debugger_reports_untaken_conditional_reassignment_unavailable_not_wrong() {
     // The never-executed branch's value must not be presented; pointer-render
     // scoped so the source listing's `s = \"high\"` line cannot trip it.
     assert!(
-        !s_pointer_reads(&text)
+        !s_value_reads(&text)
             .iter()
             .any(|line| line.contains("high")),
         "`s` must never read the never-stored branch value \"high\":\n{text}"
@@ -1041,7 +1151,7 @@ fn debugger_reports_untaken_conditional_reassignment_unavailable_not_wrong() {
     // The two honest states: unavailable (today's behaviour — the anchor
     // range died at the suspend), or the true untouched \"before\" if a
     // future full-fidelity pass recovers availability.
-    let s_reads_before = s_pointer_reads(&text)
+    let s_reads_before = s_value_reads(&text)
         .iter()
         .any(|line| line.trim_end().ends_with("\"before\""));
     assert!(

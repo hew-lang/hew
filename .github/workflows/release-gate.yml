@@ -423,10 +423,10 @@ jobs:
           - os: macos-15-intel
             arch: x86_64
     runs-on: ${{ matrix.os }}
-    # Three x86_64 runs reached 60m, 60m, and 90m with workspace tests still
-    # unfinished. Keep a finite 180-minute ceiling to obtain a completed
-    # duration from this slower runner before choosing a tighter budget.
-    timeout-minutes: 180
+    # The Intel cold build and workspace tests took 93 minutes, then native
+    # acceptance reached the three-hour job limit. Allow the remaining corpus
+    # to finish while preserving the ARM runner's existing limit.
+    timeout-minutes: ${{ matrix.arch == 'x86_64' && 240 || 180 }}
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 

@@ -374,21 +374,21 @@ release blocker.
 
 ## Phase 5 — Candidate tag and publication order
 
-The candidate is tagged on `main`, after its release PR merges, so that the
-tag is reachable from `main` and `git describe` resolves for every later
-commit. Merge the release PR with a merge commit rather than a squash: the
-commit the cross-platform gate verified must remain an ancestor of the tag,
-which a squash does not preserve. This is what `v0.6.0-rc2` did.
+Tag the qualified release-branch commit after its release PR merges into
+`main`. Use a merge commit so that the candidate and its tag are reachable
+from `main` and `git describe` resolves for later commits. Main can continue
+receiving changes while the candidate is qualified; the published source stays
+the exact source that passed the release gate and dry run.
 
-All identities below are derived from the checked-out candidate, on `main`
-after the merge:
+Derive the release identity from the checked-out, qualified candidate, then
+confirm its release PR has merged:
 
 ```bash
 release_tag="$(scripts/release-identity.sh)"
-release_sha="$(git rev-parse HEAD)"
+release_sha="$(git rev-parse "origin/release/${release_tag}")"
 test "$(git status --porcelain)" = ""
-test "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)"
-git merge-base --is-ancestor "origin/release/${release_tag}" HEAD
+test "$(git rev-parse HEAD)" = "$release_sha"
+git merge-base --is-ancestor "$release_sha" origin/main
 ```
 
 1. Confirm every release bar and the final-candidate checklist are green on
@@ -397,7 +397,7 @@ git merge-base --is-ancestor "origin/release/${release_tag}" HEAD
 2. Create the signed tag and push it only after the preceding evidence is recorded:
 
    ```bash
-   git tag -s "$release_tag" -m "Hew $release_tag"
+   git tag -s "$release_tag" "$release_sha" -m "Hew $release_tag"
    git push origin "$release_tag"
    ```
 

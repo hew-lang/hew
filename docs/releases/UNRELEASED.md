@@ -1,5 +1,10 @@
 # Unreleased
 
+The next 0.6 release replaces string scalar aliases with indexed access and
+iteration, and the per-type sorting helpers with generic operations. Follow
+the [v0.6.2 migration guide](../migrations/v0.6.2.md) when updating these calls
+and rebuild native string consumers against the matching SDK.
+
 Node identity files now use secure exclusive publication and durable writes. Existing
 files must be regular, owned by the current user and private to that user; symbolic
 links, reparse points, unsafe permissions and mismatched public/private keys refuse.

@@ -503,7 +503,8 @@ class ExecutorV1 {
       act.context.cancel = (
         fault = { kind: "panic", message: "task cancelled", cancelled: true },
       ) => {
-        act.context.pendingCancellation ??= fault;
+        if (this.scopeDeadline(act, fault) !== fault)
+          act.context.pendingCancellation ??= fault;
       };
       while (act.opIndex < act.block.ops.length) {
         const op = act.block.ops[act.opIndex++]!;
@@ -2671,15 +2672,8 @@ class ExecutorV1 {
         }
         countdown.remaining = budget;
         this.scheduler.advanceSlice();
-        let fault = act.context.pendingCancellation;
-        for (
-          let frame: Activation | null = act;
-          frame?.context === act.context;
-          frame = frame.caller
-        ) {
-          for (const scope of frame.scopes.values())
-            fault ??= scope.deadline ?? undefined;
-        }
+        const fault =
+          act.context.pendingCancellation ?? this.scopeDeadline(act);
         if (fault && term.cancel) {
           act.fault = fault;
           this.takeEdge(act, term.cancel);
@@ -3946,6 +3940,19 @@ class ExecutorV1 {
       default:
         throw new Error(`actor operation ${operation.op} has no executor`);
     }
+  }
+
+  private scopeDeadline(act: Activation, expected?: Fault): Fault | undefined {
+    for (
+      let frame: Activation | null = act;
+      frame?.context === act.context;
+      frame = frame.caller
+    ) {
+      for (const group of frame.scopes.values())
+        if (group.deadline && (!expected || group.deadline === expected))
+          return group.deadline;
+    }
+    return undefined;
   }
 
   private requestDeadline(act: Activation): number | undefined {

@@ -4,7 +4,9 @@
     {
       "fields": [
         "outputs",
-        "disposition"
+        "disposition",
+        "input",
+        "rule"
       ],
       "id": 0,
       "name": "TrafficLightStep"
@@ -549,12 +551,28 @@
           "ops": [],
           "params": [],
           "term": {
-            "edge": {
+            "cancel": {
               "args": [],
-              "to": 1
+              "to": 2
             },
-            "op": "goto",
-            "span": null
+            "detail": {
+              "budget": 4000
+            },
+            "error_shape": null,
+            "inputs": [],
+            "kind": "Safepoint",
+            "op": "suspend",
+            "request_shapes": null,
+            "result": null,
+            "result_shape": null,
+            "resumes": [
+              {
+                "args": [],
+                "to": 1
+              }
+            ],
+            "span": null,
+            "unwind": null
           }
         },
         {
@@ -566,7 +584,7 @@
               {
                 "edge": {
                   "args": [],
-                  "to": 2
+                  "to": 6
                 },
                 "fields": [],
                 "variant": 0
@@ -574,7 +592,7 @@
               {
                 "edge": {
                   "args": [],
-                  "to": 3
+                  "to": 7
                 },
                 "fields": [],
                 "variant": 1
@@ -582,7 +600,7 @@
               {
                 "edge": {
                   "args": [],
-                  "to": 4
+                  "to": 8
                 },
                 "fields": [],
                 "variant": 2
@@ -592,21 +610,69 @@
             "scrutinee": 0,
             "shape": 0,
             "span": {
-              "end": 43662,
-              "start": 43662
+              "end": 45614,
+              "start": 45614
             }
           }
         },
         {
           "id": 2,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 4
+            },
+            "op": "goto",
+            "span": null
+          }
+        },
+        {
+          "id": 3,
+          "ops": [],
+          "params": [],
+          "term": {
+            "op": "resume_unwind",
+            "span": null
+          }
+        },
+        {
+          "id": 4,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 5
+            },
+            "op": "goto",
+            "span": null
+          }
+        },
+        {
+          "id": 5,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 3
+            },
+            "op": "goto",
+            "span": null
+          }
+        },
+        {
+          "id": 6,
           "ops": [
             {
               "dst": 1,
               "op": "const.str",
               "own": "owned",
               "span": {
-                "end": 43666,
-                "start": 43666
+                "end": 45618,
+                "start": 45618
               },
               "str": 0
             }
@@ -617,25 +683,25 @@
               "args": [
                 1
               ],
-              "to": 5
+              "to": 9
             },
             "op": "goto",
             "span": {
-              "end": 43666,
-              "start": 43666
+              "end": 45618,
+              "start": 45618
             }
           }
         },
         {
-          "id": 3,
+          "id": 7,
           "ops": [
             {
               "dst": 2,
               "op": "const.str",
               "own": "owned",
               "span": {
-                "end": 43670,
-                "start": 43670
+                "end": 45622,
+                "start": 45622
               },
               "str": 1
             }
@@ -646,25 +712,25 @@
               "args": [
                 2
               ],
-              "to": 5
+              "to": 9
             },
             "op": "goto",
             "span": {
-              "end": 43670,
-              "start": 43670
+              "end": 45622,
+              "start": 45622
             }
           }
         },
         {
-          "id": 4,
+          "id": 8,
           "ops": [
             {
               "dst": 3,
               "op": "const.str",
               "own": "owned",
               "span": {
-                "end": 43674,
-                "start": 43674
+                "end": 45626,
+                "start": 45626
               },
               "str": 2
             }
@@ -675,17 +741,17 @@
               "args": [
                 3
               ],
-              "to": 5
+              "to": 9
             },
             "op": "goto",
             "span": {
-              "end": 43674,
-              "start": 43674
+              "end": 45626,
+              "start": 45626
             }
           }
         },
         {
-          "id": 5,
+          "id": 9,
           "ops": [],
           "params": [
             {
@@ -696,24 +762,24 @@
           "term": {
             "edge": {
               "args": [],
-              "to": 6
+              "to": 10
             },
             "op": "goto",
             "span": {
-              "end": 43676,
-              "start": 43676
+              "end": 45628,
+              "start": 45628
             }
           }
         },
         {
-          "id": 6,
+          "id": 10,
           "ops": [],
           "params": [],
           "term": {
             "op": "return",
             "span": {
-              "end": 43676,
-              "start": 43676
+              "end": 45628,
+              "start": 45628
             },
             "value": {
               "decision": "move",
@@ -801,8 +867,8 @@
             "result_member_shapes": [],
             "result_shape": null,
             "span": {
-              "end": 43372,
-              "start": 43372
+              "end": 45248,
+              "start": 45248
             },
             "structural": null,
             "unwind": null
@@ -870,8 +936,8 @@
               "own": "owned",
               "place": 1,
               "span": {
-                "end": 43372,
-                "start": 43372
+                "end": 45248,
+                "start": 45248
               }
             },
             {
@@ -898,10 +964,10 @@
               "fields": [],
               "op": "variant.make",
               "own": "none",
-              "shape": 2,
+              "shape": 3,
               "span": {
-                "end": 43380,
-                "start": 43380
+                "end": 45256,
+                "start": 45256
               },
               "variant": 0
             },
@@ -920,12 +986,60 @@
             },
             {
               "dst": 7,
+              "fields": [],
+              "op": "variant.make",
+              "own": "none",
+              "shape": 2,
+              "span": {
+                "end": 45262,
+                "start": 45262
+              },
+              "variant": 1
+            },
+            {
+              "dst": null,
+              "op": "alloc_place",
+              "place": 4,
+              "span": null
+            },
+            {
+              "dst": null,
+              "op": "store.init",
+              "place": 4,
+              "span": null,
+              "value": 7
+            },
+            {
+              "dst": 8,
+              "op": "const.str",
+              "own": "owned",
+              "span": {
+                "end": 45272,
+                "start": 45272
+              },
+              "str": 3
+            },
+            {
+              "dst": null,
+              "op": "alloc_place",
+              "place": 5,
+              "span": null
+            },
+            {
+              "dst": null,
+              "op": "store.init",
+              "place": 5,
+              "span": null,
+              "value": 8
+            },
+            {
+              "dst": 9,
               "op": "load.copy",
               "own": "none",
               "place": 0,
               "span": {
-                "end": 43608,
-                "start": 43608
+                "end": 45556,
+                "start": 45556
               }
             }
           ],
@@ -963,11 +1077,11 @@
               }
             ],
             "op": "switch.variant",
-            "scrutinee": 7,
+            "scrutinee": 9,
             "shape": 0,
             "span": {
-              "end": 43608,
-              "start": 43608
+              "end": 45556,
+              "start": 45556
             }
           }
         },
@@ -990,8 +1104,8 @@
             "scrutinee": 1,
             "shape": 1,
             "span": {
-              "end": 43454,
-              "start": 43454
+              "end": 45366,
+              "start": 45366
             }
           }
         },
@@ -1014,8 +1128,8 @@
             "scrutinee": 1,
             "shape": 1,
             "span": {
-              "end": 43528,
-              "start": 43528
+              "end": 45458,
+              "start": 45458
             }
           }
         },
@@ -1038,8 +1152,8 @@
             "scrutinee": 1,
             "shape": 1,
             "span": {
-              "end": 43602,
-              "start": 43602
+              "end": 45550,
+              "start": 45550
             }
           }
         },
@@ -1047,14 +1161,69 @@
           "id": 8,
           "ops": [
             {
-              "dst": 8,
+              "dst": 10,
+              "op": "const.str",
+              "own": "owned",
+              "span": {
+                "end": 45360,
+                "start": 45360
+              },
+              "str": 4
+            },
+            {
+              "dst": null,
+              "op": "store.assign",
+              "place": 5,
+              "span": {
+                "end": 45360,
+                "start": 45360
+              },
+              "value": 10
+            },
+            {
+              "dst": 11,
+              "op": "const.int",
+              "own": "none",
+              "span": {
+                "end": 45300,
+                "start": 45300
+              },
+              "ty": "i64",
+              "value": "0"
+            },
+            {
+              "dst": 12,
+              "fields": [
+                11
+              ],
+              "op": "variant.make",
+              "own": "none",
+              "shape": 2,
+              "span": {
+                "end": 45302,
+                "start": 45302
+              },
+              "variant": 0
+            },
+            {
+              "dst": null,
+              "op": "store.assign",
+              "place": 4,
+              "span": {
+                "end": 45302,
+                "start": 45302
+              },
+              "value": 12
+            },
+            {
+              "dst": 13,
               "fields": [],
               "op": "variant.make",
               "own": "none",
               "shape": 0,
               "span": {
-                "end": 43410,
-                "start": 43410
+                "end": 45314,
+                "start": 45314
               },
               "variant": 1
             }
@@ -1088,11 +1257,11 @@
               }
             ],
             "op": "switch.variant",
-            "scrutinee": 8,
+            "scrutinee": 13,
             "shape": 0,
             "span": {
-              "end": 43448,
-              "start": 43448
+              "end": 45352,
+              "start": 45352
             }
           }
         },
@@ -1100,14 +1269,14 @@
           "id": 9,
           "ops": [
             {
-              "dst": 9,
+              "dst": 14,
               "fields": [],
               "op": "variant.make",
               "own": "none",
               "shape": 0,
               "span": {
-                "end": 43424,
-                "start": 43424
+                "end": 45328,
+                "start": 45328
               },
               "variant": 0
             }
@@ -1116,14 +1285,14 @@
           "term": {
             "edge": {
               "args": [
-                9
+                14
               ],
               "to": 12
             },
             "op": "goto",
             "span": {
-              "end": 43424,
-              "start": 43424
+              "end": 45328,
+              "start": 45328
             }
           }
         },
@@ -1131,14 +1300,14 @@
           "id": 10,
           "ops": [
             {
-              "dst": 10,
+              "dst": 15,
               "fields": [],
               "op": "variant.make",
               "own": "none",
               "shape": 0,
               "span": {
-                "end": 43434,
-                "start": 43434
+                "end": 45338,
+                "start": 45338
               },
               "variant": 1
             }
@@ -1147,14 +1316,14 @@
           "term": {
             "edge": {
               "args": [
-                10
+                15
               ],
               "to": 12
             },
             "op": "goto",
             "span": {
-              "end": 43434,
-              "start": 43434
+              "end": 45338,
+              "start": 45338
             }
           }
         },
@@ -1162,14 +1331,14 @@
           "id": 11,
           "ops": [
             {
-              "dst": 11,
+              "dst": 16,
               "fields": [],
               "op": "variant.make",
               "own": "none",
               "shape": 0,
               "span": {
-                "end": 43444,
-                "start": 43444
+                "end": 45348,
+                "start": 45348
               },
               "variant": 2
             }
@@ -1178,14 +1347,14 @@
           "term": {
             "edge": {
               "args": [
-                11
+                16
               ],
               "to": 12
             },
             "op": "goto",
             "span": {
-              "end": 43444,
-              "start": 43444
+              "end": 45348,
+              "start": 45348
             }
           }
         },
@@ -1195,20 +1364,20 @@
           "params": [
             {
               "own": "none",
-              "value": 12
+              "value": 17
             }
           ],
           "term": {
             "edge": {
               "args": [
-                12
+                17
               ],
               "to": 13
             },
             "op": "goto",
             "span": {
-              "end": 43450,
-              "start": 43450
+              "end": 45356,
+              "start": 45356
             }
           }
         },
@@ -1218,20 +1387,20 @@
           "params": [
             {
               "own": "none",
-              "value": 13
+              "value": 18
             }
           ],
           "term": {
             "edge": {
               "args": [
-                13
+                18
               ],
               "to": 26
             },
             "op": "goto",
             "span": {
-              "end": 43456,
-              "start": 43456
+              "end": 45368,
+              "start": 45368
             }
           }
         },
@@ -1239,14 +1408,69 @@
           "id": 14,
           "ops": [
             {
-              "dst": 14,
+              "dst": 19,
+              "op": "const.str",
+              "own": "owned",
+              "span": {
+                "end": 45452,
+                "start": 45452
+              },
+              "str": 4
+            },
+            {
+              "dst": null,
+              "op": "store.assign",
+              "place": 5,
+              "span": {
+                "end": 45452,
+                "start": 45452
+              },
+              "value": 19
+            },
+            {
+              "dst": 20,
+              "op": "const.int",
+              "own": "none",
+              "span": {
+                "end": 45392,
+                "start": 45392
+              },
+              "ty": "i64",
+              "value": "1"
+            },
+            {
+              "dst": 21,
+              "fields": [
+                20
+              ],
+              "op": "variant.make",
+              "own": "none",
+              "shape": 2,
+              "span": {
+                "end": 45394,
+                "start": 45394
+              },
+              "variant": 0
+            },
+            {
+              "dst": null,
+              "op": "store.assign",
+              "place": 4,
+              "span": {
+                "end": 45394,
+                "start": 45394
+              },
+              "value": 21
+            },
+            {
+              "dst": 22,
               "fields": [],
               "op": "variant.make",
               "own": "none",
               "shape": 0,
               "span": {
-                "end": 43484,
-                "start": 43484
+                "end": 45406,
+                "start": 45406
               },
               "variant": 2
             }
@@ -1280,11 +1504,11 @@
               }
             ],
             "op": "switch.variant",
-            "scrutinee": 14,
+            "scrutinee": 22,
             "shape": 0,
             "span": {
-              "end": 43522,
-              "start": 43522
+              "end": 45444,
+              "start": 45444
             }
           }
         },
@@ -1292,14 +1516,14 @@
           "id": 15,
           "ops": [
             {
-              "dst": 15,
+              "dst": 23,
               "fields": [],
               "op": "variant.make",
               "own": "none",
               "shape": 0,
               "span": {
-                "end": 43498,
-                "start": 43498
+                "end": 45420,
+                "start": 45420
               },
               "variant": 0
             }
@@ -1308,14 +1532,14 @@
           "term": {
             "edge": {
               "args": [
-                15
+                23
               ],
               "to": 18
             },
             "op": "goto",
             "span": {
-              "end": 43498,
-              "start": 43498
+              "end": 45420,
+              "start": 45420
             }
           }
         },
@@ -1323,14 +1547,14 @@
           "id": 16,
           "ops": [
             {
-              "dst": 16,
+              "dst": 24,
               "fields": [],
               "op": "variant.make",
               "own": "none",
               "shape": 0,
               "span": {
-                "end": 43508,
-                "start": 43508
+                "end": 45430,
+                "start": 45430
               },
               "variant": 1
             }
@@ -1339,14 +1563,14 @@
           "term": {
             "edge": {
               "args": [
-                16
+                24
               ],
               "to": 18
             },
             "op": "goto",
             "span": {
-              "end": 43508,
-              "start": 43508
+              "end": 45430,
+              "start": 45430
             }
           }
         },
@@ -1354,14 +1578,14 @@
           "id": 17,
           "ops": [
             {
-              "dst": 17,
+              "dst": 25,
               "fields": [],
               "op": "variant.make",
               "own": "none",
               "shape": 0,
               "span": {
-                "end": 43518,
-                "start": 43518
+                "end": 45440,
+                "start": 45440
               },
               "variant": 2
             }
@@ -1370,14 +1594,14 @@
           "term": {
             "edge": {
               "args": [
-                17
+                25
               ],
               "to": 18
             },
             "op": "goto",
             "span": {
-              "end": 43518,
-              "start": 43518
+              "end": 45440,
+              "start": 45440
             }
           }
         },
@@ -1387,20 +1611,20 @@
           "params": [
             {
               "own": "none",
-              "value": 18
+              "value": 26
             }
           ],
           "term": {
             "edge": {
               "args": [
-                18
+                26
               ],
               "to": 19
             },
             "op": "goto",
             "span": {
-              "end": 43524,
-              "start": 43524
+              "end": 45448,
+              "start": 45448
             }
           }
         },
@@ -1410,20 +1634,20 @@
           "params": [
             {
               "own": "none",
-              "value": 19
+              "value": 27
             }
           ],
           "term": {
             "edge": {
               "args": [
-                19
+                27
               ],
               "to": 26
             },
             "op": "goto",
             "span": {
-              "end": 43530,
-              "start": 43530
+              "end": 45460,
+              "start": 45460
             }
           }
         },
@@ -1431,14 +1655,69 @@
           "id": 20,
           "ops": [
             {
-              "dst": 20,
+              "dst": 28,
+              "op": "const.str",
+              "own": "owned",
+              "span": {
+                "end": 45544,
+                "start": 45544
+              },
+              "str": 4
+            },
+            {
+              "dst": null,
+              "op": "store.assign",
+              "place": 5,
+              "span": {
+                "end": 45544,
+                "start": 45544
+              },
+              "value": 28
+            },
+            {
+              "dst": 29,
+              "op": "const.int",
+              "own": "none",
+              "span": {
+                "end": 45484,
+                "start": 45484
+              },
+              "ty": "i64",
+              "value": "2"
+            },
+            {
+              "dst": 30,
+              "fields": [
+                29
+              ],
+              "op": "variant.make",
+              "own": "none",
+              "shape": 2,
+              "span": {
+                "end": 45486,
+                "start": 45486
+              },
+              "variant": 0
+            },
+            {
+              "dst": null,
+              "op": "store.assign",
+              "place": 4,
+              "span": {
+                "end": 45486,
+                "start": 45486
+              },
+              "value": 30
+            },
+            {
+              "dst": 31,
               "fields": [],
               "op": "variant.make",
               "own": "none",
               "shape": 0,
               "span": {
-                "end": 43558,
-                "start": 43558
+                "end": 45498,
+                "start": 45498
               },
               "variant": 0
             }
@@ -1472,11 +1751,11 @@
               }
             ],
             "op": "switch.variant",
-            "scrutinee": 20,
+            "scrutinee": 31,
             "shape": 0,
             "span": {
-              "end": 43596,
-              "start": 43596
+              "end": 45536,
+              "start": 45536
             }
           }
         },
@@ -1484,14 +1763,14 @@
           "id": 21,
           "ops": [
             {
-              "dst": 21,
+              "dst": 32,
               "fields": [],
               "op": "variant.make",
               "own": "none",
               "shape": 0,
               "span": {
-                "end": 43572,
-                "start": 43572
+                "end": 45512,
+                "start": 45512
               },
               "variant": 0
             }
@@ -1500,14 +1779,14 @@
           "term": {
             "edge": {
               "args": [
-                21
+                32
               ],
               "to": 24
             },
             "op": "goto",
             "span": {
-              "end": 43572,
-              "start": 43572
+              "end": 45512,
+              "start": 45512
             }
           }
         },
@@ -1515,14 +1794,14 @@
           "id": 22,
           "ops": [
             {
-              "dst": 22,
+              "dst": 33,
               "fields": [],
               "op": "variant.make",
               "own": "none",
               "shape": 0,
               "span": {
-                "end": 43582,
-                "start": 43582
+                "end": 45522,
+                "start": 45522
               },
               "variant": 1
             }
@@ -1531,14 +1810,14 @@
           "term": {
             "edge": {
               "args": [
-                22
+                33
               ],
               "to": 24
             },
             "op": "goto",
             "span": {
-              "end": 43582,
-              "start": 43582
+              "end": 45522,
+              "start": 45522
             }
           }
         },
@@ -1546,14 +1825,14 @@
           "id": 23,
           "ops": [
             {
-              "dst": 23,
+              "dst": 34,
               "fields": [],
               "op": "variant.make",
               "own": "none",
               "shape": 0,
               "span": {
-                "end": 43592,
-                "start": 43592
+                "end": 45532,
+                "start": 45532
               },
               "variant": 2
             }
@@ -1562,14 +1841,14 @@
           "term": {
             "edge": {
               "args": [
-                23
+                34
               ],
               "to": 24
             },
             "op": "goto",
             "span": {
-              "end": 43592,
-              "start": 43592
+              "end": 45532,
+              "start": 45532
             }
           }
         },
@@ -1579,20 +1858,20 @@
           "params": [
             {
               "own": "none",
-              "value": 24
+              "value": 35
             }
           ],
           "term": {
             "edge": {
               "args": [
-                24
+                35
               ],
               "to": 25
             },
             "op": "goto",
             "span": {
-              "end": 43598,
-              "start": 43598
+              "end": 45540,
+              "start": 45540
             }
           }
         },
@@ -1602,20 +1881,20 @@
           "params": [
             {
               "own": "none",
-              "value": 25
+              "value": 36
             }
           ],
           "term": {
             "edge": {
               "args": [
-                25
+                36
               ],
               "to": 26
             },
             "op": "goto",
             "span": {
-              "end": 43604,
-              "start": 43604
+              "end": 45552,
+              "start": 45552
             }
           }
         },
@@ -1623,101 +1902,123 @@
           "id": 26,
           "ops": [
             {
-              "dst": 27,
+              "dst": 38,
               "op": "load.take",
               "own": "owned",
               "place": 2,
               "span": {
-                "end": 43618,
-                "start": 43618
+                "end": 45566,
+                "start": 45566
               }
             },
             {
-              "dst": 28,
+              "dst": 39,
               "op": "load.copy",
               "own": "none",
               "place": 3,
               "span": {
-                "end": 43620,
-                "start": 43620
+                "end": 45568,
+                "start": 45568
               }
             },
             {
-              "dst": 29,
+              "dst": 40,
+              "op": "load.take",
+              "own": "owned",
+              "place": 5,
+              "span": {
+                "end": 45570,
+                "start": 45570
+              }
+            },
+            {
+              "dst": 41,
+              "op": "load.copy",
+              "own": "none",
+              "place": 4,
+              "span": {
+                "end": 45572,
+                "start": 45572
+              }
+            },
+            {
+              "dst": 42,
               "fields": [
-                27,
-                28
+                38,
+                39,
+                40,
+                41
               ],
               "op": "aggregate.make",
               "own": "owned",
               "shape": 0,
               "span": {
-                "end": 43624,
-                "start": 43624
+                "end": 45576,
+                "start": 45576
               }
             },
             {
               "dst": null,
               "op": "alloc_place",
-              "place": 4,
+              "place": 6,
               "span": null
             },
             {
               "dst": null,
               "op": "store.init",
-              "place": 4,
+              "place": 6,
               "span": null,
-              "value": 29
+              "value": 42
             },
             {
               "dst": null,
               "op": "store.assign",
               "place": 0,
               "span": {
-                "end": 43634,
-                "start": 43634
+                "end": 45586,
+                "start": 45586
               },
-              "value": 26
+              "value": 37
             },
             {
-              "dst": 30,
+              "dst": 43,
               "op": "load.take",
               "own": "owned",
-              "place": 4,
+              "place": 6,
               "span": {
-                "end": 43638,
-                "start": 43638
+                "end": 45590,
+                "start": 45590
               }
             },
             {
-              "dst": 31,
+              "dst": 44,
               "op": "load.copy",
               "own": "none",
               "place": 0,
               "span": {
-                "end": 43644,
-                "start": 43644
+                "end": 45596,
+                "start": 45596
               }
             },
             {
-              "dst": 32,
+              "dst": 45,
               "fields": [
-                30,
-                31
+                43,
+                44
               ],
               "op": "aggregate.make",
               "own": "owned",
               "shape": null,
               "span": {
-                "end": 43638,
-                "start": 43638
+                "end": 45590,
+                "start": 45590
               }
             }
           ],
           "params": [
             {
               "own": "none",
-              "value": 26
+              "value": 37
             }
           ],
           "term": {
@@ -1727,14 +2028,26 @@
             },
             "op": "goto",
             "span": {
-              "end": 43638,
-              "start": 43638
+              "end": 45590,
+              "start": 45590
             }
           }
         },
         {
           "id": 27,
           "ops": [
+            {
+              "dst": null,
+              "op": "end_lifetime",
+              "place": 6,
+              "span": null
+            },
+            {
+              "dst": null,
+              "op": "end_lifetime",
+              "place": 5,
+              "span": null
+            },
             {
               "dst": null,
               "op": "end_lifetime",
@@ -1764,19 +2077,19 @@
           "term": {
             "op": "return",
             "span": {
-              "end": 43638,
-              "start": 43638
+              "end": 45590,
+              "start": 45590
             },
             "value": {
               "decision": "move",
-              "value": 32
+              "value": 45
             }
           }
         }
       ],
       "entry": 0,
       "id": 2,
-      "name": "__hew_fn_TrafficLight::step",
+      "name": "__hew_fn_TrafficLight$i$547261666669634c696768743a3a3c696d706c20696e686572656e7420666f7220547261666669634c696768743e3a3a73746570::step",
       "params": [
         {
           "own": "none",
@@ -1807,6 +2120,14 @@
         {
           "id": 4,
           "origin": "local"
+        },
+        {
+          "id": 5,
+          "origin": "local"
+        },
+        {
+          "id": 6,
+          "origin": "local"
         }
       ]
     }
@@ -1834,7 +2155,9 @@
   "strings": [
     "Red",
     "Green",
-    "Yellow"
+    "Yellow",
+    "",
+    "Tick"
   ],
   "structural_render": [],
   "supervisors": [],
@@ -1876,6 +2199,26 @@
     {
       "cases": [
         {
+          "fields": [
+            "0"
+          ],
+          "name": "Some"
+        },
+        {
+          "fields": [],
+          "name": "None"
+        }
+      ],
+      "id": 2,
+      "name": "Option<i64>",
+      "runtime_tags": {
+        "OptionNone": 1,
+        "OptionSome": 0
+      }
+    },
+    {
+      "cases": [
+        {
           "fields": [],
           "name": "Taken"
         },
@@ -1884,13 +2227,13 @@
           "name": "Ignored"
         }
       ],
-      "id": 2,
+      "id": 3,
       "name": "TrafficLightStepDisposition",
       "runtime_tags": {}
     },
     {
       "cases": [],
-      "id": 3,
+      "id": 4,
       "name": "TrafficLightOutput",
       "runtime_tags": {}
     }

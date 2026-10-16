@@ -65,7 +65,9 @@ pub(super) fn admit_resource_record_lifecycles(
         {
             continue;
         }
-        let span = identity.site(declaration).map_or(0..0, |site| site.span());
+        let span = identity
+            .site(declaration)
+            .map_or(0..0, hew_types::DeclarationOccurrence::span);
         let exact_owner = identity.path(declaration);
         let close_methods = inherent_close_methods(items, identity, declaration);
 

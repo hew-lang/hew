@@ -254,12 +254,28 @@
           "ops": [],
           "params": [],
           "term": {
-            "edge": {
+            "cancel": {
               "args": [],
-              "to": 1
+              "to": 2
             },
-            "op": "goto",
-            "span": null
+            "detail": {
+              "budget": 4000
+            },
+            "error_shape": null,
+            "inputs": [],
+            "kind": "Safepoint",
+            "op": "suspend",
+            "request_shapes": null,
+            "result": null,
+            "result_shape": null,
+            "resumes": [
+              {
+                "args": [],
+                "to": 1
+              }
+            ],
+            "span": null,
+            "unwind": null
           }
         },
         {
@@ -273,7 +289,7 @@
                   "args": [
                     1
                   ],
-                  "to": 5
+                  "to": 6
                 },
                 "fields": [
                   {
@@ -289,7 +305,7 @@
                     3,
                     5
                   ],
-                  "to": 6
+                  "to": 7
                 },
                 "fields": [
                   {
@@ -318,7 +334,11 @@
           "ops": [],
           "params": [],
           "term": {
-            "op": "resume_unwind",
+            "edge": {
+              "args": [],
+              "to": 4
+            },
+            "op": "goto",
             "span": null
           }
         },
@@ -327,11 +347,7 @@
           "ops": [],
           "params": [],
           "term": {
-            "edge": {
-              "args": [],
-              "to": 4
-            },
-            "op": "goto",
+            "op": "resume_unwind",
             "span": null
           }
         },
@@ -342,7 +358,7 @@
           "term": {
             "edge": {
               "args": [],
-              "to": 2
+              "to": 5
             },
             "op": "goto",
             "span": null
@@ -350,6 +366,19 @@
         },
         {
           "id": 5,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 3
+            },
+            "op": "goto",
+            "span": null
+          }
+        },
+        {
+          "id": 6,
           "ops": [],
           "params": [
             {
@@ -363,7 +392,7 @@
               {
                 "edge": {
                   "args": [],
-                  "to": 8
+                  "to": 9
                 },
                 "trap": "integer_overflow"
               }
@@ -373,7 +402,7 @@
               "args": [
                 7
               ],
-              "to": 7
+              "to": 8
             },
             "op": "checked.binary",
             "result": {
@@ -389,7 +418,7 @@
           }
         },
         {
-          "id": 6,
+          "id": 7,
           "ops": [],
           "params": [
             {
@@ -407,7 +436,7 @@
               {
                 "edge": {
                   "args": [],
-                  "to": 14
+                  "to": 15
                 },
                 "trap": "integer_overflow"
               }
@@ -417,7 +446,7 @@
               "args": [
                 12
               ],
-              "to": 13
+              "to": 14
             },
             "op": "checked.binary",
             "result": {
@@ -433,7 +462,7 @@
           }
         },
         {
-          "id": 7,
+          "id": 8,
           "ops": [
             {
               "dst": 9,
@@ -459,7 +488,7 @@
               {
                 "edge": {
                   "args": [],
-                  "to": 11
+                  "to": 12
                 },
                 "trap": "integer_overflow"
               }
@@ -469,7 +498,7 @@
               "args": [
                 10
               ],
-              "to": 10
+              "to": 11
             },
             "op": "checked.binary",
             "result": {
@@ -485,13 +514,13 @@
           }
         },
         {
-          "id": 8,
+          "id": 9,
           "ops": [],
           "params": [],
           "term": {
             "cleanup": {
               "args": [],
-              "to": 9
+              "to": 10
             },
             "op": "checked_raise",
             "span": {
@@ -502,13 +531,13 @@
           }
         },
         {
-          "id": 9,
+          "id": 10,
           "ops": [],
           "params": [],
           "term": {
             "edge": {
               "args": [],
-              "to": 3
+              "to": 4
             },
             "op": "goto",
             "span": {
@@ -518,7 +547,7 @@
           }
         },
         {
-          "id": 10,
+          "id": 11,
           "ops": [],
           "params": [
             {
@@ -531,7 +560,7 @@
               "args": [
                 11
               ],
-              "to": 16
+              "to": 17
             },
             "op": "goto",
             "span": {
@@ -541,13 +570,13 @@
           }
         },
         {
-          "id": 11,
+          "id": 12,
           "ops": [],
           "params": [],
           "term": {
             "cleanup": {
               "args": [],
-              "to": 12
+              "to": 13
             },
             "op": "checked_raise",
             "span": {
@@ -558,13 +587,13 @@
           }
         },
         {
-          "id": 12,
+          "id": 13,
           "ops": [],
           "params": [],
           "term": {
             "edge": {
               "args": [],
-              "to": 3
+              "to": 4
             },
             "op": "goto",
             "span": {
@@ -574,7 +603,7 @@
           }
         },
         {
-          "id": 13,
+          "id": 14,
           "ops": [],
           "params": [
             {
@@ -587,7 +616,7 @@
               "args": [
                 13
               ],
-              "to": 16
+              "to": 17
             },
             "op": "goto",
             "span": {
@@ -597,13 +626,13 @@
           }
         },
         {
-          "id": 14,
+          "id": 15,
           "ops": [],
           "params": [],
           "term": {
             "cleanup": {
               "args": [],
-              "to": 15
+              "to": 16
             },
             "op": "checked_raise",
             "span": {
@@ -614,13 +643,13 @@
           }
         },
         {
-          "id": 15,
+          "id": 16,
           "ops": [],
           "params": [],
           "term": {
             "edge": {
               "args": [],
-              "to": 3
+              "to": 4
             },
             "op": "goto",
             "span": {
@@ -630,7 +659,7 @@
           }
         },
         {
-          "id": 16,
+          "id": 17,
           "ops": [],
           "params": [
             {
@@ -641,7 +670,7 @@
           "term": {
             "edge": {
               "args": [],
-              "to": 17
+              "to": 18
             },
             "op": "goto",
             "span": {
@@ -651,7 +680,7 @@
           }
         },
         {
-          "id": 17,
+          "id": 18,
           "ops": [],
           "params": [],
           "term": {

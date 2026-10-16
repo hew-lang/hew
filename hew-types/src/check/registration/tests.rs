@@ -135,10 +135,10 @@ mod failure_surface_lockstep_tests {
         }
     }
 
-    /// M-5: `CrashInfo` carries `code: i64` AND `message: string` in the
+    /// M-5: `CrashInfo` carries `kind: CrashKind` AND `message: string` in the
     /// embedded copy (the field-presence half of `wire-contract-test-presence`).
     #[test]
-    fn embedded_crash_info_has_code_and_message_fields() {
+    fn embedded_crash_info_has_kind_and_message_fields() {
         let parsed = hew_parser::parse(FAILURE_HEW);
         let crash_info = parsed
             .program
@@ -161,8 +161,8 @@ mod failure_surface_lockstep_tests {
             .collect();
         assert_eq!(
             field_names,
-            vec!["code", "message"],
-            "CrashInfo must carry exactly `code` then `message`"
+            vec!["kind", "message"],
+            "CrashInfo must carry exactly `kind` then `message`"
         );
     }
 }

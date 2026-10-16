@@ -613,9 +613,9 @@ impl Checker {
                 &items,
                 StdlibBarePublication::Prelude,
             );
-            // `CrashInfo` / `CrashAction` are genuine prelude: a
-            // `#[on(crash)]` signature names them with no import, always.
-            for source_name in ["CrashInfo", "CrashAction"] {
+            // Crash hooks and their public crash class are available through
+            // the prelude, including field reads and variant construction.
+            for source_name in ["CrashInfo", "CrashAction", "CrashKind"] {
                 self.bind_prelude_item("std.failure", source_name);
                 self.canonical_lifecycle_import_authority.insert((
                     None,
@@ -623,7 +623,7 @@ impl Checker {
                     format!("std.failure.{source_name}"),
                 ));
             }
-            // The linked-actor payloads (`CrashNotification` / `CrashKind`)
+            // The linked-actor payloads (`CrashNotification` / `DownTarget`)
             // require an explicit `import std::failure` whenever the module
             // graph can supply that source. With no stdlib search path there
             // is no import to write — this compiled-in projection IS the

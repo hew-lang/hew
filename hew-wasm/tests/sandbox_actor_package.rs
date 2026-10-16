@@ -676,12 +676,19 @@ fn a_crash_hook_observes_the_last_valid_state_before_restart() {
 }
 
 #[test]
-fn crash_info_uses_the_native_fault_code_and_class() {
+fn crash_info_uses_the_native_public_crash_kind() {
     let trace = execute(include_str!(
         "../../tests/core-acceptance/cases/crash-info-hook-fields.hew"
     ));
-    assert_eq!(stdout(&trace), "212\nUserPanic\n");
+    assert_eq!(stdout(&trace), "Fault\nUserPanic\n");
     assert_eq!(trace["final_state"]["exit_code"], 42);
+    let trace = execute(include_str!(
+        "../../tests/core-acceptance/cases/actor-mailbox-fails-faults.hew"
+    ));
+    assert_eq!(
+        stdout(&trace),
+        "open\nvault\n60\nHandlerFailed\nopen\n100\nHandlerFailed\nvault\n50\n"
+    );
 }
 
 #[test]

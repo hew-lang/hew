@@ -842,6 +842,9 @@
         "crash_info": {
           "$ref": "#/$defs/id"
         },
+        "crash_kind": {
+          "$ref": "#/$defs/id"
+        },
         "crash_action": {
           "$ref": "#/$defs/id"
         }

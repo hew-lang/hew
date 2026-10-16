@@ -34,7 +34,7 @@ pub(crate) fn notify_child_supervisor_stopped(
 }
 
 pub(crate) unsafe fn supervisor_sys_dispatch_impl(
-    ctx: *mut crate::execution_context::HewExecutionContext,
+    _ctx: *mut crate::execution_context::HewExecutionContext,
     state: *mut c_void,
     sys_msg: i32,
     data: *mut c_void,
@@ -60,8 +60,8 @@ pub(crate) unsafe fn supervisor_sys_dispatch_impl(
 
     match kind {
         HewSysMsg::ChildStopped | HewSysMsg::ChildCrashed => {
-            // SAFETY: forwarded unchanged; `sup`/`ctx` are this dispatch's own.
-            unsafe { dispatch_child_lifecycle_event(sup, ctx, data, data_size) };
+            // SAFETY: this dispatch keeps the supervisor live.
+            unsafe { dispatch_child_lifecycle_event(sup, data, data_size) };
         }
         HewSysMsg::ChildSupervisorEscalated => {
             if data.is_null() || data_size < std::mem::size_of::<ChildSupervisorEscalation>() {
@@ -358,8 +358,7 @@ pub unsafe extern "C" fn hew_supervisor_add_child_spec(
         circuit_breaker: CircuitBreakerState::default(),
         arena_cap_bytes: sp.arena_cap_bytes,
         cycle_capable: sp.cycle_capable,
-        on_crash: sp.on_crash,
-        // Carried IN the spec literal (like on_crash) so the initial supervised
+        // Carried in the spec literal so the initial supervised
         // spawn — which happens inside this call via restart_child_from_spec —
         // fires the lifecycle wrapper. A post-hoc setter would run too late to
         // cover the initial fire (see hew_supervisor_set_child_lifecycle).
@@ -921,7 +920,6 @@ mod tests {
             message_drop_fn: None,
             arena_cap_bytes: 0,
             cycle_capable: 0,
-            on_crash: None,
             lifecycle_fn: None,
             init_fn: None,
             config: ptr::null_mut(),
@@ -1063,7 +1061,6 @@ mod tests {
                 message_drop_fn: None,
                 arena_cap_bytes: 0,
                 cycle_capable: 0,
-                on_crash: None,
                 lifecycle_fn: None,
                 init_fn: None,
                 config: ptr::null_mut(),
@@ -1741,7 +1738,6 @@ mod tests {
                 message_drop_fn: None,
                 arena_cap_bytes: 0,
                 cycle_capable: 0,
-                on_crash: None,
                 lifecycle_fn: None,
                 init_fn: None,
                 config: ptr::null_mut(),
@@ -1790,7 +1786,6 @@ mod tests {
                     message_drop_fn: None,
                     arena_cap_bytes: 0,
                     cycle_capable: 0,
-                    on_crash: None,
                     lifecycle_fn: None,
                     init_fn: None,
                     config: ptr::null_mut(),
@@ -1876,7 +1871,6 @@ mod tests {
                 message_drop_fn: None,
                 arena_cap_bytes: 0,
                 cycle_capable: 0,
-                on_crash: None,
                 lifecycle_fn: None,
                 init_fn: Some(init_counted_teardown_race_state),
                 config: ptr::null_mut(),
@@ -2984,7 +2978,6 @@ mod tests {
                 message_drop_fn: None,
                 arena_cap_bytes: 0,
                 cycle_capable: 0,
-                on_crash: None,
                 lifecycle_fn: None,
                 init_fn: None,
                 config: ptr::null_mut(),
@@ -3786,7 +3779,6 @@ mod tests {
             message_drop_fn: None,
             arena_cap_bytes: 0,
             cycle_capable: 0,
-            on_crash: None,
             lifecycle_fn: None,
             init_fn: None,
             config: ptr::null_mut(),
@@ -4727,7 +4719,6 @@ mod tests {
                 message_drop_fn: None,
                 arena_cap_bytes: 0,
                 cycle_capable: 0,
-                on_crash: None,
                 lifecycle_fn: None,
                 init_fn: None,
                 config: ptr::null_mut(),

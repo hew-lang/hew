@@ -88,6 +88,13 @@ test("terminate skips the stop hook and still releases owned state", () => {
   assert.equal(trace.final_state.stdout.join(""), "after\nrelease\n");
 });
 
+test("a crash hook requires its exact crash kind shape", () => {
+  const bytecode = lifecyclePackage("stop");
+  Object.assign(bytecode.actors[0], { crash: 1, crash_info: 0, crash_action: 0 });
+  bytecode.variants = [{ id: 0, name: "CrashAction", cases: [], runtime_tags: {} }];
+  assert.equal(admitPackage(bytecode)?.code, "sandbox.package.crash_hook_shapes");
+});
+
 
 test("only an authored close may omit a safepoint cancellation edge", () => {
   const bytecode = lifecyclePackage("stop");

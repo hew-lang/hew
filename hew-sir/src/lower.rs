@@ -1062,6 +1062,12 @@ pub(crate) fn runtime_variant_tags(
             (Role::ActorErrorPartition, "Partition"),
         ],
         TypeHead::Builtin(BuiltinType::LinkError) => &[(Role::LinkErrorNoContext, "NoContext")],
+        TypeHead::Builtin(BuiltinType::CrashKind) => &[
+            (Role::CrashKindFault, "Fault"),
+            (Role::CrashKindHeapExceeded, "HeapExceeded"),
+            (Role::CrashKindPartitionDetected, "PartitionDetected"),
+            (Role::CrashKindHandlerFailed, "HandlerFailed"),
+        ],
         head if *head == KnownDecl::Delivery.head() => &[
             (Role::DeliveryAccepted, "Accepted"),
             (Role::DeliveryDiscarded, "Discarded"),

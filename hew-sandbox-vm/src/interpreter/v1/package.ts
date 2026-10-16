@@ -71,6 +71,10 @@ export interface VariantShape {
 }
 
 export type RuntimeVariantRole =
+  | "CrashKindFault"
+  | "CrashKindHeapExceeded"
+  | "CrashKindPartitionDetected"
+  | "CrashKindHandlerFailed"
   | "OptionSome"
   | "OptionNone"
   | "ResultOk"
@@ -619,6 +623,7 @@ export interface ActorShape {
   stop: number[];
   crash?: number;
   crash_info?: number;
+  crash_kind?: number;
   crash_action?: number;
   exit?: number;
   down?: number;

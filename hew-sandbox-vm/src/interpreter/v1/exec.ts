@@ -89,6 +89,7 @@ type Fault = (
       assertion?: { operator: string; left: string; right: string };
       cancelled?: boolean;
       deadline?: boolean;
+      handlerFailed?: boolean;
     }
   | { kind: "trap"; trap: TrapName; message?: string }
 ) & { primary?: Fault; secondary?: Fault[] };
@@ -4247,6 +4248,7 @@ class ExecutorV1 {
                 else {
                   this.crashActor(actor, {
                     kind: "panic",
+                    handlerFailed: true,
                     message: "unhandled declared handler failure",
                   });
                   return;
@@ -4335,7 +4337,16 @@ class ExecutorV1 {
         typeId: this.aggregateName(actor.layout.crash_info!),
         shape: actor.layout.crash_info!,
         fields: [
-          { kind: "i64", value: BigInt(code!) },
+          {
+            kind: "enum",
+            typeId: this.variantName(actor.layout.crash_kind!),
+            shape: actor.layout.crash_kind!,
+            tag: runtimeTag(
+              this.pkg.variants[actor.layout.crash_kind!]!,
+              code === 213 ? "CrashKindHandlerFailed" : "CrashKindFault",
+            ),
+            payload: [],
+          },
           stringValue(String(message)),
         ],
       };
@@ -4862,6 +4873,7 @@ function combineFaults(
 
 function faultInfo(fault: Fault): [number, string] {
   if (fault.kind === "panic") {
+    if (fault.handlerFailed) return [213, "ActorUnhandledFailure"];
     if (fault.cancelled) return [-1, "Cancelled"];
     if (fault.deadline) return [-2, "Deadline"];
     return [212, "UserPanic"];

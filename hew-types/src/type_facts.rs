@@ -1814,7 +1814,7 @@ mod tests {
                 members: vec![ResolvedTy::String, ResolvedTy::I64],
             },
         );
-        // `std/failure.hew::CrashInfo { code: i64, message: string }`.
+        // `std/failure.hew::CrashInfo { kind: CrashKind, message: string }`.
         decls.insert(
             crate::NominalId::for_test("std.failure.CrashInfo"),
             DeclaredType {
@@ -1822,7 +1822,10 @@ mod tests {
                 is_opaque: false,
                 marker: DeclarationMarker::None,
                 type_params: vec![],
-                members: vec![ResolvedTy::I64, ResolvedTy::String],
+                members: vec![
+                    named("CrashKind", Some(BuiltinType::CrashKind), vec![]),
+                    ResolvedTy::String,
+                ],
             },
         );
         // `std/failure.hew::CrashNotification { target: DownTarget, kind: CrashKind }`.

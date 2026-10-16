@@ -236,7 +236,6 @@ fn single_worker_message_budget_and_restart_budget_bound_execution() {
             sys_dispatch: None,
             arena_cap_bytes: 0,
             cycle_capable: 0,
-            on_crash: None,
             lifecycle_fn: None,
             init_fn: None,
             config: std::ptr::null_mut(),

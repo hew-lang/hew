@@ -2,8 +2,9 @@
   "actors": [
     {
       "crash": 2,
-      "crash_action": 0,
+      "crash_action": 1,
       "crash_info": 0,
+      "crash_kind": 0,
       "handlers": [
         {
           "callable": 3,
@@ -24,7 +25,7 @@
   "aggregates": [
     {
       "fields": [
-        "code",
+        "kind",
         "message"
       ],
       "id": 0,
@@ -175,7 +176,7 @@
               "policy": "wait",
               "sealed": false
             },
-            "error_shape": 2,
+            "error_shape": 3,
             "inputs": [
               {
                 "decision": "borrow",
@@ -187,14 +188,14 @@
             "request_shapes": {
               "failure": 1,
               "message": null,
-              "reason": 4,
+              "reason": 5,
               "request": null
             },
             "result": {
               "own": "none",
               "value": 2
             },
-            "result_shape": 1,
+            "result_shape": 2,
             "resumes": [
               {
                 "args": [
@@ -301,7 +302,7 @@
               "policy": "wait",
               "sealed": false
             },
-            "error_shape": 2,
+            "error_shape": 3,
             "inputs": [
               {
                 "decision": "borrow",
@@ -313,14 +314,14 @@
             "request_shapes": {
               "failure": 1,
               "message": null,
-              "reason": 4,
+              "reason": 5,
               "request": null
             },
             "result": {
               "own": "none",
               "value": 4
             },
-            "result_shape": 1,
+            "result_shape": 2,
             "resumes": [
               {
                 "args": [
@@ -451,7 +452,7 @@
             ],
             "op": "switch.variant",
             "scrutinee": 5,
-            "shape": 1,
+            "shape": 2,
             "span": {
               "end": 271,
               "start": 271
@@ -515,7 +516,7 @@
               "dst": 11,
               "op": "variant.is",
               "own": "none",
-              "shape": 2,
+              "shape": 3,
               "source": 9,
               "span": null,
               "variant": 4
@@ -551,7 +552,7 @@
               "dst": null,
               "op": "variant.destructure",
               "results": [],
-              "shape": 2,
+              "shape": 3,
               "source": 9,
               "span": null,
               "variant": 4
@@ -1041,7 +1042,7 @@
               "fields": [],
               "op": "variant.make",
               "own": "none",
-              "shape": 0,
+              "shape": 1,
               "span": {
                 "end": 159,
                 "start": 159
@@ -1113,12 +1114,28 @@
           "ops": [],
           "params": [],
           "term": {
-            "edge": {
+            "cancel": {
               "args": [],
-              "to": 1
+              "to": 2
             },
-            "op": "goto",
-            "span": null
+            "detail": {
+              "budget": 4000
+            },
+            "error_shape": null,
+            "inputs": [],
+            "kind": "Safepoint",
+            "op": "suspend",
+            "request_shapes": null,
+            "result": null,
+            "result_shape": null,
+            "resumes": [
+              {
+                "args": [],
+                "to": 1
+              }
+            ],
+            "span": null,
+            "unwind": null
           }
         },
         {
@@ -1140,7 +1157,7 @@
             "assertion": null,
             "cleanup": {
               "args": [],
-              "to": 3
+              "to": 6
             },
             "message": {
               "decision": "borrow",
@@ -1158,7 +1175,11 @@
           "ops": [],
           "params": [],
           "term": {
-            "op": "resume_unwind",
+            "edge": {
+              "args": [],
+              "to": 4
+            },
+            "op": "goto",
             "span": null
           }
         },
@@ -1167,32 +1188,18 @@
           "ops": [],
           "params": [],
           "term": {
-            "edge": {
-              "args": [],
-              "to": 5
-            },
-            "op": "goto",
-            "span": {
-              "end": 46,
-              "start": 46
-            }
+            "op": "resume_unwind",
+            "span": null
           }
         },
         {
           "id": 4,
-          "ops": [
-            {
-              "dst": null,
-              "op": "destroy_value",
-              "span": null,
-              "value": 1
-            }
-          ],
+          "ops": [],
           "params": [],
           "term": {
             "edge": {
               "args": [],
-              "to": 2
+              "to": 5
             },
             "op": "goto",
             "span": null
@@ -1205,7 +1212,7 @@
           "term": {
             "edge": {
               "args": [],
-              "to": 6
+              "to": 3
             },
             "op": "goto",
             "span": null
@@ -1218,7 +1225,56 @@
           "term": {
             "edge": {
               "args": [],
-              "to": 4
+              "to": 8
+            },
+            "op": "goto",
+            "span": {
+              "end": 46,
+              "start": 46
+            }
+          }
+        },
+        {
+          "id": 7,
+          "ops": [
+            {
+              "dst": null,
+              "op": "destroy_value",
+              "span": null,
+              "value": 1
+            }
+          ],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 3
+            },
+            "op": "goto",
+            "span": null
+          }
+        },
+        {
+          "id": 8,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 9
+            },
+            "op": "goto",
+            "span": null
+          }
+        },
+        {
+          "id": 9,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 7
             },
             "op": "goto",
             "span": null
@@ -1270,6 +1326,34 @@
       "cases": [
         {
           "fields": [],
+          "name": "Fault"
+        },
+        {
+          "fields": [],
+          "name": "HeapExceeded"
+        },
+        {
+          "fields": [],
+          "name": "PartitionDetected"
+        },
+        {
+          "fields": [],
+          "name": "HandlerFailed"
+        }
+      ],
+      "id": 0,
+      "name": "CrashKind",
+      "runtime_tags": {
+        "CrashKindFault": 0,
+        "CrashKindHandlerFailed": 3,
+        "CrashKindHeapExceeded": 1,
+        "CrashKindPartitionDetected": 2
+      }
+    },
+    {
+      "cases": [
+        {
+          "fields": [],
           "name": "Restart"
         },
         {
@@ -1281,7 +1365,7 @@
           "name": "GiveUp"
         }
       ],
-      "id": 0,
+      "id": 1,
       "name": "CrashAction",
       "runtime_tags": {}
     },
@@ -1300,7 +1384,7 @@
           "name": "Err"
         }
       ],
-      "id": 1,
+      "id": 2,
       "name": "Result<(), ActorError<Never, Never>>",
       "runtime_tags": {
         "ResultErr": 1,
@@ -1358,7 +1442,7 @@
           "name": "Partition"
         }
       ],
-      "id": 2,
+      "id": 3,
       "name": "ActorError<Never, Never>",
       "runtime_tags": {
         "ActorErrorConnectionDropped": 9,
@@ -1376,7 +1460,7 @@
     },
     {
       "cases": [],
-      "id": 3,
+      "id": 4,
       "name": "Never",
       "runtime_tags": {}
     },
@@ -1425,7 +1509,7 @@
           "name": "WriteTimedOut"
         }
       ],
-      "id": 4,
+      "id": 5,
       "name": "SendError",
       "runtime_tags": {
         "SendErrorBackpressure": 7,

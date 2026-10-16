@@ -104,6 +104,10 @@ pub struct VariantShape {
 fn runtime_role_name(role: RuntimeVariantRole) -> &'static str {
     use RuntimeVariantRole as Role;
     match role {
+        Role::CrashKindFault => "CrashKindFault",
+        Role::CrashKindHeapExceeded => "CrashKindHeapExceeded",
+        Role::CrashKindPartitionDetected => "CrashKindPartitionDetected",
+        Role::CrashKindHandlerFailed => "CrashKindHandlerFailed",
         Role::OptionSome => "OptionSome",
         Role::OptionNone => "OptionNone",
         Role::ResultOk => "ResultOk",
@@ -173,6 +177,8 @@ pub struct Actor {
     pub crash: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub crash_info: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub crash_kind: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub crash_action: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -885,6 +891,14 @@ impl<'m> Walker<'m> {
                         .and_then(|id| self.module.callable(id))
                         .and_then(|callable| callable.signature.params.get(1))
                         .and_then(|parameter| self.module.aggregate_shape_for_type(&parameter.ty))
+                        .map(|shape| shape.id.0),
+                    crash_kind: actor
+                        .crash
+                        .and_then(|id| self.module.callable(id))
+                        .and_then(|callable| callable.signature.params.get(1))
+                        .and_then(|parameter| self.module.aggregate_shape_for_type(&parameter.ty))
+                        .and_then(|shape| shape.fields.first())
+                        .and_then(|field| self.module.variant_shape_for_type(&field.ty))
                         .map(|shape| shape.id.0),
                     crash_action: actor
                         .crash

@@ -87,7 +87,6 @@ fn supervisor_child_spec_accepts_cycle_capable_bit() {
         sys_dispatch: None,
         arena_cap_bytes: 0,
         cycle_capable: 1,
-        on_crash: None,
         lifecycle_fn: None,
         init_fn: None,
         config: ptr::null_mut(),

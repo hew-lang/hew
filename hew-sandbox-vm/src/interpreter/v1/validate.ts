@@ -291,6 +291,22 @@ export function admitPackage(pkg: PackageV1): SandboxRejection | null {
   }
 
   for (const actor of pkg.actors ?? []) {
+    if (
+      actor.crash != null &&
+      (actor.crash_info == null ||
+        !pkg.aggregates[actor.crash_info] ||
+        actor.crash_kind == null ||
+        !pkg.variants[actor.crash_kind] ||
+        actor.crash_action == null ||
+        !pkg.variants[actor.crash_action])
+    )
+      return {
+        category: "invalid_package",
+        code: "sandbox.package.crash_hook_shapes",
+        capability: null,
+        message: "crash hook lacks its exact info, kind or action shape",
+        span: null,
+      };
     if (actor.handlers.some((handler) => handler.every_ns != null))
       return unavailable("actor.periodic");
     if (actor.exit != null || actor.down != null)

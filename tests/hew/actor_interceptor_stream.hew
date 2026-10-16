@@ -13,8 +13,12 @@ actor Producer {
     receive gen fn blocked(text: string) -> string {
         yield text;
     }
-    receive gen fn accepted() -> string { yield "next delivery"; }
-    receive fn alive() -> bool { true }
+    receive gen fn accepted() -> string {
+        yield "next delivery";
+    }
+    receive fn alive() -> bool {
+        true
+    }
 }
 
 #[test]
@@ -24,9 +28,7 @@ fn interceptor_stream_refusal_faults_the_reader_without_crashing_the_actor() {
     let failed = scope {
         denied.recv();
         false
-    } handle failure {
-        true
-    };
+    } handle failure { true };
     assert(failed);
     assert(producer.alive().expect("refusal leaves producer alive"));
     let next = producer.accepted();
@@ -52,7 +54,7 @@ actor FaultyProducer {
     }
     #[on(crash)]
     fn crashed(info: failure.CrashInfo) -> failure.CrashAction {
-        assert(info.code == 212);
+        assert(info.kind == CrashKind.Fault);
         failure.CrashAction.Restart
     }
 }
@@ -71,9 +73,7 @@ fn interceptor_fault_after_stream_handler_cannot_become_clean_eof() {
             assert(text == "owned buffered item");
         }
         false
-    } handle failure {
-        true
-    };
+    } handle failure { true };
     assert(failed);
     restarted(producer);
     stop(group);

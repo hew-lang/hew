@@ -2156,7 +2156,7 @@ pub fn lower_program_with_mono_cap(
     // Pub TypeDecls are emitted here for the same reason: imported stdlib
     // record types must appear as `HirItem::TypeDecl` so that `hew-mir`'s layout
     // pass (which walks `module.items`) can populate `record_field_orders` and
-    // emit a `RecordLayout`. Without this, field accesses like `info.code` in
+    // emit a `RecordLayout`. Without this, field accesses like `info.kind` in
     // `#[on(crash)]` bodies fail at MIR time because the payload record layout
     // is absent from `record_field_orders`.
     if let Some(ref mg) = program.module_graph {

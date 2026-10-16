@@ -5,23 +5,19 @@
 //! valid state after its handlers drain and chooses the supervisor's recovery
 //! action. Actor state is released after the hook returns.
 //!
-//! ## `CrashInfo` carries `code` + `message`
+//! ## `CrashInfo` carries `kind` + `message`
 //!
-//! `code` is an opaque integer discriminator the runtime sets per crash
-//! class (arena exhaustion, link-cascade, explicit panic, …).  `message`
+//! `kind` identifies the public crash class using `CrashKind`. `message`
 //! is a heap-owned diagnostic string the runtime supplies (empty when no
 //! message is available); a crash hook can log or route on it.
 
 /// Diagnostic payload passed to `#[on(crash)]` hooks.
 ///
-/// The integer `code` discriminates crash classes; the runtime sets it
-/// before invoking `on_crash`.  `message` carries a heap-owned diagnostic
-/// string (empty when unavailable).  Hooks may match on `code` to decide a
-/// `CrashAction`, but the canonical reading is "any non-zero code is a
-/// real fault — the hook's job is to choose between Restart, Escalate,
-/// and GiveUp".
+/// Match `kind` to choose a recovery action. `message` carries a heap-owned
+/// diagnostic string (empty when unavailable); private runtime fault codes
+/// are not part of this record.
 pub type CrashInfo {
-    code: i64;
+    kind: CrashKind;
     message: string;
 }
 
@@ -58,7 +54,7 @@ pub type CrashNotification {
     kind: CrashKind;
 }
 
-/// Class of a crash propagated to a linked actor.
+/// Class of an actor crash, observed by crash and link hooks.
 ///
 /// These variants are the crash classes exposed at the link boundary; more
 /// detailed runtime reasons remain private to the crashed actor and supervisor.
@@ -70,4 +66,6 @@ pub enum CrashKind {
     HeapExceeded;
     /// A remote link became unreachable under its partition policy.
     PartitionDetected;
+    /// A mailbox handler returned a declared error without a waiting caller.
+    HandlerFailed;
 }

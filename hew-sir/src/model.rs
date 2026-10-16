@@ -681,6 +681,10 @@ pub struct SemVariantShape {
 /// cannot become a runtime result through a spelling collision.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RuntimeVariantRole {
+    CrashKindFault,
+    CrashKindHeapExceeded,
+    CrashKindPartitionDetected,
+    CrashKindHandlerFailed,
     OptionSome,
     OptionNone,
     ResultOk,

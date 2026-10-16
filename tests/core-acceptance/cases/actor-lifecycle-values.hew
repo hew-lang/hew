@@ -2,9 +2,9 @@ import std.failure;
 
 import std.link_monitor;
 
-fn info(value: failure.CrashInfo) -> i64 {
+fn info(value: failure.CrashInfo) -> failure.CrashKind {
     println(value.message);
-    value.code
+    value.kind
 }
 
 fn note(value: link_monitor.DownNotification) -> u64 {
@@ -12,7 +12,7 @@ fn note(value: link_monitor.DownNotification) -> u64 {
 }
 
 fn main() {
-    assert(info(failure.CrashInfo { code: 1, message: "hello".to_upper() }) == 1);
+    assert(info(failure.CrashInfo { kind: .HandlerFailed, message: "hello".to_upper() }) == failure.CrashKind.HandlerFailed);
     let value = link_monitor.DownNotification { monitor: link_monitor.MonitorId { value: 7 }, target: .Local(4), reason: .Crashed(failure.CrashKind.Fault) };
     assert(note(value) == 7);
 }

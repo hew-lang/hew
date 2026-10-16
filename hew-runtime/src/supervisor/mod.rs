@@ -19,9 +19,7 @@ use std::time::{Duration, Instant};
 use crate::actor::{self, HewActor, HewActorOpts};
 use crate::clock::hew_now_ms;
 use crate::exit_status::{FaultRecord, FaultRuling, RoleKey};
-use crate::internal::types::{
-    HewActorState, HewDispatchFn, HewLifecycleFn, HewOnCrashFn, HewSysDispatchFn,
-};
+use crate::internal::types::{HewActorState, HewDispatchFn, HewLifecycleFn, HewSysDispatchFn};
 use crate::mailbox;
 use crate::mailbox_header::HewSysMsg;
 use crate::pool::{HewActorPool, PoolStrategy};
@@ -499,15 +497,9 @@ pub(crate) unsafe fn actor_stop_budget(actor: &HewActor) -> i64 {
 
 // ── CrashAction return tags (M-4) ─────────────────────────────────────────
 //
-// The `HewOnCrashFn` ABI returns the hook's `CrashAction` decision as a 2-byte
-// `#[repr(C)] HewCrashActionAbi { tag: u8, payload_pad: [u8;1] }` struct BY VALUE
-// (mirroring the codegen `%CrashAction = { i8, [1 x i8] }`); the supervisor reads
-// field 0 (the `tag`) via `tag_i32()` and decodes it against these constants, in
-// `std/failure.hew::CrashAction` declaration order. The supervisor HONOURS this
-// return: Kill spends the role and Escalate transfers the failure to its parent.
-// Restart continues through the child's static policy, budget and circuit
-// breaker; it cannot override a temporary policy. A tag outside `0..=2` also
-// follows that ordinary policy path.
+// The child's drained native hook returns a tag in `std.failure.CrashAction`
+// declaration order. GiveUp spends the role; Escalate transfers the failure;
+// Restart applies the ordinary child policy, budget and circuit breaker.
 pub const CRASH_ACTION_RESTART: i32 = 0;
 pub const CRASH_ACTION_ESCALATE: i32 = 1;
 pub const CRASH_ACTION_KILL: i32 = 2;
@@ -750,23 +742,17 @@ pub struct HewChildSpec {
     /// Non-zero when the child actor participates in an actor-ref cycle.
     /// Future consumer: cycle-detection / Machine Lane B cycle handling.
     pub cycle_capable: c_int,
-    /// Optional crash handler invoked before the restart policy is applied.
-    /// Called with the execution context, trap-kind code, and actor state
-    /// pointer when the child exits with `HewActorState::Crashed`.
-    /// `None` / null means no handler. Not read by the runtime in this change;
-    /// the invocation path is added in a follow-on change.
-    pub on_crash: Option<HewOnCrashFn>,
     /// Optional lifecycle wrapper that runs the child actor's `init()` /
     /// `#[on(start)]` hooks. `None` / null when the actor declares neither.
     ///
-    /// Read during `hew_supervisor_add_child_spec` (exactly as `on_crash` is)
+    /// Read during `hew_supervisor_add_child_spec`
     /// and copied into the internal spec so it fires on the INITIAL supervised
     /// spawn — the spawn happens inside `add_child_spec`, before any post-hoc
     /// setter runs, so the literal field (not the setter) is the load-bearing
     /// carrier for the initial fire. `restart_child_from_spec` then calls it on
     /// every spawn (initial and restart) from the one firing site.
     ///
-    /// Read during `hew_supervisor_add_child_spec` (exactly as `on_crash` is)
+    /// Read during `hew_supervisor_add_child_spec`
     /// and copied into the internal spec so it fires on the INITIAL supervised
     /// spawn — the spawn happens inside `add_child_spec`, before any post-hoc
     /// setter runs, so the literal field (not the setter) is the load-bearing
@@ -788,7 +774,7 @@ pub struct HewChildSpec {
     /// (audit C1). `init_state`/`init_state_size` are left NULL/0 when this is
     /// `Some` (the template deep-copy in `add_child_spec` is skipped).
     ///
-    /// Carried IN the spec literal (like `on_crash`/`lifecycle_fn`) so the
+    /// Carried IN the spec literal (like `lifecycle_fn`) so the
     /// INITIAL supervised spawn — which happens inside `add_child_spec` before
     /// any post-hoc setter runs — uses the thunk. The mirror precedent is
     /// `SupervisorChildSpec.init_fn` for child *supervisors*.
@@ -839,8 +825,7 @@ pub struct HewChildSpec {
 /// `error_code` slot at the moment of the trap. It is meaningful only when
 /// `exit_state == HewActorState::Crashed`; for normal stops it is `0`.
 /// Routing this through the event payload lets the supervisor record the real
-/// trap code in crash-stats and forward it to a registered `on_crash` handler
-/// instead of falling back to the historical SIGSEGV placeholder (`11`).
+/// trap code in crash statistics after the child's retained hook has drained.
 ///
 /// `child_index` is `u32`: a negative index is unrepresentable. It formerly
 /// carried `-1` to retag the whole record as a child-SUPERVISOR escalation,
@@ -1571,10 +1556,6 @@ struct InternalChildSpec {
     /// Copied from `HewChildSpec::cycle_capable` and forwarded into
     /// `HewActorOpts` for every restart.
     cycle_capable: c_int,
-    /// Crash handler copied from `HewChildSpec::on_crash`. Invoked from
-    /// `apply_restart` before the restart policy is consulted when the child
-    /// exits with `HewActorState::Crashed`. `None` means no handler.
-    on_crash: Option<HewOnCrashFn>,
     /// Codegen-emitted lifecycle wrapper that runs the child actor's `init()` /
     /// `#[on(start)]` hooks. Copied from `HewChildSpec::lifecycle_fn` at spec
     /// registration (so the INITIAL supervised spawn fires it inside
@@ -1736,7 +1717,6 @@ impl Default for InternalChildSpec {
             circuit_breaker: CircuitBreakerState::default(),
             arena_cap_bytes: 0,
             cycle_capable: 0,
-            on_crash: None,
             lifecycle_fn: None,
             init_fn: None,
             config: ptr::null_mut(),

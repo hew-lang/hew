@@ -7,7 +7,7 @@ fn native_crash_context_type(ctx: &Context) -> StructType<'_> {
     ctx.struct_type(
         &[
             ptr.into(),
-            ctx.i64_type().into(),
+            ctx.i32_type().into(),
             ptr.into(),
             ctx.i64_type().into(),
             ctx.i32_type().into(),
@@ -106,6 +106,17 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
             ))
             .llvm_ctx("ignore invalid notification enum")?;
         builder.position_at_end(accepted);
+        self.lifecycle_variant_store(builder, destination, builtin, tag)
+    }
+
+    fn lifecycle_variant_store(
+        &self,
+        builder: &Builder<'ctx>,
+        destination: PointerValue<'ctx>,
+        builtin: hew_types::BuiltinType,
+        tag: IntValue<'ctx>,
+    ) -> CodegenResult<()> {
+        let layout = self.lifecycle_variant_layout(builtin)?;
         let object = llvm_type(self.ctx, &layout.object.repr)?.into_struct_type();
         let tag_ty = object
             .get_field_type_at_index(0)
@@ -456,9 +467,10 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                 let state = builder
                     .build_load(ptr, field(0, "crash.state")?, "crash.actor.state")
                     .llvm_ctx("borrow initialized crash state")?;
-                let code = builder
-                    .build_load(i64_ty, field(1, "crash.code")?, "crash.code.value")
-                    .llvm_ctx("read crash code")?;
+                let kind = builder
+                    .build_load(i32_ty, field(1, "crash.kind")?, "crash.kind.value")
+                    .llvm_ctx("read crash kind")?
+                    .into_int_value();
                 let message = builder
                     .build_load(ptr, field(2, "crash.message")?, "crash.message.value")
                     .llvm_ctx("borrow crash diagnostic")?;
@@ -471,12 +483,15 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                     .layout;
                 let object_ty = llvm_type(self.ctx, &layout.repr)?.into_struct_type();
                 let object = frame.storage(self.ctx, object_ty.into(), "crash.info")?;
-                let code_ptr = builder
-                    .build_struct_gep(object_ty, object, 0, "crash.info.code")
-                    .llvm_ctx("address crash info code")?;
-                builder
-                    .build_store(code_ptr, code)
-                    .llvm_ctx("store crash info code")?;
+                let kind_ptr = builder
+                    .build_struct_gep(object_ty, object, 0, "crash.info.kind")
+                    .llvm_ctx("address crash info kind")?;
+                self.lifecycle_variant_store(
+                    builder,
+                    kind_ptr,
+                    hew_types::BuiltinType::CrashKind,
+                    kind,
+                )?;
                 let clone = get_or_declare_external(
                     &self.llvm,
                     "hew_string_clone",
@@ -1025,8 +1040,8 @@ mod abi_tests {
                 field_size(|c: &HewNativeCrashContext| &c.state),
             ),
             (
-                offset_of!(HewNativeCrashContext, code),
-                field_size(|c: &HewNativeCrashContext| &c.code),
+                offset_of!(HewNativeCrashContext, kind),
+                field_size(|c: &HewNativeCrashContext| &c.kind),
             ),
             (
                 offset_of!(HewNativeCrashContext, message),

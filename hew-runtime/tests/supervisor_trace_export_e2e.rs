@@ -100,7 +100,6 @@ fn start_one_child_supervisor(name: &str) -> (TestSupervisor, CString) {
             sys_dispatch: None,
             arena_cap_bytes: 0,
             cycle_capable: 0,
-            on_crash: None,
             lifecycle_fn: None,
             init_fn: None,
             config: std::ptr::null_mut(),

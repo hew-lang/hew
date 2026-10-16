@@ -935,7 +935,7 @@ mod tests {
         let context = unsafe { &mut *context.cast::<super::HewNativeCrashContext>() };
         // SAFETY: the fixture lends this exact scalar record until hook drain.
         let state = unsafe { &mut *context.state.cast::<ExternalTrapHooks>() };
-        assert_eq!(context.code, 91);
+        assert_eq!(context.kind, crate::internal::types::CrashKind::Crashed);
         assert_eq!(state.calls, 0);
         assert_eq!(state.drops, 0);
         // SAFETY: the context retains a managed diagnostic string.

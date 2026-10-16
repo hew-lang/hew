@@ -1,0 +1,21 @@
+[[case]]
+id = "directory-capabilities-direction-refused"
+intent = "A supplied read root cannot write and a supplied write root cannot read."
+source = "fixtures/directory-capabilities/direction-refused.hew"
+kind = "reject"
+suites = ["acceptance"]
+timeout_seconds = 15
+
+[[case.expected.diagnostics]]
+code = "UndefinedMethod"
+severity = "error"
+line = 4
+column = 5
+message = "no method `write` on `std.fs.ReadDir`"
+
+[[case.expected.diagnostics]]
+code = "UndefinedMethod"
+severity = "error"
+line = 8
+column = 5
+message = "no method `read` on `std.fs.WriteDir`"

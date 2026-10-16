@@ -69,7 +69,8 @@ pub use verify::{
 /// e.g. `@"greeting.hello"`), but dots in native object-file symbol
 /// names are problematic on macOS and Linux linkers.  This helper
 /// replaces every `.` separator with `$` so the symbol is safe on all
-/// supported targets.
+/// supported targets. Empty path segments and literal percent signs are escaped
+/// so parent-relative imports cannot produce the `$$` generic argument separator.
 ///
 /// Used symmetrically in HIR fn-registry keying, HIR fn-body emission,
 /// MIR `module_fn_names` collection, and codegen `declare_function`.
@@ -85,5 +86,17 @@ pub use verify::{
 /// ```
 #[must_use]
 pub fn mangle_dotted_name(name: &str) -> String {
-    name.replace('.', "$")
+    if !name.contains('.') {
+        return name.to_owned();
+    }
+    name.split('.')
+        .map(|segment| {
+            if segment.is_empty() {
+                "%00".to_owned()
+            } else {
+                segment.replace('%', "%25")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("$")
 }

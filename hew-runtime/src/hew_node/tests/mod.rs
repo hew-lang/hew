@@ -1000,12 +1000,12 @@ fn start_authorized_quic_mesh_node(
     config.node_identity = Some(crate::node_identity::NodeId::from_spki(&local_spki));
     let identity_dir = tempfile::tempdir().expect("authorized mesh identity dir");
     config.identity_path = Some(identity_dir.path().join("node.pem"));
-    config.mesh_identity = Some(crate::peer_binding::MeshIdentityMaterial::from_der(
+    config.mesh_identity = Some(crate::peer_binding::MeshIdentityMaterial::from_shared_der(
         tls.cert_chain
             .iter()
             .map(|certificate| certificate.as_ref().to_vec())
             .collect(),
-        tls.private_key_pkcs8.clone(),
+        Arc::clone(&tls.private_key_pkcs8),
         local_spki,
     ));
     config

@@ -416,6 +416,23 @@ fn an_actor_handler_joins_parallel_requests_without_reentering_its_state() {
 }
 
 #[test]
+fn positional_record_payloads_cannot_hide_a_scoped_task() {
+    let rejected = hew_wasm::sandbox::compile_to_sandbox_bytecode_with_inputs(
+        include_str!("../../tests/core-acceptance/cases/task-generic-record-callback-escape.hew"),
+        Some("sandbox-vm-export"),
+        hew_compile::SourceSet::in_memory(),
+    )
+    .expect("source refusal is a diagnostic");
+    assert!(rejected.bytecode.is_none());
+    assert!(rejected.diagnostics.iter().any(|diagnostic| {
+        diagnostic.kind == "InvalidOperation"
+            && diagnostic
+                .message
+                .contains("a task handle cannot outlive its scope")
+    }));
+}
+
+#[test]
 fn pipe_send_and_receive_resume_through_backpressure() {
     let trace = execute(
         r#"
@@ -992,6 +1009,18 @@ fn imported_generic_resources_specialize_and_drain_on_every_exit() {
         .diagnostics
         .iter()
         .any(|diagnostic| diagnostic.severity == "error" && diagnostic.kind == "UseAfterConsume"));
+}
+
+#[test]
+fn parent_relative_generic_actor_imports_execute() {
+    let mut inputs = hew_compile::SourceSet::in_memory();
+    inputs.insert(
+        "../worker.hew",
+        "pub actor Worker<T> { let value: T; receive fn read() -> i64 { 1 } }",
+    );
+    let source = "import \"../worker.hew\"; fn main() { let worker = spawn Worker { value: 1 }; assert(worker.read().expect(\"read\") == 1); stop(worker); stopped(worker); }";
+    let trace = execute_options(source, "ok", "{}", inputs);
+    assert_eq!(trace["final_state"]["exit_code"], 0);
 }
 
 fn assert_native_manifest(name: &str, inputs: hew_compile::SourceSet) -> serde_json::Value {

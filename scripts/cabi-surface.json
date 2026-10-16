@@ -19718,35 +19718,9 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_transport_is_quic( *const HewTransport) -> bool"
-      },
-      "symbol": "hew_transport_is_quic"
-    },
-    {
-      "availability": [
-        "native"
-      ],
-      "classification": "stable",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
         "native": "fn hew_transport_is_quic_mesh( *const HewTransport) -> bool"
       },
       "symbol": "hew_transport_is_quic_mesh"
-    },
-    {
-      "availability": [
-        "native"
-      ],
-      "classification": "stable",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_transport_quic_free( *mut HewTransport)"
-      },
-      "symbol": "hew_transport_quic_free"
     },
     {
       "availability": [
@@ -19773,19 +19747,6 @@
         "native": "fn hew_transport_quic_mesh_new() -> *mut HewTransport"
       },
       "symbol": "hew_transport_quic_mesh_new"
-    },
-    {
-      "availability": [
-        "native"
-      ],
-      "classification": "stable",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_transport_quic_new() -> *mut HewTransport"
-      },
-      "symbol": "hew_transport_quic_new"
     },
     {
       "availability": [

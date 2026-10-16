@@ -1050,8 +1050,8 @@ ratchet-accounting: ## Check: expected-failure ledger accounting across every su
 ratchet-accounting-nextest: ## Check: nextest expected-failure accounting
 	$(MAKE) test
 
-# Informational: needs `gh` (authenticated) and network, so it runs in the
-# nightly ratchet-accounting workflow, not PR CI. Read-only — reports a row
+# Informational: needs `gh` (authenticated) and network, so ledger-issues.yml
+# runs it on issue state/title and ledger-source changes. Read-only — reports a row
 # citing a closed issue and open `ratchet:` issues no row cites; never
 # fails and never edits a ledger.
 ledger-issues: ## Check: report closed and uncited ratchet issues

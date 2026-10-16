@@ -1,6 +1,7 @@
-// The losing operand has no safepoint to observe cancellation at, so it runs
-// to completion after the race already has a winner. Its owned result is
-// never returned to the caller; the race releases it exactly once.
+// Buffered notifications and the FIFO driver let both bounded tasks finish
+// before their parent resumes. The race releases the unobserved result once.
+import std.stream;
+
 #[resource]
 type Handle {
     label: string;
@@ -12,25 +13,22 @@ impl Handle {
     }
 }
 
-fn fast() -> Handle {
-    sleep(1ms);
-    println("fast done");
-    Handle { label: "fast" }
-}
-
-fn slow_uncancellable() -> Handle {
-    var total: i64 = 0;
-    for i in 0..150000000 {
-        total = total + (i % 7);
-    }
-    println("slow done " + to_string(total));
-    Handle { label: "slow" }
+fn make(label: string, done: stream.Sink<i64>) -> Handle {
+    println(label + " done");
+    done.send(1).expect("completion notification");
+    Handle { label: label }
 }
 
 fn main() {
+    let (first_done, first_ready): (stream.Sink<i64>, stream.Stream<i64>) = stream.pipe(1).expect("first pipe");
+    let (second_done, second_ready): (stream.Sink<i64>, stream.Stream<i64>) = stream.pipe(1).expect("second pipe");
+    let first = fork make("fast", first_done);
+    let second = fork make("slow", second_done);
+    first_ready.recv().expect("first completion");
+    second_ready.recv().expect("second completion");
     let winner = await race [
-        fast(),
-        slow_uncancellable(),
+        first,
+        second,
     ];
     println("picked " + winner.label);
     winner.close();

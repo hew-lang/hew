@@ -662,13 +662,11 @@ pub(super) fn await_child<'ctx>(
         .build_store(frame_slot, child_frame)
         .llvm_ctx("publish current child frame")?;
     let pointer = ctx.ptr_type(AddressSpace::default());
-    let state_value = |name: &str| -> CodegenResult<IntValue<'ctx>> {
+    let state_value = |private: bool| -> CodegenResult<IntValue<'ctx>> {
         let state = builder
             .build_load(pointer, state_slot, "call.child.state")
             .llvm_ctx("restore current child state")?;
-        let function =
-            get_or_declare_external(llvm, name, ctx.i32_type().fn_type(&[pointer.into()], false))?;
-        Ok(call_value(builder, function, &[state.into()], "child.status")?.into_int_value())
+        coro::invocation_outcome(ctx, builder, state.into_pointer_value(), private)
     };
     let free_handle = |name: &str, slot: PointerValue<'ctx>| -> CodegenResult<()> {
         let handle = builder
@@ -715,7 +713,7 @@ pub(super) fn await_child<'ctx>(
         .build_unconditional_branch(poll)
         .llvm_ctx("poll child call")?;
     builder.position_at_end(poll);
-    let status = state_value("hew_coro_state_status")?;
+    let status = state_value(false)?;
     let pending = builder
         .build_int_compare(
             IntPredicate::EQ,
@@ -745,7 +743,7 @@ pub(super) fn await_child<'ctx>(
         .build_unconditional_branch(outcome)
         .llvm_ctx("finish completed child")?;
     builder.position_at_end(outcome);
-    let status = state_value("hew_coro_state_private_status")?;
+    let status = state_value(true)?;
     free_handle("hew_coro_state_free", state_slot)?;
     Ok(status)
 }

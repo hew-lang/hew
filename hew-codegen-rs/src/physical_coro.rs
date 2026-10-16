@@ -7,7 +7,7 @@ use inkwell::context::AsContextRef;
 use inkwell::intrinsics::Intrinsic;
 use inkwell::llvm_sys::{core::LLVMBuildCall2, prelude::LLVMValueRef};
 use inkwell::types::AsTypeRef;
-use inkwell::values::{AsValueRef, CallSiteValue};
+use inkwell::values::{AsValueRef, BasicValue, CallSiteValue};
 use std::cell::Cell;
 
 pub(super) struct Frame<'ctx> {
@@ -99,6 +99,38 @@ fn invocation_type(ctx: &Context) -> inkwell::types::StructType<'_> {
         ],
         false,
     )
+}
+
+/// Checked child ramps publish a private result on every terminal exit. Acquire
+/// completion before observing outputs; after completion or synchronous child
+/// destruction, the private result needs only a relaxed load.
+pub(super) fn invocation_outcome<'ctx>(
+    ctx: &'ctx Context,
+    builder: &Builder<'ctx>,
+    state: PointerValue<'ctx>,
+    private: bool,
+) -> CodegenResult<IntValue<'ctx>> {
+    let field = builder
+        .build_struct_gep(
+            invocation_type(ctx),
+            state,
+            if private { 2 } else { 1 },
+            "call.outcome.slot",
+        )
+        .llvm_ctx("address invocation outcome")?;
+    let outcome = builder
+        .build_load(ctx.i32_type(), field, "call.outcome")
+        .llvm_ctx("read invocation outcome")?;
+    outcome
+        .as_instruction_value()
+        .ok_or_else(|| CodegenError::FailClosed("invocation outcome is not a load".into()))?
+        .set_atomic_ordering(if private {
+            inkwell::AtomicOrdering::Monotonic
+        } else {
+            inkwell::AtomicOrdering::Acquire
+        })
+        .llvm_ctx("observe invocation publication")?;
+    Ok(outcome.into_int_value())
 }
 
 pub(super) fn begin<'ctx>(

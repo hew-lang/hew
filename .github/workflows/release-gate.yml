@@ -528,7 +528,7 @@ jobs:
   gate-windows:
     name: Release Gate — Windows x86_64
     runs-on: windows-2022
-    timeout-minutes: 120
+    timeout-minutes: 240
     env:
       # aws-lc-sys (rustls under hew-runtime, jsonwebtoken under hew-lib) wants
       # NASM on windows-msvc; its documented CI escape consumes the crate's

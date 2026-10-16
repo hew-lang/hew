@@ -253,8 +253,8 @@ fn a_build_without_debug_emits_no_debug_metadata() {
     let with_debug = std::fs::read_to_string(emit(debug.path(), true).ll_path.expect("textual IR"))
         .expect("read IR");
     assert!(
-        with_debug.contains("DICompileUnit") && with_debug.contains("#dbg_declare"),
-        "the same build with -g must carry both"
+        with_debug.contains("DICompileUnit") && with_debug.contains("#dbg_value"),
+        "the same build with -g must carry a compile unit and tracked local values"
     );
 }
 

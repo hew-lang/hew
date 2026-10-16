@@ -116,7 +116,11 @@ extern "C" void hewLLVMStabilizeDebugFrameLocations(LLVMModuleRef module) {
     for (auto [variable, instruction] : records) {
       auto *pointer = variable->getVariableLocationOp(0);
       auto ops = variable->getExpression()->getElements();
-      variable->removeFromParent();
+      auto *marker = variable->getMarker();
+      DbgMarker suffix;
+      suffix.absorbDebugValues(make_range(variable->getIterator(),
+                                          marker->getDbgRecordRange().end()),
+                               *marker, false);
       IRBuilder<> location(instruction);
       location.SetCurrentDebugLocation(DebugLoc());
       Value *address = pointer;
@@ -135,8 +139,9 @@ extern "C" void hewLLVMStabilizeDebugFrameLocations(LLVMModuleRef module) {
       variable->replaceVariableLocationOp(pointer, slot);
       variable->setExpression(DIExpression::get(
           ir->getContext(), {dwarf::DW_OP_deref, dwarf::DW_OP_deref}));
-      instruction->getParent()->insertDbgRecordBefore(
-          variable, instruction->getIterator());
+      instruction->getParent()
+          ->createMarker(instruction)
+          ->absorbDebugValues(suffix, false);
     }
   }
 }

@@ -140,15 +140,18 @@ pub(super) fn collect_captures_walk(
         }
         HirExprKind::RemoteActorAsk {
             receiver,
-            msg,
+            args,
             timeout_ms,
             ..
         } => {
             collect_captures_walk(receiver, param_ids, seen, captures, self_id);
-            collect_captures_walk(msg, param_ids, seen, captures, self_id);
+            for argument in args {
+                collect_captures_walk(argument, param_ids, seen, captures, self_id);
+            }
             collect_captures_walk(timeout_ms, param_ids, seen, captures, self_id);
         }
-        HirExprKind::RemoteActorSend { receiver, msg } => {
+
+        HirExprKind::RemoteActorSend { receiver, msg, .. } => {
             collect_captures_walk(receiver, param_ids, seen, captures, self_id);
             collect_captures_walk(msg, param_ids, seen, captures, self_id);
         }
@@ -401,15 +404,18 @@ pub(super) fn collect_general_closure_captures_walk(
         }
         HirExprKind::RemoteActorAsk {
             receiver,
-            msg,
+            args,
             timeout_ms,
             ..
         } => {
             collect_general_closure_captures_walk(receiver, outer_bindings, seen, captures);
-            collect_general_closure_captures_walk(msg, outer_bindings, seen, captures);
+            for argument in args {
+                collect_general_closure_captures_walk(argument, outer_bindings, seen, captures);
+            }
             collect_general_closure_captures_walk(timeout_ms, outer_bindings, seen, captures);
         }
-        HirExprKind::RemoteActorSend { receiver, msg } => {
+
+        HirExprKind::RemoteActorSend { receiver, msg, .. } => {
             collect_general_closure_captures_walk(receiver, outer_bindings, seen, captures);
             collect_general_closure_captures_walk(msg, outer_bindings, seen, captures);
         }

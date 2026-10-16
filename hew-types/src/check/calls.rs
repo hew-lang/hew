@@ -1164,12 +1164,8 @@ impl Checker {
             // check time so the call fails closed with a structured diagnostic
             // instead of compiling to a wasm module that imports an undefined
             // `env::hew_node_api_*` symbol and traps at instantiation.
-            name if crate::runtime_call::RuntimeCallFamily::from_c_symbol(name).is_some_and(
-                |family| {
-                    family.runtime_capability()
-                        == Some(crate::runtime_call::RuntimeCapability::Node)
-                },
-            ) =>
+            name if matches!(self.call_target_for_signature(name), CallTarget::Runtime(family)
+                if family.runtime_capability() == Some(crate::runtime_call::RuntimeCapability::Node)) =>
             {
                 self.reject_wasm_feature(span, WasmUnsupportedFeature::Distributed);
             }
@@ -1851,12 +1847,45 @@ impl Checker {
                     // (`(Vec.new)(args)` → `"Vec::new"`) because type/module
                     // names are not registered as value bindings.
                     if self.env.lookup_ref(obj_name).is_some() {
+                        let receiver_ty = self
+                            .env
+                            .lookup_ref(obj_name)
+                            .map(|binding| self.subst.resolve(&binding.ty));
+                        let has_method = receiver_ty
+                            .as_ref()
+                            .and_then(|ty| match ty {
+                                Ty::Named { head, args } => self.lookup_named_method_sig(
+                                    head.registry_key(),
+                                    args,
+                                    field.0.name.as_str(),
+                                ),
+                                _ => None,
+                            })
+                            .is_some();
+                        if type_args.is_some() && has_method {
+                            return self.check_method_call_with_type_args(
+                                object,
+                                field.0.name.as_str(),
+                                type_args,
+                                args,
+                                span,
+                            );
+                        }
                         let field_ty = self.synthesize(&func.0, &func.1);
                         let resolved = self.subst.resolve(&field_ty);
                         return self.check_call_with_type(&resolved, func, type_args, args, span);
                     }
                     format!("{obj_name}::{}", field.0)
                 } else {
+                    if type_args.is_some() {
+                        return self.check_method_call_with_type_args(
+                            object,
+                            field.0.name.as_str(),
+                            type_args,
+                            args,
+                            span,
+                        );
+                    }
                     let func_ty = self.synthesize(&func.0, &func.1);
                     return self.check_call_with_type(&func_ty, func, type_args, args, span);
                 }
@@ -3112,7 +3141,7 @@ impl Checker {
             Some(ActorMethodKind::Ask { .. })
         ) || matches!(
             self.method_call_rewrites.get(&key),
-            Some(MethodCallRewrite::RemoteActorAsk)
+            Some(MethodCallRewrite::RemoteActorAsk { .. })
         ) {
             return (ty, Some(CheckedSelectSource::ActorAsk { call: key }));
         }

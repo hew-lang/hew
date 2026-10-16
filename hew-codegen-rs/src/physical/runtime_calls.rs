@@ -500,7 +500,9 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     .llvm_ctx("finish node lookup failure result")?;
                 self.builder.position_at_end(complete);
             }
-            family @ (RuntimeCallFamily::NodeStart | RuntimeCallFamily::NodeConnect) => {
+            family @ (RuntimeCallFamily::NodeStart
+            | RuntimeCallFamily::NodeConnect
+            | RuntimeCallFamily::Service(hew_types::runtime_call::ServiceOp::Peer)) => {
                 let PhysicalRuntimeCarrier::NodeResult {
                     result: result_glue,
                     error: error_glue,
@@ -511,7 +513,17 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     ));
                 };
                 let status_ty = self.ctx.i32_type();
+                let peer_storage = matches!(family, RuntimeCallFamily::Service(_))
+                    .then(|| self.value_emitter().entry_scratch(ptr.into(), "node.peer"))
+                    .transpose()?;
                 let function = match family {
+                    hew_types::RuntimeCallFamily::Service(
+                        hew_types::runtime_call::ServiceOp::Peer,
+                    ) => get_or_declare_external(
+                        self.llvm,
+                        "hew_node_peer_new",
+                        status_ty.fn_type(&[ptr.into(), ptr.into()], false),
+                    )?,
                     hew_types::RuntimeCallFamily::NodeStart => get_or_declare_external(
                         self.llvm,
                         "hew_node_api_start_config",
@@ -534,6 +546,12 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     }
                 };
                 let arguments = match family {
+                    hew_types::RuntimeCallFamily::Service(
+                        hew_types::runtime_call::ServiceOp::Peer,
+                    ) => vec![
+                        self.load(source(0)?, "node.peer.credential")?.into(),
+                        peer_storage.expect("peer slot").into(),
+                    ],
                     hew_types::RuntimeCallFamily::NodeStart => {
                         vec![self.slots[source(0)?.0 as usize].into()]
                     }
@@ -566,7 +584,13 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 self.write_variant_value(
                     destination,
                     0,
-                    &[llvm_type(self.ctx, &unit_layout.repr)?.const_zero()],
+                    &[if let Some(peer) = peer_storage {
+                        self.builder
+                            .build_load(ptr, peer, "node.peer.handle")
+                            .llvm_ctx("load acquired peer")?
+                    } else {
+                        llvm_type(self.ctx, &unit_layout.repr)?.const_zero()
+                    }],
                     result_glue,
                 )?;
                 self.builder

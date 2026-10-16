@@ -981,12 +981,15 @@ impl<'a> InstanceService<'a> {
                 continue;
             };
             let declaration = lifecycle.close_declaration;
-            if self.demanded_opaque_closes.insert(declaration) {
-                closes.push(declaration);
+            if self
+                .demanded_opaque_closes
+                .insert((declaration, key.0.clone()))
+            {
+                closes.push((declaration, key.0.clone()));
             }
         }
-        for declaration in closes {
-            if let Ok(id) = self.admit_monomorphic(declaration) {
+        for (declaration, owner) in closes {
+            if let Ok(id) = self.request_record_close(declaration, &owner) {
                 self.callable_facts.opaque_entries.insert(id);
                 self.request_body(id);
             }

@@ -709,15 +709,18 @@ impl Verifier {
             }
             HirExprKind::RemoteActorAsk {
                 receiver,
-                msg,
+                args,
                 timeout_ms,
                 ..
             } => {
                 self.expr(receiver);
-                self.expr(msg);
+                for argument in args {
+                    self.expr(argument);
+                }
                 self.expr(timeout_ms);
             }
-            HirExprKind::RemoteActorSend { receiver, msg } => {
+
+            HirExprKind::RemoteActorSend { receiver, msg, .. } => {
                 self.expr(receiver);
                 self.expr(msg);
             }

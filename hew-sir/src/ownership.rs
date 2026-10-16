@@ -509,6 +509,10 @@ pub enum SuspendKind {
     },
     /// A `RemotePid` ask to the actor's checked remote member. The request
     /// is encoded before the caller parks; the reply is decoded on resume.
+    ServiceAcquire {
+        actor: crate::ActorId,
+        export: bool,
+    },
     RemoteAsk {
         actor: crate::ActorId,
         message: u32,

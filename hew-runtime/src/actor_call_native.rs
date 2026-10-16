@@ -200,6 +200,8 @@ pub unsafe extern "C" fn hew_actor_call_new(
             payload_release,
             reply_release,
             crate::actor_caller::local_sender(),
+            #[cfg(not(target_arch = "wasm32"))]
+            None,
         )
     }
 }
@@ -222,6 +224,9 @@ pub(crate) unsafe fn actor_call_new(
     payload_release: Option<HewValueReleaseStart>,
     reply_release: Option<HewValueReleaseStart>,
     caller: crate::actor_caller::HewCallerStamp,
+    #[cfg(not(target_arch = "wasm32"))] remote_admission: Option<
+        crate::hew_node::service::RemoteAdmission,
+    >,
 ) -> *mut HewActorCall {
     let mut rejected_payload = ptr::null_mut();
     let envelope = if payload.is_null() {
@@ -259,6 +264,8 @@ pub(crate) unsafe fn actor_call_new(
             policy,
             reply_release,
             caller,
+            #[cfg(not(target_arch = "wasm32"))]
+            remote_admission,
         );
         (*operation).rejected_payload = rejected_payload;
         operation
@@ -299,6 +306,8 @@ pub unsafe extern "C" fn hew_actor_call_resume(
             policy,
             reply_release,
             crate::actor_caller::local_sender(),
+            #[cfg(not(target_arch = "wasm32"))]
+            None,
         )
     }
 }
@@ -318,6 +327,9 @@ pub(crate) unsafe fn actor_call_resume(
     policy: i32,
     reply_release: Option<HewValueReleaseStart>,
     caller: crate::actor_caller::HewCallerStamp,
+    #[cfg(not(target_arch = "wasm32"))] remote_admission: Option<
+        crate::hew_node::service::RemoteAdmission,
+    >,
 ) -> *mut HewActorCall {
     // SAFETY: registration precedes any request publication.
     let channel = unsafe { hew_reply_channel_new_native(waker, drop_reply, reply_release) };
@@ -332,6 +344,8 @@ pub(crate) unsafe fn actor_call_resume(
     let admission = unsafe {
         crate::reply_channel::enable_native_withdrawal(channel);
         crate::reply_channel::set_native_request_deadline(channel, deadline);
+        #[cfg(not(target_arch = "wasm32"))]
+        crate::reply_channel::set_native_request_admission(channel, remote_admission);
         ask_wait_resume(token, message, envelope, channel.cast(), waker, caller)
     };
     let mut operation = Box::new(HewActorCall {

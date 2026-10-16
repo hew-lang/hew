@@ -502,7 +502,7 @@ impl Checker {
     /// `ActorError` carrying the handler's declared failure. A handler without
     /// a `fails` clause can never produce `Failed`, so its error parameter is
     /// the uninhabited `Never`.
-    fn completion_call_type(&mut self, method: crate::DefId, reply_ty: &Ty) -> Ty {
+    pub(super) fn completion_call_type(&mut self, method: crate::DefId, reply_ty: &Ty) -> Ty {
         let (success, failure) = match reply_ty.as_result() {
             Some((success, failure)) if self.receive_fails_methods.contains(&method) => {
                 (success.clone(), failure.clone())

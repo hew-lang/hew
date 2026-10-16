@@ -33,6 +33,7 @@ fn reconnect_plan_threads_expected_peer_identity() {
         expected_peer_ids: PoisonSafe::new(HashMap::new()),
         transport: std::ptr::null_mut(),
         inbound_router: None,
+        service_exports: Arc::default(),
         routing_table: std::ptr::null_mut(),
         cluster: std::ptr::null_mut(),
         reconnect_enabled: AtomicBool::new(true),

@@ -451,24 +451,7 @@ pub fn verify_resource_release(
         };
     }
     if let ResourceRelease::OpaqueClose { lifecycle, .. } = release {
-        let ResolvedTy::Named {
-            head,
-            args,
-            is_opaque: true,
-        } = ty
-        else {
-            return Err("an authored opaque release requires an exact opaque nominal type".into());
-        };
-        return if args.is_empty()
-            && head.nominal().map(hew_types::NominalId::declaration)
-                == Some(lifecycle.resource_declaration)
-            && lifecycle.release_declaration == lifecycle.close_declaration
-            && lifecycle.producer_declarations.is_empty()
-        {
-            Ok(())
-        } else {
-            Err("authored opaque release declaration does not match its nominal owner".into())
-        };
+        return verify_authored_opaque_release(ty, lifecycle);
     }
     if let ResourceRelease::RecordClose { lifecycle, .. } = release {
         let ResolvedTy::Named {
@@ -504,6 +487,31 @@ pub fn verify_resource_release(
             release,
             producers,
         } => verify_nominal_release(defs, ty, lifecycle, release, producers),
+    }
+}
+
+fn verify_authored_opaque_release(
+    ty: &ResolvedTy,
+    lifecycle: &hew_hir::OpaqueResourceLifecycle,
+) -> Result<(), String> {
+    let ResolvedTy::Named {
+        head,
+        args,
+        is_opaque: true,
+    } = ty
+    else {
+        return Err("an authored opaque release requires an exact opaque nominal type".into());
+    };
+    if (args.is_empty() || hew_types::runtime_call::ServiceHandleKind::of_ty(ty).is_some())
+        && head
+            .nominal()
+            .is_some_and(|owner| owner.declaration() == lifecycle.resource_declaration)
+        && lifecycle.release_declaration == lifecycle.close_declaration
+        && lifecycle.producer_declarations.is_empty()
+    {
+        Ok(())
+    } else {
+        Err("authored opaque release declaration does not match its nominal owner".into())
     }
 }
 

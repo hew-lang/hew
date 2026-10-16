@@ -282,6 +282,7 @@ pub struct HewConnMgr {
     /// Admitted inbound asks and reverse-link setup owners for this manager.
     pub(crate) inbound_ask_active: Arc<AtomicUsize>,
     pub(crate) inbound_asks: Arc<crate::hew_node::InboundAsks>,
+    pub(crate) service_exports: Arc<crate::hew_node::service::ServiceExports>,
     /// Background reconnect worker handles.
     reconnect_workers: PoisonSafe<Vec<JoinHandle<()>>>,
     /// Deferred reverse-link setup workers, joined before manager teardown.
@@ -509,6 +510,7 @@ type InboundRouter = unsafe extern "C" fn(
     *mut HewConnMgr,
     crate::node_identity::HewNodeId,
     u64, // authenticated connection publication
+    u64, // service grant id, zero for ordinary location requests
     i64, // absolute local request deadline, -1 when absent
 );
 

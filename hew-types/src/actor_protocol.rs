@@ -103,9 +103,22 @@ pub struct ActorHandlerDescriptor {
     pub remote_receivers: Vec<ActorRemoteReceiver>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RemoteActorInterface {
+    Message,
+    Service,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RemoteActorMember {
+    ActorMsg,
+    Declared(crate::DefId),
+}
+
 /// The receiver arguments of a checked `ActorMsg` implementation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ActorRemoteReceiver {
+    pub interface: RemoteActorInterface,
     pub parameters: Vec<crate::ParamHead>,
     pub args: Vec<ResolvedTy>,
 }

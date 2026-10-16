@@ -83,6 +83,8 @@ pub enum RuntimeValueKind {
     /// A file-read owner, with exact source or builtin identity supplied by the signature.
     FileReadHandle(FileReadHandleKind),
     IoHandle(IoHandleKind),
+    ServiceHandle(super::ServiceHandleKind),
+    ServiceResult(super::ServiceOp),
     /// One generic pipe half, resolved to the receiver's checked type.
     PipeHalf(PipeHalfKind),
     /// A freshly extracted pipe half named by the operation, not by the
@@ -209,6 +211,23 @@ impl RuntimeValueKind {
             ))
         };
         Some(match self {
+            Self::ServiceHandle(kind) => {
+                if kind == super::ServiceHandleKind::Peer {
+                    ResolvedTy::named_opaque(
+                        crate::NominalHead::new(
+                            crate::KnownDecl::PeerSession.nominal(),
+                            crate::KnownDecl::PeerSession.path(),
+                        ),
+                        Vec::new(),
+                    )
+                } else {
+                    let receiver = receiver?;
+                    if !kind.matches(receiver) {
+                        return None;
+                    }
+                    receiver.clone()
+                }
+            }
             Self::IoHandle(kind) => {
                 let receiver = receiver?;
                 if !kind.matches(receiver) {
@@ -230,7 +249,9 @@ impl RuntimeValueKind {
                 }
                 receiver.clone()
             }
-            Self::PipeHalfResult(_) | Self::NodeLookupResult => return None,
+            Self::ServiceResult(_) | Self::PipeHalfResult(_) | Self::NodeLookupResult => {
+                return None
+            }
             Self::StreamPair => ResolvedTy::named_opaque(
                 contract(
                     crate::ffi_contracts::extern_owned_resource_result("hew_stream_channel")?
@@ -614,6 +635,7 @@ impl RuntimeSemanticContract {
                     || matches!(
                         expected.ty,
                         RuntimeValueKind::PipeHalf(_)
+                            | RuntimeValueKind::ServiceHandle(_)
                             | RuntimeValueKind::BuiltinArgument(_)
                             | RuntimeValueKind::StructuralOperand
                     ) {
@@ -638,6 +660,7 @@ impl RuntimeSemanticContract {
                 let resolved = if (matches!(kind, RuntimeValueKind::NodeLookupResult)
                     && is_node_lookup_result(result_hint))
                     || matches!(kind, RuntimeValueKind::IoHandle(handle) if handle.matches(result_hint))
+                    || matches!(kind, RuntimeValueKind::ServiceResult(op) if op.matches_result(result_hint))
                     || matches!(kind, RuntimeValueKind::PipeHalfResult(half) if half.matches(result_hint))
                 {
                     Some(result_hint.clone())

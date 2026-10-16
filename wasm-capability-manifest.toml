@@ -737,6 +737,11 @@ generate_endpoints = [
   "hew_node_monitor_location",
   "hew_node_link_remote_location",
   "hew_remote_call_new",
+  "hew_node_peer_new",
+  "hew_service_export",
+  "hew_service_receive",
+  "hew_service_acquire_new",
+  "hew_service_call_new",
   "hew_remote_call_poll",
   "hew_remote_call_take",
 ]
@@ -753,6 +758,11 @@ deterministic_endpoints = [
   "hew_node_monitor_location",
   "hew_node_link_remote_location",
   "hew_remote_call_new",
+  "hew_node_peer_new",
+  "hew_service_export",
+  "hew_service_receive",
+  "hew_service_acquire_new",
+  "hew_service_call_new",
   "hew_remote_call_poll",
   "hew_remote_call_take",
 ]

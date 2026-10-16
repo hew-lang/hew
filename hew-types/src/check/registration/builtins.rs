@@ -202,6 +202,14 @@ impl Checker {
         self.register_builtin_fn("Node::start", vec![node_config], node_result.clone());
         self.register_builtin_fn("Node::shutdown", vec![], Ty::Unit);
         self.register_builtin_fn("Node::connect", vec![Ty::String], node_result);
+        self.register_builtin_fn(
+            "Node::peer",
+            vec![Ty::String],
+            Ty::result(
+                crate::actor_delivery::nominal(crate::KnownDecl::PeerSession, Vec::new()),
+                Ty::builtin_named(BuiltinType::NodeError, Vec::new()),
+            ),
+        );
         self.register_builtin_fn("Node::identity_key", vec![], Ty::String);
         self.register_builtin_fn(
             "Node::id",
@@ -737,6 +745,7 @@ impl Checker {
         // arbitrary source names look like runtime symbols.
         let runtime_symbol = match name {
             "instant::now" => "hew_instant_now".to_string(),
+            "Node::peer" => "hew_node_peer_new".to_string(),
             _ => format!("hew_{name}"),
         };
         let target = crate::runtime_call::RuntimeCallFamily::from_c_symbol(&runtime_symbol)

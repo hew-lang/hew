@@ -572,6 +572,12 @@ pub(super) fn publish_identity_connection_established(
         }
     }
 
+    mgr.service_exports
+        .observe_session(crate::envelope::NodeSessionIdentity {
+            node_id: peer_identity,
+            session_incarnation: peer_session_incarnation,
+        });
+
     flush_registry_gossip_to_connection(mgr, conn_id, publication_token, peer_feature_flags);
 
     // Publication is COMPLETE: clear the actor's stashed superseded claim

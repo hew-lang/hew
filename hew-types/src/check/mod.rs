@@ -3771,6 +3771,7 @@ impl Checker {
         // `self.actor_protocol_descriptors`. Take it for the typed output here
         // rather than rebuilding: a rebuild would re-run collision detection
         // and double-emit the diagnostics.
+        self.select_service_codecs(program);
         self.select_actor_codecs();
         let actor_protocol_descriptors = std::mem::take(&mut self.actor_protocol_descriptors);
 

@@ -16,7 +16,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 cancel,
                 unwind,
             } => self.emit_remote_ask(
-                *actor, *message, *target, *payload, *timeout, *result, normal, cancel, unwind,
+                *actor, *message, *target, payload, *timeout, *result, normal, cancel, unwind,
             ),
             PhysicalTerminator::ActorAsk {
                 actor,
@@ -68,6 +68,15 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 normal,
                 unwind,
             } => self.emit_task_scope_join(*scope, *mode, normal, unwind),
+            PhysicalTerminator::ServiceAcquire {
+                actor,
+                export,
+                args,
+                result,
+                normal,
+                cancel,
+                unwind,
+            } => self.emit_service_acquire(*actor, *export, args, *result, normal, cancel, unwind),
             PhysicalTerminator::NativeIo {
                 operation,
                 args,

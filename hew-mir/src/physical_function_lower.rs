@@ -932,6 +932,22 @@ impl FunctionLowerer<'_> {
                 unwind: self.lower_edge(unwind)?,
             }),
             SemTerminator::Suspend {
+                kind: hew_sir::SuspendKind::ServiceAcquire { actor, export },
+                inputs,
+                result: CallResult::Value(result),
+                resumes,
+                cancel,
+                unwind,
+            } => Ok(PhysicalTerminator::ServiceAcquire {
+                actor: *actor,
+                export: *export,
+                args: self.argument_transfers(inputs)?,
+                result: self.value(result.id)?,
+                normal: self.lower_edge(&resumes[0])?,
+                cancel: self.lower_edge(cancel)?,
+                unwind: self.lower_edge(unwind)?,
+            }),
+            SemTerminator::Suspend {
                 kind: hew_sir::SuspendKind::NativeIo { operation },
                 inputs,
                 result: CallResult::Value(result),
@@ -1045,8 +1061,11 @@ impl FunctionLowerer<'_> {
                 actor: *actor,
                 message: *message,
                 target: self.value(inputs[0].operand.value)?,
-                payload: self.value(inputs[1].operand.value)?,
-                timeout: self.value(inputs[2].operand.value)?,
+                payload: inputs[1..inputs.len() - 1]
+                    .iter()
+                    .map(|input| self.value(input.operand.value))
+                    .collect::<Result<_, _>>()?,
+                timeout: self.value(inputs.last().expect("remote timeout").operand.value)?,
                 result: self.value(result.id)?,
                 normal: self.lower_edge(&resumes[0])?,
                 cancel: self.lower_edge(cancel)?,

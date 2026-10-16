@@ -13,6 +13,7 @@ fn link_controls_from_wrong_authenticated_peer_are_rejected() {
         expected_peer_ids: PoisonSafe::new(HashMap::new()),
         transport: std::ptr::null_mut(),
         inbound_router: None,
+        service_exports: Arc::default(),
         routing_table: std::ptr::null_mut(),
         cluster: std::ptr::null_mut(),
         reconnect_enabled: AtomicBool::new(false),

@@ -720,6 +720,14 @@ pub const HEW_REPLY_FAIL_PAYLOAD_ALLOC_FAILED: i32 = 4;
 pub const HEW_REPLY_FAIL_REFUSED: i32 = 5;
 /// The completion budget expired before reply publication.
 pub const HEW_REPLY_FAIL_TIMEOUT: i32 = 6;
+/// The authenticated service grant refused dispatch.
+pub const HEW_REPLY_FAIL_UNAUTHORIZED: i32 = 7;
+/// The service's exact actor incarnation retired before dispatch.
+pub const HEW_REPLY_FAIL_STALE_REF: i32 = 8;
+/// The authenticated request publication retired before dispatch.
+pub const HEW_REPLY_FAIL_CONNECTION_DROPPED: i32 = 9;
+/// The owning node closed service admission before dispatch.
+pub const HEW_REPLY_FAIL_LOCAL_SHUTDOWN: i32 = 10;
 
 /// Name a reply-failure discriminant for diagnostics. Fail-closed: an
 /// unrecognized discriminant names itself rather than borrowing a real
@@ -734,6 +742,10 @@ pub const fn reply_fail_kind_name(kind: i32) -> &'static str {
         HEW_REPLY_FAIL_PAYLOAD_ALLOC_FAILED => "reply payload allocation failed",
         HEW_REPLY_FAIL_REFUSED => "delivery refused by interceptor",
         HEW_REPLY_FAIL_TIMEOUT => "completion deadline elapsed",
+        HEW_REPLY_FAIL_UNAUTHORIZED => "service grant refused dispatch",
+        HEW_REPLY_FAIL_STALE_REF => "service actor incarnation retired",
+        HEW_REPLY_FAIL_CONNECTION_DROPPED => "request publication retired",
+        HEW_REPLY_FAIL_LOCAL_SHUTDOWN => "node closed service admission",
         _ => "(unrecognized reply-failure discriminant)",
     }
 }

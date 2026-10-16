@@ -156,7 +156,7 @@ pub(crate) unsafe fn hew_connmgr_send_swim(
     if !supports_gossip(flags) {
         return -1;
     }
-    let Some(send_claim) = claim_send_to_route(mgr_ref, conn_id, peer_node_id) else {
+    let Some(send_claim) = claim_send_to_route(mgr_ref, conn_id, peer_node_id, None) else {
         return -1;
     };
 

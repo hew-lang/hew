@@ -305,17 +305,21 @@ impl LowerCtx {
             }
             HirExprKind::RemoteActorAsk {
                 receiver: target,
-                msg,
+                args,
                 timeout_ms,
                 ..
             } => {
                 self.wrap_var_self_explicit_expr_returns(target, receiver, abi_return_ty);
-                self.wrap_var_self_explicit_expr_returns(msg, receiver, abi_return_ty);
+                for argument in args {
+                    self.wrap_var_self_explicit_expr_returns(argument, receiver, abi_return_ty);
+                }
                 self.wrap_var_self_explicit_expr_returns(timeout_ms, receiver, abi_return_ty);
             }
+
             HirExprKind::RemoteActorSend {
                 receiver: target,
                 msg,
+                ..
             } => {
                 self.wrap_var_self_explicit_expr_returns(target, receiver, abi_return_ty);
                 self.wrap_var_self_explicit_expr_returns(msg, receiver, abi_return_ty);

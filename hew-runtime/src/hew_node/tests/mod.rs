@@ -1089,7 +1089,8 @@ fn remote_call_for_test(
     let (readiness, waker) = crate::wake::blocking::Readiness::new();
     // SAFETY: the waker descriptor is live for the call.
     let timer = unsafe { crate::coro_sleep::hew_coro_sleep_new(i64::MAX, waker.descriptor()) };
-    let (id, pending) = reply_table().register_with_waker(key, Some(waker), PendingReplyKind::Ask);
+    let (id, pending) =
+        reply_table().register_with_waker(key, Some(waker), PendingReplyKind::Ask(0));
     let call = Box::into_raw(Box::new(HewRemoteCall {
         route: RemoteCallRoute::Wire(pending, test_location(1, 1), 0),
         timer,

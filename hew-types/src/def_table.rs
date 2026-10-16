@@ -413,10 +413,13 @@ pub enum KnownDecl {
     Caller,
     Call,
     Outcome,
+    PeerSession,
+    Service,
+    ServiceExport,
 }
 
 impl KnownDecl {
-    pub const ALL: [Self; 23] = [
+    pub const ALL: [Self; 26] = [
         Self::ActorError,
         Self::Never,
         Self::ActorMailbox,
@@ -440,6 +443,9 @@ impl KnownDecl {
         Self::Caller,
         Self::Call,
         Self::Outcome,
+        Self::PeerSession,
+        Self::Service,
+        Self::ServiceExport,
     ];
 
     /// The declaration's canonical path in `std.builtins`.
@@ -469,6 +475,9 @@ impl KnownDecl {
             Self::Caller => "std.builtins.Caller",
             Self::Call => "std.builtins.Call",
             Self::Outcome => "std.builtins.Outcome",
+            Self::PeerSession => "std.net.PeerSession",
+            Self::Service => "std.net.Service",
+            Self::ServiceExport => "std.net.Export",
         }
     }
 
@@ -497,6 +506,9 @@ impl KnownDecl {
             Self::Caller => "Caller",
             Self::Call => "Call",
             Self::Outcome => "Outcome",
+            Self::PeerSession => "PeerSession",
+            Self::Service => "Service",
+            Self::ServiceExport => "Export",
         }
     }
 

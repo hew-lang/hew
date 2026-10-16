@@ -815,7 +815,7 @@ impl LowerCtx {
                     .and_then(|ty| ResolvedTy::from_ty(ty).ok());
                 self.lower_codec(args, codec, value_ty, checked_ty, span)
             }
-            Some(MethodCallRewrite::RemoteActorSend) => {
+            Some(MethodCallRewrite::RemoteActorSend { member }) => {
                 self.try_register_enum_instantiation(&span);
                 let ret_ty = self
                     .expr_types
@@ -840,16 +840,20 @@ impl LowerCtx {
                 let receiver = Box::new(self.lower_expr(receiver, IntentKind::Read));
                 let msg = Box::new(self.lower_expr(msg.expr(), IntentKind::Read));
                 let status = self.make_expr(
-                    HirExprKind::RemoteActorSend { receiver, msg },
+                    HirExprKind::RemoteActorSend {
+                        member,
+                        receiver,
+                        msg,
+                    },
                     ResolvedTy::I32,
                     IntentKind::Read,
                     span.clone(),
                 );
                 self.lower_send_status_result(status, ret_ty, REMOTE_SEND_STATUS, &span)
             }
-            Some(MethodCallRewrite::RemoteActorAsk) => {
+            Some(MethodCallRewrite::RemoteActorAsk { member, service }) => {
                 self.try_register_enum_instantiation(&span);
-                if args.len() != 2 {
+                if !service && args.len() != 2 {
                     self.diagnostics.push(HirDiagnostic::new(
                         HirDiagnosticKind::CheckerBoundaryViolation {
                             name: "RemotePid.ask".to_string(),
@@ -900,12 +904,30 @@ impl LowerCtx {
                     );
                 };
                 let lowered_receiver = self.lower_expr(receiver, IntentKind::Read);
-                let lowered_msg = self.lower_expr(args[0].expr(), IntentKind::Read);
-                let lowered_timeout = self.lower_expr(args[1].expr(), IntentKind::Read);
+                let (lowered_args, evaluation_order, lowered_timeout) = if service {
+                    let LoweredCallArgs {
+                        args,
+                        evaluation_order,
+                    } = self.lower_call_args(args, &span);
+                    (
+                        args,
+                        evaluation_order,
+                        self.make_int_literal(i128::from(u64::MAX), ResolvedTy::U64, span.clone()),
+                    )
+                } else {
+                    (
+                        vec![self.lower_expr(args[0].expr(), IntentKind::Read)],
+                        Vec::new(),
+                        self.lower_expr(args[1].expr(), IntentKind::Read),
+                    )
+                };
                 (
                     HirExprKind::RemoteActorAsk {
+                        member,
+                        service,
+                        args: lowered_args,
+                        evaluation_order,
                         receiver: Box::new(lowered_receiver),
-                        msg: Box::new(lowered_msg),
                         timeout_ms: Box::new(lowered_timeout),
                         reply_ty,
                     },

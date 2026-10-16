@@ -1604,6 +1604,16 @@ impl Builder<'_, '_> {
             return self.emit_actor_call(operation, signature, vec![value]);
         }
 
+        if let hew_types::RuntimeCallFamily::Service(
+            operation @ (hew_types::runtime_call::ServiceOp::Export
+            | hew_types::runtime_call::ServiceOp::Receive),
+        ) = family
+        {
+            if !evaluation_order.is_empty() {
+                return Err("service acquisition takes positional arguments".into());
+            }
+            return self.lower_service_acquire(expr, operation, args);
+        }
         if let hew_types::RuntimeCallFamily::AsyncIo(operation) = family {
             if !evaluation_order.is_empty() {
                 return Err("native I/O takes positional arguments only".into());

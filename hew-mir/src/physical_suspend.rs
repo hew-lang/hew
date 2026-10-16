@@ -533,6 +533,7 @@ pub(super) fn verify_callables(module: &PhysicalModule) -> Result<(), PhysicalEr
                 }
                 PhysicalTerminator::RecoverFault { .. }
                 | PhysicalTerminator::NativeIo { .. }
+                | PhysicalTerminator::ServiceAcquire { .. }
                 | PhysicalTerminator::Offload { .. }
                 | PhysicalTerminator::Safepoint { .. }
                 | PhysicalTerminator::Sleep { .. }

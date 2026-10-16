@@ -29,6 +29,7 @@ use strum::EnumIter;
 pub enum RuntimeCallFamily {
     AsyncIo(AsyncIoOp),
     FileRead(FileReadOp),
+    Service(super::ServiceOp),
     Tcp(TcpOp),
     /// Semantic operations over a distinct, owning encoding value.
     Encoding {
@@ -1014,6 +1015,7 @@ impl RuntimeCallFamily {
     /// runtime family. Catalogue endpoint identity is established before this
     /// call; arbitrary source names never reach it.
     #[must_use]
+    #[expect(clippy::too_many_lines, reason = "exact source catalogue endpoints")]
     pub fn from_catalog_endpoint(endpoint: &str) -> Option<Self> {
         match endpoint {
             "hew_node_id_display" => Some(Self::NodeIdDisplay),
@@ -1108,6 +1110,7 @@ impl RuntimeCallFamily {
             "utf8.decode_lossy" => Some(Self::BytesDecodeUtf8Lossy),
             "Node::start" => Some(Self::NodeStart),
             "Node::connect" => Some(Self::NodeConnect),
+            "Node::peer" => Some(Self::Service(super::ServiceOp::Peer)),
             "Node::register" => Some(Self::NodeRegister),
             "Node::lookup" => Some(Self::NodeLookup),
             "Node::shutdown" => Some(Self::NodeShutdown),

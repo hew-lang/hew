@@ -144,6 +144,19 @@ impl Checker {
         c_symbol: &str,
         sig: &FnSig,
     ) -> Option<crate::runtime_call::RuntimeCallFamily> {
+        if let Some(operation) = crate::runtime_call::ServiceOp::source_method(
+            signature_key,
+            c_symbol,
+            &sig.params,
+            &sig.return_type,
+        ) {
+            let canonical = self
+                .extern_method_origins
+                .get(signature_key)
+                .is_some_and(|(module, trusted)| *trusted && module.as_deref() == Some("std.net"))
+                || self.canonical_std_root_sources.contains("std.net");
+            return canonical.then_some(crate::RuntimeCallFamily::Service(operation));
+        }
         let declaration = crate::runtime_call::canonical_std_io_extern_signature(
             signature_key,
             c_symbol,
@@ -487,6 +500,15 @@ impl Checker {
         if let Some(family) =
             self.canonical_std_io_runtime_method_family(signature_key, &spec.template.raw, sig)
         {
+            if matches!(
+                family,
+                crate::RuntimeCallFamily::Service(
+                    crate::runtime_call::ServiceOp::Export
+                        | crate::runtime_call::ServiceOp::Receive
+                )
+            ) {
+                self.reject_wasm_feature(span, WasmUnsupportedFeature::Distributed);
+            }
             self.record_runtime_method_family_rewrite(span, family);
             return true;
         }
@@ -528,6 +550,15 @@ impl Checker {
         if let Some(family) =
             self.canonical_std_io_runtime_method_family(&signature_key, &spec.template.raw, sig)
         {
+            if matches!(
+                family,
+                crate::RuntimeCallFamily::Service(
+                    crate::runtime_call::ServiceOp::Export
+                        | crate::runtime_call::ServiceOp::Receive
+                )
+            ) {
+                self.reject_wasm_feature(span, WasmUnsupportedFeature::Distributed);
+            }
             self.record_runtime_method_family_rewrite(span, family);
             return true;
         }

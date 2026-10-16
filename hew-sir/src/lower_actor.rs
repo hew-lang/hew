@@ -648,7 +648,7 @@ impl Builder<'_, '_> {
     /// value coercions as ordinary calls, and return the owners in protocol
     /// order. Earlier owners stay live until all later arguments have
     /// succeeded.
-    fn lower_actor_payload(
+    pub(super) fn lower_actor_payload(
         &mut self,
         args: &[HirExpr],
         parameters: &[ResolvedTy],

@@ -827,6 +827,18 @@ pub(crate) fn activate_queued_actor(actor: *mut HewActor) {
                 let t0 = std::time::Instant::now();
                 // SAFETY: `msg` is exclusively owned by this worker.
                 let msg_ref = unsafe { &*msg };
+                #[cfg(not(target_arch = "wasm32"))]
+                if msg_ref.reply_channel.is_null() && msg_ref.caller.kind == 3 {
+                    // SAFETY: this worker holds the current actor activation.
+                    let target =
+                        unsafe { crate::lifetime::live_actors::ActorIncarnation::of(actor) };
+                    if crate::lifetime::live_actors::remote_grant_required(target) != Some(false) {
+                        // SAFETY: this unclaimed node and its payload belong to this worker.
+                        unsafe { hew_msg_node_free(msg) };
+                        msgs_processed += 1;
+                        continue;
+                    }
+                }
                 // The call owner may withdraw until this exact dispatch claim.
                 // Once claimed, losing its select only tombstones the reply;
                 // it does not cancel a handler that has already started.

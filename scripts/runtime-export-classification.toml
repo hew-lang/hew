@@ -134,6 +134,9 @@ public-host-stdlib = [
 
 # Compiler-private native TLS request submission and result transfer.
 non-declarable-stdlib = [
+  "hew_peer_session_close",
+  "hew_service_close",
+  "hew_service_export_close",
   "hew_async_tls_connect",
   "hew_async_tls_read",
   "hew_async_tls_take_connect",
@@ -1221,6 +1224,9 @@ stable-stdlib = [
 # non-trivial actor programs. NOT user-callable via `extern "rt"` (the checker
 # enforces this). JIT hosts must expose these in the same symbol map as `stable`.
 non-declarable = [
+  "hew_node_peer_new",
+  "hew_service_acquire_new",
+  "hew_service_call_new",
   "hew_call_caller",
   "hew_call_refusal_log",
   "hew_coverage_hit",
@@ -7495,5 +7501,29 @@ symbol = "hew_dir_write_close"
 result = "none"
 params = ["consume"]
 resource-param-types = ["std.fs.WriteDir"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_peer_session_close"
+result = "none"
+params = ["consume"]
+resource-param-types = ["std.net.PeerSession"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_service_close"
+result = "none"
+params = ["consume"]
+resource-param-types = ["std.net.Service"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_service_export_close"
+result = "none"
+params = ["consume"]
+resource-param-types = ["std.net.Export"]
 release-symbol = ""
 discharge-depth = "none"

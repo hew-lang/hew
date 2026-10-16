@@ -63,9 +63,6 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                     .ok_or_else(|| CodegenError::FailClosed("actor codec lacks dispatch".into()))?;
                 let payload = actor::message_type(self.module, self.ctx, handler)?;
                 for reply in [false, true] {
-                    if reply && codec.reply.is_none() {
-                        continue;
-                    }
                     let plans = if reply {
                         codec.reply.iter().cloned().collect()
                     } else {

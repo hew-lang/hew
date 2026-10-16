@@ -1180,10 +1180,15 @@ fn call_graph(
             // These checker-selected rewrites bypass ordinary call targets.
             // Project them to the codegen ABI endpoint, whose admission policy
             // remains owned by the capability manifest.
-            hew_types::MethodCallRewrite::RemoteActorAsk => CallTarget::Builtin {
+            hew_types::MethodCallRewrite::RemoteActorAsk { service: true, .. } => {
+                CallTarget::Runtime(hew_types::RuntimeCallFamily::Service(
+                    hew_types::runtime_call::ServiceOp::Call,
+                ))
+            }
+            hew_types::MethodCallRewrite::RemoteActorAsk { .. } => CallTarget::Builtin {
                 endpoint: "hew_remote_call_new".to_string(),
             },
-            hew_types::MethodCallRewrite::RemoteActorSend => CallTarget::Builtin {
+            hew_types::MethodCallRewrite::RemoteActorSend { .. } => CallTarget::Builtin {
                 endpoint: "hew_node_api_send_location".to_string(),
             },
             _ => continue,

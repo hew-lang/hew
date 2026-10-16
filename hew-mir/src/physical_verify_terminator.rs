@@ -88,10 +88,15 @@ pub(crate) fn terminator_successors(
         } => {
             // The pid is borrowed, the message is consumed into its encoding
             // before the caller parks and the timeout is a copied scalar.
-            for source in [target, payload, timeout] {
+            for source in std::iter::once(target)
+                .chain(payload)
+                .chain(std::iter::once(timeout))
+            {
                 initialized(function, &state, *source, block, "remote ask request")?;
             }
-            consume_if_owned(function, borrows, &mut state, *payload)?;
+            for source in payload {
+                consume_if_owned(function, borrows, &mut state, *source)?;
+            }
             if state.fault != FaultState::None {
                 return Err(PhysicalError::new(
                     "remote ask cannot replace an active fault",
@@ -397,6 +402,14 @@ pub(crate) fn terminator_successors(
             Ok(successors)
         }
         PhysicalTerminator::NativeIo {
+            args,
+            result,
+            normal,
+            cancel,
+            unwind,
+            ..
+        }
+        | PhysicalTerminator::ServiceAcquire {
             args,
             result,
             normal,
@@ -993,13 +1006,18 @@ pub(crate) fn verify_terminator(
                 .filter(|descriptor| descriptor.id == *actor)
                 .ok_or_else(|| PhysicalError::new("remote ask requires its exact actor"))?
                 .remote_signature(
+                    &module.defs,
                     *message,
                     &slot(*target)?.ty,
                     slot(*result)?.ty.clone(),
                     true,
                 )
                 .map_err(PhysicalError::new)?;
-            let types = [&slot(*target)?.ty, &slot(*payload)?.ty, &slot(*timeout)?.ty];
+            let types = std::iter::once(target)
+                .chain(payload)
+                .chain(std::iter::once(timeout))
+                .map(|id| Ok(&slot(*id)?.ty))
+                .collect::<Result<Vec<_>, PhysicalError>>()?;
             if signature.params.len() != types.len()
                 || signature
                     .params
@@ -1279,6 +1297,43 @@ pub(crate) fn verify_terminator(
                 (None, None) => {}
                 (Some(result), Some(declared)) if slot(*result)?.ty == declared.recipe.ty => {}
                 _ => return Err(PhysicalError::new("offload result differs from its extern")),
+            }
+            edge(normal)?;
+            edge(cancel)?;
+            edge(unwind)
+        }
+        PhysicalTerminator::ServiceAcquire {
+            actor,
+            export,
+            args,
+            result,
+            normal,
+            cancel,
+            unwind,
+        } => {
+            let operation = if *export {
+                hew_types::runtime_call::ServiceOp::Export
+            } else {
+                hew_types::runtime_call::ServiceOp::Receive
+            };
+            let arguments = args
+                .iter()
+                .map(|argument| match argument {
+                    ArgumentTransfer::Borrow(id) => Ok(slot(*id)?.ty.clone()),
+                    _ => Err(PhysicalError::new(
+                        "service acquisition requires borrowed inputs",
+                    )),
+                })
+                .collect::<Result<Vec<_>, PhysicalError>>()?;
+            let result_ty = &slot(*result)?.ty;
+            if module.actors.get(actor.0 as usize).is_none_or(|descriptor| {
+                descriptor.id != *actor || descriptor.handlers.is_empty()
+                    || descriptor.handlers.iter().any(|handler| handler.codec.is_none())
+                    || (*export && arguments.get(1) != Some(&descriptor.handle_ty))
+                    || !matches!(result_ty, ResolvedTy::Named { args, .. }
+                        if matches!(args.first(), Some(ResolvedTy::Named { args, .. }) if args.as_slice() == [descriptor.handle_ty.clone()]))
+            }) || !operation.row().contract.expect("service contract").matches_signature(&module.defs, &arguments, &slot(*result)?.ty) {
+                return Err(PhysicalError::new("service acquisition differs from its admitted interface"));
             }
             edge(normal)?;
             edge(cancel)?;

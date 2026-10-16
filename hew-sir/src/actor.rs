@@ -374,6 +374,7 @@ impl SemActor {
     /// Refuses a member without codecs, another actor's pid or another result.
     pub fn remote_signature(
         &self,
+        defs: &hew_types::DefTable,
         message: u32,
         target: &ResolvedTy,
         result_ty: ResolvedTy,
@@ -384,44 +385,44 @@ impl SemActor {
             .iter()
             .find(|handler| handler.message_id == message && handler.codec.is_some())
             .ok_or("remote call has no portable receive member")?;
-        let [msg] = handler.params.as_slice() else {
-            return Err("a remote member takes exactly its message".into());
-        };
-        let addressed = matches!(target, ResolvedTy::Named { head: hew_types::TypeHead::Builtin(hew_types::BuiltinType::RemotePid), args, .. } if args.as_slice() == std::slice::from_ref(&self.handle_ty));
+        let addressed = matches!(target, ResolvedTy::Named { head, args, .. }
+            if (*head == hew_types::TypeHead::Builtin(hew_types::BuiltinType::RemotePid)
+                || head.nominal() == Some(hew_types::KnownDecl::Service.nominal()))
+                && args.as_slice() == std::slice::from_ref(&self.handle_ty));
         if !addressed {
-            return Err("remote call target is not this actor's RemotePid".into());
-        }
-        if ask {
-            let [reply, error] =
-                result_parts(&result_ty).ok_or("a remote ask must return its checked Result")?;
-            let expected = hew_types::Ty::actor_error_with_request(
-                hew_types::Ty::never_type(),
-                hew_types::Ty::never_type(),
-            );
-            if *reply != handler.return_ty || error.to_ty() != expected {
-                return Err("remote ask differs from its member's reply and failure".into());
-            }
-        } else if result_ty != ResolvedTy::I32 {
-            // HIR folds the node's submission status into `Result<(), SendError>`.
-            return Err("remote send answers with its i32 submission status".into());
+            return Err("remote call target differs from its exact actor interface".into());
         }
         let param = |ty: &ResolvedTy, passing| crate::SemAbiParam {
             ty: ty.clone(),
             passing,
             caller_visible_projection: false,
         };
-        let mut params = vec![
-            param(target, crate::SemParamPassing::Borrow),
-            param(msg, crate::SemParamPassing::Consume),
-        ];
+        let mut signature = if ask {
+            self.ask_signature(defs, message, &self.handle_ty, result_ty, false)?
+        } else {
+            if result_ty != ResolvedTy::I32 {
+                return Err("remote send answers with its i32 submission status".into());
+            }
+            let mut params = vec![param(target, crate::SemParamPassing::Borrow)];
+            params.extend(
+                handler
+                    .params
+                    .iter()
+                    .map(|ty| param(ty, crate::SemParamPassing::Consume)),
+            );
+            crate::SemSignature {
+                failure_domain: hew_types::CallableFailureDomain::HewFault,
+                params,
+                return_ty: result_ty,
+            }
+        };
+        signature.params[0].ty = target.clone();
         if ask {
-            params.push(param(&ResolvedTy::U64, crate::SemParamPassing::ReadOnly));
+            signature
+                .params
+                .push(param(&ResolvedTy::U64, crate::SemParamPassing::ReadOnly));
         }
-        Ok(crate::SemSignature {
-            failure_domain: hew_types::CallableFailureDomain::HewFault,
-            params,
-            return_ty: result_ty,
-        })
+        Ok(signature)
     }
 
     /// Check the handle spelling this descriptor answers to.
@@ -1217,7 +1218,7 @@ impl ActorOperation {
                     .get(actor.0 as usize)
                     .filter(|candidate| candidate.id == *actor)
                     .ok_or("unknown remote actor identity")?;
-                return actor.remote_signature(*message, target, ResolvedTy::I32, false);
+                return actor.remote_signature(defs, *message, target, ResolvedTy::I32, false);
             }
             Self::SupervisorSpawn(_)
             | Self::SupervisorChild { .. }

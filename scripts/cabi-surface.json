@@ -11907,6 +11907,19 @@
       "availability": [
         "native"
       ],
+      "classification": "non-declarable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_node_peer_new( *const hew_cabi::string::HewString, *mut *mut c_void, ) -> i32"
+      },
+      "symbol": "hew_node_peer_new"
+    },
+    {
+      "availability": [
+        "native"
+      ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
       "nul": "nul-terminated",
@@ -12260,6 +12273,19 @@
         "native": "fn hew_path_is_file( *const HewString) -> i32"
       },
       "symbol": "hew_path_is_file"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "non-declarable-stdlib",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_peer_session_close( *mut c_void)"
+      },
+      "symbol": "hew_peer_session_close"
     },
     {
       "availability": [
@@ -15708,6 +15734,58 @@
         "wasm32-wasip1": "fn hew_ser_variant_end( *mut c_void)"
       },
       "symbol": "hew_ser_variant_end"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "non-declarable",
+      "extent": "length-or-count",
+      "nul": "nul-terminated",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_service_acquire_new( *const c_void, HewLocalPidId, *const *const c_char, usize, bool, i64, *const HewWaker, ) -> *mut HewRemoteCall"
+      },
+      "symbol": "hew_service_acquire_new"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "non-declarable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_service_call_new( *const c_void, *const c_void, i32, *mut c_void, usize, usize, u64, i64, *const HewWaker, ) -> *mut HewRemoteCall"
+      },
+      "symbol": "hew_service_call_new"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "non-declarable-stdlib",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_service_close( *mut c_void)"
+      },
+      "symbol": "hew_service_close"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "non-declarable-stdlib",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_service_export_close( *mut c_void)"
+      },
+      "symbol": "hew_service_export_close"
     },
     {
       "availability": [

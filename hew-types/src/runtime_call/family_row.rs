@@ -4947,6 +4947,7 @@ impl RuntimeCallFamily {
                 physical: RuntimePhysicalForm::NotAnAction,
                 c_return: RuntimeCReturn::Storage,
             },
+            Self::Service(op) => op.row(),
             Self::NodeConnect => RuntimeOpRow {
                 authority: RuntimeAuthority::Ambient,
                 symbol: "Node::connect",

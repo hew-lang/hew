@@ -83,6 +83,7 @@ impl<'a> HostExport<'a> {
                     | PhysicalTerminator::IndirectCall { .. }
                     | PhysicalTerminator::DynCall { .. }
                     | PhysicalTerminator::NativeIo { .. }
+                    | PhysicalTerminator::ServiceAcquire { .. }
                     | PhysicalTerminator::Offload { .. }
                     | PhysicalTerminator::Sleep { .. }
                     | PhysicalTerminator::SleepUntil { .. }

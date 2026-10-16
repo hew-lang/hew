@@ -583,15 +583,18 @@ fn walk_expr(
         }
         HirExprKind::RemoteActorAsk {
             receiver,
-            msg,
+            args,
             timeout_ms,
             ..
         } => {
             walk_expr(receiver, subst, residual_domain, disc);
-            walk_expr(msg, subst, residual_domain, disc);
+            for argument in args {
+                walk_expr(argument, subst, residual_domain, disc);
+            }
             walk_expr(timeout_ms, subst, residual_domain, disc);
         }
-        HirExprKind::RemoteActorSend { receiver, msg } => {
+
+        HirExprKind::RemoteActorSend { receiver, msg, .. } => {
             walk_expr(receiver, subst, residual_domain, disc);
             walk_expr(msg, subst, residual_domain, disc);
         }

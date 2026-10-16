@@ -44,6 +44,12 @@ pub(crate) struct ActorPtr(pub(crate) *mut HewActor);
 // SAFETY: see doc on ActorPtr above.
 unsafe impl Send for ActorPtr {}
 
+struct LiveActor {
+    actor: ActorPtr,
+    #[cfg(not(target_arch = "wasm32"))]
+    remote_capability_only: bool,
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 fn retire_actor_route(actor: *mut HewActor, actor_id: u64) {
     // SAFETY: callers invoke this only after successful removal from the live
@@ -93,7 +99,7 @@ fn retire_actor_route(actor: *mut HewActor, actor_id: u64) {
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) struct LiveActors {
     /// Map of live actor id → pointer. Single shard (see module doc).
-    map: PoisonSafe<Option<HashMap<u64, ActorPtr>>>,
+    map: PoisonSafe<Option<HashMap<u64, LiveActor>>>,
     /// Background teardown threads (deferred actor frees and deferred supervisor
     /// stops) that hold raw actor/supervisor pointers while they run. They MUST
     /// be joined before any global sweep (`cleanup_all_actors`) frees the actors
@@ -121,11 +127,11 @@ impl LiveActors {
 /// there is no cross-thread contention; the `PoisonSafe` wrapper keeps the
 /// access path identical to native.
 #[cfg(target_arch = "wasm32")]
-static LIVE_ACTORS_WASM: PoisonSafe<Option<HashMap<u64, ActorPtr>>> = PoisonSafe::new(None);
+static LIVE_ACTORS_WASM: PoisonSafe<Option<HashMap<u64, LiveActor>>> = PoisonSafe::new(None);
 
 /// Run `f` with mutable access to the current runtime's live-actor map.
 #[cfg(not(target_arch = "wasm32"))]
-fn with_live_actors<R>(f: impl FnOnce(&mut Option<HashMap<u64, ActorPtr>>) -> R) -> R {
+fn with_live_actors<R>(f: impl FnOnce(&mut Option<HashMap<u64, LiveActor>>) -> R) -> R {
     rt_current().live_actors.map.access(f)
 }
 
@@ -139,7 +145,7 @@ fn with_live_actors<R>(f: impl FnOnce(&mut Option<HashMap<u64, ActorPtr>>) -> R)
 /// default while registration/removal paths continue to fail closed through
 /// [`with_live_actors`].
 #[cfg(not(target_arch = "wasm32"))]
-fn with_live_actors_opt<R>(f: impl FnOnce(&mut Option<HashMap<u64, ActorPtr>>) -> R) -> Option<R> {
+fn with_live_actors_opt<R>(f: impl FnOnce(&mut Option<HashMap<u64, LiveActor>>) -> R) -> Option<R> {
     rt_current_opt().map(|rt| rt.live_actors.map.access(f))
 }
 
@@ -148,13 +154,13 @@ fn with_live_actors_opt<R>(f: impl FnOnce(&mut Option<HashMap<u64, ActorPtr>>) -
 /// WASM still uses a module-private static, so the optional native resolver is
 /// always present there.
 #[cfg(target_arch = "wasm32")]
-fn with_live_actors_opt<R>(f: impl FnOnce(&mut Option<HashMap<u64, ActorPtr>>) -> R) -> Option<R> {
+fn with_live_actors_opt<R>(f: impl FnOnce(&mut Option<HashMap<u64, LiveActor>>) -> R) -> Option<R> {
     Some(with_live_actors(f))
 }
 
 /// Run `f` with mutable access to the WASM runtime's live-actor map.
 #[cfg(target_arch = "wasm32")]
-fn with_live_actors<R>(f: impl FnOnce(&mut Option<HashMap<u64, ActorPtr>>) -> R) -> R {
+fn with_live_actors<R>(f: impl FnOnce(&mut Option<HashMap<u64, LiveActor>>) -> R) -> R {
     LIVE_ACTORS_WASM.access(f)
 }
 
@@ -173,7 +179,11 @@ pub(crate) unsafe fn track_actor(actor: *mut HewActor) -> bool {
     let id = unsafe { (*actor).id };
     with_live_actors(|map| match map.get_or_insert_with(HashMap::new).entry(id) {
         std::collections::hash_map::Entry::Vacant(entry) => {
-            entry.insert(ActorPtr(actor));
+            entry.insert(LiveActor {
+                actor: ActorPtr(actor),
+                #[cfg(not(target_arch = "wasm32"))]
+                remote_capability_only: false,
+            });
             true
         }
         std::collections::hash_map::Entry::Occupied(_) => false,
@@ -197,7 +207,7 @@ pub(crate) fn untrack_actor(actor: *mut HewActor) -> bool {
     let removed = with_live_actors_opt(|map| {
         if let Some(m) = map.as_mut() {
             if let std::collections::hash_map::Entry::Occupied(entry) = m.entry(id) {
-                if entry.get().0 == actor {
+                if entry.get().actor.0 == actor {
                     entry.remove();
                     return true;
                 }
@@ -217,8 +227,8 @@ pub(crate) fn untrack_actor(actor: *mut HewActor) -> bool {
 pub(crate) fn take_actor_by_id(actor_id: u64, expected: *mut HewActor) -> Option<*mut HewActor> {
     let actor = with_live_actors_opt(|map| {
         let tracked = map.as_mut()?.remove(&actor_id)?;
-        if tracked.0 == expected {
-            Some(tracked.0)
+        if tracked.actor.0 == expected {
+            Some(tracked.actor.0)
         } else {
             map.get_or_insert_with(HashMap::new)
                 .insert(actor_id, tracked);
@@ -246,7 +256,7 @@ pub(crate) fn with_live_actor<R>(
     with_live_actors_opt(|map| {
         if map
             .as_ref()
-            .is_some_and(|m| m.values().any(|ptr| ptr.0 == actor))
+            .is_some_and(|m| m.values().any(|ptr| ptr.actor.0 == actor))
         {
             // SAFETY: `actor` is tracked in LIVE_ACTORS; concurrent frees
             // must remove it before reclaiming the allocation.
@@ -286,7 +296,8 @@ pub(crate) fn with_live_actor<R>(
 pub(crate) fn has_drain_blocking_suspended_actor() -> bool {
     with_live_actors_opt(|map| {
         map.as_ref().is_some_and(|actors| {
-            actors.values().any(|ActorPtr(actor)| {
+            actors.values().any(|entry| {
+                let actor = &entry.actor.0;
                 // SAFETY: the pointer remains tracked under the liveness lock;
                 // every free path must untrack it before reclaiming the box.
                 let a = unsafe { &**actor };
@@ -352,7 +363,7 @@ pub(crate) fn with_live_actor_by_id<R>(
         if map
             .as_ref()
             .and_then(|m| m.get(&actor_id))
-            .is_some_and(|ptr| ptr.0 == expected)
+            .is_some_and(|ptr| ptr.actor.0 == expected)
         {
             // SAFETY: `expected` is tracked under `actor_id`; concurrent frees
             // must remove that exact entry before reclaiming the allocation.
@@ -376,8 +387,36 @@ pub(crate) fn with_live_actor_by_id<R>(
 pub(crate) fn get_actor_ptr_by_id(actor_id: u64) -> Option<*mut HewActor> {
     with_live_actors_opt(|map| {
         map.as_ref()
-            .and_then(|m| m.get(&actor_id).map(|ptr| ptr.0))
+            .and_then(|m| m.get(&actor_id).map(|ptr| ptr.actor.0))
             .filter(|ptr| !ptr.is_null())
+    })
+    .flatten()
+}
+
+/// Permanently require a service grant for this live incarnation's remote access.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn require_remote_grant(target: ActorIncarnation) -> bool {
+    with_live_actors_opt(|map| {
+        let entry = map.as_mut()?.get_mut(&target.actor_id)?;
+        // SAFETY: the registry lock keeps this tracked allocation live.
+        if unsafe { (*entry.actor.0).spawn_serial } != target.spawn_serial {
+            return None;
+        }
+        entry.remote_capability_only = true;
+        Some(())
+    })
+    .flatten()
+    .is_some()
+}
+
+/// Read remote admission policy while the exact incarnation remains tracked.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn remote_grant_required(target: ActorIncarnation) -> Option<bool> {
+    with_live_actors_opt(|map| {
+        let entry = map.as_ref()?.get(&target.actor_id)?;
+        // SAFETY: the registry lock keeps this tracked allocation live.
+        (unsafe { (*entry.actor.0).spawn_serial } == target.spawn_serial)
+            .then_some(entry.remote_capability_only)
     })
     .flatten()
 }
@@ -432,7 +471,7 @@ pub(crate) fn pin_actor_by_id(actor_id: u64) -> Option<ActorPin> {
     let ptr = with_live_actors_opt(|map| {
         let ptr = map
             .as_ref()
-            .and_then(|m| m.get(&actor_id).map(|p| p.0))
+            .and_then(|m| m.get(&actor_id).map(|p| p.actor.0))
             .filter(|p| !p.is_null())?;
         // SAFETY: the pointer is tracked under the liveness lock. Incrementing
         // before releasing the lock is mutually exclusive with untracking.
@@ -643,7 +682,7 @@ pub(crate) fn dispatch_ptr_by_id(actor_id: u64) -> Option<*const std::ffi::c_voi
     with_live_actors_opt(|map| {
         let actor_ptr = map
             .as_ref()
-            .and_then(|m| m.get(&actor_id).map(|ptr| ptr.0))
+            .and_then(|m| m.get(&actor_id).map(|ptr| ptr.actor.0))
             .filter(|ptr| !ptr.is_null())?;
         // SAFETY: `actor_ptr` is tracked-live under the lock held for this
         // closure; a concurrent free must remove the entry (under the same lock)
@@ -706,7 +745,7 @@ pub(crate) fn is_actor_live_with_id(actor_id: u64, expected: *mut HewActor) -> b
 pub(crate) fn snapshot_live_actor_ptrs() -> Vec<*mut HewActor> {
     with_live_actors_opt(|map| {
         map.as_ref()
-            .map(|m| m.values().map(|ActorPtr(actor)| *actor).collect())
+            .map(|m| m.values().map(|entry| entry.actor.0).collect())
             .unwrap_or_default()
     })
     .unwrap_or_default()
@@ -739,12 +778,15 @@ pub(crate) fn drain_all_for_cleanup() -> HashMap<u64, ActorPtr> {
     // copied an ActorId first must still acquire a send pin; with the liveness
     // entry gone they fail closed, while already-held pins are drained by the
     // cleanup caller before allocation reclamation.
-    for (&actor_id, ActorPtr(actor)) in &drained {
-        if !actor.is_null() {
-            retire_actor_route(*actor, actor_id);
+    for (&actor_id, entry) in &drained {
+        if !entry.actor.0.is_null() {
+            retire_actor_route(entry.actor.0, actor_id);
         }
     }
     drained
+        .into_iter()
+        .map(|(id, entry)| (id, entry.actor))
+        .collect()
 }
 
 // ── Deferred teardown threads ───────────────────────────────────────────────

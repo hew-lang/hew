@@ -35,6 +35,21 @@ pub(crate) struct SendClaim {
 unsafe impl Send for SendClaim {}
 
 impl SendClaim {
+    pub(crate) fn connection_id(&self) -> c_int {
+        self.conn_id
+    }
+
+    pub(crate) fn peer_session(&self) -> crate::envelope::NodeSessionIdentity {
+        crate::envelope::NodeSessionIdentity {
+            node_id: self.identity,
+            session_incarnation: self.session_incarnation,
+        }
+    }
+
+    pub(crate) fn publication_removed(&self) -> Arc<std::sync::atomic::AtomicBool> {
+        Arc::clone(&self.publication_removed)
+    }
+
     /// Transfer this lease to the existing pool. The caller never waits on the
     /// channel's send lock or on a peer accepting the frame.
     pub(crate) fn submit(
@@ -146,6 +161,16 @@ pub(crate) fn claim_send(
     (published && !claim.publication_removed.load(Ordering::Acquire)).then_some(claim)
 }
 
+pub(crate) fn claim_send_by_identity(
+    manager: &HewConnMgr,
+    peer: NodeId,
+    publication: Option<u64>,
+) -> Option<SendClaim> {
+    let connection = manager.claims.0.lock_or_recover().get(&peer)?.conn_id;
+    let claim = claim_send(manager, connection, publication)?;
+    (claim.identity == peer).then_some(claim)
+}
+
 pub(crate) fn claim_send_to_location(
     manager: &HewConnMgr,
     conn_id: c_int,
@@ -160,8 +185,9 @@ pub(crate) fn claim_send_to_route(
     manager: &HewConnMgr,
     conn_id: c_int,
     route_slot: u16,
+    publication: Option<u64>,
 ) -> Option<SendClaim> {
-    let claim = claim_send(manager, conn_id, None)?;
+    let claim = claim_send(manager, conn_id, publication)?;
     (route_slot != 0 && claim.route_slot == route_slot).then_some(claim)
 }
 

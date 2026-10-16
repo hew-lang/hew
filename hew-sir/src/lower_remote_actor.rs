@@ -6,25 +6,106 @@ use hew_hir::{HirExpr, HirExprKind};
 use hew_types::ResolvedTy;
 
 impl Builder<'_, '_> {
-    /// The actor a `RemotePid<A>` names and its member with wire codecs.
-    fn remote_member(&mut self, receiver: &HirExpr) -> Result<(crate::ActorId, u32), String> {
-        let ResolvedTy::Named {
-            head: hew_types::TypeHead::Builtin(hew_types::BuiltinType::RemotePid),
-            args,
-            ..
-        } = self.ty(&receiver.ty)
-        else {
-            return Err("remote call receiver is not a RemotePid".into());
+    pub(super) fn lower_service_acquire(
+        &mut self,
+        expression: &HirExpr,
+        operation: hew_types::runtime_call::ServiceOp,
+        args: &[&HirExpr],
+    ) -> Result<Option<ValueId>, String> {
+        let output = self.ty(&expression.ty);
+        let ResolvedTy::Named { args: result, .. } = &output else {
+            return Err("service acquisition lacks Result".into());
         };
-        let [actor_ty] = args.as_slice() else {
-            return Err("RemotePid names exactly one actor".into());
+        let Some(ResolvedTy::Named { args: instance, .. }) = result.first() else {
+            return Err("service acquisition lacks its handle".into());
+        };
+        let [actor_ty] = instance.as_slice() else {
+            return Err("service acquisition names one actor".into());
         };
         let actor = self.service.require_actor(actor_ty)?;
-        let message = self.service.actors[actor.0 as usize]
+        let descriptor = &self.service.actors[actor.0 as usize];
+        if descriptor.handlers.is_empty()
+            || descriptor
+                .handlers
+                .iter()
+                .any(|handler| handler.codec.is_none())
+        {
+            return Err(
+                "every service handler requires checked portable request and reply codecs".into(),
+            );
+        }
+        let export = operation == hew_types::runtime_call::ServiceOp::Export;
+        if export
+            && args
+                .get(1)
+                .is_none_or(|argument| self.ty(&argument.ty) != *actor_ty)
+        {
+            return Err("service export requires its exact local actor handle".into());
+        }
+        self.lower_borrowed_native_suspend(
+            expression,
+            crate::SuspendKind::ServiceAcquire { actor, export },
+            operation.row().contract.expect("service contract"),
+            args,
+        )
+    }
+
+    fn remote_member(
+        &mut self,
+        receiver: &HirExpr,
+        member: hew_types::actor_protocol::RemoteActorMember,
+    ) -> Result<(crate::ActorId, u32), String> {
+        let ResolvedTy::Named { args, .. } = self.ty(&receiver.ty) else {
+            return Err("remote call receiver lacks its actor interface".into());
+        };
+        let [actor_ty] = args.as_slice() else {
+            return Err("remote call names exactly one actor".into());
+        };
+        let actor = self.service.require_actor(actor_ty)?;
+        let descriptor = &self.service.actors[actor.0 as usize];
+        let declaration = match member {
+            hew_types::actor_protocol::RemoteActorMember::Declared(declaration) => declaration,
+            hew_types::actor_protocol::RemoteActorMember::ActorMsg => {
+                let ResolvedTy::Named { args, .. } = actor_ty else {
+                    unreachable!()
+                };
+                let source = self
+                    .service
+                    .module
+                    .items
+                    .iter()
+                    .find_map(|item| match item {
+                        hew_hir::HirItem::Actor(source)
+                            if source.declaration == descriptor.declaration =>
+                        {
+                            Some(source)
+                        }
+                        _ => None,
+                    })
+                    .ok_or("remote actor lacks its checked source protocol")?;
+                let selected = source
+                    .protocol_descriptor
+                    .handlers
+                    .iter()
+                    .filter(|handler| {
+                        handler.remote_receivers.iter().any(|receiver| {
+                            receiver.interface
+                                == hew_types::actor_protocol::RemoteActorInterface::Message
+                                && receiver.matches(args)
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                let [selected] = selected.as_slice() else {
+                    return Err("ActorMsg must select one exact receive member".into());
+                };
+                selected.declaration
+            }
+        };
+        let message = descriptor
             .handlers
             .iter()
-            .find(|handler| handler.codec.is_some())
-            .ok_or("remote actor lacks its checked remote member")?
+            .find(|handler| handler.declaration == declaration && handler.codec.is_some())
+            .ok_or("remote call lacks its exact portable receive declaration")?
             .message_id;
         Ok((actor, message))
     }
@@ -55,10 +136,15 @@ impl Builder<'_, '_> {
         &mut self,
         expression: &HirExpr,
     ) -> Result<ValueId, String> {
-        let HirExprKind::RemoteActorSend { receiver, msg } = &expression.kind else {
+        let HirExprKind::RemoteActorSend {
+            receiver,
+            msg,
+            member,
+        } = &expression.kind
+        else {
             unreachable!()
         };
-        let (actor, message) = self.remote_member(receiver)?;
+        let (actor, message) = self.remote_member(receiver, *member)?;
         let operation = crate::ActorOperation::RemoteSend {
             actor,
             message,
@@ -84,45 +170,63 @@ impl Builder<'_, '_> {
     ) -> Result<ValueId, String> {
         let HirExprKind::RemoteActorAsk {
             receiver,
-            msg,
+            member,
+            args,
+            evaluation_order,
             timeout_ms,
             ..
         } = &expression.kind
         else {
             unreachable!()
         };
-        let (actor, message) = self.remote_member(receiver)?;
+        let (actor, message) = self.remote_member(receiver, *member)?;
         let output = self.ty(&expression.ty);
         let signature = self.service.actors[actor.0 as usize].remote_signature(
+            &self.service.module.defs,
             message,
             &self.ty(&receiver.ty),
             output.clone(),
             true,
         )?;
         self.service.require_type_facts(&output)?;
-        let (target, value) = match self.remote_request(receiver, msg, &signature.params[1].ty)? {
-            Ok(request) => request,
-            Err(diverged) => return Ok(diverged),
+        let before: std::collections::HashSet<_> = self.owned_live.keys().copied().collect();
+        let mut loans = Vec::new();
+        let target = self
+            .lower_call_read(receiver, &mut loans, true, true)?
+            .value;
+        if !self.is_open() {
+            return Ok(target);
+        }
+        let parameters = signature
+            .params
+            .iter()
+            .skip(1)
+            .take(args.len())
+            .map(|parameter| parameter.ty.clone())
+            .collect::<Vec<_>>();
+        let values = match self.lower_actor_payload(args, &parameters, evaluation_order)? {
+            std::ops::ControlFlow::Continue(values) => values,
+            std::ops::ControlFlow::Break(value) => return Ok(value),
         };
         let timeout = self.lower_expr(timeout_ms)?;
         if !self.is_open() {
             return Ok(timeout);
         }
-        self.owned_live.remove(&value);
-        let inputs = vec![
-            crate::BoundaryOperand {
-                operand: Operand { value: target },
-                decision: crate::BoundaryDecision::Borrow,
-            },
-            crate::BoundaryOperand {
+        let mut inputs = vec![crate::BoundaryOperand {
+            operand: Operand { value: target },
+            decision: crate::BoundaryDecision::Borrow,
+        }];
+        for value in values {
+            self.owned_live.remove(&value);
+            inputs.push(crate::BoundaryOperand {
                 operand: Operand { value },
                 decision: crate::BoundaryDecision::Move,
-            },
-            crate::BoundaryOperand {
-                operand: Operand { value: timeout },
-                decision: crate::BoundaryDecision::Copy,
-            },
-        ];
+            });
+        }
+        inputs.push(crate::BoundaryOperand {
+            operand: Operand { value: timeout },
+            decision: crate::BoundaryDecision::Copy,
+        });
         let own = OwnKind::of_ty(&output, self.service.checked_facts.rows())?;
         let raw = self.fresh_value();
         let result = self.fresh_value();
@@ -152,17 +256,51 @@ impl Builder<'_, '_> {
             cancel: edge(cancel),
             unwind: edge(unwind),
         })?;
+        self.finish_remote_reply(
+            resumed,
+            cancel,
+            unwind,
+            &loans,
+            &before,
+            ValueDef {
+                id: result,
+                ty: output,
+                own,
+            },
+        )
+    }
+
+    fn finish_remote_reply(
+        &mut self,
+        normal: crate::BlockId,
+        cancel: crate::BlockId,
+        unwind: crate::BlockId,
+        loans: &[ValueId],
+        before: &std::collections::HashSet<ValueId>,
+        result: ValueDef,
+    ) -> Result<ValueId, String> {
         let saved = self.control_state();
         for cleanup in [cancel, unwind] {
             self.restore_control_state(&saved);
             self.current = cleanup;
+            self.end_call_loans(loans)?;
             self.finish_fault_exit()?;
         }
         self.restore_control_state(&saved);
-        self.current = resumed;
-        if own == OwnKind::Owned {
-            self.owned_live.insert(result, output);
+        self.current = normal;
+        self.end_call_loans(loans)?;
+        let temporaries = self
+            .owned_live
+            .keys()
+            .filter(|value| !before.contains(value))
+            .copied()
+            .collect::<Vec<_>>();
+        for temporary in temporaries.into_iter().rev() {
+            self.emit_destroy(temporary)?;
         }
-        Ok(result)
+        if result.own == OwnKind::Owned {
+            self.owned_live.insert(result.id, result.ty);
+        }
+        Ok(result.id)
     }
 }

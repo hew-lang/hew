@@ -1171,7 +1171,8 @@ impl Checker {
                     | MethodCallRewrite::BuiltinVecHigherOrder { .. },
                 ) => self.callee_suspends(invocation, graph, bodies),
                 Some(
-                    MethodCallRewrite::RemoteActorAsk | MethodCallRewrite::GeneratorNext { .. },
+                    MethodCallRewrite::RemoteActorAsk { .. }
+                    | MethodCallRewrite::GeneratorNext { .. },
                 ) => true,
                 Some(_) => false,
                 None => !matches!(

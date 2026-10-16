@@ -128,7 +128,18 @@ impl Checker {
         args: &[CallArg],
         span: &Span,
     ) -> Ty {
-        let result = self.check_method_call_inner(receiver, method, args, span);
+        self.check_method_call_with_type_args(receiver, method, None, args, span)
+    }
+
+    pub(in crate::check) fn check_method_call_with_type_args(
+        &mut self,
+        receiver: &Spanned<Expr>,
+        method: &str,
+        explicit_type_args: Option<&[Spanned<TypeExpr>]>,
+        args: &[CallArg],
+        span: &Span,
+    ) -> Ty {
+        let result = self.check_method_call_inner(receiver, method, explicit_type_args, args, span);
         let result = self.finish_actor_receive_call(receiver, span, result);
         let key = SpanKey::in_module(span, self.current_module_idx);
         self.check_method_callable_place(receiver, method, span);
@@ -231,6 +242,7 @@ impl Checker {
         &mut self,
         receiver: &Spanned<Expr>,
         method: &str,
+        explicit_type_args: Option<&[Spanned<TypeExpr>]>,
         args: &[CallArg],
         span: &Span,
     ) -> Ty {
@@ -1488,6 +1500,73 @@ impl Checker {
                 );
                 Ty::Error
             }
+            (
+                Ty::Named {
+                    head,
+                    args: service_args,
+                },
+                _,
+            ) if head.nominal() == Some(crate::KnownDecl::Service.nominal())
+                && !matches!(method, "close" | "release") =>
+            {
+                self.reject_wasm_feature(span, WasmUnsupportedFeature::Distributed);
+                let [Ty::Named {
+                    head: actor_head @ crate::TypeHead::Actor(_),
+                    args: actor_args,
+                }] = service_args.as_slice()
+                else {
+                    self.report_error(
+                        TypeErrorKind::InvalidOperation,
+                        span,
+                        "a service call names a concrete actor interface".into(),
+                    );
+                    return Ty::Error;
+                };
+                let Some(handler) =
+                    self.actor_member(*actor_head, method, crate::DeclarationKind::ActorReceive)
+                else {
+                    self.report_error(
+                        TypeErrorKind::UndefinedMethod,
+                        span,
+                        format!(
+                            "no service handler `{method}` on `{}`",
+                            service_args[0].user_facing()
+                        ),
+                    );
+                    return Ty::Error;
+                };
+                let actor_name = actor_head.registry_key().to_owned();
+                let Some(sig) = self.lookup_named_method_sig(&actor_name, actor_args, method)
+                else {
+                    return Ty::Error;
+                };
+                let applied = self.apply_instantiated_call_signature_with_assoc(
+                    &sig,
+                    None,
+                    args,
+                    span,
+                    SignatureArgApplication::FunctionLike {
+                        param_names: &sig.param_names,
+                        arity_context: format!("service handler `{method}`"),
+                    },
+                    true,
+                    Some(GenericCallee::Method {
+                        type_name: &actor_name,
+                        method,
+                        owner_type_args: actor_args,
+                    }),
+                );
+                self.enforce_actor_method_send_args(args);
+                let result = self.completion_call_type(handler, &applied.return_type);
+                self.method_call_rewrites.insert(
+                    SpanKey::in_module(span, self.current_module_idx),
+                    MethodCallRewrite::RemoteActorAsk {
+                        member: crate::actor_protocol::RemoteActorMember::Declared(handler),
+                        service: true,
+                    },
+                );
+                result
+            }
             // RemotePid<T> methods — dispatch to RemotePid's own impl methods.
             //
             // RemotePid does NOT fall through to actor receive-fn dispatch; it is
@@ -1541,9 +1620,14 @@ impl Checker {
                             self.method_call_rewrites.insert(
                                 SpanKey::in_module(span, self.current_module_idx),
                                 if method == "ask" {
-                                    MethodCallRewrite::RemoteActorAsk
+                                    MethodCallRewrite::RemoteActorAsk {
+                                        member: crate::actor_protocol::RemoteActorMember::ActorMsg,
+                                        service: false,
+                                    }
                                 } else {
-                                    MethodCallRewrite::RemoteActorSend
+                                    MethodCallRewrite::RemoteActorSend {
+                                        member: crate::actor_protocol::RemoteActorMember::ActorMsg,
+                                    }
                                 },
                             );
                         }
@@ -1869,7 +1953,7 @@ impl Checker {
                         .flatten();
                     let applied_sig = self.apply_instantiated_call_signature_with_assoc(
                         &sig,
-                        None,
+                        explicit_type_args,
                         args,
                         span,
                         SignatureArgApplication::FunctionLike {
@@ -2451,6 +2535,14 @@ impl Checker {
                 // (`checker-codegen-pattern-contract`). A field that exists
                 // but is NOT fn-typed falls through to `UndefinedMethod`.
                 if let Some(ret_ty) = self.try_record_fn_field_call(&resolved, method, args, span) {
+                    if explicit_type_args.is_some() {
+                        self.report_error(
+                            TypeErrorKind::InvalidOperation,
+                            span,
+                            "explicit type arguments require a function declaration, not a value field".to_owned(),
+                        );
+                        return Ty::Error;
+                    }
                     return ret_ty;
                 }
                 // `clone` on a user-defined named type: intercept before

@@ -54,7 +54,7 @@ fn generate() -> String {
     let mut mappings = [Vec::new(), Vec::new(), Vec::new()];
     let mut start = 0;
     let mut previous = 0;
-    for cp in 0..=0x110000 {
+    for cp in 0..=0x0011_0000 {
         let value = char::from_u32(cp);
         let current = value.map_or(0, properties);
         if current != previous {

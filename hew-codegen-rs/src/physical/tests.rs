@@ -45,7 +45,7 @@ fn borrowed_field_chain_emits_no_vector_clone_for_its_reads() {
         llvm.get_functions()
             .filter(|function| {
                 let name = function.get_name().to_string_lossy();
-                name == symbol || name.starts_with(&format!("{symbol}."))
+                name == symbol || name.starts_with(&format!("{symbol}$resume"))
             })
             .map(|function| {
                 function

@@ -41,7 +41,7 @@ struct ChildGuard {
 }
 
 struct BuiltFixture {
-    _dir: tempfile::TempDir,
+    dir: tempfile::TempDir,
     binary: PathBuf,
 }
 
@@ -88,7 +88,7 @@ fn profiler_endpoint_captures_fixture_observability_data() {
             .env("HEW_PPROF", format!("127.0.0.1:{port}"))
             .env("HEW_OBSERVE", "hot")
             .env("HEW_PROF_OUTPUT", "both")
-            .current_dir(fixture._dir.path())
+            .current_dir(fixture.dir.path())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
@@ -132,7 +132,7 @@ fn profiler_endpoint_captures_fixture_observability_data() {
         String::from_utf8_lossy(&output.stderr)
     );
     let profile =
-        std::fs::read_to_string(fixture._dir.path().join("hew-profile.txt")).expect("exit profile");
+        std::fs::read_to_string(fixture.dir.path().join("hew-profile.txt")).expect("exit profile");
     assert!(profile.contains("Live Rc blocks by payload type (including weak-only headers):\n  1 Option<RootCycle>\n"), "{profile}");
     assert!(
         !profile.contains("WeakOnly")
@@ -142,7 +142,7 @@ fn profiler_endpoint_captures_fixture_observability_data() {
     );
     assert!(
         fixture
-            ._dir
+            .dir
             .path()
             .join("hew-profile.pb.gz")
             .metadata()
@@ -242,7 +242,7 @@ fn build_fixture_binary() -> BuiltFixture {
         String::from_utf8_lossy(&output.stderr)
     );
     BuiltFixture {
-        _dir: out_dir,
+        dir: out_dir,
         binary,
     }
 }
@@ -274,7 +274,7 @@ fn build_restarts_fixture_binary() -> BuiltFixture {
         String::from_utf8_lossy(&output.stderr)
     );
     BuiltFixture {
-        _dir: out_dir,
+        dir: out_dir,
         binary,
     }
 }

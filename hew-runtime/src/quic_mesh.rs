@@ -1,8 +1,6 @@
 //! Per-actor-pair QUIC mesh transport for the Hew node mesh.
 //!
-//! This module replaces the legacy [`quic_transport`] HOL-blocking model
-//! (single bidirectional stream per connection) with per-actor-pair stream
-//! multiplexing backed by Quinn's native per-stream scheduling.
+//! Actor-pair stream multiplexing uses Quinn's native per-stream scheduling.
 //!
 //! # Architecture
 //!
@@ -19,11 +17,6 @@
 //! ```
 //!
 //! # HOL-blocker mitigation
-//!
-//! `quic_transport` opens one `open_bi()` per connection. A slow consumer on
-//! that single stream stalls all actors sharing the connection (head-of-line
-//! blocking at the QUIC application level, even though QUIC itself eliminates
-//! HOL at the TLS/IP level).
 //!
 //! `quic_mesh` opens a fresh Quinn bidirectional stream for each `(peer,
 //! lane_kind)` actor-pair. Streams are cached in a bounded LRU-like structure
@@ -80,7 +73,6 @@
 //! existing byte-stream connection-manager contract; W4/A5 move actor payloads
 //! onto typed per-actor-pair lanes once the CBOR envelope cut-over lands.
 //!
-//! [`quic_transport`]: crate::quic_transport
 
 use std::collections::{HashSet, VecDeque};
 use std::ffi::{c_char, c_int, c_void, CStr};
@@ -88,6 +80,7 @@ use std::net::ToSocketAddrs;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
+use zeroize::Zeroizing;
 
 use bytes::Bytes;
 use quinn::{Endpoint, RecvStream, SendStream, VarInt};
@@ -146,19 +139,27 @@ struct StreamHandle {
 /// the set is rejected at the TLS handshake — fail-closed.
 ///
 /// Use [`MeshTls::with_peer_spki`] to add a pinned peer certificate.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct MeshTls {
     /// DER-encoded certificate chain for this node.
     pub cert_chain: Vec<CertificateDer<'static>>,
     /// Raw PKCS8 DER bytes for this node's private key.
     ///
-    /// Stored as `Vec<u8>` because `PrivateKeyDer` does not implement `Clone`.
-    /// Call `private_key_der()` to obtain a `PrivateKeyDer<'_>` view when
-    /// needed by rustls builders.
-    pub private_key_pkcs8: Vec<u8>,
+    /// Clones share one zeroizing owner. Only the TLS key provider receives
+    /// an owned private-key copy at configuration construction.
+    pub(crate) private_key_pkcs8: Arc<Zeroizing<Vec<u8>>>,
     /// Set of DER-encoded SPKI bytes for allowed peers (fail-closed: empty
     /// means no peers are allowed).
     pub allowed_peer_spkis: std::collections::HashSet<Vec<u8>>,
+}
+
+impl std::fmt::Debug for MeshTls {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MeshTls")
+            .field("cert_chain", &self.cert_chain)
+            .field("allowed_peer_spkis", &self.allowed_peer_spkis)
+            .finish_non_exhaustive()
+    }
 }
 
 impl MeshTls {
@@ -168,7 +169,9 @@ impl MeshTls {
     /// does not implement `Clone` and rustls builders require `'static`.
     #[must_use]
     pub fn private_key_der(&self) -> PrivateKeyDer<'static> {
-        PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(self.private_key_pkcs8.clone()))
+        PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(
+            self.private_key_pkcs8.as_ref().to_vec(),
+        ))
     }
 }
 
@@ -193,7 +196,7 @@ impl MeshTls {
         // the peer side without parsing the full certificate.
         let spki_bytes = extract_spki_from_cert_der(cert_der.as_ref())?;
 
-        let private_key_pkcs8 = certified_key.signing_key.serialize_der();
+        let private_key_pkcs8 = Arc::new(Zeroizing::new(certified_key.signing_key.serialize_der()));
 
         Ok((
             MeshTls {
@@ -470,7 +473,7 @@ fn mesh_tls_from_material(material: &MeshIdentityMaterial) -> MeshIdentity {
         .collect();
     let tls = MeshTls {
         cert_chain,
-        private_key_pkcs8: material.private_key_der().to_vec(),
+        private_key_pkcs8: material.shared_private_key(),
         allowed_peer_spkis: HashSet::new(),
     };
     (tls, material.spki().to_vec())
@@ -480,7 +483,11 @@ fn mesh_tls_from_material(material: &MeshIdentityMaterial) -> MeshIdentity {
 /// material for the `Node::load_keys` -> `PeerAuthConfig` path (D14).
 fn material_from_mesh_tls(tls: &MeshTls, spki: &[u8]) -> MeshIdentityMaterial {
     let cert_chain_der = tls.cert_chain.iter().map(|c| c.as_ref().to_vec()).collect();
-    MeshIdentityMaterial::from_der(cert_chain_der, tls.private_key_pkcs8.clone(), spki.to_vec())
+    MeshIdentityMaterial::from_shared_der(
+        cert_chain_der,
+        Arc::clone(&tls.private_key_pkcs8),
+        spki.to_vec(),
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -505,7 +512,7 @@ const MAX_KEYFILE_BYTES: usize =
 impl MeshTls {
     /// Serialize this identity to the dependency-free keyfile frame. The mesh
     /// always carries a single leaf cert; serialization rejects any other shape.
-    fn to_keyfile_bytes(&self) -> Result<Vec<u8>, MeshError> {
+    fn to_keyfile_bytes(&self) -> Result<Zeroizing<Vec<u8>>, MeshError> {
         let [cert] = self.cert_chain.as_slice() else {
             return Err(MeshError::Tls(
                 "keyfile: expected exactly one leaf certificate".into(),
@@ -521,9 +528,9 @@ impl MeshTls {
             .map_err(|_| MeshError::Tls("keyfile: cert too large".into()))?;
         let key_len = u32::try_from(self.private_key_pkcs8.len())
             .map_err(|_| MeshError::Tls("keyfile: key too large".into()))?;
-        let mut out = Vec::with_capacity(
+        let mut out = Zeroizing::new(Vec::with_capacity(
             MESH_KEYFILE_MAGIC.len() + 8 + cert.len() + self.private_key_pkcs8.len(),
-        );
+        ));
         out.extend_from_slice(MESH_KEYFILE_MAGIC);
         out.extend_from_slice(&cert_len.to_le_bytes());
         out.extend_from_slice(cert);
@@ -567,7 +574,7 @@ impl MeshTls {
         if key_len == 0 || key_len > MAX_KEYFILE_KEY_BYTES {
             return Err(MeshError::Tls("keyfile: key length out of range".into()));
         }
-        let key = take_bytes(bytes, &mut pos, key_len)?;
+        let key = Arc::new(Zeroizing::new(take_bytes(bytes, &mut pos, key_len)?));
         // Fail-closed: the frame is exactly MAGIC|cert|key. Trailing bytes mean
         // a malformed or padded file; reject rather than silently ignore them.
         if pos != bytes.len() {
@@ -579,6 +586,15 @@ impl MeshTls {
             private_key_pkcs8: key,
             allowed_peer_spkis: std::collections::HashSet::new(),
         };
+        let certified = rustls::sign::CertifiedKey::from_der(
+            tls.cert_chain.clone(),
+            tls.private_key_der(),
+            &rustls::crypto::ring::default_provider(),
+        )
+        .map_err(|_| MeshError::Tls("keyfile: invalid certificate/private key".into()))?;
+        certified
+            .keys_match()
+            .map_err(|_| MeshError::Tls("keyfile: certificate/private key mismatch".into()))?;
         Ok((tls, spki))
     }
 }
@@ -597,52 +613,24 @@ impl MeshTls {
 pub fn mesh_identity_load_or_create(
     path: &std::path::Path,
 ) -> Result<MeshIdentityMaterial, MeshError> {
-    if path.exists() {
-        let bytes = read_keyfile_bounded(path)?;
-        let (tls, spki) = MeshTls::from_keyfile_bytes(&bytes)?;
-        return Ok(material_from_mesh_tls(&tls, &spki));
-    }
-    let (tls, spki) = MeshTls::self_signed(vec!["hew-mesh.local".into(), "localhost".into()])?;
-    let frame = tls.to_keyfile_bytes()?;
-    write_keyfile_owner_only(path, &frame)?;
+    let invalid = |error: MeshError| std::io::Error::new(std::io::ErrorKind::InvalidData, error);
+    let bytes = crate::identity_file::load_or_create(
+        path,
+        MAX_KEYFILE_BYTES,
+        || {
+            let (tls, _) = MeshTls::self_signed(vec!["hew-mesh.local".into(), "localhost".into()])
+                .map_err(invalid)?;
+            tls.to_keyfile_bytes().map_err(invalid)
+        },
+        |bytes| {
+            MeshTls::from_keyfile_bytes(bytes)
+                .map(|_| ())
+                .map_err(invalid)
+        },
+    )
+    .map_err(|error| MeshError::Tls(format!("load_keys: {}: {error}", path.display())))?;
+    let (tls, spki) = MeshTls::from_keyfile_bytes(&bytes)?;
     Ok(material_from_mesh_tls(&tls, &spki))
-}
-
-/// Read a keyfile capped at [`MAX_KEYFILE_BYTES`]. Bounding the read means a
-/// giant or truncated-but-huge file cannot drive an unbounded allocation; an
-/// over-cap file is rejected before the frame parser runs.
-fn read_keyfile_bounded(path: &std::path::Path) -> Result<Vec<u8>, MeshError> {
-    use std::io::Read;
-    let file = std::fs::File::open(path)
-        .map_err(|e| MeshError::Tls(format!("load_keys: read {}: {e}", path.display())))?;
-    let mut buf = Vec::new();
-    file.take((MAX_KEYFILE_BYTES + 1) as u64)
-        .read_to_end(&mut buf)
-        .map_err(|e| MeshError::Tls(format!("load_keys: read {}: {e}", path.display())))?;
-    if buf.len() > MAX_KEYFILE_BYTES {
-        return Err(MeshError::Tls("load_keys: keyfile exceeds bound".into()));
-    }
-    Ok(buf)
-}
-
-/// Write a freshly minted keyfile owner-only (mode 0600 on unix) and refuse to
-/// clobber an existing path. Private-key material must never inherit a wide
-/// umask; `create_new` keeps a racing creator from being silently overwritten.
-fn write_keyfile_owner_only(path: &std::path::Path, frame: &[u8]) -> Result<(), MeshError> {
-    use std::io::Write;
-    let mut opts = std::fs::OpenOptions::new();
-    opts.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        opts.mode(0o600);
-    }
-    let mut file = opts
-        .open(path)
-        .map_err(|e| MeshError::Tls(format!("load_keys: write {}: {e}", path.display())))?;
-    file.write_all(frame)
-        .map_err(|e| MeshError::Tls(format!("load_keys: write {}: {e}", path.display())))?;
-    Ok(())
 }
 
 struct QuicMeshConn {
@@ -2331,6 +2319,12 @@ mod tests {
     #[test]
     fn keyfile_bytes_roundtrip_preserve_spki() {
         let (tls, spki) = MeshTls::self_signed(vec!["cap12".into()]).unwrap();
+        let cloned = tls.clone();
+        assert!(Arc::ptr_eq(
+            &tls.private_key_pkcs8,
+            &cloned.private_key_pkcs8
+        ));
+        assert!(!format!("{tls:?}").contains("private_key_pkcs8"));
         let frame = tls.to_keyfile_bytes().expect("serialize keyfile");
         assert!(frame.starts_with(MESH_KEYFILE_MAGIC));
         let (loaded, loaded_spki) = MeshTls::from_keyfile_bytes(&frame).expect("parse keyfile");
@@ -2340,7 +2334,8 @@ mod tests {
         );
         assert_eq!(tls.cert_chain, loaded.cert_chain, "cert must survive");
         assert_eq!(
-            tls.private_key_pkcs8, loaded.private_key_pkcs8,
+            tls.private_key_pkcs8.as_slice(),
+            loaded.private_key_pkcs8.as_slice(),
             "key must survive"
         );
     }
@@ -2353,8 +2348,13 @@ mod tests {
             "bad magic"
         );
         let (tls, _) = MeshTls::self_signed(vec!["cap12".into()]).unwrap();
+        let (other, _) = MeshTls::self_signed(vec!["different".into()]).unwrap();
+        let mut mismatched = tls.clone();
+        mismatched.private_key_pkcs8 = other.private_key_pkcs8;
+        assert!(MeshTls::from_keyfile_bytes(&mismatched.to_keyfile_bytes().unwrap()).is_err());
         let mut frame = tls.to_keyfile_bytes().unwrap();
-        frame.truncate(frame.len() - 4);
+        let truncated_len = frame.len() - 4;
+        frame.truncate(truncated_len);
         assert!(
             MeshTls::from_keyfile_bytes(&frame).is_err(),
             "truncated body"
@@ -2378,6 +2378,7 @@ mod tests {
         // Magic-prefixed so it isn't a magic miss; bulk pushes it over the cap.
         let mut blob = MESH_KEYFILE_MAGIC.to_vec();
         blob.resize(MAX_KEYFILE_BYTES + 64, 0u8);
+        mesh_identity_load_or_create(&path).expect("create owner-only identity");
         std::fs::write(&path, &blob).unwrap();
         assert!(
             mesh_identity_load_or_create(&path).is_err(),

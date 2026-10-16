@@ -1123,15 +1123,6 @@ pub unsafe extern "C" fn hew_node_api_load_keys(path: *const c_char) -> c_int {
                 }
             }
         }
-        #[cfg(feature = "quic")]
-        TransportSelection::Quic => {
-            let _ = p;
-            node_peer_auth_setup_failed(
-                "Node::load_keys: plain quic transport has no pinnable peer identity \
-                 (use quic-mesh or tcp-noise)",
-            );
-            -1
-        }
     }
 }
 
@@ -1244,14 +1235,6 @@ pub unsafe extern "C" fn hew_node_api_allow_peer(
                 return -1;
             }
             PeerCredential::Spki(bytes)
-        }
-        #[cfg(feature = "quic")]
-        TransportSelection::Quic => {
-            node_peer_auth_setup_failed(
-                "Node::allow_peer: strict binding unsupported on plain quic transport \
-                 (use quic-mesh or tcp-noise)",
-            );
-            return -1;
         }
     };
     // Stage into the pre-start Building config. Rejected while the public node

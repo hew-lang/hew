@@ -98,6 +98,7 @@ crossbeam-utils = "0.8"
 rand = "0.10.1"
 socket2 = "0.6.4"
 snow = "0.10"
+tempfile.workspace = true
 
 # Optional ecosystem dependencies
 flate2 = { version = "1", optional = true }

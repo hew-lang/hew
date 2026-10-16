@@ -115,7 +115,7 @@ quinn = { version = "0.11", optional = true, default-features = false, features 
   "runtime-tokio",
   "rustls-ring",
 ] }
-rustls = { version = "0.23", optional = true, default-features = false, features = [
+rustls = { version = "0.23.46", optional = true, default-features = false, features = [
   "ring",
   "std",
 ] }

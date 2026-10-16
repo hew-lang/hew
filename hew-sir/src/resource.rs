@@ -481,8 +481,7 @@ pub fn verify_resource_release(
         };
         return if head
             .declaration(defs)
-            .map(hew_types::NominalId::declaration)
-            == Some(lifecycle.resource_declaration)
+            .is_some_and(|id| id.declaration() == lifecycle.resource_declaration)
         {
             Ok(())
         } else {

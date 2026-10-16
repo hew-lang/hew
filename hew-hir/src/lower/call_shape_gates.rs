@@ -467,7 +467,7 @@ pub(super) fn scan_expr_for_call_shape(
                     HirSelectArmKind::StreamNext { stream } => {
                         scan_expr_for_call_shape(stream, callable, diagnostics);
                     }
-                    HirSelectArmKind::ActorAsk { call } => {
+                    HirSelectArmKind::Call { call } => {
                         scan_expr_for_call_shape(call, callable, diagnostics);
                     }
                     HirSelectArmKind::TaskAwait { task } => {

@@ -2453,7 +2453,7 @@ pub enum HirSelectArmKind {
     /// `pat from <actor-expr>.<method>(<args>) => body`. The arm
     /// dispatches an ask to `actor.method(args)` and waits for the
     /// reply; the binding receives its complete checked `Result`.
-    ActorAsk {
+    Call {
         /// The normalized checked call preserves exact protocol identity,
         /// argument order, admission policy, deadline and complete result.
         call: Box<HirExpr>,

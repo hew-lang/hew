@@ -15,7 +15,7 @@ impl Checker {
     /// values remain conservative because their members may do so.
     fn type_may_carry_value_candidates(ty: &crate::Ty) -> bool {
         match ty {
-            crate::Ty::String | crate::Ty::Bytes => false,
+            crate::Ty::Never | crate::Ty::String | crate::Ty::Bytes => false,
             crate::Ty::Tuple(items) => items.iter().any(Self::type_may_carry_value_candidates),
             crate::Ty::Array(item, _) | crate::Ty::Slice(item) => {
                 Self::type_may_carry_value_candidates(item)
@@ -85,11 +85,13 @@ impl Checker {
 
     fn unerased_value_candidates(&self, expr: &Expr, span: &Span) -> IndirectCallCandidates {
         let key = SpanKey::in_module(span, self.current_module_idx);
-        if self.expr_types.get(&key).is_some_and(|ty| {
-            !Self::type_may_carry_value_candidates(
-                &self.subst.resolve(ty).materialize_literal_defaults(),
-            )
-        }) {
+        if matches!(expr, Expr::Literal(_))
+            || self.expr_types.get(&key).is_some_and(|ty| {
+                !Self::type_may_carry_value_candidates(
+                    &self.subst.resolve(ty).materialize_literal_defaults(),
+                )
+            })
+        {
             return IndirectCallCandidates {
                 known: Vec::new(),
                 may_be_unknown: false,
@@ -228,7 +230,29 @@ impl Checker {
         field: &Spanned<Ident>,
     ) -> IndirectCallCandidates {
         let key = SpanKey::in_module(&field.1, self.current_module_idx);
-        if let Some(Resolution::Field(owner, index)) = self.scopes.resolutions().get(&key) {
+        let identity =
+            if let Some(Resolution::Field(owner, index)) = self.scopes.resolutions().get(&key) {
+                Some((*owner, *index))
+            } else {
+                // Method syntax for a callable field uses the same declaration
+                // identity even when name resolution recorded a method site.
+                let ty = self
+                    .expr_types
+                    .get(&SpanKey::in_module(&object.1, self.current_module_idx));
+                ty.and_then(|ty| match self.subst.resolve(ty) {
+                    crate::Ty::Named { head, .. } => {
+                        let owner = head.nominal()?;
+                        let definition = self.head_type_def(head)?;
+                        let index = definition
+                            .field_order
+                            .iter()
+                            .position(|name| name == field.0.name.as_str())?;
+                        Some((owner, u32::try_from(index).ok()?))
+                    }
+                    _ => None,
+                })
+            };
+        if let Some((owner, index)) = identity {
             let receiver = self.callable_candidates_for_expr(&object.0, &object.1);
             IndirectCallCandidates {
                 known: receiver
@@ -236,8 +260,8 @@ impl Checker {
                     .into_iter()
                     .map(|receiver| CallableCandidate::Field {
                         receiver: Box::new(receiver),
-                        owner: *owner,
-                        index: *index,
+                        owner,
+                        index,
                     })
                     .collect(),
                 may_be_unknown: receiver.may_be_unknown,
@@ -262,12 +286,13 @@ impl Checker {
         &self,
         block: &hew_parser::ast::Block,
     ) -> IndirectCallCandidates {
-        block
-            .trailing_expr
-            .as_ref()
-            .map_or_else(IndirectCallCandidates::unknown, |value| {
-                self.callable_candidates_for_expr(&value.0, &value.1)
-            })
+        block.trailing_expr.as_ref().map_or_else(
+            || IndirectCallCandidates {
+                known: Vec::new(),
+                may_be_unknown: false,
+            },
+            |value| self.callable_candidates_for_expr(&value.0, &value.1),
+        )
     }
 
     pub(super) fn record_binding_value_candidates(
@@ -461,7 +486,7 @@ impl Checker {
         }
     }
 
-    fn selected_callable_target(&self, span: &Span) -> Option<&CallTarget> {
+    pub(super) fn selected_callable_target(&self, span: &Span) -> Option<&CallTarget> {
         let key = SpanKey::in_module(span, self.current_module_idx);
         self.selected_callable_target_at(&key)
     }

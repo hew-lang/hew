@@ -248,6 +248,27 @@ Creating another owner creates an independent revision sequence and identity.
 Dropping a subscription detaches its cursor and pending receive before resource
 cleanup completes. An ordinary `scope within` can bound a receive.
 
+An ordinary receive call can also be selected repeatedly without consuming
+the subscription. A timer win cancels and drains that receive before its arm
+runs; the next iteration can receive from the same cursor. Ordinary-call
+preparation can advance the cursor before selection; cancelling a completed
+receive does not undo that consumption (§4.11.1 of the language specification):
+
+```hew,ignore
+loop {
+    select {
+        item from updates.recv() => {
+            match item {
+                .Ok(.Some(notice)) => println(notice.revision),
+                .Ok(.None) => break,
+                .Err(lag) => panic(f"history incomplete: {lag}"),
+            }
+        }
+        after 1s => println("still waiting"),
+    };
+}
+```
+
 The wrapper uses ordinary Hew actors, bounded streams and resource cleanup.
 It invokes the same generated evaluator as direct `M.step`; it has no second
 transition evaluator or observer callback execution inside commit.

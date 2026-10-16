@@ -5,9 +5,8 @@
 pub(super) use super::*;
 
 #[test]
-fn user_stream_recv_is_not_a_pipe_select_source() {
-    let output = check_source(
-        r"type Stream<T> {
+fn user_stream_recv_uses_ordinary_call_selection() {
+    let source = r"type Stream<T> {
     value: T;
 }
 
@@ -24,18 +23,24 @@ fn main() {
         after 1ms => 0,
     };
 }
-",
-    );
+";
+    let output = check_source(source);
 
     assert!(
-        output.errors.iter().any(|error| {
-            error.kind == TypeErrorKind::InvalidOperation
-                && error
-                    .message
-                    .contains("a select arm source is a task, an actor call, or a stream receive")
-        }),
-        "a same-spelling user Stream must not acquire pipe select semantics: {:#?}",
+        output.errors.is_empty(),
+        "a user method uses its ordinary invocation: {:#?}",
         output.errors
+    );
+    assert!(output.select_sources.values().flatten().any(|source_kind| {
+        matches!(source_kind, crate::check::CheckedSelectSource::Call { call } if source[call.start..call.end].trim() == "rx.recv()")
+    }), "{:?}", output.select_sources);
+    assert!(
+        !output.select_sources.values().flatten().any(|source_kind| {
+            matches!(
+                source_kind,
+                crate::check::CheckedSelectSource::StreamReceive { .. }
+            )
+        })
     );
 }
 

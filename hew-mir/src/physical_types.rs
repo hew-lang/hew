@@ -658,6 +658,25 @@ pub enum PhysicalSetOp {
 impl PhysicalSetOp {}
 
 #[derive(Debug, Clone, PartialEq)]
+pub enum PhysicalInvocationCallee {
+    Direct(CallableId),
+    Indirect {
+        receiver: ArgumentTransfer,
+        specialization: Option<hew_sir::CallableSpecializationId>,
+    },
+}
+
+impl PhysicalInvocationCallee {
+    #[must_use]
+    pub fn receiver(&self) -> Option<ArgumentTransfer> {
+        match self {
+            Self::Direct(_) => None,
+            Self::Indirect { receiver, .. } => Some(*receiver),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub enum PhysicalOp {
     /// One bounded element pipe. Unconsumed elements are released through
     /// the element recipe by whichever half closes last.
@@ -685,6 +704,13 @@ pub enum PhysicalOp {
     TaskRace {
         scope: hew_sir::TaskScopeId,
         members: Vec<StorageId>,
+        dest: StorageId,
+        output: Option<PhysicalValueRecipe>,
+    },
+    TaskInvoke {
+        scope: hew_sir::TaskScopeId,
+        callee: PhysicalInvocationCallee,
+        args: Vec<ArgumentTransfer>,
         dest: StorageId,
         output: Option<PhysicalValueRecipe>,
     },

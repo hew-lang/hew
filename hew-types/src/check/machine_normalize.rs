@@ -1057,6 +1057,10 @@ impl Builder {
         Ok(())
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "normalize dispatch and report construction before the single state commit"
+    )]
     fn step_body(
         &mut self,
         machine: &MachineDecl,

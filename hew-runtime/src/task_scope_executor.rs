@@ -129,12 +129,20 @@ impl Driver {
                     )
                 };
                 match invocation {
-                    CheckedTaskInvocation::Callable(callable) => {
-                        self.frame = ((*callable.descriptor)
-                            .invoke_once
-                            .unwrap_or_else(|| std::process::abort()))(
+                    CheckedTaskInvocation::Callable {
+                        value: callable,
+                        arguments,
+                        consuming,
+                    } => {
+                        let descriptor = &*callable.descriptor;
+                        let invoke = if consuming {
+                            descriptor.invoke_once
+                        } else {
+                            descriptor.invoke_borrow
+                        };
+                        self.frame = (invoke.unwrap_or_else(|| std::process::abort()))(
                             callable.environment,
-                            ptr::null(),
+                            arguments,
                             result,
                             (&raw mut self.fault).cast(),
                             self.state.cast(),

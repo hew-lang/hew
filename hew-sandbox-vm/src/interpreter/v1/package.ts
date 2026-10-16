@@ -401,6 +401,15 @@ export type OpV1 =
       dst: number;
       scope: number;
       callable: Operand;
+    })
+  | (OpBase & {
+      op: "task.invoke";
+      dst: number;
+      scope: number;
+      callee:
+        | { direct: number }
+        | { receiver: BoundaryOperand; specialization: number | null };
+      args: BoundaryOperand[];
     });
 
 export type OpName = OpV1["op"];

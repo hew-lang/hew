@@ -3541,6 +3541,21 @@
         "native",
         "wasm32-wasip1"
       ],
+      "classification": "non-declarable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_checked_task_invoke( *mut HewTaskScope, *mut HewCallableValue, *const *mut c_void, i32, *const HewValueLayout, ) -> *mut HewTask",
+        "wasm32-wasip1": "fn hew_checked_task_invoke( *mut HewTaskScope, *mut HewCallableValue, *const *mut c_void, i32, *const HewValueLayout, ) -> *mut HewTask"
+      },
+      "symbol": "hew_checked_task_invoke"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
       "classification": "unclassified-stdlib",
       "extent": "length-or-count",
       "nul": "not-applicable",

@@ -422,10 +422,14 @@ language contracts:
   scope's exit like every fork. Whether Hew needs a true fire-and-forget send
   is an open question: it would make resources, cleanup and control flow less
   deterministic, and nothing in this specification promises it.
-- Native `select` realizes task, timer, actor-call and stream receive
+- Native `select` realizes task, timer, actor-call, ordinary callable and stream receive
   sources. A line, chunk or take adapter over a socket stream, and a file
   stream over a pipe, device or terminal, are not select sources yet
   (§6.4.5).
+- Ordinary-call select currently realizes direct calls, statically resolved
+  trait methods and callable values, including mutable and generic closures.
+  Mutable methods with receiver handback and dynamic trait slots still need
+  prepared invocation adapters; their ordinary calls remain supported.
 - Generic `frames` / `framed` codec adapters are not lowered; the `Codec`
   trait, `lines()` and the shipped codecs are separate from that gap
   (§6.4.6).
@@ -5774,19 +5778,20 @@ A timer arm does not create a new public cancellation token.
 #### 4.11.1 `select` Expression
 
 `select { }` is a **sealed compiler-known construct** in edition 2026. It
-waits for the first of four named operation forms to complete, evaluates
+waits for the first of five named operation forms to complete, evaluates
 the corresponding arm, and disarms the losing registrations. There is no
-user-implementable `Awaitable` trait — the four forms are exhaustive.
+user-implementable `Awaitable` trait — the five forms are exhaustive.
 
 **Canonical syntax:**
 
-<!-- Illustrates all four select arm forms; native actor-call registration is pending (§2.1.1). -->
+<!-- Illustrates the select arm forms. -->
 
 ```hew,ignore
 select {
     reply   from worker.call(x)        => use(reply),     // actor call
     item    from inbox.recv()          => use(item),      // stream receive
     value   from job                   => use(value),     // forked task
+    notice  from subscription.recv()   => use(notice),    // ordinary call
     after 5s                           => abort(),        // timer
 }
 ```
@@ -5800,16 +5805,18 @@ consumes that classification:
 - `<stream-expr>.recv()` — a receive on a pipe `Stream<T>` (§6.4.5).
 - `<task-expr>` — an expression of type `Task<T>`, the handle `fork`
   produces (§4.4).
+- `<call-expr>` — an ordinary checked call, including a callable value.
+  The call starts during source preparation and produces its ordinary result.
 - `after <duration-expr>` — the timer arm; carries no binding.
 
 An arm source never writes `await`: the `select` is what waits (§4.0). The
 spelling is refused at check time with a fix-it that deletes it, and a
 `select` with no arms at all is refused the same way.
 
-Current native realization of the four specified forms is listed in
+Current native realization of the specified forms is listed in
 §2.1.1.
 
-**The four forms (closed set).** Each form is fully specified by four
+**The five forms (closed set).** Each form is fully specified by four
 columns: what the winning arm binds, how the winning arm propagates a
 non-success outcome at the source, how the runtime cleans up *that* arm
 when a different arm wins (loser cleanup), and how the runtime cleans up
@@ -5822,7 +5829,16 @@ cleanup columns; the difference is which side initiates the teardown.
 | `<id> from <actor>.<method>(<args>)` | `id: Result<R, ActorError<E>>` for a reply type `R` | `ActorError` per HEW-DIST-SPEC §6 — `Partition`, `Timeout`, or `Dead` as observed by the caller. Traps in the callee are isolated by the mailbox boundary and do not propagate through the ask. | If the envelope has **not yet been dispatched**, withdraw it from the target actor's mailbox by correlation id — no `OrphanedAsk` is observed on either side. If it **has been dispatched**, the reply sink is tombstoned; a late reply arriving at the tombstoned sink is classified as `OrphanedAsk` and discarded silently (no caller-visible failure). | Same as loser cleanup: withdraw-or-tombstone by correlation id, late reply classified as `OrphanedAsk` and discarded.                                       |
 | `<id> from <rx>.recv()`    | `id: Option<T>` for `Stream<T>` | `None` is a normal winning value indicating end of data; `Some(value)` carries the received item. A faulted pipe traps the winner exactly as a plain `recv` would (§6.4.4).                              | Pending receive is withdrawn from the pipe core; the stream binding remains usable in the enclosing scope.                                                                                         | Same as loser cleanup: pending receive withdrawn, stream binding remains usable for the cancellation handler.                                             |
 | `<id> from <task>`         | `id: T` for `Task<T>`             | The task's own outcome, exactly as `await` would deliver it.                                                                                                                                                | The handle is not consumed: the losing task keeps running and its handle stays owned by the enclosing scope, which must still join it. Its registration is disarmed, never cancelled.                     | The registration is disarmed; the task takes the enclosing scope's ordinary cancellation.                                                                  |
+| `<id> from <call>` | The call's ordinary return type | A selected fault propagates as an ordinary call fault. | The select-local invocation is cancelled and drained before entering the winning arm. | The invocation is cancelled and drained before releasing its inputs. |
 | `after <duration>`         | no binding; arm type is `()`-shaped at the source | Timer expiry selects this arm; evaluating its duration follows ordinary expression rules.                                                                                                                                                                          | The timer is cancelled. No effect propagates.                                                                                                                                                            | The timer is cancelled. No effect propagates.                                                                                                              |
+
+Ordinary calls may perform effects while the remaining sources are being
+prepared. Cancellation does not undo those effects. Shared inputs require
+`Sync`; exclusively borrowed or transferred inputs and returned values require
+`Send`. The prepared invocation retains its input slots and loans until it has
+finished cleanup, including when later source preparation faults. Those loans
+end before the selected arm runs. This private lifetime applies only to newly
+prepared calls; an explicitly forked task keeps the task-arm rules below.
 
 **Only the winning task arm consumes the task (normative).** A task arm takes
 the task's result only when it wins, so only the winning arm's body sees the

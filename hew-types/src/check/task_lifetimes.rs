@@ -73,6 +73,9 @@ struct OriginEnvironments {
     values: Vec<Arc<Actuals>>,
     identities: HashMap<Vec<(TypeBindingId, IndirectCallCandidates)>, usize>,
     task_carriers: HashMap<crate::Ty, bool>,
+    completed: HashMap<Visit, (Vec<ValueOrigin>, bool)>,
+    cycles: usize,
+    incomplete: usize,
 }
 
 impl OriginEnvironments {
@@ -460,6 +463,172 @@ impl Checker {
         carries
     }
 
+    pub(super) fn value_candidates_have_marker(
+        &self,
+        ty: &crate::Ty,
+        candidates: &IndirectCallCandidates,
+        marker: crate::traits::MarkerTrait,
+        flows: &HashMap<SpanKey, Vec<CallableArgumentFlow>>,
+    ) -> bool {
+        let mut environments = OriginEnvironments::default();
+        let actuals = environments.intern(Actuals::new());
+        self.value_marker(
+            ty,
+            candidates,
+            marker,
+            actuals,
+            flows,
+            &mut HashSet::new(),
+            &mut environments,
+        )
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        clippy::too_many_lines,
+        reason = "reuse canonical value projections and their exact call environments"
+    )]
+    fn value_marker(
+        &self,
+        ty: &crate::Ty,
+        candidates: &IndirectCallCandidates,
+        marker: crate::traits::MarkerTrait,
+        actuals: usize,
+        flows: &HashMap<SpanKey, Vec<CallableArgumentFlow>>,
+        seen: &mut HashSet<(SpanKey, usize)>,
+        environments: &mut OriginEnvironments,
+    ) -> bool {
+        let ty = self.subst.resolve(ty);
+        if self.type_has_marker(&ty, marker) {
+            return true;
+        }
+        let captures_have_marker =
+            |site: &SpanKey,
+             actuals,
+             seen: &mut HashSet<_>,
+             environments: &mut OriginEnvironments| {
+                if !seen.insert((site.clone(), actuals)) {
+                    return false;
+                }
+                let proven = self
+                    .closure_capture_facts
+                    .get(site)
+                    .is_some_and(|captures| {
+                        captures.iter().all(|capture| {
+                            self.value_marker(
+                                &capture.ty,
+                                &capture.value_candidates,
+                                marker,
+                                actuals,
+                                flows,
+                                seen,
+                                environments,
+                            )
+                        })
+                    });
+                seen.remove(&(site.clone(), actuals));
+                proven
+            };
+        if let crate::Ty::Closure {
+            identity: EffectBody::Closure(site),
+            ..
+        } = ty.callable_body()
+        {
+            return captures_have_marker(site, actuals, seen, environments);
+        }
+        match &ty {
+            crate::Ty::Function { .. } | crate::Ty::GenericCallable { .. } => {
+                let incomplete = environments.incomplete;
+                let origins = self.task_value_origins(
+                    candidates,
+                    actuals,
+                    flows,
+                    &[],
+                    &mut HashSet::new(),
+                    environments,
+                );
+                environments.incomplete == incomplete
+                    && !origins.is_empty()
+                    && origins.iter().all(|origin| match &origin.candidate {
+                        CallableCandidate::Declaration(_) => true,
+                        CallableCandidate::Closure(site) => {
+                            captures_have_marker(site, origin.actuals, seen, environments)
+                        }
+                        _ => false,
+                    })
+            }
+            crate::Ty::Tuple(fields) => fields.iter().enumerate().all(|(index, ty)| {
+                let projected = IndirectCallCandidates {
+                    known: candidates
+                        .known
+                        .iter()
+                        .cloned()
+                        .map(|receiver| CallableCandidate::Element {
+                            receiver: Box::new(receiver),
+                            index,
+                        })
+                        .collect(),
+                    may_be_unknown: candidates.may_be_unknown,
+                };
+                self.value_marker(ty, &projected, marker, actuals, flows, seen, environments)
+            }),
+            crate::Ty::Named { head, args }
+                if args.iter().all(|ty| self.type_has_marker(ty, marker)) =>
+            {
+                let Some(owner) = head.nominal() else {
+                    return false;
+                };
+                let Some(definition) = self.head_type_def(*head) else {
+                    return false;
+                };
+                if !matches!(
+                    definition.kind,
+                    super::TypeDefKind::Struct | super::TypeDefKind::Record
+                ) || definition.fields.is_empty()
+                {
+                    return false;
+                }
+                definition
+                    .field_order
+                    .iter()
+                    .enumerate()
+                    .all(|(index, name)| {
+                        let Ok(index) = u32::try_from(index) else {
+                            return false;
+                        };
+                        let Some(ty) = definition.fields.get(name) else {
+                            return false;
+                        };
+                        let ty =
+                            Self::instantiate_type_def_member(ty, &definition.type_params, args);
+                        let projected = IndirectCallCandidates {
+                            known: candidates
+                                .known
+                                .iter()
+                                .cloned()
+                                .map(|receiver| CallableCandidate::Field {
+                                    receiver: Box::new(receiver),
+                                    owner,
+                                    index,
+                                })
+                                .collect(),
+                            may_be_unknown: candidates.may_be_unknown,
+                        };
+                        self.value_marker(
+                            &ty,
+                            &projected,
+                            marker,
+                            actuals,
+                            flows,
+                            seen,
+                            environments,
+                        )
+                    })
+            }
+            _ => false,
+        }
+    }
+
     fn task_candidates_escape(
         &self,
         candidates: &IndirectCallCandidates,
@@ -528,6 +697,9 @@ impl Checker {
         seen: &mut HashSet<Visit>,
         environments: &mut OriginEnvironments,
     ) -> Vec<ValueOrigin> {
+        if candidates.may_be_unknown {
+            environments.incomplete += 1;
+        }
         let mut origins: Vec<_> = candidates
             .known
             .iter()
@@ -563,15 +735,31 @@ impl Checker {
         };
         let visit = (candidate.clone(), visit_projections, actuals);
         if !seen.insert(visit.clone()) {
+            environments.cycles += 1;
+            environments.incomplete += 1;
             return Vec::new();
         }
+        let query = (candidate.clone(), projections.to_vec(), actuals);
+        if let Some((origins, complete)) = environments.completed.get(&query) {
+            if !complete {
+                environments.incomplete += 1;
+            }
+            seen.remove(&visit);
+            return origins.clone();
+        }
+        let cycles = environments.cycles;
+        let incomplete = environments.incomplete;
         let result = match candidate {
             CallableCandidate::Erasure { value, .. } => {
                 self.task_value_origins(value, actuals, flows, projections, seen, environments)
             }
             CallableCandidate::Formal(formal) => {
                 let environment = Arc::clone(&environments.values[actuals]);
-                formal_sources(*formal, &environment, flows)
+                let sources = formal_sources(*formal, &environment, flows);
+                if sources.is_empty() {
+                    environments.incomplete += 1;
+                }
+                sources
                     .iter()
                     .flat_map(|candidates| {
                         self.task_value_origins(
@@ -585,10 +773,9 @@ impl Checker {
                     })
                     .collect()
             }
-            CallableCandidate::LoopInput { site, binding } => self
-                .loop_value_candidates
-                .get(&(site.clone(), *binding))
-                .map_or_else(Vec::new, |candidates| {
+            CallableCandidate::LoopInput { site, binding } => {
+                if let Some(candidates) = self.loop_value_candidates.get(&(site.clone(), *binding))
+                {
                     self.task_value_origins(
                         candidates,
                         actuals,
@@ -597,7 +784,11 @@ impl Checker {
                         seen,
                         environments,
                     )
-                }),
+                } else {
+                    environments.incomplete += 1;
+                    Vec::new()
+                }
+            }
             CallableCandidate::CallResult(_) | CallableCandidate::CallWriteback(_) => {
                 self.task_call_origins(candidate, actuals, flows, projections, seen, environments)
             }
@@ -648,10 +839,8 @@ impl Checker {
             {
                 Vec::new()
             }
-            CallableCandidate::Aggregate(site) => self
-                .aggregate_field_candidates
-                .get(site)
-                .map_or_else(Vec::new, |fields| {
+            CallableCandidate::Aggregate(site) => {
+                if let Some(fields) = self.aggregate_field_candidates.get(site) {
                     let selected = projections.split_last();
                     fields
                         .iter()
@@ -673,7 +862,11 @@ impl Checker {
                             )
                         })
                         .collect()
-                }),
+                } else {
+                    environments.incomplete += 1;
+                    Vec::new()
+                }
+            }
             CallableCandidate::TaskProducer(site)
                 if projections.last() == Some(&Projection::TaskResult) =>
             {
@@ -705,6 +898,14 @@ impl Checker {
             _ => Vec::new(),
         };
         seen.remove(&visit);
+        // A cycle cut depends on the active path. Reuse only complete expansions,
+        // keyed by the full projection and exact argument environment.
+        if environments.cycles == cycles {
+            environments.completed.insert(
+                query,
+                (result.clone(), environments.incomplete == incomplete),
+            );
+        }
         result
     }
 
@@ -723,6 +924,7 @@ impl Checker {
             _ => return Vec::new(),
         };
         let Some(pending) = self.pending_callable_arguments.get(site) else {
+            environments.incomplete += 1;
             return Vec::new();
         };
         let callees = match &pending.callee {
@@ -745,6 +947,7 @@ impl Checker {
                     &self.callable_return_candidates
                 };
                 let Some(returns) = outputs.get(&owner) else {
+                    environments.incomplete += 1;
                     return Vec::new();
                 };
                 let mut call_actuals = (*environments.values[callee.actuals]).clone();

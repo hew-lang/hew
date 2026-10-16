@@ -747,7 +747,13 @@ fn dump_expr(defs: &hew_types::DefTable, out: &mut String, expr: &HirExpr, inden
             for arm in &select.arms {
                 let kind_label = match &arm.kind {
                     crate::node::HirSelectArmKind::StreamNext { .. } => "stream-next",
-                    crate::node::HirSelectArmKind::ActorAsk { .. } => "actor-ask",
+                    crate::node::HirSelectArmKind::Call { call } => {
+                        if matches!(&call.kind, HirExprKind::ActorAsk { .. }) {
+                            "actor-ask"
+                        } else {
+                            "call"
+                        }
+                    }
                     crate::node::HirSelectArmKind::TaskAwait { .. } => "task-await",
                     crate::node::HirSelectArmKind::AfterTimer { .. } => "after-timer",
                 };

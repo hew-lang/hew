@@ -666,7 +666,7 @@ fn walk_expr(
                     HirSelectArmKind::StreamNext { stream } => {
                         walk_expr(stream, subst, residual_domain, disc);
                     }
-                    HirSelectArmKind::ActorAsk { call } => {
+                    HirSelectArmKind::Call { call } => {
                         walk_expr(call, subst, residual_domain, disc);
                     }
                     HirSelectArmKind::TaskAwait { task } => {

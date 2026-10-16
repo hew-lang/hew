@@ -16,10 +16,10 @@ struct hew_cabi_manifest_row {
   enum hew_cabi_manifest_ownership ownership;
 };
 
-#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1653u
+#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1654u
 #define HEW_CABI_MANIFEST_STATIC_COUNT 24u
 
-static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1653] = {
+static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1654] = {
     {"hew_actor_ask",
      "{\"native\": \"fn hew_actor_ask( *mut HewActor, i32, *mut c_void, usize, "
      ") -> *mut c_void\"}",
@@ -1400,6 +1400,14 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1653] = {
      "HewCheckedScopeWait, *mut *mut HewFault, ) -> i32\", \"wasm32-wasip1\": "
      "\"fn hew_checked_scope_wait_take_fault( *const HewCheckedScopeWait, *mut "
      "*mut HewFault, ) -> i32\"}",
+     "native,wasm32-wasip1", "non-declarable", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_checked_task_invoke",
+     "{\"native\": \"fn hew_checked_task_invoke( *mut HewTaskScope, *mut "
+     "HewCallableValue, *const *mut c_void, i32, *const HewValueLayout, ) -> "
+     "*mut HewTask\", \"wasm32-wasip1\": \"fn hew_checked_task_invoke( *mut "
+     "HewTaskScope, *mut HewCallableValue, *const *mut c_void, i32, *const "
+     "HewValueLayout, ) -> *mut HewTask\"}",
      "native,wasm32-wasip1", "non-declarable", "not-applicable",
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_checked_task_race",

@@ -415,7 +415,7 @@ impl LowerCtx {
                                 abi_return_ty,
                             );
                         }
-                        HirSelectArmKind::ActorAsk { call } => {
+                        HirSelectArmKind::Call { call } => {
                             self.wrap_var_self_explicit_expr_returns(call, receiver, abi_return_ty);
                         }
                         HirSelectArmKind::TaskAwait { task } => {

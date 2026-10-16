@@ -4,6 +4,8 @@
 
 - Observe machine inputs through bounded read-only feeds, atomic snapshots and
   ordered notices with explicit lag and resource-scoped detach.
+- Select ordinary calls while retaining their input loans through cancellation
+  and cleanup; reuse a subscription after a timeout or cancelled receive.
 
 - Allow actor crash hooks to suspend within the child's stop budget, with
   ordinary restart fallback after hook failure or deadline expiry.

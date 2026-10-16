@@ -472,7 +472,7 @@ fn callable_descriptor_type(ctx: &Context) -> inkwell::types::StructType<'_> {
     ctx.struct_type(&[pointer.into(); 6], false)
 }
 
-fn callable_carrier<'ctx>(
+pub(super) fn callable_carrier<'ctx>(
     ctx: &'ctx Context,
     builder: &Builder<'ctx>,
     environment: PointerValue<'ctx>,
@@ -494,6 +494,10 @@ fn callable_carrier<'ctx>(
 fn function_descriptor_symbol(id: CallableId) -> String {
     format!("__hew_callable_function_{}", id.0)
 }
+pub(super) fn prepared_descriptor_symbol(id: CallableId) -> String {
+    format!("__hew_prepared_function_{}", id.0)
+}
+
 fn closure_descriptor_symbol(id: ClosureId) -> String {
     format!("__hew_callable_closure_{}", id.0)
 }
@@ -568,6 +572,54 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                 ty,
                 None,
             )?;
+        }
+        let prepared = self
+            .module
+            .functions
+            .iter()
+            .flat_map(|function| &function.blocks)
+            .flat_map(|block| &block.ops)
+            .filter_map(|op| {
+                if let PhysicalOp::TaskInvoke {
+                    callee: hew_mir::physical::PhysicalInvocationCallee::Direct(target),
+                    ..
+                } = op
+                {
+                    Some(*target)
+                } else {
+                    None
+                }
+            })
+            .collect::<std::collections::BTreeSet<_>>();
+        if !prepared.is_empty() {
+            let target = TargetData::create(&self.module.target.data_layout);
+            let pointer = self.ctx.ptr_type(AddressSpace::default());
+            let size = self.ctx.ptr_sized_int_type(&target, None);
+            let ty = value_descriptor_type(self.ctx, &target);
+            let environment = self.llvm.add_global(ty, None, "__hew_prepared_environment");
+            environment.set_linkage(Linkage::Internal);
+            environment.set_constant(true);
+            environment.set_initializer(
+                &ty.const_named_struct(&[
+                    size.const_zero().into(),
+                    size.const_int(1, false).into(),
+                    self.ctx
+                        .i8_type()
+                        .const_int(HewTypeOwnershipKind::Plain as u64, false)
+                        .into(),
+                    pointer.const_null().into(),
+                    pointer.const_null().into(),
+                    pointer.const_null().into(),
+                ]),
+            );
+            for id in prepared {
+                self.emit_invocation_descriptor(
+                    &prepared_descriptor_symbol(id),
+                    callable(self.module, id)?,
+                    environment.as_pointer_value(),
+                    None,
+                )?;
+            }
         }
         Ok(())
     }
@@ -659,12 +711,27 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                     "callable descriptor lacks its environment layout global".into(),
                 )
             })?;
+        self.emit_invocation_descriptor(
+            name,
+            body,
+            environment.as_pointer_value(),
+            closure.map(|_| &self.module.environment_glue[index]),
+        )
+    }
+
+    fn emit_invocation_descriptor(
+        &self,
+        name: &str,
+        body: &PhysicalCallable,
+        environment: PointerValue<'ctx>,
+        receiver: Option<&PhysicalEnvironmentGlue>,
+    ) -> CodegenResult<()> {
         let descriptor_ty = callable_descriptor_type(self.ctx);
         let descriptor = self.llvm.add_global(descriptor_ty, None, name);
         descriptor.set_linkage(Linkage::Internal);
         descriptor.set_constant(true);
         let pointer = self.ctx.ptr_type(AddressSpace::default());
-        let owned_body = closure.is_some()
+        let owned_body = receiver.is_some()
             && body.params[0].passing == hew_mir::physical::SemParamPassing::Consume;
         let borrow = if owned_body {
             pointer.const_null()
@@ -673,7 +740,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                 &format!("{name}_borrow"),
                 descriptor.as_pointer_value(),
                 body,
-                closure.map(|_| &self.module.environment_glue[index]),
+                receiver,
                 false,
                 false,
             )?
@@ -684,7 +751,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
             &format!("{name}_once"),
             descriptor.as_pointer_value(),
             body,
-            closure.map(|_| &self.module.environment_glue[index]),
+            receiver,
             true,
             false,
         )?;
@@ -693,7 +760,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                 &format!("{name}_borrow_sync"),
                 descriptor.as_pointer_value(),
                 body,
-                closure.map(|_| &self.module.environment_glue[index]),
+                receiver,
                 false,
                 true,
             )?
@@ -702,17 +769,12 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         } else {
             pointer.const_null()
         };
-        let synchronous_once = if !invocation_suspends(
-            self.module,
-            body,
-            closure.map(|_| &self.module.environment_glue[index]),
-            true,
-        ) {
+        let synchronous_once = if !invocation_suspends(self.module, body, receiver, true) {
             self.emit_invoke_adapter(
                 &format!("{name}_once_sync"),
                 descriptor.as_pointer_value(),
                 body,
-                closure.map(|_| &self.module.environment_glue[index]),
+                receiver,
                 true,
                 true,
             )?
@@ -722,7 +784,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
             pointer.const_null()
         };
         descriptor.set_initializer(&descriptor_ty.const_named_struct(&[
-            environment.as_pointer_value().into(),
+            environment.into(),
             borrow.into(),
             once.as_global_value().as_pointer_value().into(),
             synchronous_borrow.into(),
@@ -1096,7 +1158,7 @@ pub(super) fn capture_parameter_slot<'ctx>(
 }
 
 impl<'ctx> FunctionEmitter<'_, 'ctx> {
-    fn select_callable_descriptor(
+    pub(super) fn select_callable_descriptor(
         &self,
         descriptor: PointerValue<'ctx>,
         specialization: Option<hew_mir::physical::CallableSpecializationId>,
@@ -1252,12 +1314,69 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         )
     }
 
+    pub(super) fn prepare_callable_arguments(
+        &self,
+        args: &[ArgumentTransfer],
+    ) -> CodegenResult<(PointerValue<'ctx>, Vec<StorageId>)> {
+        let pointer = self.ctx.ptr_type(AddressSpace::default());
+        let mut moved = Vec::new();
+        let argument_slots = if args.is_empty() {
+            pointer.const_null()
+        } else {
+            let count = u32::try_from(args.len())
+                .map_err(|_| CodegenError::FailClosed("argument array exceeds u32".into()))?;
+            let slots = self
+                .value_emitter()
+                .entry_scratch(pointer.array_type(count).into(), "callable.arguments")?;
+            for (index, argument) in args.iter().enumerate() {
+                let source = argument_source(argument);
+                let address = match argument {
+                    ArgumentTransfer::Clone { .. } | ArgumentTransfer::Move(_) => {
+                        let value = if let ArgumentTransfer::Clone { action, .. } = argument {
+                            self.clone_value(source, *action)?
+                        } else {
+                            moved.push(source);
+                            self.load(source, "callable.argument.move")?
+                        };
+                        let slot = self.value_emitter().entry_scratch(
+                            llvm_type(
+                                self.ctx,
+                                &self.function.storage[source.0 as usize].layout.repr,
+                            )?,
+                            "callable.argument.value",
+                        )?;
+                        self.builder
+                            .build_store(slot, value)
+                            .llvm_ctx("stage owned invocation argument")?;
+                        slot
+                    }
+                    _ => self.slots[source.0 as usize],
+                };
+                // SAFETY: this index is within the allocated argument pointer array.
+                let slot = unsafe {
+                    self.builder.build_in_bounds_gep(
+                        pointer,
+                        slots,
+                        &[self.ctx.i64_type().const_int(index as u64, false)],
+                        "callable.argument.slot",
+                    )
+                }
+                .llvm_ctx("address invocation argument slot")?;
+                self.builder
+                    .build_store(slot, address)
+                    .llvm_ctx("store invocation argument address")?;
+            }
+            slots
+        };
+        Ok((argument_slots, moved))
+    }
+
     pub(super) fn emit_indirect_call(&self, call: &PhysicalTerminator) -> CodegenResult<()> {
         let PhysicalTerminator::IndirectCall {
             targets,
             specialization,
             callee,
-            signature,
+            signature: _,
             args,
             result,
             normal,
@@ -1325,49 +1444,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .build_load(pointer, entry_slot, "callable.entry")
             .llvm_ctx("load exact invocation adapter")?
             .into_pointer_value();
-        let mut moved = Vec::new();
-        let argument_slots = if args.is_empty() {
-            pointer.const_null()
-        } else {
-            let count = u32::try_from(args.len())
-                .map_err(|_| CodegenError::FailClosed("argument array exceeds u32".into()))?;
-            let slots = self
-                .value_emitter()
-                .entry_scratch(pointer.array_type(count).into(), "callable.arguments")?;
-            for (index, (argument, parameter)) in args.iter().zip(&signature.params).enumerate() {
-                let source = argument_source(argument);
-                let address = if let ArgumentTransfer::Clone { action, .. } = argument {
-                    let value = self.clone_value(source, *action)?;
-                    let slot = self.value_emitter().entry_scratch(
-                        llvm_type(self.ctx, &parameter.layout.repr)?,
-                        "callable.argument.copy",
-                    )?;
-                    self.builder
-                        .build_store(slot, value)
-                        .llvm_ctx("stage copied argument")?;
-                    slot
-                } else {
-                    if matches!(argument, ArgumentTransfer::Move(_)) {
-                        moved.push(source);
-                    }
-                    self.slots[source.0 as usize]
-                };
-                // SAFETY: this index is within the allocated argument pointer array.
-                let slot = unsafe {
-                    self.builder.build_in_bounds_gep(
-                        pointer,
-                        slots,
-                        &[self.ctx.i64_type().const_int(index as u64, false)],
-                        "callable.argument.slot",
-                    )
-                }
-                .llvm_ctx("address invocation argument slot")?;
-                self.builder
-                    .build_store(slot, address)
-                    .llvm_ctx("store invocation argument address")?;
-            }
-            slots
-        };
+        let (argument_slots, moved) = self.prepare_callable_arguments(args)?;
         if consuming {
             self.clear_owned(source)?;
         }

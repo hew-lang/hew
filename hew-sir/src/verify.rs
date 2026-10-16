@@ -2920,6 +2920,7 @@ fn verify_callable_operation(
             | SemOpKind::GeneratorCoerce { .. }
             | SemOpKind::CallableCoerce { .. }
             | SemOpKind::DynMake { .. }
+            | SemOpKind::TaskInvoke { .. }
     ) {
         return;
     }
@@ -2931,6 +2932,64 @@ fn verify_callable_operation(
             "callable construction requires its module's semantic contract".to_string()
         })?;
         match &operation.kind {
+            SemOpKind::TaskInvoke {
+                callee, signature, ..
+            } => match callee {
+                crate::InvocationCallee::Direct(id) => {
+                    let target = context
+                        .callable(*id)
+                        .ok_or("prepared direct call has no target")?;
+                    if target.kind != SemCallableKind::HewDirect
+                        || target.signature.hands_back_receiver()
+                        || &target.signature != signature
+                    {
+                        return Err(
+                            "prepared direct call differs from its declaration signature".into(),
+                        );
+                    }
+                }
+                crate::InvocationCallee::Indirect {
+                    receiver,
+                    specialization,
+                } => {
+                    let ty = types
+                        .get(&receiver.operand.value)
+                        .ok_or("prepared indirect call has no receiver type")?;
+                    let invocation = match specialization {
+                        Some(id) => ty
+                            .instantiate_callable(
+                                context
+                                    .callable_specializations
+                                    .get(id.0 as usize)
+                                    .ok_or("prepared indirect call has no specialization")?,
+                            )
+                            .ok_or("prepared specialization differs from its scheme")?,
+                        None if !matches!(ty, ResolvedTy::GenericCallable { .. }) => ty.clone(),
+                        None => return Err("prepared generic call lacks a specialization".into()),
+                    };
+                    if &crate::callable_value_signature(&invocation, facts)? != signature {
+                        return Err(
+                            "prepared indirect call differs from its callable signature".into()
+                        );
+                    }
+                    let (_, _, capabilities) = crate::callable_parts(ty)?;
+                    let expected = match capabilities.call {
+                        hew_types::CallableCallMode::Read => crate::BoundaryDecision::Borrow,
+                        hew_types::CallableCallMode::Var => crate::BoundaryDecision::BorrowMut,
+                        hew_types::CallableCallMode::Once => crate::BoundaryDecision::Move,
+                    };
+                    if receiver.decision != expected
+                        || (capabilities.call == hew_types::CallableCallMode::Var
+                            && !callable_mutation_permitted(
+                                function,
+                                receiver.operand.value,
+                                Some(context),
+                            ))
+                    {
+                        return Err("prepared receiver differs from its callable capability".into());
+                    }
+                }
+            },
             SemOpKind::FunctionMake { callable } => {
                 let target = context
                     .callable(*callable)
@@ -3391,6 +3450,41 @@ fn verify_operation_shape(
                     function,
                     operation.id,
                     "race requires homogeneous owned task handles".into(),
+                    diagnostics,
+                );
+            }
+        }
+        SemOpKind::TaskInvoke {
+            args, signature, ..
+        } => {
+            let valid = result.ty == ResolvedTy::Task(Box::new(signature.return_ty.clone()))
+                && args.len() == signature.params.len()
+                && args
+                    .iter()
+                    .zip(&signature.params)
+                    .all(|(argument, parameter)| {
+                        types.get(&argument.operand.value) == Some(&parameter.ty)
+                            && argument.decision
+                                == match parameter.passing {
+                                    crate::SemParamPassing::ReadOnly => {
+                                        crate::BoundaryDecision::Copy
+                                    }
+                                    crate::SemParamPassing::Borrow => {
+                                        crate::BoundaryDecision::Borrow
+                                    }
+                                    crate::SemParamPassing::BorrowMut => {
+                                        crate::BoundaryDecision::BorrowMut
+                                    }
+                                    crate::SemParamPassing::Consume => {
+                                        crate::BoundaryDecision::Move
+                                    }
+                                }
+                    });
+            if !valid {
+                invalid_operation(
+                    function,
+                    operation.id,
+                    "prepared task call disagrees with its checked signature".into(),
                     diagnostics,
                 );
             }

@@ -361,17 +361,28 @@ pub enum CheckedSelectSource {
     ActorAsk {
         call: SpanKey,
     },
+    Call {
+        call: SpanKey,
+    },
     StreamReceive {
         call: SpanKey,
     },
 }
 
-/// A task place borrowed while later selection sources are evaluated.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum PreparedSelectAccess {
+    Task,
+    Shared,
+    Exclusive,
+}
+
+/// An input place borrowed while later selection sources are evaluated.
 #[derive(Debug, Clone)]
-pub(super) struct PreparedSelectTask {
+pub(super) struct PreparedSelectInput {
     pub binding: TypeBindingId,
     pub path: Vec<String>,
     pub span: Span,
+    pub access: PreparedSelectAccess,
 }
 
 /// How one `for` loop binds each `Vec<T>` element (D432).
@@ -3666,7 +3677,7 @@ pub struct Checker {
     /// distinguish an actor ask under `await` (valid) from an actor ask without
     /// Only these operand calls are explicitly awaited or forked.
     pub(super) suspension_operands: HashSet<SpanKey>,
-    pub(super) prepared_select_tasks: Vec<PreparedSelectTask>,
+    pub(super) prepared_select_inputs: Vec<PreparedSelectInput>,
     pub(super) loop_depth: u32,
     /// Loop and label floors of a currently checked deferred body.
     pub(super) deferred_body: Option<(u32, usize)>,
@@ -4558,7 +4569,7 @@ impl Checker {
             in_generator: false,
             implied_display_context: None,
             suspension_operands: HashSet::new(),
-            prepared_select_tasks: Vec::new(),
+            prepared_select_inputs: Vec::new(),
             loop_depth: 0,
             deferred_body: None,
             loop_labels: Vec::new(),

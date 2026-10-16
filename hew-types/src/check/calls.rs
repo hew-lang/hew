@@ -3096,6 +3096,10 @@ impl Checker {
         );
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "classify the selected operation and its typed preparation inputs together"
+    )]
     pub(super) fn synthesize_select_source(
         &mut self,
         expr: &Expr,
@@ -3153,6 +3157,124 @@ impl Checker {
             ))
         ) {
             return (ty, Some(CheckedSelectSource::StreamReceive { call: key }));
+        }
+        if matches!(
+            self.selected_callable_target(operand_span),
+            Some(
+                CallTarget::User(_)
+                    | CallTarget::ImplMethod(_)
+                    | CallTarget::StaticTraitMethod { .. }
+                    | CallTarget::IndirectFunctionValue
+            )
+        ) {
+            let declaration = self.selected_callable_declaration_at(&key);
+            let signature = declaration.and_then(|id| self.fn_sigs.get(&id)).cloned();
+            let argument_slots = self.call_argument_slots.get(&key).cloned();
+            match operand {
+                Expr::MethodCall {
+                    receiver,
+                    method,
+                    args,
+                } => {
+                    if matches!(
+                        self.method_call_rewrites.get(&key),
+                        Some(MethodCallRewrite::RecordFnFieldCall { .. })
+                    ) {
+                        if let Some(ty) =
+                            self.record_fn_field_type(receiver, method.0.name.as_str())
+                        {
+                            let mode = ty
+                                .callable_signature()
+                                .map_or(crate::CallableCallMode::Once, |(caps, _, _)| caps.call);
+                            let shared = mode == crate::CallableCallMode::Read;
+                            if mode != crate::CallableCallMode::Once {
+                                self.record_select_input_loan(
+                                    &Expr::FieldAccess {
+                                        object: receiver.clone(),
+                                        field: method.clone(),
+                                    },
+                                    operand_span,
+                                    &ty,
+                                    !shared,
+                                );
+                            }
+                            let candidates = self.callable_field_candidates(receiver, method);
+                            self.check_select_call_transfer_typed(
+                                operand_span,
+                                ty,
+                                candidates,
+                                shared,
+                            );
+                        }
+                    } else if !matches!(
+                        self.method_call_receiver_kinds.get(&key),
+                        Some(
+                            super::MethodCallReceiverKind::ModuleBinding { .. }
+                                | super::MethodCallReceiverKind::EnumConstructorPath { .. }
+                        )
+                    ) {
+                        let shared = signature.as_ref().is_none_or(|sig| {
+                            !sig.consumes_receiver && !sig.requires_mutable_receiver
+                        });
+                        let loan = signature
+                            .as_ref()
+                            .filter(|sig| !sig.consumes_receiver)
+                            .map(|sig| sig.requires_mutable_receiver);
+                        self.check_select_call_transfer(&receiver.0, &receiver.1, shared, loan);
+                    }
+                    let offset = usize::from(signature.as_ref().is_some_and(|sig| !sig.associated));
+                    for (index, arg) in args.iter().enumerate() {
+                        let slot = argument_slots
+                            .as_ref()
+                            .and_then(|slots| slots.get(index))
+                            .copied()
+                            .unwrap_or(index);
+                        let shared = signature
+                            .as_ref()
+                            .and_then(|sig| sig.param_ownership.get(slot + offset))
+                            .is_none_or(|mode| *mode != crate::env::ParameterOwnership::Consume);
+                        let (expr, span) = arg.expr();
+                        self.check_select_call_transfer(
+                            expr,
+                            span,
+                            shared,
+                            shared.then_some(false),
+                        );
+                    }
+                }
+                Expr::Call { function, args, .. } => {
+                    if declaration.is_none() {
+                        let mode = self
+                            .callee_value_type(function)
+                            .and_then(|ty| ty.callable_signature().map(|(caps, _, _)| caps.call))
+                            .unwrap_or(crate::CallableCallMode::Once);
+                        let shared = mode == crate::CallableCallMode::Read;
+                        let loan = (mode != crate::CallableCallMode::Once).then_some(!shared);
+                        self.check_select_call_transfer(&function.0, &function.1, shared, loan);
+                    }
+                    for (index, arg) in args.iter().enumerate() {
+                        let slot = argument_slots
+                            .as_ref()
+                            .and_then(|slots| slots.get(index))
+                            .copied()
+                            .unwrap_or(index);
+                        let shared = signature
+                            .as_ref()
+                            .and_then(|sig| sig.param_ownership.get(slot))
+                            .is_none_or(|mode| *mode != crate::env::ParameterOwnership::Consume);
+                        let (expr, span) = arg.expr();
+                        self.check_select_call_transfer(
+                            expr,
+                            span,
+                            shared,
+                            shared.then_some(false),
+                        );
+                    }
+                }
+                _ => {}
+            }
+            self.check_select_call_transfer(operand, operand_span, false, None);
+            return (ty, Some(CheckedSelectSource::Call { call: key }));
         }
         self.report_error(
             TypeErrorKind::InvalidOperation,

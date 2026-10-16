@@ -381,6 +381,38 @@ impl FunctionLowerer<'_> {
                         .transpose()?,
                 })
             }
+            SemOpKind::TaskInvoke {
+                scope,
+                callee,
+                args,
+                ..
+            } => {
+                let dest = self.one_result(operation)?;
+                let ResolvedTy::Task(output) = &self.storage[dest.0 as usize].ty else {
+                    return Err(PhysicalError::new("prepared call has no exact task output"));
+                };
+                one(PhysicalOp::TaskInvoke {
+                    scope: *scope,
+                    callee: match callee {
+                        hew_sir::InvocationCallee::Direct(target) => {
+                            super::PhysicalInvocationCallee::Direct(*target)
+                        }
+                        hew_sir::InvocationCallee::Indirect {
+                            receiver,
+                            specialization,
+                        } => super::PhysicalInvocationCallee::Indirect {
+                            receiver: self
+                                .argument_transfer(receiver.operand.value, receiver.decision)?,
+                            specialization: *specialization,
+                        },
+                    },
+                    args: self.argument_transfers(args)?,
+                    dest,
+                    output: (output.as_ref() != &ResolvedTy::Never)
+                        .then(|| physical_value_recipe(self.module, self.glue_ids, output))
+                        .transpose()?,
+                })
+            }
             SemOpKind::TaskSpawn { scope, callable } => {
                 let dest = self.one_result(operation)?;
                 let ResolvedTy::Task(output) = &self.storage[dest.0 as usize].ty else {

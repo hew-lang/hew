@@ -783,14 +783,38 @@ impl Builder<'_, '_> {
     }
 
     /// Direct and indirect user calls share argument capture and both cleanup paths.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one user-call boundary owns evaluation order, receiver transfer and both continuations"
-    )]
     pub(super) fn lower_direct_call(
         &mut self,
         expr: &HirExpr,
         value_required: bool,
+    ) -> Result<Option<ValueId>, String> {
+        self.lower_direct_call_in_scope(expr, value_required, None, &mut Vec::new())
+    }
+
+    pub(super) fn lower_select_call(
+        &mut self,
+        expr: &HirExpr,
+        scope: crate::TaskScopeId,
+        loans: &mut Vec<ValueId>,
+    ) -> Result<ValueId, String> {
+        let result = if matches!(expr.kind, HirExprKind::CallTraitMethodStatic { .. }) {
+            self.lower_static_trait_call_in_scope(expr, true, Some(scope), loans)?
+        } else {
+            self.lower_direct_call_in_scope(expr, true, Some(scope), loans)?
+        };
+        result.ok_or_else(|| "prepared select call has no task handle".into())
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one user-call boundary owns evaluation order, receiver transfer and both continuations"
+    )]
+    fn lower_direct_call_in_scope(
+        &mut self,
+        expr: &HirExpr,
+        value_required: bool,
+        scope: Option<crate::TaskScopeId>,
+        retained_loans: &mut Vec<ValueId>,
     ) -> Result<Option<ValueId>, String> {
         let HirExprKind::Call {
             target,
@@ -974,6 +998,15 @@ impl Builder<'_, '_> {
                 },
             );
         }
+        if let Some(scope) = scope {
+            if actor.is_some() {
+                return Err("a prepared ordinary call cannot borrow actor state".into());
+            }
+            retained_loans.extend(loans);
+            return self
+                .start_prepared_call(expr, scope, callee, signature, lowered_args, retained_loans)
+                .map(Some);
+        }
         let result = self.finish_user_call(
             callee,
             signature,
@@ -1000,6 +1033,79 @@ impl Builder<'_, '_> {
         Ok(result)
     }
 
+    fn start_prepared_call(
+        &mut self,
+        expr: &HirExpr,
+        scope: crate::TaskScopeId,
+        callee: PreparedCallee,
+        signature: SemSignature,
+        mut lowered_args: Vec<crate::BoundaryOperand>,
+        loans: &mut Vec<ValueId>,
+    ) -> Result<ValueId, String> {
+        let mut callee = match callee {
+            PreparedCallee::Direct { target, site } => {
+                if let Some(site) = site {
+                    self.service
+                        .record_checked_call(self.callable.id, site, target);
+                }
+                crate::InvocationCallee::Direct(target)
+            }
+            PreparedCallee::Indirect {
+                receiver,
+                specialization,
+                ..
+            } => crate::InvocationCallee::Indirect {
+                receiver,
+                specialization,
+            },
+            PreparedCallee::Dyn { .. } => {
+                return Err("prepared dyn call has no invocation adapter".into())
+            }
+        };
+        let task_ty = ResolvedTy::Task(Box::new(signature.return_ty.clone()));
+        self.service.require_type_facts(&task_ty)?;
+        for argument in callee.receiver_mut().into_iter().chain(&mut lowered_args) {
+            if matches!(
+                argument.decision,
+                crate::BoundaryDecision::Borrow | crate::BoundaryDecision::BorrowMut
+            ) {
+                let ty = self
+                    .value_ty(argument.operand.value)
+                    .ok_or("prepared input lacks its checked type")?;
+                let loan = self.emit_typed(
+                    Provenance::Site(expr.site),
+                    &ty,
+                    SemOpKind::BeginBorrow {
+                        owner: argument.operand.clone(),
+                    },
+                )?;
+                argument.operand.value = loan;
+                loans.push(loan);
+            }
+        }
+        for argument in &lowered_args {
+            if argument.decision == crate::BoundaryDecision::Move {
+                self.owned_live.remove(&argument.operand.value);
+            }
+        }
+        if let Some(receiver) = callee.receiver() {
+            if receiver.decision == crate::BoundaryDecision::Move {
+                self.owned_live.remove(&receiver.operand.value);
+            }
+        }
+        let task = self.emit_typed(
+            Provenance::Site(expr.site),
+            &task_ty,
+            SemOpKind::TaskInvoke {
+                scope,
+                callee,
+                args: lowered_args,
+                signature,
+            },
+        )?;
+        Ok(task)
+    }
+
     /// Lower a trait-method call reached through a where-clause bound.
     ///
     /// Once the implementation is selected the receiver is simply its first
@@ -1009,6 +1115,16 @@ impl Builder<'_, '_> {
         &mut self,
         expr: &HirExpr,
         value_required: bool,
+    ) -> Result<Option<ValueId>, String> {
+        self.lower_static_trait_call_in_scope(expr, value_required, None, &mut Vec::new())
+    }
+
+    fn lower_static_trait_call_in_scope(
+        &mut self,
+        expr: &HirExpr,
+        value_required: bool,
+        scope: Option<crate::TaskScopeId>,
+        retained_loans: &mut Vec<ValueId>,
     ) -> Result<Option<ValueId>, String> {
         let HirExprKind::CallTraitMethodStatic {
             receiver,
@@ -1068,6 +1184,22 @@ impl Builder<'_, '_> {
             &signature.params,
             &mut loans,
         )?;
+        if let Some(scope) = scope {
+            retained_loans.extend(loans);
+            return self
+                .start_prepared_call(
+                    expr,
+                    scope,
+                    PreparedCallee::Direct {
+                        target: callee.id,
+                        site: Some(expr.site),
+                    },
+                    signature,
+                    lowered_args,
+                    retained_loans,
+                )
+                .map(Some);
+        }
         self.finish_user_call(
             PreparedCallee::Direct {
                 target: callee.id,

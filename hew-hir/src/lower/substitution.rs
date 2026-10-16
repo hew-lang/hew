@@ -561,7 +561,7 @@ pub(super) fn collect_call_sites_in_expr(
                     HirSelectArmKind::StreamNext { stream } => {
                         collect_call_sites_in_expr(stream, out, trait_out);
                     }
-                    HirSelectArmKind::ActorAsk { call } => {
+                    HirSelectArmKind::Call { call } => {
                         collect_call_sites_in_expr(call, out, trait_out);
                     }
                     HirSelectArmKind::TaskAwait { task } => {

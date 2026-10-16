@@ -1016,7 +1016,6 @@ impl Checker {
 
     pub(super) fn check_stmt(&mut self, stmt: &Stmt, span: &Span) {
         self.check_stmt_inner(stmt, span);
-        self.record_statement_effect_binding(stmt);
     }
 
     #[expect(

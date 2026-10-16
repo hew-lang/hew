@@ -437,6 +437,13 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 dest,
                 ..
             } => self.emit_task_spawn(*scope, *callable, *dest),
+            PhysicalOp::TaskInvoke {
+                scope,
+                callee,
+                args,
+                dest,
+                ..
+            } => self.emit_task_invoke(*scope, callee, args, *dest),
             PhysicalOp::ClosureMake {
                 dest,
                 closure,

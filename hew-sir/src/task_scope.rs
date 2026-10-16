@@ -3,10 +3,34 @@
 use crate::{BlockId, SemFunction, SemOpKind, SemTerminator, SuspendKind, TaskScopeId};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "verify lexical scope ancestry and the invocation loans each scope retains"
+)]
 pub(crate) fn verify(function: &SemFunction) -> Result<(), String> {
     let mut declared = BTreeSet::new();
+    let mut invocation_loans = BTreeMap::new();
     for block in &function.blocks {
         for op in &block.ops {
+            if let SemOpKind::TaskInvoke {
+                scope,
+                callee,
+                args,
+                ..
+            } = &op.kind
+            {
+                for argument in callee.receiver().into_iter().chain(args) {
+                    if matches!(
+                        argument.decision,
+                        crate::BoundaryDecision::Borrow | crate::BoundaryDecision::BorrowMut
+                    ) && invocation_loans
+                        .insert(argument.operand.value, *scope)
+                        .is_some()
+                    {
+                        return Err("prepared invocations require distinct input loans".into());
+                    }
+                }
+            }
             if let SemOpKind::TaskScopeEnter { scope, .. } = op.kind {
                 if !declared.insert(scope) {
                     return Err("task scope has more than one lexical declaration".into());
@@ -34,8 +58,24 @@ pub(crate) fn verify(function: &SemFunction) -> Result<(), String> {
                     stack.push((scope, false));
                 }
                 SemOpKind::TaskSpawn { scope, .. } | SemOpKind::TaskRace { scope, .. } => {
+                    if !stack.contains(&(scope, false)) {
+                        return Err("task spawn requires an active lexical scope".into());
+                    }
+                }
+                SemOpKind::TaskInvoke { scope, .. } => {
                     if stack.last() != Some(&(scope, false)) {
                         return Err("task spawn requires the active innermost scope".into());
+                    }
+                }
+                SemOpKind::EndBorrow { ref borrow } => {
+                    if invocation_loans
+                        .get(&borrow.value)
+                        .is_some_and(|scope| stack.contains(&(*scope, false)))
+                    {
+                        return Err(
+                            "prepared input loan cannot end before its invocation scope drains"
+                                .into(),
+                        );
                     }
                 }
                 SemOpKind::TaskScopeClose { scope } => {

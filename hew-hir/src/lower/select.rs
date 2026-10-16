@@ -94,7 +94,7 @@ impl LowerCtx {
         source_span: &std::ops::Range<usize>,
     ) -> Option<ResolvedTy> {
         match kind {
-            HirSelectArmKind::ActorAsk { call } => Some(call.ty.clone()),
+            HirSelectArmKind::Call { call } => Some(call.ty.clone()),
             // A stream arm wins with the receive result: `None` is EOF.
             HirSelectArmKind::StreamNext { stream } => match &stream.ty {
                 ResolvedTy::Named {
@@ -302,8 +302,10 @@ impl LowerCtx {
                     task: Box::new(self.lower_expr(operand, IntentKind::Read)),
                 };
             }
-            Some(CheckedSelectSource::ActorAsk { call }) if call == &key => {
-                return HirSelectArmKind::ActorAsk {
+            Some(CheckedSelectSource::ActorAsk { call } | CheckedSelectSource::Call { call })
+                if call == &key =>
+            {
+                return HirSelectArmKind::Call {
                     call: Box::new(self.lower_expr(operand, IntentKind::Read)),
                 };
             }

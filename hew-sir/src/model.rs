@@ -325,6 +325,32 @@ impl SemFunction {
     }
 }
 
+/// The checked entry used by a prepared invocation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InvocationCallee {
+    Direct(CallableId),
+    Indirect {
+        receiver: BoundaryOperand,
+        specialization: Option<crate::CallableSpecializationId>,
+    },
+}
+
+impl InvocationCallee {
+    #[must_use]
+    pub fn receiver(&self) -> Option<&BoundaryOperand> {
+        match self {
+            Self::Direct(_) => None,
+            Self::Indirect { receiver, .. } => Some(receiver),
+        }
+    }
+    pub fn receiver_mut(&mut self) -> Option<&mut BoundaryOperand> {
+        match self {
+            Self::Direct(_) => None,
+            Self::Indirect { receiver, .. } => Some(receiver),
+        }
+    }
+}
+
 /// The Hew call convention before physical MIR selects concrete carriers.
 /// Failure transport is the signature's explicit failure-domain contract;
 /// runtime and foreign boundaries retain their own typed signatures.
@@ -1331,6 +1357,13 @@ pub enum SemOpKind {
         scope: crate::TaskScopeId,
         callable: Operand,
     },
+    /// Start a call whose argument storage is retained by its select scope.
+    TaskInvoke {
+        scope: crate::TaskScopeId,
+        callee: InvocationCallee,
+        args: Vec<BoundaryOperand>,
+        signature: SemSignature,
+    },
     TaskRace {
         scope: crate::TaskScopeId,
         members: Vec<Operand>,
@@ -1580,6 +1613,19 @@ impl SemOpKind {
     /// module-local `u32` operand-slot range can represent.
     pub fn visit_operands(&self, mut visit: impl FnMut(OperandSlot, &Operand)) {
         match self {
+            Self::TaskInvoke { callee, args, .. } => {
+                if let Some(receiver) = callee.receiver() {
+                    visit(OperandSlot(0), &receiver.operand);
+                }
+                for (index, argument) in args.iter().enumerate() {
+                    visit(
+                        OperandSlot(
+                            u32::try_from(index + 1).expect("call operand count exceeds u32"),
+                        ),
+                        &argument.operand,
+                    );
+                }
+            }
             Self::TaskScopeEnter { duration, .. } => {
                 if let Some(duration) = duration {
                     visit(OperandSlot(0), duration);
@@ -1676,6 +1722,19 @@ impl SemOpKind {
     /// module-local `u32` operand-slot range can represent.
     pub fn visit_operands_mut(&mut self, mut visit: impl FnMut(OperandSlot, &mut Operand)) {
         match self {
+            Self::TaskInvoke { callee, args, .. } => {
+                if let Some(receiver) = callee.receiver_mut() {
+                    visit(OperandSlot(0), &mut receiver.operand);
+                }
+                for (index, argument) in args.iter_mut().enumerate() {
+                    visit(
+                        OperandSlot(
+                            u32::try_from(index + 1).expect("call operand count exceeds u32"),
+                        ),
+                        &mut argument.operand,
+                    );
+                }
+            }
             Self::TaskScopeEnter { duration, .. } => {
                 if let Some(duration) = duration {
                     visit(OperandSlot(0), duration);
@@ -1781,6 +1840,7 @@ impl SemOpKind {
             | Self::TaskScopeEnter { .. }
             | Self::TaskScopeClose { .. }
             | Self::TaskSpawn { .. }
+            | Self::TaskInvoke { .. }
             | Self::TaskRace { .. }
             | Self::GeneratorMake { .. }
             | Self::StreamPipe { .. }
@@ -1856,6 +1916,7 @@ impl SemOpKind {
             | Self::TaskScopeClose { .. }
             | Self::RegisterDefer { .. }
             | Self::TaskSpawn { .. }
+            | Self::TaskInvoke { .. }
             | Self::TaskRace { .. }
             | Self::GeneratorMake { .. }
             | Self::StreamPipe { .. }
@@ -1918,6 +1979,7 @@ impl SemOpKind {
                 | Self::TaskScopeClose { .. }
                 | Self::RegisterDefer { .. }
                 | Self::TaskSpawn { .. }
+                | Self::TaskInvoke { .. }
                 | Self::TaskRace { .. }
                 | Self::GeneratorMake { .. }
                 | Self::StreamPipe { .. }

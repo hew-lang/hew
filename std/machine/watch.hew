@@ -271,7 +271,8 @@ pub fn observe<M: Machine + Send>(initial: M, capacity: i64, subscribers: i64) -
                 let registration = Registration { core: core, id: id, input: input };
                 let receive_notice = move || -> Result<Option<Notice<M>>, Lag> {
                     loop {
-                        let ready = registration.input.recv();
+                        // Cancellation can consume a wake without advancing the cursor.
+                        // Check committed history before parking again.
                         match registration.core.read(registration.id) {
                             .Ok(.Item(notice)) => return .Ok(.Some(notice)),
                             .Ok(.Lagged(lag, finished)) => {
@@ -286,8 +287,11 @@ pub fn observe<M: Machine + Send>(initial: M, capacity: i64, subscribers: i64) -
                                 }
                                 return .Ok(.None);
                             }
-                            .Ok(.Pending) => {}
+                            .Ok(.Pending) => {
+                                let _ready = registration.input.recv();
+                            }
                             .Err(_) => {
+                                let ready = registration.input.recv();
                                 if ready.is_none() {
                                     return .Ok(.None);
                                 }

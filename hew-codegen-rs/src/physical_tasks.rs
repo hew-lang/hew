@@ -16,6 +16,11 @@ impl ModuleEmitter<'_, '_> {
                     output: Some(output),
                     ..
                 }
+                | PhysicalOp::TaskInvoke {
+                    dest,
+                    output: Some(output),
+                    ..
+                }
                 | PhysicalOp::TaskRace {
                     dest,
                     output: Some(output),
@@ -166,6 +171,123 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         )?;
         self.clear_owned(callable)?;
         self.store(dest, task.into())
+    }
+
+    pub(super) fn emit_task_invoke(
+        &self,
+        scope: TaskScopeId,
+        callee: &hew_mir::physical::PhysicalInvocationCallee,
+        args: &[ArgumentTransfer],
+        dest: StorageId,
+    ) -> CodegenResult<()> {
+        let pointer = self.ctx.ptr_type(AddressSpace::default());
+        let (carrier, source, consuming) = match callee {
+            hew_mir::physical::PhysicalInvocationCallee::Direct(target) => {
+                let descriptor = self
+                    .llvm
+                    .get_global(&super::callable::prepared_descriptor_symbol(*target))
+                    .ok_or_else(|| {
+                        CodegenError::FailClosed("prepared direct call has no descriptor".into())
+                    })?;
+                let carrier = self.value_emitter().entry_scratch(
+                    self.ctx.struct_type(&[pointer.into(); 2], false).into(),
+                    "prepared.callable",
+                )?;
+                let value = super::callable::callable_carrier(
+                    self.ctx,
+                    &self.builder,
+                    pointer.const_null(),
+                    descriptor.as_pointer_value(),
+                )?;
+                self.builder
+                    .build_store(carrier, value)
+                    .llvm_ctx("prepare direct invocation")?;
+                (carrier, None, false)
+            }
+            hew_mir::physical::PhysicalInvocationCallee::Indirect {
+                receiver,
+                specialization,
+            } => {
+                let source = argument_source(receiver);
+                let carrier = self.slots[source.0 as usize];
+                if let Some(specialization) = specialization {
+                    let value = self.load(source, "prepared.callable")?.into_struct_value();
+                    let descriptor = self
+                        .builder
+                        .build_extract_value(value, 1, "prepared.descriptor")
+                        .llvm_ctx("read prepared descriptor")?
+                        .into_pointer_value();
+                    let descriptor =
+                        self.select_callable_descriptor(descriptor, Some(*specialization))?;
+                    let environment = self
+                        .builder
+                        .build_extract_value(value, 0, "prepared.environment")
+                        .llvm_ctx("read prepared environment")?
+                        .into_pointer_value();
+                    let value = super::callable::callable_carrier(
+                        self.ctx,
+                        &self.builder,
+                        environment,
+                        descriptor,
+                    )?;
+                    let selected = self
+                        .value_emitter()
+                        .entry_scratch(value.get_type(), "prepared.entry")?;
+                    self.builder
+                        .build_store(selected, value)
+                        .llvm_ctx("select prepared entry")?;
+                    (
+                        selected,
+                        Some(source),
+                        matches!(receiver, ArgumentTransfer::Move(_)),
+                    )
+                } else {
+                    (
+                        carrier,
+                        Some(source),
+                        matches!(receiver, ArgumentTransfer::Move(_)),
+                    )
+                }
+            }
+        };
+        let (arguments, moved) = self.prepare_callable_arguments(args)?;
+        let pointer = self.ctx.ptr_type(AddressSpace::default());
+        let invoke = get_or_declare_external(
+            self.llvm,
+            "hew_checked_task_invoke",
+            pointer.fn_type(
+                &[
+                    pointer.into(),
+                    pointer.into(),
+                    pointer.into(),
+                    self.ctx.i32_type().into(),
+                    pointer.into(),
+                ],
+                false,
+            ),
+        )?;
+        let task = suspend::call_value(
+            &self.builder,
+            invoke,
+            &[
+                self.task_scope_handle(scope)?.into(),
+                carrier.into(),
+                arguments.into(),
+                self.ctx
+                    .i32_type()
+                    .const_int(u64::from(consuming), false)
+                    .into(),
+                self.task_result_descriptor(dest)?.into(),
+            ],
+            "select.call",
+        )?;
+        if consuming {
+            self.clear_owned(source.expect("owning callable source"))?;
+        }
+        for source in moved {
+            self.clear_owned(source)?;
+        }
+        self.store(dest, task)
     }
 
     pub(super) fn emit_task_race(
@@ -422,6 +544,9 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             "hew_checked_scope_wait_new",
             &[handle.into(), waker.into(), frame.state.into()],
         )?;
+        if mode == hew_mir::physical::TaskScopeJoinMode::CancelLosers {
+            self.free_handle("hew_checked_scope_wait_cancel_losers", wait)?;
+        }
         if mode.preserves_fault() {
             self.free_handle("hew_checked_scope_cancel", handle)?;
         }

@@ -2981,7 +2981,7 @@ impl Checker {
             failure_edge_inferred: self.failure_edge_inferred.clone(),
             in_generator: self.in_generator.clone(),
             suspension_operands: self.suspension_operands.clone(),
-            prepared_select_tasks: self.prepared_select_tasks.clone(),
+            prepared_select_inputs: self.prepared_select_inputs.clone(),
             loop_depth: self.loop_depth.clone(),
             deferred_body: self.deferred_body.clone(),
             loop_labels: self.loop_labels.clone(),
@@ -3553,9 +3553,9 @@ impl Checker {
         self.report_completion_call_cycles();
         let checked_impl_body_callees = self.checked_impl_body_callees();
         self.call_type_args = resolved_call_type_args;
-        let suspension_effects = self.finish_suspension_effects();
-        let mut resolved_call_type_args = std::mem::take(&mut self.call_type_args);
         let callable_argument_flows = self.finish_callable_argument_flows();
+        let suspension_effects = self.finish_suspension_effects(&callable_argument_flows);
+        let mut resolved_call_type_args = std::mem::take(&mut self.call_type_args);
         self.finish_task_lifetimes(&callable_argument_flows);
         self.pending_callable_arguments.clear();
         let resolved_closure_capture_facts = std::mem::take(&mut self.closure_capture_facts)

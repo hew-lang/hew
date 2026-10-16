@@ -557,6 +557,7 @@ pub enum SuspendKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum TaskScopeJoinMode {
     Wait,
+    CancelLosers,
     PropagateFault,
 }
 

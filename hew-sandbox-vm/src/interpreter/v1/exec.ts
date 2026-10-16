@@ -1173,11 +1173,28 @@ class ExecutorV1 {
         ready();
         return;
       }
-      case "task.spawn": {
+      case "task.spawn":
+      case "task.invoke": {
         const group = act.scopes.get(op.scope);
         if (!group) throw new Error(`task scope ${op.scope} is missing`);
-        const callable = this.read(act, op.callable);
-        this.invalidate(act, op.callable);
+        const consuming =
+          op.op === "task.spawn" ||
+          ("receiver" in op.callee && op.callee.receiver.decision === "move");
+        const callable =
+          op.op === "task.spawn"
+            ? this.read(act, op.callable)
+            : "direct" in op.callee
+              ? { kind: "function" as const, id: String(op.callee.direct) }
+              : this.boundary(act, op.callee.receiver);
+        if (op.op === "task.spawn") this.invalidate(act, op.callable);
+        const args =
+          op.op === "task.invoke"
+            ? op.args.map((arg) => this.boundary(act, arg))
+            : [];
+        const specialization =
+          op.op === "task.invoke" && "receiver" in op.callee
+            ? op.callee.specialization
+            : null;
         const task = this.newTask();
         group.tasks.push(task);
         const settle = (value: VmValue, fault: Fault | null) => {
@@ -1189,26 +1206,31 @@ class ExecutorV1 {
             act.context.actor
           )
             act.context.actor.crashing ??= fault;
+          const complete = (closeFault: Fault | null) => {
+            if (!fault || (fault.kind === "panic" && fault.cancelled))
+              fault = closeFault ?? fault;
+            this.settleTask(task, value, fault);
+            if (
+              !task.grouped &&
+              fault &&
+              !(fault.kind === "panic" && fault.cancelled)
+            ) {
+              for (const sibling of group.tasks)
+                if (!sibling.done) sibling.cancel();
+              if (!group.joining) act.context.cancel?.(fault);
+            }
+            for (const changed of [...group.changed]) changed();
+          };
+          if (!consuming) {
+            complete(null);
+            return;
+          }
           this.closeValueAsync(
             callable,
             act.context.actor
               ? this.faultText(act.context.actor.crashing)
               : null,
-            (closeFault) => {
-              if (!fault || (fault.kind === "panic" && fault.cancelled))
-                fault = closeFault ?? fault;
-              this.settleTask(task, value, fault);
-              if (
-                !task.grouped &&
-                fault &&
-                !(fault.kind === "panic" && fault.cancelled)
-              ) {
-                for (const sibling of group.tasks)
-                  if (!sibling.done) sibling.cancel();
-                if (!group.joining) act.context.cancel?.(fault);
-              }
-              for (const changed of [...group.changed]) changed();
-            },
+            complete,
             act.context.actor,
             act.rcOwner,
           );
@@ -1222,34 +1244,25 @@ class ExecutorV1 {
           failed: (fault) => settle(UNIT, fault),
         };
         const frame = this.activate(
-          this.functionAt(calleeFunction(callable)),
-          callable.kind === "closure" ? [callable.environment] : [],
+          this.functionAt(calleeFunction(callable, specialization)),
+          callable.kind === "closure" ? [callable.environment, ...args] : args,
           null,
           null,
           undefined,
           null,
           context,
         );
-        let started = false;
         task.cancel = () => {
           if (task.done || task.finishing) return;
-          if (started) {
-            context.pendingCancellation ??= {
-              kind: "panic",
-              message: "task cancelled",
-              cancelled: true,
-            };
-            context.cancel?.(context.pendingCancellation);
-          } else
-            settle(UNIT, {
-              kind: "panic",
-              message: "task cancelled",
-              cancelled: true,
-            });
+          context.pendingCancellation ??= {
+            kind: "panic",
+            message: "task cancelled",
+            cancelled: true,
+          };
+          context.cancel?.(context.pendingCancellation);
         };
         this.scheduler.enqueue(task.id, () => {
           if (task.done || task.finishing) return;
-          started = true;
           this.runFrame(frame);
         });
         this.trace.allocateId("task", task.id, act.context.id);

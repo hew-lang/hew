@@ -7,9 +7,9 @@
 //! spelled `fn[suspends]`; a closure or named function flowing into a written
 //! type that never suspends is an obligation checked once every body is known.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 
-use hew_parser::ast::{Expr, Pattern, Span, Spanned, Stmt};
+use hew_parser::ast::{Expr, Span, Spanned};
 
 use super::{CallTarget, Checker, MethodCallRewrite, SpanKey};
 use crate::env::TypeBindingId;
@@ -83,59 +83,13 @@ struct Invocation {
     source_module: Option<String>,
 }
 
-/// The concrete callable behind a fork operand. A written callable slot
-/// erases its captures, so the Send proof for a fork through a record field
-/// or tuple element is not in the slot's type; this ledger keeps the concrete
-/// callable types stored through local bindings for fork transfers only.
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum CallableOrigin {
-    Unknown,
-    Typed(Ty),
-    Aggregate(BTreeMap<String, CallableOrigin>),
-    Binding {
-        binding: TypeBindingId,
-        path: Vec<String>,
-    },
-}
-
-impl CallableOrigin {
-    /// Replace the value at `path`; a conflicting replacement is unknown.
-    fn merge_at(&mut self, path: &[String], value: Self) {
-        if let Some((field, rest)) = path.split_first() {
-            if let Self::Aggregate(fields) = self {
-                fields
-                    .entry(field.clone())
-                    .or_insert(Self::Unknown)
-                    .merge_at(rest, value);
-            } else {
-                *self = Self::Unknown;
-            }
-        } else if *self != value {
-            *self = Self::Unknown;
-        }
-    }
-
-    fn project(&self, field: &str) -> Self {
-        match self {
-            Self::Aggregate(fields) => fields.get(field).cloned().unwrap_or(Self::Unknown),
-            Self::Binding { binding, path } => {
-                let mut path = path.clone();
-                path.push(field.to_string());
-                Self::Binding {
-                    binding: *binding,
-                    path,
-                }
-            }
-            _ => Self::Unknown,
-        }
-    }
-}
-
 #[derive(Debug, Clone)]
 struct PendingForkTransfer {
+    required: crate::traits::MarkerTrait,
+    context: &'static str,
     key: SpanKey,
     ty: Ty,
-    origin: CallableOrigin,
+    candidates: super::IndirectCallCandidates,
     source_module: Option<String>,
     acquisition: crate::ClosureCaptureAcquisition,
 }
@@ -183,7 +137,6 @@ pub(super) struct EffectGraph {
     seen_calls: HashMap<SpanKey, Option<EffectBody>>,
     construct_calls: HashSet<SpanKey>,
     submission_effects: HashMap<SpanKey, bool>,
-    bindings: HashMap<TypeBindingId, CallableOrigin>,
     fork_transfers: Vec<PendingForkTransfer>,
     obligations: Vec<SuspensionObligation>,
     pub(super) releases: Vec<super::cleanup_effects::CleanupEffect>,
@@ -270,7 +223,8 @@ impl Checker {
                         field: method.clone(),
                     };
                     if let Some(ty) = self.record_fn_field_type(receiver, method.0.name.as_str()) {
-                        self.check_fork_transfer(&field, &branch.1, &ty);
+                        let candidates = self.callable_field_candidates(receiver, method);
+                        self.check_fork_value_transfer(&field, &branch.1, &ty, candidates);
                     }
                 } else if !matches!(
                     self.method_call_receiver_kinds.get(&key),
@@ -302,14 +256,127 @@ impl Checker {
         }
     }
 
-    pub(super) fn check_fork_transfer(&mut self, expr: &Expr, span: &Span, ty: &Ty) {
-        let ty = self.subst.resolve(ty);
-        // A literal is its own origin; a fork body shares its span with the
-        // synthetic block whose type is already recorded there.
-        let origin = match expr {
-            Expr::Lambda { .. } | Expr::ForkBlock { .. } => CallableOrigin::Typed(ty.clone()),
-            _ => self.expression_callable_origin(expr, span),
+    pub(super) fn check_select_call_transfer(
+        &mut self,
+        expr: &Expr,
+        span: &Span,
+        shared: bool,
+        loan: Option<bool>,
+    ) {
+        let key = SpanKey::in_module(span, self.current_module_idx);
+        let ty = self.expr_types.get(&key).cloned().or_else(|| match expr {
+            Expr::Ident(name) => self.env.lookup_ref(name).map(|binding| binding.ty.clone()),
+            _ => None,
+        });
+        let Some(ty) = ty else {
+            self.report_error(
+                crate::error::TypeErrorKind::InvalidOperation,
+                span,
+                "select call input lacks its checked type".into(),
+            );
+            return;
         };
+        if let Some(exclusive) = loan {
+            self.record_select_input_loan(expr, span, &ty, exclusive);
+        }
+        self.check_select_call_transfer_typed(
+            span,
+            ty,
+            self.callable_candidates_for_expr(expr, span),
+            shared,
+        );
+    }
+
+    pub(super) fn record_select_input_loan(
+        &mut self,
+        expr: &Expr,
+        span: &Span,
+        ty: &Ty,
+        exclusive: bool,
+    ) {
+        if self.type_has_marker(ty, crate::traits::MarkerTrait::Copy) {
+            return;
+        }
+        let Some((root, path)) = self.expr_place(expr) else {
+            return;
+        };
+        self.reject_prepared_input_access(
+            root,
+            &path,
+            span,
+            crate::error::TypeErrorKind::InvalidOperation,
+            !exclusive,
+        );
+        let Some(binding) = self.env.lookup_ref(root) else {
+            return;
+        };
+        self.prepared_select_inputs
+            .push(super::types::PreparedSelectInput {
+                binding: binding.id,
+                path,
+                span: span.clone(),
+                access: if exclusive {
+                    super::types::PreparedSelectAccess::Exclusive
+                } else {
+                    super::types::PreparedSelectAccess::Shared
+                },
+            });
+    }
+
+    pub(super) fn check_select_call_transfer_typed(
+        &mut self,
+        span: &Span,
+        ty: Ty,
+        candidates: super::IndirectCallCandidates,
+        shared: bool,
+    ) {
+        let key = SpanKey::in_module(span, self.current_module_idx);
+        self.effect_graph.fork_transfers.push(PendingForkTransfer {
+            required: if shared {
+                crate::traits::MarkerTrait::Sync
+            } else {
+                crate::traits::MarkerTrait::Send
+            },
+            context: "select call",
+            key,
+            ty,
+            candidates,
+            source_module: self.current_module.clone(),
+            acquisition: crate::ClosureCaptureAcquisition::Snapshot,
+        });
+    }
+
+    pub(super) fn record_actor_marker_transfer(
+        &mut self,
+        expr: &Expr,
+        span: &Span,
+        error_span: &Span,
+        ty: Ty,
+    ) {
+        self.effect_graph.fork_transfers.push(PendingForkTransfer {
+            required: crate::traits::MarkerTrait::Send,
+            context: "actor send",
+            key: SpanKey::in_module(error_span, self.current_module_idx),
+            ty,
+            candidates: self.callable_candidates_for_expr(expr, span),
+            source_module: self.current_module.clone(),
+            acquisition: crate::ClosureCaptureAcquisition::Move,
+        });
+    }
+
+    pub(super) fn check_fork_transfer(&mut self, expr: &Expr, span: &Span, ty: &Ty) {
+        let candidates = self.callable_candidates_for_expr(expr, span);
+        self.check_fork_value_transfer(expr, span, ty, candidates);
+    }
+
+    fn check_fork_value_transfer(
+        &mut self,
+        expr: &Expr,
+        span: &Span,
+        ty: &Ty,
+        candidates: super::IndirectCallCandidates,
+    ) {
+        let ty = self.subst.resolve(ty);
         let key = SpanKey::in_module(span, self.current_module_idx);
         // Invocation checking has already recorded explicit consuming
         // parameters/receivers. Ordinary value operands acquire snapshots.
@@ -325,9 +392,11 @@ impl Checker {
             && !matches!(ty, Ty::Borrow { .. })
             && self.parameter_has_independent_clone(&ty);
         self.effect_graph.fork_transfers.push(PendingForkTransfer {
+            required: crate::traits::MarkerTrait::Send,
+            context: "fork",
             key,
             ty: ty.clone(),
-            origin,
+            candidates,
             source_module: self.current_module.clone(),
             acquisition: if snapshot {
                 crate::ClosureCaptureAcquisition::Snapshot
@@ -522,7 +591,7 @@ impl Checker {
     }
 
     /// The instantiated type of a callable record field selected as a method.
-    fn record_fn_field_type(&self, receiver: &Spanned<Expr>, field: &str) -> Option<Ty> {
+    pub(super) fn record_fn_field_type(&self, receiver: &Spanned<Expr>, field: &str) -> Option<Ty> {
         let receiver_ty = self
             .expr_types
             .get(&SpanKey::in_module(&receiver.1, self.current_module_idx))?;
@@ -535,157 +604,6 @@ impl Checker {
             &definition.type_params,
             &args,
         ))
-    }
-
-    fn expression_callable_origin(&self, expr: &Expr, span: &Span) -> CallableOrigin {
-        let typed = |span: &Span| {
-            self.expr_types
-                .get(&SpanKey::in_module(span, self.current_module_idx))
-                .map_or(CallableOrigin::Unknown, |ty| {
-                    CallableOrigin::Typed(ty.clone())
-                })
-        };
-        match expr {
-            Expr::Ident(name) => match self.env.lookup_ref(name) {
-                Some(binding) if self.effect_graph.bindings.contains_key(&binding.id) => {
-                    CallableOrigin::Binding {
-                        binding: binding.id,
-                        path: Vec::new(),
-                    }
-                }
-                Some(binding) => CallableOrigin::Typed(binding.ty.clone()),
-                None => typed(span),
-            },
-            Expr::Tuple(elements) => CallableOrigin::Aggregate(
-                elements
-                    .iter()
-                    .enumerate()
-                    .map(|(index, value)| {
-                        (
-                            index.to_string(),
-                            self.expression_callable_origin(&value.0, &value.1),
-                        )
-                    })
-                    .collect(),
-            ),
-            // A spread can carry callables whose origin is not visible here.
-            Expr::StructInit {
-                fields, base: None, ..
-            } => CallableOrigin::Aggregate(
-                fields
-                    .iter()
-                    .map(|(name, value)| {
-                        (
-                            name.to_string(),
-                            self.expression_callable_origin(&value.0, &value.1),
-                        )
-                    })
-                    .collect(),
-            ),
-            Expr::FieldAccess { object, field } => self
-                .expression_callable_origin(&object.0, &object.1)
-                .project(field.0.name.as_str()),
-            _ => typed(span),
-        }
-    }
-
-    pub(super) fn record_statement_effect_binding(&mut self, stmt: &Stmt) {
-        match stmt {
-            Stmt::Assign { target, value, .. } => {
-                let Some((root, path)) = self.expr_place(&target.0) else {
-                    return;
-                };
-                let Some(binding) = self.env.lookup_ref(root).map(|binding| binding.id) else {
-                    return;
-                };
-                let origin = self.expression_callable_origin(&value.0, &value.1);
-                self.effect_graph
-                    .bindings
-                    .entry(binding)
-                    .or_insert(CallableOrigin::Unknown)
-                    .merge_at(&path, origin);
-            }
-            Stmt::Let {
-                pattern: (Pattern::Identifier(name), _),
-                value: Some(value),
-                ..
-            }
-            | Stmt::Var {
-                name,
-                value: Some(value),
-                ..
-            } => {
-                let Some((binding, ty)) = self
-                    .env
-                    .lookup_ref(name.name.as_str())
-                    .map(|binding| (binding.id, binding.ty.clone()))
-                else {
-                    return;
-                };
-                let origin = self.expression_callable_origin(&value.0, &value.1);
-                if matches!(origin, CallableOrigin::Typed(_))
-                    && !self.subst.resolve(&ty).contains_callable()
-                {
-                    return;
-                }
-                self.effect_graph
-                    .bindings
-                    .entry(binding)
-                    .and_modify(|existing| existing.merge_at(&[], origin.clone()))
-                    .or_insert(origin);
-            }
-            _ => {}
-        }
-    }
-
-    fn origin_has_marker(
-        &self,
-        origin: &CallableOrigin,
-        bindings: &HashMap<TypeBindingId, CallableOrigin>,
-        seen: &mut HashSet<TypeBindingId>,
-        marker: crate::traits::MarkerTrait,
-    ) -> bool {
-        match origin {
-            CallableOrigin::Unknown => false,
-            CallableOrigin::Typed(ty) => match self.subst.resolve(ty).callable_body().clone() {
-                Ty::Closure {
-                    identity: EffectBody::Closure(key),
-                    ..
-                } => self
-                    .closure_capture_facts
-                    .get(&key)
-                    .is_some_and(|captures| {
-                        captures.iter().all(|capture| {
-                            (if marker == crate::traits::MarkerTrait::Sync {
-                                capture.is_sync
-                            } else {
-                                capture.is_send
-                            }) || bindings.get(&capture.binding_id).is_some_and(|origin| {
-                                self.origin_has_marker(origin, bindings, seen, marker)
-                            })
-                        })
-                    }),
-                ty => self.registry.implements_marker(&ty, marker),
-            },
-            CallableOrigin::Aggregate(fields) => fields
-                .values()
-                .all(|origin| self.origin_has_marker(origin, bindings, seen, marker)),
-            CallableOrigin::Binding { binding, path } => {
-                if !seen.insert(*binding) {
-                    return false;
-                }
-                let mut origin = bindings
-                    .get(binding)
-                    .cloned()
-                    .unwrap_or(CallableOrigin::Unknown);
-                for field in path {
-                    origin = origin.project(field);
-                }
-                let proven = self.origin_has_marker(&origin, bindings, seen, marker);
-                seen.remove(binding);
-                proven
-            }
-        }
     }
 
     fn record_value_operation_effects(&mut self, expr: &Expr, span: &Span) {
@@ -1185,19 +1103,26 @@ impl Checker {
         }
     }
 
-    fn finish_fork_transfers(&mut self, graph: &EffectGraph, output: &mut SuspensionEffects) {
+    fn finish_fork_transfers(
+        &mut self,
+        graph: &EffectGraph,
+        output: &mut SuspensionEffects,
+        flows: &HashMap<SpanKey, Vec<super::CallableArgumentFlow>>,
+    ) {
         for PendingForkTransfer {
             key,
             ty,
-            origin,
+            candidates,
             source_module,
             acquisition,
+            required,
+            context,
         } in &graph.fork_transfers
         {
             let ty = self.subst.resolve(ty);
             let proven = |marker| {
-                self.registry.implements_marker(&ty, marker)
-                    || self.origin_has_marker(origin, &graph.bindings, &mut HashSet::new(), marker)
+                self.type_has_marker(&ty, marker)
+                    || self.value_candidates_have_marker(&ty, candidates, marker, flows)
             };
             let is_send = proven(crate::traits::MarkerTrait::Send);
             let is_sync = proven(crate::traits::MarkerTrait::Sync);
@@ -1209,16 +1134,31 @@ impl Checker {
                     acquisition: *acquisition,
                 },
             );
-            if !is_send {
+            if !proven(*required) {
                 let mut error = crate::error::TypeError::new(
                     crate::error::TypeErrorKind::InvalidSend,
                     key.start..key.end,
-                    format!(
-                        "fork cannot transfer `{}`: the value is not proven Send",
-                        ty.user_facing()
-                    ),
+                    if *context == "actor send" {
+                        format!(
+                            "cannot send `{}` to actor: type is not Send",
+                            ty.user_facing()
+                        )
+                    } else if *context == "fork" {
+                        format!(
+                            "fork cannot transfer `{}`: the value is not proven Send",
+                            ty.user_facing()
+                        )
+                    } else {
+                        format!(
+                            "{context} cannot schedule `{}`: the value is not proven {required}",
+                            ty.user_facing()
+                        )
+                    },
                 );
                 error.source_module.clone_from(source_module);
+                if *context == "actor send" {
+                    error.suggestions.push("keep the resource inside one owning actor and send that actor a message instead — see the language guide, 'Own a resource with an actor'".into());
+                }
                 self.errors.push(error);
             }
         }
@@ -1228,7 +1168,10 @@ impl Checker {
         clippy::too_many_lines,
         reason = "Resolve the effect fixed point and report its source obligations in one pass"
     )]
-    pub(super) fn finish_suspension_effects(&mut self) -> SuspensionEffects {
+    pub(super) fn finish_suspension_effects(
+        &mut self,
+        flows: &HashMap<SpanKey, Vec<super::CallableArgumentFlow>>,
+    ) -> SuspensionEffects {
         let graph = std::mem::take(&mut self.effect_graph);
         let mut bodies = graph.bodies.clone();
         let mut witnesses = graph.witnesses.clone();
@@ -1405,7 +1348,7 @@ impl Checker {
             error.source_module.clone_from(&obligation.source_module);
             self.errors.push(error);
         }
-        self.finish_fork_transfers(&graph, &mut output);
+        self.finish_fork_transfers(&graph, &mut output, flows);
         output
     }
 }

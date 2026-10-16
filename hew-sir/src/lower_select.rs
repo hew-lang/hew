@@ -12,6 +12,8 @@ use hew_types::ResolvedTy;
 enum SelectSource {
     /// An ephemeral invocation owns its request until selected or abandoned.
     ActorCall(super::actor::StartedActorCall),
+    /// A select-local prepared invocation with parent-retained argument loans.
+    Call { task: ValueId, output: ResolvedTy },
     /// A prepared task handle the winning arm awaits.
     Task {
         target: BindingTarget,
@@ -38,6 +40,18 @@ impl Builder<'_, '_> {
         select: &HirSelect,
     ) -> Result<Option<ValueId>, String> {
         let outer_live = self.owned_live.clone();
+        let has_calls = select.arms.iter().any(|arm| matches!(&arm.kind, HirSelectArmKind::Call { call } if matches!(call.kind, hew_hir::HirExprKind::Call { .. } | hew_hir::HirExprKind::CallTraitMethodStatic { .. })));
+        let call_scope = if has_calls {
+            self.open_scope();
+            let scope = self.enter_task_scope()?;
+            self.task_scopes
+                .last_mut()
+                .expect("entered select scope")
+                .calls_only = true;
+            Some(scope)
+        } else {
+            None
+        };
         let outer_bindings = self.bindings.keys().copied().collect();
         let probe_depth = self.argument_receiver_loans.len();
         let result_ty = self.ty(&expression.ty);
@@ -121,7 +135,31 @@ impl Builder<'_, '_> {
                         },
                     ));
                 }
-                HirSelectArmKind::ActorAsk { call } => {
+                HirSelectArmKind::Call { call } => {
+                    if matches!(
+                        call.kind,
+                        hew_hir::HirExprKind::Call { .. }
+                            | hew_hir::HirExprKind::CallTraitMethodStatic { .. }
+                    ) {
+                        let scope =
+                            call_scope.ok_or("prepared call has no private select scope")?;
+                        let floor = loans.len();
+                        let task = self.lower_select_call(call, scope, &mut loans)?;
+                        self.argument_receiver_loans
+                            .extend_from_slice(&loans[floor..]);
+                        inputs.push(BoundaryOperand {
+                            operand: Operand { value: task },
+                            decision: BoundaryDecision::Borrow,
+                        });
+                        sources.push((
+                            arm_index,
+                            SelectSource::Call {
+                                task,
+                                output: self.ty(&call.ty),
+                            },
+                        ));
+                        continue;
+                    }
                     let Some(started) = self.lower_actor_select_start(call)? else {
                         return Ok(None);
                     };
@@ -144,7 +182,6 @@ impl Builder<'_, '_> {
         if sources.is_empty() && timer.is_none() {
             return Err("task selection has no arms".into());
         }
-        self.argument_receiver_loans.truncate(loan_depth);
         if let Some(duration) = &timer {
             inputs.push(BoundaryOperand {
                 operand: duration.clone(),
@@ -188,7 +225,11 @@ impl Builder<'_, '_> {
         for cleanup in [cancel, unwind] {
             self.restore_control_state(&inherited);
             self.current = cleanup;
+            if let Some(scope) = call_scope {
+                self.finish_task_scope(scope, crate::TaskScopeJoinMode::PropagateFault)?;
+            }
             self.end_call_loans(&loans)?;
+            self.argument_receiver_loans.truncate(loan_depth);
             self.finish_fault_exit()?;
         }
         self.restore_control_state(&inherited);
@@ -225,6 +266,15 @@ impl Builder<'_, '_> {
                 )?;
                 Some(self.branch_candidate_test(condition)?)
             };
+            let prepared_result =
+                if let Some((_, (_, SelectSource::Call { task, output }))) = source {
+                    self.lower_task_await_value(*task, output)?
+                } else {
+                    None
+                };
+            if let Some(scope) = call_scope {
+                self.finish_task_scope(scope, crate::TaskScopeJoinMode::CancelLosers)?;
+            }
             // The selected receiver keeps exactly its prepared borrow through
             // take. End every other observation loan before the branch runs.
             let selected_loans = match source {
@@ -237,6 +287,7 @@ impl Builder<'_, '_> {
                 .copied()
                 .collect();
             self.end_call_loans(&ending)?;
+            self.argument_receiver_loans.truncate(loan_depth);
             // A losing invocation's close can fail before the chosen receive.
             // Its cleanup edge must end the chosen receiver's loan as well.
             self.argument_receiver_loans
@@ -254,6 +305,7 @@ impl Builder<'_, '_> {
             self.argument_receiver_loans.truncate(loan_depth);
             if let Some((_, (_, source))) = source {
                 let (value, output) = match source {
+                    SelectSource::Call { output, .. } => (prepared_result, output.clone()),
                     SelectSource::ActorCall(started) => {
                         let operation = crate::ActorOperation::CallTake(started.protocol.clone());
                         let signature = self.actor_signature(&operation)?;
@@ -342,6 +394,10 @@ impl Builder<'_, '_> {
                 self.restore_control_state(&failure);
             }
         }
-        self.merge_match_exits(exits, &result_ty)
+        let result = self.merge_match_exits(exits, &result_ty);
+        if call_scope.is_some() {
+            self.leave_scope();
+        }
+        result
     }
 }

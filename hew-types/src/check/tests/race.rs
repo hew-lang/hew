@@ -53,30 +53,23 @@ fn await_on_a_race_operand_is_refused() {
 
 #[test]
 fn race_rejects_non_send_fork_inputs() {
-    let output = check_source(
+    for source in [
         "fn use_value(value: Rc<i64>) -> i64 { 1 } fn main() { let value = Rc.new(1); let result = race [ use_value(value), use_value(value) ]; }",
-    );
-    assert!(
-        output
-            .errors
-            .iter()
-            .any(|error| error.kind == TypeErrorKind::InvalidSend),
-        "{:?}",
-        output.errors
-    );
+        "fn use_value(value: Rc<i64>) -> i64 { sleep(1ms); 1 } fn main() { let value = Rc.new(1); let result = select { answer from use_value(value) => answer, after 1s => 0 }; }",
+        "type Reader { value: Rc<i64>; } impl Reader { fn read(self) -> i64 { sleep(1ms); 1 } } fn main() { let reader = Reader { value: Rc.new(1) }; let result = select { answer from reader.read() => answer, after 1s => 0 }; }",
+    ] {
+        let output = check_source(source);
+        assert!(output.errors.iter().any(|error| error.kind == TypeErrorKind::InvalidSend), "{source}: {:?}", output.errors);
+    }
 }
 
 #[test]
 fn race_consumed_input_is_unusable_after_the_race() {
-    let output = check_source(
+    for source in [
         "fn take(consume value: string) -> string { value } fn hold() -> string { \"other\" } fn main() { let text = \"hello\"; let result = race [ take(text), hold() ]; println(text); }",
-    );
-    assert!(
-        output.errors.iter().any(|error| matches!(
-            error.kind,
-            TypeErrorKind::UseAfterMove | TypeErrorKind::UseAfterConsume
-        )),
-        "{:?}",
-        output.errors
-    );
+        "fn take(consume value: string) -> string { sleep(1ms); value } fn main() { let text = \"hello\"; let result = select { answer from take(text) => answer, after 1s => \"timer\" }; println(text); }",
+    ] {
+        let output = check_source(source);
+        assert!(output.errors.iter().any(|error| matches!(error.kind, TypeErrorKind::UseAfterMove | TypeErrorKind::UseAfterConsume)), "{source}: {:?}", output.errors);
+    }
 }

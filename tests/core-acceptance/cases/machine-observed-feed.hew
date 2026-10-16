@@ -1,5 +1,7 @@
 import std.machine.watch;
 
+import std.stream;
+
 machine Counter {
     events {
         Add { value: i64; }
@@ -10,7 +12,9 @@ machine Counter {
     }
     state Ready { value: i64; }
     on Add: Ready => Ready {
-        if event.value < 0 { panic("reject negative input"); }
+        if event.value < 0 {
+            panic("reject negative input");
+        }
         emit Added { value: event.value };
         Ready { value: state.value + event.value }
     }
@@ -35,6 +39,18 @@ fn ordered(consume subscriber: watch.Subscription<Counter>) {
     println("ordered");
 }
 
+fn feed_baseline(feed: watch.Feed<Counter>) -> i64 {
+    let updates = feed.subscribe().expect("parallel subscription");
+    updates.initial().revision
+}
+
+actor Reader {
+    let feed: watch.Feed<Counter>;
+    receive fn baseline() -> i64 {
+        feed_baseline(self.feed)
+    }
+}
+
 fn cancel_pending(feed: watch.Feed<Counter>) {
     let cancelled = scope within 10ms {
         let waiting = feed.subscribe().expect("pending subscription");
@@ -50,11 +66,117 @@ fn cancel_pending(feed: watch.Feed<Counter>) {
     println("detached");
 }
 
+#[resource]
+type Completion {
+    done: stream.Sink<i64>;
+}
+
+impl Completion {
+    fn close(consume self) {
+        let _ = self.done.send(1);
+    }
+}
+
+fn delayed_owned(consume completion: Completion) -> i64 {
+    sleep(20ms);
+    let _ = completion.done.send(2);
+    41
+}
+
+fn prepared_calls() {
+    let (sender, done) = stream.pipe<i64>(1).expect("completion pipe");
+    let timed_out = select {
+        result from delayed_owned(Completion { done: sender }) => false,
+        after 1ms => true,
+    };
+    assert(timed_out);
+    assert(done.recv() == .Some(1));
+    let callback = |value: i64| -> i64 {
+        sleep(1ms);
+        value + 1
+    };
+    let answer = select {
+        result from callback(8) => result,
+        after 1s => panic("callback select timed out"),
+    };
+    assert(answer == 9);
+    let count = 0;
+    var counter = move capture(var count) || -> i64 {
+        sleep(1ms);
+        count += 1;
+        count
+    };
+    let advanced = select {
+        result from counter() => result,
+        after 1s => panic("mutable callback timed out"),
+    };
+    assert(advanced == 1);
+    assert(counter() == 2);
+    let (retained_sender, retained_done) = stream.pipe<i64>(2).expect("retained task pipe");
+    scope {
+        select {
+            result from callback(9) => {
+                assert(result == 10);
+            }
+            result from fork delayed_owned(Completion { done: retained_sender }) => {
+                assert(result == 41);
+            }
+        };
+        assert(retained_done.recv() == .Some(2));
+        assert(retained_done.recv() == .Some(1));
+    };
+    let identity = |<T: Send> value: T| -> T {
+        sleep(1ms);
+        value
+    };
+    let generic_answer = select {
+        result from identity(12) => result,
+        after 1s => panic("generic callback select timed out"),
+    };
+    assert(generic_answer == 12);
+}
+
+fn reusable_select() {
+    let (owner, feed) = watch.observe(Counter.Ready { value: 0 }, capacity: 2, subscribers: 1).expect("select owner");
+    var live = owner;
+    let updates = feed.subscribe().expect("select subscription");
+    let timed_out = select {
+        item from updates.recv() => false,
+        after 1ms => true,
+    };
+    assert(timed_out);
+    let _ = live.step(.Add { value: 8 });
+    let received = select {
+        item from updates.recv() => item.expect("no lag").expect("notice").revision,
+        after 1s => panic("select notice timed out"),
+    };
+    assert(received == 1);
+    let cancelled = scope within 1ms {
+        select {
+            item from updates.recv() => {}
+            after 1s => {}
+        };
+        false
+    } handle failure { true };
+    assert(cancelled);
+    let _ = live.step(.Ping);
+    assert(updates.recv().expect("later read").expect("later notice").revision == 2);
+    live.close();
+    assert(updates.recv().expect("end").is_none());
+}
+
 fn main() {
+    reusable_select();
+    prepared_calls();
     let original: Counter = .Ready { value: 0 };
     let (owner, feed) = watch.observe(original, capacity: 2, subscribers: 3).expect("observe");
     var live = owner;
     cancel_pending(feed);
+    let baseline = fork feed_baseline(feed);
+    assert(await baseline == 0);
+    let reader = spawn Reader { feed };
+    assert(reader.baseline().expect("reader reply") == 0);
+    terminate(reader);
     let first = feed.subscribe().expect("first");
     let copied_feed = feed;
     let second = copied_feed.subscribe().expect("second");

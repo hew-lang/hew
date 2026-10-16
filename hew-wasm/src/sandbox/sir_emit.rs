@@ -1515,6 +1515,20 @@ impl<'m> Walker<'m> {
                 "scope": scope.0,
                 "callable": operand(callable),
             }),
+            SemOpKind::TaskInvoke {
+                scope,
+                callee,
+                args,
+                ..
+            } => serde_json::json!({
+                "op": "task.invoke",
+                "scope": scope.0,
+                "callee": match callee {
+                    hew_sir::InvocationCallee::Direct(target) => serde_json::json!({ "direct": target.0 }),
+                    hew_sir::InvocationCallee::Indirect { receiver, specialization } => serde_json::json!({ "receiver": boundary(receiver), "specialization": specialization.map(|id| id.0) }),
+                },
+                "args": args.iter().map(boundary).collect::<Vec<_>>(),
+            }),
             SemOpKind::ActorIngressAdapter(adapter) => serde_json::json!({
                 "op": "actor.ingress_adapter",
                 "actor": adapter.actor.0,
@@ -2183,6 +2197,7 @@ fn actor_operation(operation: &hew_sir::ActorOperation) -> serde_json::Value {
 const fn join_mode_name(mode: hew_sir::TaskScopeJoinMode) -> &'static str {
     match mode {
         hew_sir::TaskScopeJoinMode::Wait => "wait",
+        hew_sir::TaskScopeJoinMode::CancelLosers => "cancel_losers",
         hew_sir::TaskScopeJoinMode::PropagateFault => "propagate_fault",
     }
 }

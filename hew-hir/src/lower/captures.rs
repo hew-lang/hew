@@ -210,7 +210,7 @@ pub(super) fn collect_captures_walk(
                     HirSelectArmKind::StreamNext { stream } => {
                         collect_captures_walk(stream, param_ids, seen, captures, self_id);
                     }
-                    HirSelectArmKind::ActorAsk { call } => {
+                    HirSelectArmKind::Call { call } => {
                         collect_captures_walk(call, param_ids, seen, captures, self_id);
                     }
                     HirSelectArmKind::TaskAwait { task } => {
@@ -473,7 +473,7 @@ pub(super) fn collect_general_closure_captures_walk(
                             captures,
                         );
                     }
-                    HirSelectArmKind::ActorAsk { call } => {
+                    HirSelectArmKind::Call { call } => {
                         collect_general_closure_captures_walk(call, outer_bindings, seen, captures);
                     }
                     HirSelectArmKind::TaskAwait { task } => {

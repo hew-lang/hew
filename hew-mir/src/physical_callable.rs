@@ -17,7 +17,7 @@ fn closure(module: &PhysicalModule, id: ClosureId) -> Result<&PhysicalClosure, P
         .ok_or_else(|| PhysicalError::new("unknown physical closure identity"))
 }
 
-fn invocation_type(
+pub(super) fn invocation_type(
     module: &PhysicalModule,
     ty: &ResolvedTy,
     specialization: Option<hew_sir::CallableSpecializationId>,
@@ -38,6 +38,107 @@ fn invocation_type(
             "generic callable requires a concrete invocation entry",
         )),
     }
+}
+
+pub(super) fn verify_prepared_call(
+    module: &PhysicalModule,
+    function: &PhysicalFunction,
+    callee: &super::PhysicalInvocationCallee,
+    args: &[ArgumentTransfer],
+) -> Result<ResolvedTy, PhysicalError> {
+    let (params, result) = match callee {
+        super::PhysicalInvocationCallee::Direct(id) => {
+            let body = module
+                .callables
+                .get(id.0 as usize)
+                .filter(|body| body.id == *id)
+                .ok_or_else(|| PhysicalError::new("prepared call target is absent"))?;
+            if body.failure_domain != hew_types::CallableFailureDomain::HewFault
+                || body.receiver_handback
+            {
+                return Err(PhysicalError::new(
+                    "prepared direct call lacks a uniform invocation ABI",
+                ));
+            }
+            (
+                body.params
+                    .iter()
+                    .map(|param| (param.ty.clone(), param.passing))
+                    .collect::<Vec<_>>(),
+                body.return_ty.clone(),
+            )
+        }
+        super::PhysicalInvocationCallee::Indirect {
+            receiver,
+            specialization,
+        } => {
+            let source = match receiver {
+                ArgumentTransfer::Borrow(source)
+                | ArgumentTransfer::BorrowMut(source)
+                | ArgumentTransfer::Move(source) => *source,
+                ArgumentTransfer::Clone { .. } => {
+                    return Err(PhysicalError::new(
+                        "prepared receiver must borrow or transfer",
+                    ))
+                }
+            };
+            let receiver_slot = storage(function, source)?;
+            if !matches!(
+                (expected_receiver(&receiver_slot.ty)?, receiver),
+                (SemParamPassing::Borrow, ArgumentTransfer::Borrow(_))
+                    | (SemParamPassing::BorrowMut, ArgumentTransfer::BorrowMut(_))
+                    | (SemParamPassing::Consume, ArgumentTransfer::Move(_))
+            ) || receiver_slot.own == OwnKind::None
+            {
+                return Err(PhysicalError::new(
+                    "prepared receiver differs from its invocation capability",
+                ));
+            }
+            let ty = invocation_type(module, &receiver_slot.ty, *specialization)?;
+            let signature = hew_sir::callable_value_signature(&ty, &module.type_facts)
+                .map_err(PhysicalError::new)?;
+            (
+                signature
+                    .params
+                    .into_iter()
+                    .map(|param| (param.ty, param.passing))
+                    .collect(),
+                signature.return_ty,
+            )
+        }
+    };
+    if args.len() != params.len() {
+        return Err(PhysicalError::new(
+            "prepared argument count differs from its signature",
+        ));
+    }
+    for (argument, (ty, passing)) in args.iter().zip(&params) {
+        let source = match (passing, argument) {
+            (SemParamPassing::ReadOnly, ArgumentTransfer::Clone { source, action }) => {
+                let slot = storage(function, *source)?;
+                super::verify_clone_action(module, &slot.ty, slot.own, *action)?;
+                *source
+            }
+            (SemParamPassing::Borrow, ArgumentTransfer::Borrow(source))
+            | (SemParamPassing::BorrowMut, ArgumentTransfer::BorrowMut(source)) => *source,
+            (SemParamPassing::Consume, ArgumentTransfer::Move(source))
+                if storage(function, *source)?.own == OwnKind::Owned =>
+            {
+                *source
+            }
+            _ => {
+                return Err(PhysicalError::new(
+                    "prepared argument transfer differs from its parameter",
+                ))
+            }
+        };
+        if storage(function, source)?.ty != *ty {
+            return Err(PhysicalError::new(
+                "prepared argument type differs from its parameter",
+            ));
+        }
+    }
+    Ok(result)
 }
 
 fn expected_receiver(ty: &ResolvedTy) -> Result<SemParamPassing, PhysicalError> {

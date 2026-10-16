@@ -1361,6 +1361,7 @@ non-declarable = [
   "hew_checked_task_select_fault",
   "hew_checked_task_select_set_context",
   "hew_checked_task_spawn",
+  "hew_checked_task_invoke",
   "hew_checked_task_wait_cancel",
   "hew_checked_task_wait_free",
   "hew_checked_task_wait_new",

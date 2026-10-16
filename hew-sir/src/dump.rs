@@ -169,6 +169,15 @@ fn dump_op(out: &mut String, op: &crate::SemOp) {
         SemOpKind::TaskRace { scope, members } => {
             writeln!(out, "task.race #{} {:?}", scope.0, members).expect("write to String");
         }
+        SemOpKind::TaskInvoke {
+            scope,
+            callee,
+            args,
+            ..
+        } => {
+            write!(out, "task.invoke scope{} {:?} {:?}", scope.0, callee, args)
+                .expect("write to String");
+        }
         SemOpKind::TaskSpawn { scope, callable } => {
             writeln!(out, "task.spawn #{} %{}", scope.0, callable.value.0)
                 .expect("write to String");

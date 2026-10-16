@@ -467,6 +467,75 @@ fn lower_source(source: &str) -> SemModule {
 }
 
 #[test]
+fn finite_calls_use_direct_abi_without_losing_recursive_or_cleanup_polls() {
+    let semantic = lower_source(
+        r"
+fn leaf(item: i64) -> i64 { item + 1 }
+fn encode(item: i64) -> bytes { [leaf(item) as u8] }
+fn recursive(depth: i64) -> i64 {
+    if depth == 0 { 1 } else { recursive(depth - 1) + 1 }
+}
+fn deferred_loop() {
+    defer { for _ in 0..2 {} }
+}
+fn looping(limit: i64) -> i64 {
+    var result = 0;
+    for _ in 0..limit { result += 1; }
+    result
+}
+#[resource]
+type Ticket { value: i64; }
+impl Ticket { fn close(consume self) { sleep(1ms); } }
+fn suspending_close() -> i64 {
+    let ticket = Ticket { value: 1 };
+    ticket.close();
+    7
+}
+fn main() {
+    assert(encode(1)[0] == 2);
+    assert(recursive(2) == 3);
+    assert(looping(2) == 2);
+    deferred_loop();
+    assert(suspending_close() == 7);
+}
+",
+    );
+    let physical = lower_physical_module(&semantic, target_for_inventory(&semantic))
+        .unwrap()
+        .into_unverified();
+    for (name, resumable) in [
+        ("leaf", false),
+        ("encode", false),
+        ("recursive", true),
+        ("looping", true),
+        ("deferred_loop", true),
+        ("suspending_close", true),
+    ] {
+        let callable = physical
+            .callables
+            .iter()
+            .find(|callable| physical.defs.path(callable.declaration) == name)
+            .unwrap();
+        assert_eq!(callable.is_resumable, resumable, "{name}");
+        let function = physical
+            .functions
+            .iter()
+            .find(|body| body.callable == callable.id)
+            .unwrap();
+        let entry = function
+            .blocks
+            .iter()
+            .find(|block| block.id == function.entry)
+            .unwrap();
+        assert_eq!(
+            matches!(entry.terminator, PhysicalTerminator::Safepoint { .. }),
+            resumable,
+            "{name}"
+        );
+    }
+}
+
+#[test]
 fn physical_dyn_call_requires_the_exact_trait_method_at_its_slot() {
     let semantic = lower_source(
         r#"trait A {

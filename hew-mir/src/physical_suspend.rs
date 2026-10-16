@@ -238,6 +238,8 @@ pub(super) fn semantic_callables(checked: &hew_sir::CheckedModule<'_>) -> BTreeS
     let module = checked.module();
     let mut resumable = BTreeSet::new();
     let mut calls = BTreeMap::<_, Vec<_>>::new();
+    let mut entry_polls = BTreeSet::new();
+    let mut cyclic_bodies = BTreeSet::new();
     for function in &module.functions {
         if matches!(
             module.callables[function.callable.0 as usize].instance,
@@ -266,6 +268,22 @@ pub(super) fn semantic_callables(checked: &hew_sir::CheckedModule<'_>) -> BTreeS
             .function(function.callable)
             .expect("verified callable body")
             .place_lifetimes();
+        let cfg = hew_sir::build_cfg_index(function);
+        let order: BTreeMap<_, _> = cfg
+            .rpo()
+            .iter()
+            .enumerate()
+            .map(|(i, id)| (*id, i))
+            .collect();
+        if cfg.rpo().iter().any(|block| {
+            cfg.successors_of(*block).iter().any(|edge| {
+                cfg.edge_target(*edge)
+                    .is_some_and(|target| order[&target] <= order[block])
+            })
+        }) {
+            cyclic_bodies.insert(function.callable);
+        }
+        let reenters_entry = !cfg.predecessors_of(function.entry).is_empty();
         for block in function
             .blocks
             .iter()
@@ -364,6 +382,11 @@ pub(super) fn semantic_callables(checked: &hew_sir::CheckedModule<'_>) -> BTreeS
                     ..
                 } if policy.may_suspend() => {
                     resumable.insert(function.callable);
+                }
+                hew_sir::SemTerminator::Safepoint { .. }
+                    if block.id == function.entry && !reenters_entry =>
+                {
+                    entry_polls.insert(function.callable);
                 }
                 hew_sir::SemTerminator::RecoverFault { .. }
                 | hew_sir::SemTerminator::Safepoint { .. }
@@ -469,6 +492,32 @@ pub(super) fn semantic_callables(checked: &hew_sir::CheckedModule<'_>) -> BTreeS
             }
         }
     }
+    // A one-shot entry poll need not create a continuation for finite code.
+    // Close over the same call and release dependencies used for ABI selection;
+    // recursive components never become bounded, and retain their entry polls.
+    let bodies: BTreeSet<_> = module.functions.iter().map(|body| body.callable).collect();
+    let mut bounded = BTreeSet::new();
+    loop {
+        let mut changed = false;
+        for callable in &bodies {
+            if !bounded.contains(callable)
+                && !cyclic_bodies.contains(callable)
+                && !resumable.contains(callable)
+                && calls.get(callable).is_none_or(|callees| {
+                    callees.iter().all(|callee| {
+                        !resumable.contains(callee)
+                            && (!bodies.contains(callee) || bounded.contains(callee))
+                    })
+                })
+            {
+                changed |= bounded.insert(*callable);
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    resumable.extend(entry_polls.difference(&bounded));
     close_callers(resumable, &calls)
 }
 

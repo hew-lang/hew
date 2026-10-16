@@ -115,32 +115,3 @@ impl Builder<'_, '_> {
         Ok(())
     }
 }
-
-pub(super) fn remove_bounded_entry_poll(function: &mut crate::SemFunction) {
-    // A call-free, straight-line body performs bounded work. Keep its
-    // direct ABI; all loops and recursive call paths retain entry polling.
-    let bounded_leaf = !function.blocks.iter().any(|block| {
-        if block.id == function.entry {
-            return false;
-        }
-        matches!(
-            block.terminator,
-            SemTerminator::Call { .. }
-                | SemTerminator::IndirectCall { .. }
-                | SemTerminator::DynCall { .. }
-                | SemTerminator::ValueCall { .. }
-                | SemTerminator::ActorCall { .. }
-                | SemTerminator::WireCodec { .. }
-                | SemTerminator::RtCall { .. }
-                | SemTerminator::ExternCall { .. }
-                | SemTerminator::Suspend { .. }
-                | SemTerminator::Safepoint { .. }
-        )
-    });
-    if bounded_leaf {
-        let entry = &mut function.blocks[function.entry.0 as usize];
-        if let SemTerminator::Safepoint { resume, .. } = &entry.terminator {
-            entry.terminator = SemTerminator::Goto(resume.clone());
-        }
-    }
-}

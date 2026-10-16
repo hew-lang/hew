@@ -679,9 +679,9 @@ impl FunctionLowerer<'_> {
     )]
     pub(crate) fn lower_terminator(
         &self,
-        terminator: &SemTerminator,
+        block: &hew_sir::SemBlock,
     ) -> Result<PhysicalTerminator, PhysicalError> {
-        match terminator {
+        match &block.terminator {
             SemTerminator::EnterDefer { defer, park, body } => Ok(PhysicalTerminator::EnterDefer {
                 defer: *defer,
                 park: *park,
@@ -1034,6 +1034,11 @@ impl FunctionLowerer<'_> {
                 cancel: self.lower_edge(cancel)?,
                 unwind: self.lower_edge(unwind)?,
             }),
+            SemTerminator::Safepoint { resume, .. }
+                if block.id == self.function.entry && !self.is_resumable =>
+            {
+                Ok(PhysicalTerminator::Goto(self.lower_edge(resume)?))
+            }
             SemTerminator::Safepoint { resume, cancel } => Ok(PhysicalTerminator::Safepoint {
                 normal: self.lower_edge(resume)?,
                 cancel: cancel

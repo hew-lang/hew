@@ -3009,6 +3009,11 @@ completion nor an ordinary `return`, `break` or `continue` triggers it. It binds
 no error. A fault raised by another deferred action activates remaining
 failure-only actions while preserving the primary fault.
 
+Once a resource's `close` starts, cancellation does not abandon its release
+obligation. Explicit and automatic close use the same protected cleanup
+ancestry. A close may suspend or yield to other work, and its helpers inherit
+that protection; a failure in the close still follows ordinary cleanup rules.
+
 A `close` that fails on a cancellation edge is not discarded. Cancellation
 marks a frame's fault rather than being a failure of its own, so the first real
 failure raised while unwinding a cancelled frame becomes that frame's outcome
@@ -3168,6 +3173,11 @@ implements the trait can be passed to a `dyn Trait` parameter, where calls to
 the trait's instance methods dispatch through the runtime vtable. See
 [`examples/types_and_traits.hew`](../../examples/types_and_traits.hew) for a
 runnable example.
+
+Dynamic dispatch preserves the method's checked suspension effects. A method
+may suspend, or yield during computation, through a trait object just as it
+does through a concrete receiver. Mutable receiver handback remains intact on
+success, failure and cancellation.
 
 The current subset does not yet fully enforce object-safety rules or support
 associated-type bounds and higher-ranked trait bounds in `dyn` position. See

@@ -2044,6 +2044,16 @@ impl Checker {
         self.expr_type_source_modules
             .insert(key.clone(), self.current_module.clone());
         self.expr_types.insert(key, ty.clone());
+        if matches!(
+            ty,
+            Ty::Named { .. } | Ty::Tuple(_) | Ty::Array(..) | Ty::Closure { .. }
+        ) {
+            self.record_generic_requirement(
+                super::super::types::GenericRequirementKind::ResourceClose,
+                ty,
+                span,
+            );
+        }
     }
 
     pub(in crate::check) fn record_integer_literal_type(

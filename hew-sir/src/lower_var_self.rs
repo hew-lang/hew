@@ -41,6 +41,7 @@ impl Builder<'_, '_> {
             receiver,
             receiver_update,
             call_target,
+            target,
             args,
             evaluation_order,
             ret_ty,
@@ -61,14 +62,20 @@ impl Builder<'_, '_> {
             CallTarget::StaticTraitMethod {
                 declaring_trait,
                 method,
-            } => self.service.resolve_static_trait_call(
-                *declaring_trait,
-                *method,
-                &receiver_ty,
-                &[],
-                expr.site,
-                &self.substitution,
-            )?,
+            } => {
+                let hew_hir::HirVarSelfMethodTarget::StaticTrait { trait_args, .. } = target else {
+                    return Err("mutable trait call has no checked trait arguments".into());
+                };
+                let trait_args: Vec<_> = trait_args.iter().map(|ty| self.ty(ty)).collect();
+                self.service.resolve_static_trait_call(
+                    *declaring_trait,
+                    *method,
+                    &receiver_ty,
+                    &trait_args,
+                    expr.site,
+                    &self.substitution,
+                )?
+            }
             _ => {
                 return Err(
                     "mutable method requires a resolved direct or static-trait declaration".into(),

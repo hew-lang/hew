@@ -994,6 +994,57 @@ fn imported_generic_resources_specialize_and_drain_on_every_exit() {
         .any(|diagnostic| diagnostic.severity == "error" && diagnostic.kind == "UseAfterConsume"));
 }
 
+#[test]
+fn confined_supplied_services_keep_generic_and_erased_cleanup_authority() {
+    let mut inputs = hew_compile::SourceSet::in_memory();
+    inputs.insert(
+        "confined_service_support/component.hew",
+        include_str!("../../tests/core-acceptance/cases/confined_service_support/component.hew"),
+    );
+    assert_native_manifest("confined-service-summaries", inputs.clone());
+    let source = include_str!("../../tests/core-acceptance/cases/confined-service-summaries.hew")
+        .replace("impl Codec<i64> for TextCodec {", "impl TextCodec {")
+        .replace("    type Encoded = string;\n", "");
+    let structural =
+        include_str!("../../tests/core-acceptance/cases/confined_service_support/component.hew")
+            .replace("    type Encoded;\n", "")
+            .replace("Self.Encoded", "string")
+            .replace("Codec<i64, Encoded = string>", "Codec<i64>");
+    let mut structural_inputs = hew_compile::SourceSet::in_memory();
+    structural_inputs.insert("confined_service_support/component.hew", structural);
+    let trace = execute_options(&source, "ok", "{}", structural_inputs);
+    assert_eq!(stdout(&trace), "confined supplied service closed\n");
+    assert_eq!(trace["final_state"]["exit_code"], 0);
+    for (source, kind) in [
+        (
+            include_str!(
+                "../../tests/core-acceptance/cases/confined-service-summaries-refused.hew"
+            ),
+            "E_CONFINED_AUTHORITY",
+        ),
+        (
+            include_str!("../../tests/core-acceptance/cases/generic-resource-bounds-refused.hew"),
+            "BoundsNotSatisfied",
+        ),
+    ] {
+        let rejected = hew_wasm::sandbox::compile_to_sandbox_bytecode_with_inputs(
+            source,
+            Some("sandbox-vm-export"),
+            inputs.clone(),
+        )
+        .expect("source refusal is a diagnostic");
+        assert!(rejected.bytecode.is_none());
+        assert!(
+            rejected
+                .diagnostics
+                .iter()
+                .any(|diagnostic| { diagnostic.severity == "error" && diagnostic.kind == kind }),
+            "{:?}",
+            rejected.diagnostics
+        );
+    }
+}
+
 fn assert_native_manifest(name: &str, inputs: hew_compile::SourceSet) -> serde_json::Value {
     assert_native_manifest_options(name, inputs, "{}")
 }

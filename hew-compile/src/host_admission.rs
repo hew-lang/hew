@@ -45,6 +45,15 @@ enum ResolvedValue {
         span: SpanKey,
         captures: ResolvedContext,
     },
+    Generator {
+        body: CallableNode,
+        captures: ResolvedContext,
+    },
+    Erasure {
+        site: SpanKey,
+        value: IndirectCallCandidates,
+        captures: ResolvedContext,
+    },
     Aggregate {
         span: SpanKey,
         captures: ResolvedContext,
@@ -121,13 +130,23 @@ fn selected_call_target<'a>(output: &'a TypeCheckOutput, span: &SpanKey) -> Opti
             _ => None,
         })
         .or_else(|| output.direct_call_targets.get(span))
+        .or_else(|| {
+            output
+                .dyn_trait_method_calls
+                .get(span)
+                .map(|call| &call.target)
+        })
 }
 
 fn selected_call_declaration(output: &TypeCheckOutput, span: &SpanKey) -> Option<DefId> {
     selected_call_target(output, span).and_then(target_declaration)
 }
 
-type Projection = (NominalId, u32);
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum Projection {
+    Field(NominalId, u32),
+    Element(usize),
+}
 type CandidateVisit = (CallableCandidate, Vec<Projection>, ResolvedContext);
 
 fn resolve_candidates(
@@ -188,6 +207,17 @@ fn project_values(
     let mut projected = Vec::new();
     for value in values {
         let next = match value {
+            ResolvedValue::Erasure {
+                value, captures, ..
+            } if !projections.is_empty() => resolve_candidates_at(
+                output,
+                value,
+                &captures.env(),
+                projections,
+                nominal_only,
+                depth + 1,
+                seen,
+            ),
             ResolvedValue::Source {
                 candidates,
                 captures,
@@ -208,7 +238,7 @@ fn project_values(
                     .and_then(|fields| {
                         fields
                             .iter()
-                            .find(|field| (field.owner, field.index) == *selected)
+                            .find(|field| Projection::Field(field.owner, field.index) == *selected)
                     })
                     .map_or_else(
                         || vec![ResolvedValue::Unknown],
@@ -288,6 +318,24 @@ fn resolve_candidate_at(
     }
     seen.push(visit);
     let values = match candidate {
+        CallableCandidate::Erasure { site, value } => project_values(
+            output,
+            &[ResolvedValue::Erasure {
+                site: site.clone(),
+                value: (**value).clone(),
+                captures: env_key(env),
+            }],
+            projections,
+            nominal_only,
+            depth + 1,
+            seen,
+        ),
+        CallableCandidate::GeneratorBlock(span) if projections.is_empty() => {
+            vec![ResolvedValue::Generator {
+                body: CallableNode::GeneratorBlock(span.clone()),
+                captures: env_key(env),
+            }]
+        }
         CallableCandidate::Declaration(id) if projections.is_empty() => {
             vec![ResolvedValue::Declaration(*id)]
         }
@@ -399,6 +447,18 @@ fn resolve_candidate_at(
                 values.push(ResolvedValue::Unknown);
             }
             for callee in callees {
+                if matches!(candidate, CallableCandidate::CallResult(_))
+                    && output
+                        .suspension_effects
+                        .bodies
+                        .contains_key(&CallableNode::Generator(callee))
+                {
+                    values.push(ResolvedValue::Generator {
+                        body: CallableNode::Generator(callee),
+                        captures: env_key(&callee_env(output, site, callee, env)),
+                    });
+                    continue;
+                }
                 let body = hew_types::check::effects::EffectBody::Declaration(callee);
                 let returned = if matches!(candidate, CallableCandidate::CallWriteback(_)) {
                     output.callable_receiver_outputs.get(&body)
@@ -428,13 +488,38 @@ fn resolve_candidate_at(
             }
             values
         }
+        CallableCandidate::Sequence(values) => {
+            if let Some((Projection::Element(index), rest)) = projections.split_last() {
+                values.get(*index).map_or_else(
+                    || vec![ResolvedValue::Unknown],
+                    |value| {
+                        resolve_candidates_at(
+                            output,
+                            value,
+                            env,
+                            rest,
+                            nominal_only,
+                            depth + 1,
+                            seen,
+                        )
+                    },
+                )
+            } else {
+                vec![ResolvedValue::Unknown]
+            }
+        }
+        CallableCandidate::Element { receiver, index } => {
+            let mut path = projections.to_vec();
+            path.push(Projection::Element(*index));
+            resolve_candidate_at(output, receiver, env, &path, nominal_only, depth + 1, seen)
+        }
         CallableCandidate::Field {
             receiver,
             owner,
             index,
         } => {
             let mut path = projections.to_vec();
-            path.push((*owner, *index));
+            path.push(Projection::Field(*owner, *index));
             resolve_candidate_at(output, receiver, env, &path, nominal_only, depth + 1, seen)
         }
         _ => vec![ResolvedValue::Unknown],
@@ -731,13 +816,8 @@ fn nominal_actuals(
     let values = resolve_candidates_at(output, candidates, env, &[], true, 0, &mut Vec::new());
     let mut instances = Vec::new();
     for value in values {
-        if let ResolvedValue::Aggregate { span, captures } = value {
-            if let Some(instance) = output
-                .expr_types
-                .get(&span)
-                .map(|ty| {
-                    ty.substitute_type_params_parallel(&captures.types.iter().cloned().collect())
-                })
+        if let Some(ty) = actual_type(output, &value) {
+            if let Some(instance) = Some(ty)
                 .and_then(|ty| ResolvedTy::from_ty(&ty).ok())
                 .and_then(|ty| ty.impl_receiver_instance(&output.defs))
             {
@@ -752,6 +832,60 @@ fn nominal_actuals(
         }
     }
     instances
+}
+
+fn actual_type(output: &TypeCheckOutput, value: &ResolvedValue) -> Option<Ty> {
+    let (ty, captures) = match value {
+        ResolvedValue::Aggregate { span, captures } => (output.expr_types.get(span)?, captures),
+        ResolvedValue::Erasure { site, captures, .. } => (
+            &output.dyn_trait_coercions.get(site)?.concrete_type,
+            captures,
+        ),
+        _ => return None,
+    };
+    Some(ty.substitute_type_params_parallel(&captures.types.iter().cloned().collect()))
+}
+
+fn method_instance_arguments(
+    output: &TypeCheckOutput,
+    method: DefId,
+    receiver: &ResolvedTy,
+    trait_args: &[Ty],
+    method_args: &[Ty],
+) -> Option<Vec<Ty>> {
+    let signature = output.fn_sigs.get(&method)?;
+    if signature.type_params.is_empty() && trait_args.is_empty() {
+        return Some(Vec::new());
+    }
+    let impl_args = output
+        .type_fact_context
+        .implementation_arguments(method, receiver, trait_args)?;
+    let arguments: Vec<_> = method_args
+        .iter()
+        .cloned()
+        .chain(impl_args.iter().map(ResolvedTy::to_ty))
+        .collect();
+    (signature.type_params.len() == arguments.len()).then_some(arguments)
+}
+
+fn service_method_owner(
+    output: &TypeCheckOutput,
+    owner: hew_types::check::dispatch_table::MethodOwner,
+    nominal: NominalId,
+    candidate: DefId,
+    declaring_trait: DefId,
+    method: DefId,
+) -> bool {
+    use hew_types::check::dispatch_table::MethodOwner;
+    match owner {
+        MethodOwner::Trait(id) => id == declaring_trait,
+        MethodOwner::Inherent => output.structural_witnesses.iter().any(|witness| {
+            witness.declaring_trait == declaring_trait
+                && witness.method == method
+                && witness.self_type == nominal
+                && witness.inherent == candidate
+        }),
+    }
 }
 
 fn env_key(env: &CandidateEnv) -> ResolvedContext {
@@ -1124,6 +1258,12 @@ fn call_graph(
             }
         }
         for (span, owner) in &output.suspension_effects.unresolved_calls {
+            if matches!(
+                output.method_call_rewrites.get(span),
+                Some(hew_types::MethodCallRewrite::GeneratorNext { .. })
+            ) {
+                continue;
+            }
             edges.entry(owner.clone()).or_default().push(CallEdge {
                 span: span.clone(),
                 target: CallTarget::IndirectFunctionValue,
@@ -1790,9 +1930,21 @@ fn check_profile(
                     if unbound_parameter(&ty, &substitutions) {
                         continue;
                     }
-                    if let Some(calls) = iteration_calls(output, &ty) {
-                        implicit_releases
-                            .extend(output.owned_release_targets(&calls.iterator, &HashMap::new()));
+                    if ty.named_builtin() == Some(hew_types::BuiltinType::Generator) {
+                        let candidates = receiver_actual(output, span)
+                            .cloned()
+                            .unwrap_or_else(IndirectCallCandidates::unknown);
+                        implicit_releases.extend(output.owned_release_targets(
+                            &ty,
+                            &HashMap::new(),
+                            &candidates,
+                        ));
+                    } else if let Some(calls) = iteration_calls(output, &ty) {
+                        implicit_releases.extend(output.owned_release_targets(
+                            &calls.iterator,
+                            &HashMap::new(),
+                            &IndirectCallCandidates::unknown(),
+                        ));
                         implicit.extend(
                             calls
                                 .calls
@@ -1946,39 +2098,109 @@ fn check_profile(
                     .iter()
                     .filter(|effect| effect.owner == caller)
                     .flat_map(|effect| output.release_targets(effect, &substitutions))
+                    .map(|target| (target, caller_env.clone()))
                     .collect();
-                releases.extend(implicit_releases);
+                releases.extend(
+                    implicit_releases
+                        .into_iter()
+                        .map(|target| (target, caller_env.clone())),
+                );
                 let mut released_callables = HashSet::new();
-                while let Some(release) = releases.pop_front() {
+                while let Some((release, release_env)) = releases.pop_front() {
                     use hew_types::check::cleanup_effects::CleanupTarget;
                     match release {
                         CleanupTarget::Body {
                             body,
                             type_args: cleanup_args,
+                            candidates,
+                            ..
                         } => {
+                            let mut next_env = release_env.clone();
+                            if let Some(formal) = output
+                                .callable_formals
+                                .get(&body)
+                                .and_then(|formals| formals.first())
+                            {
+                                next_env.insert(*formal, actual_values(&candidates, &release_env));
+                            }
                             queue.push_back((
                                 body,
                                 user_site.clone(),
                                 cleanup_args,
-                                caller_env.clone(),
+                                next_env,
                                 ancestors.clone(),
                                 boundary,
                             ));
                         }
-                        CleanupTarget::Callable(candidates) => {
-                            for value in resolve_candidates(output, &candidates, &caller_env) {
+                        CleanupTarget::Callable { ty, candidates } => {
+                            for value in resolve_candidates(output, &candidates, &release_env) {
                                 match value {
+                                    ResolvedValue::Generator { body, captures } => {
+                                        queue.push_back((
+                                            body,
+                                            user_site.clone(),
+                                            Vec::new(),
+                                            captures.env(),
+                                            ancestors.clone(),
+                                            boundary,
+                                        ));
+                                    }
+                                    ResolvedValue::Erasure {
+                                        site,
+                                        value,
+                                        captures,
+                                    } => {
+                                        if let Some(coercion) =
+                                            output.dyn_trait_coercions.get(&site)
+                                        {
+                                            releases.extend(
+                                                output
+                                                    .owned_release_targets(
+                                                        &coercion.concrete_type,
+                                                        &captures.types.iter().cloned().collect(),
+                                                        &value,
+                                                    )
+                                                    .into_iter()
+                                                    .map(|target| (target, captures.env())),
+                                            );
+                                        } else {
+                                            releases.push_back((
+                                                CleanupTarget::Unknown(Ty::Error),
+                                                captures.env(),
+                                            ));
+                                        }
+                                    }
                                     ResolvedValue::Declaration(_) | ResolvedValue::Parameter(_) => {
                                     }
                                     ResolvedValue::Closure { span, captures } => {
                                         if released_callables
                                             .insert((span.clone(), captures.clone()))
                                         {
-                                            if let Some(ty) = output.expr_types.get(&span) {
-                                                releases.extend(output.owned_release_targets(
-                                                    ty,
-                                                    &captures.types.iter().cloned().collect(),
-                                                ));
+                                            if output.expr_types.contains_key(&span) {
+                                                releases.extend(
+                                                    output
+                                                        .suspension_effects
+                                                        .releases
+                                                        .iter()
+                                                        .filter(|effect| {
+                                                            effect.captured
+                                                                && effect.owner
+                                                                    == CallableNode::Closure(
+                                                                        span.clone(),
+                                                                    )
+                                                        })
+                                                        .flat_map(|effect| {
+                                                            output.release_targets(
+                                                                effect,
+                                                                &captures
+                                                                    .types
+                                                                    .iter()
+                                                                    .cloned()
+                                                                    .collect(),
+                                                            )
+                                                        })
+                                                        .map(|target| (target, captures.env())),
+                                                );
                                             } else if let Some((site, source, filename)) =
                                                 user_site.clone().or_else(|| {
                                                     body_site(
@@ -2008,7 +2230,22 @@ fn check_profile(
                                                 )
                                             })
                                         {
-                                            diagnostics.push(confinement_diagnostic(output, diagnostic_root, site, &source, &filename, "cleanup of a callable with unknown captured authority"));
+                                            let reason = if matches!(ty, Ty::TraitObject { .. })
+                                                || ty.named_builtin()
+                                                    == Some(hew_types::BuiltinType::Generator)
+                                            {
+                                                format!("cleanup of `{}` without a checked authority summary", ty.user_facing())
+                                            } else {
+                                                "cleanup of a callable with unknown captured authority".into()
+                                            };
+                                            diagnostics.push(confinement_diagnostic(
+                                                output,
+                                                diagnostic_root,
+                                                site,
+                                                &source,
+                                                &filename,
+                                                &reason,
+                                            ));
                                         }
                                     }
                                 }
@@ -2270,6 +2507,8 @@ fn check_profile(
                                     ));
                                 }
                                 ResolvedValue::Aggregate { .. }
+                                | ResolvedValue::Erasure { .. }
+                                | ResolvedValue::Generator { .. }
                                 | ResolvedValue::Source { .. }
                                 | ResolvedValue::Unknown
                                 | ResolvedValue::Parameter(_) => {}
@@ -2338,6 +2577,29 @@ fn check_profile(
                 } = &call.target
                 {
                     let method_name = output.defs.name(*method);
+                    let trait_args: Vec<_> = output
+                        .method_call_rewrites
+                        .get(&call.span)
+                        .into_iter()
+                        .flat_map(|rewrite| match rewrite {
+                            hew_types::MethodCallRewrite::StaticTraitDispatch {
+                                trait_args,
+                                ..
+                            } => trait_args.as_slice(),
+                            hew_types::MethodCallRewrite::BinderStaticCall(call) => {
+                                call.trait_args.as_slice()
+                            }
+                            _ => &[],
+                        })
+                        .map(|ty| ty.substitute_type_params_parallel(&substitutions))
+                        .collect();
+                    let method_args: Vec<_> = output
+                        .call_type_args
+                        .get(&call.span)
+                        .into_iter()
+                        .flatten()
+                        .map(|ty| ty.substitute_type_params_parallel(&substitutions))
+                        .collect();
                     let receiver_param = output.method_call_rewrites.get(&call.span).and_then(
                         |rewrite| match rewrite {
                             hew_types::MethodCallRewrite::StaticTraitDispatch {
@@ -2425,20 +2687,39 @@ fn check_profile(
                         };
                         for (name, owner, candidate) in methods {
                             if name == method_name
-                                && (owner
-                                    == hew_types::check::dispatch_table::MethodOwner::Inherent
-                                    || owner
-                                        == hew_types::check::dispatch_table::MethodOwner::Trait(
-                                            *declaring_trait,
-                                        ))
+                                && service_method_owner(
+                                    output,
+                                    owner,
+                                    nominal,
+                                    candidate,
+                                    *declaring_trait,
+                                    *method,
+                                )
                             {
+                                let receiver = ResolvedTy::Named {
+                                    head: hew_types::TypeHead::of_declaration(
+                                        &output.defs,
+                                        nominal,
+                                    ),
+                                    args: instance.args.clone(),
+                                    is_opaque: false,
+                                };
+                                let Some(arguments) = method_instance_arguments(
+                                    output,
+                                    candidate,
+                                    &receiver,
+                                    &trait_args,
+                                    &method_args,
+                                ) else {
+                                    continue;
+                                };
                                 matched = true;
                                 let next_env =
                                     callee_env(output, &call.span, candidate, &caller_env);
                                 queue.push_back((
                                     CallableNode::Declaration(candidate),
                                     selected_site.clone(),
-                                    next_args.clone(),
+                                    arguments,
                                     next_env,
                                     ancestors.clone(),
                                     boundary,
@@ -2455,6 +2736,103 @@ fn check_profile(
                         }
                     }
                 } else if let CallTarget::DynamicVtable { method, .. } = &call.target {
+                    if confined {
+                        let values = receiver_actual(output, &call.span).map_or_else(
+                            || vec![ResolvedValue::Unknown],
+                            |candidates| resolve_candidates(output, candidates, &caller_env),
+                        );
+                        for value in values {
+                            if matches!(value, ResolvedValue::Parameter(_)) {
+                                continue;
+                            }
+                            let selected = (|| {
+                                let ResolvedValue::Erasure { site, captures, .. } = &value else {
+                                    return None;
+                                };
+                                let coercion = output.dyn_trait_coercions.get(site)?;
+                                let slot = output
+                                    .trait_object_layouts
+                                    .get(&coercion.target)?
+                                    .slots
+                                    .iter()
+                                    .find(|slot| slot.method == *method)?;
+                                let ResolvedTy::TraitObject { traits } = &coercion.target else {
+                                    return None;
+                                };
+                                let trait_args: Vec<_> = traits
+                                    .iter()
+                                    .find(|bound| bound.trait_id == Some(slot.declaring_trait))
+                                    .map(|bound| {
+                                        let substitutions =
+                                            captures.types.iter().cloned().collect();
+                                        bound
+                                            .args
+                                            .iter()
+                                            .map(|ty| {
+                                                ty.to_ty()
+                                                    .substitute_type_params_parallel(&substitutions)
+                                            })
+                                            .collect()
+                                    })
+                                    .unwrap_or_default();
+                                let receiver =
+                                    ResolvedTy::from_ty(&actual_type(output, &value)?).ok()?;
+                                let instance = receiver.impl_receiver_instance(&output.defs)?;
+                                let mut calls = Vec::new();
+                                for (owner, candidate) in output.dispatch.candidates(
+                                    instance.nominal,
+                                    Some(&instance),
+                                    output.defs.name(*method),
+                                ) {
+                                    if !service_method_owner(
+                                        output,
+                                        owner,
+                                        instance.nominal,
+                                        candidate,
+                                        slot.declaring_trait,
+                                        *method,
+                                    ) {
+                                        continue;
+                                    }
+                                    let arguments = method_instance_arguments(
+                                        output,
+                                        candidate,
+                                        &receiver,
+                                        &trait_args,
+                                        &[],
+                                    )?;
+                                    calls.push((candidate, arguments));
+                                }
+                                (!calls.is_empty()).then_some(calls)
+                            })();
+                            if let Some(calls) = selected {
+                                for (candidate, arguments) in calls {
+                                    let mut env =
+                                        callee_env(output, &call.span, candidate, &caller_env);
+                                    if let Some(formal) = output
+                                        .callable_formals
+                                        .get(&CallableNode::Declaration(candidate))
+                                        .and_then(|formals| formals.first())
+                                    {
+                                        env.insert(*formal, vec![value.clone()]);
+                                    }
+                                    queue.push_back((
+                                        CallableNode::Declaration(candidate),
+                                        selected_site.clone(),
+                                        arguments,
+                                        env,
+                                        ancestors.clone(),
+                                        boundary,
+                                    ));
+                                }
+                            } else if checking {
+                                if let Some((site, source, filename)) = selected_site.clone() {
+                                    diagnostics.push(confinement_diagnostic(output, diagnostic_root, site, &source, &filename, "a dynamic service implementation without a checked authority summary"));
+                                }
+                            }
+                        }
+                        continue;
+                    }
                     // A dyn call can reach the filler of its slot in every
                     // erasure whose layout carries the method: the concrete
                     // type's own method of that name or its impl of the

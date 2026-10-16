@@ -662,8 +662,7 @@ impl Checker {
             }
             Ty::Named { head, .. } => {
                 if self.type_implements_trait_ref(ty, bound)
-                    || (bound.args.is_empty()
-                        && self.type_structurally_satisfies(ty, bound.trait_id))
+                    || self.type_structurally_satisfies_bound(ty, bound)
                 {
                     return true;
                 }

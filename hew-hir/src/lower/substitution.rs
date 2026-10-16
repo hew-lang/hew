@@ -404,10 +404,10 @@ pub(super) fn collect_call_sites_in_expr(
                 HirVarSelfMethodTarget::Direct => {}
                 HirVarSelfMethodTarget::StaticTrait {
                     receiver_type_param,
-                    ..
+                    trait_args,
                 } => trait_out.push(TraitMethodStaticSite {
                     self_ty: ResolvedTy::param(*receiver_type_param),
-                    trait_args: Vec::new(),
+                    trait_args: trait_args.clone(),
                     target: call_target.clone(),
                 }),
             }

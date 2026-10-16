@@ -1,0 +1,45 @@
+import "confined_service_support/component.hew";
+
+actor ReceiptBook {
+    var entries: Vec<string> = Vec.new();
+
+    receive fn record(value: string) {
+        entries.push(value);
+    }
+
+    receive fn all() -> Vec<string> {
+        entries
+    }
+}
+
+type MemoryService {
+    book: ReceiptBook;
+}
+
+impl Service for MemoryService {
+    fn send(self, value: string) {
+        self.book.record(value).expect("record receipt");
+    }
+}
+
+type TextCodec {
+}
+
+impl Codec<i64> for TextCodec {
+    type Encoded = string;
+    fn encode(self, value: i64) -> string {
+        f"receipt:{value}"
+    }
+}
+
+fn main() {
+    let book = spawn ReceiptBook;
+    let copier = spawn Copier { service: MemoryService { book: book }, codec: TextCodec {  } };
+    assert(copier.copy().expect("copy") == 42);
+    assert(book.all().expect("receipts") == ["receipt:42", "callback", "receipt:42", "receipt:42", "receipt:42", "dynamic", "receipt:42", "receipt:42"]);
+    stop(copier);
+    stopped(copier);
+    stop(book);
+    stopped(book);
+    println("confined supplied service closed");
+}

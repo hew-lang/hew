@@ -469,6 +469,9 @@ impl Checker {
         }
         let cycles = environments.cycles;
         let result = match candidate {
+            CallableCandidate::Erasure { value, .. } => {
+                self.task_value_origins(value, actuals, flows, projections, seen, environments)
+            }
             CallableCandidate::Formal(formal) => {
                 let environment = Arc::clone(&environments.values[actuals]);
                 formal_sources(*formal, &environment, flows)
@@ -586,6 +589,7 @@ impl Checker {
             }
             CallableCandidate::TaskProducer(_)
             | CallableCandidate::Closure(_)
+            | CallableCandidate::GeneratorBlock(_)
             | CallableCandidate::Declaration(_)
                 if projections.is_empty() =>
             {

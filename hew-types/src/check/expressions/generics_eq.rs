@@ -23,6 +23,26 @@ use crate::BuiltinType;
 use std::collections::VecDeque;
 
 impl Checker {
+    fn generic_body_parameters(&self, key: &str) -> Vec<crate::ParamHead> {
+        let mut parameters = self
+            .fn_sig(key)
+            .map_or_else(Vec::new, |sig| sig.type_params.clone());
+        if let Some(actor) = self
+            .fn_sig_keys
+            .get(key)
+            .and_then(|id| self.defs.owner(*id))
+            .filter(|id| self.defs.kind(*id) == crate::DeclarationKind::Actor)
+            .and_then(|id| self.type_defs.get(&crate::NominalId::of_declaration(id)))
+        {
+            for parameter in &actor.type_params {
+                if !parameters.contains(parameter) {
+                    parameters.push(*parameter);
+                }
+            }
+        }
+        parameters
+    }
+
     /// If `expr` is a bare identifier bound (via an unannotated `let`) to a
     /// still-open literal-defaulting `TypeVar`, return that var.
     ///
@@ -271,8 +291,7 @@ impl Checker {
         }
         let params = owner
             .as_ref()
-            .and_then(|key| self.fn_sig(key))
-            .map_or_else(Vec::new, |sig| sig.type_params.clone());
+            .map_or_else(Vec::new, |key| self.generic_body_parameters(key));
         let requirements = self.generic_requirements.entry(owner).or_default();
         if requirements.iter().any(|existing| {
             existing.kind == kind
@@ -417,8 +436,7 @@ impl Checker {
         };
         let enclosing_params = enclosing
             .as_ref()
-            .and_then(|name| self.fn_sig(name))
-            .map_or_else(Vec::new, |sig| sig.type_params.clone());
+            .map_or_else(Vec::new, |name| self.generic_body_parameters(name));
         self.generic_fn_instantiation_sites
             .push(GenericFnInstantiationSite {
                 caller: enclosing,
@@ -476,6 +494,28 @@ impl Checker {
                 report_module: site.source_module,
                 depth: 0,
             });
+        }
+        for (nominal, actor) in &self.type_defs {
+            if actor.kind != TypeDefKind::Actor || actor.type_params.is_empty() {
+                continue;
+            }
+            for (_, callback) in self
+                .defs
+                .declarations()
+                .filter(|(_, callback)| self.defs.owner(*callback) == Some(nominal.declaration()))
+            {
+                edges
+                    .entry(actor.name.clone())
+                    .or_default()
+                    .push(GenericCallEdge {
+                        callee: self.defs.path(callback).to_string(),
+                        substitution: actor
+                            .type_params
+                            .iter()
+                            .map(|param| (*param, Ty::param(*param)))
+                            .collect(),
+                    });
+            }
         }
         (roots, edges)
     }
@@ -549,9 +589,10 @@ impl Checker {
     }
 
     pub(super) fn check_concrete_generic_requirements(
-        &self,
+        &mut self,
         requirements: &HashMap<Option<String>, Vec<GenericRequirement>>,
         service: &mut TypeFactService,
+        resource_roots: &mut Vec<PendingInstantiation>,
     ) -> Vec<crate::error::TypeError> {
         let mut new_errors = Vec::new();
         let mut demands: Vec<_> = requirements.values().flatten().collect();
@@ -572,6 +613,7 @@ impl Checker {
             {
                 new_errors.push(error);
             }
+            resource_roots.extend(self.resource_close_pending(requirement, &concrete, None));
         }
         new_errors
     }
@@ -612,10 +654,60 @@ impl Checker {
                     "declare the parameter `consume {root}: ...` before consuming it"
                 ))
             }
-            GenericRequirementKind::Eq | GenericRequirementKind::BorrowedTransfer { .. } => return None,
+            GenericRequirementKind::Eq | GenericRequirementKind::BorrowedTransfer { .. } | GenericRequirementKind::ResourceClose => return None,
         };
         error.source_module.clone_from(module);
         Some(error)
+    }
+
+    fn resource_close_pending(
+        &mut self,
+        requirement: &GenericRequirement,
+        concrete: &Ty,
+        pending: Option<&PendingInstantiation>,
+    ) -> Vec<PendingInstantiation> {
+        if requirement.kind != GenericRequirementKind::ResourceClose {
+            return Vec::new();
+        }
+        let span = pending.map_or(&requirement.span, |site| &site.report_span);
+        let module = pending.map_or(&requirement.source_module, |site| &site.report_module);
+        let mut instances = Vec::new();
+        for (method, receiver, arguments) in self.resource_close_instances(concrete) {
+            if receiver.has_type_parameters() {
+                continue;
+            }
+            let Some(signature) = self.fn_sigs.get(&method).cloned() else {
+                continue;
+            };
+            let errors = self.errors.len();
+            let previous_module = std::mem::replace(&mut self.current_module, module.clone());
+            self.enforce_signature_bounds(&signature, &arguments, span);
+            self.current_module = previous_module;
+            if self.errors.len() != errors {
+                continue;
+            }
+            let Ok(receiver) = ResolvedTy::from_ty(&receiver) else {
+                continue;
+            };
+            if let Some(binders) = self.impl_method_binders.get_mut(&method) {
+                binders.checked_receivers.insert(receiver);
+            }
+            if signature.type_params.is_empty() {
+                continue;
+            }
+            let callee = self.defs.path(method).to_string();
+            let mut chain = pending.map_or_else(Vec::new, |site| site.chain.clone());
+            chain.push(callee.clone());
+            instances.push(PendingInstantiation {
+                callee,
+                substitution: signature.type_params.into_iter().zip(arguments).collect(),
+                report_span: span.clone(),
+                report_module: module.clone(),
+                depth: pending.map_or(0, |site| site.depth + 1),
+                chain,
+            });
+        }
+        instances
     }
 
     /// Discharge concrete demands and the generic type obligations reachable
@@ -643,7 +735,12 @@ impl Checker {
         }
 
         let mut service = TypeFactService::new(self.type_fact_context(), BTreeMap::new());
-        let mut new_errors = self.check_concrete_generic_requirements(&requirements, &mut service);
+        let mut resource_roots = Vec::new();
+        let mut new_errors = self.check_concrete_generic_requirements(
+            &requirements,
+            &mut service,
+            &mut resource_roots,
+        );
         requirements.retain(|_, demands| {
             demands.retain(|demand| {
                 Self::ty_mentions_type_params(&demand.ty, &demand.owner_type_params)
@@ -657,6 +754,7 @@ impl Checker {
         let (roots, edges) = self.partition_generic_instantiation_sites(sites);
         let mut seen: HashSet<(String, String, usize, Option<String>)> = HashSet::new();
         let mut work: VecDeque<PendingInstantiation> = roots.into();
+        work.extend(resource_roots);
 
         while let Some(pending) = work.pop_front() {
             // Span offsets are module-local, so two modules can produce the same
@@ -712,6 +810,7 @@ impl Checker {
                 ) {
                     new_errors.push(error);
                 }
+                work.extend(self.resource_close_pending(requirement, &concrete, Some(&pending)));
             }
 
             for edge in edges.get(&pending.callee).into_iter().flatten() {

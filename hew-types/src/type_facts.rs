@@ -180,7 +180,9 @@ pub(crate) struct ImplMethodBinders {
     pub receiver: crate::Ty,
     pub impl_params: Vec<crate::ParamHead>,
     pub method_params: Vec<crate::ParamHead>,
-    pub obligations: Option<Vec<(crate::TypeParamId, ImplMethodObligation)>>,
+    pub obligations: Vec<(crate::TypeParamId, ImplMethodObligation)>,
+    pub checked_receivers: HashSet<ResolvedTy>,
+    pub implemented_trait: Option<crate::check::TraitRef>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -188,6 +190,7 @@ pub(crate) enum ImplMethodObligation {
     Marker(MarkerTrait),
     Display,
     Serializable,
+    Checked,
 }
 
 impl ImplMethodBinders {
@@ -213,10 +216,13 @@ impl ImplMethodBinders {
         decide: &mut dyn FnMut(&ResolvedTy, ImplMethodObligation) -> Result<bool, ClassError>,
     ) -> Result<Vec<ResolvedTy>, ClassError> {
         let type_args = self.arguments(defs, method, receiver)?;
+        if self.checked_receivers.contains(receiver) {
+            return Ok(type_args);
+        }
         let refusal = || ClassError::UnknownDeclaration {
             name: defs.display(method).to_string(),
         };
-        for (param, obligation) in self.obligations.as_ref().ok_or_else(refusal)? {
+        for (param, obligation) in &self.obligations {
             let position = self
                 .impl_params
                 .iter()
@@ -226,6 +232,7 @@ impl ImplMethodBinders {
                 ImplMethodObligation::Marker(marker) => {
                     registry.implements_marker(&type_args[position].to_ty(), *marker)
                 }
+                ImplMethodObligation::Checked => false,
                 other => decide(&type_args[position], *other)?,
             };
             if !satisfied {
@@ -234,7 +241,7 @@ impl ImplMethodBinders {
         }
         Ok(type_args)
     }
-    fn arguments(
+    pub(crate) fn arguments(
         &self,
         defs: &crate::DefTable,
         method: crate::DefId,
@@ -243,6 +250,15 @@ impl ImplMethodBinders {
         if let Some(name) = self.method_params.first() {
             return Err(ClassError::TypeParam { param: *name });
         }
+        self.receiver_arguments(defs, method, receiver)
+    }
+
+    fn receiver_arguments(
+        &self,
+        defs: &crate::DefTable,
+        method: crate::DefId,
+        receiver: &ResolvedTy,
+    ) -> Result<Vec<ResolvedTy>, ClassError> {
         let variables: Vec<_> = self
             .impl_params
             .iter()
@@ -408,6 +424,48 @@ impl RenderingMembers {
 }
 
 impl TypeFactContext {
+    /// Bind an implementation's receiver and match its checked trait arguments.
+    #[must_use]
+    pub fn implementation_arguments(
+        &self,
+        method: crate::DefId,
+        receiver: &ResolvedTy,
+        trait_args: &[crate::Ty],
+    ) -> Option<Vec<ResolvedTy>> {
+        let binders = self.method_binders.get(&method)?;
+        let arguments = binders
+            .receiver_arguments(&self.defs, method, receiver)
+            .ok()?;
+        let substitutions = binders
+            .impl_params
+            .iter()
+            .copied()
+            .zip(arguments.iter().map(ResolvedTy::to_ty))
+            .collect();
+        if let Some(bound) = &binders.implemented_trait {
+            let implemented: Vec<_> = bound
+                .args
+                .iter()
+                .map(|ty| ty.substitute_type_params_parallel(&substitutions))
+                .collect();
+            if implemented != trait_args {
+                return None;
+            }
+        }
+        Some(arguments)
+    }
+
+    pub(crate) fn impl_method_arguments(
+        &self,
+        method: crate::DefId,
+        receiver: &ResolvedTy,
+    ) -> Option<Vec<ResolvedTy>> {
+        self.method_binders
+            .get(&method)?
+            .arguments(&self.defs, method, receiver)
+            .ok()
+    }
+
     /// The type definitions, read by declaration.
     #[must_use]
     pub fn types(&self) -> crate::check::TypeDefView<'_> {
@@ -1596,7 +1654,7 @@ pub fn push_type_components(ty: &ResolvedTy, out: &mut Vec<ResolvedTy>) {
 mod tests {
     use super::{selected_impl_method, ImplMethodKey};
     use std::collections::BTreeMap;
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
 
     use super::{
         CloneKind, SendFact, TypeFactContext, TypeFactService, TypeFacts, TypeInstanceKey,
@@ -1623,7 +1681,9 @@ mod tests {
             ),
             impl_params: vec![crate::ParamHead::for_test("T")],
             method_params: vec![],
-            obligations: Some(vec![]),
+            obligations: vec![],
+            checked_receivers: HashSet::new(),
+            implemented_trait: None,
         }
     }
 

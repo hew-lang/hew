@@ -1,0 +1,21 @@
+[[case]]
+id = "generic-resource-bounds-refused"
+intent = "An implicit generic resource close proves its full parameterized trait bounds at the concrete helper application."
+source = "cases/generic-resource-bounds-refused.hew"
+kind = "reject"
+suites = ["acceptance"]
+timeout_seconds = 15
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "BoundsNotSatisfied"
+line = 36
+column = 5
+message = "type `StringCodec` does not implement trait `Codec<i64, Encoded = string>` required by `C`"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "BoundsNotSatisfied"
+line = 37
+column = 5
+message = "type `BytesCodec` does not satisfy associated type binding `C: Codec<Encoded = string>`; found `bytes`"

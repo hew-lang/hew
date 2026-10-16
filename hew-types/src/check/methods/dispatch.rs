@@ -2326,17 +2326,9 @@ impl Checker {
                     hits.dedup_by_key(|hit| hit.0);
 
                     if hits.len() == 1 {
-                        let (declaring_id, mut trait_sig) = hits.into_iter().next().unwrap();
+                        let (declaring_id, trait_sig) = hits.into_iter().next().unwrap();
                         let declaring_trait = self.defs.path(declaring_id).to_string();
-                        // Replace `Self` references with the type parameter type.
                         let self_ty = self.normalize_for_use(&receiver_ty);
-                        let self_parameter = crate::ParamHead::receiver(declaring_id);
-                        for param_ty in &mut trait_sig.params {
-                            *param_ty = param_ty.substitute_type_param(self_parameter, &self_ty);
-                        }
-                        trait_sig.return_type = trait_sig
-                            .return_type
-                            .substitute_type_param(self_parameter, &self_ty);
                         if self.refuse_associated_dot_call(
                             &trait_sig,
                             &declaring_trait,
@@ -2353,22 +2345,29 @@ impl Checker {
                                 span,
                             );
                         }
-                        let applied_sig = self.apply_instantiated_call_signature_with_assoc(
-                            &trait_sig,
-                            None,
+                        let mut selected_bounds: Vec<_> = bounds
+                            .iter()
+                            .filter(|bound| bound.trait_id == declaring_id)
+                            .cloned()
+                            .collect();
+                        if selected_bounds.is_empty() {
+                            selected_bounds.push(TraitRef::bare(declaring_id));
+                        }
+                        let Some((applied_sig, selected)) = self.apply_call_over_bounds(
+                            self_ty,
+                            (name, "bounds"),
+                            (declaring_id, trait_sig.clone(), &selected_bounds),
+                            (method, &declaring_trait),
                             args,
                             span,
-                            SignatureArgApplication::FunctionLike {
-                                param_names: &trait_sig.param_names,
-                                arity_context: format!("method `{method}`"),
-                            },
-                            true,
-                            Some(GenericCallee::Method {
-                                type_name: &declaring_trait,
-                                method,
-                                owner_type_args: &[],
-                            }),
-                        );
+                        ) else {
+                            return Ty::Error;
+                        };
+                        let trait_args = selected_bounds[selected]
+                            .args
+                            .iter()
+                            .map(|ty| self.subst.resolve(ty))
+                            .collect();
                         if declaring_trait == "std.builtins.Pid" && method == "send" {
                             // TODO(A640): replace this fail-closed branch with
                             // a first-class `P::Msg: Serializable` projection
@@ -2417,6 +2416,7 @@ impl Checker {
                             MethodCallRewrite::StaticTraitDispatch {
                                 target,
                                 receiver_type_param: *receiver_parameter,
+                                trait_args,
                                 requires_mutable_receiver: trait_sig.requires_mutable_receiver,
                                 consumes_receiver: trait_sig.consumes_receiver,
                                 returns_receiver_identity: trait_sig.returns_receiver_identity,

@@ -272,6 +272,19 @@ impl Checker {
         let Some(type_def) = self.lookup_type_def(type_name) else {
             return;
         };
+        if type_def.kind == TypeDefKind::Actor {
+            self.record_generic_instantiation_site(
+                self.current_function.clone(),
+                type_def.name.clone(),
+                type_def
+                    .type_params
+                    .iter()
+                    .copied()
+                    .zip(type_args.iter().cloned())
+                    .collect(),
+                span,
+            );
+        }
         if type_def.bounds.is_empty() {
             return;
         }
@@ -912,7 +925,20 @@ impl Checker {
     /// the LLVM emitter; the checker populates `TypeCheckOutput::dyn_trait_coercions`
     /// at every accepted coercion site and rejects non-object-safe traits
     /// (generic methods, `Self`-returning methods) with `E_TRAIT_NOT_OBJECT_SAFE`.
-    pub(super) fn type_structurally_satisfies(&mut self, ty: &Ty, trait_id: crate::DefId) -> bool {
+    pub(super) fn type_structurally_satisfies_bound(&mut self, ty: &Ty, bound: &TraitRef) -> bool {
+        let trait_id = bound.trait_id;
+        let Some(info) = self.trait_info(trait_id) else {
+            return false;
+        };
+        if info.type_params.len() != bound.args.len() || !bound.assoc.is_empty() {
+            return false;
+        }
+        let mut substitutions: HashMap<_, _> = info
+            .type_params
+            .iter()
+            .copied()
+            .zip(bound.args.iter().cloned())
+            .collect();
         // A trait that declares no methods of its own - `trait Error: Display {}`
         // - is a marker over its super-traits. Having the super-trait's methods
         // says nothing about the marker, so it still needs an explicit impl.
@@ -940,18 +966,18 @@ impl Checker {
         }
 
         // The concrete type, used for Self substitution in trait signatures.
-        let concrete_ty = match ty {
-            Ty::Named { head, .. } => Ty::named_head(*head, Vec::new()),
-            other => other.clone(),
-        };
-        let receiver = crate::ParamHead::receiver(trait_id);
+        let concrete_ty = ty.clone();
 
         for method_name in &required {
             // Resolve the trait method's expected signature.
             // lookup_trait_method strips the receiver and walks super-traits.
-            let Some(trait_sig) = self.lookup_trait_method(trait_id, method_name) else {
+            let Some((declaring, trait_sig)) =
+                self.lookup_trait_method_with_origin(trait_id, method_name)
+            else {
                 return false;
             };
+
+            substitutions.insert(crate::ParamHead::receiver(declaring), concrete_ty.clone());
 
             // Look up the concrete type's method using the shared builtin-aware
             // resolver so imported stdlib stubs cannot shadow intrinsic surfaces.
@@ -973,14 +999,14 @@ impl Checker {
             // Return-type check (Self → concrete type in trait side).
             let expected_ret = trait_sig
                 .return_type
-                .substitute_type_param(receiver, &concrete_ty);
+                .substitute_type_params_parallel(&substitutions);
             if expected_ret != type_sig.return_type {
                 return false;
             }
 
             // Per-parameter type check (Self → concrete type in trait side).
             for (trait_param, type_param) in trait_sig.params.iter().zip(type_sig.params.iter()) {
-                let expected = trait_param.substitute_type_param(receiver, &concrete_ty);
+                let expected = trait_param.substitute_type_params_parallel(&substitutions);
                 if expected != *type_param {
                     return false;
                 }
@@ -989,6 +1015,11 @@ impl Checker {
 
         self.record_structural_witnesses(trait_id, &concrete_ty, &required);
         true
+    }
+
+    #[cfg(test)]
+    pub(super) fn type_structurally_satisfies(&mut self, ty: &Ty, trait_id: crate::DefId) -> bool {
+        self.type_structurally_satisfies_bound(ty, &TraitRef::bare(trait_id))
     }
 
     /// Publish the inherent method that fills each required method of

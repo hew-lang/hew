@@ -954,6 +954,7 @@ fn dump_expr(defs: &hew_types::DefTable, out: &mut String, expr: &HirExpr, inden
                 },
                 crate::node::HirVarSelfMethodTarget::StaticTrait {
                     receiver_type_param,
+                    ..
                 } => match call_target {
                     hew_types::CallTarget::StaticTraitMethod { method, .. } => format!(
                         "{} [receiver_param={receiver_type_param}]",

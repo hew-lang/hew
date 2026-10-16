@@ -1112,6 +1112,11 @@ pub enum CallableCandidate {
     Declaration(crate::DefId),
     /// A closure literal in the checked source module.
     Closure(SpanKey),
+    GeneratorBlock(SpanKey),
+    Erasure {
+        site: SpanKey,
+        value: Box<IndirectCallCandidates>,
+    },
     TaskProducer(SpanKey),
     TaskResult(Box<CallableCandidate>),
     Sequence(Vec<IndirectCallCandidates>),
@@ -1197,7 +1202,8 @@ pub struct IndirectCallCandidates {
 }
 
 impl IndirectCallCandidates {
-    pub(crate) fn unknown() -> Self {
+    #[must_use]
+    pub fn unknown() -> Self {
         Self {
             known: Vec::new(),
             may_be_unknown: true,
@@ -2066,6 +2072,7 @@ pub enum MethodCallRewrite {
         /// (e.g. "T" in `fn foo<T: Show>(x: T)`). Used by MIR to look up the
         /// concrete type from the monomorphization substitution map.
         receiver_type_param: crate::ParamHead,
+        trait_args: Vec<Ty>,
         /// Checker-owned receiver ABI bit from the declaring trait signature.
         requires_mutable_receiver: bool,
         /// Checker-owned receiver ownership bit from the declaring trait.
@@ -2419,6 +2426,7 @@ pub(super) struct GenericRequirement {
 pub(super) enum GenericRequirementKind {
     Eq,
     BorrowedTransfer { root: String },
+    ResourceClose,
 }
 
 /// One generic function call site, recorded so type obligations

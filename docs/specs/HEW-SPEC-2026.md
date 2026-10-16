@@ -5599,9 +5599,12 @@ Pending results, queued stream values and collection elements retain their own
 cleanup effects. Placing a resource inside a service or container does not hide
 its destructor, including during explicit close or destructive updates.
 
-Generator values erase their producer and captured cleanup authority. Advancing
-or owning the cleanup of such a value inside a confined boundary is currently
-refused when that authority cannot be proved.
+Erased callables, dynamic services and generators retain their checked source
+origins through construction and forwarding. Confined execution and required
+cleanup follow those concrete bodies and captures. A generator's early close
+includes its producer's resource cleanup. Unknown origins remain refused.
+Generic resource cleanup proves the close implementation's ordinary trait
+arguments and associated-type bindings at each concrete application.
 
 ```hew,no_run
 import std.fs;

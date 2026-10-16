@@ -1,0 +1,78 @@
+import std.fs;
+
+import "confined_service_support/component.hew";
+
+type AmbientService {
+}
+
+impl Service for AmbientService {
+    fn send(self, value: string) {
+        let file = fs.open_read("ungranted service");
+    }
+}
+
+#[resource]
+type AmbientCleanup {
+    tag: i64;
+}
+
+impl AmbientCleanup {
+    fn close(consume self) {
+        let file = fs.open_read("ungranted cleanup");
+    }
+}
+
+impl Service for AmbientCleanup {
+    fn send(self, value: string) {}
+}
+
+type TextCodec {
+}
+
+impl Codec<i64> for TextCodec {
+    type Encoded = string;
+    fn encode(self, value: i64) -> string {
+        f"receipt:{value}"
+    }
+}
+
+type SafeService {
+}
+
+impl Service for SafeService {
+    fn send(self, value: string) {}
+}
+
+type ServicePair {
+    first: dyn Service;
+    second: dyn Service;
+}
+
+#[confined]
+fn discard_pair(consume pair: ServicePair) {}
+
+#[confined]
+fn execute_cleanup_service(consume service: dyn Service) {
+    service.send("cleanup");
+}
+
+#[confined]
+fn discard_service(consume service: dyn Service) {}
+
+fn main() {
+    discard_pair(ServicePair { first: AmbientCleanup { tag: 5 }, second: SafeService {  } });
+    let copier = spawn Copier { service: AmbientService {  }, codec: TextCodec {  } };
+    run_callback(close_later(AmbientService {  }, TextCodec {  }));
+    discard_callback(close_later(AmbientService {  }, TextCodec {  }));
+    let service: dyn Service = AmbientService {  };
+    run_service(service);
+    let source = pending(AmbientService {  }, TextCodec {  });
+    let _ = first(source);
+    discard_callback(close_later(AmbientCleanup { tag: 1 }, TextCodec {  }));
+    let cleanup: dyn Service = AmbientCleanup { tag: 2 };
+    execute_cleanup_service(cleanup);
+    let discarded: dyn Service = AmbientCleanup { tag: 4 };
+    discard_service(discarded);
+    let cleanup_source = pending(AmbientCleanup { tag: 3 }, TextCodec {  });
+    let _ = first(cleanup_source);
+}

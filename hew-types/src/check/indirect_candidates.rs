@@ -71,6 +71,19 @@ impl Checker {
         expr: &Expr,
         span: &Span,
     ) -> IndirectCallCandidates {
+        let candidates = self.unerased_value_candidates(expr, span);
+        let site = SpanKey::in_module(span, self.current_module_idx);
+        if self.dyn_trait_coercions.contains_key(&site) {
+            IndirectCallCandidates::single(CallableCandidate::Erasure {
+                site,
+                value: Box::new(candidates),
+            })
+        } else {
+            candidates
+        }
+    }
+
+    fn unerased_value_candidates(&self, expr: &Expr, span: &Span) -> IndirectCallCandidates {
         let key = SpanKey::in_module(span, self.current_module_idx);
         if self.expr_types.get(&key).is_some_and(|ty| {
             !Self::type_may_carry_value_candidates(
@@ -106,6 +119,11 @@ impl Checker {
             Expr::Lambda { .. } | Expr::SpawnLambdaActor { .. } => IndirectCallCandidates::single(
                 CallableCandidate::Closure(SpanKey::in_module(span, self.current_module_idx)),
             ),
+            Expr::GenBlock { .. } => {
+                IndirectCallCandidates::single(CallableCandidate::GeneratorBlock(
+                    SpanKey::in_module(span, self.current_module_idx),
+                ))
+            }
             Expr::Ident(_) => self.resolved_callable_candidate(span),
             Expr::FieldAccess { object, field } => self.callable_field_candidates(object, field),
             Expr::GenericApplySuffix { target, .. } => {
@@ -454,6 +472,11 @@ impl Checker {
                 _ => None,
             })
             .or_else(|| self.direct_call_targets.get(&key))
+            .or_else(|| {
+                self.dyn_trait_method_calls
+                    .get(&key)
+                    .map(|call| &call.target)
+            })
             .or_else(|| self.resolved_calls.get(&key).map(|call| &call.target))
     }
 
@@ -489,15 +512,28 @@ impl Checker {
                 Some(MethodCallRewrite::BinderStaticCall(_))
             )
         });
-        if matches!(
-            self.selected_callable_target(span),
-            Some(CallTarget::StaticTraitMethod { .. } | CallTarget::IndirectFunctionValue)
-        ) {
-            let receiver = receiver.filter(|_| {
-                matches!(
-                    self.selected_callable_target(span),
-                    Some(CallTarget::StaticTraitMethod { .. })
+        let generator = matches!(
+            self.method_call_rewrites.get(&key),
+            Some(MethodCallRewrite::GeneratorNext { .. })
+        );
+        if generator
+            || matches!(
+                self.selected_callable_target(span),
+                Some(
+                    CallTarget::StaticTraitMethod { .. }
+                        | CallTarget::DynamicVtable { .. }
+                        | CallTarget::IndirectFunctionValue
                 )
+            )
+        {
+            let receiver = receiver.filter(|_| {
+                generator
+                    || matches!(
+                        self.selected_callable_target(span),
+                        Some(
+                            CallTarget::StaticTraitMethod { .. } | CallTarget::DynamicVtable { .. }
+                        )
+                    )
             });
             let receiver_offset = usize::from(receiver.is_some());
             let mut actuals = Vec::with_capacity(args.len() + receiver_offset);
@@ -517,10 +553,12 @@ impl Checker {
             }
             self.generic_trait_call_arguments
                 .insert(key.clone(), actuals);
-            if matches!(
-                self.selected_callable_target(span),
-                Some(CallTarget::StaticTraitMethod { .. })
-            ) {
+            if generator
+                || matches!(
+                    self.selected_callable_target(span),
+                    Some(CallTarget::StaticTraitMethod { .. } | CallTarget::DynamicVtable { .. })
+                )
+            {
                 return;
             }
         }

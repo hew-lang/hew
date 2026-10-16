@@ -1,0 +1,77 @@
+[[case]]
+id = "confined-service-summaries-refused"
+intent = "Confined supplied services reject ambient acquisition through generic helpers, erased execution and captured cleanup."
+source = "cases/confined-service-summaries-refused.hew"
+kind = "reject"
+suites = ["acceptance"]
+timeout_seconds = 15
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "E_CONFINED_AUTHORITY"
+line = 21
+column = 20
+message = "confined `discard_pair` reaches `fs.open_read`: ambient authority acquisition"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "E_CONFINED_AUTHORITY"
+line = 10
+column = 20
+message = "confined `run_service` reaches `fs.open_read`: ambient authority acquisition"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "E_CONFINED_AUTHORITY"
+line = 21
+column = 20
+message = "confined `execute_cleanup_service` reaches `fs.open_read`: ambient authority acquisition"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "E_CONFINED_AUTHORITY"
+line = 21
+column = 20
+message = "confined `discard_service` reaches `fs.open_read`: ambient authority acquisition"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "E_CONFINED_AUTHORITY"
+line = 10
+column = 20
+message = "confined `discard_callback` reaches `fs.open_read`: ambient authority acquisition"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "E_CONFINED_AUTHORITY"
+line = 21
+column = 20
+message = "confined `discard_callback` reaches `fs.open_read`: ambient authority acquisition"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "E_CONFINED_AUTHORITY"
+line = 21
+column = 20
+message = "confined `first` reaches `fs.open_read`: ambient authority acquisition"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "E_CONFINED_AUTHORITY"
+line = 10
+column = 20
+message = "confined `run_callback` reaches `fs.open_read`: ambient authority acquisition"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "E_CONFINED_AUTHORITY"
+line = 10
+column = 20
+message = "confined `first` reaches `fs.open_read`: ambient authority acquisition"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "E_CONFINED_AUTHORITY"
+line = 10
+column = 20
+message = "confined `Copier` reaches `fs.open_read`: ambient authority acquisition"

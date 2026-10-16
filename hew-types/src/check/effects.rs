@@ -189,7 +189,20 @@ pub(super) struct EffectGraph {
 }
 
 impl Checker {
-    pub(super) fn record_iteration_effect(&mut self, span: &Span, ty: &Ty) {
+    pub(super) fn record_iteration_effect(
+        &mut self,
+        span: &Span,
+        ty: &Ty,
+        candidates: super::IndirectCallCandidates,
+    ) {
+        self.generic_trait_call_arguments
+            .entry(SpanKey::in_module(span, self.current_module_idx))
+            .or_insert_with(|| {
+                vec![super::CallableDispatchActual {
+                    slot: 0,
+                    candidates,
+                }]
+            });
         self.effect_graph.iteration_operations.insert(
             SpanKey::in_module(span, self.current_module_idx),
             ty.clone(),
@@ -685,7 +698,13 @@ impl Checker {
                 self.method_call_rewrites.get(&key),
                 Some(MethodCallRewrite::GeneratorNext { .. })
             ) {
-                self.record_iteration_effect(span, &receiver);
+                let candidates = match expr {
+                    Expr::MethodCall { receiver, .. } => {
+                        self.callable_candidates_for_expr(&receiver.0, &receiver.1)
+                    }
+                    _ => super::IndirectCallCandidates::unknown(),
+                };
+                self.record_iteration_effect(span, &receiver, candidates);
             }
             self.effect_graph.receivers.insert(key.clone(), receiver);
         }

@@ -1280,6 +1280,7 @@ impl LowerCtx {
             Some(MethodCallRewrite::StaticTraitDispatch {
                 target,
                 receiver_type_param,
+                trait_args,
                 requires_mutable_receiver,
                 consumes_receiver,
                 returns_receiver_identity,
@@ -1427,6 +1428,24 @@ impl LowerCtx {
                 }
 
                 self.record_call_type_args(&span, site);
+                let Ok(trait_args) = trait_args
+                    .iter()
+                    .map(ResolvedTy::from_ty)
+                    .collect::<Result<Vec<_>, _>>()
+                else {
+                    self.diagnostics.push(HirDiagnostic::new(
+                        HirDiagnosticKind::CheckerBoundaryViolation {
+                            name: "static trait call".into(),
+                            reason: "selected trait arguments are unresolved".into(),
+                        },
+                        span.clone(),
+                        "checker selected unresolved trait arguments",
+                    ));
+                    return (
+                        HirExprKind::Unsupported("unresolved trait arguments".into()),
+                        ret_ty,
+                    );
+                };
 
                 if requires_mutable_receiver {
                     let lowered_receiver = self.lower_expr(receiver, IntentKind::Consume);
@@ -1439,6 +1458,7 @@ impl LowerCtx {
                             call_target: target,
                             target: HirVarSelfMethodTarget::StaticTrait {
                                 receiver_type_param,
+                                trait_args,
                             },
                             args: lowered_args.args,
                             evaluation_order: lowered_args.evaluation_order,
@@ -1460,7 +1480,7 @@ impl LowerCtx {
                 (
                     self.make_static_trait_dispatch_call(
                         crate::StaticTraitSelf::Receiver(Box::new(lowered_receiver)),
-                        Vec::new(),
+                        trait_args,
                         target,
                         receiver_type_param,
                         lowered_args,

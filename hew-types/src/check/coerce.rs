@@ -694,9 +694,18 @@ impl Checker {
         // Prefer the nominal impl registries; fall back to the structural
         // match path so a bare `impl T { fn ... }` that structurally
         // satisfies a trait also fills the table.
-        let nominal_impl = self.type_implements_trait(concrete_type, trait_id);
+        let predicate = TraitRef {
+            trait_id,
+            args: bound.args.clone(),
+            assoc: bound
+                .assoc_bindings
+                .iter()
+                .map(|(name, ty)| (Symbol::intern(name), ty.clone()))
+                .collect(),
+        };
+        let nominal_impl = self.type_implements_trait_ref(concrete_type, &predicate);
         let structural_ok =
-            !nominal_impl && self.type_structurally_satisfies(concrete_type, trait_id);
+            !nominal_impl && self.type_structurally_satisfies_bound(concrete_type, &predicate);
         if !nominal_impl && !structural_ok {
             return None;
         }

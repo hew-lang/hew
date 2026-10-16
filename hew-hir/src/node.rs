@@ -1188,6 +1188,7 @@ pub enum HirVarSelfMethodTarget {
     StaticTrait {
         /// Type-parameter name that carries the bound (e.g. "T").
         receiver_type_param: hew_types::ParamHead,
+        trait_args: Vec<ResolvedTy>,
     },
 }
 

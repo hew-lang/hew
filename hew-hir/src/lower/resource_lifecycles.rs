@@ -46,29 +46,28 @@ fn inherent_close_methods(
 /// reconstruct a close declaration from a record-layout or symbol spelling.
 pub(super) fn admit_resource_record_lifecycles(
     items: &[HirItem],
-    layout_declarations: &[HirItem],
+    facts: &hew_types::TypeFactContext,
     identity: &hew_types::DefTable,
     resource_close_discipline_failures: &HashSet<hew_types::DefId>,
     type_classes: &mut crate::value_class::TypeClassTable,
     diagnostics: &mut Vec<HirDiagnostic>,
 ) {
-    for decl in items
-        .iter()
-        .chain(layout_declarations)
-        .filter_map(|item| match item {
-            HirItem::TypeDecl(decl)
-                if !decl.is_opaque
-                    && decl.marker == ResourceMarker::Resource
-                    && decl.kind == HirTypeDeclKind::Struct
-                    && !resource_close_discipline_failures.contains(&decl.declaration) =>
-            {
-                Some(decl)
-            }
-            _ => None,
-        })
-    {
-        let exact_owner = identity.path(decl.declaration);
-        let close_methods = inherent_close_methods(items, identity, decl.declaration);
+    for (nominal, decl) in facts.declarations() {
+        let declaration = nominal.declaration();
+        if decl.is_opaque
+            || decl.marker != hew_types::value_class::DeclarationMarker::Resource
+            || !facts
+                .types()
+                .type_defs
+                .get(nominal)
+                .is_some_and(|definition| definition.kind == hew_types::check::TypeDefKind::Struct)
+            || resource_close_discipline_failures.contains(&declaration)
+        {
+            continue;
+        }
+        let span = identity.site(declaration).map_or(0..0, |site| site.span());
+        let exact_owner = identity.path(declaration);
+        let close_methods = inherent_close_methods(items, identity, declaration);
 
         let [close_declaration] = close_methods.as_slice() else {
             diagnostics.push(resource_lifecycle_boundary_diagnostic(
@@ -77,7 +76,7 @@ pub(super) fn admit_resource_record_lifecycles(
                     "resource record requires one exact inherent close declaration; found {}",
                     close_methods.len()
                 ),
-                &decl.span,
+                &span,
                 "resource lifecycle identity did not survive HIR lowering",
             ));
             continue;
@@ -99,7 +98,7 @@ pub(super) fn admit_resource_record_lifecycles(
                     "resource record close requires one exact emitted body; found {}",
                     close_bodies.len()
                 ),
-                &decl.span,
+                &span,
                 "resource lifecycle close body did not survive HIR lowering",
             ));
             continue;
@@ -109,14 +108,14 @@ pub(super) fn admit_resource_record_lifecycles(
             diagnostics.push(resource_lifecycle_boundary_diagnostic(
                 identity.path(*close_declaration),
                 "resource record close body must take one receiver and return unit".to_string(),
-                &decl.span,
+                &span,
                 "resource lifecycle close body has an inadmissible signature",
             ));
             continue;
         }
 
         let lifecycle = crate::ResourceRecordLifecycle {
-            resource_declaration: decl.declaration,
+            resource_declaration: declaration,
             close_declaration: *close_declaration,
             close_symbol: close_symbol.clone(),
         };
@@ -127,7 +126,7 @@ pub(super) fn admit_resource_record_lifecycles(
             diagnostics.push(resource_lifecycle_boundary_diagnostic(
                 exact_owner,
                 "duplicate exact resource-record lifecycle admission".to_string(),
-                &decl.span,
+                &span,
                 "one qualified resource may have exactly one automatic lifecycle authority",
             ));
         }

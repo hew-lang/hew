@@ -1750,7 +1750,7 @@ class ExecutorV1 {
           let result: VmValue;
           if ("value" in value)
             result = this.variant(term.result_shape, "ResultOk", [
-              { kind: "string", value: value.value },
+              stringValue(value.value),
             ]);
           else {
             const shapes = term.variant_result_shapes!;

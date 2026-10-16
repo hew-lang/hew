@@ -362,7 +362,19 @@ pub fn build(root: &Path, target: &str) -> Result<crate::tarball::PackResult, St
     let slot = root.join("target/native-package-source");
     let staged = StagedDir::new(&slot).map_err(|error| error.to_string())?;
     crate::tarball::unpack(&source.data, staged.path()).map_err(|error| error.to_string())?;
-    let artifact = build_rust_crate(staged.path(), &rust, &embedded_rustc_identity(), target)?;
+    let mut paths = hew_compile::SourcePathPolicy::default();
+    let display = PathBuf::from("packages")
+        .join(&manifest.package.name)
+        .join(&manifest.package.version);
+    paths.insert(root, &display);
+    paths.insert(staged.path(), &display);
+    let artifact = build_rust_crate(
+        staged.path(),
+        &rust,
+        &embedded_rustc_identity(),
+        target,
+        &paths,
+    )?;
     let descriptor = NativeDescriptor {
         name: manifest.package.name.clone(),
         version: manifest.package.version.clone(),

@@ -536,6 +536,13 @@ pub struct BuildArgs {
     /// Use the O2 release pipeline. Explicit `--opt-level` takes precedence.
     #[arg(long, short = 'r')]
     pub release: bool,
+    /// Remove checkout prefixes from diagnostics and compiled source paths.
+    /// Enabled by default with --release.
+    #[arg(long, conflicts_with = "no_trim_paths")]
+    pub trim_paths: bool,
+    /// Retain original source paths, including in release builds.
+    #[arg(long, conflicts_with = "trim_paths")]
+    pub no_trim_paths: bool,
     /// Build with debug info (no optimization, no stripping).
     ///
     /// Emits DWARF debug info into the native object. gdb and lldb read this

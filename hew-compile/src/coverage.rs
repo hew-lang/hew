@@ -56,7 +56,7 @@ impl super::SessionOutput {
                     .canonicalize()
                     .unwrap_or_else(|_| file.into());
                 files
-                    .entry(super::display_path(&path))
+                    .entry(super::display_path(&super::display_source_path(&path)))
                     .or_default()
                     .insert(line);
             }

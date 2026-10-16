@@ -170,6 +170,8 @@ pub(crate) fn render_frontend_diagnostics(
     diagnostics: &[FrontendDiagnostic],
 ) -> Option<hew_types::error::DiagChannel> {
     use hew_types::error::DiagChannel;
+
+    crate::source_paths::register_diagnostics(diagnostics);
     let worst = diagnostics
         .iter()
         .map(|diagnostic| match &diagnostic.kind {

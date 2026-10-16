@@ -62,7 +62,7 @@ impl ProgramInputs {
         let mut walk = Walk {
             std_dirs,
             seen_sources: BTreeSet::new(),
-            owners: BTreeMap::new(),
+            owners: PackageOwners::default(),
             inputs: Self::default(),
         };
         walk.add_source(entry)?;
@@ -136,7 +136,7 @@ struct Walk {
     std_dirs: Vec<PathBuf>,
     seen_sources: BTreeSet<PathBuf>,
     /// Owning package root of each directory already probed.
-    owners: BTreeMap<PathBuf, Option<PathBuf>>,
+    owners: PackageOwners,
     inputs: ProgramInputs,
 }
 
@@ -154,7 +154,7 @@ impl Walk {
         let Some(dir) = canonical.parent() else {
             return Ok(());
         };
-        let Some(root) = self.owner(dir) else {
+        let Some(root) = self.owners.owner(dir) else {
             return Ok(());
         };
         let root = plain(root);
@@ -172,10 +172,15 @@ impl Walk {
         self.inputs.packages.push(InputPackage { root, native });
         Ok(())
     }
+}
 
+#[derive(Debug, Default)]
+pub(crate) struct PackageOwners(BTreeMap<PathBuf, Option<PathBuf>>);
+
+impl PackageOwners {
     /// The nearest directory at or above `dir` holding `hew.toml`.
-    fn owner(&mut self, dir: &Path) -> Option<PathBuf> {
-        if let Some(owner) = self.owners.get(dir) {
+    pub(crate) fn owner(&mut self, dir: &Path) -> Option<PathBuf> {
+        if let Some(owner) = self.0.get(dir) {
             return owner.clone();
         }
         let owner = if dir.join(MANIFEST_FILE).is_file() {
@@ -183,7 +188,7 @@ impl Walk {
         } else {
             dir.parent().and_then(|parent| self.owner(parent))
         };
-        self.owners.insert(dir.to_path_buf(), owner.clone());
+        self.0.insert(dir.to_path_buf(), owner.clone());
         owner
     }
 }

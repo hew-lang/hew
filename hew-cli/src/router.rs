@@ -441,6 +441,8 @@ mod tests {
             export_c: None,
             emit_llvm: false,
             release: false,
+            trim_paths: false,
+            no_trim_paths: false,
             debug: false,
             opt_level: "0".to_string(),
             link_libs: Vec::new(),

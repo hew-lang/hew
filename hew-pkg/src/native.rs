@@ -96,7 +96,25 @@ pub fn build(
         } else {
             out.source = stage_registry_source(root, manifest)?;
             let source = out.source.as_ref().map_or(root, |source| source.path());
-            build_rust_crate(source, &rust, &embedded_rustc_identity(), &toolchain.target)?
+            let mut paths = hew_compile::source_path_policy();
+            if paths.prefixes().next().is_some() {
+                let display = paths.display(root);
+                let display = if display == root {
+                    PathBuf::from("packages")
+                        .join(package)
+                        .join(&manifest.package.version)
+                } else {
+                    display
+                };
+                paths.insert(source, &display);
+            }
+            build_rust_crate(
+                source,
+                &rust,
+                &embedded_rustc_identity(),
+                &toolchain.target,
+                &paths,
+            )?
         };
         refuse_reserved_symbols(&artifact, &format!("Rust crate `{}`", rust.lib), package)?;
         out.dependencies.push(artifact.clone());
@@ -230,6 +248,13 @@ impl SourceSet<'_> {
 
     fn args(&self, toolchain: &NativeToolchain, language: SourceLanguage) -> Vec<String> {
         let mut args = toolchain.flags.clone();
+        for (source, display) in hew_compile::source_path_policy().prefixes().rev() {
+            args.push(format!(
+                "-ffile-prefix-map={}={}",
+                source.display(),
+                display.display()
+            ));
+        }
         args.extend_from_slice(self.pkg_cflags);
         for dir in &self.inputs.include_dirs {
             args.push(format!("-I{}", self.root.join(dir).display()));
@@ -364,11 +389,12 @@ fn compile_one(
     let output = command
         .output()
         .map_err(|e| format!("cannot run the C compiler `{driver}`: {e}"))?;
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stderr =
+        hew_compile::source_path_policy().display_text(&String::from_utf8_lossy(&output.stderr));
     if !output.status.success() {
         let _ = std::fs::remove_file(&object_tmp);
         let _ = std::fs::remove_file(&depfile_tmp);
-        return Err(stderr.into_owned());
+        return Err(stderr);
     }
     // Warnings are build output the package asked for (`-Wall` and friends).
     if !stderr.trim().is_empty() {
@@ -769,6 +795,7 @@ pub(crate) fn build_rust_crate(
     rust: &RustCrate<'_>,
     expected: &RustcIdentity,
     target: &str,
+    paths: &hew_compile::SourcePathPolicy,
 ) -> Result<PathBuf, String> {
     let crate_dir = root.join(rust.dir);
     let cargo_toml = crate_dir.join("Cargo.toml");
@@ -805,10 +832,12 @@ pub(crate) fn build_rust_crate(
     // duplicate-symbol link failure. Define `release-lib` on the Cargo
     // command line so standalone packages inherit their own release settings
     // while always disabling LTO for a consumer-linkable archive.
-    let status = Command::new("cargo")
+    let mut command = Command::new("cargo");
+    command
         .env("RUSTC", &rustc)
         .args([
-            "build",
+            "rustc",
+            "--lib",
             "--profile",
             "release-lib",
             "--config",
@@ -819,10 +848,29 @@ pub(crate) fn build_rust_crate(
         ])
         .arg(&cargo_toml)
         .args(["--target", target])
-        .current_dir(&crate_dir)
-        .status()
+        .current_dir(&crate_dir);
+    if paths.prefixes().next().is_some() {
+        command.arg("--");
+        for (source, display) in paths.prefixes().rev() {
+            command.arg(format!(
+                "--remap-path-prefix={}={}",
+                source.display(),
+                display.display()
+            ));
+        }
+    }
+    let output = command
+        .output()
         .map_err(|e| format!("failed to run cargo: {e}"))?;
-    if !status.success() {
+    print!(
+        "{}",
+        paths.display_text(&String::from_utf8_lossy(&output.stdout))
+    );
+    eprint!(
+        "{}",
+        paths.display_text(&String::from_utf8_lossy(&output.stderr))
+    );
+    if !output.status.success() {
         return Err(format!(
             "cargo build failed for [native] crate {}",
             crate_dir.display()
@@ -952,6 +1000,7 @@ mod tests {
             &rust,
             &mismatching,
             &embedded_rustc_identity().host,
+            &hew_compile::SourcePathPolicy::default(),
         )
         .unwrap_err();
 

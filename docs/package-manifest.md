@@ -94,6 +94,29 @@ its `[native]` code builds with the program. `[dev-dependencies]` is used by `he
 reaches a consumer of the package. `[features]` maps feature names to the
 features they enable.
 
+## Build paths
+
+`hew build --trim-paths` removes the checkout prefix from source diagnostics
+and compiled debug paths. Release builds enable it by default; use
+`hew build --release --no-trim-paths` to retain original paths.
+
+Project files use paths relative to `.`. Imported packages outside the
+project use `packages/<name>/<version>`, and standard-library files use `std`.
+The compiler still reads and tracks the original files: module identities,
+package checksums and Make dependency files keep their usual meaning.
+
+```sh
+hew build --release -g
+# After relocating the sources, in GDB:
+# set substitute-path . /path/to/checkout
+# In LLDB:
+# settings set target.source-map . /path/to/checkout
+```
+
+Native C, C++ and Rust compilation uses the same prefix mappings. Existing
+Cargo flags remain active. `hew native build` trims the native archive when
+it is produced; a consumer keeps a signed prebuilt archive unchanged.
+
 ## `[native]`
 
 `[native]` declares the native code behind the package's `extern "C"`

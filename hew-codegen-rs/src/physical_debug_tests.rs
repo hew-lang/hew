@@ -101,6 +101,7 @@ fn hew_codegen_emit(
             emit_llvm: true,
             address_sanitizer: false,
             debug_source,
+            debug_display_source: None,
             link_freestanding_wasm: false,
             build_info: None,
         },

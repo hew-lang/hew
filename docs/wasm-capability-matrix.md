@@ -1,11 +1,9 @@
 # Hew WASM Capability Matrix
 
-`wasm-capability-manifest.toml` is the **sole authority** for WASM feature
-identity and policy. This document is its human-readable projection: the
-feature-policy and current WASI summary tables below are generated and checked byte-for-byte by
-`hew-capability-gen`. The type checker consumes the generated carrier in
-`hew-types/src/wasm_capabilities_generated.rs`; runtime stubs and the language
-spec provide implementation context but do not independently own policy.
+Use this matrix to choose between browser analysis, browser sandbox execution,
+and WASI execution. The feature table is generated from
+`wasm-capability-manifest.toml`, the same data the type checker uses for WASI
+warnings and refusals.
 
 When a feature is listed as **Reject** or **Warn**, the type checker enforces
 that disposition at compile time before any code reaches LLVM/WASM codegen.
@@ -22,8 +20,7 @@ that disposition at compile time before any code reaches LLVM/WASM codegen.
 
 **Tier 1** exposes editor APIs and `compileToSandboxBytecode` in the canonical
 `@hew-lang/wasm` package. It runs the shared frontend through verified ownership
-SIR and projects the result into the VM package. There is no AST emitter or
-separate source profile authority.
+SIR and projects the result into the VM package.
 
 **sandbox-vm** loads that package and checks its declared operations against
 implemented runtime shims before executing any instruction. Actors, tasks,
@@ -37,9 +34,8 @@ single-threaded cooperative actor scheduler and provides a meaningful subset of
 the native runtime capabilities.
 
 Native `hew eval` compiles each submission ahead of time and executes a child
-process. Hew-managed JIT execution is outside the current product targets and
-roadmap. Native AOT remains primary, with WASI runtime and browser sandbox
-execution retained in the product scope.
+process. Hew supports native AOT, WASI runtime execution, and browser sandbox
+execution.
 
 For CLI eval, `hew eval --target wasm32-wasi <expr>` and
 `hew eval --target wasm32-wasi -f <file>` run through Tier 2. Interactive REPL
@@ -51,50 +47,50 @@ and `--json` is supported only for those non-interactive eval modes.
 ## Feature disposition table
 
 The **Checker disposition** column documents what the type checker emits when
-`enable_wasm_target()` is set (i.e., when compiling for Tier 2), or
-`WASM-TODO` when a surface is documented as unresolved / not yet checker-gated.
+compiling for Tier 2. An unsupported capability without a dedicated diagnostic
+is identified directly; its runtime-status cell states the current behavior.
 
-| ID | Feature surface | Diagnostic label | Checker disposition | Diagnostic reason | Runtime status | Tracking |
-|----|-----------------|------------------|---------------------|-------------------|----------------|----------|
-| `basic-actors` | Basic actors (`spawn`, `send`, `receive`, `ask/await`) | Basic actors (`spawn`, `send`, `receive`, `ask/await`) | Pass | — | Implemented on the wasm32 process driver: the same actor core the native target runs, with the parked root draining the run queue in place of worker threads | — |
-| `exit-status-range` | Process exit statuses above 125 | Process exit statuses above 125 | Pass | — | WASI `proc_exit` refuses a status above 125, so `exit(n)` for n greater than 125 reaches the host as 1 rather than n. Every other status matches native, including the exit-1 rule an unrecovered fault follows (HEW-SPEC-2026 5.8), whose trap code is a diagnostic tag and never the status | — |
-| `actor-crash-containment` | Actor-local panic/trap containment and restart | Actor-local panic/trap containment and restart | WASM-TODO (not checker-gated) | — | A handler panic is contained: the physical path delivers it as a typed fault on the ask's failure edge, so the caller sees `Err` and the run continues. An `#[on(start)]` panic is still module-fatal, because it runs on the spawning stack with no fault edge and the production artifact is panic=abort. Supervisor restart is the separate `supervision-trees` capability | WASM-TODO(actor-crash-containment): |
-| `generators` | Generators (`gen fn`) | Generators (`gen fn`) | Pass (not checker-gated — Tier 2 has no dedicated `WasmUnsupportedFeature` guard) | — | Scalar-parameter and `fn[clone]`-parameter `gen fn` forms execute through checked continuation frames on Tier 2; full consumption and early-break cleanup verified under wasmtime at O0 and O2 | Note below |
-| `patterns-adts-generics` | Pattern matching, ADTs, generics | Pattern matching, ADTs, generics | Pass | — | Implemented | — |
-| `collections-arithmetic` | Standard collections, arithmetic | Standard collections, arithmetic | Pass | — | Implemented | — |
-| `layout-hashmap-hashset` | Layout-backed `HashMap` / `HashSet` | Layout-backed `HashMap` / `HashSet` | Pass | — | Supported on Tier 2; descriptor ABI uses target-width layout fields and descriptor hook pointers are value-correct under wasmtime | #1820 |
-| `actor-ask-reply` | Actor ask/reply | Actor ask/reply | Pass | — | Implemented | — |
-| `wasi-sockets` | Raw WASI socket capability (host-provided, no stable Hew stdlib surface yet) | Raw WASI socket capability (host-provided, no stable Hew stdlib surface yet) | WASM-TODO (not checker-gated) | — | Host-/runtime-dependent; Hew does not yet expose a supported cross-target socket layer | WASM-TODO(wasi-sockets): |
-| `select` | `select {}` (any arm kind, any timeout expression) | `select {}` operations | Reject (`Select`) | a select builds its readiness waitset through the task-scope runtime (`hew_checked_task_select_*`), which is not compiled for wasm32 | Module not compiled | WASM-TODO(suspending-select): |
-| `supervision-trees` | Supervision trees (`supervisor`, `supervisor_child`, `supervisor_stop`) | Supervision tree operations | Reject (`SupervisionTrees`) | they require OS threads for restart strategies and child supervision | Educational sandbox subset implements deterministic restart trees; native runtime parity remains gated | WASM-TODO(supervision): |
-| `link-monitor` | Actor `link` / `unlink` / `monitor` / `demonitor` | Link/monitor operations | Reject (`LinkMonitor`) | they rely on OS threads to watch linked actors and propagate exits | Educational sandbox subset implements deterministic graph state, exit signals, and monitor notifications; native runtime parity remains gated | WASM-TODO(link-monitor): |
-| `structured-concurrency` | Structured concurrency (`scope {}`, `fork`, `await`) | Structured concurrency scopes | Reject (`StructuredConcurrency`) | the wasm32 scheduler has no cooperative task executor or non-blocking scope join | Native scheduler-owned task continuations and scope joins; the task-scope runtime is not compiled for wasm32 | WASM-TODO(scope): |
-| `tasks` | Scope-spawned `Task` handles | Task handles spawned from scopes | Reject (`Tasks`) | the scheduler-owned task continuation executor is not compiled for wasm32, so forked bodies have no wasm32 task executor | Native task spawn queues checked continuations for the scheduler; no task executor drives forked bodies on wasm32 | WASM-TODO(scope): |
-| `semaphore-non-blocking` | `semaphore.new`, `Semaphore.try_acquire/release/count/free` | `semaphore.new`, `Semaphore.try_acquire/release/count/free` | Pass | — | Non-blocking semaphore subset only | — |
-| `semaphore-blocking-acquire` | `Semaphore.acquire`, `Semaphore.acquire_timeout` | Blocking semaphore acquire operations | Reject (`BlockingSemaphoreAcquire`) | Semaphore.acquire and Semaphore.acquire_timeout still require a blocking permit wait that has no cooperative wasm32 implementation; use try_acquire or actor coordination instead | No cooperative blocking wait implementation | WASM-TODO(semaphore): |
-| `timers-sleep` | `sleep_ms`, `sleep` | Timer operations | Warn (`Timers`) | timers are cooperative on wasm32: a sleep parks the coroutine and an #[every(duration)] handler fires when the process driver next ticks the shared timer wheel, so granularity follows the driver steps rather than a dedicated ticker | Cooperative park at message boundary | Implemented |
-| `timers-every` | `#[every(duration)]` periodic handlers | Timer operations | Warn (`PeriodicTimers`) | timers are cooperative on wasm32: a sleep parks the coroutine and an #[every(duration)] handler fires when the process driver next ticks the shared timer wheel, so granularity follows the driver steps rather than a dedicated ticker | Cooperative periodic dispatch via host-driven timer queue | Implemented |
-| `streams` | Pipe operations (`stream.pipe`, `Stream<T>.*`, `Sink<T>.*`) | Pipe operations (`stream.pipe`, `Stream<T>.*`, `Sink<T>.*`) | Pass | — | Implemented on the wasm32 process driver: the same suspending queue core the native target runs, with a parked producer or consumer resumed from the driver's run queue instead of a worker thread. The file and socket backings of the same handle types are separately classified | — |
-| `filesystem-streams` | `std.fs.read`, `std.stream.open`, `std.fs.open_read`, `std.fs.open_write`, `std.fs.open_read_dir` and `std.fs.open_write_dir` | File-backed streams and resources | Reject (`FilesystemStreams`) | file-backed streams and directional file/directory resources use native I/O facilities, which are not compiled for wasm32; in-memory services remain available | File-backed stream runtime is native-only; path-independent fs helpers remain separately classified | WASM-TODO(filesystem-streams): |
-| `termination-signals` | `std.os.shutdown_signal` | Termination signal subscriptions | Reject (`TerminationSignals`) | termination requests arrive through native signal handlers and a dispatcher thread; a wasm32 module receives no SIGTERM or console control events | Native-only signal dispatcher | — |
-| `descriptor-readiness` | `std.io.watch_readable` | Descriptor readiness watches | Reject (`DescriptorReadiness`) | a readiness watch waits on the native I/O reactor, which is not compiled for wasm32 | Native-only reactor watch | — |
-| `http-client` | `std.net.http.http_client.*`, `http_client.Response.*` | std.net.http.http_client operations | Reject (`HttpClient`) | the std.net.http.http_client wrappers are still native-only; no wasm32 networking bridge exists yet | Native-only wrapper module | WASM-TODO(http-client): |
-| `smtp` | `std.net.smtp.*`, `smtp.Conn.*` | std.net.smtp operations | Reject (`Smtp`) | the std.net.smtp transport is still native-only; no wasm32 SMTP bridge exists yet | Native-only transport wrapper | WASM-TODO(smtp): |
-| `websocket` | `std.net.websocket.*`, `websocket.Conn.*`, `websocket.Server.*` | std.net.websocket operations | Reject (`WebSocket`) | the std.net.websocket transport uses native sockets and OS threads; no wasm32 WebSocket bridge exists yet | Native-only socket and reader-thread transport | WASM-TODO(websocket): |
-| `http-server` | `http.listen`, `http.Server.*`, `http.Request.*` | HTTP server operations | Reject (`HttpServer`) | the std.net.http server is backed by native sockets and tiny_http; no cooperative wasm32 server implementation exists yet | Native-only runtime module | WASM-TODO(http-server): |
-| `tcp-networking` | `net.listen`, `net.connect`, `net.*`, `net.Listener.*`, `net.Connection.*` | TCP networking operations | Reject (`TcpNetworking`) | hew_tcp_listen / hew_tcp_connect require the native OS socket layer; the transport runtime module is not compiled for wasm32 | Native-only runtime module | WASM-TODO(tcp-networking): |
-| `process-execution` | `process.run`, `process.start`, `process.*`, `process.Child.*` | Process execution operations | Reject (`ProcessExecution`) | hew_process_start_shell / hew_process_start require the native OS process model; the process runtime module is not compiled for wasm32 | Native-only runtime module | WASM-TODO(process-execution): |
-| `tls` | `std.net.tls.connect/read/write/close`, `tls.TlsStream.*` | std.net.tls operations | Reject (`Tls`) | the std.net.tls transport is backed by rustls over native sockets; no wasm32 TLS bridge exists yet | Native TLS-over-TCP stack today; no documented wasm32 path | WASM-TODO(tls): |
-| `quic` | `std.net.quic.*`, `quic.QUICEndpoint.*`, `quic.QUICConnection.*`, `quic.QUICStream.*`, `quic.QUICEvent.*` | std.net.quic operations | Reject (`Quic`) | the std.net.quic transport is backed by quinn over native sockets; no wasm32 QUIC bridge exists yet | native QUIC is feature-gated and not compiled for wasm32 | WASM-TODO(quic): |
-| `dns` | `std.net.dns.resolve`, `dns.lookup_host` | std.net.dns resolver operations | Reject (`Dns`) | the std.net.dns resolver uses the native OS resolver; no wasm32 implementation exists yet | Native OS resolver; not compiled for wasm32 | WASM-TODO(dns): |
-| `std-os` | `std.os.*` (args, env, cwd, home, hostname, pid, temp-dir) | std.os environment and path operations | Reject (`OsEnv`) | the std.os helpers rely on native POSIX APIs; the os runtime layer is not compiled for wasm32 | Hew OS/env helpers are native-only today even where WASI may offer host data | WASM-TODO(os): |
-| `distributed` | `Node.*` (`start`, `shutdown`, `connect`, `set_transport`, `load_keys`, `identity_key`, `id`, `allow_peer`, `register`, `lookup`), remote actor calls, and remote monitor/link operations | Distributed node and remote-actor operations | Reject (`Distributed`) | the Node cluster API and remote actor calls route through the native mesh transport (hew_node_api_* / hew_remote_call_*), which is not compiled for wasm32; no wasm32 distributed runtime exists yet | Key-derived identity, durable sessions, authenticated mesh routing, registry/SWIM, and cross-node lifecycle are native-only | WASM-TODO(distributed): |
-| `stdin-input` | Standard input reads | Standard input reads | Pass | — | Native and WASI standard input is host-provided | — |
-| `crypto-random` | `std.crypto.crypto.random_bytes` | std.crypto.crypto.random_bytes operations | Reject (`CryptoRandom`) | the std.crypto.random_bytes secure entropy source (ring::SystemRandom) is native-only and absent from the wasm32 link set; no cryptographically secure wasm32 implementation exists yet; generating key material on wasm32 would not be secure | Secure entropy source is native-only; fail-closed rejection until wasm32 cryptographic entropy exists | WASM-TODO(crypto-random): |
-| `crypto-encrypt` | `std.crypto.encrypt.*` | std.crypto.encrypt operations | Reject (`CryptoEncrypt`) | the std.crypto.encrypt module is backed by a native-only staticlib companion crate (std/crypto/encrypt) that is absent from the wasm32 link set; no wasm32 AES-GCM seal/open implementation exists yet | Native-only AES-256-GCM companion crate; not linked for wasm32 | WASM-TODO(crypto-encrypt): |
-| `crypto-sign` | `std.crypto.sign.*` | std.crypto.sign operations | Reject (`CryptoSign`) | the std.crypto.sign module is backed by a native-only staticlib companion crate (std/crypto/sign) that is absent from the wasm32 link set; no wasm32 Ed25519 implementation exists yet | Native-only Ed25519 companion crate; not linked for wasm32 | WASM-TODO(crypto-sign): |
-| `unseeded-random` | Unseeded UUID and password-salt generation | Unseeded UUID and password-salt generation | Pass | — | Native UUID and password helpers use host entropy rather than the seeded program PRNG | — |
-| `filesystem-inspection` | Filesystem inspection outside std.fs | Filesystem inspection outside std.fs | Pass | — | Path metadata and glob expansion read the host filesystem directly | — |
+| ID | Feature surface | Diagnostic label | Checker disposition | Diagnostic reason | Runtime status |
+|----|-----------------|------------------|---------------------|-------------------|----------------|
+| `basic-actors` | Basic actors (`spawn`, `send`, `receive`, `ask/await`) | Basic actors (`spawn`, `send`, `receive`, `ask/await`) | Pass | — | Implemented on the wasm32 process driver: the same actor core the native target runs, with the parked root draining the run queue in place of worker threads |
+| `exit-status-range` | Process exit statuses above 125 | Process exit statuses above 125 | Pass | — | WASI `proc_exit` refuses a status above 125, so `exit(n)` for n greater than 125 reaches the host as 1 rather than n. Every other status matches native, including the exit-1 rule an unrecovered fault follows (HEW-SPEC-2026 5.8), whose trap code is a diagnostic tag and never the status |
+| `actor-crash-containment` | Actor-local panic/trap containment and restart | Actor-local panic/trap containment and restart | Unsupported (no dedicated diagnostic) | — | A handler panic is contained: the physical path delivers it as a typed fault on the ask's failure edge, so the caller sees `Err` and the run continues. An `#[on(start)]` panic is still module-fatal, because it runs on the spawning stack with no fault edge and the production artifact is panic=abort. Supervisor restart is the separate `supervision-trees` capability |
+| `generators` | Generators (`gen fn`) | Generators (`gen fn`) | Pass | — | Scalar-parameter and `fn[clone]`-parameter `gen fn` forms execute through checked continuation frames on Tier 2; full consumption and early-break cleanup verified under wasmtime at O0 and O2 |
+| `patterns-adts-generics` | Pattern matching, ADTs, generics | Pattern matching, ADTs, generics | Pass | — | Implemented |
+| `collections-arithmetic` | Standard collections, arithmetic | Standard collections, arithmetic | Pass | — | Implemented |
+| `layout-hashmap-hashset` | Layout-backed `HashMap` / `HashSet` | Layout-backed `HashMap` / `HashSet` | Pass | — | Supported on Tier 2; descriptor ABI uses target-width layout fields and descriptor hook pointers are value-correct under wasmtime |
+| `actor-ask-reply` | Actor ask/reply | Actor ask/reply | Pass | — | Implemented |
+| `wasi-sockets` | Raw host-provided WASI socket capability | Raw host-provided WASI socket capability | Unsupported (no dedicated diagnostic) | — | Host- and runtime-dependent; Hew's stdlib has no cross-target socket layer |
+| `select` | `select {}` (any arm kind, any timeout expression) | `select {}` operations | Reject (`Select`) | a select builds its readiness waitset through the task-scope runtime (`hew_checked_task_select_*`), which is not compiled for wasm32 | Module not compiled |
+| `supervision-trees` | Supervision trees (`supervisor`, `supervisor_child`, `supervisor_stop`) | Supervision tree operations | Reject (`SupervisionTrees`) | they require OS threads for restart strategies and child supervision | The browser sandbox implements deterministic restart trees; Tier 2 rejects this surface |
+| `link-monitor` | Actor `link` / `unlink` / `monitor` / `demonitor` | Link/monitor operations | Reject (`LinkMonitor`) | they rely on OS threads to watch linked actors and propagate exits | The browser sandbox implements deterministic graph state, exit signals, and monitor notifications; Tier 2 rejects this surface |
+| `structured-concurrency` | Structured concurrency (`scope {}`, `fork`, `await`) | Structured concurrency scopes | Reject (`StructuredConcurrency`) | the wasm32 scheduler has no cooperative task executor or non-blocking scope join | Native scheduler-owned task continuations and scope joins; the task-scope runtime is not compiled for wasm32 |
+| `tasks` | Scope-spawned `Task` handles | Task handles spawned from scopes | Reject (`Tasks`) | the scheduler-owned task continuation executor is not compiled for wasm32, so forked bodies have no wasm32 task executor | Native task spawn queues checked continuations for the scheduler; no task executor drives forked bodies on wasm32 |
+| `semaphore-non-blocking` | `semaphore.new`, `Semaphore.try_acquire/release/count/free` | `semaphore.new`, `Semaphore.try_acquire/release/count/free` | Pass | — | Non-blocking semaphore subset only |
+| `semaphore-blocking-acquire` | `Semaphore.acquire`, `Semaphore.acquire_timeout` | Blocking semaphore acquire operations | Reject (`BlockingSemaphoreAcquire`) | Semaphore.acquire and Semaphore.acquire_timeout still require a blocking permit wait that has no cooperative wasm32 implementation; use try_acquire or actor coordination instead | No cooperative blocking wait implementation |
+| `timers-sleep` | `sleep_ms`, `sleep` | Timer operations | Warn (`Timers`) | timers are cooperative on wasm32: a sleep parks the coroutine and an #[every(duration)] handler fires when the process driver next ticks the shared timer wheel, so granularity follows the driver steps rather than a dedicated ticker | Cooperative park at message boundary |
+| `timers-every` | `#[every(duration)]` periodic handlers | Timer operations | Warn (`PeriodicTimers`) | timers are cooperative on wasm32: a sleep parks the coroutine and an #[every(duration)] handler fires when the process driver next ticks the shared timer wheel, so granularity follows the driver steps rather than a dedicated ticker | Cooperative periodic dispatch via host-driven timer queue |
+| `streams` | Pipe operations (`stream.pipe`, `Stream<T>.*`, `Sink<T>.*`) | Pipe operations (`stream.pipe`, `Stream<T>.*`, `Sink<T>.*`) | Pass | — | Implemented on the wasm32 process driver: the same suspending queue core the native target runs, with a parked producer or consumer resumed from the driver's run queue instead of a worker thread. The file and socket backings of the same handle types are separately classified |
+| `filesystem-streams` | `std.fs.read`, `std.stream.open`, `std.fs.open_read`, `std.fs.open_write`, `std.fs.open_read_dir` and `std.fs.open_write_dir` | File-backed streams and resources | Reject (`FilesystemStreams`) | file-backed streams and directional file/directory resources use native I/O facilities, which are not compiled for wasm32; in-memory services remain available | File-backed stream runtime is native-only; path-independent fs helpers remain separately classified |
+| `termination-signals` | `std.os.shutdown_signal` | Termination signal subscriptions | Reject (`TerminationSignals`) | termination requests arrive through native signal handlers and a dispatcher thread; a wasm32 module receives no SIGTERM or console control events | Native-only signal dispatcher |
+| `descriptor-readiness` | `std.io.watch_readable` | Descriptor readiness watches | Reject (`DescriptorReadiness`) | a readiness watch waits on the native I/O reactor, which is not compiled for wasm32 | Native-only reactor watch |
+| `http-client` | `std.net.http.http_client.*`, `http_client.Response.*` | std.net.http.http_client operations | Reject (`HttpClient`) | the std.net.http.http_client wrappers are native-only and have no wasm32 networking bridge | Native-only wrapper module |
+| `smtp` | `std.net.smtp.*`, `smtp.Conn.*` | std.net.smtp operations | Reject (`Smtp`) | the std.net.smtp transport is native-only and has no wasm32 SMTP bridge | Native-only transport wrapper |
+| `websocket` | `std.net.websocket.*`, `websocket.Conn.*`, `websocket.Server.*` | std.net.websocket operations | Reject (`WebSocket`) | the std.net.websocket transport uses native sockets and OS threads and has no wasm32 WebSocket bridge | Native-only socket and reader-thread transport |
+| `http-server` | `http.listen`, `http.Server.*`, `http.Request.*` | HTTP server operations | Reject (`HttpServer`) | the std.net.http server is backed by native sockets and tiny_http and has no cooperative wasm32 implementation | Native-only runtime module |
+| `tcp-networking` | `net.listen`, `net.connect`, `net.*`, `net.Listener.*`, `net.Connection.*` | TCP networking operations | Reject (`TcpNetworking`) | hew_tcp_listen / hew_tcp_connect require the native OS socket layer; the transport runtime module is not compiled for wasm32 | Native-only runtime module |
+| `process-execution` | `process.run`, `process.start`, `process.*`, `process.Child.*` | Process execution operations | Reject (`ProcessExecution`) | hew_process_start_shell / hew_process_start require the native OS process model; the process runtime module is not compiled for wasm32 | Native-only runtime module |
+| `tls` | `std.net.tls.connect/read/write/close`, `tls.TlsStream.*` | std.net.tls operations | Reject (`Tls`) | the std.net.tls transport is backed by rustls over native sockets and has no wasm32 TLS bridge | Native TLS-over-TCP stack today; no documented wasm32 path |
+| `quic` | `std.net.quic.*`, `quic.QUICEndpoint.*`, `quic.QUICConnection.*`, `quic.QUICStream.*`, `quic.QUICEvent.*` | std.net.quic operations | Reject (`Quic`) | the std.net.quic transport is backed by quinn over native sockets and has no wasm32 QUIC bridge | native QUIC is feature-gated and not compiled for wasm32 |
+| `dns` | `std.net.dns.resolve`, `dns.lookup_host` | std.net.dns resolver operations | Reject (`Dns`) | the std.net.dns resolver uses the native OS resolver and has no wasm32 implementation | Native OS resolver; not compiled for wasm32 |
+| `std-os` | `std.os.*` (args, env, cwd, home, hostname, pid, temp-dir) | std.os environment and path operations | Reject (`OsEnv`) | the std.os helpers rely on native POSIX APIs; the os runtime layer is not compiled for wasm32 | Hew OS/env helpers are native-only today even where WASI may offer host data |
+| `distributed` | `Node.*` (`start`, `shutdown`, `connect`, `set_transport`, `load_keys`, `identity_key`, `id`, `allow_peer`, `register`, `lookup`), remote actor calls, and remote monitor/link operations | Distributed node and remote-actor operations | Reject (`Distributed`) | the Node cluster API and remote actor calls route through the native mesh transport (hew_node_api_* / hew_remote_call_*), which is not compiled for wasm32 | Key-derived identity, durable sessions, authenticated mesh routing, registry/SWIM, and cross-node lifecycle are native-only |
+| `stdin-input` | Standard input reads | Standard input reads | Pass | — | Native and WASI standard input is host-provided |
+| `crypto-random` | `std.crypto.crypto.random_bytes` | std.crypto.crypto.random_bytes operations | Reject (`CryptoRandom`) | the std.crypto.random_bytes secure entropy source (ring::SystemRandom) is native-only and absent from the wasm32 link set; generating key material without a cryptographic entropy source would be unsafe | Secure entropy source is native-only; fail-closed rejection until wasm32 cryptographic entropy exists |
+| `crypto-encrypt` | `std.crypto.encrypt.*` | std.crypto.encrypt operations | Reject (`CryptoEncrypt`) | the std.crypto.encrypt module is backed by a native-only staticlib companion crate (std/crypto/encrypt) that is absent from the wasm32 link set | Native-only AES-256-GCM companion crate; not linked for wasm32 |
+| `crypto-sign` | `std.crypto.sign.*` | std.crypto.sign operations | Reject (`CryptoSign`) | the std.crypto.sign module is backed by a native-only staticlib companion crate (std/crypto/sign) that is absent from the wasm32 link set | Native-only Ed25519 companion crate; not linked for wasm32 |
+| `unseeded-random` | Unseeded UUID and password-salt generation | Unseeded UUID and password-salt generation | Pass | — | Native UUID and password helpers use host entropy rather than the seeded program PRNG |
+| `filesystem-inspection` | Filesystem inspection outside std.fs | Filesystem inspection outside std.fs | Pass | — | Path metadata and glob expansion read the host filesystem directly |
 
 ---
 
@@ -102,124 +98,34 @@ The **Checker disposition** column documents what the type checker emits when
 
 ### ⚠️ Warn (warning-level)
 
-Features in the **Warn** group are architecturally different on the
-single-threaded cooperative WASM scheduler, but they still have a meaningful
-runtime implementation.
-
-These exist as warnings (not errors) to allow gradual migration: a program can
-be partially WASM-compatible and still get useful analysis feedback.
-
-This group includes `sleep`/`sleep_until` and `#[every(duration)]`. A sleeping
-coroutine arms the shared timer wheel and parks; the wasm32 process driver
-ticks that wheel against the WASI clock while the root waits, so a sleep
-resumes without a host tick.  Periodic actor delivery reaches the driver with
-the actor core.
+Warnings identify supported operations whose timing differs on the
+single-threaded cooperative WASM scheduler. `sleep`, `sleep_until`, and
+`#[every(duration)]` use the shared timer wheel. The process driver ticks that
+wheel against the WASI clock while the root waits.
 
 ### 🚫 Error (compile-time reject)
 
-Features in the **Error** group are rejected at compile time because wasm32 has
-no coherent runtime support for them and allowing them through the checker
-would otherwise end in a trap or linker failure:
+An error means the compiler rejects the operation before code generation. The
+diagnostic reason in the table names the missing WASI runtime facility and,
+where available, a supported alternative. In particular:
 
-- **Supervision trees / link-monitor / structured concurrency / tasks**: the
-  production runtime modules are gated behind
-  `#[cfg(not(target_arch = "wasm32"))]` in `hew-runtime/src/lib.rs`.  The
-  sandbox VM separately teaches reduced M6 supervision/link/monitor semantics
-  with deterministic virtual time and typed fail-closed traps; Tier 2 still
-  rejects the production surface at check time to avoid undefined-symbol linker
-  failures.
+- Single-process actors and in-memory pipes run on Tier 2. Supervision trees,
+  links and monitors, structured task scopes, and `select` require runtime
+  modules excluded from wasm32.
+- Use `Semaphore.try_acquire` for non-blocking coordination. The blocking
+  `acquire` methods have no cooperative WASM wait path.
+- File and socket streams depend on the native I/O reactor. Networking,
+  subprocess, and distributed-node APIs are native-only.
+- `crypto.random_bytes`, encryption, and signing require native cryptographic
+  implementations. Tier 2 rejects them rather than substituting an insecure
+  source or algorithm.
 
-  **Release decision:** Tier 2 `scope {}` / `Task` support is deferred from
-  v0.6.0-rc1 to a later v0.6.x. LLVM lowering is shared across native and
-  wasm32. Native fork now drives checked callable continuations through the
-  shared scheduler, with non-blocking scope drain and retained readiness.
-  The checked task module remains excluded from wasm32, whose actor run queue
-  does not yet accept task continuations. The compiler continues to reject
-  this surface before LLVM/linking until execution parity is established.
+### ⚠️ Unclassified host capability
 
-- **`select {}`**: a select builds its readiness waitset through the
-  task-scope runtime (`hew_checked_task_select_*`), which is not compiled for
-  wasm32. The checker rejects every select at compile time rather than leaving
-  the arm's carrier unresolved at link
-  (WASM-TODO(suspending-select)).
-
-- **Blocking semaphore acquire**: `Semaphore::acquire` and
-  `Semaphore::acquire_timeout` can block waiting for a permit. Native builds do
-  that with condvar-style parking, but wasm32 has no cooperative permit-wait
-  path yet. The checker rejects only those blocking methods and still allows
-  the non-blocking semaphore subset (`new`, `try_acquire`, `release`, `count`,
-  `free`).
-
-- **Timers** (`sleep`, `sleep_until`, `#[every(duration)]`): A sleeping
-  coroutine arms the shared timer wheel and parks. The wasm32 process driver
-  ticks the wheel against the WASI clock while the root coroutine waits, so the
-  sleep resumes on the deadline with no host tick. Periodic actor delivery
-  reaches the driver with the actor core.
-
-- **File- and socket-backed streams**: the in-memory pipe runs on wasm32, but
-  a file or socket stream reads its chunks through the native I/O reactor,
-  which is not compiled for this target.  `std.fs.read` and `std.stream.open`
-  are rejected at compile time; `net.Connection.split` is covered by the `net`
-  module reject.
-  - `WASM-TODO(streams):` implement I/O stream adapters over WASI fd/socket APIs.
-
-- **`std.net.http.http_client` / `std.net.smtp`**: these stdlib wrappers
-  are still native-only today (`WASM-TODO` in the module sources).  Letting
-  them through type checking on wasm32 only defers the failure to link time.
-  The checker now rejects both the module helper calls and their handle methods
-  (`http_client.Response.*`, `smtp.Conn.*`) with feature-specific diagnostics.
-  This is distinct from any raw WASI socket support a host runtime may expose:
-  Hew does not currently treat those low-level capabilities as a supported,
-  portable stdlib networking surface.
-
-- **HTTP server**: The `std.net.http` server surface is backed by native
-  sockets and `tiny_http`. Its runtime symbols are unavailable on wasm32, so
-  `http.listen` plus `http.Server` / `http.Request` methods are rejected at
-  compile time instead of failing later in codegen or at link time.
-  - `WASM-TODO(http-server):` design a cooperative WASI-hosted HTTP server surface.
-
-- **TCP networking**: The `std.net` listener/connection runtime lives in the
-  native transport module, which is gated out on wasm32. Rejecting `net.*`
-  constructors and `net.Listener` / `net.Connection` methods keeps the checker
-  fail-closed instead of leaking to undefined-symbol linker failures.
-  - `WASM-TODO(tcp-networking):` expose socket-backed listener/connection adapters over WASI.
-
-- **Process execution**: The `std.process` module depends on the host OS
-  process model, and its runtime module is not compiled for wasm32. Rejecting
-  `process.*` helpers and `process.Child` methods at check time gives a
-  feature-specific diagnostic rather than a native-symbol failure downstream.
-  - `WASM-TODO(process-execution):` define a host capability model for subprocess execution.
-
-- **Key-backed distributed identity and remote actors**: The `Node.*` cluster
-  API, remote actor calls, registry/SWIM, durable
-  session fencing, and cross-node monitor/link delivery lower to the native
-  authenticated mesh runtime. That runtime is absent from the wasm32 link set.
-  The checker rejects the whole distributed surface with `Distributed`, so
-  wasm32 never receives a success-shaped networking shim. Basic single-process
-  actors (`spawn` / local `send` / local `ask`) remain available.
-  - `WASM-TODO(distributed):` define a wasm peer transport and identity/session authority
-    before exposing any distributed surface.
-
-- **`std.crypto.crypto.random_bytes`**: Secure randomness is backed by
-  `ring::SystemRandom`, which is native-only and absent from the wasm32 link set.
-  The checker rejects `crypto.random_bytes` and its fallible twin
-  `crypto.random_bytes` on wasm32 so key material generation fails closed
-  instead of compiling to a non-cryptographic fallback or host
-  import. `WASM-TODO(crypto-random):` plumb a secure host entropy capability such as WASI
-  `random_get`.
-
-### ⚠️ WASM-TODO (documented gap / not yet checker-gated)
-
-Rows whose **Checker disposition** is **WASM-TODO** are intentionally *not*
-claimed as supported. They remain in the matrix because the current wasm32
-story is either unresolved or native-only, but Hew does not yet emit a
-dedicated checker warning/error for them.
-
-- **Raw WASI socket capability**: some WASI hosts may expose socket APIs, but
-  Hew does not yet provide a stable socket abstraction that spans browser Tier 1,
-  WASI Tier 2, and native builds. That is why the matrix rejects Hew's current
-  high-level networking modules while keeping raw host socket capability in the
-  backlog instead of marking it ✅ Pass.
+Some unsupported rows have no dedicated checker diagnostic. Raw sockets are
+the current example: a WASI host may provide them, while Hew's stdlib
+networking surface remains native-only. Treat these rows as unsupported on
+Tier 2.
 
 ---
 
@@ -233,100 +139,8 @@ are compiled for wasm32. WASI execution at O0 and O2 verifies scalar parameters
 and a named function supplied to a `fn[clone]` parameter through full consumption
 and early break, including producer defer cleanup.
 
-Generator forms not yet implemented on any target are tracked in
-HEW-FUTURE.md §1.6 — that is a language-surface gap, not a WASM-specific one.
-
 Generators that depend on stream I/O are additionally covered by the Streams
 reject above at the point of the stream call.
-
----
-
-## Checker enforcement
-
-`wasm-capability-manifest.toml` is the single editable source for feature IDs,
-labels, dispositions, enum variants, diagnostic reasons, runtime status, and
-tracking labels. `hew-capability-gen` emits `WasmUnsupportedFeature` and its
-typed policy accessors into
-`hew-types/src/wasm_capabilities_generated.rs`, and owns the feature table in
-this document. The `warn_wasm_limitation` and `reject_wasm_feature` methods in
-`hew-types/src/check/diagnostics.rs` consume that generated policy.
-
-The distinction:
-
-```
-warn_wasm_limitation  → Severity::Warning  → self.warnings
-reject_wasm_feature   → Severity::Error    → self.errors
-```
-
-**Warn group** is wired in:
-- `hew-types/src/check/calls.rs :: reject_if_wasm_incompatible_call` (`sleep`/`sleep_until` → `Timers` warning arm)
-
-**Reject group** is wired in:
-- `hew-types/src/check/expressions.rs :: reject_if_wasm_incompatible_expr` (scope/tasks)
-- `hew-types/src/check/calls.rs :: reject_if_wasm_incompatible_call` (link/monitor/supervisor/`random_bytes`/`Node::*`)
-- `hew-types/src/check/registration.rs` (supervisor actor declarations)
-- `hew-types/src/check/methods.rs :: check_method_call` (stream.* / `http_client.*` / `smtp.*` / http.* / net.* / process.* / tls.* / quic.* / dns.* / os.* / `crypto.random_bytes` module calls)
-- `hew-types/src/check/methods.rs` semaphore handle gate (`acquire` / `acquire_timeout` → `BlockingSemaphoreAcquire`)
-- `hew-types/src/check/methods.rs` Stream / http.Server / http.Request / net.Listener / net.Connection / process.Child / tls.TlsStream / quic.QUIC* handle match arms
-- `hew-types/src/check/methods/dispatch.rs` remote-handle method gate (`Distributed`)
-
-Rows marked **WASM-TODO (not checker-gated)** currently have no dedicated
-`WasmUnsupportedFeature` guard point. As of main, that bucket includes raw WASI
-socket capability only. `std.net.tls`, `std.net.quic`, `std.net.dns`,
-`std.os`, and `std.crypto.crypto.random_bytes` are all checker-gated.
-
----
-
-## WASM-TODO backlog
-
-These gaps are explicitly deferred and tracked here:
-
-| Gap | Blocker | Tracking label |
-|-----|---------|----------------|
-| Actor-local panic/trap containment and restart on production WASI | The shipped wasm32-wasip1 Rust sysroot supports panic=abort; containment requires a supported unwind runtime or an explicit generated-code status/CPS failure ABI | `WASM-TODO(actor-crash-containment):` |
-| Main-context panic cleanup on production WASI | Same root cause as actor-crash-containment (panic=abort sysroot, no portable WASM EH on the shipped target): `hew_panic` exits the module directly instead of unwinding through the MIR-authored landing pads that run `#[resource]` closes and drop obligations on native (hew-lang/hew#3074) | `WASM-TODO(main-context-panic-cleanup):` |
-| Blocking semaphore acquire parity | Cooperative permit wait / timeout semantics for `Semaphore::acquire*` on wasm32 | `WASM-TODO(semaphore):` |
-| Raw socket-backed Hew networking surface | Stable cross-host socket abstraction above host-provided WASI sockets | `WASM-TODO(wasi-sockets):` |
-| I/O stream adapters | WASI fd/socket APIs | `WASM-TODO(streams):` |
-| HTTP server parity | Cooperative WASI-hosted request accept/respond runtime | `WASM-TODO(http-server):` |
-| TCP listener / connection parity | WASI socket-backed accept/read/write abstractions | `WASM-TODO(tcp-networking):` |
-| TLS client parity | wasm-capable TLS-over-sockets design plus checker/runtime classification | `WASM-TODO(tls):` |
-| QUIC parity | wasm-capable UDP/QUIC transport plus feature-gated runtime support | `WASM-TODO(quic):` |
-| DNS resolver parity | WASI-backed resolver shim; current native OS resolver is not compiled for wasm32 | `WASM-TODO(dns):` |
-| `std.os` parity | WASI-backed args/env/path/system shims for the current stdlib surface | `WASM-TODO(os):` |
-| `crypto.random_bytes` parity | Secure wasm32 entropy source and explicit capability classification | `WASM-TODO(crypto-random):` |
-| Process execution parity | Explicit host capability model for subprocesses | `WASM-TODO(process-execution):` |
-| Key-backed distributed identity, remote-actor messaging, and lifecycle parity | wasm peer transport plus authenticated identity/session, registry, SWIM, full-Location routing, and cross-node monitor/link authorities | `WASM-TODO(distributed):` |
-| Supervision tree restart strategies | OS-thread-free supervision design | `WASM-TODO(supervision):` |
-| Actor link/monitor fault propagation | OS-thread-free exit propagation | `WASM-TODO(link-monitor):` |
-| Structured concurrency scopes | Cooperative task work queue integrated with `hew_sched_run`, `TaskEntry` continuation/resume, completion wakeups, and non-blocking scope joins | `WASM-TODO(scope):` |
-| Actor-set drain parity | WASM scheduler integration for observing and quiescing a requested actor set | `WASM-TODO(actor-drain):` |
-| Process exit-status reporting for unrecovered actor faults | A wasm32 program-exit path that reads the exit-status authority; native reads it from shutdown/main-return paths that wasm32 does not use | `WASM-TODO(actor-exit-status):` |
-| Per-actor heap-limit crash parity | A wasm32 heap-exceeded trap path that reports the actor crash without native signal recovery | `WASM-TODO(actor-heap-limits):` |
-| Aliased actor-message delivery parity | Envelope-mode send and receive routing in the cooperative WASM scheduler | `WASM-TODO(alias-messaging):` |
-| Deadline-bounded blocking-call parity | A wasm32-compatible async deadline primitive in place of native worker threads | `WASM-TODO(blocking-pool):` |
-| Compression runtime verification on wasm32-wasip1 | Compiled-and-run gzip and deflate parity coverage for the WASI target | `WASM-TODO(compression):` |
-| Stack-safe cooperative actor yielding | A non-recursive WASM scheduler driver that cannot suppress progress at the nesting cap | `WASM-TODO(cooperative-yield):` |
-| AES-256-GCM encryption parity | A wasm32-compatible authenticated-encryption implementation and ecosystem-FFI link path | `WASM-TODO(crypto-encrypt):` |
-| Ed25519 signing parity | A wasm32-compatible key generation, signing, and verification implementation | `WASM-TODO(crypto-sign):` |
-| Imported-module diagnostic source loading without native filesystem access | A host-provided source map for WASM and no-filesystem diagnostic rendering | `WASM-TODO(diagnostic-source-map):` |
-| Outbound HTTP client parity | A browser/WASI request bridge for the native-only HTTP client wrapper | `WASM-TODO(http-client):` |
-| Lambda-actor construction parity | A cooperative WASM implementation of the native lambda-actor runtime | `WASM-TODO(lambda-actors):` |
-| Runtime profiler parity | A WASM sampling and dashboard design without native OS threads or an embedded HTTP server | `WASM-TODO(profiler):` |
-| Structured classification for newly encountered native-only runtime symbols | An explicit capability-family mapping before a new excluded symbol can use the generic diagnostic branch | `WASM-TODO(runtime-substrate-classification):` |
-| WASM actor-trap reporting parity | Per-kind trap reporting and actor-crash recovery without native POSIX or SEH signal recovery | `WASM-TODO(runtime-traps):` |
-| SMTP client parity | A wasm32 transport bridge for the native-only SMTP wrapper | `WASM-TODO(smtp):` |
-| Execution-context select suspension parity | A WASM readiness waitset and non-recursive resume path for suspending select | `WASM-TODO(suspending-select):` |
-| Shared suspension-deadline runtime parity | A WASM deadline scheduler for select, sleep, and scope continuations | `WASM-TODO(suspension-deadline):` |
-| Mid-handler timer suspension parity | A WASM timer continuation that resumes within a handler instead of parking only at the message boundary | `WASM-TODO(timer-suspension):` |
-| WASI error-code classification | Target-aware filesystem and network error mapping for WASI errno values | `WASM-TODO(wasi-errno):` |
-| WebSocket transport parity | A browser/WASI WebSocket bridge without the native thread and socket implementation | `WASM-TODO(websocket):` |
-
-> **Stackless suspension substrate.** Native tasks use checked continuation
-> frames, scheduler-owned task work, and readiness wakeups. The task-scope
-> runtime, including its continuation executor, is not compiled for wasm32.
-> WASM task scopes remain gated until a wasm32 task executor and non-blocking
-> scope joins preserve the same concurrency and cleanup behaviour.
 
 ---
 
@@ -358,68 +172,56 @@ form consumed by browser/playground tooling and the WASI e2e test suite.
 <!-- BEGIN GENERATED: playground-wasi-capability-summary -->
 | Example | `capabilities.wasi` | Reason |
 |---------|---------------------|--------|
-| `basics/hello_world` | `runnable` | Runnable in the playground manifest and exercised by the WASI E2E gate |
-| `basics/fibonacci` | `runnable` | Runnable in the playground manifest and exercised by the WASI E2E gate |
-| `basics/float_arithmetic` | `runnable` | Runnable in the playground manifest and exercised by the WASI E2E gate |
-| `basics/float_division` | `runnable` | Runnable in the playground manifest and exercised by the WASI E2E gate |
-| `basics/float_nonfinite_compare` | `runnable` | Runnable in the playground manifest and exercised by the WASI E2E gate |
-| `basics/higher_order_functions` | `runnable` | Runnable in the playground manifest and exercised by the WASI E2E gate |
-| `basics/if_let_value` | `runnable` | Runnable in the playground manifest and exercised by the WASI E2E gate |
-| `basics/mixed_numeric` | `runnable` | Runnable in the playground manifest and exercised by the WASI E2E gate |
-| `basics/stmt_control_flow` | `runnable` | Runnable in the playground manifest and exercised by the WASI E2E gate |
-| `basics/stmt_if` | `runnable` | Runnable in the playground manifest and exercised by the WASI E2E gate |
-| `basics/stmt_if_let` | `runnable` | Runnable in the playground manifest and exercised by the WASI E2E gate |
-| `basics/stmt_match` | `runnable` | Runnable in the playground manifest and exercised by the WASI E2E gate |
-| `basics/string_interpolation` | `runnable` | Runnable in the playground manifest and exercised by the WASI E2E gate |
-| `basics/clone_value` | `runnable` | Runnable in the playground manifest and exercised by the WASI E2E gate |
-| `basics/display_scalars` | `runnable` | Runnable in the playground manifest and exercised by the WASI E2E gate |
-| `concurrency/actor_pipeline` | `runnable` | Runnable in the playground manifest and exercised by the WASI E2E gate |
-| `concurrency/async_await` | `runnable` | Runnable in the playground manifest and exercised by the WASI E2E gate |
-| `concurrency/counter_actor` | `runnable` | Runnable in the playground manifest and exercised by the WASI E2E gate |
-| `concurrency/supervisor` | `unsupported` | Uses the manifest-owned supervision-trees reject capability |
-| `language/arithmetic_operators` | `runnable` | Runnable in the playground manifest and exercised by the WASI E2E gate |
-| `language/array_indexing` | `runnable` | Runnable in the playground manifest and exercised by the WASI E2E gate |
-| `language/string_slicing` | `runnable` | Runnable in the playground manifest and exercised by the WASI E2E gate |
-| `language/while_loop` | `runnable` | Runnable in the playground manifest and exercised by the WASI E2E gate |
-| `language/wildcard_match` | `runnable` | Runnable in the playground manifest and exercised by the WASI E2E gate |
-| `language/match_guard` | `runnable` | Runnable in the playground manifest and exercised by the WASI E2E gate |
-| `language/compound_assign` | `runnable` | Runnable in the playground manifest and exercised by the WASI E2E gate |
-| `language/f64_nonfinite_render` | `runnable` | Runnable in the playground manifest and exercised by the WASI E2E gate |
-| `language/f64_finite_render` | `runnable` | Runnable in the playground manifest and exercised by the WASI E2E gate |
-| `machines/traffic_light` | `runnable` | Runnable in the playground manifest and exercised by the WASI E2E gate |
-| `types/collections` | `runnable` | Runnable in the playground manifest and exercised by the WASI E2E gate |
-| `types/pattern_matching` | `runnable` | Runnable in the playground manifest and exercised by the WASI E2E gate |
-| `types/record_types` | `runnable` | Runnable in the playground manifest and exercised by the WASI E2E gate |
-| `types/field_shorthand` | `runnable` | Runnable in the playground manifest and exercised by the WASI E2E gate |
-| `types/wire_types` | `runnable` | Runnable in the playground manifest and exercised by the WASI E2E gate |
-| `types/structural_bounds` | `runnable` | Runnable in the playground manifest and exercised by the WASI E2E gate |
-| `types/record_equality` | `runnable` | Runnable in the playground manifest and exercised by the WASI E2E gate |
-| `types/tuple_values` | `runnable` | Runnable in the playground manifest and exercised by the WASI E2E gate |
-| `types/generic_aggregate_eq` | `runnable` | Runnable in the playground manifest and exercised by the WASI E2E gate |
-| `types/option_result_methods` | `runnable` | Runnable in the playground manifest and exercised by the WASI E2E gate |
-| `types/vec_operations` | `runnable` | Runnable in the playground manifest and exercised by the WASI E2E gate |
-| `types/vec_f64_nonfinite_contains` | `runnable` | Runnable in the playground manifest and exercised by the WASI E2E gate |
-| `types/vec_inclusive_slice` | `runnable` | Runnable in the playground manifest and exercised by the WASI E2E gate |
-| `types/record_clone` | `runnable` | Runnable in the playground manifest and exercised by the WASI E2E gate |
-| `types/fn_field_call` | `runnable` | Runnable in the playground manifest and exercised by the WASI E2E gate |
-| `types/method_clone` | `runnable` | Runnable in the playground manifest and exercised by the WASI E2E gate |
+| `basics/hello_world` | `runnable` | Verified by WASI end-to-end execution |
+| `basics/fibonacci` | `runnable` | Verified by WASI end-to-end execution |
+| `basics/float_arithmetic` | `runnable` | Verified by WASI end-to-end execution |
+| `basics/float_division` | `runnable` | Verified by WASI end-to-end execution |
+| `basics/float_nonfinite_compare` | `runnable` | Verified by WASI end-to-end execution |
+| `basics/higher_order_functions` | `runnable` | Verified by WASI end-to-end execution |
+| `basics/if_let_value` | `runnable` | Verified by WASI end-to-end execution |
+| `basics/mixed_numeric` | `runnable` | Verified by WASI end-to-end execution |
+| `basics/stmt_control_flow` | `runnable` | Verified by WASI end-to-end execution |
+| `basics/stmt_if` | `runnable` | Verified by WASI end-to-end execution |
+| `basics/stmt_if_let` | `runnable` | Verified by WASI end-to-end execution |
+| `basics/stmt_match` | `runnable` | Verified by WASI end-to-end execution |
+| `basics/string_interpolation` | `runnable` | Verified by WASI end-to-end execution |
+| `basics/clone_value` | `runnable` | Verified by WASI end-to-end execution |
+| `basics/display_scalars` | `runnable` | Verified by WASI end-to-end execution |
+| `concurrency/actor_pipeline` | `runnable` | Verified by WASI end-to-end execution |
+| `concurrency/async_await` | `runnable` | Verified by WASI end-to-end execution |
+| `concurrency/counter_actor` | `runnable` | Verified by WASI end-to-end execution |
+| `concurrency/supervisor` | `unsupported` | Uses supervision trees, which Tier 2 rejects |
+| `language/arithmetic_operators` | `runnable` | Verified by WASI end-to-end execution |
+| `language/array_indexing` | `runnable` | Verified by WASI end-to-end execution |
+| `language/string_slicing` | `runnable` | Verified by WASI end-to-end execution |
+| `language/while_loop` | `runnable` | Verified by WASI end-to-end execution |
+| `language/wildcard_match` | `runnable` | Verified by WASI end-to-end execution |
+| `language/match_guard` | `runnable` | Verified by WASI end-to-end execution |
+| `language/compound_assign` | `runnable` | Verified by WASI end-to-end execution |
+| `language/f64_nonfinite_render` | `runnable` | Verified by WASI end-to-end execution |
+| `language/f64_finite_render` | `runnable` | Verified by WASI end-to-end execution |
+| `machines/traffic_light` | `runnable` | Verified by WASI end-to-end execution |
+| `types/collections` | `runnable` | Verified by WASI end-to-end execution |
+| `types/pattern_matching` | `runnable` | Verified by WASI end-to-end execution |
+| `types/record_types` | `runnable` | Verified by WASI end-to-end execution |
+| `types/field_shorthand` | `runnable` | Verified by WASI end-to-end execution |
+| `types/wire_types` | `runnable` | Verified by WASI end-to-end execution |
+| `types/structural_bounds` | `runnable` | Verified by WASI end-to-end execution |
+| `types/record_equality` | `runnable` | Verified by WASI end-to-end execution |
+| `types/tuple_values` | `runnable` | Verified by WASI end-to-end execution |
+| `types/generic_aggregate_eq` | `runnable` | Verified by WASI end-to-end execution |
+| `types/option_result_methods` | `runnable` | Verified by WASI end-to-end execution |
+| `types/vec_operations` | `runnable` | Verified by WASI end-to-end execution |
+| `types/vec_f64_nonfinite_contains` | `runnable` | Verified by WASI end-to-end execution |
+| `types/vec_inclusive_slice` | `runnable` | Verified by WASI end-to-end execution |
+| `types/record_clone` | `runnable` | Verified by WASI end-to-end execution |
+| `types/fn_field_call` | `runnable` | Verified by WASI end-to-end execution |
+| `types/method_clone` | `runnable` | Verified by WASI end-to-end execution |
 <!-- END GENERATED: playground-wasi-capability-summary -->
 
-The typed `[[playground_wasi]]` rows in `wasm-capability-manifest.toml` are the
-source of truth for non-runnable per-entry values. `hew-capability-gen` renders
-those rows into `examples/playground/wasm-capabilities.json`; the playground
-manifest generator consumes that checked output and owns no independent WASI
-capability table. The summary above combines those typed exclusions with the
-runnable values from the checked playground manifest and is generated in full.
+Each `runnable` example is compiled and executed by the WASI end-to-end test,
+which compares its output with the checked expectation. Each `unsupported`
+example is checked for the capability-specific diagnostic shown above.
 
-Entries absent from `[[playground_wasi]]` are candidates for `"runnable"`, not
-declarative pass claims. The WASI E2E test compiles and executes every such
-entry and compares its real output. This keeps Pass proof in the executable
-gate rather than allowing a table row to waive it.
-
-The WASI e2e test (`hew-cli/tests/wasi_run_e2e.rs`) reads `capabilities.wasi`
-from the manifest to determine which examples to run vs. which to verify on the
-diagnostic path, eliminating hard-coded runnable example IDs from the test
-logic. Run it via `make playground-wasi-check` in codegen-capable environments
-to prove the curated playground contract against the real WASI runtime path
-without implying any in-browser runtime.
+Run `make playground-wasi-check` in a codegen-capable environment to verify
+the curated examples against the Tier 2 runtime.

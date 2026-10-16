@@ -179,7 +179,7 @@ pub fn shuffle(v: Vec<i64>) {
 ///
 /// `weights` is a `Vec<f64>` of cumulative weights (each entry is the sum of
 /// all weights up to and including that index), `total` is the grand total,
-/// and `n` is reserved for future multi-sample use (pass 1).
+/// and `n` must be `1`.
 pub fn choices(weights: Vec<f64>, total: f64, n: i64) -> i64 {
     if weights.len() == 0 {
         panic("random.choices: weights must not be empty");

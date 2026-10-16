@@ -79,7 +79,7 @@ If the diff is empty the output matches exactly. A non-empty diff means the prog
 
 - **progressive/** -- Numbered lessons (01-11) introducing core language features with expected output files
 - **ux/** -- Quick-start lessons (01-15) covering arithmetic, actors, enums, vectors, and more; all lessons have expected output files and run as automated tests
-- **directory_module_demo/** -- Quick proof that directory-form module merging works: two peer files compose into one `greeting` module ([README](directory_module_demo/README.md))
+- **directory_module_demo/** -- Directory-form module merging: two peer files compose into one `greeting` module ([README](directory_module_demo/README.md))
 - **native_c/** -- A package whose `extern "C"` functions are a C source with a header, a define and a per-OS system library, declared in `hew.toml`'s `[native]` section and linked with no `--link-lib` ([manifest reference](../docs/package-manifest.md#native))
 - **module_generic_boundaries/** -- Small two-file demo showing generic trait APIs crossing a module boundary (`main.hew` + `src/widgets.hew`)
 - **multifile/** -- Progressive multi-file examples showing peer-file type contribution, selective imports, and two-level module hierarchies ([README](multifile/README.md)):
@@ -104,7 +104,7 @@ The learning paths here are mostly language-focused. When you want shipped libra
 
 - **algos/** -- One-file algorithm examples covering search, sorting, graph traversal, dynamic programming, and string processing. Each is self-checking, ships a paired `.expected`, and is gated as a core-acceptance `example-algo-*`/`example-datastruct-*` case
 - **datastruct/** -- One-file data-structure examples covering trees, heaps, maps, caches, graphs, and related utilities. Each is self-checking, ships a paired `.expected`, and is gated as a core-acceptance `example-algo-*`/`example-datastruct-*` case
-- **playground/** -- Grouped by topic; [`manifest.json`](playground/manifest.json) is the curated source of truth for the downstream browser playground catalog. After editing files under `playground/`, refresh it with `make baselines` (or `python3 scripts/gen-playground-manifest.py` for that artefact alone), use `make playground-manifest-check` for the cheap freshness check, use `make playground-check` for the repo-local browser/tooling preflight that validates the curated entries through `hew-wasm`'s analysis-only `analyze()` surface before building `hew-wasm`, and use `make playground-wasi-check` in codegen-capable environments for the real `hew run --target wasm32-wasi` proof path:
+- **playground/** -- Grouped by topic; [`manifest.json`](playground/manifest.json) is the curated source of truth for the downstream browser playground catalog. After editing files under `playground/`, refresh it with `make baselines` (or `python3 scripts/gen-playground-manifest.py` for that artefact alone), use `make playground-manifest-check` for the cheap freshness check, use `make playground-check` for the repo-local browser/tooling preflight that validates the curated entries through `hew-wasm`'s analysis-only `analyze()` surface before building `hew-wasm`, and use `make playground-wasi-check` in codegen-capable environments to compile and run the curated WASI examples:
   - `basics/` -- Hello world, fibonacci, higher-order functions, string interpolation
   - `concurrency/` -- Actor pipelines, async/await, counters, supervisors
   - `types/` -- Collections, pattern matching, wire types

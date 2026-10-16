@@ -889,8 +889,8 @@ impl Builder {
         for param in &machine.const_params {
             if param.default.is_none() {
                 return Err(self.error(format!(
-                    "const parameter `{}` on machine `{}` needs a default value; \
-                     a machine type annotation cannot yet spell const arguments",
+                    "const parameter `{}` on machine `{}` needs a default value because \
+                     machine type annotations do not accept const arguments",
                     param.name, machine.name
                 )));
             }

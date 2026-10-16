@@ -957,8 +957,8 @@ impl Checker {
                     return target;
                 }
                 Some(format!(
-                    "module file contains unsupported slice annotations in signature(s): {}. \
-                     slice type composite lowering is not yet implemented",
+                    "module file contains slice annotations that cannot be lowered in \
+                     signature(s): {}",
                     info.unsupported_type_signatures.join(", ")
                 ))
             }

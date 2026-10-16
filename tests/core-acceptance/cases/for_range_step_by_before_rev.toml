@@ -10,4 +10,4 @@ kind = "reject"
 code = "NotYetImplemented"
 line = 8
 column = 15
-message = "``step_by` before `rev` is unsupported; write `(a..b).rev().step_by(k)`` is not yet supported by the Hew compiler (this is a current Hew limitation, not your code)"
+message = "unsupported compiler construct: `step_by` before `rev` is unsupported; write `(a..b).rev().step_by(k)`"

@@ -80,9 +80,7 @@ pub(super) fn check_coroutine_gate(ctx: &mut LowerCtx, program: &Program) {
                 }
             }
             Item::Supervisor(supervisor_decl) => {
-                // Supervisors remain gated on wasm32: supervisor restart
-                // machinery (`SupervisorChildGet`, `Stop`, nested-restart)
-                // is not yet implemented in the wasm32 runtime (#1475).
+                // The wasm32 runtime has no supervisor restart machinery.
                 ctx.diagnostics.push(HirDiagnostic::new(
                     HirDiagnosticKind::TargetCoroutineUnsupported {
                         target_arch: target_name.to_string(),
@@ -91,8 +89,7 @@ pub(super) fn check_coroutine_gate(ctx: &mut LowerCtx, program: &Program) {
                     span.clone(),
                     format!(
                         "supervisor `{}` cannot be compiled for target `{}`: \
-                         supervisor restart machinery is not yet available on \
-                         this target (#1475)",
+                         this target has no supervisor restart runtime",
                         supervisor_decl.name, target_name
                     ),
                 ));

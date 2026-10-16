@@ -81,16 +81,12 @@ pub(crate) fn hir_diagnostic_prefix(kind: &hew_hir::HirDiagnosticKind) -> &'stat
 
 /// Build the user-facing message for an HIR diagnostic.
 ///
-/// For a `NotYetImplemented` gap, the message frames the gap as a current
-/// compiler limitation — not a problem with the user's code — and never leaks
-/// the Rust `{:?}` field names (`construct`, `owning_pass`). Other kinds fall
-/// back to the stable prefix plus any attached note.
+/// For a `NotYetImplemented` gap, the message names the unsupported construct
+/// without leaking the Rust `{:?}` field names (`construct`, `owning_pass`).
+/// Other kinds fall back to the stable prefix plus any attached note.
 pub(crate) fn hir_diagnostic_user_message(diagnostic: &hew_hir::HirDiagnostic) -> String {
     if let hew_hir::HirDiagnosticKind::NotYetImplemented { construct, .. } = &diagnostic.kind {
-        let mut message = format!(
-            "`{construct}` is not yet supported by the Hew compiler \
-             (this is a current Hew limitation, not your code)"
-        );
+        let mut message = format!("unsupported compiler construct: {construct}");
         if !diagnostic.note.is_empty() {
             message.push_str(": ");
             message.push_str(&diagnostic.note);
@@ -146,10 +142,8 @@ pub(crate) fn codegen_channel(
 /// The stable code for a codegen-emit failure, classified the same three ways
 /// as [`codegen_channel`] (#3189): `LlvmVerify`/`FailClosed`/`FailClosedAt`
 /// are the compiler disagreeing with the LLVM module it built, `Unsupported`/
-/// `UnsupportedAt` are a legal Hew construct this backend does not lower yet,
-/// and the rest are the build environment. None of the three is "not yet
-/// implemented" — that code names a different thing (a source construct HIR
-/// itself refuses) and previously swallowed all three classes here alike.
+/// `UnsupportedAt` identify a Hew construct outside this backend's lowering
+/// surface, and the rest describe the build environment.
 #[must_use]
 pub(crate) fn codegen_error_code(error: &hew_codegen_rs::CodegenError) -> &'static str {
     use hew_types::error::DiagChannel;

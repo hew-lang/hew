@@ -27,23 +27,14 @@
 //   ⑥ Messages     — trace events: spawns, sends, and the crash/restart
 //   ⑦ Timeline     — same events as a time-density view
 //
-// ── Why this works where supervisor_showcase.hew does not ───────────────
+// ── Supervised-child setup ─────────────────────────────────────────
 // The Supervisors tab is fed by the runtime's live supervisor profiler.
-// Any supervisor that boots cleanly shows up there. The catch: supervised
-// children whose `init() {}` blocks run during the supervisor bootstrap are
-// not yet supported by codegen, so a tree built from init-style children
-// never starts and never reaches the profiler.
-//
-// The workaround used here is to give every child DEFAULT FIELD VALUES and
-// CONSTRUCTOR ARGUMENTS instead of an init() block. That is a fully
-// supported path: children boot cleanly, the supervisor registers, and the
-// profiler serves a real tree.
+// These children use default field values and constructor arguments, so they
+// boot during supervisor setup and appear in the live tree.
 //
 // NOTE: #[on(start)] does run for a supervised child — on its first start
-//       and again after every restart. This example still sets everything up
-//       through field defaults and constructor arguments, because that is
-//       what the init() workaround above needs; the hook is available if you
-//       want one.
+//       and again after every restart. Use it for work that should repeat for
+//       each incarnation.
 
 // ── Actor types ─────────────────────────────────────────────────────────
 

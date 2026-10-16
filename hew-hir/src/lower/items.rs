@@ -47,9 +47,9 @@ impl LowerCtx {
             self.diagnostics.push(HirDiagnostic::new(
                 HirDiagnosticKind::ImplBlockShapeNotLowered { shape },
                 span,
-                "impl-block shape not yet lowered: only where-clause predicates of the form \
+                "unsupported impl block: only where-clause predicates of the form \
                  `where T: Bound(s)` on the impl's own type parameters are admitted — \
-                 predicates on parameterised types and non-type-param names require later slices",
+                 use a bound on an impl type parameter",
             ));
             return;
         }
@@ -63,9 +63,9 @@ impl LowerCtx {
                     shape: "impl on non-nominal target".to_string(),
                 },
                 span,
-                "impl-block shape not yet lowered: impl target must be a named \
+                "unsupported impl block: impl target must be a named \
                  nominal type (e.g. `impl Trait for VecIter<T>`); tuple, array, \
-                 function, and trait-object targets are not yet supported",
+                 function, and trait-object targets are unsupported",
             ));
             return;
         };
@@ -168,10 +168,8 @@ impl LowerCtx {
                     ),
                 },
                 span,
-                "impl-block shape not yet lowered: blanket impls (target is a \
-                 bare type parameter) require specialisation infrastructure \
-                 that is not in V0b — restrict the target to a concrete \
-                 nominal type",
+                "unsupported impl block: a blanket impl cannot target a bare \
+                 type parameter; restrict the target to a concrete nominal type",
             ));
             return;
         }
@@ -311,7 +309,7 @@ impl LowerCtx {
                         shape: format!("inherent impl on builtin nominal `{self_type_name}`"),
                     },
                     span,
-                    "impl-block shape not yet lowered: inherent impls on builtin \
+                    "unsupported impl block: inherent impls on builtin \
                  nominal types (`Vec`, `HashMap`, `Option`, `Result`, etc.) are \
                  reserved for the standard library — user code may add trait \
                  impls (`impl MyTrait for Vec<T>`) but not bare \
@@ -1094,7 +1092,7 @@ impl LowerCtx {
                 name: format!("impl body `{}`", self.defs.path(declaration)),
                 reason: expected.map_or_else(
                     || "no pre-lowering emitted-body plan".to_string(),
-                    |expected| format!("planned symbol `{expected}`, emitted `{symbol}`"),
+                    |expected| format!("expected symbol `{expected}`, found `{symbol}`"),
                 ),
             },
             span.clone(),

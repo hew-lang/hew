@@ -44,10 +44,9 @@ Expected output:
 Hello from a merged directory module!
 ```
 
-`hew check` passes in v0.5. `hew run` and `hew build` require string
-concatenation lowering, which lands in the v0.5 codegen milestone. The
-directory-module resolution path (`import greeting;`, peer-file merge, and
-function-call lowering) is covered by the vertical-slice acceptance suite.
+All three commands resolve `import greeting;`, merge the peer files, and lower
+the function call. The acceptance suite exercises the same directory-module
+path.
 
 If you want the next step after this minimal layout, continue with
 [`../multifile/README.md`](../multifile/README.md) for selective imports and

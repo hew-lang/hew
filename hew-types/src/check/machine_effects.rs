@@ -782,7 +782,10 @@ impl NodeVisitor for EffectVisitor<'_> {
                             .interpolation_display_types
                             .contains_key(&SpanKey::in_module(&value.1, self.module_idx))
                         {
-                            self.refuse(&value.1, "custom Display calls are not yet classified for machine evaluation");
+                            self.refuse(
+                                &value.1,
+                                "machine evaluation cannot call a custom Display implementation",
+                            );
                         }
                     }
                 }

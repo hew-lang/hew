@@ -3,6 +3,6 @@
     "id": "concurrency/supervisor",
     "status": "unsupported",
     "capability": "supervision-trees",
-    "reason": "Uses the manifest-owned supervision-trees reject capability"
+    "reason": "Uses supervision trees, which Tier 2 rejects"
   }
 ]

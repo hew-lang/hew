@@ -79,6 +79,10 @@ pub enum RuntimeCallFamily {
     AutoMutexLock,
     AutoMutexUnlock,
 
+    // --- Deque resource operations ------------------------------------------
+    DequePopFront,
+    DequePopBack,
+
     // --- Bytes value collection ops -----------------------------------------
     BytesAppend,
     BytesClear,
@@ -912,6 +916,33 @@ impl RuntimeCallFamily {
             Self::Encoding { format, .. } => Some(format),
             _ => None,
         }
+    }
+
+    /// Admit deque pops only through their exact shipped source declaration.
+    /// The checker separately proves the module's canonical source provenance.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "each part of the extern declaration is matched independently"
+    )]
+    #[must_use]
+    pub fn matches_deque_extern(
+        self,
+        defs: &crate::DefTable,
+        module: &str,
+        declaration: &str,
+        symbol: &str,
+        params: &[ResolvedTy],
+        result: &ResolvedTy,
+        consuming: &[bool],
+    ) -> bool {
+        matches!(self, Self::DequePopFront | Self::DequePopBack)
+            && module == "std.deque"
+            && symbol == self.c_symbol()
+            && declaration == format!("{module}.{symbol}")
+            && consuming == [false]
+            && self
+                .semantic_contract()
+                .is_some_and(|contract| contract.matches_signature(defs, params, result))
     }
 
     /// Admit an encoding extern only at its exact declaring identity and ABI.

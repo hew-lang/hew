@@ -4,6 +4,7 @@ import std.deque;
 actor DequePopBackCrasher {
     receive fn boom() {
         let dq = deque.new();
+        sleep(1ms);
         let _ = dq.pop_back();
     }
 }

@@ -406,6 +406,38 @@ impl RuntimeCallFamily {
             },
             Self::BytesIsEmpty => declared::BYTESISEMPTY.row,
             Self::BytesLen => declared::BYTESLEN.row,
+            Self::DequePopFront => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
+                symbol: "hew_deque_pop_front",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::NominalArgument("std.deque.DequeHandle"),
+                        effect: E::Borrow,
+                    }],
+                    result: R::BitCopy(K::I64),
+                    failures: &[RuntimeLogicalFailure::IndexOutOfBounds],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::DequePopBack => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
+                symbol: "hew_deque_pop_back",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::NominalArgument("std.deque.DequeHandle"),
+                        effect: E::Borrow,
+                    }],
+                    result: R::BitCopy(K::I64),
+                    failures: &[RuntimeLogicalFailure::IndexOutOfBounds],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
             Self::BytesPop => RuntimeOpRow {
                 authority: RuntimeAuthority::Value,
                 symbol: "hew_bytes_pop",

@@ -637,6 +637,7 @@ export interface SupervisorShape {
     role: { actor: number } | { supervisor: number };
     restart: string;
     stop_ns?: number | null;
+    stop_config?: number;
     pool_count?: number;
     spawn: number;
   }>;

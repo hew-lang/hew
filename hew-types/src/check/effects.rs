@@ -159,15 +159,6 @@ enum ObligationSlot {
     Dyn { method: String, target: String },
 }
 
-/// An `#[on(crash)]` hook body, which must not suspend (D529).
-#[derive(Debug, Clone)]
-struct CrashHook {
-    body: EffectBody,
-    name: String,
-    span: Span,
-    source_module: Option<String>,
-}
-
 #[derive(Debug, Clone, Default)]
 pub(super) struct EffectGraph {
     pub builtin_suspensions: HashSet<CallTarget>,
@@ -193,7 +184,6 @@ pub(super) struct EffectGraph {
     bindings: HashMap<TypeBindingId, CallableOrigin>,
     fork_transfers: Vec<PendingForkTransfer>,
     obligations: Vec<SuspensionObligation>,
-    crash_hooks: Vec<CrashHook>,
     pub(super) releases: Vec<super::cleanup_effects::CleanupEffect>,
     pub(super) once_releases: HashMap<EffectBody, Vec<super::cleanup_effects::CleanupValue>>,
 }
@@ -357,26 +347,13 @@ impl Checker {
         }
     }
 
-    /// Enter a crash hook's body. The supervisor calls the hook synchronously
-    /// to rule on the restart before the crashed actor's cleanup, so the body
-    /// must not suspend; the fixed point decides that once every body is known.
-    pub(super) fn enter_crash_hook_body(
-        &mut self,
-        qualified_name: &str,
-        display_name: String,
-        span: &Span,
-    ) -> Option<EffectBody> {
+    /// Enter the declaration-owned effect body of a crash hook.
+    pub(super) fn enter_crash_hook_body(&mut self, qualified_name: &str) -> Option<EffectBody> {
         let body = self
             .lookup_declaration(qualified_name)
             .map(EffectBody::Declaration);
         if let Some(body) = &body {
             self.effect_graph.bodies.entry(body.clone()).or_default();
-            self.effect_graph.crash_hooks.push(CrashHook {
-                body: body.clone(),
-                name: display_name,
-                span: span.clone(),
-                source_module: self.current_module.clone(),
-            });
         }
         std::mem::replace(&mut self.effect_graph.current_body, body)
     }
@@ -1186,51 +1163,6 @@ impl Checker {
         }
     }
 
-    /// D529: report each crash hook whose body may suspend, at its own
-    /// suspending call when it has one.
-    fn refuse_suspending_crash_hooks(
-        &mut self,
-        graph: &EffectGraph,
-        bodies: &HashMap<EffectBody, bool>,
-        witnesses: &HashMap<EffectBody, String>,
-    ) {
-        for hook in &graph.crash_hooks {
-            if !bodies.get(&hook.body).copied().unwrap_or(false) {
-                continue;
-            }
-            // Point at the hook's own suspending call when there is one; an
-            // intrinsic suspension (`await`, `select`, …) is named instead.
-            let call = graph
-                .calls
-                .iter()
-                .filter(|(key, invocation)| {
-                    invocation.owner.as_ref() == Some(&hook.body)
-                        && self.invocation_suspends(key, invocation, graph, bodies)
-                })
-                .min_by_key(|(key, _)| key.start);
-            let (span, witness) = match call {
-                Some((key, invocation)) => (key.start..key.end, invocation.name.as_str()),
-                None => (
-                    hook.span.clone(),
-                    witnesses
-                        .get(&hook.body)
-                        .map_or("a suspending operation", String::as_str),
-                ),
-            };
-            let mut error = crate::error::TypeError::new(
-                crate::error::TypeErrorKind::InvalidOperation,
-                span,
-                format!(
-                    "a crash hook cannot suspend: it rules on the restart before cleanup; \
-                     `{}` suspends at `{witness}`",
-                    hook.name
-                ),
-            );
-            error.source_module.clone_from(&hook.source_module);
-            self.errors.push(error);
-        }
-    }
-
     fn finish_fork_transfers(&mut self, graph: &EffectGraph, output: &mut SuspensionEffects) {
         for PendingForkTransfer {
             key,
@@ -1450,7 +1382,6 @@ impl Checker {
             error.source_module.clone_from(&obligation.source_module);
             self.errors.push(error);
         }
-        self.refuse_suspending_crash_hooks(&graph, &bodies, &witnesses);
         self.finish_fork_transfers(&graph, &mut output);
         output
     }

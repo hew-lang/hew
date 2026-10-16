@@ -845,6 +845,10 @@
             "type": "object",
             "additionalProperties": false,
             "required": ["name", "role", "restart", "spawn"],
+            "not": {
+              "properties": { "stop_ns": {}, "stop_config": {} },
+              "required": ["stop_ns", "stop_config"]
+            },
             "properties": {
               "name": {
                 "type": "string"
@@ -875,6 +879,13 @@
               },
               "restart": {
                 "type": "string"
+              },
+              "stop_ns": {
+                "type": ["integer", "null"],
+                "minimum": 0
+              },
+              "stop_config": {
+                "$ref": "#/$defs/id"
               },
               "pool_count": {
                 "$ref": "#/$defs/id"

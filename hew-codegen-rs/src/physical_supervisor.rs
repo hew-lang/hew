@@ -147,6 +147,9 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                             .i64_type()
                             .const_int(
                                 match child.stop_deadline {
+                                    hew_mir::physical::SemStopDeadline::DefaultActor => {
+                                        hew_runtime::actor::DEFAULT_STOP_BUDGET_NS as u64
+                                    }
                                     hew_mir::physical::SemStopDeadline::Literal(ns) => ns as u64,
                                     hew_mir::physical::SemStopDeadline::Config(_) => 0,
                                 },

@@ -92,14 +92,13 @@ pub(crate) unsafe fn deep_copy_state(src: *mut c_void, size: usize) -> *mut c_vo
     }
 }
 
-/// Configuration for the internal actor spawn helper.
-///
-/// All three public spawn functions build one of these and delegate to
-/// [`spawn_actor_internal`].
-/// A native crash hook borrows initialized state and a managed diagnostic.
-pub type HewNativeCrashFn =
-    unsafe extern "C" fn(*mut c_void, i64, *const hew_cabi::string::HewString) -> i32;
+/// A native crash hook borrows retained inputs through its release continuation.
+pub type HewNativeCrashFn = hew_cabi::value::HewValueReleaseStart;
 
+/// Default graceful-stop budget shared by declared children and crash hooks.
+pub const DEFAULT_STOP_BUDGET_NS: i64 = 5_000_000_000;
+
+/// Configuration shared by the public actor spawn functions.
 struct ActorSpawnConfig {
     native_crash: Option<HewNativeCrashFn>,
     native_state_release: Option<hew_cabi::value::HewValueReleaseStart>,

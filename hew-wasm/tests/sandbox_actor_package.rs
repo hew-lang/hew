@@ -642,6 +642,10 @@ fn a_crash_hook_observes_the_last_valid_state_before_restart() {
         stdout(&trace),
         "CHANGED!\nlast valid crash state, fresh restart\n"
     );
+    let trace =
+        assert_native_manifest("crash-hook-suspension", hew_compile::SourceSet::in_memory());
+    // One helper millisecond, the authored 100ms timeout and six 1ms releases.
+    assert_eq!(trace["final_state"]["virtual_clock"]["current_ms"], 107);
 }
 
 #[test]
@@ -960,7 +964,7 @@ fn imported_associated_projection_bounds_execute() {
     assert_native_manifest("associated-projection-bounds", inputs);
 }
 
-fn assert_native_manifest(name: &str, inputs: hew_compile::SourceSet) {
+fn assert_native_manifest(name: &str, inputs: hew_compile::SourceSet) -> serde_json::Value {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../tests/core-acceptance");
     let manifest = std::fs::read_to_string(root.join(format!("cases/{name}.toml")))
         .expect("shared native manifest");
@@ -979,6 +983,7 @@ fn assert_native_manifest(name: &str, inputs: hew_compile::SourceSet) {
         case["expected"]["exit"].as_integer(),
         "{name}"
     );
+    trace
 }
 
 #[test]

@@ -650,16 +650,5 @@ pub(super) fn verify_callables(module: &PhysicalModule) -> Result<(), PhysicalEr
             )));
         }
     }
-    // Spawn invokes init and start through its caller's continuation,
-    // terminal cleanup drives stop hooks as a resumable release, and the
-    // system lane parks a suspending EXIT or DOWN hook like a handler. The
-    // crash hook still runs through the runtime's synchronous callback ABI.
-    for actor in &module.actors {
-        if actor.crash.iter().any(|body| expected.contains(body)) {
-            return Err(PhysicalError::new(
-                "native actor crash hook suspension is not implemented",
-            ));
-        }
-    }
     Ok(())
 }

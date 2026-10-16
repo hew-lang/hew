@@ -89,6 +89,8 @@ type CallerStamp =
   | { kind: "Task" | "Timer" }
   | { kind: "Actor"; identity: bigint };
 
+const DEFAULT_ACTOR_STOP_NS = 5_000_000_000;
+
 interface FrameContext {
   pollBudget?: number;
   pollSuppression?: number;
@@ -149,7 +151,7 @@ interface ActorInstance {
   closeFaultDebt?: number;
   crashing: Fault | null;
   active: FrameContext | null;
-  stopHook: FrameContext | null;
+  terminalHook: FrameContext | null;
   closed: Array<() => void>;
   supervisor?: { owner: SupervisorInstance; child: number };
 }
@@ -2731,7 +2733,7 @@ class ExecutorV1 {
           closingFault: null,
           crashing: null,
           active: null,
-          stopHook: null,
+          terminalHook: null,
           closed: [],
         };
         this.actors.set(actor.id, actor);
@@ -3593,7 +3595,13 @@ class ExecutorV1 {
           { kind: "string", value: String(message) },
         ],
       };
-      this.invokeFrame(
+      let cancelTimer: (() => void) | undefined;
+      const complete = (action: string) => {
+        cancelTimer?.();
+        actor.terminalHook = null;
+        finished(action);
+      };
+      const hook = this.invokeFrame(
         actor,
         actor.layout.crash,
         [actor.state, info],
@@ -3603,10 +3611,28 @@ class ExecutorV1 {
             value.kind === "enum" ? shape?.cases[value.tag]?.name : undefined;
           if (!action)
             throw new Error("crash hook returned no declared action");
-          finished(action);
+          complete(action);
         },
-        () => finished("Kill"),
+        (hookFault) => {
+          fault = combineFaults(fault, hookFault)!;
+          actor.crashing = fault;
+          complete("Restart");
+        },
       );
+      actor.terminalHook = hook;
+      const parent = actor.supervisor;
+      const stopNs = parent
+        ? this.childStopBudget(parent.owner, parent.child)!
+        : DEFAULT_ACTOR_STOP_NS;
+      hook.requestDeadline = this.trace.virtualTimeMs + stopNs / 1_000_000;
+      const expire = () =>
+        hook.cancel?.({
+          kind: "panic",
+          message: "crash hook deadline elapsed",
+          deadline: true,
+        });
+      if (stopNs <= 0) expire();
+      else cancelTimer = this.scheduler.after(BigInt(stopNs), expire);
     } else finished("Restart");
   }
 
@@ -3817,6 +3843,22 @@ class ExecutorV1 {
       this.stopSupervisor(this.supervisorFor(value), true);
   }
 
+  private childStopBudget(
+    owner: SupervisorInstance,
+    child: number,
+  ): number | null {
+    const spec = owner.specs[child]!;
+    if (spec.stop_config !== undefined) {
+      const duration = owner.config[spec.stop_config];
+      if (duration?.kind !== "i64" || duration.value < 0n)
+        throw new Error("child stop budget is not a non-negative duration");
+      return Number(duration.value);
+    }
+    return (
+      spec.stop_ns ?? ("actor" in spec.role ? DEFAULT_ACTOR_STOP_NS : null)
+    );
+  }
+
   private stopSupervisor(owner: SupervisorInstance, force = false): void {
     if (force) {
       owner.terminating = true;
@@ -3835,13 +3877,7 @@ class ExecutorV1 {
         const index = childIndex--;
         const child = owner.children[index]!;
         owner.teardownChild = child;
-        const spec = owner.specs[index]!;
-        const stopNs =
-          spec.stop_ns === undefined
-            ? "actor" in spec.role
-              ? 5_000_000_000
-              : null
-            : spec.stop_ns;
+        const stopNs = this.childStopBudget(owner, index);
         if (!owner.terminating && stopNs !== null && stopNs > 0) {
           owner.teardownCancelTimer = this.scheduler.after(BigInt(stopNs), () =>
             this.terminateChild(child),
@@ -3908,7 +3944,7 @@ class ExecutorV1 {
     if (actor.completed || actor.terminating) return;
     actor.closing = true;
     actor.terminating = true;
-    for (const context of [actor.active, actor.stopHook]) {
+    for (const context of [actor.active, actor.terminalHook]) {
       if (!context) continue;
       context.pendingCancellation ??= {
         kind: "panic",
@@ -3927,16 +3963,16 @@ class ExecutorV1 {
     const next = () => {
       const hook = actor.terminating ? undefined : hooks.shift();
       if (hook !== undefined) {
-        actor.stopHook = this.invokeFrame(
+        actor.terminalHook = this.invokeFrame(
           actor,
           hook,
           [actor.state],
           () => {
-            actor.stopHook = null;
+            actor.terminalHook = null;
             next();
           },
           (fault) => {
-            actor.stopHook = null;
+            actor.terminalHook = null;
             if (
               !(actor.terminating && fault.kind === "panic" && fault.cancelled)
             )

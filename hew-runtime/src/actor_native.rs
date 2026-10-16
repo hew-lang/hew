@@ -13,6 +13,7 @@ use crate::lifetime::live_actors::ActorIncarnation;
 
 #[path = "actor_native_cleanup.rs"]
 pub(crate) mod cleanup;
+pub use cleanup::HewNativeCrashContext;
 #[path = "actor_native_close.rs"]
 mod close;
 pub(crate) use close::{
@@ -877,19 +878,24 @@ mod tests {
     }
 
     unsafe extern "C" fn external_trap_hook(
-        state: *mut c_void,
-        code: i64,
-        message: *const hew_cabi::string::HewString,
-    ) -> i32 {
-        // SAFETY: the fixture keeps this initialized state live through terminal cleanup.
-        let state = unsafe { &mut *state.cast::<ExternalTrapHooks>() };
-        assert_eq!(code, 91);
+        context: *mut c_void,
+        _fault: *mut *mut c_void,
+        invocation: *mut c_void,
+    ) -> *mut c_void {
+        // SAFETY: terminal cleanup retains the context and initialized state.
+        let context = unsafe { &mut *context.cast::<super::HewNativeCrashContext>() };
+        // SAFETY: the fixture lends this exact scalar record until hook drain.
+        let state = unsafe { &mut *context.state.cast::<ExternalTrapHooks>() };
+        assert_eq!(context.code, 91);
         assert_eq!(state.calls, 0);
         assert_eq!(state.drops, 0);
-        // SAFETY: the native terminal boundary lends a managed diagnostic string.
-        assert!(!unsafe { hew_cabi::string::string_as_str(message) }.is_empty());
+        // SAFETY: the context retains a managed diagnostic string.
+        assert!(!unsafe { hew_cabi::string::string_as_str(context.message) }.is_empty());
         state.calls += 1;
-        crate::supervisor::CRASH_ACTION_KILL
+        context.action = crate::supervisor::CRASH_ACTION_KILL;
+        // SAFETY: this synchronous callback owns its supplied invocation.
+        unsafe { crate::coro_state::hew_coro_state_finish(invocation.cast(), 0) };
+        ptr::null_mut()
     }
 
     unsafe extern "C-unwind" fn external_trap_state_clone(state: *const c_void) -> *mut c_void {
@@ -978,10 +984,12 @@ mod tests {
             crate::scheduler::activate_actor_for_test(&raw mut actor);
             assert_eq!(frame.resumes.load(Ordering::Acquire), 2);
             assert_eq!(frame.destroyed.load(Ordering::Acquire), 1);
+            assert_eq!((hooks.calls, hooks.drops), (0, 0));
+            crate::scheduler::activate_actor_for_test(&raw mut actor);
             assert_eq!(
                 actor.actor_state.load(Ordering::Acquire),
                 crate::internal::types::HewActorState::Crashed as i32,
-                "the drained activation publishes the original crash"
+                "terminal cleanup publishes the original crash after its hook"
             );
             assert_eq!(actor.error_code.load(Ordering::Acquire), 91);
             assert!(actor.checked_invocation.load(Ordering::Acquire).is_null());

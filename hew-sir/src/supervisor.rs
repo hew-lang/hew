@@ -43,6 +43,8 @@ pub enum SemSupervisedRole {
 /// Checked source of a child's graceful-stop deadline.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SemStopDeadline {
+    /// The runtime's ordinary actor stop budget.
+    DefaultActor,
     Literal(i64),
     Config(usize),
 }

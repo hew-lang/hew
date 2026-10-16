@@ -237,6 +237,10 @@ pub struct SupervisorChild {
     pub role: serde_json::Value,
     pub restart: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub stop_ns: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stop_config: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub pool_count: Option<u32>,
     pub spawn: u32,
 }
@@ -953,6 +957,14 @@ impl<'m> Walker<'m> {
                                     }
                                 },
                                 restart: restart_name(child.restart).to_string(),
+                                stop_ns: match child.stop_deadline {
+                                    hew_sir::SemStopDeadline::Literal(ns) if ns >= 0 => Some(ns),
+                                    _ => None,
+                                },
+                                stop_config: match child.stop_deadline {
+                                    hew_sir::SemStopDeadline::Config(index) => Some(index),
+                                    _ => None,
+                                },
                                 pool_count: child.pool_count,
                                 spawn: self.function_id(child.spawn)?,
                             })

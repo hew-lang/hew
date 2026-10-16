@@ -344,7 +344,7 @@ pub unsafe extern "C" fn hew_supervisor_add_child_spec(
         }),
         dispatch: sp.dispatch,
         restart_policy: sp.restart_policy,
-        stop_ns: 5_000_000_000,
+        stop_ns: actor::DEFAULT_STOP_BUDGET_NS,
         mailbox_capacity: sp.mailbox_capacity,
         overflow: sp.overflow,
         coalesce_match_fn: sp.coalesce_match_fn,

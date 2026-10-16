@@ -8,6 +8,24 @@ use hew_cabi::value::HewValueReleaseStart;
 use std::sync::atomic::{AtomicI32, AtomicPtr, Ordering};
 use std::{collections::VecDeque, ffi::c_void, ptr, sync::Mutex};
 
+/// Borrowed crash-hook inputs and output retained until its frame drains.
+#[repr(C)]
+#[derive(Debug)]
+pub struct HewNativeCrashContext {
+    pub state: *mut c_void,
+    pub code: i64,
+    pub message: *const hew_cabi::string::HewString,
+    pub stop_ns: i64,
+    pub action: i32,
+}
+
+impl Drop for HewNativeCrashContext {
+    fn drop(&mut self) {
+        // SAFETY: this context owns the managed diagnostic through hook drain.
+        unsafe { hew_cabi::string::string_release(self.message.cast_mut()) };
+    }
+}
+
 #[derive(Debug, Default)]
 struct Inbox {
     owners: usize,
@@ -22,6 +40,8 @@ unsafe impl Send for Inbox {}
 enum Releasing {
     /// A discarded message payload.
     Payload,
+    /// The restart ruling, before state destruction.
+    Crash,
     /// The `#[on(stop)]` sequence, run on the live state.
     Stop,
     /// The actor state itself.
@@ -32,9 +52,10 @@ enum Releasing {
 struct Work {
     state: *mut HewCoroState,
     driver: Option<Box<ReleaseDriver>>,
+    crash_started: bool,
+    crash: Option<HewNativeCrashContext>,
     stop_started: bool,
     state_started: bool,
-    state_done: bool,
     releasing: Releasing,
     fault: *mut HewFault,
 }
@@ -137,7 +158,7 @@ pub(crate) fn wake(actor: &HewActor) {
     }
 }
 
-/// Cancel a stop hook already parked in terminal cleanup. State release still
+/// Cancel a terminal hook already parked in terminal cleanup. State release still
 /// follows through the same cleanup driver after the hook's cancel edge.
 pub(crate) fn cancel_stop_hook(actor: &HewActor) {
     let Some(completion) = &actor.native_completion else {
@@ -145,7 +166,7 @@ pub(crate) fn cancel_stop_hook(actor: &HewActor) {
     };
     let work = completion.cleanup.work.lock_or_recover();
     if let Some(work) = work.as_ref() {
-        if work.releasing == Releasing::Stop {
+        if matches!(work.releasing, Releasing::Stop | Releasing::Crash) {
             if let Some(driver) = work.driver.as_ref() {
                 driver.cancel_active();
             }
@@ -175,9 +196,10 @@ pub(crate) unsafe fn drive_actor_cleanup(actor: &HewActor) -> bool {
         Box::new(Work {
             state,
             driver: None,
+            crash_started: false,
+            crash: None,
             stop_started: false,
             state_started: false,
-            state_done: false,
             releasing: Releasing::State,
             fault: ptr::null_mut(),
         })
@@ -197,7 +219,7 @@ pub(crate) unsafe fn drive_actor_cleanup(actor: &HewActor) -> bool {
     let _ = crate::execution_context::set_current_context(&raw mut context);
     let mut pending = false;
     loop {
-        if work.releasing == Releasing::Stop
+        if matches!(work.releasing, Releasing::Stop | Releasing::Crash)
             // SAFETY: this activation retains the actor and its mailbox.
             && unsafe { crate::mailbox::mailbox_terminate_requested(actor.mailbox.cast()) }
         {
@@ -212,7 +234,8 @@ pub(crate) unsafe fn drive_actor_cleanup(actor: &HewActor) -> bool {
                 break;
             }
             let fault = driver.take_fault();
-            let stopped_by_termination = work.releasing == Releasing::Stop
+            let failed = !fault.is_null();
+            let stopped_by_termination = matches!(work.releasing, Releasing::Stop | Releasing::Crash)
                 // SAFETY: this activation retains the actor and its mailbox.
                 && unsafe { crate::mailbox::mailbox_terminate_requested(actor.mailbox.cast()) };
             if stopped_by_termination
@@ -220,7 +243,7 @@ pub(crate) unsafe fn drive_actor_cleanup(actor: &HewActor) -> bool {
                 && unsafe { crate::fault::hew_fault_code(fault) }
                     == crate::fault::HEW_FAULT_CANCELLED
             {
-                // SAFETY: this cancellation was requested to skip the stop
+                // SAFETY: this cancellation was requested to skip the terminal
                 // hook; state release remains the same driver's next phase.
                 unsafe { crate::fault::hew_fault_drop(fault) };
             } else {
@@ -230,8 +253,13 @@ pub(crate) unsafe fn drive_actor_cleanup(actor: &HewActor) -> bool {
             work.driver = None;
             match work.releasing {
                 Releasing::Payload => cleanup.retire_without_release(),
-                Releasing::Stop => {}
-                Releasing::State => work.state_done = true,
+                Releasing::Crash => {
+                    let context = work.crash.take().expect("owned crash hook context");
+                    completion
+                        .crash_action
+                        .store(if failed { 0 } else { context.action }, Ordering::Release);
+                }
+                Releasing::Stop | Releasing::State => {}
             }
         }
         let cursor = cleanup.inbox.lock_or_recover().pending.pop_front();
@@ -247,6 +275,43 @@ pub(crate) unsafe fn drive_actor_cleanup(actor: &HewActor) -> bool {
         if cleanup.inbox.lock_or_recover().owners != 0 {
             pending = true;
             break;
+        }
+        if !work.crash_started {
+            work.crash_started = true;
+            if terminal == HewActorState::Crashed as i32 {
+                if let Some(start) = completion.crash {
+                    let code = actor.error_code.load(Ordering::Acquire);
+                    #[cfg(not(target_arch = "wasm32"))]
+                    // SAFETY: terminal ownership retains this incarnation and tree.
+                    let stop_ns = unsafe { crate::supervisor::actor_stop_budget(actor) };
+                    #[cfg(target_arch = "wasm32")]
+                    let stop_ns = crate::actor::DEFAULT_STOP_BUDGET_NS;
+                    work.crash = Some(HewNativeCrashContext {
+                        state: actor.state,
+                        code: i64::from(code),
+                        message: hew_cabi::string::string_from_str(
+                            crate::internal::types::ExitReason::from_error_code(code)
+                                .trap_kind_name(),
+                        ),
+                        stop_ns,
+                        action: 0,
+                    });
+                    let context = work.crash.as_mut().expect("initialized crash context");
+                    // SAFETY: boxed Work keeps the borrowed context and actor
+                    // state stable until this driver destroys the hook frame.
+                    let cursor = unsafe {
+                        HewReleaseCursor::payload(
+                            std::ptr::from_mut(context).cast(),
+                            std::mem::size_of::<HewNativeCrashContext>(),
+                            start,
+                            false,
+                        )
+                    };
+                    work.releasing = Releasing::Crash;
+                    work.driver = Some(ReleaseDriver::new(cursor));
+                    continue;
+                }
+            }
         }
         // Stop hooks run on the live state after a cooperative stop and before
         // its release; a crash skips them. They may suspend like any release.
@@ -286,7 +351,6 @@ pub(crate) unsafe fn drive_actor_cleanup(actor: &HewActor) -> bool {
                         // SAFETY: this cleanup owns the exact initialized state.
                         unsafe { drop(actor.state) };
                     }
-                    work.state_done = true;
                 } else {
                     // SAFETY: this pointer was installed from the exact callback type.
                     let start =
@@ -298,8 +362,6 @@ pub(crate) unsafe fn drive_actor_cleanup(actor: &HewActor) -> bool {
                     work.driver = Some(ReleaseDriver::new(cursor));
                     continue;
                 }
-            } else {
-                work.state_done = true;
             }
         }
         break;

@@ -479,6 +479,24 @@ pub const RESTART_PERMANENT: c_int = 0;
 pub const RESTART_TRANSIENT: c_int = 1;
 pub const RESTART_TEMPORARY: c_int = 2;
 
+/// Read the declared child's stop budget while its incarnation remains owned.
+/// # Safety
+/// The actor and its supervising tree remain live through this lookup.
+pub(crate) unsafe fn actor_stop_budget(actor: &HewActor) -> i64 {
+    if actor.supervisor.is_null() {
+        return actor::DEFAULT_STOP_BUDGET_NS;
+    }
+    // SAFETY: the active incarnation retains its supervising tree; the roster
+    // lock protects the matching child and its declaration from replacement.
+    let roster = unsafe { &(*actor.supervisor.cast::<HewSupervisor>()).roster }.lock_or_recover();
+    roster
+        .children
+        .iter()
+        .position(|child| std::ptr::eq(*child, actor))
+        .and_then(|index| roster.child_specs.get(index))
+        .map_or(actor::DEFAULT_STOP_BUDGET_NS, |spec| spec.stop_ns)
+}
+
 // ── CrashAction return tags (M-4) ─────────────────────────────────────────
 //
 // The `HewOnCrashFn` ABI returns the hook's `CrashAction` decision as a 2-byte
@@ -1705,7 +1723,7 @@ impl Default for InternalChildSpec {
             dispatch: None,
             sys_dispatch: None,
             restart_policy: RESTART_PERMANENT,
-            stop_ns: 5_000_000_000,
+            stop_ns: actor::DEFAULT_STOP_BUDGET_NS,
             mailbox_capacity: -1,
             overflow: OVERFLOW_DROP_NEW,
             coalesce_match_fn: None,

@@ -248,7 +248,7 @@ pub(crate) fn record_resource_lifecycle<'a>(
     module
         .type_classes
         .lifecycle_registry()
-        .resource_record(&head.nominal()?.declaration())
+        .resource_record(&head.declaration(&module.defs)?.declaration())
 }
 
 /// The authored `#[resource] #[opaque]` lifecycle for one exact nominal type.
@@ -470,7 +470,9 @@ pub fn verify_resource_release(
         else {
             return Err("a record release requires an exact non-opaque nominal type".into());
         };
-        return if head.nominal().map(hew_types::NominalId::declaration)
+        return if head
+            .declaration(defs)
+            .map(hew_types::NominalId::declaration)
             == Some(lifecycle.resource_declaration)
         {
             Ok(())

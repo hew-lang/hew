@@ -2317,8 +2317,12 @@ impl Builder<'_, '_> {
                 "unit-valued runtime family `{family:?}` cannot produce an SSA value"
             ));
         }
-        for value in argument_temporaries.into_iter().rev() {
-            self.emit_destroy(value)?;
+        // A loan keeps its argument owners until the surrounding expression
+        // ends it, including snapshots taken before effectful later arguments.
+        if !result_is_loan {
+            for value in argument_temporaries.into_iter().rev() {
+                self.emit_destroy(value)?;
+            }
         }
         self.dispatch_runtime_release(receiver_release.as_ref())?;
         Ok(result)

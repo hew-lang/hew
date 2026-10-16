@@ -1,0 +1,73 @@
+import std.machine.watch;
+
+machine Counter {
+    events {
+        Add { value: i64; }
+        Ping;
+    }
+    emits {
+        Added { value: i64; }
+    }
+    state Ready { value: i64; }
+    on Add: Ready => Ready {
+        emit Added { value: event.value };
+        Ready { value: state.value + event.value }
+    }
+    default { state }
+}
+
+fn value(state: Counter) -> i64 {
+    match state {
+        .Ready { value } => value,
+    }
+}
+
+fn ordered(consume subscriber: watch.Subscription<Counter>) {
+    let one = subscriber.recv().expect("complete").expect("first notice");
+    let two = subscriber.recv().expect("complete").expect("second notice");
+    assert(one.revision == 1 && two.revision == 2);
+    assert(one.transition.input == "Add");
+    assert(two.transition.input == "Ping");
+    assert(one.transition.disposition == .Taken);
+    assert(two.transition.disposition == .Ignored);
+    assert(value(one.state) == 4 && value(two.state) == 4);
+    println("ordered");
+}
+
+fn main() {
+    let original: Counter = .Ready { value: 0 };
+    let (owner, feed) = watch.observe(original, capacity: 2, subscribers: 3).expect("observe");
+    var live = owner;
+    let first = feed.subscribe().expect("first");
+    let copied_feed = feed;
+    let second = copied_feed.subscribe().expect("second");
+    let slow = feed.subscribe().expect("slow");
+    assert(first.initial().revision == 0);
+    assert(value(first.initial().state) == 0);
+    assert(feed.subscribe().is_err());
+    let step = live.step(.Add { value: 4 });
+    assert(step.outputs.len() == 1);
+    assert(step.rule == .Some(0));
+    let _ignored = live.step(.Ping);
+    ordered(first);
+    ordered(second);
+    let _next = live.step(.Add { value: 3 });
+    match slow.recv() {
+        .Err(lag) => {
+            assert(lag.last_seen == 0 && lag.available_from == 2);
+            println("lagged");
+        }
+        _ => panic("slow observer silently skipped history"),
+    }
+    let drain = feed.subscribe().expect("replacement subscription");
+    assert(drain.initial().revision == 3);
+    assert(value(drain.initial().state) == 7);
+    let _last = live.step(.Add { value: 2 });
+    live.close();
+    let final_notice = drain.recv().expect("retained").expect("final notice");
+    assert(final_notice.revision == 4 && value(final_notice.state) == 9);
+    assert(drain.recv().expect("closed").is_none());
+    assert(feed.subscribe().is_err());
+    assert(value(original) == 0);
+    println("closed");
+}

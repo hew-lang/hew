@@ -770,8 +770,15 @@ impl Checker {
     /// boundary asks this of the predicate itself, never of a trait spelled
     /// `Send` (R2).
     pub(in crate::check) fn type_is_send(&self, ty: &Ty) -> bool {
+        fn bound_type(checker: &Checker, ty: &Ty) -> Ty {
+            checker.bound_parameter(ty).map_or_else(
+                || ty.map_children_pub(&|child| bound_type(checker, child)),
+                Ty::param,
+            )
+        }
+        let ty = bound_type(self, ty);
         self.registry
-            .implements_marker_with_bounds(ty, MarkerTrait::Send, &|param, marker| {
+            .implements_marker_with_bounds(&ty, MarkerTrait::Send, &|param, marker| {
                 marker == MarkerTrait::Send
                     && self.param_carries_marker(param.id, MarkerTrait::Send)
             })

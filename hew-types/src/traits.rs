@@ -595,7 +595,7 @@ impl TraitRegistry {
                             | MarkerTrait::Drop
                     );
                 }
-                // Actors are always Send + Sync
+                // Actors are always Send and Sync
                 if self.actors.contains(&name)
                     && matches!(marker, MarkerTrait::Send | MarkerTrait::Sync)
                 {
@@ -793,38 +793,7 @@ impl TraitRegistry {
         self.implements_marker(ty, MarkerTrait::Sync)
     }
 
-    /// Structural field check for user-defined types, with generic-arg substitution.
-    ///
-    /// For non-generic types (`args` is empty) every registered field is checked
-    /// directly — identical to the non-generic path.
-    ///
-    /// For generic instantiations (`args` non-empty) the derivation separates
-    /// fields into two groups:
-    ///
-    /// * **Concrete fields** — field types whose own marker can be determined
-    ///   without substitution (builtins, registered types, or fields that are
-    ///   themselves generic instantiations). These are checked recursively as
-    ///   before; the existing `visiting` guard prevents infinite recursion.
-    ///
-    /// * **Type-param placeholder fields** — bare `Ty::Named` entries whose name
-    ///   appears in the declared type-parameter list for `parent_name` (see
-    ///   [`Self::is_type_param_placeholder`]). These arise because `register_type`
-    ///   stores the generic declaration's field types verbatim; `T` in
-    ///   `type Box<T> { v: T }` is stored as `Ty::Named { name: "T" }`.
-    ///   Placeholder fields are skipped in the direct check and are instead
-    ///   covered by the **type-args sweep** below.
-    ///
-    /// **Type-args sweep** (`all(args.implements(marker))`): checks every
-    /// declared type argument against `marker`. This is a conservative proxy
-    /// for the substituted-field check: if every instantiation arg satisfies the
-    /// marker then every type-param-bearing field in the declaration also
-    /// satisfies it, regardless of the positional param-to-arg mapping. The
-    /// converse (any arg failing ⇒ outer type fails) is also correct because
-    /// a non-marker arg eventually substitutes into at least one field.
-    ///
-    /// **Soundness (no over-grant):** both arms use `all()`, so no non-Send
-    /// component is silently dropped. A type holding ANY non-Send field or ANY
-    /// non-Send type arg is correctly rejected.
+    /// Instantiate declaration-owned fields before recursively deriving markers.
     fn check_structural_fields(
         &self,
         parent_name: crate::TypeHead,
@@ -833,45 +802,20 @@ impl TraitRegistry {
         marker: MarkerTrait,
         visiting: &mut MarkerDerivation<'_>,
     ) -> bool {
-        // Concrete-field pass: check every field that is not a bare type-param
-        // placeholder. For non-generic types all fields are concrete and this
-        // is the only pass.
-        let concrete_ok = fields.iter().all(|f| {
-            if !args.is_empty() && self.is_type_param_placeholder(parent_name, f) {
-                // Placeholder covered by the type-args sweep; vacuously ok here.
-                true
-            } else {
-                self.implements_marker_guarded(f, marker, visiting)
-            }
-        });
-        if !concrete_ok {
-            return false;
-        }
-        // Type-args sweep: for generic instantiations, every declared type
-        // argument must satisfy the marker. This covers all type-param-bearing
-        // fields (spec §4.1.2: "all variant payload / field types satisfy Send").
-        args.iter()
-            .all(|a| self.implements_marker_guarded(a, marker, visiting))
-    }
-
-    /// Only this declaration's own binder can stand for its concrete argument.
-    /// An absent binder inventory or a foreign binder is checked as a member.
-    fn is_type_param_placeholder(&self, parent_name: crate::TypeHead, ty: &Ty) -> bool {
-        // Only a binder head is a placeholder: a nominal field that merely
-        // shares a binder's spelling is a concrete type (rule R6).
-        let Ty::Named {
-            head: crate::TypeHead::Param(param),
-            args,
-        } = ty
-        else {
-            return false;
-        };
-        if !args.is_empty() {
-            return false;
-        }
-        self.type_params
+        let substitutions: HashMap<_, _> = self
+            .type_params
             .get(&parent_name)
-            .is_some_and(|params| params.iter().any(|p| p == param))
+            .into_iter()
+            .flatten()
+            .copied()
+            .zip(args.iter().cloned())
+            .collect();
+        fields.iter().all(|field| {
+            let field = field.substitute_type_params_parallel(&substitutions);
+            self.implements_marker_guarded(&field, marker, visiting)
+        }) && args
+            .iter()
+            .all(|arg| self.implements_marker_guarded(arg, marker, visiting))
     }
 }
 

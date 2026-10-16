@@ -624,6 +624,16 @@ impl Checker {
     }
 
     fn capture_is_cloneable(&self, ty: &Ty) -> bool {
+        // An actor handle's copy proof does not depend on its state arguments.
+        if matches!(
+            ty,
+            Ty::Named {
+                head: crate::TypeHead::Actor(_),
+                ..
+            }
+        ) {
+            return self.registry.implements_marker(ty, MarkerTrait::Copy);
+        }
         let Ok(resolved) = ResolvedTy::from_ty(ty) else {
             return false;
         };

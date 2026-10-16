@@ -497,6 +497,27 @@ impl<T: ActorMsg> RemotePid<T> {
 // ---------------------------------------------------------------------------
 // Iterator trait
 // ---------------------------------------------------------------------------
+/// A machine's ordinary staged evaluator and committed transition metadata.
+#[lang_item("machine")]
+pub trait Machine {
+    type Event;
+    type Step;
+
+    fn step(var self, event: Self.Event) -> Self.Step;
+    fn step_info(self, report: Self.Step) -> MachineStepInfo;
+}
+
+pub enum MachineDisposition {
+    Taken;
+    Ignored;
+}
+
+pub type MachineStepInfo {
+    input: string;
+    rule: Option<i64>;
+    disposition: MachineDisposition;
+}
+
 /// Produce a sequence of values one item at a time.
 ///
 /// User-defined iterators implement this trait directly; `for` loops accept

@@ -1,0 +1,10 @@
+[[case]]
+id = "machine-observed-feed"
+intent = "Observed machine owners retain independent values, publish ordered notices to bounded subscribers, report lag and drain retained history before closing."
+source = "cases/machine-observed-feed.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 20
+
+[case.expected]
+stdout = "ordered\nordered\nlagged\nclosed\n"
+exit = 0

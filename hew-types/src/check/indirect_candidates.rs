@@ -463,8 +463,12 @@ impl Checker {
 
     fn selected_callable_target(&self, span: &Span) -> Option<&CallTarget> {
         let key = SpanKey::in_module(span, self.current_module_idx);
+        self.selected_callable_target_at(&key)
+    }
+
+    fn selected_callable_target_at(&self, key: &SpanKey) -> Option<&CallTarget> {
         self.method_call_rewrites
-            .get(&key)
+            .get(key)
             .and_then(|rewrite| match rewrite {
                 MethodCallRewrite::RewriteToFunction { target, .. }
                 | MethodCallRewrite::RewriteModuleQualifiedToFunction { target, .. }
@@ -475,22 +479,25 @@ impl Checker {
                 }) => Some(target),
                 _ => None,
             })
-            .or_else(|| self.direct_call_targets.get(&key))
+            .or_else(|| self.direct_call_targets.get(key))
             .or_else(|| {
                 self.dyn_trait_method_calls
-                    .get(&key)
+                    .get(key)
                     .map(|call| &call.target)
             })
-            .or_else(|| self.resolved_calls.get(&key).map(|call| &call.target))
+            .or_else(|| self.resolved_calls.get(key).map(|call| &call.target))
     }
 
     fn selected_callable_declaration(&self, span: &Span) -> Option<crate::DefId> {
-        self.selected_callable_target(span)
+        self.selected_callable_declaration_at(&SpanKey::in_module(span, self.current_module_idx))
+    }
+
+    pub(super) fn selected_callable_declaration_at(&self, key: &SpanKey) -> Option<crate::DefId> {
+        self.selected_callable_target_at(key)
             .and_then(Self::callable_target_declaration)
             .or_else(|| {
-                let key = SpanKey::in_module(span, self.current_module_idx);
                 self.actor_method_dispatch
-                    .get(&key)
+                    .get(key)
                     .map(|dispatch| match dispatch {
                         super::ActorMethodKind::Ask { method, .. }
                         | super::ActorMethodKind::Message { method, .. }

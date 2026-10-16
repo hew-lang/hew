@@ -134,13 +134,6 @@ struct Discovery<'a> {
 /// already produced during lowering; they seed the dedup set so this pass
 /// never re-emits an entry the concrete-site path already produced.
 ///
-/// `extra_decls` is the discovery-only decl universe (#2755): record/enum
-/// decls of imported modules that never became emitted `HirItem`s because the
-/// imported-module visibility guard excludes them (a module-private generic
-/// record behind a pub API). They are folded into the decl registries so the
-/// substituted-body walk can register their layouts, but are NOT walked as
-/// origin bodies and NEVER emitted into the module — visibility still governs
-/// naming, only ABI discovery is widened.
 #[must_use]
 #[allow(
     clippy::too_many_lines,
@@ -149,7 +142,6 @@ struct Discovery<'a> {
 pub fn run_layout_mono_pass(
     defs: &hew_types::DefTable,
     items: &[HirItem],
-    extra_decls: &[HirItem],
     monomorphisations: &[MonomorphizedFn],
     existing_records: &[RecordLayout],
     existing_enums: &[EnumLayout],
@@ -241,84 +233,6 @@ pub fn run_layout_mono_pass(
             // entries; actor/machine bodies carry concrete `expr.ty`s walked
             // via their monomorphic-fn analogue when reachable).
             HirItem::Actor(_)
-            | HirItem::Supervisor(_)
-            | HirItem::ExternFn(_)
-            | HirItem::Const(_) => {}
-        }
-    }
-
-    // Widen the decl universe with record/enum decls that never became emitted
-    // `HirItem`s (#2755). A module-private generic record used as a `Vec`
-    // element behind a pub API is excluded from HIR-item emission by the
-    // imported-module visibility guard, so the walk below would find `Slot<i64>`
-    // in a substituted `Store::add$$i64` body with no `record_decls` entry and
-    // skip it silently → the consumer's MIR fails closed with a missing
-    // `RecordLayout`. These decls carry their defining module's field/variant
-    // shapes lowered under the owning module's context; visibility governs
-    // NAMING (unchanged — no new `HirItem` is emitted and the checker's
-    // authority is untouched), while layout existence follows ABI reachability.
-    // Keyed by the declaration's full nominal owner, exactly like emitted
-    // declarations. The type checker preserves that owner in `ResolvedTy`, so
-    // a discovery probe must not fall back to a same-leaf declaration from a
-    // different module. `entry(..).or_insert_with` lets an emitted decl win,
-    // so the universe only fills genuine gaps — it never shadows an emitted
-    // declaration with the same identity.
-    for item in extra_decls {
-        match item {
-            HirItem::Record(r) => {
-                all_type_params.extend(r.type_params.iter().copied());
-                record_decls
-                    .entry(r.qualified_name())
-                    .or_insert_with(|| RecordDecl {
-                        id: r.id,
-                        type_params: r.type_params.clone(),
-                        symbol_class: crate::mono::SymbolClass::Function,
-                        fields: if r.fields.is_empty() {
-                            r.positional_field_tys
-                                .iter()
-                                .enumerate()
-                                .map(|(index, ty)| (index.to_string(), ty.clone()))
-                                .collect()
-                        } else {
-                            r.fields
-                                .iter()
-                                .map(|f| (f.name.clone(), f.ty.clone()))
-                                .collect()
-                        },
-                    });
-            }
-            HirItem::TypeDecl(td) => {
-                all_type_params.extend(td.type_params.iter().copied());
-                if td.kind == crate::HirTypeDeclKind::Struct {
-                    record_decls
-                        .entry(td.qualified_name(defs))
-                        .or_insert_with(|| RecordDecl {
-                            id: td.id,
-                            type_params: td.type_params.clone(),
-                            symbol_class: crate::mono::SymbolClass::Function,
-                            fields: td
-                                .fields
-                                .iter()
-                                .map(|f| (f.name.clone(), f.ty.clone()))
-                                .collect(),
-                        });
-                } else {
-                    enum_decls
-                        .entry(td.qualified_name(defs))
-                        .or_insert_with(|| EnumDecl {
-                            id: td.id,
-                            type_params: td.type_params.clone(),
-                            variants: td.variants.clone(),
-                            is_indirect: td.is_indirect,
-                        });
-                }
-            }
-            // The universe carries only record/enum decls (private types
-            // excluded from emission). Any other item variant here is a
-            // caller error; contribute nothing.
-            HirItem::Function(_)
-            | HirItem::Impl(_)
-            | HirItem::Actor(_)
             | HirItem::Supervisor(_)
             | HirItem::ExternFn(_)
             | HirItem::Const(_) => {}
@@ -837,15 +751,16 @@ impl Discovery<'_> {
                 ArgClass::Concrete => {}
                 ArgClass::BorrowedAbstract => continue,
                 ArgClass::ResidualDefect(residual) => {
+                    let message = format!(
+                        "generic type `{name}` retains abstract parameter `{residual}` after function specialization; pass-ordering invariant violated"
+                    );
                     self.diagnostics.push(HirDiagnostic::new(
                         HirDiagnosticKind::UnresolvedLayoutTypeParamPostMono {
                             type_name: name.to_string(),
                             residual_var: residual,
                         },
                         span.clone(),
-                        "generic record/enum instantiation carries a residual abstract \
-                         type-parameter after function-mono substitution; pass-ordering \
-                         invariant violated",
+                        message,
                     ));
                     continue;
                 }

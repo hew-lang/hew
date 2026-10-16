@@ -39,6 +39,8 @@ impl SuspensionEffect {
 pub struct SuspensionEffects {
     pub bodies: HashMap<EffectBody, SuspensionEffect>,
     pub calls: HashMap<SpanKey, SuspensionEffect>,
+    /// Checked constructors have no executable callee.
+    pub construct_calls: HashSet<SpanKey>,
     pub fork_transfers: HashMap<SpanKey, ForkTransferFact>,
     /// Exact checker body for each visited expression, including implicit calls.
     pub call_owners: HashMap<SpanKey, EffectBody>,
@@ -1260,6 +1262,7 @@ impl Checker {
             }
         }
         let mut output = SuspensionEffects {
+            construct_calls: graph.construct_calls.clone(),
             call_owners: graph.expression_owners.clone(),
             value_operations: graph
                 .value_operations

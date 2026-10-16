@@ -741,7 +741,14 @@ impl NodeVisitor for EffectVisitor<'_> {
                     Expr::FieldAccess { field, .. } => format!("{}(...)", field.0),
                     _ => "call".to_string(),
                 };
-                if let Some(target) = self.output.direct_call_targets.get(&key) {
+                if self
+                    .output
+                    .suspension_effects
+                    .construct_calls
+                    .contains(&key)
+                {
+                    // A checked constructor has no executable callee.
+                } else if let Some(target) = self.output.direct_call_targets.get(&key) {
                     self.target(target, span, &call);
                 } else {
                     self.refuse(span, format!("`{call}` has no checked direct target"));

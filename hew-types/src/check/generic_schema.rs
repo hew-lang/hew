@@ -1,4 +1,4 @@
-use super::{BTreeMap, CallTarget, Checker, HashMap, SpanKey, Symbol, Ty};
+use super::{BTreeMap, Checker, HashMap, SpanKey, Symbol, Ty};
 
 #[derive(Debug, Clone, Default)]
 /// Implicit declaration-owned binders for associated types in generic bodies.
@@ -202,12 +202,10 @@ impl Checker {
         calls: &mut HashMap<SpanKey, Vec<Ty>>,
     ) {
         for (site, arguments) in calls {
-            let Some(CallTarget::User(declaration) | CallTarget::ImplMethod(declaration)) =
-                self.direct_call_targets.get(site)
-            else {
+            let Some(declaration) = self.selected_callable_declaration_at(site) else {
                 continue;
             };
-            let Some(signature) = self.fn_sigs.get(declaration) else {
+            let Some(signature) = self.fn_sigs.get(&declaration) else {
                 continue;
             };
             let mut expanded = Vec::new();

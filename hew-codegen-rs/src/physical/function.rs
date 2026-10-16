@@ -815,6 +815,9 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             .map(|field| self.load(*field, "variant.make.field"))
             .collect::<CodegenResult<Vec<_>>>()?;
         self.write_variant_value(self.slots[dest.0 as usize], variant, &values, glue_id)?;
+        if self.debug.is_some() {
+            self.load(dest, "variant.debug.value")?;
+        }
         for field in fields {
             self.clear_owned(*field)?;
         }

@@ -68,8 +68,6 @@ const _: () = assert!(
 enum TransportSelection {
     Tcp,
     #[cfg(feature = "quic")]
-    Quic,
-    #[cfg(feature = "quic")]
     QuicMesh,
 }
 
@@ -82,8 +80,6 @@ impl TransportSelection {
         match self {
             TransportSelection::Tcp => PeerTransport::Tcp,
             #[cfg(feature = "quic")]
-            TransportSelection::Quic => PeerTransport::Quic,
-            #[cfg(feature = "quic")]
             TransportSelection::QuicMesh => PeerTransport::QuicMesh,
         }
     }
@@ -92,16 +88,6 @@ impl TransportSelection {
 fn normalize_transport_name(name: &str) -> Result<&'static str, String> {
     if name.eq_ignore_ascii_case("tcp") {
         return Ok("tcp");
-    }
-    if name.eq_ignore_ascii_case("quic") {
-        #[cfg(feature = "quic")]
-        {
-            return Ok("quic");
-        }
-        #[cfg(not(feature = "quic"))]
-        {
-            return Err("transport 'quic' requires the hew-runtime quic feature".into());
-        }
     }
     if name.eq_ignore_ascii_case("quic-mesh") {
         #[cfg(feature = "quic")]
@@ -114,7 +100,7 @@ fn normalize_transport_name(name: &str) -> Result<&'static str, String> {
         }
     }
     Err(format!(
-        "unknown transport '{name}'; supported values: tcp, quic, quic-mesh"
+        "unknown transport '{name}'; supported values: tcp, quic-mesh"
     ))
 }
 
@@ -163,8 +149,6 @@ fn transport_selection_from_env() -> Result<TransportSelection, String> {
     match normalize_transport_name(&value)? {
         "tcp" => Ok(TransportSelection::Tcp),
         #[cfg(feature = "quic")]
-        "quic" => Ok(TransportSelection::Quic),
-        #[cfg(feature = "quic")]
         "quic-mesh" => Ok(TransportSelection::QuicMesh),
         _ => unreachable!("normalize_transport_name returns only supported transport keys"),
     }
@@ -175,8 +159,6 @@ fn transport_selection_from_env() -> Result<TransportSelection, String> {
 fn peer_transport_from_normalized(normalized: &str) -> PeerTransport {
     match normalized {
         "tcp" => PeerTransport::Tcp,
-        #[cfg(feature = "quic")]
-        "quic" => PeerTransport::Quic,
         #[cfg(feature = "quic")]
         "quic-mesh" => PeerTransport::QuicMesh,
         _ => unreachable!("normalize_transport_name returns only supported transport keys"),
@@ -191,7 +173,6 @@ fn peer_transport_from_normalized(normalized: &str) -> PeerTransport {
 fn peer_transport_env_name(t: PeerTransport) -> &'static str {
     match t {
         PeerTransport::Tcp => "tcp",
-        PeerTransport::Quic => "quic",
         PeerTransport::QuicMesh => "quic-mesh",
     }
 }
@@ -1451,11 +1432,6 @@ pub unsafe extern "C" fn hew_node_start(node: *mut HewNode) -> c_int {
             TransportSelection::Tcp => {
                 // SAFETY: constructor returns owned transport pointer or null.
                 node.transport = unsafe { transport::hew_transport_tcp_new() };
-            }
-            #[cfg(feature = "quic")]
-            TransportSelection::Quic => {
-                // SAFETY: constructor returns owned transport pointer or null.
-                node.transport = unsafe { crate::quic_transport::hew_transport_quic_new() };
             }
             #[cfg(feature = "quic")]
             TransportSelection::QuicMesh => {

@@ -51,10 +51,8 @@ pub const NOISE_KEY_LEN: usize = 32;
 /// unsupported selection at start.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub enum TransportSelection {
-    /// TCP with optional Noise-XX encryption.
+    /// TCP with authenticated Noise-XX encryption.
     Tcp,
-    /// Plain QUIC (TLS 1.3, no peer-credential binding mechanism).
-    Quic,
     /// QUIC mesh with mutual SPKI-pinned TLS.
     QuicMesh,
 }
@@ -173,7 +171,7 @@ pub enum RemoteIpClass {
     Loopback,
     /// The peer address is a routable/non-loopback address.
     NonLoopback,
-    /// The remote address could not be determined (plain-quic, stub, custom
+    /// The remote address could not be determined (stub or custom
     /// transport) — treated as strict, fail-closed.
     Unknown,
 }
@@ -287,7 +285,7 @@ struct MeshIdentityBytes {
     /// DER-encoded certificate chain (leaf first).
     cert_chain_der: Vec<Vec<u8>>,
     /// DER-encoded PKCS#8 private key.
-    private_key_der: Zeroizing<Vec<u8>>,
+    private_key_der: Arc<Zeroizing<Vec<u8>>>,
     /// The local leaf certificate's `SubjectPublicKeyInfo` (the bindable id).
     spki: Vec<u8>,
 }
@@ -296,10 +294,22 @@ impl MeshIdentityMaterial {
     /// Construct from DER material and the precomputed local leaf SPKI.
     #[must_use]
     pub fn from_der(cert_chain_der: Vec<Vec<u8>>, private_key_der: Vec<u8>, spki: Vec<u8>) -> Self {
+        Self::from_shared_der(
+            cert_chain_der,
+            Arc::new(Zeroizing::new(private_key_der)),
+            spki,
+        )
+    }
+
+    pub(crate) fn from_shared_der(
+        cert_chain_der: Vec<Vec<u8>>,
+        private_key_der: Arc<Zeroizing<Vec<u8>>>,
+        spki: Vec<u8>,
+    ) -> Self {
         Self {
             inner: Arc::new(MeshIdentityBytes {
                 cert_chain_der,
-                private_key_der: Zeroizing::new(private_key_der),
+                private_key_der,
                 spki,
             }),
         }
@@ -315,6 +325,11 @@ impl MeshIdentityMaterial {
     #[must_use]
     pub fn private_key_der(&self) -> &[u8] {
         &self.inner.private_key_der
+    }
+
+    #[cfg(feature = "quic")]
+    pub(crate) fn shared_private_key(&self) -> Arc<Zeroizing<Vec<u8>>> {
+        Arc::clone(&self.inner.private_key_der)
     }
 
     /// The local leaf certificate's `SubjectPublicKeyInfo`.
@@ -486,7 +501,6 @@ impl PeerAuthConfig {
         let has_transport_identity = match self.transport.unwrap_or(TransportSelection::Tcp) {
             TransportSelection::Tcp => self.noise_identity.is_some(),
             TransportSelection::QuicMesh => self.mesh_identity.is_some(),
-            TransportSelection::Quic => false,
         };
         if !has_transport_identity {
             return Err(

@@ -16,10 +16,10 @@ struct hew_cabi_manifest_row {
   enum hew_cabi_manifest_ownership ownership;
 };
 
-#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1639u
+#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1636u
 #define HEW_CABI_MANIFEST_STATIC_COUNT 24u
 
-static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1639] = {
+static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1636] = {
     {"hew_actor_ask",
      "{\"native\": \"fn hew_actor_ask( *mut HewActor, i32, *mut c_void, usize, "
      ") -> *mut c_void\"}",
@@ -7382,17 +7382,9 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1639] = {
      "HewReleaseCursor\"}",
      "native,wasm32-wasip1", "non-declarable", "not-applicable",
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
-    {"hew_transport_is_quic",
-     "{\"native\": \"fn hew_transport_is_quic( *const HewTransport) -> bool\"}",
-     "native", "stable", "not-applicable", "no-in-signature-extent",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_transport_is_quic_mesh",
      "{\"native\": \"fn hew_transport_is_quic_mesh( *const HewTransport) -> "
      "bool\"}",
-     "native", "stable", "not-applicable", "no-in-signature-extent",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
-    {"hew_transport_quic_free",
-     "{\"native\": \"fn hew_transport_quic_free( *mut HewTransport)\"}",
      "native", "stable", "not-applicable", "no-in-signature-extent",
      HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_transport_quic_mesh_free",
@@ -7401,10 +7393,6 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1639] = {
      HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_transport_quic_mesh_new",
      "{\"native\": \"fn hew_transport_quic_mesh_new() -> *mut HewTransport\"}",
-     "native", "stable", "not-applicable", "no-in-signature-extent",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
-    {"hew_transport_quic_new",
-     "{\"native\": \"fn hew_transport_quic_new() -> *mut HewTransport\"}",
      "native", "stable", "not-applicable", "no-in-signature-extent",
      HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_transport_tcp_new",

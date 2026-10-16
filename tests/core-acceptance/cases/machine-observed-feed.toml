@@ -6,5 +6,5 @@ suites = ["acceptance", "safety"]
 timeout_seconds = 20
 
 [case.expected]
-stdout = "ordered\nordered\nlagged\nclosed\n"
+stdout = "detached\nordered\nordered\nlagged\nclosed\n"
 exit = 0

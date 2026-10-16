@@ -15,3 +15,12 @@ Directory acquisition remains ambient and is refused transitively inside a
 The browser VM can use an in-memory implementation of the same ordinary service
 interface. Native directory resources and hosted filesystem grants are not
 available in the browser VM.
+
+Machines can be observed through `std.machine.watch.observe`. A single owner
+steps an independent copy and returns its typed outputs; cloneable read-only
+feeds create bounded subscriptions with an atomic state/revision snapshot.
+Each committed input produces one ordered notice, including ignored inputs.
+Slow subscribers receive explicit lag, and owner closure drains retained
+notices before end-of-stream. Subscription cleanup detaches pending waits and
+releases capacity. The wrapper uses the ordinary machine evaluator and actor
+services.

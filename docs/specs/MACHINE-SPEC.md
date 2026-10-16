@@ -245,6 +245,8 @@ subscribe again for a new atomic snapshot. Closing the owner rejects new
 subscriptions, lets existing subscribers drain retained history, then returns
 `None`; lag still takes precedence when the retained range was exceeded.
 Creating another owner creates an independent revision sequence and identity.
+Dropping a subscription detaches its cursor and pending receive before resource
+cleanup completes. An ordinary `scope within` can bound a receive.
 
 The wrapper uses ordinary Hew actors, bounded streams and resource cleanup.
 It invokes the same generated evaluator as direct `M.step`; it has no second

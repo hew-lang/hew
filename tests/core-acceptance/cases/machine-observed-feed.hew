@@ -10,6 +10,7 @@ machine Counter {
     }
     state Ready { value: i64; }
     on Add: Ready => Ready {
+        if event.value < 0 { panic("reject negative input"); }
         emit Added { value: event.value };
         Ready { value: state.value + event.value }
     }
@@ -34,10 +35,26 @@ fn ordered(consume subscriber: watch.Subscription<Counter>) {
     println("ordered");
 }
 
+fn cancel_pending(feed: watch.Feed<Counter>) {
+    let cancelled = scope within 10ms {
+        let waiting = feed.subscribe().expect("pending subscription");
+        let _ = waiting.recv();
+        false
+    } handle failure {
+        match failure {
+            .Deadline { message: _ } => true,
+            .Fault { message } => panic(message),
+        }
+    };
+    assert(cancelled);
+    println("detached");
+}
+
 fn main() {
     let original: Counter = .Ready { value: 0 };
     let (owner, feed) = watch.observe(original, capacity: 2, subscribers: 3).expect("observe");
     var live = owner;
+    cancel_pending(feed);
     let first = feed.subscribe().expect("first");
     let copied_feed = feed;
     let second = copied_feed.subscribe().expect("second");
@@ -62,6 +79,11 @@ fn main() {
     let drain = feed.subscribe().expect("replacement subscription");
     assert(drain.initial().revision == 3);
     assert(value(drain.initial().state) == 7);
+    let failed = scope {
+        let _ = live.step(.Add { value: -1 });
+        false
+    } handle failure { true };
+    assert(failed);
     let _last = live.step(.Add { value: 2 });
     live.close();
     let final_notice = drain.recv().expect("retained").expect("final notice");
@@ -70,4 +92,13 @@ fn main() {
     assert(feed.subscribe().is_err());
     assert(value(original) == 0);
     println("closed");
+    let (other, other_feed) = watch.observe(original, capacity: 1, subscribers: 1).expect("independent owner");
+    var independent = other;
+    let independent_subscriber = other_feed.subscribe().expect("independent subscription");
+    assert(independent_subscriber.initial().revision == 0);
+    let _ = independent.step(.Add { value: 20 });
+    let independent_notice = independent_subscriber.recv().expect("independent delivery").expect("independent notice");
+    assert(independent_notice.revision == 1 && value(independent_notice.state) == 20);
+    independent.close();
+    assert(independent_subscriber.recv().expect("independent close").is_none());
 }

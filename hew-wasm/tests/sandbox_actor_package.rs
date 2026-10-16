@@ -975,10 +975,14 @@ fn dead_actor_calls_drain_their_consumed_message_before_returning() {
 }
 
 #[test]
+fn observed_machine_feeds_snapshot_lag_and_detach() {
+    assert_native_manifest("machine-observed-feed", hew_compile::SourceSet::in_memory());
+}
+
+#[test]
 fn shared_native_manifests_execute_with_matching_results() {
     for name in [
         "machine-deep-handshake",
-        "machine-observed-feed",
         "actor_state_closure_field",
         "resource-close-actor-composition",
         "resource-close-actor-queued",

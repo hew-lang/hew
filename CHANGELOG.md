@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+- Observe machine inputs through bounded read-only feeds, atomic snapshots and
+  ordered notices with explicit lag and resource-scoped detach.
+
 - Allow actor crash hooks to suspend within the child's stop budget, with
   ordinary restart fallback after hook failure or deadline expiry.
 

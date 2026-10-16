@@ -1183,6 +1183,11 @@ test-pkg-import: hew-native
 test-package-install: hew-native ## Test: prove installed packages import and execute
 	HEW_BIN="$(DEBUG_DIR)/hew" bash tests/package-install/run.sh
 
+.PHONY: test-native-prebuilt-sqlite
+test-native-prebuilt-sqlite: hew-native ## Test: install signed SQLite without Cargo
+	@test -n "$(HEW_ECOSYSTEM_SOURCE)" || { echo "set HEW_ECOSYSTEM_SOURCE to the ecosystem checkout"; exit 2; }
+	HEW_BIN="$(DEBUG_DIR)/hew" HEW_ECOSYSTEM_SOURCE="$(HEW_ECOSYSTEM_SOURCE)" cargo test -p hew-pkg --test test_registry_wire_install native_prebuilt_sqlite_without_cargo -- --ignored --nocapture
+
 # Repeated-compile determinism over the LL-oracle corpus: the same input
 # compiled several times must produce the same exit status, the same
 # `ownership EdgeCarry` ordering in raw MIR, and byte-identical stderr.

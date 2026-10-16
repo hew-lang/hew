@@ -29,6 +29,10 @@ static NEXT_TEMPORARY: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU
 /// How native sources compile for the current target.
 #[derive(Debug, Clone)]
 pub struct NativeToolchain {
+    /// Canonical target triple selected by the compiler driver.
+    pub target: String,
+    /// Entry package lock used to verify registry native artifacts.
+    pub lockfile: Option<PathBuf>,
     /// Selects the `[native.<os>]` table.
     pub os: NativeOs,
     /// The C driver (`clang`, a gcc-compatible `cc`, or `HEW_CC`). It picks
@@ -41,6 +45,7 @@ pub struct NativeToolchain {
 }
 
 /// What one package's `[native]` section contributes to the final link.
+/// Keep this value alive through linking to retain its cache generations.
 #[derive(Debug, Clone, Default)]
 pub struct NativeBuild {
     /// Archives and objects, linked before any system library.
@@ -51,6 +56,9 @@ pub struct NativeBuild {
     pub compiles_cxx: bool,
     /// Files the build read: native sources, their headers and Rust sources.
     pub dependencies: Vec<PathBuf>,
+    /// Retains immutable native archive generations through the final link.
+    prebuilts: Vec<std::sync::Arc<crate::native_prebuilt::PrebuiltArtifact>>,
+    source: Option<std::sync::Arc<crate::atomic_fs::PinnedDir>>,
 }
 
 /// Build the `[native]` section of the package rooted at `root`.
@@ -75,10 +83,39 @@ pub fn build(
     let package = manifest.package.name.as_str();
     let mut out = NativeBuild::default();
     if let Some(rust) = native.rust_crate() {
-        let artifact = build_rust_crate(root, &rust, &embedded_rustc_identity())?;
+        let prebuilt = crate::native_prebuilt::for_package(
+            root,
+            manifest,
+            &toolchain.target,
+            toolchain.lockfile.as_deref(),
+        )?;
+        let artifact = if let Some(prebuilt) = prebuilt {
+            let artifact = prebuilt.path().to_path_buf();
+            out.prebuilts.push(std::sync::Arc::new(prebuilt));
+            artifact
+        } else {
+            out.source = stage_registry_source(root, manifest)?;
+            let source = out.source.as_ref().map_or(root, |source| source.path());
+            build_rust_crate(source, &rust, &embedded_rustc_identity(), &toolchain.target)?
+        };
         refuse_reserved_symbols(&artifact, &format!("Rust crate `{}`", rust.lib), package)?;
-        out.dependencies
-            .extend(cargo_dep_info(&artifact.with_extension("d")));
+        out.dependencies.push(artifact.clone());
+        out.dependencies.extend(
+            cargo_dep_info(&artifact.with_extension("d"))
+                .into_iter()
+                .filter_map(|path| {
+                    let Some(source) = &out.source else {
+                        return Some(path);
+                    };
+                    match path.strip_prefix(source.path()) {
+                        Ok(relative) => {
+                            let original = root.join(relative);
+                            original.is_file().then_some(original)
+                        }
+                        Err(_) => Some(path),
+                    }
+                }),
+        );
         out.inputs.push(artifact);
     }
     let inputs = native.inputs_for(toolchain.os);
@@ -665,9 +702,28 @@ pub fn embedded_rustc_identity() -> RustcIdentity {
     })
 }
 
+fn stage_registry_source(
+    root: &Path,
+    manifest: &HewManifest,
+) -> Result<Option<std::sync::Arc<crate::atomic_fs::PinnedDir>>, String> {
+    let Some((_, _, archive)) = crate::registry::source_provenance(root, manifest)? else {
+        return Ok(None);
+    };
+    let slot = root.join("target/native-source");
+    let staged = crate::atomic_fs::StagedDir::new(&slot).map_err(|error| error.to_string())?;
+    crate::tarball::unpack(&archive, staged.path()).map_err(|error| error.to_string())?;
+    let pinned = staged
+        .publish_pinned(&slot)
+        .map_err(|error| error.to_string())?;
+    Ok(Some(std::sync::Arc::new(pinned)))
+}
+
 /// Query the rustc selected for a native crate directory.
-fn crate_rustc_identity(crate_dir: &Path) -> Result<RustcIdentity, String> {
-    let output = Command::new("rustc")
+fn crate_rustc_identity(
+    crate_dir: &Path,
+    rustc: &std::ffi::OsStr,
+) -> Result<RustcIdentity, String> {
+    let output = Command::new(rustc)
         .arg("-vV")
         .current_dir(crate_dir)
         .output()
@@ -685,16 +741,16 @@ fn crate_rustc_identity(crate_dir: &Path) -> Result<RustcIdentity, String> {
 }
 
 /// Platform-specific file name for a built library of the given `kind`.
-fn artifact_file_name(lib: &str, kind: &str) -> String {
+pub(crate) fn artifact_file_name(lib: &str, kind: &str, target: &str) -> String {
     if kind == "cdylib" {
-        if cfg!(target_os = "macos") {
+        if target.contains("-apple-darwin") {
             format!("lib{lib}.dylib")
-        } else if cfg!(target_os = "windows") {
+        } else if target.contains("-windows-") {
             format!("{lib}.dll")
         } else {
             format!("lib{lib}.so")
         }
-    } else if cfg!(target_os = "windows") {
+    } else if target.contains("-windows-") {
         // staticlib
         format!("{lib}.lib")
     } else {
@@ -708,10 +764,11 @@ fn artifact_file_name(lib: &str, kind: &str) -> String {
 /// `expected` is the rustc identity `libhew.a` was built with: production
 /// passes [`embedded_rustc_identity`]; tests pass a deliberately mismatching
 /// value.
-fn build_rust_crate(
+pub(crate) fn build_rust_crate(
     root: &Path,
     rust: &RustCrate<'_>,
     expected: &RustcIdentity,
+    target: &str,
 ) -> Result<PathBuf, String> {
     let crate_dir = root.join(rust.dir);
     let cargo_toml = crate_dir.join("Cargo.toml");
@@ -723,7 +780,11 @@ fn build_rust_crate(
     }
 
     // Refuse before cargo builds a static library with an incompatible libstd.
-    let actual = crate_rustc_identity(&crate_dir)?;
+    let rustc = std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into());
+    let actual = crate_rustc_identity(&crate_dir, &rustc).map_err(|error| format!(
+        "error[E_NATIVE_TOOLCHAIN]: no compatible native prebuilt is available; [native] crate at {} requires {expected}. Install Cargo and run `rustup toolchain install {}`. {error}",
+        crate_dir.display(), expected.release,
+    ))?;
     if actual != *expected {
         return Err(format!(
             "error[E_NATIVE_TOOLCHAIN]: [native] crate at {} would build with {actual}, \
@@ -745,6 +806,7 @@ fn build_rust_crate(
     // command line so standalone packages inherit their own release settings
     // while always disabling LTO for a consumer-linkable archive.
     let status = Command::new("cargo")
+        .env("RUSTC", &rustc)
         .args([
             "build",
             "--profile",
@@ -756,6 +818,7 @@ fn build_rust_crate(
             "--manifest-path",
         ])
         .arg(&cargo_toml)
+        .args(["--target", target])
         .current_dir(&crate_dir)
         .status()
         .map_err(|e| format!("failed to run cargo: {e}"))?;
@@ -767,8 +830,8 @@ fn build_rust_crate(
     }
 
     let target_dir = cargo_target_dir(&cargo_toml)?;
-    let file_name = artifact_file_name(rust.lib, rust.kind);
-    let artifact = target_dir.join("release-lib").join(&file_name);
+    let file_name = artifact_file_name(rust.lib, rust.kind, target);
+    let artifact = target_dir.join(target).join("release-lib").join(&file_name);
     if !artifact.exists() {
         return Err(format!(
             "[native] crate built but artifact not found: {} (expected lib name `{}`, kind `{}`)",
@@ -791,6 +854,7 @@ fn cargo_target_dir(cargo_toml: &Path) -> Result<PathBuf, String> {
             "--manifest-path",
         ])
         .arg(cargo_toml)
+        .current_dir(cargo_toml.parent().unwrap_or_else(|| Path::new(".")))
         .output()
         .map_err(|e| format!("failed to run cargo metadata: {e}"))?;
     if !out.status.success() {
@@ -810,7 +874,11 @@ mod tests {
 
     #[test]
     fn staticlib_artifact_name() {
-        let name = artifact_file_name("hew_hew_db_sqlite", "staticlib");
+        let name = artifact_file_name(
+            "hew_hew_db_sqlite",
+            "staticlib",
+            &embedded_rustc_identity().host,
+        );
         if cfg!(target_os = "windows") {
             assert_eq!(name, "hew_hew_db_sqlite.lib");
         } else {
@@ -820,7 +888,7 @@ mod tests {
 
     #[test]
     fn cdylib_artifact_name() {
-        let name = artifact_file_name("foo", "cdylib");
+        let name = artifact_file_name("foo", "cdylib", &embedded_rustc_identity().host);
         if cfg!(target_os = "macos") {
             assert_eq!(name, "libfoo.dylib");
         } else if cfg!(target_os = "windows") {
@@ -879,7 +947,13 @@ mod tests {
             lib: "p_native",
             kind: "staticlib",
         };
-        let error = build_rust_crate(dir.path(), &rust, &mismatching).unwrap_err();
+        let error = build_rust_crate(
+            dir.path(),
+            &rust,
+            &mismatching,
+            &embedded_rustc_identity().host,
+        )
+        .unwrap_err();
 
         assert!(
             error.contains("E_NATIVE_TOOLCHAIN"),

@@ -177,6 +177,73 @@ struct RegistryEndpoint {
 }
 
 impl RegistryClient {
+    /// Fetch the record for one exact native compatibility identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns invalid identity, registry and response parsing errors.
+    pub fn get_native(
+        &self,
+        name: &str,
+        version: &str,
+        identity: &crate::native_prebuilt::NativeIdentity,
+    ) -> Result<crate::native_prebuilt::NativeRecord, ApiError> {
+        let url = self.native_url(name, version, identity)?;
+        let mut response = self.agent.get(&url).call().map_err(map_ureq_error)?;
+        response
+            .body_mut()
+            .read_json()
+            .map_err(|error| ApiError::Parse(error.to_string()))
+    }
+
+    fn native_url(
+        &self,
+        name: &str,
+        version: &str,
+        identity: &crate::native_prebuilt::NativeIdentity,
+    ) -> Result<String, ApiError> {
+        let name = package_name::to_wire(name, self.wire_names).map_err(ApiError::Parse)?;
+        validate_version(version)?;
+        let route = identity.route().map_err(ApiError::Parse)?;
+        Ok(format!(
+            "{}/packages/{name}/{version}/native/{route}",
+            self.api_url
+        ))
+    }
+
+    /// Publish a signed native archive through the ordinary publisher grant.
+    ///
+    /// # Errors
+    ///
+    /// Returns authentication, identity and registry errors.
+    pub fn publish_native(
+        &self,
+        descriptor: &crate::native_prebuilt::NativeDescriptor,
+        bytes: &[u8],
+        signature: &str,
+        fingerprint: &str,
+    ) -> Result<(), ApiError> {
+        use base64::Engine as _;
+
+        let token = self.token.as_ref().ok_or(ApiError::NotAuthenticated)?;
+        let url = self.native_url(&descriptor.name, &descriptor.version, &descriptor.identity)?;
+        let body = serde_json::json!({
+            "tarball": base64::engine::general_purpose::STANDARD.encode(bytes),
+            "checksum": crate::tarball::checksum_bytes(bytes),
+            "signature": signature,
+            "key_fingerprint": fingerprint,
+        });
+        let response = self
+            .agent
+            .put(&url)
+            .header("Authorization", &format!("Bearer {token}"))
+            .send_json(&body)
+            .map_err(map_ureq_error)?;
+        if !matches!(response.status().as_u16(), 200 | 201) {
+            return Err(self.parse_error_response(response));
+        }
+        Ok(())
+    }
     /// Create a client for the official Hew registry using compiled-in defaults.
     ///
     /// Loads `~/.hew/config.toml` to check for a `fallback-api` override.
@@ -702,8 +769,14 @@ impl RegistryClient {
             let mut data = Vec::new();
             resp.into_body()
                 .into_reader()
+                .take(crate::tarball::MAX_TARBALL_SIZE as u64 + 1)
                 .read_to_end(&mut data)
                 .map_err(|e| ApiError::Http(e.to_string()))?;
+            if data.len() > crate::tarball::MAX_TARBALL_SIZE {
+                return Err(ApiError::Parse(
+                    "archive exceeds compressed size limit".to_string(),
+                ));
+            }
             Ok(data)
         };
 

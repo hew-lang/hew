@@ -117,6 +117,26 @@ built by the same rustc release as the Hew runtime, which a
 `rust-toolchain.toml` in the crate pins; a mismatch is refused with
 `E_NATIVE_TOOLCHAIN` before Cargo runs.
 
+### Native prebuilts
+
+Published Rust `staticlib` packages may provide native prebuilts beside their
+source archives. `hew install` selects the host artifact and `hew build`
+selects the requested native target. Compatibility requires the exact compiler
+build version and runtime rustc release/host stamp. The Rust compiler host stamp
+is independent of the selected native target, including for cross-built SDKs.
+The package name, version,
+source archive checksum and compatibility identity are inside the archive
+covered by the ordinary publisher checksum signature. `hew.lock` records the
+selected qualified archive checksum alongside the source package. Offline
+linking verifies the cached archive against this pin.
+
+Only an absent artifact record permits source compilation. Invalid signatures,
+checksum or identity mismatches, damaged cached archives and failed downloads
+of advertised artifacts refuse. Verified archives retain the existing immutable
+cache generation through the final link and can be reused without registry
+access. Native C/C++/assembly sources and system library requirements still
+follow the fields below.
+
 ### C, C++ and assembly sources
 
 | Field          | Meaning                                                                                                    |

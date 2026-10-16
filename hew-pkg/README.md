@@ -57,6 +57,36 @@ the workspace lockfile and builds without the publisher's checkout. The generate
 `hew-native-deps/` directory is reserved for those bundled dependencies; include
 rules must retain the native crate's `Cargo.toml`.
 
+Published Rust static libraries can also provide signed native prebuilts.
+`hew install` fetches the archive for the host target and `hew build` retains
+its verified cache generation through linking. Selection requires the exact
+Hew build version, native target and runtime Rust toolchain stamp. The signed
+archive also binds the package name, version and source archive checksum.
+These archives use the ordinary publisher key and SHA-256 checksum signature.
+`hew.lock` pins each selected compatibility identity and native archive checksum
+to its source package. After installation, a cached native archive matching that
+pin can build without Cargo, rustc or registry access. `hew install --locked`
+refuses changes to these pins; an ordinary install updates them.
+
+Source compilation is used only when the registry has no artifact for that
+compatibility identity. Invalid signatures, checksum or identity mismatches,
+damaged caches and failed downloads of advertised artifacts refuse the build;
+they never trigger a source build. C, C++ and assembly inputs and system library
+requirements still follow the package manifest.
+
+Publishers build the native archive before acquiring a short-lived publication
+grant, then publish it after its matching source package:
+
+```sh
+hew native build --target x86_64-unknown-linux-gnu --output target/native.tar.zst
+hew publish
+hew native publish target/native.tar.zst
+```
+
+Native publication uses the existing registry login and signing key, refuses
+replacement of an existing source/runtime identity and verifies the stored
+record and archive before reporting success.
+
 ### Dependency Management
 
 - `hew add <PACKAGE> [--version <VER>] [--registry <NAME>]` — Add a dependency

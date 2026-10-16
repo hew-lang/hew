@@ -117,10 +117,16 @@ pub fn pack(
 
     crate::native_archive::prepare(dir, &mut files)?;
 
+    pack_files(&files)
+}
+
+pub(crate) fn pack_files(
+    files: &[crate::package_fs::PackageFile],
+) -> Result<PackResult, TarballError> {
     let mut tar_data = Vec::new();
     {
         let mut builder = tar::Builder::new(&mut tar_data);
-        for file in &files {
+        for file in files {
             let mut header = tar::Header::new_gnu();
             header.set_size(file.contents.len() as u64);
             header.set_mode(0o644);

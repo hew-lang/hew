@@ -546,6 +546,8 @@ pub(crate) fn native_toolchain(
         flags.push(format!("--gcc-toolchain={gcc_toolchain}"));
     }
     Ok(hew_pkg::native::NativeToolchain {
+        target: target.normalized_triple().to_string(),
+        lockfile: None,
         os,
         driver: compiler.program,
         flags,

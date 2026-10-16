@@ -137,7 +137,32 @@ impl CommandDispatcher for MainCommandDispatcher {
     }
 
     fn pkg(&mut self, cmd: &hew_pkg::cli::PkgCommand) {
-        hew_pkg::cli::dispatch(cmd, crate::generate::check_package);
+        let requested = match cmd {
+            hew_pkg::cli::PkgCommand::Native {
+                action: hew_pkg::cli::NativeAction::Build { target, .. },
+            } => target.as_deref(),
+            _ => None,
+        };
+        let target = crate::target::TargetSpec::from_requested(requested).unwrap_or_else(|error| {
+            eprintln!("Error: {error}");
+            std::process::exit(2);
+        });
+        if target.is_wasm()
+            && matches!(
+                cmd,
+                hew_pkg::cli::PkgCommand::Native {
+                    action: hew_pkg::cli::NativeAction::Build { .. }
+                }
+            )
+        {
+            eprintln!("Error: native package archives require a native target");
+            std::process::exit(2);
+        }
+        hew_pkg::cli::dispatch(
+            cmd,
+            target.normalized_triple(),
+            crate::generate::check_package,
+        );
     }
 }
 

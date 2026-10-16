@@ -26,6 +26,9 @@ pub struct LockedPackage {
     /// Ed25519 signature of the checksum (`"ed25519:{hex}"`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub signature: Option<String>,
+    /// Signed native archives selected for this exact source package.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub native: Vec<LockedNative>,
     /// Package source: `"registry"`, `"path"`, or `"local"`.
     #[serde(default = "default_source", skip_serializing_if = "is_default_source")]
     pub source: String,
@@ -35,6 +38,17 @@ pub struct LockedPackage {
     /// Local dependency path when `source = "path"`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
+}
+
+/// A qualified native archive pinned by the ordinary package lock.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+pub struct LockedNative {
+    /// Compiler, Rust and target qualification.
+    pub identity: crate::native_prebuilt::NativeIdentity,
+    /// Checksum of the signed source archive used to build this library.
+    pub source_checksum: String,
+    /// Checksum of the signed native archive.
+    pub checksum: String,
 }
 
 fn default_source() -> String {
@@ -146,6 +160,11 @@ pub fn read_lockfile(path: &Path) -> Result<LockFile, LockError> {
 pub fn write_lockfile(path: &Path, lockfile: &LockFile) -> Result<(), LockError> {
     let mut sorted = lockfile.clone();
     sorted.packages.sort_by(|a, b| a.name.cmp(&b.name));
+    for package in &mut sorted.packages {
+        package
+            .native
+            .sort_by_key(|pin| pin.identity.route().unwrap_or_default());
+    }
 
     let body = toml::to_string(&sorted)?;
     let content = format!("{LOCKFILE_HEADER}{body}");
@@ -173,6 +192,26 @@ pub fn validate_lockfile(lockfile: &LockFile) -> Result<(), LockError> {
                 package: package.name.clone(),
                 reason: crate::package_name::invalid_message(&package.name),
             });
+        }
+        let mut native_identities = std::collections::BTreeSet::new();
+        for native in &package.native {
+            let identity = native
+                .identity
+                .route()
+                .map_err(|reason| LockError::InvalidEntry {
+                    package: package.name.clone(),
+                    reason,
+                })?;
+            if package.source != "registry"
+                || !is_sha256_checksum(&native.checksum)
+                || !is_sha256_checksum(&native.source_checksum)
+                || !native_identities.insert(identity)
+            {
+                return Err(LockError::InvalidEntry {
+                    package: package.name.clone(),
+                    reason: "invalid or duplicate native archive pin".to_string(),
+                });
+            }
         }
         semver::Version::parse(&package.version).map_err(|error| LockError::InvalidEntry {
             package: package.name.clone(),
@@ -373,6 +412,7 @@ mod tests {
                     version: "2.1.0".to_string(),
                     checksum: Some("sha256:def456".to_string()),
                     signature: None,
+                    native: Vec::new(),
                     source: "registry".to_string(),
                     registry: Some(crate::config::default_registry_identity()),
                     path: None,
@@ -383,6 +423,7 @@ mod tests {
                     version: "1.0.0".to_string(),
                     checksum: Some("sha256:abc123".to_string()),
                     signature: None,
+                    native: Vec::new(),
                     source: "registry".to_string(),
                     registry: Some(crate::config::default_registry_identity()),
                     path: None,
@@ -415,6 +456,7 @@ mod tests {
                 version: "0.1.0".to_string(),
                 checksum: None,
                 signature: None,
+                native: Vec::new(),
                 source: "registry".to_string(),
                 registry: Some(crate::config::default_registry_identity()),
                 path: None,
@@ -462,6 +504,7 @@ mod tests {
                 version: "1.0.0".to_string(),
                 checksum: None,
                 signature: None,
+                native: Vec::new(),
                 source: "registry".to_string(),
                 registry: Some(crate::config::default_registry_identity()),
                 path: None,
@@ -485,6 +528,7 @@ mod tests {
                     version: "1.0.0".to_string(),
                     checksum: None,
                     signature: None,
+                    native: Vec::new(),
                     source: "registry".to_string(),
                     registry: Some(crate::config::default_registry_identity()),
                     path: None,
@@ -495,6 +539,7 @@ mod tests {
                     version: "2.0.0".to_string(),
                     checksum: None,
                     signature: None,
+                    native: Vec::new(),
                     source: "registry".to_string(),
                     registry: Some(crate::config::default_registry_identity()),
                     path: None,
@@ -516,6 +561,7 @@ mod tests {
                     version: "2.3.0".to_string(),
                     checksum: None,
                     signature: None,
+                    native: Vec::new(),
                     source: "registry".to_string(),
                     registry: Some(crate::config::default_registry_identity()),
                     path: None,
@@ -526,6 +572,7 @@ mod tests {
                     version: "1.4.0".to_string(),
                     checksum: None,
                     signature: None,
+                    native: Vec::new(),
                     source: "registry".to_string(),
                     registry: Some(crate::config::default_registry_identity()),
                     path: None,
@@ -546,6 +593,7 @@ mod tests {
                 version: "1.8.0".to_string(),
                 checksum: None,
                 signature: None,
+                native: Vec::new(),
                 source: "registry".to_string(),
                 registry: Some(crate::config::default_registry_identity()),
                 path: None,
@@ -566,6 +614,7 @@ mod tests {
                     version: "2.0.0".to_string(),
                     checksum: None,
                     signature: None,
+                    native: Vec::new(),
                     source: "registry".to_string(),
                     registry: Some(crate::config::default_registry_identity()),
                     path: None,
@@ -576,6 +625,7 @@ mod tests {
                     version: "1.0.0".to_string(),
                     checksum: None,
                     signature: None,
+                    native: Vec::new(),
                     source: "registry".to_string(),
                     registry: Some(crate::config::default_registry_identity()),
                     path: None,
@@ -613,6 +663,7 @@ mod tests {
                     version: "1.0.0".to_string(),
                     checksum: None,
                     signature: None,
+                    native: Vec::new(),
                     source: "registry".to_string(),
                     registry: Some(crate::config::default_registry_identity()),
                     path: None,
@@ -623,6 +674,7 @@ mod tests {
                     version: "1.0.0".to_string(),
                     checksum: None,
                     signature: None,
+                    native: Vec::new(),
                     source: "registry".to_string(),
                     registry: Some(crate::config::default_registry_identity()),
                     path: None,
@@ -663,6 +715,7 @@ mod tests {
                 version: "1.2.3".to_string(),
                 checksum: None,
                 signature: None,
+                native: Vec::new(),
                 source: "path".to_string(),
                 registry: None,
                 path: Some("../local".to_string()),
@@ -717,6 +770,7 @@ mod tests {
                 version: "../../escape".to_string(),
                 checksum: Some(format!("sha256:{}", "0".repeat(64))),
                 signature: None,
+                native: Vec::new(),
                 source: "registry".to_string(),
                 registry: Some(crate::config::default_registry_identity()),
                 path: None,
@@ -736,6 +790,7 @@ mod tests {
                 version: "1.0.0".to_string(),
                 checksum: None,
                 signature: None,
+                native: Vec::new(),
                 source: "registry".to_string(),
                 registry: Some(crate::config::default_registry_identity()),
                 path: None,
@@ -755,6 +810,7 @@ mod tests {
                 version: "1.0.0".to_string(),
                 checksum: Some(format!("sha256:{}", "0".repeat(64))),
                 signature: None,
+                native: Vec::new(),
                 source: "registry".to_string(),
                 registry: None,
                 path: None,
@@ -778,6 +834,7 @@ mod tests {
                 version: "1.0.0".to_string(),
                 checksum: Some(format!("sha256:{}", "0".repeat(64))),
                 signature: None,
+                native: Vec::new(),
                 source: "registry".to_string(),
                 registry: Some(first.to_string()),
                 path: None,

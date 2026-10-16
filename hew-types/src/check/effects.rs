@@ -16,6 +16,9 @@ use crate::env::TypeBindingId;
 pub use crate::ty::EffectBody;
 use crate::Ty;
 
+#[path = "effect_instances.rs"]
+mod instances;
+
 /// The checker-owned contract consumed by lowering.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum SuspensionEffect {
@@ -99,6 +102,7 @@ struct PendingForkTransfer {
 #[derive(Debug, Clone)]
 struct SuspensionObligation {
     body: EffectBody,
+    owner: Option<EffectBody>,
     once: bool,
     key: SpanKey,
     slot: ObligationSlot,
@@ -483,6 +487,7 @@ impl Checker {
             if plain {
                 obligations.push(SuspensionObligation {
                     body: EffectBody::Declaration(impl_method),
+                    owner: self.effect_graph.current_body.clone(),
                     once: false,
                     key: SpanKey::in_module(span, self.current_module_idx),
                     slot: ObligationSlot::Dyn {
@@ -570,6 +575,7 @@ impl Checker {
         }
         self.effect_graph.obligations.push(SuspensionObligation {
             body,
+            owner: self.effect_graph.current_body.clone(),
             once,
             key: SpanKey::in_module(span, self.current_module_idx),
             slot,
@@ -1281,24 +1287,11 @@ impl Checker {
             {
                 continue;
             }
-            let suspends = bodies.get(&obligation.body).copied().unwrap_or(true)
-                || self.body_cleanup_suspends(
-                    &obligation.body,
-                    &graph,
-                    &HashMap::new(),
-                    &bodies,
-                    true,
-                    &mut HashSet::new(),
-                )
-                || (obligation.once
-                    && self.once_cleanup_suspends(
-                        &obligation.body,
-                        &graph,
-                        &HashMap::new(),
-                        &bodies,
-                        true,
-                    ));
-            if !suspends {
+            let failures = self.suspension_obligation_instances(obligation, &graph, &bodies);
+            if failures.is_empty() {
+                output
+                    .bodies
+                    .insert(obligation.body.clone(), SuspensionEffect::Never);
                 continue;
             }
             let subject = match &obligation.body {
@@ -1340,13 +1333,15 @@ impl Checker {
                      declared `fn[suspends]`"
                 ),
             };
-            let mut error = crate::error::TypeError::new(
-                crate::error::TypeErrorKind::InvalidOperation,
-                obligation.key.start..obligation.key.end,
-                message,
-            );
-            error.source_module.clone_from(&obligation.source_module);
-            self.errors.push(error);
+            for (key, source_module) in failures {
+                let mut error = crate::error::TypeError::new(
+                    crate::error::TypeErrorKind::InvalidOperation,
+                    key.start..key.end,
+                    message.clone(),
+                );
+                error.source_module = source_module;
+                self.errors.push(error);
+            }
         }
         self.finish_fork_transfers(&graph, &mut output, flows);
         output

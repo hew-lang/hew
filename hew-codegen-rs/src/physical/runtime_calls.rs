@@ -214,13 +214,6 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     result,
                 )?;
             }
-            RuntimeCallFamily::SinkClone => {
-                self.emit_direct_runtime_call(
-                    hew_types::RuntimeCallFamily::SinkClone,
-                    arguments,
-                    result,
-                )?;
-            }
 
             RuntimeCallFamily::StreamForward => {
                 self.emit_direct_runtime_call(
@@ -242,6 +235,11 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     arguments,
                     result,
                 )?;
+            }
+            family @ (RuntimeCallFamily::StreamFromGenerator
+            | RuntimeCallFamily::SinkFromEncoder
+            | RuntimeCallFamily::SinkClone) => {
+                self.emit_stream_codec_make(family, transfers, required_result()?)?;
             }
             RuntimeCallFamily::ActorCallFree => {
                 self.emit_direct_runtime_call(

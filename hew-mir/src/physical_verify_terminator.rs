@@ -1176,6 +1176,7 @@ pub(crate) fn verify_terminator(
         PhysicalTerminator::StreamSend {
             park,
             sink,
+            receiver,
             value,
             element,
             committed,
@@ -1203,6 +1204,12 @@ pub(crate) fn verify_terminator(
                     "stream send element differs from its sink",
                 ));
             }
+            if receiver.ty != slot(*sink)?.ty {
+                return Err(PhysicalError::new(
+                    "stream send witness disagrees with its receiver",
+                ));
+            }
+            verify_value_recipe(module, receiver)?;
             verify_value_recipe(module, element)?;
             for successor in defer::edges(terminator) {
                 edge(successor)?;
@@ -2010,6 +2017,25 @@ pub(crate) fn verify_terminator(
                     Ok(slot(id)?.ty.clone())
                 })
                 .collect::<Result<Vec<_>, PhysicalError>>()?;
+            let needs_witnesses = matches!(
+                action.family,
+                RuntimeCallFamily::StreamFromGenerator
+                    | RuntimeCallFamily::SinkFromEncoder
+                    | RuntimeCallFamily::SinkClone
+            );
+            if args.value_witnesses().len() != if needs_witnesses { args.len() } else { 0 } {
+                return Err(PhysicalError::new(
+                    "physical stream bridge has incomplete value witnesses",
+                ));
+            }
+            for (recipe, ty) in args.value_witnesses().iter().zip(&parameter_types) {
+                if &recipe.ty != ty {
+                    return Err(PhysicalError::new(
+                        "physical stream bridge witness disagrees with its argument",
+                    ));
+                }
+                verify_value_recipe(module, recipe)?;
+            }
             let result_type = result
                 .map(|id| slot(id).map(|slot| &slot.ty))
                 .transpose()?

@@ -5857,6 +5857,44 @@ impl RuntimeCallFamily {
                 physical: RuntimePhysicalForm::Direct,
                 c_return: RuntimeCReturn::Storage,
             },
+            Self::StreamFromGenerator => RuntimeOpRow {
+                authority: RuntimeAuthority::Service,
+                symbol: "hew_stream_from_generator",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::CodecGenerator,
+                        effect: E::Move,
+                    }],
+                    result: R::FreshOwned(K::Applied(BuiltinType::Stream, &[K::CodecItem])),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::SinkFromEncoder => RuntimeOpRow {
+                authority: RuntimeAuthority::Service,
+                symbol: "hew_sink_from_encoder",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::Applied(BuiltinType::Sink, &[K::Bytes]),
+                            effect: E::Move,
+                        },
+                        A {
+                            ty: K::CodecEncoder,
+                            effect: E::Move,
+                        },
+                    ],
+                    result: R::FreshOwned(K::Applied(BuiltinType::Sink, &[K::CodecItem])),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
             Self::StreamPairSink => RuntimeOpRow {
                 authority: RuntimeAuthority::Service,
                 symbol: "hew_stream_pair_sink",

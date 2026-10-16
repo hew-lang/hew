@@ -846,6 +846,7 @@ fn main() {}
     let mut diagnostics = Vec::new();
     admit_resource_record_lifecycles(
         &items,
+        &[],
         &lowered.module.defs,
         &HashSet::new(),
         &mut table,

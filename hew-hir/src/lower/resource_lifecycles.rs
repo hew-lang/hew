@@ -46,22 +46,27 @@ fn inherent_close_methods(
 /// reconstruct a close declaration from a record-layout or symbol spelling.
 pub(super) fn admit_resource_record_lifecycles(
     items: &[HirItem],
+    layout_declarations: &[HirItem],
     identity: &hew_types::DefTable,
     resource_close_discipline_failures: &HashSet<hew_types::DefId>,
     type_classes: &mut crate::value_class::TypeClassTable,
     diagnostics: &mut Vec<HirDiagnostic>,
 ) {
-    for decl in items.iter().filter_map(|item| match item {
-        HirItem::TypeDecl(decl)
-            if !decl.is_opaque
-                && decl.marker == ResourceMarker::Resource
-                && decl.kind == HirTypeDeclKind::Struct
-                && !resource_close_discipline_failures.contains(&decl.declaration) =>
-        {
-            Some(decl)
-        }
-        _ => None,
-    }) {
+    for decl in items
+        .iter()
+        .chain(layout_declarations)
+        .filter_map(|item| match item {
+            HirItem::TypeDecl(decl)
+                if !decl.is_opaque
+                    && decl.marker == ResourceMarker::Resource
+                    && decl.kind == HirTypeDeclKind::Struct
+                    && !resource_close_discipline_failures.contains(&decl.declaration) =>
+            {
+                Some(decl)
+            }
+            _ => None,
+        })
+    {
         let exact_owner = identity.path(decl.declaration);
         let close_methods = inherent_close_methods(items, identity, decl.declaration);
 

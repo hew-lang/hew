@@ -43,6 +43,9 @@ export interface ShimHost {
   pipes?: Pipes;
   newPipe?(capacity: number): VmValue;
   closePipe?(value: VmValue): void;
+  generatorStream?(generator: VmValue): VmValue;
+  encoderSink?(sink: VmValue, encoder: VmValue): VmValue;
+  cloneSink?(sink: VmValue): VmValue;
   releaseValue?(value: VmValue): void;
   /// Write to the program's standard output.
   writeStdout(text: string): void;
@@ -218,7 +221,10 @@ const UNIT_FAMILY_SHIMS: Record<string, RuntimeShim | undefined> = {
   StringToLowercase: (_host, args) => str(text(args, 0).toLowerCase()),
   StreamPairSink: (host, args) => host.pipes!.extract(arg(args, 0), "sink"),
   StreamPairStream: (host, args) => host.pipes!.extract(arg(args, 0), "stream"),
-  SinkClone: (host, args) => host.pipes!.cloneSink(arg(args, 0)),
+  StreamFromGenerator: (host, args) => host.generatorStream!(arg(args, 0)),
+  SinkFromEncoder: (host, args) =>
+    host.encoderSink!(arg(args, 0), arg(args, 1)),
+  SinkClone: (host, args) => host.cloneSink!(arg(args, 0)),
   SinkClose: (host, args) => {
     host.closePipe!(arg(args, 0));
     return UNIT;
@@ -358,7 +364,9 @@ const UNIT_FAMILY_SHIMS: Record<string, RuntimeShim | undefined> = {
   CharFromI64: checkedChar,
   CharFromU64: checkedChar,
   CharToString: (_host, args) => str(renderStdout(arg(args, 0))),
-  BytesDecodeUtf8: (_host, args) => str(decodeUtf8(arg(args, 0))),
+  BytesDecodeUtf8: () => {
+    throw new Error("UTF-8 decode requires its checked result carrier");
+  },
   // TextDecoder replaces each maximal invalid subsequence with U+FFFD, as
   // native lossy decoding does.
   BytesDecodeUtf8Lossy: (_host, args) => str(decodeUtf8(arg(args, 0))),
@@ -957,6 +965,52 @@ const EXTERN_SHIMS: Record<string, RuntimeShim | undefined> = {
     return int(high <= low ? low : low + host.prng.randbelow(high - low));
   },
 };
+
+export function decodeUtf8Checked(
+  value: VmValue,
+): { value: string } | { validUpTo: number; errorLen: number | null } {
+  if (value.kind !== "vector") throw new TypeError("UTF-8 input must be bytes");
+  const bytes = Uint8Array.from(
+    value.items.map((item) => Number(integer([item], 0))),
+  );
+  let at = 0;
+  while (at < bytes.length) {
+    const first = bytes[at]!;
+    if (first < 128) {
+      at++;
+      continue;
+    }
+    const width =
+      first >= 194 && first <= 223
+        ? 2
+        : first >= 224 && first <= 239
+          ? 3
+          : first >= 240 && first <= 244
+            ? 4
+            : 0;
+    if (width === 0) return { validUpTo: at, errorLen: 1 };
+    for (let offset = 1; offset < width; offset++) {
+      if (at + offset >= bytes.length) return { validUpTo: at, errorLen: null };
+      const next = bytes[at + offset]!;
+      const lower =
+        offset === 1 && first === 224
+          ? 160
+          : offset === 1 && first === 240
+            ? 144
+            : 128;
+      const upper =
+        offset === 1 && first === 237
+          ? 159
+          : offset === 1 && first === 244
+            ? 143
+            : 191;
+      if (next < lower || next > upper)
+        return { validUpTo: at, errorLen: offset };
+    }
+    at += width;
+  }
+  return { value: new TextDecoder("utf-8", { ignoreBOM: true }).decode(bytes) };
+}
 
 /// `bytes` is a vector of byte values, so decoding walks its items.
 function decodeUtf8(value: VmValue): string {

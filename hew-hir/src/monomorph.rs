@@ -136,7 +136,12 @@ pub fn mangle(origin_name: &str, type_args: &[ResolvedTy]) -> String {
 /// a second spelling for the same monomorphisation.
 #[must_use]
 pub fn function_monomorph_symbol(linker_symbol: &str, type_args: &[ResolvedTy]) -> String {
-    mangle(linker_symbol, type_args)
+    let origin = if linker_symbol.contains("$$") {
+        std::borrow::Cow::Owned(format!("$method${}", linker_symbol.replace('$', "$s")))
+    } else {
+        std::borrow::Cow::Borrowed(linker_symbol)
+    };
+    mangle(&origin, type_args)
 }
 
 /// Build the canonical registry key for a user record or enum layout.

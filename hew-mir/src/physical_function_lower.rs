@@ -872,7 +872,7 @@ impl FunctionLowerer<'_> {
                 ..
             } => Ok(PhysicalTerminator::RuntimeCall {
                 action: self.runtime_action(*family, args, result)?,
-                args: self.physical_arguments(args, runtime_param_carrier)?,
+                args: self.runtime_arguments(*family, args)?,
                 result: match result {
                     CallResult::Unit | CallResult::Never => None,
                     CallResult::Value(value) => Some(self.value(value.id)?),
@@ -1203,6 +1203,11 @@ impl FunctionLowerer<'_> {
                 Ok(PhysicalTerminator::StreamSend {
                     park: *park,
                     sink: transfers[0],
+                    receiver: physical_value_recipe(
+                        self.module,
+                        self.glue_ids,
+                        &self.storage[self.value(inputs[0].operand.value)?.0 as usize].ty,
+                    )?,
                     value: transfers[1],
                     element: physical_value_recipe(self.module, self.glue_ids, element)?,
                     normal: self.lower_edge(normal)?,
@@ -1301,6 +1306,34 @@ impl FunctionLowerer<'_> {
         args.iter()
             .map(|argument| self.argument_transfer(argument.operand.value, argument.decision))
             .collect()
+    }
+
+    fn runtime_arguments(
+        &self,
+        family: RuntimeCallFamily,
+        args: &[hew_sir::BoundaryOperand],
+    ) -> Result<PhysicalArguments, PhysicalError> {
+        let arguments = self.physical_arguments(args, runtime_param_carrier)?;
+        if !matches!(
+            family,
+            RuntimeCallFamily::StreamFromGenerator
+                | RuntimeCallFamily::SinkFromEncoder
+                | RuntimeCallFamily::SinkClone
+        ) {
+            return Ok(arguments);
+        }
+        let recipes = args
+            .iter()
+            .map(|argument| {
+                let source = self.value(argument.operand.value)?;
+                physical_value_recipe(
+                    self.module,
+                    self.glue_ids,
+                    &self.storage[source.0 as usize].ty,
+                )
+            })
+            .collect::<Result<Vec<_>, PhysicalError>>()?;
+        Ok(arguments.with_value_witnesses(recipes))
     }
 
     pub(crate) fn physical_arguments(

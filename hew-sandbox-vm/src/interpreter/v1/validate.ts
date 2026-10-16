@@ -208,6 +208,35 @@ export function admitPackage(pkg: PackageV1): SandboxRejection | null {
         };
       }
       const term = block.term;
+      if (
+        term.op === "runtime.call" &&
+        pkg.runtime_families[term.family]?.family === "BytesDecodeUtf8"
+      ) {
+        const shapes = term.variant_result_shapes;
+        const error = shapes && pkg.aggregates[shapes.error];
+        const length = shapes && pkg.variants[shapes.error_len];
+        const result =
+          term.result_shape === null
+            ? undefined
+            : pkg.variants[term.result_shape];
+        if (
+          !error ||
+          error.fields.length !== 2 ||
+          !length ||
+          !result ||
+          length.runtime_tags?.OptionSome === undefined ||
+          length.runtime_tags?.OptionNone === undefined ||
+          result.runtime_tags?.ResultOk === undefined ||
+          result.runtime_tags?.ResultErr === undefined
+        )
+          return {
+            category: "invalid_package",
+            code: "sandbox.package.variant_result_shapes",
+            capability: null,
+            message: "UTF-8 decode lacks its checked result carrier",
+            span: null,
+          };
+      }
       if (term.op === "suspend") {
         const mandatoryClose = (pkg.resources ?? []).some(
           (resource) => resource.close === function_.id,

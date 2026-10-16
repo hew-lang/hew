@@ -62,6 +62,66 @@ fn exclusive_receiver() -> (PhysicalModule, CallableId) {
 }
 
 #[test]
+fn cloned_sink_requires_its_exact_owner_descriptor() {
+    let mut semantic =
+        lower_source("fn main(sink: Sink<i64>) { let _ = sink.try_send(1); let sibling = sink.clone(); sibling.close(); }");
+    semantic.entry_callable = None;
+    semantic.entry_exit_plan = None;
+    let physical = lower_physical_module(&semantic, target_for_inventory(&semantic))
+        .expect("cloned sink has an exact owner witness")
+        .into_unverified();
+    for missing in [true, false] {
+        let mut invalid = physical.clone();
+        let arguments = invalid
+            .functions
+            .iter_mut()
+            .flat_map(|function| &mut function.blocks)
+            .find_map(|block| match &mut block.terminator {
+                PhysicalTerminator::RuntimeCall { action, args, .. }
+                    if action.family == hew_types::RuntimeCallFamily::SinkClone =>
+                {
+                    Some(args)
+                }
+                _ => None,
+            })
+            .expect("sink clone call");
+        let mut witnesses = arguments.value_witnesses().to_vec();
+        if missing {
+            witnesses.clear();
+        } else {
+            witnesses[0].ty = ResolvedTy::I64;
+        }
+        *arguments = PhysicalArguments::new(arguments.to_vec(), arguments.carriers().to_vec())
+            .unwrap()
+            .with_value_witnesses(witnesses);
+        let error = verify_physical_module(&invalid)
+            .expect_err("a sink cannot use an absent or foreign descriptor");
+        assert!(
+            error.message.contains(if missing {
+                "incomplete value witnesses"
+            } else {
+                "witness disagrees with its argument"
+            }),
+            "{error:?}"
+        );
+    }
+    let mut invalid = physical.clone();
+    let receiver = invalid
+        .functions
+        .iter_mut()
+        .flat_map(|function| &mut function.blocks)
+        .find_map(|block| match &mut block.terminator {
+            PhysicalTerminator::StreamSend { receiver, .. } => Some(receiver),
+            _ => None,
+        })
+        .expect("sink send call");
+    receiver.ty = ResolvedTy::I64;
+    let error = verify_physical_module(&invalid)
+        .expect_err("a sender cannot use a foreign owner descriptor");
+    assert!(error.message.contains("receiver"), "{error:?}");
+}
+
+#[test]
 fn exclusive_receiver_rejects_value_carriers_and_shared_call_arguments() {
     let (physical, id) = exclusive_receiver();
     let mut invalid = physical.clone();

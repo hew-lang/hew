@@ -58,10 +58,10 @@ export class Pipes {
     return this.half(pipe, kind);
   }
 
-  private half(pipe: Pipe, kind: "sink" | "stream"): VmValue {
+  private half(pipe: Pipe, kind: "sink" | "stream", open = true): VmValue {
     const id = `pipe-half:${++this.next}`;
-    this.halves.set(id, { pipe, kind, open: true });
-    if (kind === "sink") pipe.sinks += 1;
+    this.halves.set(id, { pipe, kind, open });
+    if (kind === "sink" && open) pipe.sinks += 1;
     return { kind, channelId: id };
   }
 
@@ -75,9 +75,13 @@ export class Pipes {
 
   cloneSink(value: VmValue): VmValue {
     const half = this.get(value);
-    if (!half.open || half.kind !== "sink")
-      throw new Error("cannot clone a closed sink");
-    return this.half(half.pipe, "sink");
+    if (half.kind !== "sink")
+      throw new Error("cannot clone a stream as a sink");
+    return this.half(half.pipe, "sink", half.open);
+  }
+
+  isClosed(value: VmValue): boolean {
+    return !this.get(value).open;
   }
 
   close(value: VmValue, fault: string | null = null): VmValue[] {

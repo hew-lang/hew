@@ -194,6 +194,33 @@ pub(crate) enum ImplMethodObligation {
 }
 
 impl ImplMethodBinders {
+    pub(crate) fn implementation_arguments(
+        &self,
+        defs: &crate::DefTable,
+        method: crate::DefId,
+        receiver: &ResolvedTy,
+        trait_args: &[crate::Ty],
+    ) -> Option<Vec<ResolvedTy>> {
+        let arguments = self.receiver_arguments(defs, method, receiver).ok()?;
+        let substitutions = self
+            .impl_params
+            .iter()
+            .copied()
+            .zip(arguments.iter().map(ResolvedTy::to_ty))
+            .collect();
+        if let Some(bound) = &self.implemented_trait {
+            let implemented: Vec<_> = bound
+                .args
+                .iter()
+                .map(|ty| ty.substitute_type_params_parallel(&substitutions))
+                .collect();
+            if implemented != trait_args {
+                return None;
+            }
+        }
+        Some(arguments)
+    }
+
     #[cfg(test)]
     fn instantiate(
         &self,
@@ -432,27 +459,9 @@ impl TypeFactContext {
         receiver: &ResolvedTy,
         trait_args: &[crate::Ty],
     ) -> Option<Vec<ResolvedTy>> {
-        let binders = self.method_binders.get(&method)?;
-        let arguments = binders
-            .receiver_arguments(&self.defs, method, receiver)
-            .ok()?;
-        let substitutions = binders
-            .impl_params
-            .iter()
-            .copied()
-            .zip(arguments.iter().map(ResolvedTy::to_ty))
-            .collect();
-        if let Some(bound) = &binders.implemented_trait {
-            let implemented: Vec<_> = bound
-                .args
-                .iter()
-                .map(|ty| ty.substitute_type_params_parallel(&substitutions))
-                .collect();
-            if implemented != trait_args {
-                return None;
-            }
-        }
-        Some(arguments)
+        self.method_binders
+            .get(&method)?
+            .implementation_arguments(&self.defs, method, receiver, trait_args)
     }
 
     pub(crate) fn impl_method_arguments(

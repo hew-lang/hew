@@ -58,6 +58,7 @@ import { DeterministicIds } from "../../scheduler/ids.js";
 import { Mt19937 } from "./mt19937.js";
 import {
   ShimFault,
+  decodeUtf8Checked,
   resolveExternShim,
   resolveRuntimeShim,
   type ShimHost,
@@ -124,6 +125,29 @@ interface GeneratorEntry {
   resume?: () => void;
   receive?: (value: VmValue | null, fault: Fault | null) => void;
   closed: Array<(fault: Fault | null) => void>;
+}
+
+interface GeneratorStream {
+  generator: GeneratorEntry;
+  closed: boolean;
+  pending: VmValue | null;
+  fault: Fault | null;
+  receiving: boolean;
+  waiting?: (value: VmValue | null, fault: Fault | null) => void;
+}
+
+interface SenderOwner {
+  sink: VmValue;
+  encoder: VmValue;
+  references: number;
+  endpoints: number;
+  busy: boolean;
+  waiting: Set<() => void>;
+}
+
+interface SenderEndpoint {
+  owner: SenderOwner;
+  open: boolean;
 }
 
 interface ActorMessage {
@@ -352,6 +376,8 @@ class ExecutorV1 {
   private readonly roles = new Map<string, RoleSlot>();
   private readonly pipes = new Pipes();
   private readonly generators = new Map<string, GeneratorEntry>();
+  private readonly generatorStreams = new Map<string, GeneratorStream>();
+  private readonly senderEndpoints = new Map<string, SenderEndpoint>();
   private readonly tasks = new Map<string, TaskEntry>();
   private completedTasks = 0;
   private actorIdentity = 0n;
@@ -374,6 +400,38 @@ class ExecutorV1 {
     this.ids = new DeterministicIds(trace.replay.seed);
     this.host = {
       pipes: this.pipes,
+      generatorStream: (value) => {
+        const id = this.ids.channel();
+        this.generatorStreams.set(id, {
+          generator: this.generatorFor(value),
+          closed: false,
+          pending: null,
+          fault: null,
+          receiving: false,
+        });
+        return { kind: "stream", channelId: id };
+      },
+      encoderSink: (sink, encoder) =>
+        this.senderEndpoint(
+          {
+            sink,
+            encoder,
+            references: 0,
+            endpoints: 0,
+            busy: false,
+            waiting: new Set(),
+          },
+          !this.sinkClosed(sink),
+        ),
+      cloneSink: (value) => {
+        const endpoint =
+          value.kind === "sink"
+            ? this.senderEndpoints.get(value.channelId)
+            : undefined;
+        return endpoint
+          ? this.senderEndpoint(endpoint.owner, endpoint.open)
+          : this.pipes.cloneSink(value);
+      },
       newPipe: (capacity) => this.newPipe(capacity),
       closePipe: (value) =>
         this.pipes.close(value, this.pipeFault(this.current)),
@@ -441,6 +499,11 @@ class ExecutorV1 {
     this.running = true;
     while (this.running) {
       const act = this.current;
+      act.context.cancel = (
+        fault = { kind: "panic", message: "task cancelled", cancelled: true },
+      ) => {
+        act.context.pendingCancellation ??= fault;
+      };
       while (act.opIndex < act.block.ops.length) {
         const op = act.block.ops[act.opIndex++]!;
         if (op.op !== "coverage.hit") this.commitStep();
@@ -1681,6 +1744,37 @@ class ExecutorV1 {
           this.structuralFormat(act, term);
           return;
         }
+        if (entry?.family === "BytesDecodeUtf8") {
+          const value = decodeUtf8Checked(this.boundary(act, term.args[0]!));
+          let result: VmValue;
+          if ("value" in value)
+            result = this.variant(term.result_shape, "ResultOk", [
+              { kind: "string", value: value.value },
+            ]);
+          else {
+            const shapes = term.variant_result_shapes!;
+            const error = this.pkg.aggregates[shapes.error]!;
+            result = this.variant(term.result_shape, "ResultErr", [
+              {
+                kind: "record",
+                typeId: error.name,
+                shape: error.id,
+                fields: [
+                  { kind: "i64", value: BigInt(value.validUpTo) },
+                  this.variant(
+                    shapes.error_len,
+                    value.errorLen === null ? "OptionNone" : "OptionSome",
+                    value.errorLen === null
+                      ? []
+                      : [{ kind: "i64", value: BigInt(value.errorLen) }],
+                  ),
+                ],
+              },
+            ]);
+          }
+          this.completeShim(act, term, result);
+          return;
+        }
         const shim = entry ? resolveRuntimeShim(entry) : undefined;
         if (!entry || !shim) {
           throw new Error(
@@ -2347,55 +2441,37 @@ class ExecutorV1 {
         return;
       }
       case "StreamSend": {
-        const [sink, value] = term.inputs.map((input) =>
-          this.boundary(act, input),
+        const sink = this.boundary(act, term.inputs[0]!);
+        const value = this.boundary(act, term.inputs[1]!);
+        const wake = this.park(act, term);
+        const cancel = act.context.cancel;
+        const stop = this.sendStream(
+          sink,
+          value,
+          term.detail.park,
+          act.context.actor,
+          (status, fault) => {
+            wake(UNIT, fault, status);
+          },
+          act.rcOwner,
         );
-        let cancelWait = () => {};
-        let owned = true;
-        let closing = false;
-        let cancelled: Fault | null = null;
-        const wake = this.park(act, term, () => cancelWait());
-        const cancel = act.context.cancel!;
         act.context.cancel = (
           fault = { kind: "panic", message: "task cancelled", cancelled: true },
         ) => {
-          cancelled ??= fault;
-          cancelWait();
-          if (owned) {
-            owned = false;
-            closing = true;
-            this.closeValueAsync(
-              value!,
-              this.faultText(fault),
-              (closeFault) => cancel(closeFault ?? fault),
-              act.context.actor,
-              act.rcOwner,
-            );
-          } else if (!closing) cancel(fault);
+          stop(fault, (closeFault) => cancel?.(closeFault ?? fault));
         };
-        cancelWait = this.pipes.send(
-          sink!,
-          value!,
-          term.detail.park,
-          (status) => {
-            owned = false;
-            if (status === 0) wake(UNIT);
-            else {
-              closing = true;
-              this.closeValueAsync(
-                value!,
-                this.pipeFault(act),
-                (fault) => wake(UNIT, fault ?? cancelled, status),
-                act.context.actor,
-                act.rcOwner,
-              );
-            }
-          },
-        );
         return;
       }
       case "StreamNext": {
         const stream = this.boundary(act, term.inputs[0]!);
+        const adapter =
+          stream.kind === "stream"
+            ? this.generatorStreams.get(stream.channelId)
+            : undefined;
+        if (adapter) {
+          this.receiveGeneratorStream(act, term, adapter);
+          return;
+        }
         let cancelWait = () => {};
         const wake = this.park(act, term, () => cancelWait());
         cancelWait = this.pipes.receive(
@@ -2543,8 +2619,22 @@ class ExecutorV1 {
       }
       case "NativeIo": {
         if (term.detail?.operation === "SinkFinish") {
-          this.host.pipes!.close(this.boundary(act, term.inputs[0]!));
-          this.park(act, term)(UNIT);
+          const wake = this.park(act, term);
+          const cancel = act.context.cancel!;
+          let stopped: Fault | null = null;
+          act.context.cancel = (
+            fault = {
+              kind: "panic",
+              message: "task cancelled",
+              cancelled: true,
+            },
+          ) => {
+            stopped ??= fault;
+          };
+          this.finishSink(this.boundary(act, term.inputs[0]!), null, () => {
+            if (stopped) cancel(stopped);
+            else wake(UNIT);
+          });
           return;
         }
         // Admission passed `StdinReadLine`. The record is the raw line,
@@ -2675,6 +2765,253 @@ class ExecutorV1 {
       else resume(UNIT, fault);
     };
     return resume;
+  }
+
+  private sinkClosed(value: VmValue): boolean {
+    const endpoint =
+      value.kind === "sink"
+        ? this.senderEndpoints.get(value.channelId)
+        : undefined;
+    return endpoint ? !endpoint.open : this.pipes.isClosed(value);
+  }
+
+  private senderEndpoint(owner: SenderOwner, open = true): VmValue {
+    const id = this.ids.channel();
+    owner.references++;
+    if (open) owner.endpoints++;
+    this.senderEndpoints.set(id, { owner, open });
+    return { kind: "sink", channelId: id };
+  }
+
+  private finishSink(
+    value: VmValue,
+    fault: string | null,
+    done: () => void,
+  ): void {
+    const endpoint =
+      value.kind === "sink"
+        ? this.senderEndpoints.get(value.channelId)
+        : undefined;
+    if (!endpoint) {
+      this.pipes.close(value, fault);
+      done();
+      return;
+    }
+    if (!endpoint.open) {
+      done();
+      return;
+    }
+    endpoint.open = false;
+    endpoint.owner.endpoints--;
+    if (fault || endpoint.owner.endpoints === 0) {
+      const finish = () => {
+        if (endpoint.owner.busy) {
+          endpoint.owner.waiting.add(finish);
+          return;
+        }
+        this.finishSink(endpoint.owner.sink, fault, done);
+      };
+      finish();
+    } else done();
+  }
+
+  private sendStream(
+    sink: VmValue,
+    value: VmValue,
+    park: boolean,
+    actor: ActorInstance | null,
+    complete: (status: number, fault: Fault | null) => void,
+    rcOwner: RcOwner | null,
+  ): (fault: Fault, drained: (fault: Fault | null) => void) => void {
+    const endpoint =
+      sink.kind === "sink"
+        ? this.senderEndpoints.get(sink.channelId)
+        : undefined;
+    let owned = true;
+    let finished = false;
+    let closing = false;
+    let claimed = false;
+    let stopped: Fault | null = null;
+    let encoder: FrameContext | null = null;
+    let child: ReturnType<ExecutorV1["sendStream"]> | null = null;
+    let withdraw = () => {};
+    const drained: Array<(fault: Fault | null) => void> = [];
+    const release = () => {
+      if (!claimed || !endpoint) return;
+      claimed = false;
+      endpoint.owner.busy = false;
+      for (const wake of endpoint.owner.waiting)
+        this.scheduler.enqueue(actor?.id ?? "actor:root", wake);
+      endpoint.owner.waiting.clear();
+    };
+    const finish = (status: number, fault: Fault | null = null) => {
+      if (finished || closing) return;
+      closing = true;
+      release();
+      const done = (closeFault: Fault | null = null) => {
+        finished = true;
+        const failure = combineFaults(fault, closeFault);
+        if (stopped) for (const wake of drained.splice(0)) wake(failure);
+        else complete(status, failure);
+      };
+      if (owned) {
+        owned = false;
+        this.closeValueAsync(
+          value,
+          this.faultText(fault ?? stopped),
+          done,
+          actor,
+          rcOwner,
+        );
+      } else done();
+    };
+    const start = () => {
+      if (stopped || finished || closing) return;
+      if (!endpoint) {
+        withdraw = this.pipes.send(sink, value, park, (status) => {
+          if (status === 0) owned = false;
+          finish(status);
+        });
+        return;
+      }
+      if (!endpoint.open) {
+        finish(1);
+        return;
+      }
+      const owner = endpoint.owner;
+      if (owner.busy) {
+        if (!park) {
+          finish(2);
+          return;
+        }
+        owner.waiting.add(start);
+        withdraw = () => {
+          owner.waiting.delete(start);
+        };
+        return;
+      }
+      owner.busy = true;
+      claimed = true;
+      const callable = owner.encoder;
+      encoder = this.invokeFrame(
+        actor,
+        calleeFunction(callable, null),
+        callable.kind === "closure" ? [callable.environment, value] : [value],
+        (encoded) => {
+          encoder = null;
+          if (stopped) {
+            this.closeValueAsync(
+              encoded,
+              this.faultText(stopped),
+              (fault) => finish(0, fault),
+              actor,
+              rcOwner,
+            );
+          } else {
+            child = this.sendStream(
+              owner.sink,
+              encoded,
+              park,
+              actor,
+              (status, fault) => {
+                child = null;
+                finish(status, fault);
+              },
+              rcOwner,
+            );
+          }
+        },
+        (fault) => {
+          encoder = null;
+          finish(3, fault);
+        },
+        rcOwner,
+      );
+    };
+    start();
+    return (fault, done) => {
+      if (finished) {
+        done(null);
+        return;
+      }
+      stopped ??= fault;
+      drained.push(done);
+      withdraw();
+      if (closing) return;
+      if (encoder) encoder.cancel?.(fault);
+      else if (child)
+        child(fault, (failure) => {
+          child = null;
+          finish(0, failure);
+        });
+      else finish(0);
+    };
+  }
+
+  private receiveGeneratorStream(
+    act: Activation,
+    term: Extract<TermV1, { op: "suspend" }>,
+    adapter: GeneratorStream,
+  ): void {
+    const wake = this.park(act, term);
+    const receive = (value: VmValue | null, fault: Fault | null) => {
+      if (fault) wake(UNIT, fault);
+      else
+        wake(
+          this.variant(
+            term.result_shape,
+            value === null ? "OptionNone" : "OptionSome",
+            value === null ? [] : [value],
+          ),
+        );
+    };
+    if (adapter.pending !== null) {
+      const value = adapter.pending;
+      adapter.pending = null;
+      receive(value, null);
+      return;
+    }
+    const generator = adapter.generator;
+    if (generator.done) {
+      receive(null, adapter.fault ?? generator.fault);
+      return;
+    }
+    if (term.detail.park) adapter.waiting = receive;
+    else receive(null, null);
+    const cancel = act.context.cancel;
+    if (term.detail.park)
+      act.context.cancel = (fault) => {
+        adapter.waiting = undefined;
+        this.closeGenerator(generator, (closeFault) =>
+          cancel?.(closeFault ?? fault),
+        );
+      };
+    if (adapter.receiving) return;
+    adapter.receiving = true;
+    generator.receive = (value, fault) => {
+      adapter.receiving = false;
+      if (adapter.closed) {
+        if (value !== null) this.closeValueAsync(value, null, () => {});
+        return;
+      }
+      adapter.fault = fault;
+      const waiting = adapter.waiting;
+      adapter.waiting = undefined;
+      if (waiting) waiting(value, fault);
+      else adapter.pending = value;
+    };
+    if (generator.started) {
+      const resume = generator.resume;
+      generator.resume = undefined;
+      if (!resume) throw new Error("generator stream lost its suspended yield");
+      resume();
+    } else {
+      this.scheduler.enqueue(generator.id, () => {
+        if (generator.done) return;
+        generator.started = true;
+        this.runFrame(generator.frame);
+      });
+    }
   }
 
   private newPipe(capacity: number): VmValue {
@@ -2870,10 +3207,34 @@ class ExecutorV1 {
           case "vector":
             pending.push(...[...value.items].reverse());
             break;
-          case "sink":
-          case "stream":
+          case "stream": {
+            const adapter = this.generatorStreams.get(value.channelId);
+            if (adapter) {
+              this.generatorStreams.delete(value.channelId);
+              adapter.closed = true;
+              if (adapter.pending !== null) pending.push(adapter.pending);
+              adapter.pending = null;
+              adapter.waiting = undefined;
+              this.closeGenerator(adapter.generator, next);
+              return;
+            }
             pending.push(...this.pipes.close(value, currentFault).reverse());
             break;
+          }
+          case "sink": {
+            const endpoint = this.senderEndpoints.get(value.channelId);
+            if (endpoint) {
+              this.finishSink(value, currentFault, () => {
+                this.senderEndpoints.delete(value.channelId);
+                if (--endpoint.owner.references === 0)
+                  pending.push(endpoint.owner.sink, endpoint.owner.encoder);
+                next();
+              });
+              return;
+            } else
+              pending.push(...this.pipes.close(value, currentFault).reverse());
+            break;
+          }
         }
       }
       done(firstFault);

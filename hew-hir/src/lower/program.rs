@@ -2976,6 +2976,7 @@ pub fn lower_program_with_mono_cap(
     );
     admit_resource_record_lifecycles(
         &items,
+        &layout_universe_decls,
         &ctx.defs,
         &ctx.resource_close_discipline_failures,
         &mut ctx.type_classes,

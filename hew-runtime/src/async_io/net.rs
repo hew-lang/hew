@@ -38,13 +38,9 @@ enum Action {
     Write {
         data: WriteData,
         written: usize,
-        finish: Option<FinishSink>,
+        finish: Option<hew_cabi::sink::PendingFinish>,
     },
 }
-
-struct FinishSink(*mut crate::stream::HewSink);
-// SAFETY: the submitted operation retains the sink's exclusive loan to quiescence.
-unsafe impl Send for FinishSink {}
 
 enum WriteData {
     Owned(Vec<u8>),
@@ -240,13 +236,12 @@ pub(crate) fn accept_now(slot: &Slot) -> io::Result<Option<c_int>> {
 
 impl NetOp {
     pub(super) fn finish_sink(&self) -> Option<IoFailure> {
-        let finish = match &mut *self.action.lock_or_recover() {
+        let pending = match &mut *self.action.lock_or_recover() {
             Action::Write { finish, .. } => finish.take(),
             _ => None,
         }?;
         let _ = crate::stream_error::take_last_error();
-        // SAFETY: producer quiescence precedes releasing this exclusive loan.
-        unsafe { (*finish.0).close() };
+        pending.finish();
         IoFailure::take_recorded()
     }
     /// Bytes of a write's item that reached the OS so far.
@@ -339,6 +334,13 @@ unsafe fn start(handle: i32, action: Action, waker: *const HewWaker) -> *const H
         Direction::Read
     };
     let Some(slot) = crate::reactor::lookup(handle) else {
+        if let Action::Write {
+            finish: Some(pending),
+            ..
+        } = action
+        {
+            pending.finish();
+        }
         // SAFETY: the caller borrows a valid descriptor through this call.
         let operation = unsafe { HewAsyncIo::new(waker) };
         operation.complete(Err(IoFailure::from_io(
@@ -514,14 +516,14 @@ pub(crate) unsafe fn start_tcp_stream_write(
 pub(super) unsafe fn start_tcp_sink_finish(
     connection: i32,
     bytes: Vec<u8>,
-    sink: *mut crate::stream::HewSink,
+    pending: hew_cabi::sink::PendingFinish,
     waker: *const HewWaker,
 ) -> *const HewAsyncIo {
     let action = Action::Write {
         data: WriteData::Owned(bytes),
         written: 0,
-        finish: Some(FinishSink(sink)),
+        finish: Some(pending),
     };
-    // SAFETY: the caller retains the source loan and supplies a live waker.
+    // SAFETY: the pending backing retains the source loan and the caller lends a live waker.
     unsafe { start(connection, action, waker) }
 }

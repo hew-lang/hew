@@ -926,6 +926,7 @@ pub enum ArgumentTransfer {
 pub struct PhysicalArguments {
     transfers: Vec<ArgumentTransfer>,
     carriers: Vec<ParamCarrier>,
+    value_witnesses: Vec<PhysicalValueRecipe>,
 }
 
 impl PhysicalArguments {
@@ -941,12 +942,23 @@ impl PhysicalArguments {
         Ok(Self {
             transfers,
             carriers,
+            value_witnesses: Vec::new(),
         })
     }
 
     #[must_use]
     pub fn carriers(&self) -> &[ParamCarrier] {
         &self.carriers
+    }
+
+    pub(crate) fn with_value_witnesses(mut self, recipes: Vec<PhysicalValueRecipe>) -> Self {
+        self.value_witnesses = recipes;
+        self
+    }
+
+    #[must_use]
+    pub fn value_witnesses(&self) -> &[PhysicalValueRecipe] {
+        &self.value_witnesses
     }
 
     #[cfg(test)]
@@ -1093,6 +1105,7 @@ pub enum PhysicalTerminator {
     StreamSend {
         park: bool,
         sink: ArgumentTransfer,
+        receiver: PhysicalValueRecipe,
         value: ArgumentTransfer,
         element: PhysicalValueRecipe,
         normal: PhysicalEdge,

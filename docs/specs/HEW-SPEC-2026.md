@@ -426,15 +426,8 @@ language contracts:
   sources. A line, chunk or take adapter over a socket stream, and a file
   stream over a pipe, device or terminal, are not select sources yet
   (§6.4.5).
-- Ordinary-call select currently realizes direct calls, statically resolved
-  trait methods and callable values, including mutable and generic closures.
-  Mutable methods with receiver handback and dynamic trait slots still need
-  prepared invocation adapters; their ordinary calls remain supported.
-- Generic `frames` / `framed` codec adapters are not lowered; the `Codec`
-  trait, `lines()` and the shipped codecs are separate from that gap
-  (§6.4.6).
-- Native supervision supports declared children and pools of them; a literal
-  `count:` is required, and sibling wiring and parts of the shutdown-deadline
+- Native supervision supports declared children and pools of them, with a checked
+  runtime `count:` expression. Sibling wiring and parts of the shutdown-deadline
   contract remain incomplete (§5).
 - Captured WASI execution can still expose an internal trap tag as its exit
   status. This does not change the exit-1 rule for unrecovered faults (§5.8).
@@ -6903,9 +6896,55 @@ either byte order whose declared length above `max` is `Malformed` (a
 length-prefixed stream cannot resynchronize), and `Slip { max }` (RFC
 1055), which skips an empty, malformed or oversized record to the next
 END and never errors. Because `encode` returns `bytes`, an item past a
-codec's bound panics and names the codec. `lines()` is the `Lines` case
-as a method. Generic `frames(codec)` / `framed(codec)` adapters over
-a user codec are decided but not lowered in edition 2026 (§2.1.1).
+codec's bound panics and names the codec. The `lines()` convenience retains
+its existing line-normalization and EOF behaviour; `frames(Lines {})`
+delivers typed codec errors.
+
+`input.frames(codec)` consumes a `Stream<bytes>` and a `Codec<T> + Send`
+value, returning `Stream<Result<T, CodecError>>` for `T: Send`. The adapter
+buffers across chunk boundaries and yields every complete frame in order.
+Malformed input, a complete frame that consumes no buffered bytes, or EOF
+with an incomplete frame produces one terminal `Err`, then EOF. Input and
+codec cleanup finishes before that error is delivered. A clean EOF with no
+buffered bytes produces EOF directly. Decode may suspend through ordinary
+inferred effects. Closing or cancelling the adapter drains any active poll
+and releases its input, buffered bytes and codec. `try_recv()` performs one
+nonblocking poll; pending work belongs to the retained stream after the
+calling function returns.
+
+`output.framed(codec)` consumes a `Sink<bytes>` and a `Codec<T> + Send`
+value, returning `Sink<T>` for `T: Send`. Construction requires the concrete
+encoder, including calls and implicit cleanup through generic helpers, to
+be non-suspending. This requirement belongs to `framed`; ordinary `Codec`
+calls retain inferred suspension. Encode is infallible, so send retains the
+ordinary `SendError` admission contract. Accepted partial-write remainders
+are flushed before another item is admitted.
+
+Encoding retains ordinary cooperative compute polling. `try_send()` never
+waits for sink readiness and does not report `Full` because encoding is
+unfinished; after encoding it makes one capacity attempt.
+
+Cloning a sink shares one sender owner. Framed clones share its codec,
+pending frame and underlying sink without requiring `C: Clone`; concurrent
+admission is serialized and `try_send()` returns `Full` when that owner is
+busy. Finishing an endpoint retires that producer, and the last open
+endpoint finishes the underlying sink. The final endpoint release closes
+the codec exactly once through ordinary affine cleanup.
+
+```hew
+import std.stream;
+
+fn main() {
+    let (output, input): (Sink<bytes>, Stream<bytes>) = stream.pipe(2).expect("pipe");
+    let sender: Sink<string> = output.framed(stream.Lines {});
+    let frames: Stream<Result<string, stream.CodecError>> = input.frames(stream.Lines {});
+    sender.send("hello").expect("send");
+    sender.close();
+    assert(frames.recv().expect("frame").expect("decode") == "hello");
+    assert(frames.recv().is_none());
+    frames.close();
+}
+```
 
 #### 6.4.7 Sockets
 

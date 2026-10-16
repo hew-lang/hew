@@ -1,0 +1,13 @@
+[[case]]
+id = "user-codec-encoder-suspends-refused"
+intent = "Framing through a generic helper refuses an encoder whose implicit resource cleanup suspends."
+source = "cases/user-codec-encoder-suspends-refused.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "InvalidOperation"
+line = 33
+column = 19
+message = "closure suspends via `encode(...)`; `fn(T) -> bytes` never suspends, write `fn[suspends]`"

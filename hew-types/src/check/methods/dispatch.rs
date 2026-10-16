@@ -1753,7 +1753,9 @@ impl Checker {
                     ..
                 },
                 _,
-            ) => self.check_stream_method(type_args, method, args, span),
+            ) if lookup_builtin_method_sig(&resolved, method).is_some() => {
+                self.check_stream_method(type_args, method, args, span)
+            }
             // Sink<T> methods
             (
                 Ty::Named {
@@ -1762,7 +1764,7 @@ impl Checker {
                     ..
                 },
                 _,
-            ) => {
+            ) if lookup_builtin_method_sig(&resolved, method).is_some() => {
                 let inner = Self::stream_element_type(type_args);
                 // Pipe sends use the same owned-element witness as receives.
                 // Admission waits until inference has resolved the element.

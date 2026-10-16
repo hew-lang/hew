@@ -691,6 +691,41 @@ fn generic_sort_and_reverse_match_native() {
     }
 }
 
+#[cfg(unix)]
+#[test]
+fn utf8_decode_matches_native() {
+    set_test_hewpath();
+    ensure_native_toolchain();
+    ensure_parity_runner_built();
+    for case in [
+        ParityCase {
+            test_name: "utf8-decode-loop",
+            source_rel: "tests/core-acceptance/cases/utf8-decode-loop.hew",
+        },
+        ParityCase {
+            test_name: "utf8-decode-errors",
+            source_rel: "tests/core-acceptance/cases/utf8-decode-errors.hew",
+        },
+    ] {
+        assert_case(&case, "");
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn user_codec_stream_matches_native() {
+    set_test_hewpath();
+    ensure_native_toolchain();
+    ensure_parity_runner_built();
+    assert_case(
+        &ParityCase {
+            test_name: "user_codec_stream",
+            source_rel: "tests/core-acceptance/cases/user-codec-stream.hew",
+        },
+        "",
+    );
+}
+
 /// Standard input reaches both engines as the same bytes: the VM serves the
 /// stdin line read that native suspends on, with line endings, an empty line
 /// and the unterminated tail intact.
@@ -1060,6 +1095,7 @@ fn assert_exact_stdout(case: &ParityCase, native: &Output) {
         ),
         "pointer_width_native64" => Some("4294967296\n4294967296\n"),
         "sort_values" | "float_sort_values" => Some("sort-authority=0\n"),
+        "user_codec_stream" => Some("user codec frames\n"),
         "dyn_subtrait_display" => Some("point at 1\n(1, 2)\npoint at 3 / (3, 4)\n"),
         "dyn_multibound_dispatch" => {
             Some("alpha 3\nbeta 3\n300\nalpha 3\nbeta 5 alpha 5 500\nright\nleft\ntag 7\n")

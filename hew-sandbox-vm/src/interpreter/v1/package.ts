@@ -510,6 +510,7 @@ export type TermV1 =
         releases_contents?: boolean;
         keeps_inputs_on_failure?: boolean;
         result_member_shapes?: Array<number | null>;
+        variant_result_shapes?: { error: number; error_len: number };
         result_shape: number | null;
       })
   | (TermBase &

@@ -29,6 +29,35 @@ pub struct CleanupEffect {
 }
 
 impl Checker {
+    pub(super) fn effect_release_targets(
+        &self,
+        effect: &CleanupEffect,
+        substitutions: &HashMap<ParamHead, Ty>,
+    ) -> Vec<CleanupTarget> {
+        let mut value = effect.value.clone();
+        value.ty = self.subst.resolve(&value.ty);
+        cleanup_targets(&value, substitutions, self, true)
+    }
+
+    pub(super) fn effect_once_release_targets(
+        &self,
+        body: &EffectBody,
+        graph: &EffectGraph,
+        substitutions: &HashMap<ParamHead, Ty>,
+    ) -> Vec<CleanupTarget> {
+        graph
+            .once_releases
+            .get(body)
+            .into_iter()
+            .flatten()
+            .flat_map(|value| {
+                let mut value = value.clone();
+                value.ty = self.subst.resolve(&value.ty);
+                cleanup_targets(&value, substitutions, self, true)
+            })
+            .collect()
+    }
+
     pub(super) fn resource_close_instances(&self, ty: &Ty) -> Vec<(crate::DefId, Ty, Vec<Ty>)> {
         cleanup_targets(
             &CleanupValue {

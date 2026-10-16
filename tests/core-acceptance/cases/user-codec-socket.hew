@@ -1,0 +1,86 @@
+import std.net;
+
+import std.stream;
+
+#[resource]
+type SocketCodec {
+    closed: Sink<i64>;
+}
+
+impl SocketCodec {
+    fn close(consume self) {
+        self.closed.send(1).expect("socket codec closes once");
+    }
+}
+
+impl stream.Codec<string> for SocketCodec {
+    fn decode(self, buf: bytes) -> Result<stream.Decoded<string>, stream.CodecError> {
+        .Ok(stream.Decoded.Incomplete(buf))
+    }
+
+    fn encode(self, item: string) -> bytes {
+        var frame: bytes = [165];
+        frame.append(item.to_bytes());
+        frame
+    }
+}
+
+fn plain_client(address: string) {
+    let connection = net.connect(address).expect("plain connect");
+    let (input, output) = connection.split();
+    let sibling = output.clone();
+    output.send("first\0".to_bytes()).expect("first clone");
+    output.finish();
+    output.close();
+    sibling.send("second".to_bytes()).expect("remaining clone");
+    sibling.close();
+    input.close();
+}
+
+fn framed_client(address: string, consume closed: Sink<i64>) {
+    let connection = net.connect(address).expect("framed connect");
+    let (input, output) = connection.split();
+    let encoded: Sink<string> = output.framed(SocketCodec { closed });
+    let sibling = encoded.clone();
+    encoded.send("one").expect("first frame");
+    encoded.close();
+    sibling.send("two").expect("second frame");
+    sibling.finish();
+    sibling.close();
+    input.close();
+}
+
+fn drain(consume input: Stream<bytes>) -> bytes {
+    var data = bytes.new();
+    for chunk in input {
+        data.append(chunk);
+    }
+    data
+}
+
+fn main() {
+    let listener = net.listen("127.0.0.1:0").expect("listen");
+    let address = f"127.0.0.1:{listener.local_port()}";
+    scope {
+        let client = fork plain_client(address);
+        let connection = listener.accept().expect("plain accept");
+        let (input, output) = connection.split();
+        assert(drain(input) == "first\0second".to_bytes());
+        output.close();
+        await client;
+    };
+    let (closed, audit): (Sink<i64>, Stream<i64>) = stream.pipe(1).expect("audit");
+    scope {
+        let client = fork framed_client(address, closed);
+        let connection = listener.accept().expect("framed accept");
+        let (input, output) = connection.split();
+        assert(drain(input) == [165, 111, 110, 101, 165, 116, 119, 111]);
+        output.close();
+        await client;
+    };
+    assert(audit.recv() == .Some(1));
+    assert(audit.recv().is_none());
+    audit.close();
+    listener.close();
+    println("cloned socket codecs");
+}

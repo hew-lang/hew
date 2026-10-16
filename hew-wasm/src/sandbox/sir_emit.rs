@@ -1718,6 +1718,27 @@ impl<'m> Walker<'m> {
                             .to_string(),
                     );
                 }
+                if let Some(hew_types::runtime_call::RuntimeSemanticContract {
+                    result: hew_types::runtime_call::RuntimeResultEffect::FreshOwnedVariant(kind),
+                    ..
+                }) = family.semantic_contract()
+                {
+                    let CallResult::Value(value) = result else {
+                        return Err(EmitError::new("runtime variant result has no value"));
+                    };
+                    let shapes = hew_sir::runtime_variant_shape_refs(
+                        &self.module.defs,
+                        kind,
+                        &value.ty,
+                        &self.module.aggregate_shapes,
+                        &self.module.variant_shapes,
+                    )
+                    .map_err(EmitError::new)?;
+                    call["variant_result_shapes"] = serde_json::json!({
+                        "error": shapes.error.0,
+                        "error_len": shapes.error_len.0,
+                    });
+                }
                 // A failure that leaves the inputs with the caller, whose
                 // unwind edge stores the moved receiver back.
                 if family

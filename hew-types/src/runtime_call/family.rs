@@ -341,6 +341,8 @@ pub enum RuntimeCallFamily {
     /// `stream.forward(from, to)`: drain `from` into `to`, finishing `to` at
     /// EOF. Both halves are consumed.
     StreamForward,
+    StreamFromGenerator,
+    SinkFromEncoder,
     StreamLines,
     StreamNextLayout,
     /// The two halves of one `stream.pipe` allocation, extracted by the
@@ -1138,6 +1140,8 @@ impl RuntimeCallFamily {
             Self::StreamPairSink => Some("std.stream.pair_sink"),
             Self::StreamPairStream => Some("std.stream.pair_stream"),
             Self::StreamForward => Some("std.stream.forward"),
+            Self::StreamFromGenerator => Some("std.stream.from_generator"),
+            Self::SinkFromEncoder => Some("std.stream.from_encoder"),
             Self::BytesDecodeUtf8 => Some("std.encoding.utf8.decode"),
             Self::BytesDecodeUtf8Lossy => Some("std.encoding.utf8.decode_lossy"),
             _ => None,
@@ -1148,7 +1152,11 @@ impl RuntimeCallFamily {
     #[must_use]
     pub const fn source_intrinsic_type_params(self) -> &'static [&'static str] {
         match self {
-            Self::StreamPairSink | Self::StreamPairStream | Self::StreamForward => &["T"],
+            Self::StreamPairSink
+            | Self::StreamPairStream
+            | Self::StreamForward
+            | Self::StreamFromGenerator
+            | Self::SinkFromEncoder => &["T"],
             _ => &[],
         }
     }
@@ -1173,6 +1181,8 @@ impl RuntimeCallFamily {
             "stream.pair_sink" => Some(Self::StreamPairSink),
             "stream.pair_stream" => Some(Self::StreamPairStream),
             "stream.forward" => Some(Self::StreamForward),
+            "stream.from_generator" => Some(Self::StreamFromGenerator),
+            "stream.from_encoder" => Some(Self::SinkFromEncoder),
             "println_i32" => Some(Self::Print {
                 kind: PrintKind::I32,
                 newline: true,

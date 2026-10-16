@@ -10,6 +10,10 @@ fn stream_descriptor_symbol(callable: CallableId, block: BlockId) -> String {
     format!("__hew_stream_{}_{}_elem", callable.0, block.0)
 }
 
+fn codec_descriptor_symbol(callable: CallableId, storage: StorageId) -> String {
+    format!("__hew_stream_codec_{}_{}_owner", callable.0, storage.0)
+}
+
 impl<'ctx> ModuleEmitter<'ctx, '_> {
     /// Producers, consumers and queued-value cleanup use the same typed witness.
     pub(super) fn emit_stream_descriptors(&self) -> CodegenResult<()> {
@@ -34,6 +38,30 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                         element,
                     )?;
                 }
+                if let PhysicalTerminator::StreamSend { sink, receiver, .. } = &block.terminator {
+                    self.emit_value_descriptor(
+                        &codec_descriptor_symbol(function.callable, argument_source(sink)),
+                        receiver,
+                    )?;
+                }
+                if let PhysicalTerminator::RuntimeCall { action, args, .. } = &block.terminator {
+                    if matches!(
+                        action.family,
+                        RuntimeCallFamily::StreamFromGenerator
+                            | RuntimeCallFamily::SinkFromEncoder
+                            | RuntimeCallFamily::SinkClone
+                    ) {
+                        for (argument, recipe) in args.iter().zip(args.value_witnesses()) {
+                            self.emit_value_descriptor(
+                                &codec_descriptor_symbol(
+                                    function.callable,
+                                    argument_source(argument),
+                                ),
+                                recipe,
+                            )?;
+                        }
+                    }
+                }
             }
         }
         Ok(())
@@ -41,6 +69,56 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
 }
 
 impl<'ctx> FunctionEmitter<'_, 'ctx> {
+    pub(super) fn emit_stream_codec_make(
+        &self,
+        family: RuntimeCallFamily,
+        arguments: &[ArgumentTransfer],
+        result: StorageId,
+    ) -> CodegenResult<()> {
+        let index = usize::from(family == RuntimeCallFamily::SinkFromEncoder);
+        let source = argument_source(&arguments[index]);
+        let witness = self
+            .llvm
+            .get_global(&codec_descriptor_symbol(self.function.callable, source))
+            .ok_or_else(|| {
+                CodegenError::FailClosed("stream codec owner lacks its value descriptor".into())
+            })?
+            .as_pointer_value();
+        let pointer = self.ctx.ptr_type(AddressSpace::default());
+        let mut inputs = Vec::new();
+        if index == 1 {
+            inputs.push(
+                self.load(argument_source(&arguments[0]), "codec.sink")?
+                    .into(),
+            );
+            inputs.push(self.slots[source.0 as usize].into());
+        } else {
+            inputs.push(self.load(source, "codec.generator")?.into());
+        }
+        if index == 1 {
+            let sink_witness = self
+                .llvm
+                .get_global(&codec_descriptor_symbol(
+                    self.function.callable,
+                    argument_source(&arguments[0]),
+                ))
+                .ok_or_else(|| {
+                    CodegenError::FailClosed(
+                        "framed sink lacks its underlying value descriptor".into(),
+                    )
+                })?;
+            inputs.push(sink_witness.as_pointer_value().into());
+        }
+        inputs.push(witness.into());
+        let function = get_or_declare_external(
+            self.llvm,
+            family.c_symbol(),
+            pointer.fn_type(&vec![pointer.into(); inputs.len()], false),
+        )?;
+        let value = suspend::call_value(&self.builder, function, &inputs, "stream.codec")?;
+        self.store(result, value)
+    }
+
     pub(super) fn emit_stream_pipe(
         &self,
         capacity: u32,
@@ -214,22 +292,46 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         result: StorageId,
         option: PhysicalVariantId,
         normal: &PhysicalEdge,
+        unwind: &PhysicalEdge,
     ) -> CodegenResult<()> {
         let pointer = self.ctx.ptr_type(AddressSpace::default());
+        let fault_out = self
+            .value_emitter()
+            .entry_scratch(pointer.into(), "stream.try_next.fault")?;
         let take = get_or_declare_external(
             self.llvm,
             "hew_stream_try_next_layout",
-            self.ctx
-                .i32_type()
-                .fn_type(&[pointer.into(), pointer.into(), pointer.into()], false),
+            self.ctx.i32_type().fn_type(&[pointer.into(); 4], false),
         )?;
         let status = suspend::call_value(
             &self.builder,
             take,
-            &[handle.into(), slot.into(), witness.into()],
+            &[handle.into(), slot.into(), witness.into(), fault_out.into()],
             "stream.try_next.status",
         )?
         .into_int_value();
+        let fault = self
+            .builder
+            .build_load(pointer, fault_out, "stream.try_next.failure")
+            .llvm_ctx("read generator poll fault")?
+            .into_pointer_value();
+        let faulted = self
+            .builder
+            .build_is_not_null(fault, "stream.try_next.faulted")
+            .llvm_ctx("observe generator poll fault")?;
+        let failed = self
+            .ctx
+            .append_basic_block(self.value, "stream.try_next.failed");
+        let ready = self
+            .ctx
+            .append_basic_block(self.value, "stream.try_next.ready");
+        self.builder
+            .build_conditional_branch(faulted, failed, ready)
+            .llvm_ctx("dispatch generator poll fault")?;
+        self.builder.position_at_end(failed);
+        self.store_active_fault(fault.into(), HEW_TRAP_USER_PANIC)?;
+        self.emit_edge(unwind)?;
+        self.builder.position_at_end(ready);
         let some = self
             .ctx
             .append_basic_block(self.value, "stream.try_next.some");
@@ -303,22 +405,26 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .value_emitter()
             .entry_scratch(element_ty, "stream.element.slot")?;
         if !park {
-            // A non-parking take never registers a waker or an in-flight read
-            // request, so there is nothing to abandon on an empty stream.
-            return self
-                .emit_stream_try_next(handle, slot, element, witness, result, option.id, normal);
+            return self.emit_stream_try_next(
+                handle, slot, element, witness, result, option.id, normal, unwind,
+            );
         }
         let frame = self.stream_frame()?;
         let waker = self.task_pointer_call("hew_coro_state_waker", &[frame.state.into()])?;
         let start = get_or_declare_external(
             self.llvm,
             "hew_stream_read_start_native",
-            pointer.fn_type(&[pointer.into(); 3], false),
+            pointer.fn_type(&[pointer.into(); 4], false),
         )?;
         let request = suspend::call_value(
             &self.builder,
             start,
-            &[handle.into(), waker.into(), witness.into()],
+            &[
+                handle.into(),
+                waker.into(),
+                witness.into(),
+                frame.state.into(),
+            ],
             "stream.read.operation",
         )?
         .into_pointer_value();
@@ -422,117 +528,6 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         self.emit_edge(unwind)
     }
 
-    /// `try_send()`: one non-parking transfer. The runtime entry moves the
-    /// element in and reports 0 accepted, 1 closed or 2 full. Rejected owners
-    /// finish consuming cleanup without waiting for channel capacity.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the send carries each checked outcome edge"
-    )]
-    fn emit_stream_try_send(
-        &self,
-        handle: BasicValueEnum<'ctx>,
-        value: StorageId,
-        witness: PointerValue<'ctx>,
-        normal: &PhysicalEdge,
-        closed: &PhysicalEdge,
-        full: &PhysicalEdge,
-        unwind: &PhysicalEdge,
-    ) -> CodegenResult<()> {
-        let pointer = self.ctx.ptr_type(AddressSpace::default());
-        let cleanup = self
-            .value_emitter()
-            .entry_scratch(pointer.into(), "stream.rejected.owner")?;
-        self.builder
-            .build_store(cleanup, pointer.const_null())
-            .llvm_ctx("initialize rejected stream owner")?;
-        let send = get_or_declare_external(
-            self.llvm,
-            "hew_stream_try_send_move_release",
-            self.ctx.i32_type().fn_type(&[pointer.into(); 4], false),
-        )?;
-        let status = suspend::call_value(
-            &self.builder,
-            send,
-            &[
-                handle.into(),
-                self.slots[value.0 as usize].into(),
-                witness.into(),
-                cleanup.into(),
-            ],
-            "stream.try_send.status",
-        )?
-        .into_int_value();
-        // The runtime copied the element into its envelope; the slot no
-        // longer owns it on any outcome.
-        self.clear_owned(value)?;
-        let cursor = self
-            .builder
-            .build_load(pointer, cleanup, "stream.rejected.cursor")
-            .llvm_ctx("read rejected stream owner")?
-            .into_pointer_value();
-        release::drain(&self.value_emitter(), self.frame.as_ref(), cursor)?;
-        let failed = self
-            .ctx
-            .append_basic_block(self.value, "stream.rejected.failed");
-        let dispatch = self
-            .ctx
-            .append_basic_block(self.value, "stream.try_send.dispatch");
-        let fault = self
-            .builder
-            .build_load(pointer, self.active_fault, "stream.rejected.fault")
-            .llvm_ctx("read rejected stream cleanup fault")?
-            .into_pointer_value();
-        let faulted = self
-            .builder
-            .build_is_not_null(fault, "stream.rejected.faulted")
-            .llvm_ctx("test rejected stream cleanup fault")?;
-        self.builder
-            .build_conditional_branch(faulted, failed, dispatch)
-            .llvm_ctx("dispatch rejected stream cleanup")?;
-        self.builder.position_at_end(failed);
-        self.emit_edge(unwind)?;
-        self.builder.position_at_end(dispatch);
-        let accepted = self
-            .ctx
-            .append_basic_block(self.value, "stream.try_send.accepted");
-        let peer_closed = self
-            .ctx
-            .append_basic_block(self.value, "stream.try_send.closed");
-        let at_capacity = self
-            .ctx
-            .append_basic_block(self.value, "stream.try_send.full");
-        let write_failed = self
-            .ctx
-            .append_basic_block(self.value, "stream.try_send.failed");
-        self.builder
-            .build_switch(
-                status,
-                write_failed,
-                &[
-                    (self.ctx.i32_type().const_zero(), accepted),
-                    (self.ctx.i32_type().const_int(1, false), peer_closed),
-                    (self.ctx.i32_type().const_int(2, false), at_capacity),
-                ],
-            )
-            .llvm_ctx("dispatch non-parking stream send outcome")?;
-        self.builder.position_at_end(accepted);
-        self.emit_edge(normal)?;
-        self.builder.position_at_end(peer_closed);
-        self.emit_edge(closed)?;
-        self.builder.position_at_end(at_capacity);
-        self.emit_edge(full)?;
-        self.builder.position_at_end(write_failed);
-        let fault = get_or_declare_external(
-            self.llvm,
-            "hew_stream_take_error_fault",
-            pointer.fn_type(&[], false),
-        )?;
-        let fault = suspend::call_value(&self.builder, fault, &[], "stream.write.fault")?;
-        self.store_active_fault(fault, HEW_TRAP_USER_PANIC)?;
-        self.emit_edge(unwind)
-    }
-
     pub(super) fn emit_stream_send(&self, block: &PhysicalBlock) -> CodegenResult<()> {
         let PhysicalTerminator::StreamSend {
             park,
@@ -558,20 +553,29 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             ));
         };
         let handle = self.load(*sink, "stream.sink")?;
-        if !park {
-            return self
-                .emit_stream_try_send(handle, *value, witness, normal, closed, refused, unwind);
+        if *park != committed.is_some() {
+            return Err(CodegenError::FailClosed(
+                "stream send committed slot disagrees with admission".into(),
+            ));
         }
-        let committed = committed.ok_or_else(|| {
-            CodegenError::FailClosed("parking stream send lacks its committed slot".into())
-        })?;
         let frame = self.stream_frame()?;
         let pointer = self.ctx.ptr_type(AddressSpace::default());
         let waker = self.task_pointer_call("hew_coro_state_waker", &[frame.state.into()])?;
         let start = get_or_declare_external(
             self.llvm,
             "hew_stream_write_start_native",
-            pointer.fn_type(&[pointer.into(); 4], false),
+            pointer.fn_type(
+                &[
+                    pointer.into(),
+                    pointer.into(),
+                    pointer.into(),
+                    pointer.into(),
+                    pointer.into(),
+                    self.ctx.bool_type().into(),
+                    pointer.into(),
+                ],
+                false,
+            ),
         )?;
         let request = suspend::call_value(
             &self.builder,
@@ -581,6 +585,18 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 waker.into(),
                 self.slots[value.0 as usize].into(),
                 witness.into(),
+                frame.state.into(),
+                self.ctx
+                    .bool_type()
+                    .const_int(u64::from(*park), false)
+                    .into(),
+                self.llvm
+                    .get_global(&codec_descriptor_symbol(self.function.callable, *sink))
+                    .ok_or_else(|| {
+                        CodegenError::FailClosed("stream sender lacks its owner descriptor".into())
+                    })?
+                    .as_pointer_value()
+                    .into(),
             ],
             "stream.write.operation",
         )?
@@ -648,17 +664,19 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         // The deadline's committed count lives in the operation; read it
         // before the operation is released.
         self.builder.position_at_end(timed_out);
-        let count = suspend::call_value(
-            &self.builder,
-            get_or_declare_external(
-                self.llvm,
-                "hew_stream_write_committed_native",
-                self.ctx.i64_type().fn_type(&[pointer.into()], false),
-            )?,
-            &[request.into()],
-            "stream.send.committed",
-        )?;
-        self.store(committed, count)?;
+        if let Some(committed) = committed {
+            let count = suspend::call_value(
+                &self.builder,
+                get_or_declare_external(
+                    self.llvm,
+                    "hew_stream_write_committed_native",
+                    self.ctx.i64_type().fn_type(&[pointer.into()], false),
+                )?,
+                &[request.into()],
+                "stream.send.committed",
+            )?;
+            self.store(*committed, count)?;
+        }
         self.finish_stream(request, waker, cancelled)?;
         self.leave(&mut join, TIMED_OUT)?;
         self.builder.position_at_end(cancelled);

@@ -184,6 +184,8 @@ impl State {
 /// Opaque resource held across a suspended I/O call.
 pub struct HewAsyncIo {
     state: Mutex<State>,
+    #[cfg(not(target_arch = "wasm32"))]
+    sink_finish: Mutex<Option<sink::Finish>>,
     /// The socket, action and readiness flag of a readiness operation.
     #[cfg(not(target_arch = "wasm32"))]
     net: Option<net::NetOp>,
@@ -296,6 +298,7 @@ impl HewAsyncIo {
         Arc::new(Self {
             state: Mutex::new(State::Pending(owned)),
             net,
+            sink_finish: Mutex::new(None),
             socket_cancel: None,
             cleanup: Mutex::new(Cleanup::default()),
             deadline: Mutex::new(None),
@@ -330,6 +333,7 @@ impl HewAsyncIo {
     unsafe fn advance_if_ready(operation: *const Self) {
         // SAFETY: the caller lends a live reference.
         let this = unsafe { &*operation };
+        this.advance_finish();
         let Some(net) = &this.net else {
             return;
         };
@@ -342,6 +346,22 @@ impl HewAsyncIo {
             };
             net::advance(&operation);
         }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn advance_finish(&self) -> bool {
+        let (result, drained) = {
+            let mut finish = self.sink_finish.lock_or_recover();
+            let result = finish.as_mut().and_then(sink::Finish::poll);
+            if result.is_some() {
+                finish.take();
+            }
+            (result, finish.is_none())
+        };
+        if let Some(result) = result {
+            self.complete(result);
+        }
+        drained
     }
 
     /// Register the pool job now producing this result, so a caller that
@@ -431,6 +451,9 @@ impl HewAsyncIo {
         {
             self.clear_deadline();
             if won {
+                if let Some(finish) = self.sink_finish.lock_or_recover().as_mut() {
+                    finish.cancel();
+                }
                 if let Some(cancel) = &self.socket_cancel {
                     cancel.cancel();
                 }
@@ -507,6 +530,10 @@ pub unsafe extern "C" fn hew_async_io_cleanup_status(
     let Some(operation) = (unsafe { operation.as_ref() }) else {
         return 1;
     };
+    #[cfg(not(target_arch = "wasm32"))]
+    if !operation.advance_finish() {
+        return 0;
+    }
     // Retain and release callbacks must run outside the cleanup lock.
     // SAFETY: the descriptor is borrowed for this call or null.
     let retained = unsafe { waker.as_ref().map(|waker| OwnedWaker::retain(waker)) };

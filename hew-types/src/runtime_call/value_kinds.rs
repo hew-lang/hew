@@ -165,6 +165,10 @@ pub enum RuntimeValueKind {
     /// concrete type the call site carries; the rendering recipe comes from
     /// that type's physical layout, not from this kind.
     StructuralOperand,
+    /// Exact lazy generator and encoder contracts admitted by the stream bridge.
+    CodecGenerator,
+    CodecEncoder,
+    CodecItem,
 }
 
 impl RuntimeValueKind {
@@ -276,6 +280,37 @@ impl RuntimeValueKind {
                 ),
                 Vec::new(),
             ),
+            Self::CodecGenerator => {
+                let source = receiver?;
+                if !matches!(source, ResolvedTy::Named { head: crate::TypeHead::Builtin(BuiltinType::Generator), args, .. } if matches!(args.as_slice(), [_, ResolvedTy::Unit]))
+                {
+                    return None;
+                }
+                source.clone()
+            }
+            Self::CodecEncoder => {
+                let source = receiver?;
+                if !matches!(source, ResolvedTy::Function { capabilities, params, ret } | ResolvedTy::Closure { capabilities, params, ret, .. }
+                    if capabilities.call == crate::CallableCallMode::Read && !capabilities.suspends && params.len() == 1 && **ret == ResolvedTy::Bytes)
+                {
+                    return None;
+                }
+                source.clone()
+            }
+            Self::CodecItem => match receiver? {
+                ResolvedTy::Named {
+                    head: crate::TypeHead::Builtin(BuiltinType::Generator),
+                    args,
+                    ..
+                } if matches!(args.as_slice(), [_, ResolvedTy::Unit]) => args[0].clone(),
+                ResolvedTy::Function { params, ret, .. }
+                | ResolvedTy::Closure { params, ret, .. }
+                    if params.len() == 1 && **ret == ResolvedTy::Bytes =>
+                {
+                    params[0].clone()
+                }
+                _ => return None,
+            },
             Self::StructuralOperand => receiver?.clone(),
             Self::Named(name) => ResolvedTy::named_user(contract(name)?, Vec::new()),
             Self::NamedOpaque(name) => ResolvedTy::named_opaque(contract(name)?, Vec::new()),
@@ -617,7 +652,19 @@ impl RuntimeSemanticContract {
         // failing that, in its result.
         let shared_constructor =
             (runtime_receiver_builtin(result_hint) == Some(BuiltinType::Rc)).then_some(result_hint);
-        let receiver = shared_constructor
+        let codec_source = self
+            .arguments
+            .iter()
+            .zip(params)
+            .find_map(|(argument, actual)| {
+                matches!(
+                    argument.ty,
+                    RuntimeValueKind::CodecGenerator | RuntimeValueKind::CodecEncoder
+                )
+                .then_some(actual)
+            });
+        let receiver = codec_source
+            .or(shared_constructor)
             .or_else(|| {
                 params.iter().find(|ty| {
                     runtime_receiver_builtin(ty).is_some()

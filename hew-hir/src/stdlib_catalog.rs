@@ -2431,6 +2431,20 @@ const HANDWRITTEN_CATALOG: &[BuiltinEntry] = &[
         BuiltinTy::Unit,
         BuiltinLinkage::CalleeNameDispatchOnly,
     ),
+    direct(
+        "stream.from_generator",
+        BuiltinClass::ClassB,
+        &[BuiltinTy::Pointer],
+        BuiltinTy::Pointer,
+        BuiltinLinkage::CalleeNameDispatchOnly,
+    ),
+    direct(
+        "stream.from_encoder",
+        BuiltinClass::ClassB,
+        &[BuiltinTy::Pointer, BuiltinTy::Pointer],
+        BuiltinTy::Pointer,
+        BuiltinLinkage::CalleeNameDispatchOnly,
+    ),
     // Compiler-owned UTF-8 source declarations carry their real signatures.
     // These rows are exact dispatch identities only: validating decode's
     // nominal Result type is checked by RuntimeSemanticContract, so the Unit

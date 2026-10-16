@@ -31,6 +31,17 @@ enum Backing {
     Pipe(Arc<ChannelCore>),
     #[cfg(not(target_arch = "wasm32"))]
     Io(*const HewAsyncIo),
+    Shared(Box<super::sender::SharedWrite>),
+    Immediate {
+        status: i32,
+        fault: *mut crate::fault::HewFault,
+        release: *mut crate::release_walker::HewReleaseCursor,
+    },
+    Generator {
+        stream: *mut HewStream,
+        parent: *mut crate::coro_state::HewCoroState,
+        closing: bool,
+    },
     Finished,
 }
 
@@ -145,6 +156,7 @@ pub unsafe extern "C" fn hew_stream_read_start_native(
     stream: *mut HewStream,
     waker: *const HewWaker,
     layout: *const HewValueLayout,
+    parent: *mut crate::coro_state::HewCoroState,
 ) -> *mut HewNativeStream {
     // SAFETY: compiler-provided live operands satisfy the start contract.
     let layout = unsafe { *move_elem_layout_witness(layout, "native stream read") };
@@ -153,6 +165,12 @@ pub unsafe extern "C" fn hew_stream_read_start_native(
     // SAFETY: stream is a live exclusive loan.
     let backing = if unsafe { (*stream).exhausted() } {
         Backing::Finished
+    } else if unsafe { (*stream).inner.generator().is_some() } {
+        Backing::Generator {
+            stream,
+            parent,
+            closing: false,
+        }
     } else {
         // SAFETY: the exclusive source loan is live until this request drains.
         match unsafe { (*stream).channel.clone() } {
@@ -211,9 +229,79 @@ pub unsafe extern "C" fn hew_stream_write_start_native(
     waker: *const HewWaker,
     data: *mut c_void,
     layout: *const HewValueLayout,
+    parent: *const crate::coro_state::HewCoroState,
+    park: bool,
+    sink_layout: *const HewValueLayout,
+) -> *mut HewNativeStream {
+    // SAFETY: the source read loan pins the endpoint and its exact descriptor.
+    unsafe { super::sender::retain(sink, sink_layout, false) };
+    // SAFETY: the installed owner serializes every underlying write through terminal cleanup.
+    unsafe { start_underlying(sink, waker, data, layout, parent, park) }
+}
+
+/// # Safety
+/// The caller holds the underlying sender gate, or borrows an installed shared endpoint.
+unsafe fn try_underlying(
+    sink: *mut HewSink,
+    waker: *const HewWaker,
+    data: *mut c_void,
+    layout: HewValueLayout,
+) -> *mut HewNativeStream {
+    let mut release = std::ptr::null_mut();
+    let mut fault = std::ptr::null_mut();
+    // SAFETY: the shared sender gate exclusively lends this raw backing for one capacity attempt.
+    let status = unsafe {
+        super::try_send_underlying(
+            sink,
+            data,
+            &raw const layout,
+            &raw mut release,
+            &raw mut fault,
+        )
+    };
+    let status = match status {
+        0 => 1,
+        1 => 2,
+        2 => 4,
+        3 => 3,
+        _ => std::process::abort(),
+    };
+    Box::into_raw(Box::new(HewNativeStream {
+        layout,
+        // SAFETY: the descriptor remains borrowed during construction.
+        waker: Arc::new(unsafe { OwnedWaker::retain(&*waker) }),
+        backing: Backing::Immediate {
+            status,
+            fault,
+            release,
+        },
+        #[cfg(not(target_arch = "wasm32"))]
+        yields: ReadYield::Content,
+        envelope: None,
+        read_stream: None,
+        #[cfg(not(target_arch = "wasm32"))]
+        write_prefix: 0,
+    }))
+}
+
+/// # Safety
+/// The caller holds the underlying sender gate, or borrows an installed shared endpoint.
+pub(super) unsafe fn start_underlying(
+    sink: *mut HewSink,
+    waker: *const HewWaker,
+    data: *mut c_void,
+    layout: *const HewValueLayout,
+    parent: *const crate::coro_state::HewCoroState,
+    park: bool,
 ) -> *mut HewNativeStream {
     // SAFETY: the compiler provides a static descriptor and a live owned value.
     let layout = unsafe { *move_elem_layout_witness(layout, "native stream write") };
+    // SAFETY: this operation pins the endpoint while inspecting its shared backing.
+    let owner = unsafe { super::sender::shared(sink) };
+    if !park && owner.is_none() {
+        // SAFETY: the shared gate lends this raw backing for one nonparking capacity attempt.
+        return unsafe { try_underlying(sink, waker, data, layout) };
+    }
     // SAFETY: the source value transfers exactly once at operation construction.
     let envelope = unsafe { move_elem_envelope(data, &layout, "native stream write") };
     // A finished sink has released its backing, so there is nothing left to
@@ -226,6 +314,23 @@ pub unsafe extern "C" fn hew_stream_write_start_native(
             // SAFETY: waker is borrowed during this call.
             waker: Arc::new(unsafe { OwnedWaker::retain(&*waker) }),
             backing: Backing::Finished,
+            #[cfg(not(target_arch = "wasm32"))]
+            yields: ReadYield::Content,
+            envelope: Some(envelope),
+            read_stream: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            write_prefix: 0,
+        }));
+    }
+    // SAFETY: an adapter endpoint pins its shared sender through this exclusive loan.
+    if let Some(owner) = owner {
+        return Box::into_raw(Box::new(HewNativeStream {
+            layout,
+            // SAFETY: the caller retains this descriptor during operation construction.
+            waker: Arc::new(unsafe { OwnedWaker::retain(&*waker) }),
+            backing: Backing::Shared(Box::new(super::sender::SharedWrite::new(
+                owner, sink, parent, park,
+            ))),
             #[cfg(not(target_arch = "wasm32"))]
             yields: ReadYield::Content,
             envelope: Some(envelope),
@@ -304,6 +409,17 @@ pub unsafe extern "C" fn hew_stream_read_poll_native(operation: *mut HewNativeSt
                 ReadYield::Readiness => async_io::take_readiness_item(*io),
             }
         },
+        Backing::Shared(_) | Backing::Immediate { .. } => std::process::abort(),
+        Backing::Generator { stream, parent, .. } => {
+            // SAFETY: the operation retains the exclusive stream and parent loans.
+            unsafe {
+                (**stream)
+                    .inner
+                    .generator()
+                    .expect("generator backing")
+                    .poll(*parent, &operation.layout)
+            }
+        }
         // A read never begins on a finished backing; report end of data.
         Backing::Finished => (2, None),
     };
@@ -326,6 +442,29 @@ pub unsafe extern "C" fn hew_stream_read_poll_native(operation: *mut HewNativeSt
 pub unsafe extern "C" fn hew_stream_operation_fault_native(
     operation: *mut HewNativeStream,
 ) -> *mut crate::fault::HewFault {
+    // SAFETY: the caller holds this operation's exclusive poll loan.
+    if let Backing::Shared(write) = unsafe { &mut (*operation).backing } {
+        // SAFETY: this owned write reported a terminal failure.
+        return unsafe { write.take_fault() };
+    }
+    // SAFETY: the operation exclusively owns this immediate terminal fault.
+    if let Backing::Immediate { fault, .. } = unsafe { &mut (*operation).backing } {
+        return std::mem::replace(fault, std::ptr::null_mut());
+    }
+    // SAFETY: the operation owns the unique terminal generator fault transfer.
+    if let Backing::Generator { stream, .. } = unsafe { &(*operation).backing } {
+        let mut fault = std::ptr::null_mut();
+        // SAFETY: the exclusive operation loan pins this terminal generator and its fault slot.
+        unsafe {
+            let generator = (**stream)
+                .inner
+                .generator()
+                .expect("generator backing")
+                .generator;
+            crate::generator_checked::hew_checked_generator_take_fault(generator, &raw mut fault);
+        }
+        return fault;
+    }
     // SAFETY: the caller lends the live operation.
     let message = match unsafe { &(*operation).backing } {
         Backing::Pipe(core) => core.fault_message(),
@@ -334,6 +473,9 @@ pub unsafe extern "C" fn hew_stream_operation_fault_native(
             // SAFETY: the operation owns this live async request.
             unsafe { async_io::failure_message(*io) }
                 .unwrap_or_else(|| "stream I/O failed".to_string())
+        }
+        Backing::Shared(_) | Backing::Immediate { .. } | Backing::Generator { .. } => {
+            unreachable!()
         }
         Backing::Finished => "stream operation on a finished stream".to_string(),
     };
@@ -369,7 +511,12 @@ pub unsafe extern "C" fn hew_stream_read_take_native(
 pub unsafe extern "C" fn hew_stream_write_poll_native(operation: *mut HewNativeStream) -> i32 {
     // SAFETY: the caller lends the live exclusive operation.
     let operation = unsafe { &mut *operation };
-    match &operation.backing {
+    match &mut operation.backing {
+        Backing::Immediate { status, .. } => *status,
+        Backing::Shared(write) => {
+            // SAFETY: this operation drives the unique pending frame under shared sender admission.
+            unsafe { write.poll(&mut operation.envelope, &operation.layout, &operation.waker) }
+        }
         Backing::Pipe(core) => {
             let Some(envelope) = operation.envelope.take() else {
                 return 1;
@@ -392,6 +539,7 @@ pub unsafe extern "C" fn hew_stream_write_poll_native(operation: *mut HewNativeS
                 },
             }
         }
+        Backing::Generator { .. } => std::process::abort(),
         Backing::Finished => 2,
     }
 }
@@ -413,6 +561,8 @@ pub unsafe extern "C" fn hew_stream_write_committed_native(operation: *mut HewNa
                 .max(0),
             _ => 0,
         },
+        // SAFETY: this retained write reported the timeout being observed.
+        Backing::Shared(write) => unsafe { write.committed() },
         _ => 0,
     }
 }
@@ -422,7 +572,9 @@ pub unsafe extern "C" fn hew_stream_write_committed_native(operation: *mut HewNa
 #[no_mangle]
 pub unsafe extern "C" fn hew_stream_cancel_native(operation: *mut HewNativeStream) {
     // SAFETY: the caller lends the live exclusive operation.
-    match unsafe { &(*operation).backing } {
+    match unsafe { &mut (*operation).backing } {
+        // SAFETY: this operation owns and exclusively cancels its child write.
+        Backing::Shared(write) => unsafe { write.cancel() },
         #[cfg(not(target_arch = "wasm32"))]
         Backing::Io(io) => {
             // SAFETY: this operation owns the async request.
@@ -430,7 +582,26 @@ pub unsafe extern "C" fn hew_stream_cancel_native(operation: *mut HewNativeStrea
         }
         // A pipe registration is withdrawn by the read slot the await entry
         // parked on, not here.
-        Backing::Pipe(_) | Backing::Finished => {}
+        Backing::Generator {
+            stream,
+            parent,
+            closing,
+        } => {
+            *closing = true;
+            // SAFETY: the live operation owns both exclusive loans through drain.
+            unsafe {
+                crate::generator_checked::hew_checked_generator_poll(
+                    (**stream)
+                        .inner
+                        .generator()
+                        .expect("generator backing")
+                        .generator,
+                    *parent,
+                    true,
+                );
+            }
+        }
+        Backing::Pipe(_) | Backing::Immediate { .. } | Backing::Finished => {}
     }
 }
 
@@ -442,7 +613,9 @@ pub unsafe extern "C" fn hew_stream_cleanup_status_native(
     waker: *const HewWaker,
 ) -> i32 {
     // SAFETY: the caller lends the live exclusive operation.
-    match unsafe { &(*operation).backing } {
+    match unsafe { &mut (*operation).backing } {
+        // SAFETY: the owner retains the source loan and live waker through quiescence.
+        Backing::Shared(write) => unsafe { write.cleanup(waker) },
         #[cfg(not(target_arch = "wasm32"))]
         Backing::Io(io) => {
             // SAFETY: this operation owns the async request.
@@ -450,7 +623,27 @@ pub unsafe extern "C" fn hew_stream_cleanup_status_native(
         }
         // Nothing borrowed a handle beyond this call, so the operation is
         // already quiescent.
-        Backing::Pipe(_) | Backing::Finished => {
+        Backing::Generator {
+            stream,
+            parent,
+            closing,
+        } => {
+            if !*closing {
+                return 1;
+            }
+            // SAFETY: producer cancellation uses the existing checked close driver.
+            unsafe {
+                let generator = (**stream)
+                    .inner
+                    .generator()
+                    .expect("generator backing")
+                    .generator;
+                let status =
+                    crate::generator_checked::hew_checked_generator_poll(generator, *parent, true);
+                i32::from(status != crate::coro_state::CoroStatus::Pending as i32)
+            }
+        }
+        Backing::Pipe(_) | Backing::Immediate { .. } | Backing::Finished => {
             let _ = waker;
             1
         }
@@ -482,14 +675,27 @@ pub unsafe extern "C" fn hew_stream_operation_release_begin(
     let value = unsafe { (*operation).envelope.take() };
     // SAFETY: the operation retains its exact descriptor through this transfer.
     let layout = unsafe { (*operation).layout };
-    HewReleaseCursor::envelopes(
+    let envelope = HewReleaseCursor::envelopes(
         value.into_iter().collect(),
         Some(layout),
         ReleaseItem::Storage {
             owner: operation.cast(),
             free: free_operation,
         },
-    )
+    );
+    // SAFETY: the operation is exclusively owned after producer quiescence.
+    let shared = match unsafe { &mut (*operation).backing } {
+        // SAFETY: the quiescent child and input transfer once to the returned cursor.
+        Backing::Shared(write) => unsafe { write.release_cursor(layout) },
+        Backing::Immediate { release, fault, .. } => {
+            // SAFETY: an unobserved terminal fault remains owned by this operation.
+            unsafe { crate::fault::hew_fault_drop(std::mem::replace(fault, std::ptr::null_mut())) };
+            std::mem::replace(release, std::ptr::null_mut())
+        }
+        _ => std::ptr::null_mut(),
+    };
+    // SAFETY: the owner storage remains pinned until its child/input cursors finish.
+    unsafe { HewReleaseCursor::join(vec![shared, envelope]) }
 }
 
 /// A stream with no queue core is a file or a socket, and both are manifest
@@ -653,20 +859,24 @@ mod tests {
         unsafe {
             let stream = super::super::hew_stream_pipe_native(1, &raw const layout, &raw mut sink);
             let mut first = Box::into_raw(Box::new(Arc::clone(&drops)));
-            let first_op = hew_stream_write_start_native(
+            let first_op = start_underlying(
                 sink,
                 &raw const wake,
                 (&raw mut first).cast(),
                 &raw const layout,
+                std::ptr::null(),
+                true,
             );
             assert_eq!(hew_stream_write_poll_native(first_op), 1);
             hew_stream_operation_free_native(first_op);
             let mut second = Box::into_raw(Box::new(Arc::clone(&drops)));
-            let second_op = hew_stream_write_start_native(
+            let second_op = start_underlying(
                 sink,
                 &raw const wake,
                 (&raw mut second).cast(),
                 &raw const layout,
+                std::ptr::null(),
+                true,
             );
             assert_eq!(hew_stream_write_poll_native(second_op), 0);
             hew_stream_cancel_native(second_op);
@@ -742,8 +952,12 @@ mod tests {
         };
         // SAFETY: the exclusive stream loan survives every producer and operation.
         unsafe {
-            let operation =
-                hew_stream_read_start_native(stream, &raw const wake, &raw const layout);
+            let operation = hew_stream_read_start_native(
+                stream,
+                &raw const wake,
+                &raw const layout,
+                std::ptr::null_mut(),
+            );
             started.recv_timeout(Duration::from_secs(5)).unwrap();
             assert_eq!(hew_stream_read_poll_native(operation), 0);
             hew_stream_cancel_native(operation);
@@ -794,6 +1008,7 @@ mod tests {
                 &raw mut *stream,
                 &raw const wake,
                 &raw const layout,
+                std::ptr::null_mut(),
             ));
             assert_eq!(hew_stream_read_poll_native(&raw mut *abandoned), 0);
             hew_stream_cancel_native(&raw mut *abandoned);
@@ -806,6 +1021,7 @@ mod tests {
                 &raw mut *stream,
                 &raw const wake,
                 &raw const layout,
+                std::ptr::null_mut(),
             ));
             peer.write_all(&[0]).unwrap();
             loop {

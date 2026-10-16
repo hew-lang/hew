@@ -524,6 +524,9 @@ impl RuntimeCallFamily {
                     | RuntimeValueKind::ConstBytePointer
                     | RuntimeValueKind::TypeArgument(_)
                     | RuntimeValueKind::SharedPayload
+                    | RuntimeValueKind::CodecGenerator
+                    | RuntimeValueKind::CodecEncoder
+                    | RuntimeValueKind::CodecItem
                     | RuntimeValueKind::NodeLookupResult
                     | RuntimeValueKind::BuiltinNominal(_)
                     | RuntimeValueKind::BuiltinArgument(_)
@@ -713,6 +716,8 @@ impl RuntimeCallFamily {
             | F::StreamTryNextLayout
             | F::StreamTrySendLayout
             | F::StreamForward
+            | F::StreamFromGenerator
+            | F::SinkFromEncoder
             | F::StreamPairSink
             | F::StreamPairStream
             | F::SinkClone

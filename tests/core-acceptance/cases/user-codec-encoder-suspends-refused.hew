@@ -1,0 +1,36 @@
+import std.stream;
+
+#[resource]
+type SlowClose {
+}
+
+impl SlowClose {
+    fn close(consume self) {
+        sleep(1ms);
+    }
+}
+
+type ByteCodec {
+}
+
+impl stream.Codec<i64> for ByteCodec {
+    fn decode(self, buf: bytes) -> Result<stream.Decoded<i64>, stream.CodecError> {
+        .Ok(stream.Decoded.Incomplete(buf))
+    }
+    fn encode(self, item: i64) -> bytes {
+        let temporary = SlowClose {  };
+        let out: bytes = [item as u8];
+        out
+    }
+}
+
+fn construct<C: stream.Codec<i64> + Send>(consume sink: Sink<bytes>, consume codec: C) -> Sink<i64> {
+    sink.framed(codec)
+}
+
+fn main() {
+    let (sink, input): (Sink<bytes>, Stream<bytes>) = stream.pipe(1).expect("pipe");
+    let encoded = construct(sink, ByteCodec {  });
+    encoded.close();
+    input.close();
+}

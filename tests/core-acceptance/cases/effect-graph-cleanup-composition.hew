@@ -8,7 +8,14 @@ impl Ticket {
     }
 }
 
-type Holder<T> { value: T; }
+#[resource]
+type Wrapper<T> { value: T; }
+
+impl<T> Wrapper<T> {
+    fn close(consume self) {
+        discard(self.value);
+    }
+}
 
 fn discard<T>(consume value: T) {}
 
@@ -20,7 +27,7 @@ fn first(n: i64) {
     if n > 0 {
         second(n - 1);
     } else {
-        forward(Holder { value: Ticket { id: 1 } });
+        forward(Wrapper { value: Ticket { id: 1 } });
     }
 }
 
@@ -30,6 +37,7 @@ fn second(n: i64) {
 
 fn scalar() {
     forward(7);
+    forward(Wrapper { value: 8 });
 }
 
 fn main() {

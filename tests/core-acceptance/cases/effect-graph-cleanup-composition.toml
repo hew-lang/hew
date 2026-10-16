@@ -1,6 +1,6 @@
 [[case]]
 id = "effect-graph-cleanup-composition"
-intent = "Recursive calls preserve generic owned-resource cleanup and resume close, while scalar instantiations and reusable calls remain synchronous."
+intent = "Recursive calls preserve generic resource-close receiver substitutions and resume nested cleanup, while scalar wrappers and reusable calls remain synchronous."
 source = "cases/effect-graph-cleanup-composition.hew"
 suites = ["acceptance"]
 timeout_seconds = 30

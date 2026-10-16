@@ -3235,5 +3235,18 @@ mod alias_cycle_graph_tests {
             )],
         );
         assert!(checker.alias_expansion_is_recursive(growing));
+        let function = Ty::Function {
+            capabilities: crate::CallableCapabilities::default(),
+            params: vec![],
+            ret: Box::new(Ty::param(parameter)),
+        };
+        checker.type_aliases.get_mut(&growing).unwrap().target =
+            Ty::named_in(&checker.defs, "Growing", vec![function]);
+        assert!(
+            checker.alias_expansion_is_recursive(growing),
+            "function-wrapped type arguments are genuine alias growth too"
+        );
+        let root = Ty::named_in(&checker.defs, "Growing", vec![Ty::I64]);
+        assert_eq!(checker.normalize_for_use(&root), Ty::Error);
     }
 }

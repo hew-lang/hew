@@ -11,7 +11,7 @@ use crate::{BuiltinType, ParamHead, Ty};
 
 #[derive(Debug, Clone)]
 pub struct CleanupValue {
-    pub(super) ty: Ty,
+    ty: Ty,
     absent: Vec<Vec<String>>,
     /// A borrowed parameter owns only the places it has replaced.
     owned: Option<Vec<Vec<String>>>,
@@ -23,7 +23,7 @@ pub struct CleanupValue {
 #[derive(Debug, Clone)]
 pub struct CleanupEffect {
     pub owner: EffectBody,
-    pub(super) value: CleanupValue,
+    value: CleanupValue,
     pub witness: String,
 }
 

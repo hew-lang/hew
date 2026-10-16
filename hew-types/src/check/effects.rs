@@ -989,15 +989,8 @@ impl Checker {
     pub(super) fn finish_suspension_effects(&mut self) -> SuspensionEffects {
         let graph = std::mem::take(&mut self.effect_graph);
         let mut solver = EffectSolver::new(self, &graph);
-        let mut bodies = HashMap::new();
-        let mut witnesses = HashMap::new();
         let mut conservative = HashMap::new();
         for body in graph.bodies.keys() {
-            let witness = solver.body(body, false);
-            bodies.insert(body.clone(), witness.is_some());
-            if let Some(witness) = witness {
-                witnesses.insert(body.clone(), witness);
-            }
             if let Some(witness) = solver.body(body, true) {
                 conservative.insert(body.clone(), witness);
             }
@@ -1080,7 +1073,7 @@ impl Checker {
         }
         for obligation in &graph.obligations {
             if matches!(obligation.body, EffectBody::Declaration(_))
-                && !bodies.contains_key(&obligation.body)
+                && !graph.bodies.contains_key(&obligation.body)
             {
                 continue;
             }

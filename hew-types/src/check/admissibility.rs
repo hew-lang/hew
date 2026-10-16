@@ -32,14 +32,14 @@ impl StructuralTypeWalk {
 
     pub(in crate::check) fn grows_from(ancestor: &Ty, ty: &Ty) -> bool {
         fn contains(outer: &Ty, inner: &Ty) -> bool {
-            outer == inner
-                || match outer {
-                    Ty::Named { args, .. } | Ty::Tuple(args) => {
-                        args.iter().any(|arg| contains(arg, inner))
-                    }
-                    Ty::Array(arg, _) | Ty::Slice(arg) | Ty::Task(arg) => contains(arg, inner),
-                    _ => false,
+            let mut pending = vec![outer];
+            while let Some(ty) = pending.pop() {
+                if ty == inner {
+                    return true;
                 }
+                ty.for_each_child(&mut |child| pending.push(child));
+            }
+            false
         }
         let (
             Ty::Named { head, args },
@@ -2207,6 +2207,34 @@ mod tests {
         assert!(
             !checker.rc_payload_clone_drop_supported(&root),
             "a stored growing argument retains its unsupported callable leaf"
+        );
+        let parameter = Ty::param(crate::ParamHead::for_test("T"));
+        let function = Ty::Function {
+            capabilities: crate::CallableCapabilities::default(),
+            params: vec![],
+            ret: Box::new(parameter.clone()),
+        };
+        let next = Ty::builtin_named(
+            BuiltinType::Vec,
+            vec![Ty::named_in(&checker.defs, "Grow", vec![function])],
+        );
+        let definition = checker.type_defs.get_mut(&grow).unwrap();
+        definition.fields.remove("value");
+        definition.fields.insert("next".into(), next);
+        let root = Ty::named_in(&checker.defs, "Grow", vec![Ty::I64]);
+        assert!(
+            checker.rc_payload_clone_drop_supported(&root),
+            "function-wrapped phantom arguments must reach a fixed point"
+        );
+        checker
+            .type_defs
+            .get_mut(&grow)
+            .unwrap()
+            .fields
+            .insert("value".into(), parameter);
+        assert!(
+            !checker.rc_payload_clone_drop_supported(&root),
+            "a function introduced by recursive substitution remains an unsupported stored value"
         );
     }
 

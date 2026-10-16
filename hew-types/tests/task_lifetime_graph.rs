@@ -153,9 +153,9 @@ fn recursive_rebinding_keeps_the_original_argument_environment() {
 fn recursive_projection_growth_without_formals_reaches_a_fixed_point() {
     let source = "type Node {
         next: Vec<Node>;
-        callback: fn() -> i64;
+        callback: fn[clone]() -> i64;
     }
-    fn again() -> Node { again().next[0] }
+    fn again() -> Node { clone again().next[0] }
     fn main() {
         let task = fork { 1 };
         let _ = again();

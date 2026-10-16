@@ -63,8 +63,7 @@ struct ValueOrigin {
 struct OriginEnvironments {
     values: Vec<Arc<Actuals>>,
     identities: HashMap<Vec<(TypeBindingId, IndirectCallCandidates)>, usize>,
-    completed: HashMap<Visit, Vec<ValueOrigin>>,
-    cycles: usize,
+    task_carriers: HashMap<crate::Ty, bool>,
 }
 
 impl OriginEnvironments {
@@ -324,15 +323,20 @@ impl Checker {
         {
             let structural =
                 matches!(&boundary, Boundary::Actor(ty) if self.subst.resolve(ty).contains_task());
+            let may_carry_task = self
+                .expr_types
+                .get(&site)
+                .is_none_or(|ty| self.task_carrier_type(ty, &mut environments.task_carriers));
             if !structural
-                && !self.task_candidates_escape(
-                    &candidates,
-                    &boundary,
-                    actuals,
-                    flows,
-                    &mut HashSet::new(),
-                    &mut environments,
-                )
+                && (!may_carry_task
+                    || !self.task_candidates_escape(
+                        &candidates,
+                        &boundary,
+                        actuals,
+                        flows,
+                        &mut HashSet::new(),
+                        &mut environments,
+                    ))
             {
                 if let Boundary::Return(TaskLifetime {
                     scope: Some(scope), ..
@@ -354,6 +358,89 @@ impl Checker {
             error.source_module = module;
             self.errors.push(error);
         }
+    }
+
+    fn task_carrier_type(&self, ty: &crate::Ty, known: &mut HashMap<crate::Ty, bool>) -> bool {
+        let ty = self.subst.resolve(ty);
+        if let Some(carries) = known.get(&ty) {
+            return *carries;
+        }
+        let carries = self.task_carrier_type_inner(&ty, &mut HashSet::new(), known);
+        known.insert(ty, carries);
+        carries
+    }
+
+    fn task_carrier_type_inner(
+        &self,
+        ty: &crate::Ty,
+        seen: &mut HashSet<crate::Ty>,
+        known: &HashMap<crate::Ty, bool>,
+    ) -> bool {
+        use crate::{BuiltinType, Ty};
+        if let Some(carries) = known.get(ty) {
+            return *carries;
+        }
+        if !seen.insert(ty.clone()) {
+            return false;
+        }
+        let carries = match ty {
+            Ty::Tuple(values) => values
+                .iter()
+                .any(|ty| self.task_carrier_type_inner(ty, seen, known)),
+            Ty::Array(value, _) | Ty::Slice(value) => {
+                self.task_carrier_type_inner(value, seen, known)
+            }
+            Ty::Named { head, args } => {
+                let containers = matches!(
+                    head.builtin(),
+                    Some(
+                        BuiltinType::Option
+                            | BuiltinType::Result
+                            | BuiltinType::Vec
+                            | BuiltinType::HashMap
+                            | BuiltinType::HashSet
+                            | BuiltinType::Rc
+                            | BuiltinType::Weak
+                    )
+                );
+                if containers {
+                    args.iter()
+                        .any(|ty| self.task_carrier_type_inner(ty, seen, known))
+                } else if let Some(nominal) = head.nominal() {
+                    let recursive_arguments = seen.iter().any(|other| {
+                        other != ty && matches!(other, Ty::Named { head: other, .. } if other.nominal() == Some(nominal))
+                    });
+                    recursive_arguments
+                        || crate::value_class::ClassDeclarations::declared_type(
+                            &self.class_declarations(),
+                            nominal,
+                        )
+                        .is_none_or(|declaration| {
+                            if declaration.is_opaque
+                                || declaration.marker != crate::DeclarationMarker::None
+                                || declaration.type_params.len() != args.len()
+                            {
+                                return true;
+                            }
+                            declaration.members.iter().any(|field| {
+                                let field = Self::instantiate_type_def_member(
+                                    &field.to_ty(),
+                                    &declaration.type_params,
+                                    args,
+                                );
+                                self.task_carrier_type_inner(&field, seen, known)
+                            })
+                        })
+                } else {
+                    true
+                }
+            }
+            Ty::String | Ty::Bytes | Ty::CancellationToken | Ty::Never => false,
+            ty if ty.is_primitive() => false,
+            _ => true,
+        };
+        seen.remove(ty);
+        carries
     }
 
     fn task_candidates_escape(
@@ -459,15 +546,8 @@ impl Checker {
         };
         let visit = (candidate.clone(), visit_projections, actuals);
         if !seen.insert(visit.clone()) {
-            environments.cycles += 1;
             return Vec::new();
         }
-        let query = (candidate.clone(), projections.to_vec(), actuals);
-        if let Some(origins) = environments.completed.get(&query) {
-            seen.remove(&visit);
-            return origins.clone();
-        }
-        let cycles = environments.cycles;
         let result = match candidate {
             CallableCandidate::Erasure { value, .. } => {
                 self.task_value_origins(value, actuals, flows, projections, seen, environments)
@@ -544,6 +624,13 @@ impl Checker {
                         .collect()
                 }
             }
+            CallableCandidate::Aggregate(site)
+                if self.expr_types.get(site).is_some_and(|ty| {
+                    !self.task_carrier_type(ty, &mut environments.task_carriers)
+                }) =>
+            {
+                Vec::new()
+            }
             CallableCandidate::Aggregate(site) => self
                 .aggregate_field_candidates
                 .get(site)
@@ -601,11 +688,6 @@ impl Checker {
             _ => Vec::new(),
         };
         seen.remove(&visit);
-        // A cycle cut depends on the active path. Reuse only complete expansions,
-        // keyed by the full projection and exact argument environment.
-        if environments.cycles == cycles {
-            environments.completed.insert(query, result.clone());
-        }
         result
     }
 

@@ -2315,7 +2315,7 @@ impl Checker {
     /// Validate a `#[on(link)]` linked-actor end hook (M-7-R, Q210/A211).
     ///
     /// Fires when an actor THIS actor is linked to crashes/exits, delivering a
-    /// typed `CrashNotification { actor_id, kind }`. Mirrors `#[on(crash)]`'s
+    /// typed `CrashNotification { target, kind }`. Mirrors `#[on(crash)]`'s
     /// attribute shape (one typed payload param) but, unlike crash, returns
     /// `()` — an exit hook reacts (log / re-establish a link / drop work), it
     /// does not steer a restart decision. The signature is

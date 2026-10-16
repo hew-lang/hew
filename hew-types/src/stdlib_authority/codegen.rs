@@ -200,7 +200,6 @@ pub fn derive_monitor_ref_projection(
                             decl.name.name.as_str(),
                             "PartitionPolicy"
                                 | "MonitorId"
-                                | "DownTarget"
                                 | "DownReason"
                                 | "DownNotification"
                                 | "MonitorRef"
@@ -248,7 +247,6 @@ fn ensure_monitor_projection_complete(items: &[Item]) -> Result<(), String> {
         "LinkError",
         "PartitionPolicy",
         "MonitorId",
-        "DownTarget",
         "DownReason",
         "DownNotification",
         "MonitorRef",

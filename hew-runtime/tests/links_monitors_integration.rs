@@ -24,16 +24,9 @@ struct MonitorDispatchState {
     down_messages: Vec<HewDownMessage>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[repr(C)]
-struct ExitMessageView {
-    crashed_actor_id: u64,
-    reason: i32,
-}
-
 #[derive(Clone, Debug, Default)]
 struct ExitDispatchState {
-    exit_messages: Vec<ExitMessageView>,
+    exit_messages: Vec<hew_runtime::link::ExitMessage>,
 }
 
 struct MonitorDispatchSignal {
@@ -116,11 +109,13 @@ impl ExitDispatchSignal {
         let mut state = self.state.lock().unwrap();
         if sys_msg == HewSysMsg::Exit.as_i32()
             && !data.is_null()
-            && data_size == std::mem::size_of::<ExitMessageView>()
+            && data_size == std::mem::size_of::<hew_runtime::link::ExitMessage>()
         {
             // SAFETY: The runtime sent an Exit payload with the exact
             // expected size, so reading the packed value is valid here.
-            let exit = unsafe { (data.cast::<ExitMessageView>().cast_const()).read_unaligned() };
+            let exit = unsafe {
+                (data.cast::<hew_runtime::link::ExitMessage>().cast_const()).read_unaligned()
+            };
             state.exit_messages.push(exit);
             self.cond.notify_all();
         }
@@ -130,7 +125,7 @@ impl ExitDispatchSignal {
         &self,
         expected: usize,
         timeout: Duration,
-    ) -> Option<Vec<ExitMessageView>> {
+    ) -> Option<Vec<hew_runtime::link::ExitMessage>> {
         let deadline = Instant::now() + timeout;
         let mut state = self.state.lock().unwrap();
         while state.exit_messages.len() < expected {
@@ -249,9 +244,12 @@ fn test_monitor_after_crash_delivers_down_without_stale_registration() {
         .expect("late monitor registration should deliver DOWN immediately");
     let down = down_messages.last().copied().expect("captured DOWN");
     assert_eq!(down.monitor_id, ref_id);
-    assert_eq!(down.target_kind, 0);
+    assert_eq!(down.target.kind, 0);
     assert_eq!(down.reason_kind, 2);
-    assert_eq!(down.slot, hew_runtime::pid::hew_pid_serial(target_id));
+    assert_eq!(
+        down.target.slot,
+        hew_runtime::pid::hew_pid_serial(target_id)
+    );
 
     hew_actor_demonitor(ref_id);
     hew_deterministic_reset();
@@ -291,11 +289,10 @@ fn test_link_after_crash_delivers_exit_without_stale_registration() {
         .wait_for_exit_count(1, Duration::from_secs(5))
         .expect("late link registration should deliver EXIT immediately");
     assert_eq!(
-        exit_messages.last().copied(),
-        Some(ExitMessageView {
-            crashed_actor_id: target_id,
-            reason: exit_reason,
-        })
+        exit_messages
+            .last()
+            .map(|exit| (exit.target.kind, exit.target.slot, exit.reason)),
+        Some((0, hew_runtime::pid::hew_pid_serial(target_id), exit_reason))
     );
 
     // SAFETY: unlink takes live actor pointers.
@@ -412,11 +409,14 @@ fn a_crash_code_is_published_before_the_terminal_state_is_visible() {
         .wait_for_exit_count(1, Duration::from_secs(5))
         .expect("late link registration should deliver EXIT immediately");
     assert_eq!(
-        exit_messages.last().copied(),
-        Some(ExitMessageView {
-            crashed_actor_id: target_id,
-            reason: INJECTED_CRASH_REASON,
-        })
+        exit_messages
+            .last()
+            .map(|exit| (exit.target.kind, exit.target.slot, exit.reason)),
+        Some((
+            0,
+            hew_runtime::pid::hew_pid_serial(target_id),
+            INJECTED_CRASH_REASON
+        ))
     );
 
     // SAFETY: unlink takes live actor pointers.
@@ -489,11 +489,14 @@ fn a_trap_on_an_already_terminal_actor_leaves_its_recorded_reason_unchanged() {
             .wait_for_exit_count(1, Duration::from_secs(5))
             .expect("late link registration should deliver EXIT immediately");
         assert_eq!(
-            exit_messages.last().copied(),
-            Some(ExitMessageView {
-                crashed_actor_id: target_id,
-                reason: FIRST_CRASH_REASON,
-            }),
+            exit_messages
+                .last()
+                .map(|exit| (exit.target.kind, exit.target.slot, exit.reason)),
+            Some((
+                0,
+                hew_runtime::pid::hew_pid_serial(target_id),
+                FIRST_CRASH_REASON
+            )),
             "a link registered after the second trap must still see the first trap's reason"
         );
 
@@ -541,11 +544,10 @@ fn a_trap_on_an_already_terminal_actor_leaves_its_recorded_reason_unchanged() {
             .wait_for_exit_count(1, Duration::from_secs(5))
             .expect("late link registration should deliver EXIT immediately");
         assert_eq!(
-            exit_messages.last().copied(),
-            Some(ExitMessageView {
-                crashed_actor_id: target_id,
-                reason: 0,
-            }),
+            exit_messages
+                .last()
+                .map(|exit| (exit.target.kind, exit.target.slot, exit.reason)),
+            Some((0, hew_runtime::pid::hew_pid_serial(target_id), 0)),
             "a link registered after the second trap must still see the clean-stop reason"
         );
 

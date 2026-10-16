@@ -1367,6 +1367,17 @@ fn link_remote_crash_cascade_on_clean_exit() {
     );
 }
 
+/// The typed hook retains the peer's complete Location and handles one crash.
+#[test]
+fn link_remote_typed_crash_preserves_origin_once() {
+    let stdout = run_two_process_scenario("link_remote_typed_crash");
+    assert!(
+        stdout.contains("PASS link_remote_typed_crash remote-origin class=fault count=1"),
+        "typed remote link notification failed: {stdout}"
+    );
+    assert!(!stdout.contains("FAIL "), "{stdout}");
+}
+
 /// A `CrashLinked` cross-node link crashes the LOCAL linked actor when the remote
 /// actor CRASHES (panics). Same mailbox-EXIT cascade as the clean-exit case; the
 /// terminal cause differs but the linked actor still crashes.

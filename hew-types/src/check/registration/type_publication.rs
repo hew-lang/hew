@@ -244,14 +244,14 @@ impl Checker {
             return;
         }
         let lifecycle_names: &[&str] = match owner {
-            "std.failure" => &["CrashInfo", "CrashAction", "CrashNotification", "CrashKind"],
-            "std.link_monitor" => &[
-                "MonitorId",
+            "std.failure" => &[
+                "CrashInfo",
+                "CrashAction",
+                "CrashNotification",
+                "CrashKind",
                 "DownTarget",
-                "DownReason",
-                "DownNotification",
-                "MonitorRef",
             ],
+            "std.link_monitor" => &["MonitorId", "DownReason", "DownNotification", "MonitorRef"],
             _ => unreachable!("matched canonical lifecycle owner"),
         };
         for source_name in lifecycle_names {

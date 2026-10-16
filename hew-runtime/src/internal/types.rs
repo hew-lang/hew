@@ -886,12 +886,8 @@ impl ExitReason {
     ///   normal exit never reaches the crash-propagation path
     ///   (`propagate_exit_to_links` is called from the trap path, not clean stop).
     ///
-    /// `CrashKind::PartitionDetected` has NO source `ExitReason` today: the
-    /// runtime carries no duplex/mailbox-partition exit reason yet. The variant
-    /// is reserved (the std doc's additive-widening note) for when one is added;
-    /// the new reason's arm here will map to it. A `CrashKind` variant that no
-    /// `ExitReason` projects to is the documented-allowed direction (the runtime
-    /// may surface fewer classes than `CrashKind` names).
+    /// Remote observation loss carries `CrashKind::PartitionDetected` directly;
+    /// it has no actor-local `ExitReason` projection.
     #[must_use]
     pub const fn to_crash_kind(self) -> CrashKind {
         match self {
@@ -919,9 +915,9 @@ impl ExitReason {
 /// `std/failure.hew::CrashKind`.
 ///
 /// The discriminants match the std enum's DECLARATION ORDER (the tagged-union
-/// tag a Hew `CrashKind` value carries): `Crashed = 0`, `HeapExceeded = 1`,
+/// tag a Hew `CrashKind` value carries): `Fault = 0`, `HeapExceeded = 1`,
 /// `PartitionDetected = 2`. M-7 delivers this tag in a typed
-/// `CrashNotification { actor_id, kind }` to a linked actor's exit hook; the
+/// `CrashNotification { target, kind }` to a linked actor's exit hook; the
 /// `as i32` tag is the wire value.
 ///
 /// Adding a variant here REQUIRES a matching variant in `std/failure.hew`
@@ -934,8 +930,7 @@ pub enum CrashKind {
     Crashed = 0,
     /// Per-actor arena cap exceeded.
     HeapExceeded = 1,
-    /// A duplex / mailbox partition was observed on a recv path the crashed
-    /// actor was awaiting. Reserved: no `ExitReason` projects to it yet.
+    /// A remote link became unreachable under its partition policy.
     PartitionDetected = 2,
 }
 

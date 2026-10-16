@@ -134,12 +134,8 @@ fn system_dispatch_is_reachable_only_by_the_system_channel() {
 
     let down = crate::monitor::HewDownMessage {
         monitor_id: 0,
-        target_kind: 0,
+        target: crate::monitor::HewNotificationTarget::local(0),
         reason_kind: 0,
-        node_hi: 0,
-        node_lo: 0,
-        slot: 0,
-        session_incarnation: 0,
         crash_kind: 0,
     };
     // SAFETY: the actor is live, so its mailbox is valid; `down` outlives
@@ -200,7 +196,7 @@ fn system_dispatch_is_reachable_only_by_the_system_channel() {
 /// raw `msg_type` regardless of provenance, so `hew_actor_send(actor, 103,
 /// null, 0)` — a legal public C-ABI call — arrived byte-for-byte as a
 /// runtime-originated EXIT signal: the generated trampoline's EXIT arm
-/// read a 16-byte `ExitMessage` out of the null payload (no `data_size`
+/// read an `ExitMessage` out of the null payload (no `data_size`
 /// guard existed) and called `hew_actor_exit_unhandled` with the loaded
 /// reason. There is now no shared namespace to collide in: the system
 /// entry point takes `HewSysMsg` discriminants and is reachable only from

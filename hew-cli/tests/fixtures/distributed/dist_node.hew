@@ -35,7 +35,8 @@ import std.net;
 
 import std.encoding.utf8;
 
-import std.link_monitor.{DownNotification, DownReason, DownTarget, MonitorRef, PartitionPolicy,};
+import std.failure.{CrashNotification, CrashKind, DownTarget};
+import std.link_monitor.{DownNotification, DownReason, MonitorRef, PartitionPolicy,};
 
 // hew_node_api_unregister: the repoint_preserves_ref scenario re-points a
 // registered name to a DIFFERENT actor. `Node::unregister` is not yet a Hew
@@ -720,6 +721,33 @@ actor PartitionInjector {
             }
             sleep(2ms);
         }
+    }
+}
+
+actor RemoteCrashObserver {
+    let expected: Location;
+    var notices: i64 = 0;
+
+    receive fn attach(peer: RemotePid<KeyValue>) -> Result<(), LinkError> {
+        link_remote(peer, PartitionPolicy.CrashLinked)
+    }
+
+    receive fn count() -> i64 {
+        notices
+    }
+
+    #[on(link)]
+    fn on_link(note: CrashNotification) {
+        match note.target {
+            DownTarget.Remote(location) => {
+                assert(location.node_id().display() == expected.node_id().display());
+                assert(location.slot() == expected.slot());
+                assert(location.incarnation() == expected.incarnation());
+            }
+            DownTarget.Local(_) => panic("remote link reported a local origin"),
+        }
+        assert(note.kind == CrashKind.Fault);
+        notices = notices + 1;
     }
 }
 
@@ -2318,6 +2346,25 @@ fn scenario_link_remote_clean_exit(kv: RemotePid<KeyValue>) -> i64 {
     link_cascade_common(kv, "link_remote_clean_exit", "stop")
 }
 
+fn scenario_link_remote_typed_crash(kv: RemotePid<KeyValue>) -> i64 {
+    let observer = spawn RemoteCrashObserver { expected: kv.location() };
+    observer.attach(kv).expect("observer alive").expect("remote link registered");
+    kv.send(KvReq.CrashSelf).expect("remote crash submitted");
+    var attempts = 0;
+    while observer.count().expect("typed hook survives") == 0 {
+        attempts = attempts + 1;
+        assert(attempts < 300);
+        sleep(100ms);
+    }
+    assert(observer.count().expect("first notification") == 1);
+    sleep(100ms);
+    assert(observer.count().expect("one notification after settling") == 1);
+    stop(observer);
+    stopped(observer);
+    println("PASS link_remote_typed_crash remote-origin class=fault count=1");
+    0
+}
+
 fn scenario_link_remote_crash(kv: RemotePid<KeyValue>) -> i64 {
     link_cascade_common(kv, "link_remote_crash", "crash")
 }
@@ -2847,6 +2894,8 @@ fn run_client(scenario: string) -> i64 {
                     scenario_inbound_isolation(kv, kx)
                 } else if scenario == "linker_local_crash" {
                     scenario_linker_local_crash()
+                } else if scenario == "link_remote_typed_crash" {
+                    scenario_link_remote_typed_crash(kv)
                 } else if scenario == "local_route" {
                     scenario_local_route(kv)
                 } else {

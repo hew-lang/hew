@@ -34,9 +34,9 @@ actor Watcher {
 
     #[on(link)]
     fn exited(note: failure.CrashNotification) {
-        assert(note.actor_id > 0);
+        assert(match note.target { .Local(id) => id > 0, .Remote(_) => false });
         assert(note.kind == failure.CrashKind.Fault);
-        exit_actor = note.actor_id;
+        exit_actor = match note.target { .Local(id) => id, .Remote(_) => 0 };
         exits = exits + 1;
     }
 

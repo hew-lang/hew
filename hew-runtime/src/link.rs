@@ -343,6 +343,20 @@ fn terminal_exit_reason(shard: &LinkShard, actor_id: u64, actor: &HewActor) -> O
 }
 
 fn send_exit_signal(linked_actor_id: u64, crashed_actor_id: u64, reason: i32) {
+    send_exit_notification(
+        linked_actor_id,
+        crate::monitor::HewNotificationTarget::local(crashed_actor_id),
+        reason,
+        crate::internal::types::CrashKind::tag_from_error_code(reason),
+    );
+}
+
+fn send_exit_notification(
+    linked_actor_id: u64,
+    target: crate::monitor::HewNotificationTarget,
+    reason: i32,
+    crash_kind: i32,
+) {
     let Some(linked_actor_pin) = pin_actor_by_id(linked_actor_id) else {
         return;
     };
@@ -352,12 +366,9 @@ fn send_exit_signal(linked_actor_id: u64, crashed_actor_id: u64, reason: i32) {
         let linked_actor_ref = linked_actor_pin.actor();
         if !linked_actor_ref.mailbox.is_null() {
             let exit_data = ExitMessage {
-                crashed_actor_id,
+                target,
                 reason,
-                // M-7 substrate: precompute the CrashKind tag (the M-6
-                // projection) so the future typed `#[on(exit)]` hook reads
-                // `CrashNotification.kind` directly.
-                crash_kind: crate::internal::types::CrashKind::tag_from_error_code(reason),
+                crash_kind,
             };
 
             let data_ptr = (&raw const exit_data).cast::<c_void>();
@@ -428,9 +439,9 @@ pub(crate) const POLICY_TAG_CRASH_LINKED: u8 = 3;
 /// fail-together semantic. Local and cross-node link state stores actor
 /// identities only, so delivery resolves and pins the live allocation by id.
 ///
-/// `crashed_remote_serial` is the dead remote peer's serial (carried into the
-/// `ExitMessage` for the typed `#[on(exit)]` consumer). `reason` is the terminal
-/// reason (a `HewActorState` value, or a partition sentinel).
+/// `target` preserves the complete authenticated remote identity. The crash
+/// class comes from the decoded notice; `reason` is the terminal state or
+/// partition sentinel used by link policy.
 ///
 /// Non-`CrashLinked` policies are non-fatal: the link is recorded but the
 /// remote's death does not crash the local actor (it survives). This is the
@@ -440,9 +451,10 @@ pub(crate) const POLICY_TAG_CRASH_LINKED: u8 = 3;
 /// actor); false if the policy was non-fatal or the local actor is already gone.
 pub(crate) fn deliver_cross_node_link_exit(
     local_actor_id: u64,
-    crashed_remote_serial: u64,
+    target: crate::node_identity::Location,
     reason: i32,
     policy_tag: u8,
+    crash_kind: i32,
 ) -> bool {
     if policy_tag != POLICY_TAG_CRASH_LINKED {
         // Non-CrashLinked link: the remote's death is non-fatal to the local
@@ -456,9 +468,14 @@ pub(crate) fn deliver_cross_node_link_exit(
     }
     // Reuse the proven local EXIT-synthesis path (same HewSysMsg::Exit + CrashKind
     // projection + Idle→Runnable wake), so supervision / exit-trapping behaves
-    // identically to a local link EXIT. `send_exit_signal` re-validates and pins
+    // identically to a local link EXIT. `send_exit_notification` re-validates and pins
     // liveness before dereferencing the allocation.
-    send_exit_signal(local_actor_id, crashed_remote_serial, reason);
+    send_exit_notification(
+        local_actor_id,
+        crate::monitor::HewNotificationTarget::remote(target),
+        reason,
+        crash_kind,
+    );
     true
 }
 
@@ -548,25 +565,13 @@ pub(crate) fn remove_all_links_for_actor(actor_id: u64, _actor_addr: *mut HewAct
     }
 }
 
-/// Message data for EXIT system messages.
-///
-/// M-7 typed-payload substrate: this is the runtime mirror of the
-/// `std/failure.hew::CrashNotification { actor_id, kind }` a linked actor's
-/// exit hook will receive once the `#[on(exit)]` user surface is ratified
-/// (M-7-R). `crash_kind` is the M-6 `ExitReason -> CrashKind` projection of
-/// `reason`, precomputed at the delivery boundary so the (future) typed hook
-/// reads a `CrashKind` tag directly without re-deriving the projection. The
-/// raw `reason` is retained for the existing integer-tag consumers.
+/// Fixed actor-mailbox payload for `CrashNotification { target, kind }`.
 #[repr(C)]
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub struct ExitMessage {
-    /// ID of the actor that crashed and caused this exit signal. Maps to
-    /// `CrashNotification.actor_id`.
-    pub crashed_actor_id: u64,
-    /// Reason code (`error_code` from `hew_actor_trap`).
+    pub target: crate::monitor::HewNotificationTarget,
+    /// Terminal reason retained for link policy processing.
     pub reason: i32,
-    /// The M-6 `CrashKind` tag projected from `reason` (Crashed=0,
-    /// HeapExceeded=1, PartitionDetected=2). Maps to `CrashNotification.kind`.
     pub crash_kind: i32,
 }
 
@@ -1078,7 +1083,10 @@ mod tests {
             assert!(!node.is_null());
             assert_eq!((*node).msg_type, HewSysMsg::Exit.as_i32());
             let payload = &*((*node).data.cast::<ExitMessage>());
-            assert_eq!(payload.crashed_actor_id, target_id);
+            assert_eq!(
+                payload.target,
+                crate::monitor::HewNotificationTarget::local(target_id)
+            );
             assert_eq!(payload.reason, 91);
             // M-7 substrate: the delivered EXIT message carries the projected
             // CrashKind tag. reason 91 is not a known trap code → Signal(91) →

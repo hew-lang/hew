@@ -682,7 +682,12 @@ pub(super) fn handle_link_down_frame(
         set_last_error("connection reader link down target Location mismatch");
         return;
     }
-    crate::hew_node::handle_inbound_link_down(payload.ref_id, payload.target, payload.reason);
+    crate::hew_node::handle_inbound_link_down(
+        payload.ref_id,
+        payload.target,
+        payload.reason,
+        payload.crash_kind,
+    );
 }
 
 fn handle_service_frame(

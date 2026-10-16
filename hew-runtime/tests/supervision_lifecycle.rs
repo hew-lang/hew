@@ -921,9 +921,12 @@ fn monitor_detects_crash() {
         .copied()
         .expect("DOWN notification should be recorded");
     assert_eq!(down.monitor_id, ref_id);
-    assert_eq!(down.target_kind, 0);
+    assert_eq!(down.target.kind, 0);
     assert_eq!(down.reason_kind, 2);
-    assert_eq!(down.slot, hew_runtime::pid::hew_pid_serial(target_id));
+    assert_eq!(
+        down.target.slot,
+        hew_runtime::pid::hew_pid_serial(target_id)
+    );
 
     hew_deterministic_reset();
 }
@@ -1013,9 +1016,12 @@ fn late_monitor_after_crash_delivers_immediate_down() {
         .copied()
         .expect("DOWN notification should be recorded");
     assert_eq!(down.monitor_id, ref_id);
-    assert_eq!(down.target_kind, 0);
+    assert_eq!(down.target.kind, 0);
     assert_eq!(down.reason_kind, 2);
-    assert_eq!(down.slot, hew_runtime::pid::hew_pid_serial(target_id));
+    assert_eq!(
+        down.target.slot,
+        hew_runtime::pid::hew_pid_serial(target_id)
+    );
 
     hew_actor_demonitor(ref_id);
     watcher.send_empty(77);

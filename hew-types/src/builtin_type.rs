@@ -59,15 +59,15 @@ pub enum BuiltinType {
     ActorFn,
     CrashInfo,
     CrashAction,
-    /// `std/failure.hew::CrashNotification { actor_id: u64, kind: CrashKind }`
-    /// — the typed payload a linked actor's `#[on(exit)]` hook receives (M-7-R).
+    /// `std/failure.hew::CrashNotification { target: DownTarget, kind: CrashKind }`.
+    /// The typed payload a linked actor's `#[on(link)]` hook receives.
     CrashNotification,
-    /// `std/failure.hew::CrashKind { Crashed; HeapExceeded; PartitionDetected }`
-    /// — the crash-class enum delivered in a `CrashNotification` (M-7-R).
+    /// `std/failure.hew::CrashKind { Fault; HeapExceeded; PartitionDetected }`.
+    /// The crash class delivered in a `CrashNotification`.
     CrashKind,
     /// `std/link_monitor.hew::MonitorId { value: u64 }`.
     MonitorId,
-    /// `std/link_monitor.hew::DownTarget`.
+    /// `std/failure.hew::DownTarget`.
     DownTarget,
     /// `std/link_monitor.hew::DownReason`.
     DownReason,
@@ -581,7 +581,7 @@ impl BuiltinType {
             Self::CrashNotification => Some("std.failure.CrashNotification"),
             Self::CrashKind => Some("std.failure.CrashKind"),
             Self::MonitorId => Some("std.link_monitor.MonitorId"),
-            Self::DownTarget => Some("std.link_monitor.DownTarget"),
+            Self::DownTarget => Some("std.failure.DownTarget"),
             Self::DownReason => Some("std.link_monitor.DownReason"),
             Self::DownNotification => Some("std.link_monitor.DownNotification"),
             Self::MonitorRef => Some("std.link_monitor.MonitorRef"),

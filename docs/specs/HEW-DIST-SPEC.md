@@ -428,10 +428,16 @@ terminal control frames back to the owning watcher.
 non-zero `u64` values, never reused, and exhaust only after issuing
 `u64::MAX`.
 
+Monitor and link notifications share `std.failure.DownTarget`: `.Local(u64)`
+for a process-local actor and `.Remote(Location)` for the complete remote
+identity. `CrashNotification.target` replaces the earlier `actor_id` field;
+imports of `DownTarget` move from `std.link_monitor` to `std.failure`.
+
 An actor receives monitor termination through one typed hook:
 
 ```hew,ignore
-import std.link_monitor.{DownNotification, DownReason, DownTarget};
+import std.failure.{DownTarget};
+import std.link_monitor.{DownNotification, DownReason};
 
 actor Watcher {
     #[on(down)]

@@ -1434,7 +1434,7 @@ fn main() {}
             actor Watcher {
                 #[on(exit)]
                 fn on_peer_exit(note: CrashNotification) {
-                    let _id = note.actor_id;
+                    let _id = note.target;
                 }
 
                 receive fn watch(peer: u64) {

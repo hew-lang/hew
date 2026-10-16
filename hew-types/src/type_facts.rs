@@ -1816,7 +1816,7 @@ mod tests {
                 members: vec![ResolvedTy::I64, ResolvedTy::String],
             },
         );
-        // `std/failure.hew::CrashNotification { actor_id: u64, kind: CrashKind }`.
+        // `std/failure.hew::CrashNotification { target: DownTarget, kind: CrashKind }`.
         decls.insert(
             crate::NominalId::for_test("std.failure.CrashNotification"),
             DeclaredType {
@@ -1825,7 +1825,7 @@ mod tests {
                 marker: DeclarationMarker::None,
                 type_params: vec![],
                 members: vec![
-                    ResolvedTy::U64,
+                    named("DownTarget", Some(BuiltinType::DownTarget), vec![]),
                     named("CrashKind", Some(BuiltinType::CrashKind), vec![]),
                 ],
             },

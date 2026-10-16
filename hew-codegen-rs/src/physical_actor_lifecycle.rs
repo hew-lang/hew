@@ -58,7 +58,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
     ) -> CodegenResult<&hew_mir::physical::PhysicalVariantLayout> {
         let name = match builtin {
             hew_types::BuiltinType::CrashKind => "std.failure.CrashKind",
-            hew_types::BuiltinType::DownTarget => "std.link_monitor.DownTarget",
+            hew_types::BuiltinType::DownTarget => "std.failure.DownTarget",
             hew_types::BuiltinType::DownReason => "std.link_monitor.DownReason",
             _ => return Err(CodegenError::FailClosed("unexpected lifecycle enum".into())),
         };
@@ -159,6 +159,97 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         Ok(())
     }
 
+    fn emit_notification_target(
+        &self,
+        builder: &Builder<'ctx>,
+        function: FunctionValue<'ctx>,
+        data: PointerValue<'ctx>,
+        target: PointerValue<'ctx>,
+        base: usize,
+    ) -> CodegenResult<()> {
+        use hew_runtime::monitor::HewNotificationTarget;
+        use hew_types::BuiltinType;
+        let word = |offset, bits| self.lifecycle_word(builder, data, base + offset, bits);
+        let target_tag = word(std::mem::offset_of!(HewNotificationTarget, kind), 32)?;
+        self.lifecycle_variant_header(builder, target, BuiltinType::DownTarget, target_tag)?;
+        let local = self.ctx.append_basic_block(function, "down.local");
+        let remote = self.ctx.append_basic_block(function, "down.remote");
+        let reason = self
+            .ctx
+            .append_basic_block(function, "notification.target.done");
+        let invalid = self.ctx.append_basic_block(function, "down.invalid");
+        builder
+            .build_switch(
+                target_tag,
+                invalid,
+                &[
+                    (self.ctx.i32_type().const_zero(), local),
+                    (self.ctx.i32_type().const_int(1, false), remote),
+                ],
+            )
+            .llvm_ctx("decode DOWN target")?;
+        builder.position_at_end(invalid);
+        builder
+            .build_return(Some(
+                &self.ctx.ptr_type(AddressSpace::default()).const_null(),
+            ))
+            .llvm_ctx("ignore invalid DOWN tag")?;
+        builder.position_at_end(local);
+        let slot = word(std::mem::offset_of!(HewNotificationTarget, slot), 64)?;
+        self.lifecycle_variant_payload(
+            builder,
+            target,
+            BuiltinType::DownTarget,
+            0,
+            &[slot.into()],
+        )?;
+        builder
+            .build_unconditional_branch(reason)
+            .llvm_ctx("finish local DOWN target")?;
+        builder.position_at_end(remote);
+        let remote_layout = self.lifecycle_variant_layout(BuiltinType::DownTarget)?;
+        let fields = llvm_type(self.ctx, &remote_layout.variants[1].repr)?.into_struct_type();
+        let location_ty = fields
+            .get_field_type_at_index(0)
+            .ok_or_else(|| CodegenError::FailClosed("remote DOWN lacks location".into()))?
+            .into_struct_type();
+        let mut location = location_ty.const_zero();
+        for (index, (offset, bits)) in [
+            (std::mem::offset_of!(HewNotificationTarget, node_hi), 64),
+            (std::mem::offset_of!(HewNotificationTarget, node_lo), 64),
+            (std::mem::offset_of!(HewNotificationTarget, slot), 64),
+            (
+                std::mem::offset_of!(HewNotificationTarget, session_incarnation),
+                32,
+            ),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            location = builder
+                .build_insert_value(
+                    location,
+                    word(offset, bits)?,
+                    index as u32,
+                    "down.location.field",
+                )
+                .llvm_ctx("construct remote DOWN location")?
+                .into_struct_value();
+        }
+        self.lifecycle_variant_payload(
+            builder,
+            target,
+            BuiltinType::DownTarget,
+            1,
+            &[location.into()],
+        )?;
+        builder
+            .build_unconditional_branch(reason)
+            .llvm_ctx("finish remote DOWN target")?;
+        builder.position_at_end(reason);
+        Ok(())
+    }
+
     fn emit_down_payload(
         &self,
         builder: &Builder<'ctx>,
@@ -187,81 +278,24 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         let target = builder
             .build_struct_gep(object, destination, 1, "down.target")
             .llvm_ctx("address DOWN target")?;
-        let target_tag = word(std::mem::offset_of!(HewDownMessage, target_kind), 32)?;
-        self.lifecycle_variant_header(builder, target, BuiltinType::DownTarget, target_tag)?;
-        let local = self.ctx.append_basic_block(function, "down.local");
-        let remote = self.ctx.append_basic_block(function, "down.remote");
-        let reason = self.ctx.append_basic_block(function, "down.reason");
-        let invalid = self.ctx.append_basic_block(function, "down.invalid");
-        builder
-            .build_switch(
-                target_tag,
-                invalid,
-                &[
-                    (self.ctx.i32_type().const_zero(), local),
-                    (self.ctx.i32_type().const_int(1, false), remote),
-                ],
-            )
-            .llvm_ctx("decode DOWN target")?;
+        self.emit_notification_target(
+            builder,
+            function,
+            data,
+            target,
+            std::mem::offset_of!(HewDownMessage, target),
+        )?;
+        let invalid = self.ctx.append_basic_block(function, "down.invalid.reason");
+        let reason_start = builder
+            .get_insert_block()
+            .ok_or_else(|| CodegenError::FailClosed("DOWN decoder lacks insertion block".into()))?;
         builder.position_at_end(invalid);
         builder
             .build_return(Some(
                 &self.ctx.ptr_type(AddressSpace::default()).const_null(),
             ))
-            .llvm_ctx("ignore invalid DOWN tag")?;
-        builder.position_at_end(local);
-        let slot = word(std::mem::offset_of!(HewDownMessage, slot), 64)?;
-        self.lifecycle_variant_payload(
-            builder,
-            target,
-            BuiltinType::DownTarget,
-            0,
-            &[slot.into()],
-        )?;
-        builder
-            .build_unconditional_branch(reason)
-            .llvm_ctx("finish local DOWN target")?;
-        builder.position_at_end(remote);
-        let remote_layout = self.lifecycle_variant_layout(BuiltinType::DownTarget)?;
-        let fields = llvm_type(self.ctx, &remote_layout.variants[1].repr)?.into_struct_type();
-        let location_ty = fields
-            .get_field_type_at_index(0)
-            .ok_or_else(|| CodegenError::FailClosed("remote DOWN lacks location".into()))?
-            .into_struct_type();
-        let mut location = location_ty.const_zero();
-        for (index, (offset, bits)) in [
-            (std::mem::offset_of!(HewDownMessage, node_hi), 64),
-            (std::mem::offset_of!(HewDownMessage, node_lo), 64),
-            (std::mem::offset_of!(HewDownMessage, slot), 64),
-            (
-                std::mem::offset_of!(HewDownMessage, session_incarnation),
-                32,
-            ),
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            location = builder
-                .build_insert_value(
-                    location,
-                    word(offset, bits)?,
-                    index as u32,
-                    "down.location.field",
-                )
-                .llvm_ctx("construct remote DOWN location")?
-                .into_struct_value();
-        }
-        self.lifecycle_variant_payload(
-            builder,
-            target,
-            BuiltinType::DownTarget,
-            1,
-            &[location.into()],
-        )?;
-        builder
-            .build_unconditional_branch(reason)
-            .llvm_ctx("finish remote DOWN target")?;
-        builder.position_at_end(reason);
+            .llvm_ctx("ignore invalid DOWN reason")?;
+        builder.position_at_end(reason_start);
         let reason_ptr = builder
             .build_struct_gep(object, destination, 2, "down.reason")
             .llvm_ctx("address DOWN reason")?;
@@ -912,18 +946,16 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
             .build_store(payload, object_ty.const_zero())
             .llvm_ctx("initialize source notification")?;
         if exit {
-            let id = self.lifecycle_word(
-                builder,
-                data,
-                std::mem::offset_of!(hew_runtime::link::ExitMessage, crashed_actor_id),
-                64,
-            )?;
             let field = builder
-                .build_struct_gep(object_ty, payload, 0, "note.actor")
-                .llvm_ctx("address notification actor")?;
-            builder
-                .build_store(field, id)
-                .llvm_ctx("store notification actor")?;
+                .build_struct_gep(object_ty, payload, 0, "note.target")
+                .llvm_ctx("address notification target")?;
+            self.emit_notification_target(
+                builder,
+                function,
+                data,
+                field,
+                std::mem::offset_of!(hew_runtime::link::ExitMessage, target),
+            )?;
             let kind = self.lifecycle_word(
                 builder,
                 data,

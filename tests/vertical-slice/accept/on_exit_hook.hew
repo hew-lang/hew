@@ -6,7 +6,7 @@
 //     (a recognised lifecycle hook returning `()`)
 //   - HIR lowers it as HirLifecycleHookKind::Exit
 //   - MIR emits `Watcher__on_exit` with the two-field ABI (actor_id, kind_tag)
-//     and a prologue that rebuilds `note = CrashNotification { actor_id, kind }`
+//     and a prologue that rebuilds `note = CrashNotification { target, kind }`
 //   - codegen routes HewSysMsg::Exit in the actor dispatch trampoline to __on_exit,
 //     unpacking the delivered ExitMessage payload
 //   - the supervisor boots; main returns 42.
@@ -20,7 +20,7 @@ import std.failure.{CrashNotification};
 actor Watcher {
     #[on(link)]
     fn on_peer_exit(note: CrashNotification) {
-        let _id = note.actor_id;
+        let _id = note.target;
         let _kind = note.kind;
     }
 }

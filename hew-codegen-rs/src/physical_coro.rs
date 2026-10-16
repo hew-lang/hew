@@ -79,6 +79,24 @@ pub(super) fn entry_storage<'ctx>(
         .llvm_ctx("allocate local storage")
 }
 
+fn invocation_type(ctx: &Context) -> inkwell::types::StructType<'_> {
+    // The exact HewCoroInvocation fields; LLVM applies the target's C padding
+    // and alignment rather than importing the host's size.
+    ctx.struct_type(
+        &[
+            ctx.ptr_type(AddressSpace::default()).into(),
+            ctx.i32_type().into(),
+            ctx.i32_type().into(),
+            ctx.i32_type().into(),
+            ctx.i32_type().into(),
+            ctx.i8_type().into(),
+            ctx.i8_type().into(),
+            ctx.i8_type().into(),
+        ],
+        false,
+    )
+}
+
 pub(super) fn begin<'ctx>(
     ctx: &'ctx Context,
     module: &Module<'ctx>,
@@ -292,21 +310,7 @@ impl<'ctx> Frame<'ctx> {
         let storage = if let Some(storage) = self.child_invocation.get() {
             storage
         } else {
-            // The exact HewCoroInvocation fields; LLVM applies the target's C
-            // padding and alignment rather than importing the host's size.
-            let record = ctx.struct_type(
-                &[
-                    pointer.into(),
-                    ctx.i32_type().into(),
-                    ctx.i32_type().into(),
-                    ctx.i32_type().into(),
-                    ctx.i32_type().into(),
-                    ctx.i8_type().into(),
-                    ctx.i8_type().into(),
-                    ctx.i8_type().into(),
-                ],
-                false,
-            );
+            let record = invocation_type(ctx);
             let storage = self.storage(ctx, record.into(), "call.child.invocation")?;
             self.child_invocation.set(Some(storage));
             storage
@@ -429,4 +433,64 @@ pub(super) fn handle_operation<'ctx>(
         .llvm_ctx("finish coroutine operation")?;
     builder.position_at_end(done);
     Ok(())
+}
+
+#[cfg(test)]
+mod abi_tests {
+    use super::super::actor::{c_mirror_mismatch, field_size};
+    use super::*;
+    use hew_cabi::coro::HewCoroInvocation;
+    use std::mem::{align_of, offset_of, size_of};
+
+    #[test]
+    fn invocation_storage_matches_the_runtime_c_abi() {
+        let fields = [
+            (
+                offset_of!(HewCoroInvocation, context),
+                field_size(|record: &HewCoroInvocation| &record.context),
+            ),
+            (
+                offset_of!(HewCoroInvocation, status),
+                field_size(|record: &HewCoroInvocation| &record.status),
+            ),
+            (
+                offset_of!(HewCoroInvocation, private_status),
+                field_size(|record: &HewCoroInvocation| &record.private_status),
+            ),
+            (
+                offset_of!(HewCoroInvocation, poll_suppression),
+                field_size(|record: &HewCoroInvocation| &record.poll_suppression),
+            ),
+            (
+                offset_of!(HewCoroInvocation, lexical_depth),
+                field_size(|record: &HewCoroInvocation| &record.lexical_depth),
+            ),
+            (
+                offset_of!(HewCoroInvocation, flags),
+                field_size(|record: &HewCoroInvocation| &record.flags),
+            ),
+            (
+                offset_of!(HewCoroInvocation, cleanup_fault),
+                field_size(|record: &HewCoroInvocation| &record.cleanup_fault),
+            ),
+            (
+                offset_of!(HewCoroInvocation, cleanup_abandon_io),
+                field_size(|record: &HewCoroInvocation| &record.cleanup_abandon_io),
+            ),
+        ];
+        let ctx = Context::create();
+        let record = invocation_type(&ctx);
+        let mismatch = |mirror| {
+            c_mirror_mismatch(
+                mirror,
+                &fields,
+                size_of::<HewCoroInvocation>(),
+                align_of::<HewCoroInvocation>(),
+            )
+        };
+        assert_eq!(mismatch(record), None);
+        let mut reordered = record.get_field_types();
+        reordered.swap(0, 1);
+        assert!(mismatch(ctx.struct_type(&reordered, false)).is_some());
+    }
 }

@@ -1,0 +1,54 @@
+import "generic_resource_support/wrapper.hew";
+import std.stream;
+
+#[resource]
+type Ticket {
+    id: i64;
+}
+
+impl Ticket {
+    fn close(consume self) {
+        println(f"ticket {self.id}");
+    }
+}
+
+fn returned() -> Wrapper<Ticket> {
+    wrap(Ticket { id: 1 }, "returned".to_upper())
+}
+
+fn fail() {
+    let value = wrap(Ticket { id: 3 }, "fault".to_upper());
+    panic("generic owner fault");
+}
+
+fn cancelled(consume ready: Sink<i64>, consume gate: Stream<i64>) -> i64 {
+    let value = wrap(Ticket { id: 4 }, "cancel".to_upper());
+    ready.send(1).expect("ready");
+    gate.recv();
+    0
+}
+
+fn winner(consume ready: Stream<i64>) -> i64 {
+    ready.recv().expect("started");
+    7
+}
+
+fn main() {
+    discard(returned());
+    {
+        let text = wrap("payload".to_upper(), "string".to_upper());
+    };
+    let explicit = wrap(Ticket { id: 2 }, "explicit".to_upper());
+    explicit.close();
+    let delivery = Delivery<Ticket> { payload: Ticket { id: 5 } };
+    discard(wrap(delivery.take(), "linear".to_upper()));
+    scope {
+        fail();
+    } handle failure {
+        println("fault drained");
+    };
+    let (_hold, gate): (Sink<i64>, Stream<i64>) = stream.pipe(1).expect("gate");
+    let (ready, started): (Sink<i64>, Stream<i64>) = stream.pipe(1).expect("ready");
+    let picked = await race [winner(started), cancelled(ready, gate)];
+    println(f"picked {picked}");
+}

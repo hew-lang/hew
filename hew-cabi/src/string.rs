@@ -23,8 +23,8 @@ pub struct HewString {
 }
 
 #[repr(C)]
-struct HewStringHeader {
-    byte_len: usize,
+struct HewStringHeader<Length = usize> {
+    byte_len: Length,
     rc: AtomicU32,
 }
 
@@ -32,9 +32,19 @@ struct HewStringHeader {
 /// Runtime and package code should use [`string_as_bytes`] instead.
 pub const STRING_DEBUG_BYTE_LEN_OFFSET: usize = core::mem::offset_of!(HewStringHeader, byte_len);
 
-/// Native-target offset of the UTF-8 payload for read-only debugger tooling.
-/// The payload has exactly the header's byte length and no C terminator.
-pub const STRING_DEBUG_DATA_OFFSET: usize = core::mem::size_of::<HewStringHeader>();
+/// Header size for a debugger describing a supported target's managed strings.
+/// Derive cross-target offsets from the allocation header declaration as well.
+#[must_use]
+pub const fn string_debug_header_size(pointer_bytes: u64) -> Option<u64> {
+    let size = match pointer_bytes {
+        4 => core::mem::size_of::<HewStringHeader<u32>>() as u64,
+        8 => core::mem::size_of::<HewStringHeader<u64>>() as u64,
+        _ => return None,
+    };
+    // A 32-bit host can align u64 to four bytes. Apply the target pointer's
+    // alignment to the same fields when describing a 64-bit allocation.
+    Some(size.next_multiple_of(pointer_bytes))
+}
 
 const MAX_REFCOUNT: u32 = u32::MAX / 2;
 

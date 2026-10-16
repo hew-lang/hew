@@ -1,0 +1,44 @@
+import std.stream;
+
+fn finish_work() {
+    var count = 0;
+    for _ in 0..40000 { count += 1; }
+    println(f"finished {count}");
+}
+
+#[resource]
+type Ticket {
+    label: string;
+    ready: stream.Sink<i64>;
+}
+impl Ticket {
+    fn close(consume self) {
+        self.ready.send(1).expect("ready");
+        finish_work();
+        println("closed " + self.label);
+    }
+}
+
+fn explicit_close(consume ready: stream.Sink<i64>) -> i64 {
+    let ticket = Ticket { label: "explicit", ready: ready };
+    ticket.close();
+    1
+}
+
+fn implicit_close(consume ready: stream.Sink<i64>) -> i64 {
+    let ticket = Ticket { label: "implicit", ready: ready };
+    1
+}
+
+fn peer(ready: stream.Stream<i64>) -> i64 {
+    ready.recv().expect("ready");
+    println("peer progressed");
+    7
+}
+
+fn main() {
+    let (tx, rx): (stream.Sink<i64>, stream.Stream<i64>) = stream.pipe(1).expect("pipe");
+    println(await race [explicit_close(tx), peer(rx)]);
+    let (implicit_tx, implicit_rx): (stream.Sink<i64>, stream.Stream<i64>) = stream.pipe(1).expect("pipe");
+    println(await race [implicit_close(implicit_tx), peer(implicit_rx)]);
+}

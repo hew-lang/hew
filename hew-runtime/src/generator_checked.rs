@@ -215,8 +215,9 @@ pub unsafe extern "C" fn hew_checked_generator_poll(
     // after ownership moves to another actor between yields.
     // SAFETY: both invocation states remain live throughout this poll.
     unsafe {
-        (*generator.state).actor_turn = (*parent).actor_turn;
-        (*generator.state).actor_message_type = (*parent).actor_message_type;
+        (*generator.state).execution_mut().actor_turn = (*parent).execution().actor_turn;
+        (*generator.state).execution_mut().actor_message_type =
+            (*parent).execution().actor_message_type;
     }
     if closing {
         // SAFETY: this owner retains the child invocation state.

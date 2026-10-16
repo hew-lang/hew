@@ -5,6 +5,9 @@ source = "cases/actor-stop-drains.hew"
 suites = ["acceptance", "safety"]
 timeout_seconds = 15
 
+[case.env]
+HEW_WORKERS = "1"
+
 [case.expected]
-stdout = "after stop\ndead\n1\n2\n3\nhook\nafter stopped\n"
+stdout = "after stop\ndead\n1\n2\n3\nhook\nafter stopped\ncomputing hook drained\nterminal state released\nforced hook stopped\n"
 exit = 0

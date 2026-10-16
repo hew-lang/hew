@@ -1,6 +1,6 @@
 [[case]]
 id = "deque_pop_front_empty_actor_isolated"
-intent = "The fixture runs to completion and exits 1."
+intent = "A fresh actor turn releases its deque before reporting the checked empty-pop fault."
 source = "../vertical-slice/accept/deque_pop_front_empty_actor_isolated.hew"
 suites = ["acceptance"]
 timeout_seconds = 30
@@ -10,5 +10,5 @@ HEW_WORKERS = "4"
 
 [case.expected]
 stdout = ""
-stderr = "PANIC: Deque.pop_front() on an empty deque\nhew: actor crash in DequePopFrontCrasher.boom (actor 1): IndexOutOfBounds\n"
+stderr = "hew: failure: IndexOutOfBounds (205)\nhew: actor crash in DequePopFrontCrasher.boom (actor 1): IndexOutOfBounds\n"
 exit = 1

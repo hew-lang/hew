@@ -85,6 +85,19 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             self.task_pointer_call("hew_coro_state_token", &[self.task_frame()?.state.into()])?
         };
         let handle = self.task_pointer_call("hew_checked_scope_new", &[token.into()])?;
+        let pointer = self.ctx.ptr_type(AddressSpace::default());
+        let bind_owner = get_or_declare_external(
+            self.llvm,
+            "hew_checked_scope_set_rc_owner",
+            self.ctx.void_type().fn_type(&[pointer.into(); 2], false),
+        )?;
+        self.builder
+            .build_call(
+                bind_owner,
+                &[handle.into(), self.task_frame()?.state.into()],
+                "",
+            )
+            .llvm_ctx("bind scoped task allocation owner")?;
         self.builder
             .build_store(self.task_scopes[&scope], handle)
             .llvm_ctx("retain lexical task scope")?;

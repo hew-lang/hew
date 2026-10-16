@@ -15,8 +15,8 @@ use std::sync::{Arc, Mutex};
 #[derive(Debug, Default)]
 pub struct NativeActorCompletion {
     pub(crate) cleanup: super::cleanup::Cleanup,
-    crash: Option<crate::actor::HewNativeCrashFn>,
-    crash_action: AtomicI32,
+    pub(crate) crash: Option<crate::actor::HewNativeCrashFn>,
+    pub(crate) crash_action: AtomicI32,
     phase: AtomicU8,
     code: AtomicI32,
     ready: ReadinessRegistrations,
@@ -123,37 +123,7 @@ pub(crate) unsafe fn finish_native_terminal_after_terminate(actor: &HewActor) {
         actor.dispatch_ownership,
         HewDispatchOwnership::UniqueEnvelope
     );
-    if state == HewActorState::Crashed as i32 {
-        if let Some(hook) = completion.crash {
-            let code = actor.error_code.load(Ordering::Acquire);
-            let message = hew_cabi::string::string_from_str(
-                crate::internal::types::ExitReason::from_error_code(code).trap_kind_name(),
-            );
-            let mut context = crate::execution_context::HewExecutionContext {
-                actor: std::ptr::from_ref(actor).cast_mut(),
-                actor_id: actor.id,
-                arena: actor.arena,
-                prev_context: crate::execution_context::current_context(),
-                ..crate::execution_context::HewExecutionContext::default()
-            };
-            let previous = crate::execution_context::set_current_context(&raw mut context);
-            // SAFETY: the terminal actor pins its owning runtime across cleanup.
-            #[cfg(not(target_arch = "wasm32"))]
-            let _runtime = unsafe { actor.runtime.as_ref() }.map(|runtime| {
-                // SAFETY: the actor retains this runtime until terminal cleanup returns.
-                unsafe { crate::runtime::enter(runtime) }
-            });
-            // SAFETY: terminal cleanup owns the initialized incarnation state;
-            // the generated adapter returns before its typed destructor runs.
-            let action = unsafe { hook(actor.state, i64::from(code), message) };
-            let restored = crate::execution_context::set_current_context(previous);
-            debug_assert_eq!(restored, &raw mut context);
-            completion.crash_action.store(action, Ordering::Release);
-            // SAFETY: this frame owns the managed diagnostic string.
-            unsafe { hew_cabi::string::string_release(message) };
-        }
-    }
-    if completion.cleanup.needs_terminal_cleanup() {
+    if completion.crash.is_some() || completion.cleanup.needs_terminal_cleanup() {
         // SAFETY: the terminal claim retains state until scheduler cleanup
         // completes; raw actor reclamation must observe this pending claim.
         unsafe { completion.cleanup.begin_terminal(actor, state) };
@@ -162,6 +132,12 @@ pub(crate) unsafe fn finish_native_terminal_after_terminate(actor: &HewActor) {
     // SAFETY: this terminal owner has reserved completion before taking the
     // actor's existing exactly-once state destructor authority.
     unsafe { crate::actor::drop_initialized_actor_state(actor) };
+    if !completion.cleanup.rc.close_empty() {
+        // SAFETY: any allocations made during synchronous state release belong
+        // to this same terminal owner and drain before completion publication.
+        unsafe { completion.cleanup.begin_terminal(actor, state) };
+        return;
+    }
     finish_actor_terminal(actor, state);
 }
 

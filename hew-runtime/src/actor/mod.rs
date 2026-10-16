@@ -972,14 +972,6 @@ pub(crate) fn hew_actor_current_id_silent() -> i64 {
 /// Default message processing budget per activation.
 pub const HEW_MSG_BUDGET: i32 = 256;
 
-/// Default reduction budget per dispatch call.
-///
-/// This is the number of "reduction points" (loop iterations, function
-/// calls) an actor can execute within a single message dispatch before
-/// it yields. 4000 is roughly similar to Erlang's default of 4000
-/// reductions.
-pub const HEW_DEFAULT_REDUCTIONS: i32 = 4000;
-
 /// Maximum number of workers the scheduler supports.
 pub const HEW_MAX_WORKERS: usize = 256;
 
@@ -1159,12 +1151,6 @@ pub struct HewActor {
     /// Higher-priority actors get their message budget multiplied,
     /// allowing them to process more messages per activation.
     pub priority: AtomicI32,
-
-    // ── Reduction-based preemption ────────────────────────────────────
-    /// Remaining reduction budget for the current dispatch. Decremented
-    /// at compiler-inserted yield points. When it reaches 0 the actor
-    /// yields control back to the scheduler.
-    pub reductions: AtomicI32,
 
     // ── Hibernation ─────────────────────────────────────────────────────
     /// Number of consecutive activations with zero messages.

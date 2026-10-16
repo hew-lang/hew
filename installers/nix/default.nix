@@ -71,6 +71,11 @@ in stdenv.mkDerivation rec {
       cp -r include/. $out/include/
     fi
 
+    if [ -d share ]; then
+      mkdir -p $out/share
+      cp -r share/. $out/share/
+    fi
+
     if [ -f completions/hew.bash ]; then
       install -Dm644 completions/hew.bash \
         $out/share/bash-completion/completions/hew

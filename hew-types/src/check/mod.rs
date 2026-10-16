@@ -745,7 +745,7 @@ impl Checker {
             .with_serial_layouts(self.serial_layouts.clone())
             .with_impl_methods(
                 self.trait_impl_method_declaration_ids.clone(),
-                self.trait_impl_method_binders.clone(),
+                self.impl_method_binders.clone(),
             )
             .with_display_method(
                 self.lang_trait(crate::LangItem::Display)
@@ -2998,7 +2998,7 @@ impl Checker {
             reported_unknown_bounds: self.reported_unknown_bounds.clone(),
             trait_impl_method_names: self.trait_impl_method_names.clone(),
             trait_impl_method_declaration_ids: self.trait_impl_method_declaration_ids.clone(),
-            trait_impl_method_binders: self.trait_impl_method_binders.clone(),
+            impl_method_binders: self.impl_method_binders.clone(),
             primitive_trait_impls: self.primitive_trait_impls.clone(),
             supervisor_children: self.supervisor_children.clone(),
             supervisor_child_slots: self.supervisor_child_slots.clone(),
@@ -4103,6 +4103,16 @@ impl Checker {
             output
                 .warnings
                 .push(TypeError::actor_ref_cycle(span, &desc));
+        }
+        for cycle in crate::cycle::detect_strong_rc_cycles(output.types()) {
+            let span = cycle
+                .iter()
+                .filter_map(|name| self.type_def_spans.get(name).cloned())
+                .min_by_key(|span| span.start)
+                .unwrap_or(0..0);
+            output
+                .warnings
+                .push(TypeError::strong_rc_cycle(span, &cycle.join(" -> ")));
         }
         output.cycle_capable_actors = cycle_capable;
         if output.errors.is_empty() {

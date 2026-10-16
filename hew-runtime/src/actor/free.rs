@@ -1876,50 +1876,6 @@ pub unsafe extern "C" fn hew_actor_set_state_clone(
     a.state_clone_fn = Some(state_clone_fn);
 }
 
-/// Set the per-actor reduction budget (operations per dispatch).
-///
-/// A value of `0` resets to the default ([`HEW_DEFAULT_REDUCTIONS`]).
-/// Higher values allow an actor to run longer before yielding.
-///
-/// # Safety
-///
-/// `actor` must be a valid pointer returned by a spawn function.
-#[no_mangle]
-pub unsafe extern "C" fn hew_actor_set_reductions(actor: *mut HewActor, reductions: u32) {
-    cabi_guard!(actor.is_null());
-    // SAFETY: Caller guarantees `actor` is valid.
-    let a = unsafe { &*actor };
-    #[expect(
-        clippy::cast_possible_wrap,
-        reason = "reduction values are small positive integers, well within i32 range"
-    )]
-    if reductions == 0 {
-        a.reductions
-            .store(HEW_DEFAULT_REDUCTIONS, Ordering::Relaxed);
-    } else {
-        a.reductions.store(reductions as i32, Ordering::Relaxed);
-    }
-}
-
-/// Query the current per-actor reduction budget.
-///
-/// # Safety
-///
-/// `actor` must be a valid pointer returned by a spawn function.
-#[no_mangle]
-pub unsafe extern "C" fn hew_actor_get_reductions(actor: *const HewActor) -> u32 {
-    cabi_guard!(actor.is_null(), 0);
-    // SAFETY: Caller guarantees `actor` is valid.
-    let a = unsafe { &*actor };
-    #[expect(
-        clippy::cast_sign_loss,
-        reason = "reductions is always set to a positive value"
-    )]
-    {
-        a.reductions.load(Ordering::Relaxed) as u32
-    }
-}
-
 /// Enable hibernation for an actor.
 ///
 /// When an actor goes through `threshold` consecutive activations with

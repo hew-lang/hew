@@ -1862,6 +1862,55 @@ fn verifier_rejects_a_suspend_no_relation_row_admits() {
     );
 }
 
+#[test]
+fn safepoints_cannot_abandon_cancellation_without_cleanup() {
+    let mut function = unit_function(0, "poll", "poll", FunctionSourceOrigin::Unknown, Vec::new());
+    let edge = |target| Edge {
+        target: BlockId(target),
+        args: Vec::new(),
+    };
+    function.blocks[0].terminator = SemTerminator::Safepoint {
+        resume: edge(1),
+        cancel: Some(edge(2)),
+    };
+    for (id, terminator) in [
+        (1, SemTerminator::Return { value: None }),
+        (2, SemTerminator::ResumeUnwind { handback: None }),
+    ] {
+        function.blocks.push(SemBlock {
+            id: BlockId(id),
+            args: Vec::new(),
+            ops: Vec::new(),
+            terminator,
+            terminator_provenance: Provenance::Synthesized,
+        });
+    }
+    let mut checked = module(vec![function]);
+    assert!(
+        verify_module(&checked).is_empty(),
+        "{:?}",
+        verify_module(&checked)
+    );
+    let SemTerminator::Safepoint { cancel, .. } = &mut checked.functions[0].blocks[0].terminator
+    else {
+        unreachable!()
+    };
+    *cancel = Some(edge(1));
+    assert!(verify_module(&checked).iter().any(|diagnostic| matches!(
+        &diagnostic.kind, SirDiagnosticKind::InvalidTerminator { reason }
+            if reason == "safepoint cancellation must leave through fault cleanup"
+    )));
+    let SemTerminator::Safepoint { cancel, .. } = &mut checked.functions[0].blocks[0].terminator
+    else {
+        unreachable!()
+    };
+    *cancel = None;
+    assert!(verify_module(&checked).iter().any(|diagnostic| matches!(
+        &diagnostic.kind, SirDiagnosticKind::InvalidTerminator { reason }
+            if reason == "safepoint cancellation ancestry must match its authored close lifecycle"
+    )));
+}
+
 /// A typed trap is a complete semantic endpoint and needs no synthetic return.
 #[test]
 fn verifier_admits_a_typed_trap_endpoint() {

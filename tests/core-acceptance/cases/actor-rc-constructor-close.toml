@@ -1,0 +1,11 @@
+[[case]]
+id = "actor-rc-constructor-close"
+intent = "A child constructor's temporary and scoped task result close under its own Rc allocation owner, even while the parent actor remains live."
+source = "cases/actor-rc-constructor-close.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "close 2\nclose 1\nchild stopped\nparent stopped\n"
+stderr = ""
+exit = 0

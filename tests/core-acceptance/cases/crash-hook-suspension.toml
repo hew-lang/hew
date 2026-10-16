@@ -1,0 +1,14 @@
+[[case]]
+id = "crash-hook-suspension"
+intent = "Crash hooks suspend through helpers, drain before state cleanup and fall back to ordinary restart on deadline expiry or failure."
+source = "cases/crash-hook-suspension.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 20
+
+[case.env]
+HEW_WORKERS = "1"
+
+[case.expected]
+stdout = "hook settled\nhook drained\n0\nstate released\nhook drained\n1\nstate released\nhook drained\n2\nstate released\nhook drained\n3\nstate released\nstate released\nstate released\nstate released\nstate released\n"
+stderr = "hew: failure: UserPanic (212): boom\nhew: actor crash in Worker.boom (actor 1): UserPanic\nhew: failure: UserPanic (212): boom\nhew: actor crash in Worker.boom (actor 2): UserPanic\nhew: secondary failure: Deadline (-2)\nhew: failure: UserPanic (212): boom\nhew: actor crash in Worker.boom (actor 3): UserPanic\nhew: secondary failure: UserPanic (212): hook failed\nhew: failure: UserPanic (212): boom\nhew: actor crash in Worker.boom (actor 4): UserPanic\nhew: secondary failure: Deadline (-2)\n"
+exit = 0

@@ -87,3 +87,18 @@ test("terminate skips the stop hook and still releases owned state", () => {
   assert.equal(trace.result, "ok", JSON.stringify(trace.final_state.runtime_failures));
   assert.equal(trace.final_state.stdout.join(""), "after\nrelease\n");
 });
+
+
+test("only an authored close may omit a safepoint cancellation edge", () => {
+  const bytecode = lifecyclePackage("stop");
+  bytecode.suspend_kinds = ["Safepoint"];
+  const poll = {
+    op: "suspend", kind: "Safepoint", detail: { budget: 4000 },
+    inputs: [], result: null, resumes: [{ to: 1, args: [] }],
+    cancel: null, unwind: null, span: null,
+  };
+  bytecode.functions[2].blocks[0].term = poll;
+  assert.equal(admitPackage(bytecode), null);
+  bytecode.functions[0].blocks[0].term = poll;
+  assert.equal(admitPackage(bytecode)?.code, "sandbox.package.cancellation_ancestry");
+});

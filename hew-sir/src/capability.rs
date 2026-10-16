@@ -137,7 +137,8 @@ pub(crate) fn verify_value_capability(
         | CallableInstance::ActorSupervisorIntercept { .. }
         | CallableInstance::Closure(_)
         | CallableInstance::EntryAdapter
-        | CallableInstance::SupervisorChild { .. } => false,
+        | CallableInstance::SupervisorChild { .. }
+        | CallableInstance::ActorConstruction { .. } => false,
         CallableInstance::Monomorphic => type_args.is_empty(),
         CallableInstance::Generic(key) => {
             &key.template.declaration == declaration && &key.type_args == type_args

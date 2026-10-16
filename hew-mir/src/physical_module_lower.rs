@@ -58,6 +58,13 @@ pub fn lower_physical_module(
     } = build_glue(module)?;
 
     let resumable = suspend::semantic_callables(&checked);
+    let resumable_methods: BTreeSet<_> = module
+        .vtables
+        .iter()
+        .flat_map(|table| &table.slots)
+        .filter(|slot| resumable.contains(&slot.callee))
+        .map(|slot| slot.method)
+        .collect();
     let callables = module
         .callables
         .iter()
@@ -102,6 +109,10 @@ pub fn lower_physical_module(
                     .transpose()?,
                 return_layout,
                 is_resumable: resumable.contains(&callable.id),
+                is_authored_close: module
+                    .resources
+                    .values()
+                    .any(|release| release.close_callable() == Some(callable.id)),
                 receiver_handback: callable.signature.hands_back_receiver(),
             })
         })
@@ -148,8 +159,15 @@ pub fn lower_physical_module(
             let certificate = checked
                 .function(function.callable)
                 .ok_or_else(|| PhysicalError::new("physical function lacks its SIR certificate"))?;
-            let (lowered, attribution) =
-                lower_function(module, &target, function, &ids, &structural, certificate)?;
+            let (lowered, attribution) = lower_function(
+                module,
+                &target,
+                function,
+                &ids,
+                &structural,
+                certificate,
+                &resumable_methods,
+            )?;
             if let Some(attribution) = attribution {
                 debug.functions.insert(function.callable, attribution);
             }
@@ -194,6 +212,7 @@ pub fn lower_physical_module(
                     };
                     Ok(PhysicalVtableSlot {
                         slot: slot.slot,
+                        is_resumable: resumable_methods.contains(&slot.method),
                         method: slot.method,
                         callee: slot.callee,
                         signature: PhysicalCallSignature {
@@ -995,6 +1014,7 @@ pub(crate) fn required_layout<'a>(
 
 pub(crate) struct FunctionLowerer<'a> {
     pub(crate) module: &'a SemModule,
+    pub(crate) resumable_methods: &'a BTreeSet<hew_types::DefId>,
     pub(crate) target: &'a PhysicalTarget,
     pub(crate) function: &'a SemFunction,
     pub(crate) glue_ids: &'a PhysicalGlueIds,
@@ -1019,9 +1039,11 @@ pub(crate) fn lower_function(
     glue_ids: &PhysicalGlueIds,
     structural: &std::cell::RefCell<structural::StructuralGlue>,
     certificate: &hew_sir::CheckedFunction,
+    resumable_methods: &BTreeSet<hew_types::DefId>,
 ) -> Result<(PhysicalFunction, Option<PhysicalDebugFunction>), PhysicalError> {
     let mut lowerer = FunctionLowerer {
         module,
+        resumable_methods,
         target,
         function,
         glue_ids,

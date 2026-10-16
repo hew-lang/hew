@@ -395,7 +395,7 @@ pub unsafe extern "C" fn hew_actor_await_all(actors: *const *mut HewActor, count
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
-    use crate::actor::{HEW_DEFAULT_REDUCTIONS, HEW_MSG_BUDGET, HEW_PRIORITY_NORMAL};
+    use crate::actor::{HEW_MSG_BUDGET, HEW_PRIORITY_NORMAL};
     use std::ptr;
     use std::sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, AtomicU64};
 
@@ -431,7 +431,6 @@ mod tests {
             supervisor: ptr::null_mut(),
             supervisor_child_index: -1,
             priority: AtomicI32::new(HEW_PRIORITY_NORMAL),
-            reductions: AtomicI32::new(HEW_DEFAULT_REDUCTIONS),
             idle_count: AtomicI32::new(0),
             hibernation_threshold: AtomicI32::new(0),
             hibernating: AtomicI32::new(0),
@@ -628,7 +627,6 @@ mod tests {
             supervisor: ptr::null_mut(),
             supervisor_child_index: -1,
             priority: AtomicI32::new(HEW_PRIORITY_NORMAL),
-            reductions: AtomicI32::new(HEW_DEFAULT_REDUCTIONS),
             idle_count: AtomicI32::new(0),
             hibernation_threshold: AtomicI32::new(0),
             hibernating: AtomicI32::new(0),

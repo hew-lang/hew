@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import {
   decodeMetricsEnvelope,
+  decodeMemoryEnvelope,
   decodeCrashesEnvelope,
   decodeTraceStreamMismatchEnvelope,
   decodeTracesEnvelope,
@@ -23,6 +24,16 @@ const metrics = decodeMetricsEnvelope(`{
 }`);
 assert.equal(metrics.data.timestamp_secs, 18446744073709551615n);
 assert.equal(metrics.data.bytes_live, 18446744073709551615n);
+
+const memory = {
+  alloc_count: "1", dealloc_count: "0", bytes_allocated: "1", bytes_freed: "0",
+  bytes_live: "1", peak_bytes_live: "1",
+};
+const memoryEnvelope = (data: object) => JSON.stringify({ schema_version: "v1", data });
+assert.equal(decodeMemoryEnvelope(memoryEnvelope(memory)).data.rc_live_by_type, null);
+const liveRc = [{ type_name: "Option<Node>", count: max }];
+assert.equal(decodeMemoryEnvelope(memoryEnvelope({ ...memory, rc_live_by_type: liveRc })).data.rc_live_by_type?.[0].count, 18446744073709551615n);
+assert.throws(() => decodeMemoryEnvelope(memoryEnvelope({ ...memory, rc_live_by_type: [{ type_name: "Node", count: 1 }] })));
 
 const additive = decodeMetricsEnvelope(`{"schema_version":"v1","data":${metricsData().replace(/}$/, ',"future_property":true}')},"future_envelope_property":true}`);
 assert.equal(additive.data.future_property, true);

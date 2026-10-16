@@ -70,6 +70,18 @@ actor Labels {
     }
 }
 
+fn settle_crash(target: Labels, expected: string) {
+    scope {
+        stopped(target);
+        panic("expected actor crash");
+    } handle failure {
+        match failure {
+            .Fault { message } => assert(message.contains(expected)),
+            .Deadline { message } => panic(message),
+        }
+    };
+}
+
 fn main() {
     let plugins = spawn Plugins;
     println(plugins.drain("m1").expect("drain"));
@@ -79,7 +91,9 @@ fn main() {
     println(plugins.drain("m2").expect("drain"));
     let faulting = spawn Labels;
     let _ = faulting.fail_in_transform();
+    settle_crash(faulting, "IndexOutOfBounds");
     let quiet = spawn Labels;
     let _ = quiet.fail_before_transform();
+    settle_crash(quiet, "before the take");
     println("done");
 }

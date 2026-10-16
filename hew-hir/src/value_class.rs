@@ -59,6 +59,7 @@ pub struct OpaqueResourceLifecycle {
 pub struct ResourceRecordLifecycle {
     pub resource_declaration: hew_types::DefId,
     pub close_declaration: hew_types::DefId,
+    /// Declaration linkage base; SIR resolves the concrete close callable.
     pub close_symbol: String,
 }
 

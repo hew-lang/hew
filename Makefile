@@ -1658,6 +1658,7 @@ install: require-host-cargo-target
 	install -d "$(DESTDIR)$(PREFIX)/std"
 	install -d "$(DESTDIR)$(PREFIX)/include"
 	install -d "$(DESTDIR)$(PREFIX)/completions"
+	install -d "$(DESTDIR)$(PREFIX)/share/hew"
 	install -m 755 "$(RELEASE_DIR)/hew"                "$(DESTDIR)$(PREFIX)/bin/hew"
 	install -m 755 "$(RELEASE_DIR)/hew-lsp"            "$(DESTDIR)$(PREFIX)/bin/hew-lsp"
 	install -m 755 "$(RELEASE_DIR)/hew-observe"        "$(DESTDIR)$(PREFIX)/bin/hew-observe"
@@ -1685,6 +1686,7 @@ install: require-host-cargo-target
 		install -m 644 "$$lib_path" "$(DESTDIR)$(PREFIX)/lib/$$triple/libhew.a"; \
 	done
 	cp -r std/. "$(DESTDIR)$(PREFIX)/std/"
+	install -m 644 scripts/debug/hew-gdb.py scripts/debug/hew_lldb.py "$(DESTDIR)$(PREFIX)/share/hew/"
 	install -m 644 hew-cabi/include/hew.h hew-cabi/include/hew_host.h "$(DESTDIR)$(PREFIX)/include/"
 	@set -e; for shell in bash zsh fish; do \
 		"$(RELEASE_DIR)/hew" completions "$$shell" \

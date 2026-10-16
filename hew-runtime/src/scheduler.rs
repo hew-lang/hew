@@ -33,7 +33,7 @@ use rand::RngExt;
 
 #[cfg(test)]
 use crate::actor::HEW_MSG_BUDGET;
-use crate::actor::{self, HewActor, HEW_DEFAULT_REDUCTIONS};
+use crate::actor::{self, HewActor};
 use crate::deque::{GlobalQueue, WorkDeque, WorkStealer};
 use crate::deterministic::hew_deterministic_set_seed;
 use crate::internal::types::HewActorState;
@@ -299,6 +299,16 @@ impl Drop for ActivationClaim {
 /// Whether any worker holds the pop-to-activation handoff.
 fn activation_handoff_in_flight() -> bool {
     PENDING_ACTIVATIONS.load(Ordering::Acquire) != 0
+}
+
+/// Whether another activation or continuation can use a yielded worker.
+pub(crate) fn has_runnable_work() -> bool {
+    get_scheduler().is_some_and(|sched| {
+        !sched.global_queue.is_empty()
+            || crate::driver::has_queued_work()
+            || !sched.task_queue.lock_or_recover().is_empty()
+            || sched.stealers.iter().any(|stealer| !stealer.is_empty())
+    })
 }
 
 /// Return `true` when the native scheduler has no observable work left to drain.
@@ -2085,67 +2095,6 @@ impl Drop for NoWorkerSchedulerForTest {
     }
 }
 
-// ── Cooperative yielding ────────────────────────────────────────────────
-
-/// Cooperatively yield if the actor's reduction budget is exhausted.
-///
-/// The compiler inserts calls to this function at yield points (loop
-/// headers, function calls). Each call decrements the reduction counter.
-/// When it reaches 0 the actor yields to the scheduler via
-/// [`std::thread::yield_now`], and the counter is reset.
-///
-/// Returns 0 if the actor should continue, 1 if it yielded, and 2 if the
-/// current task scope has requested cancellation.
-///
-/// # Safety
-///
-/// No preconditions — may be called from any context. When called outside
-/// an installed execution context, this returns 0 and leaves the
-/// thread-local last-error slot untouched, so a real diagnostic set by a
-/// prior operation survives.
-#[no_mangle]
-pub extern "C" fn hew_actor_cooperate() -> c_int {
-    // A fail-open cooperative-yield checkpoint must not disturb the caller's
-    // LAST_ERROR: use the silent context read, not require_current_context()
-    // (which sets EXECUTION_CONTEXT_NOT_INSTALLED as a side effect and would
-    // clobber a real error a straight-line `main()` is about to read back).
-    let ctx = crate::execution_context::current_context();
-    if ctx.is_null() {
-        return 0;
-    }
-
-    // SAFETY: a non-null canonical context points to a live context slot owned
-    // by the current dispatch/scope boundary.
-    let (actor, cancel_token) = unsafe { ((*ctx).actor, (*ctx).cancel_token) };
-
-    if !cancel_token.is_null() {
-        // SAFETY: cancel_token is owned by the installed task scope.
-        if unsafe { crate::cancel_token::hew_cancel_token_is_requested(cancel_token) } != 0 {
-            return 2;
-        }
-    }
-
-    if actor.is_null() {
-        return 0;
-    }
-
-    // SAFETY: actor was read from the installed canonical context.
-    let a = unsafe { &*actor };
-
-    // Decrement reduction counter. If still positive, continue.
-    let prev = a.reductions.fetch_sub(1, Ordering::Relaxed);
-    if prev > 1 {
-        return 0;
-    }
-
-    // Budget exhausted — reset counter and yield to OS scheduler.
-    a.reductions
-        .store(HEW_DEFAULT_REDUCTIONS, Ordering::Relaxed);
-
-    thread::yield_now();
-    1
-}
-
 // ── Metrics query API ───────────────────────────────────────────────────
 
 /// Return the total number of tasks spawned (enqueued) since startup or last reset.
@@ -3526,7 +3475,7 @@ mod tests {
         unsafe {
             let invocation =
                 crate::coro_state::hew_coro_state_new(waker.descriptor(), ptr::null_mut());
-            (*invocation).actor_message_type = 71;
+            (*invocation).execution_mut().actor_message_type = 71;
             actor
                 .checked_invocation
                 .store(invocation.cast(), Ordering::Release);
@@ -3783,7 +3732,6 @@ mod tests {
             supervisor: ptr::null_mut(),
             supervisor_child_index: -1,
             priority: AtomicI32::new(actor::HEW_PRIORITY_NORMAL),
-            reductions: AtomicI32::new(HEW_DEFAULT_REDUCTIONS),
             idle_count: AtomicI32::new(0),
             hibernation_threshold: AtomicI32::new(0),
             hibernating: AtomicI32::new(0),
@@ -6352,7 +6300,6 @@ mod tests {
             supervisor: ptr::null_mut(),
             supervisor_child_index: -1,
             priority: AtomicI32::new(actor::HEW_PRIORITY_NORMAL),
-            reductions: AtomicI32::new(HEW_DEFAULT_REDUCTIONS),
             idle_count: AtomicI32::new(0),
             hibernation_threshold: AtomicI32::new(0),
             hibernating: AtomicI32::new(0),

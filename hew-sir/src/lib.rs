@@ -92,3 +92,6 @@ pub use wire::{
     SemWireDecodeResult, SemWireKind, SemWireMember, SemWirePayload, SemWirePlan, SemWirePlans,
     SemWireTable,
 };
+
+/// Structural polls per scheduling slice, shared by native and sandbox execution.
+pub const SAFEPOINT_BUDGET: u32 = 4000;

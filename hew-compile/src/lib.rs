@@ -1231,7 +1231,10 @@ fn configured_stdlib_roots(options: &FrontendOptions) -> Vec<PathBuf> {
 fn path_is_below(path: &Path, root: &Path) -> bool {
     match (std::fs::canonicalize(path), std::fs::canonicalize(root)) {
         (Ok(path), Ok(root)) => path.starts_with(root),
-        _ => path.starts_with(root),
+        _ => path
+            .strip_prefix(".")
+            .unwrap_or(path)
+            .starts_with(root.strip_prefix(".").unwrap_or(root)),
     }
 }
 

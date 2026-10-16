@@ -147,10 +147,6 @@ These runtime foundations belong to the adopted language contract in
 HEW-SPEC-2026. Their implementation and remaining limits are 0.6-series work,
 rather than a deferral of the contract to 0.7:
 
-- **Safepoint preemption.** Compiler-inserted `cooperate` checks at function
-  entry and loop back-edges, so a computation that never suspends still
-  yields to the scheduler and still observes cancellation
-  (HEW-SPEC-2026 §4.3, §4.5, §4.8, §9.0).
 - **Envelope-only delivery.** Every message, local or remote, travelling as
   one envelope form rather than a local fast path beside the wire path.
 - **The wire identity field.** A node-identity field in the envelope header,

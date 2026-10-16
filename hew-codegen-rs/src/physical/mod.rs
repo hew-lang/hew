@@ -943,6 +943,10 @@ struct ValueEmitter<'a, 'ctx> {
 mod debug_tests;
 
 #[cfg(test)]
+#[path = "../physical_test_runtime.rs"]
+mod test_runtime;
+
+#[cfg(test)]
 #[path = "../physical_resource_tests.rs"]
 mod resource_tests;
 

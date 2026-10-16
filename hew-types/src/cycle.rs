@@ -60,6 +60,121 @@ pub fn detect_actor_ref_cycles(types: TypeDefView<'_>) -> (HashSet<String>, Vec<
     (cycle_capable, cycles)
 }
 
+fn rc_members(td: &TypeDef) -> Vec<&Ty> {
+    let mut values: Vec<_> = td.fields.values().collect();
+    for variant in td.variants.values() {
+        match variant {
+            VariantDef::Unit => {}
+            VariantDef::Tuple(fields) => values.extend(fields),
+            VariantDef::Struct(fields) => values.extend(fields.iter().map(|(_, ty)| ty)),
+        }
+    }
+    values
+}
+fn walk_strong_rc(
+    ty: &Ty,
+    types: TypeDefView<'_>,
+    strong: bool,
+    refs: &mut HashSet<NominalId>,
+    rc_refs: &mut HashSet<NominalId>,
+    active: &mut HashSet<NominalId>,
+) {
+    match ty {
+        Ty::Slice(inner) | Ty::Array(inner, _) => {
+            walk_strong_rc(inner, types, strong, refs, rc_refs, active);
+        }
+        Ty::Tuple(items) => {
+            for item in items {
+                walk_strong_rc(item, types, strong, refs, rc_refs, active);
+            }
+        }
+        Ty::Named { head, args } => {
+            if head.builtin() == Some(crate::BuiltinType::Weak) || head.is_actor() {
+                return;
+            }
+            let strong = strong || head.builtin() == Some(crate::BuiltinType::Rc);
+            if let Some(id) = head.nominal() {
+                refs.insert(id);
+                if strong {
+                    rc_refs.insert(id);
+                }
+                if active.insert(id) {
+                    if let Some(td) = types.type_defs.get(&id) {
+                        for field in rc_members(td) {
+                            walk_strong_rc(
+                                &instantiate_value_field_ty(field, td, args),
+                                types,
+                                strong,
+                                refs,
+                                rc_refs,
+                                active,
+                            );
+                        }
+                    }
+                    active.remove(&id);
+                }
+            } else {
+                for argument in args {
+                    walk_strong_rc(argument, types, strong, refs, rc_refs, active);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Strong self-reach through Rc storage. Weak backedges and actor handles
+/// terminate the walk; the existing declaration SCC analysis supplies identity.
+#[must_use]
+pub fn detect_strong_rc_cycles(types: TypeDefView<'_>) -> Vec<Vec<String>> {
+    let mut nodes: Vec<_> = types
+        .type_defs
+        .iter()
+        .filter_map(|(&id, td)| {
+            matches!(
+                td.kind,
+                TypeDefKind::Record | TypeDefKind::Struct | TypeDefKind::Enum
+            )
+            .then_some(id)
+        })
+        .collect();
+    nodes.sort_by_key(|id| types.defs.path(id.declaration()));
+    let mut adj = HashMap::new();
+    let mut rc_adj = HashMap::new();
+    for &id in &nodes {
+        let mut refs = HashSet::new();
+        let mut rc_refs = HashSet::new();
+        for field in rc_members(&types.type_defs[&id]) {
+            walk_strong_rc(
+                field,
+                types,
+                false,
+                &mut refs,
+                &mut rc_refs,
+                &mut HashSet::new(),
+            );
+        }
+        adj.insert(id, refs);
+        rc_adj.insert(id, rc_refs);
+    }
+    tarjan_scc(&nodes, &adj)
+        .into_iter()
+        .filter(|group| {
+            group
+                .iter()
+                .any(|from| rc_adj[from].iter().any(|to| group.contains(to)))
+        })
+        .map(|group| {
+            let mut paths: Vec<_> = group
+                .iter()
+                .map(|id| types.defs.path(id.declaration()).to_string())
+                .collect();
+            paths.sort();
+            paths
+        })
+        .collect()
+}
+
 /// One value-typed field edge that participates in an infinitely-sized type
 /// cycle.
 #[derive(Debug, Clone, PartialEq, Eq)]

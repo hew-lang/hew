@@ -13,6 +13,7 @@ use crate::lifetime::live_actors::ActorIncarnation;
 
 #[path = "actor_native_cleanup.rs"]
 pub(crate) mod cleanup;
+pub use cleanup::HewNativeCrashContext;
 #[path = "actor_native_close.rs"]
 mod close;
 pub(crate) use close::{
@@ -75,7 +76,14 @@ unsafe fn new_actor_state(
     // SAFETY: the local Arc and current context retain both inputs for creation.
     let state = unsafe { crate::coro_state::hew_coro_state_new(&raw const waker, token) };
     // SAFETY: the new invocation belongs exclusively to this strict actor turn.
-    unsafe { (*state).actor_turn = *target };
+    unsafe {
+        let execution = (*state).execution_mut();
+        execution.actor_turn = *target;
+        execution.rc_owner = (*actor)
+            .native_completion
+            .as_ref()
+            .map(|completion| completion.cleanup.rc.clone());
+    }
     // SAFETY: this activation owns the actor and its one strict turn. The
     // adapter clears the borrowed slot after child completion under the same
     // activation ownership, before another turn can start.
@@ -112,8 +120,9 @@ pub unsafe extern "C" fn hew_actor_coro_set_fault(fault: *mut HewFault) {
 /// Request cooperative cleanup while preserving the scheduler's strict turn.
 ///
 /// # Safety
-/// The caller owns the actor activation, excluding execution and invocation
-/// teardown. External stoppers must latch mailbox stop and wake the actor.
+/// The caller owns the actor activation, keeping its invocation and current
+/// token stable during this call. External stoppers must latch mailbox stop
+/// and wake the actor.
 pub(crate) unsafe fn cancel_checked_turn(actor: &crate::actor::HewActor) -> bool {
     let state = actor
         .checked_invocation
@@ -124,6 +133,75 @@ pub(crate) unsafe fn cancel_checked_turn(actor: &crate::actor::HewActor) -> bool
     // SAFETY: activation ownership keeps the borrowed invocation state live.
     unsafe { crate::coro_state::hew_coro_state_cancel(state.cast()) };
     true
+}
+
+/// Restore the actor's outer checked invocation after a terminal-hook poll.
+#[derive(Debug)]
+pub(crate) struct CheckedInvocationBinding<'a> {
+    actor: &'a crate::actor::HewActor,
+    previous: *mut std::ffi::c_void,
+}
+
+impl Drop for CheckedInvocationBinding<'_> {
+    fn drop(&mut self) {
+        self.actor
+            .checked_invocation
+            .store(self.previous, std::sync::atomic::Ordering::Release);
+    }
+}
+
+/// Lend the current terminal hook to activation-owned stop polling.
+/// # Safety
+/// The caller exclusively owns the activation and keeps both invocations live
+/// until this binding is restored, before destroying the hook invocation.
+pub(crate) unsafe fn bind_checked_invocation(
+    actor: &crate::actor::HewActor,
+    state: *mut crate::coro_state::HewCoroState,
+) -> CheckedInvocationBinding<'_> {
+    let previous = actor
+        .checked_invocation
+        .swap(state.cast(), std::sync::atomic::Ordering::AcqRel);
+    CheckedInvocationBinding { actor, previous }
+}
+
+/// Observe a latched terminal request while the current strict turn computes.
+/// Cleanup invocations keep their independent cancellation ancestry.
+pub(crate) fn poll_turn_stop() {
+    let context = crate::execution_context::current_context();
+    if context.is_null() {
+        return;
+    }
+    // SAFETY: an installed actor execution context owns its live activation.
+    let actor = unsafe { (*context).actor };
+    // SAFETY: the installed context pins this optional actor until dispatch ends.
+    let Some(actor) = (unsafe { actor.as_ref() }) else {
+        return;
+    };
+    if actor.actor_state.load(std::sync::atomic::Ordering::Acquire)
+        != crate::internal::types::HewActorState::Running as i32
+    {
+        return;
+    }
+    let terminal_cleanup = actor
+        .native_completion
+        .as_ref()
+        .is_some_and(|completion| completion.cleanup.terminal_in_progress());
+    // A graceful stop admits terminal hooks; only forced termination cancels
+    // them. Mandatory release callbacks retain their independent ancestry.
+    // SAFETY: activation ownership pins the mailbox and checked invocation.
+    let stop_requested = unsafe {
+        if terminal_cleanup {
+            crate::mailbox::mailbox_terminate_requested(actor.mailbox.cast())
+        } else {
+            crate::mailbox::mailbox_stop_requested(actor.mailbox.cast())
+        }
+    };
+    if stop_requested {
+        // SAFETY: this is the activation owner, not an external stopper.
+        unsafe {
+            cancel_checked_turn(actor);
+        }
+    }
 }
 
 /// Finish the process root after its source cleanup and child joins complete.
@@ -849,19 +927,24 @@ mod tests {
     }
 
     unsafe extern "C" fn external_trap_hook(
-        state: *mut c_void,
-        code: i64,
-        message: *const hew_cabi::string::HewString,
-    ) -> i32 {
-        // SAFETY: the fixture keeps this initialized state live through terminal cleanup.
-        let state = unsafe { &mut *state.cast::<ExternalTrapHooks>() };
-        assert_eq!(code, 91);
+        context: *mut c_void,
+        _fault: *mut *mut c_void,
+        invocation: *mut c_void,
+    ) -> *mut c_void {
+        // SAFETY: terminal cleanup retains the context and initialized state.
+        let context = unsafe { &mut *context.cast::<super::HewNativeCrashContext>() };
+        // SAFETY: the fixture lends this exact scalar record until hook drain.
+        let state = unsafe { &mut *context.state.cast::<ExternalTrapHooks>() };
+        assert_eq!(context.code, 91);
         assert_eq!(state.calls, 0);
         assert_eq!(state.drops, 0);
-        // SAFETY: the native terminal boundary lends a managed diagnostic string.
-        assert!(!unsafe { hew_cabi::string::string_as_str(message) }.is_empty());
+        // SAFETY: the context retains a managed diagnostic string.
+        assert!(!unsafe { hew_cabi::string::string_as_str(context.message) }.is_empty());
         state.calls += 1;
-        crate::supervisor::CRASH_ACTION_KILL
+        context.action = crate::supervisor::CRASH_ACTION_KILL;
+        // SAFETY: this synchronous callback owns its supplied invocation.
+        unsafe { crate::coro_state::hew_coro_state_finish(invocation.cast(), 0) };
+        ptr::null_mut()
     }
 
     unsafe extern "C-unwind" fn external_trap_state_clone(state: *const c_void) -> *mut c_void {
@@ -950,10 +1033,12 @@ mod tests {
             crate::scheduler::activate_actor_for_test(&raw mut actor);
             assert_eq!(frame.resumes.load(Ordering::Acquire), 2);
             assert_eq!(frame.destroyed.load(Ordering::Acquire), 1);
+            assert_eq!((hooks.calls, hooks.drops), (0, 0));
+            crate::scheduler::activate_actor_for_test(&raw mut actor);
             assert_eq!(
                 actor.actor_state.load(Ordering::Acquire),
                 crate::internal::types::HewActorState::Crashed as i32,
-                "the drained activation publishes the original crash"
+                "terminal cleanup publishes the original crash after its hook"
             );
             assert_eq!(actor.error_code.load(Ordering::Acquire), 91);
             assert!(actor.checked_invocation.load(Ordering::Acquire).is_null());

@@ -1,0 +1,29 @@
+#[resource]
+pub type Wrapper<T> {
+    label: string;
+    payload: T;
+}
+
+impl<T> Wrapper<T> {
+    pub fn close(consume self) {
+        println(f"wrapper {self.label}");
+    }
+}
+
+pub fn wrap<T>(consume payload: T, label: string) -> Wrapper<T> {
+    Wrapper<T> { label: label, payload: payload }
+}
+
+pub fn discard<T>(consume value: Wrapper<T>) {}
+
+#[linear]
+pub type Delivery<T> {
+    payload: T;
+}
+
+impl<T> Delivery<T> {
+    pub fn take(consume self) -> T {
+        let Delivery { payload } = self;
+        payload
+    }
+}

@@ -45,9 +45,12 @@ fn main() {
     // unlikely to produce the same permutation of a large vector.
     let h = random.Rng.new(2026);
     var original: Vec<i64> = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
+    let saved = original;
     h.shuffle(original);
+    assert(original != saved);
     var seen: Vec<bool> = [false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false];
     for i in 0 .. original.len() {
+        assert(saved[i] == i);
         let v = original[i];
         assert(!seen[v]);
         seen[v] = true;

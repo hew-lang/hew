@@ -206,6 +206,25 @@ export function admitPackage(pkg: PackageV1): SandboxRejection | null {
           span: null,
         };
       }
+      const term = block.term;
+      if (term.op === "suspend") {
+        const mandatoryClose = (pkg.resources ?? []).some(
+          (resource) => resource.close === function_.id,
+        );
+        if (
+          term.kind === "Safepoint"
+            ? (term.cancel == null) !== mandatoryClose
+            : term.cancel == null
+        )
+          return {
+            category: "invalid_package",
+            code: "sandbox.package.cancellation_ancestry",
+            capability: null,
+            message:
+              "safepoint cancellation ancestry must match its authored close lifecycle",
+            span: null,
+          };
+      }
       const unknown =
         block.ops.find((op) => !OPS.has(op.op))?.op ??
         (!TERMS.has(block.term.op) ? block.term.op : null);

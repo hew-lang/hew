@@ -31,6 +31,40 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             })
         };
         let ptr = self.ctx.ptr_type(AddressSpace::default());
+        let shared_access = matches!(
+            action.family,
+            RuntimeCallFamily::RcClone
+                | RuntimeCallFamily::RcDowngrade
+                | RuntimeCallFamily::RcGet
+                | RuntimeCallFamily::RcSet
+                | RuntimeCallFamily::RcIsUnique
+                | RuntimeCallFamily::RcStrongCount
+                | RuntimeCallFamily::RcWeakCount
+        );
+        if shared_access {
+            let fail = failure.ok_or_else(|| {
+                CodegenError::FailClosed("Rc access lacks its checked fault edge".into())
+            })?;
+            let check = external_unary_ptr(self.ctx, self.llvm, "hew_rc_check")?;
+            let receiver = self.load(source(0)?, "rc.checked.receiver")?;
+            let fault = self
+                .runtime_call_value(check, &[receiver.into()], "rc.access.fault")?
+                .into_pointer_value();
+            let dead = self.ctx.append_basic_block(self.value, "rc.dead");
+            let live = self.ctx.append_basic_block(self.value, "rc.live");
+            let unavailable = self
+                .builder
+                .build_is_not_null(fault, "rc.unavailable")
+                .llvm_ctx("test shared payload liveness")?;
+            self.builder
+                .build_conditional_branch(unavailable, dead, live)
+                .llvm_ctx("check shared payload access")?;
+            self.builder.position_at_end(dead);
+            self.store_active_fault(fault.into(), HEW_TRAP_USER_PANIC)?;
+            self.emit_edge(fail)?;
+            self.builder.position_at_end(live);
+        }
+        let failure = if shared_access { None } else { failure };
         // A collection operation is realized entirely by its physical glue.
         match action.carrier {
             PhysicalRuntimeCarrier::Map { operation, glue } => {
@@ -921,6 +955,49 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                         )
                     })?,
                 );
+            }
+            RuntimeCallFamily::DequePopFront | RuntimeCallFamily::DequePopBack => {
+                let failure = failure.ok_or_else(|| {
+                    CodegenError::FailClosed(
+                        "physical deque pop lacks its cleanup failure edge".into(),
+                    )
+                })?;
+                let handle = self.load(source(0)?, "deque.pop.handle")?;
+                let length = get_or_declare_external(
+                    self.llvm,
+                    "hew_deque_len",
+                    self.ctx.i64_type().fn_type(&[ptr.into()], false),
+                )?;
+                let length = self
+                    .runtime_call_value(length, &[handle.into()], "deque.pop.length")?
+                    .into_int_value();
+                let empty = self
+                    .builder
+                    .build_int_compare(
+                        IntPredicate::EQ,
+                        length,
+                        self.ctx.i64_type().const_zero(),
+                        "deque.pop.empty",
+                    )
+                    .llvm_ctx("check deque pop precondition")?;
+                let safe = self.ctx.append_basic_block(self.value, "deque.pop.safe");
+                let failed = self.ctx.append_basic_block(self.value, "deque.pop.failure");
+                self.builder
+                    .build_conditional_branch(empty, failed, safe)
+                    .llvm_ctx("branch around fallible deque pop")?;
+                self.builder.position_at_end(failed);
+                self.emit_edge(failure)?;
+                self.builder.position_at_end(safe);
+                let pop = get_or_declare_external(
+                    self.llvm,
+                    action.family.c_symbol(),
+                    self.ctx.i64_type().fn_type(&[ptr.into()], false),
+                )?;
+                let value = self.runtime_call_value(pop, &[handle.into()], "deque.pop.value")?;
+                self.builder
+                    .build_store(self.slots[required_result()?.0 as usize], value)
+                    .llvm_ctx("store deque pop result")?;
+                return self.emit_result_edge(result, normal);
             }
             RuntimeCallFamily::BytesIndex => {
                 return self.emit_bytes_index(

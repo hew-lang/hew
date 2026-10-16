@@ -11,7 +11,7 @@ use crate::cancel_token::{
     hew_cancel_token_retain, hew_cancel_unobserve, HewCancelObserver, HewCancellationToken,
 };
 use crate::wake::{HewWaker, OwnedWaker};
-use std::sync::atomic::{AtomicI32, Ordering};
+use std::sync::atomic::{AtomicI32, AtomicU32, Ordering};
 
 /// ABI-visible coroutine outcome. A yielded value is available until the
 /// generator's next resume; every terminal outcome requires frame destruction.
@@ -25,24 +25,27 @@ pub enum CoroStatus {
     Yielded = 4,
 }
 
-/// Invocation-owned state, separate from the LLVM frame and result storage.
+/// One local completion record, with the exact compiler-private C ABI.
+#[repr(transparent)]
 #[derive(Debug)]
 pub struct HewCoroState {
-    /// Direct nested calls share their strict actor turn; fresh tasks do not.
+    invocation: hew_cabi::coro::HewCoroInvocation,
+}
+
+/// Owned only at an execution or lexical cancellation boundary. Ordinary calls
+/// borrow the suspended caller's context and keep their own completion record.
+#[derive(Debug)]
+pub(crate) struct InvocationContext {
     pub(crate) actor_turn: crate::lifetime::live_actors::ActorIncarnation,
-    /// Original mailbox message identity, recorded before the actor turn parks.
-    /// Read only by the scheduler while it owns the activation.
+    pub(crate) rc_owner: Option<std::sync::Arc<crate::rc::RcAllocations>>,
     pub(crate) actor_message_type: i32,
     pub(crate) actor_caller: crate::actor_caller::HewCallerStamp,
     pub(crate) request_deadline: crate::request_deadline::RequestDeadline,
+    budget: std::sync::Arc<AtomicU32>,
     waker: OwnedWaker,
     token: *mut HewCancellationToken,
-    enclosing_tokens: Vec<*mut HewCancellationToken>,
     observer: *mut HewCancelObserver,
-    status: AtomicI32,
-    private_status: AtomicI32,
-    cleanup_fault: std::sync::atomic::AtomicU8,
-    cleanup_abandon_io: std::sync::atomic::AtomicU8,
+    previous: *mut InvocationContext,
 }
 
 #[repr(u8)]
@@ -59,124 +62,275 @@ enum CleanupIo {
     InheritedAbandon,
 }
 
-impl Drop for HewCoroState {
+impl Drop for InvocationContext {
     fn drop(&mut self) {
-        // SAFETY: this object owns its subscription and invocation-local token.
+        // SAFETY: this context owns its subscription and retained token.
         unsafe {
             hew_cancel_unobserve(self.observer);
             hew_cancel_token_release(self.token);
-            for token in self.enclosing_tokens.drain(..) {
-                hew_cancel_token_release(token);
-            }
         }
     }
 }
 
-/// Create an invocation state using an existing execution owner's wake target.
+impl HewCoroState {
+    fn with_context(context: *mut InvocationContext, flags: u8, poll_suppression: u32) -> Self {
+        Self {
+            invocation: hew_cabi::coro::HewCoroInvocation {
+                context: context.cast(),
+                status: AtomicI32::new(CoroStatus::Pending as i32),
+                private_status: AtomicI32::new(1),
+                poll_suppression,
+                lexical_depth: 0,
+                flags,
+                cleanup_fault: std::sync::atomic::AtomicU8::new(CleanupFault::None as u8),
+                cleanup_abandon_io: std::sync::atomic::AtomicU8::new(CleanupIo::Normal as u8),
+            },
+        }
+    }
+
+    pub(crate) fn execution(&self) -> &InvocationContext {
+        // SAFETY: an initialized invocation owns its context or borrows it from
+        // its suspended caller, which outlives this invocation.
+        unsafe { &*self.invocation.context.cast::<InvocationContext>() }
+    }
+
+    pub(crate) fn execution_mut(&mut self) -> &mut InvocationContext {
+        assert!(
+            self.invocation.flags & hew_cabi::coro::OWNS_CONTEXT != 0
+                || self.invocation.lexical_depth != 0
+        );
+        // SAFETY: this invocation owns the context and exclusively executes.
+        unsafe { &mut *self.invocation.context.cast::<InvocationContext>() }
+    }
+
+    fn leave_context(&mut self) {
+        assert_ne!(self.invocation.lexical_depth, 0);
+        // SAFETY: every entered lexical context is exclusively owned by this
+        // record; all child operations have finished before its scope leaves.
+        let context = unsafe { Box::from_raw(self.invocation.context.cast::<InvocationContext>()) };
+        self.invocation.context = context.previous.cast();
+        self.invocation.lexical_depth -= 1;
+        drop(context);
+    }
+}
+
+impl Drop for HewCoroState {
+    fn drop(&mut self) {
+        while self.invocation.lexical_depth != 0 {
+            self.leave_context();
+        }
+        if self.invocation.flags & hew_cabi::coro::OWNS_CONTEXT != 0 {
+            // SAFETY: this record owns its base context and every nested frame
+            // has been destroyed before the invocation is released.
+            drop(unsafe { Box::from_raw(self.invocation.context.cast::<InvocationContext>()) });
+        }
+    }
+}
+
+/// Build a context from a transferred token reference and a retained wake target.
+unsafe fn context_with_token(
+    waker: *const HewWaker,
+    token: *mut HewCancellationToken,
+    budget: std::sync::Arc<AtomicU32>,
+    previous: *mut InvocationContext,
+) -> InvocationContext {
+    // SAFETY: the caller keeps the descriptor and transferred token live.
+    let waker = unsafe { OwnedWaker::retain(&*waker) };
+    // SAFETY: the retained descriptor and token stay live in this context.
+    let observer = unsafe { hew_cancel_observe(token, waker.descriptor()) };
+    InvocationContext {
+        actor_turn: crate::lifetime::live_actors::ActorIncarnation::NONE,
+        rc_owner: crate::rc::current_allocations(),
+        actor_message_type: 0,
+        actor_caller: crate::actor_caller::HewCallerStamp::default(),
+        request_deadline: crate::request_deadline::RequestDeadline::current(),
+        budget,
+        waker,
+        token,
+        observer,
+        previous,
+    }
+}
+
+unsafe fn new_state(
+    waker: *const HewWaker,
+    parent_token: *mut HewCancellationToken,
+    budget: std::sync::Arc<AtomicU32>,
+    poll_suppression: u32,
+) -> *mut HewCoroState {
+    if waker.is_null() {
+        return std::ptr::null_mut();
+    }
+    // SAFETY: the caller keeps the optional parent token live during creation.
+    let token = unsafe { hew_cancel_token_new_child(parent_token) };
+    // SAFETY: the new context owns token and retains the caller's wake target.
+    let context = unsafe { context_with_token(waker, token, budget, std::ptr::null_mut()) };
+    Box::into_raw(Box::new(HewCoroState::with_context(
+        Box::into_raw(Box::new(context)),
+        hew_cabi::coro::OWNS_CONTEXT | hew_cabi::coro::HEAP_ALLOCATED,
+        poll_suppression,
+    )))
+}
+
+/// Create an independently owned execution boundary.
 ///
 /// # Safety
-/// `waker` must point to a live descriptor obeying [`HewWaker`]'s contract.
-/// `token` must be null or a live parent token. The state owns a fresh child
-/// token and retains its ancestry. Free it after destroying its frame.
+/// `waker` points to a live descriptor obeying `HewWaker`'s contract. `token` is
+/// null or a live parent token. Destroy the LLVM frame before freeing the state.
 #[no_mangle]
 pub unsafe extern "C" fn hew_coro_state_new(
     waker: *const HewWaker,
     token: *mut HewCancellationToken,
 ) -> *mut HewCoroState {
-    if waker.is_null() {
-        return std::ptr::null_mut();
-    }
-    // SAFETY: the caller keeps the descriptor and token live during creation.
-    let retained = unsafe { OwnedWaker::retain(&*waker) };
-    // SAFETY: the caller keeps the parent token live during child creation.
-    let token = unsafe { hew_cancel_token_new_child(token) };
-    // SAFETY: token and the retained descriptor are live for registration.
-    let observer = unsafe { hew_cancel_observe(token, retained.descriptor()) };
-    Box::into_raw(Box::new(HewCoroState {
-        actor_turn: crate::lifetime::live_actors::ActorIncarnation::NONE,
-        actor_message_type: 0,
-        actor_caller: crate::actor_caller::HewCallerStamp::default(),
-        request_deadline: crate::request_deadline::RequestDeadline::current(),
-        waker: retained,
-        token,
-        enclosing_tokens: Vec::new(),
-        observer,
-        status: AtomicI32::new(CoroStatus::Pending as i32),
-        private_status: AtomicI32::new(1),
-        cleanup_fault: std::sync::atomic::AtomicU8::new(CleanupFault::None as u8),
-        cleanup_abandon_io: std::sync::atomic::AtomicU8::new(CleanupIo::Normal as u8),
-    }))
+    // SAFETY: the caller keeps both inputs live during construction.
+    unsafe { new_state(waker, token, std::sync::Arc::new(AtomicU32::new(0)), 0) }
 }
 
-/// Release an invocation state after its frame and operation handles.
+/// Release an invocation record after its LLVM frame and operation handles.
 ///
 /// # Safety
-/// `state` must be null or an owned state returned by [`hew_coro_state_new`].
-/// No execution or accessor may use it concurrently or after this call.
+/// `state` is null or live, allocated by `hew_coro_state_new`/`cleanup_child` or
+/// initialized in caller-owned storage by `hew_coro_state_init_child`. Release
+/// exactly once, without concurrent access; borrowed parent context stays live.
 #[no_mangle]
 pub unsafe extern "C" fn hew_coro_state_free(state: *mut HewCoroState) {
     if !state.is_null() {
-        // SAFETY: the caller transfers the sole owning state handle.
-        drop(unsafe { Box::from_raw(state) });
+        // SAFETY: the initialized record remains live until released here.
+        if unsafe { (*state).invocation.flags } & hew_cabi::coro::HEAP_ALLOCATED != 0 {
+            // SAFETY: the heap flag names a Box allocated by the runtime.
+            drop(unsafe { Box::from_raw(state) });
+        } else {
+            // SAFETY: this is initialized caller storage, retained past drop.
+            unsafe { std::ptr::drop_in_place(state) };
+        }
     }
 }
 
-/// Create a nested invocation using the current frame's wake target and token.
+/// Initialize an ordinary invocation in the caller's LLVM frame.
 ///
 /// # Safety
-/// `parent` must be a live state. The caller owns the new state until its nested
-/// frame has been destroyed and then releases it with [`hew_coro_state_free`].
+/// `storage` is writable and aligned for `HewCoroInvocation`, and uninitialized
+/// or previously released. `parent` stays live and suspended throughout the
+/// child invocation. Destroy the child's LLVM frame, then release its record,
+/// before reusing this storage or resuming/releasing its parent.
 #[no_mangle]
-pub unsafe extern "C" fn hew_coro_state_child(parent: *const HewCoroState) -> *mut HewCoroState {
-    if parent.is_null() {
-        return std::ptr::null_mut();
-    }
-    // SAFETY: parent retains both inputs throughout child construction.
+pub unsafe extern "C" fn hew_coro_state_init_child(
+    storage: *mut HewCoroState,
+    parent: *const HewCoroState,
+) {
+    // SAFETY: the caller retains the suspended, initialized parent record.
     let parent = unsafe { &*parent };
-    // SAFETY: parent retains both inputs for child construction.
-    let child = unsafe { hew_coro_state_new(parent.waker.descriptor(), parent.token) };
-    // SAFETY: the new child is exclusively owned and its parent remains live.
-    unsafe {
-        (*child).actor_turn = parent.actor_turn;
-        (*child).actor_message_type = parent.actor_message_type;
-        (*child).actor_caller = parent.actor_caller;
-        (*child).request_deadline = parent.request_deadline;
-    }
-    child
+    let child = HewCoroState::with_context(
+        parent.invocation.context.cast(),
+        0,
+        parent.invocation.poll_suppression,
+    );
+    // SAFETY: the caller provides uninitialized, aligned frame storage.
+    unsafe { storage.write(child) };
 }
 
-/// Create a cleanup invocation with the same readiness and actor identity,
-/// shielded from cancellation and request expiry already being discharged by its parent.
+/// Initialize a checked actor construction in ordinary caller-owned storage.
+/// Its allocation list is transferred unchanged when the actor is published.
 ///
 /// # Safety
-/// `parent` is live through construction. Destroy the cleanup frame before
-/// freeing the returned state, exactly as for an ordinary child invocation.
+/// The storage and parent obey `hew_coro_state_init_child`'s lifetime contract.
+#[no_mangle]
+pub unsafe extern "C" fn hew_coro_state_init_construction(
+    storage: *mut HewCoroState,
+    parent: *const HewCoroState,
+) {
+    // SAFETY: the suspended caller retains its execution context and token.
+    let parent = unsafe { &*parent };
+    let execution = parent.execution();
+    // SAFETY: this owned context retains the same cancellation ancestry.
+    unsafe { hew_cancel_token_retain(execution.token) };
+    // SAFETY: parent retains the descriptor through initialization.
+    let mut context = unsafe {
+        context_with_token(
+            execution.waker.descriptor(),
+            execution.token,
+            execution.budget.clone(),
+            std::ptr::null_mut(),
+        )
+    };
+    context.actor_turn = execution.actor_turn;
+    context.actor_message_type = execution.actor_message_type;
+    context.actor_caller = execution.actor_caller;
+    context.request_deadline = execution.request_deadline;
+    context.rc_owner = Some(std::sync::Arc::default());
+    let child = HewCoroState::with_context(
+        Box::into_raw(Box::new(context)),
+        hew_cabi::coro::OWNS_CONTEXT,
+        parent.invocation.poll_suppression,
+    );
+    // SAFETY: the caller grants aligned, uninitialized invocation storage.
+    unsafe { storage.write(child) };
+}
+
+/// Detach the next failed-construction survivor wave, or finish its owner.
+/// Successful publication has already transferred the list and returns null.
+///
+/// # Safety
+/// `state` is the exclusively executing construction invocation. Prior waves
+/// and scoped children have drained before calling again.
+#[no_mangle]
+pub unsafe extern "C" fn hew_coro_state_rc_sweep(
+    state: *mut HewCoroState,
+) -> *mut crate::release_walker::HewReleaseCursor {
+    // SAFETY: the generated construction body owns this execution context.
+    let execution = unsafe { &mut *state }.execution_mut();
+    let Some(owner) = &execution.rc_owner else {
+        return std::ptr::null_mut();
+    };
+    // SAFETY: ordinary body cleanup and scoped children have quiesced.
+    if let Some(cursor) = unsafe { owner.sweep() } {
+        cursor
+    } else {
+        execution.rc_owner = None;
+        std::ptr::null_mut()
+    }
+}
+
+/// Create a cleanup invocation with independent cancellation ancestry.
+///
+/// # Safety
+/// `parent` is live through construction. Destroy the cleanup LLVM frame before
+/// freeing its returned state, exactly as for an ordinary invocation.
 #[no_mangle]
 pub unsafe extern "C" fn hew_coro_state_cleanup_child(
     parent: *const HewCoroState,
 ) -> *mut HewCoroState {
-    // SAFETY: the caller retains the parent during construction.
+    // SAFETY: the caller retains the optional parent during construction.
     let Some(parent) = (unsafe { parent.as_ref() }) else {
         return std::ptr::null_mut();
     };
-    // SAFETY: the parent retains the descriptor; null starts fresh ancestry.
-    let child = unsafe { hew_coro_state_new(parent.waker.descriptor(), std::ptr::null_mut()) };
-    // SAFETY: the new state is uniquely owned until returned.
+    let execution = parent.execution();
+    // SAFETY: parent retains its descriptor; null starts fresh token ancestry.
+    let child = unsafe {
+        new_state(
+            execution.waker.descriptor(),
+            std::ptr::null_mut(),
+            execution.budget.clone(),
+            parent.invocation.poll_suppression,
+        )
+    };
+    // SAFETY: the new state and context are uniquely owned until returned.
     unsafe {
-        (*child).actor_turn = parent.actor_turn;
-        (*child).actor_message_type = parent.actor_message_type;
-        (*child).actor_caller = parent.actor_caller;
-        (*child).request_deadline = crate::request_deadline::RequestDeadline::default();
-        (*child).cleanup_fault.store(
-            if parent.cleanup_fault.load(Ordering::Acquire) == CleanupFault::None as u8 {
+        let child_execution = (*child).execution_mut();
+        child_execution.actor_turn = execution.actor_turn;
+        child_execution.rc_owner.clone_from(&execution.rc_owner);
+        child_execution.actor_message_type = execution.actor_message_type;
+        child_execution.actor_caller = execution.actor_caller;
+        child_execution.request_deadline = crate::request_deadline::RequestDeadline::default();
+        (*child).invocation.cleanup_fault.store(
+            if parent.invocation.cleanup_fault.load(Ordering::Acquire) == CleanupFault::None as u8 {
                 CleanupFault::None as u8
             } else {
                 CleanupFault::Inherited as u8
             },
             Ordering::Release,
         );
-        let abandon = cleanup_abandons_io(parent) || hew_coro_state_is_cancelled(parent) != 0;
-        if abandon {
+        if cleanup_abandons_io(parent) || hew_coro_state_is_cancelled(parent) != 0 {
             abandon_cleanup_io(child);
         }
     }
@@ -206,8 +360,8 @@ pub unsafe extern "C" fn hew_coro_state_set_cleanup_fault(
         // A nested release's empty local fault slot cannot erase the fault
         // whose cleanup created it. The parent owns and eventually clears that
         // fault; this shielded invocation retains its inherited disposition.
-        if state.cleanup_fault.load(Ordering::Acquire) != CleanupFault::Inherited as u8 {
-            state.cleanup_fault.store(
+        if state.invocation.cleanup_fault.load(Ordering::Acquire) != CleanupFault::Inherited as u8 {
+            state.invocation.cleanup_fault.store(
                 if failed {
                     CleanupFault::Local as u8
                 } else {
@@ -216,8 +370,10 @@ pub unsafe extern "C" fn hew_coro_state_set_cleanup_fault(
                 Ordering::Release,
             );
         }
-        if state.cleanup_abandon_io.load(Ordering::Acquire) != CleanupIo::InheritedAbandon as u8 {
-            state.cleanup_abandon_io.store(
+        if state.invocation.cleanup_abandon_io.load(Ordering::Acquire)
+            != CleanupIo::InheritedAbandon as u8
+        {
+            state.invocation.cleanup_abandon_io.store(
                 if fault.is_null() {
                     CleanupIo::Normal as u8
                 } else {
@@ -232,8 +388,8 @@ pub unsafe extern "C" fn hew_coro_state_set_cleanup_fault(
 pub(crate) unsafe fn cleanup_fault_owner(state: *const HewCoroState) -> Option<u64> {
     // SAFETY: this optional state is retained by the consuming callback.
     let state = unsafe { state.as_ref() }?;
-    let id = state.actor_turn.actor_id();
-    (id != 0 && state.cleanup_fault.load(Ordering::Acquire) != CleanupFault::None as u8)
+    let id = state.execution().actor_turn.actor_id();
+    (id != 0 && state.invocation.cleanup_fault.load(Ordering::Acquire) != CleanupFault::None as u8)
         .then_some(id)
 }
 
@@ -243,6 +399,7 @@ pub(crate) unsafe fn abandon_cleanup_io(state: *const HewCoroState) {
     // SAFETY: the caller retains the cleanup state for this invocation.
     if let Some(state) = unsafe { state.as_ref() } {
         state
+            .invocation
             .cleanup_abandon_io
             .store(CleanupIo::InheritedAbandon as u8, Ordering::Release);
     }
@@ -253,20 +410,27 @@ pub(crate) unsafe fn abandon_cleanup_io(state: *const HewCoroState) {
 pub(crate) unsafe fn cleanup_abandons_io(state: *const HewCoroState) -> bool {
     // SAFETY: the caller retains this optional invocation.
     unsafe { state.as_ref() }.is_some_and(|state| {
-        state.cleanup_abandon_io.load(Ordering::Acquire) != CleanupIo::Normal as u8
+        state.invocation.cleanup_abandon_io.load(Ordering::Acquire) != CleanupIo::Normal as u8
     })
 }
 
-/// Request cancellation of this invocation and its descendants.
-/// Siblings and the parent retain their independent cancellation state.
+/// Request cancellation of an independently owned execution boundary.
+/// Ordinary nested calls inherit their parent's cancellation authority.
 ///
 /// # Safety
-/// `state` must be a live invocation state through this call.
+/// `state` is live and was created by `hew_coro_state_new` or
+/// `hew_coro_state_cleanup_child`, never `hew_coro_state_init_child`.
+/// The caller excludes concurrent execution and teardown, keeping its current
+/// lexical context stable. External cancellers use the retained token instead.
 #[no_mangle]
 pub unsafe extern "C" fn hew_coro_state_cancel(state: *const HewCoroState) {
     if !state.is_null() {
+        // SAFETY: the caller keeps the state live through this call.
+        if unsafe { (*state).invocation.flags } & hew_cabi::coro::OWNS_CONTEXT == 0 {
+            std::process::abort();
+        }
         // SAFETY: the caller keeps the state and its owned token live.
-        unsafe { hew_cancel_token_cancel((*state).token, 1) };
+        unsafe { hew_cancel_token_cancel((*state).execution().token, 1) };
     }
 }
 
@@ -283,7 +447,7 @@ pub unsafe extern "C" fn hew_coro_state_token(
         return std::ptr::null_mut();
     }
     // SAFETY: the caller keeps the state live for this borrow.
-    unsafe { (*state).token }
+    unsafe { (*state).execution().token }
 }
 
 /// Capture the incoming request budget and explicit enclosing scope deadlines.
@@ -295,8 +459,8 @@ pub unsafe extern "C" fn hew_coro_state_request_deadline(state: *const HewCoroSt
     // SAFETY: the caller retains the state and its token ancestry.
     let state = unsafe { &*state };
     // SAFETY: the invocation retains the active lexical token and its ancestry.
-    let lexical = unsafe { crate::cancel_token::token_deadline(state.token) };
-    state.request_deadline.earlier(lexical).raw()
+    let lexical = unsafe { crate::cancel_token::token_deadline(state.execution().token) };
+    state.execution().request_deadline.earlier(lexical).raw()
 }
 
 /// Enter a lexical cancellation boundary for this invocation's operations.
@@ -310,35 +474,39 @@ pub unsafe extern "C" fn hew_coro_state_enter_token(
     state: *mut HewCoroState,
     token: *mut HewCancellationToken,
 ) {
-    // SAFETY: the frame exclusively owns state and retains token during entry.
-    unsafe {
-        let state = &mut *state;
-        hew_cancel_token_retain(token);
-        hew_cancel_unobserve(state.observer);
-        state.enclosing_tokens.push(state.token);
-        state.token = token;
-        state.observer = hew_cancel_observe(token, state.waker.descriptor());
-    }
+    // SAFETY: the executing frame exclusively owns its invocation record.
+    let state = unsafe { &mut *state };
+    let previous = state.invocation.context.cast::<InvocationContext>();
+    let execution = state.execution();
+    // SAFETY: the scope supplies a live token, retained by this new context.
+    unsafe { hew_cancel_token_retain(token) };
+    // SAFETY: the previous context stays live until this scope has left.
+    let mut context = unsafe {
+        context_with_token(
+            execution.waker.descriptor(),
+            token,
+            execution.budget.clone(),
+            previous,
+        )
+    };
+    context.actor_turn = execution.actor_turn;
+    context.rc_owner.clone_from(&execution.rc_owner);
+    context.actor_message_type = execution.actor_message_type;
+    context.actor_caller = execution.actor_caller;
+    context.request_deadline = execution.request_deadline;
+    state.invocation.context = Box::into_raw(Box::new(context)).cast();
+    state.invocation.lexical_depth += 1;
 }
 
-/// Restore the enclosing cancellation boundary after lexical cleanup.
+/// Restore the enclosing execution context after lexical cleanup.
 ///
 /// # Safety
-/// State is exclusively borrowed by its executing frame and has a matching
-/// token entry. No operation still borrows the token being left.
+/// State is exclusively executing with a matching token entry. Its scope's
+/// children and operations have drained before this boundary is released.
 #[no_mangle]
 pub unsafe extern "C" fn hew_coro_state_leave_token(state: *mut HewCoroState) {
-    // SAFETY: caller guarantees balanced entries and completed scope cleanup.
-    unsafe {
-        let state = &mut *state;
-        let Some(token) = state.enclosing_tokens.pop() else {
-            std::process::abort();
-        };
-        hew_cancel_unobserve(state.observer);
-        hew_cancel_token_release(state.token);
-        state.token = token;
-        state.observer = hew_cancel_observe(token, state.waker.descriptor());
-    }
+    // SAFETY: the executing frame owns the record and its lexical context.
+    unsafe { &mut *state }.leave_context();
 }
 
 /// Borrow the readiness descriptor for registration of an operation.
@@ -352,7 +520,7 @@ pub unsafe extern "C" fn hew_coro_state_waker(state: *const HewCoroState) -> *co
         return std::ptr::null();
     }
     // SAFETY: caller keeps state live for the borrow.
-    unsafe { &*state }.waker.descriptor()
+    unsafe { &*state }.execution().waker.descriptor()
 }
 
 /// Read the retained cancellation token at a compiler-authored safepoint.
@@ -364,12 +532,12 @@ pub unsafe extern "C" fn hew_coro_state_is_cancelled(state: *const HewCoroState)
     if state.is_null() {
         return 1;
     }
-    // SAFETY: the state's subscription keeps its token and ancestors live.
-    let token = unsafe { &*state }.token;
+    // SAFETY: the owned or borrowed context keeps its token ancestry live.
+    let token = unsafe { &*state }.execution().token;
     if token.is_null() {
         0
     } else {
-        // SAFETY: the state retains this non-null token through its observer.
+        // SAFETY: the current execution context retains this non-null token.
         unsafe { hew_cancel_token_is_requested(token) }
     }
 }
@@ -382,7 +550,7 @@ pub unsafe extern "C" fn hew_coro_state_is_cancelled(state: *const HewCoroState)
 #[no_mangle]
 pub unsafe extern "C" fn hew_coro_state_cancel_code(state: *const HewCoroState) -> i32 {
     // SAFETY: the live state's retained token owns its complete ancestry.
-    let reason = unsafe { cancel_token_reason((*state).token) };
+    let reason = unsafe { cancel_token_reason((*state).execution().token) };
     match reason {
         crate::fault::HEW_FAULT_DEADLINE | crate::fault::HEW_FAULT_RACE_LOST => reason,
         _ => crate::fault::HEW_FAULT_CANCELLED,
@@ -400,7 +568,7 @@ pub unsafe extern "C" fn hew_coro_state_status(state: *const HewCoroState) -> i3
         return -1;
     }
     // SAFETY: state is live; Acquire observes preceding result writes.
-    unsafe { &*state }.status.load(Ordering::Acquire)
+    unsafe { &*state }.invocation.status.load(Ordering::Acquire)
 }
 
 /// Publish a checked function's existing private status after writing its
@@ -419,10 +587,11 @@ pub unsafe extern "C" fn hew_coro_state_finish(
     }
     // SAFETY: the caller owns execution and keeps state live.
     let state_ref = unsafe { &*state };
-    if state_ref.status.load(Ordering::Acquire) != CoroStatus::Pending as i32 {
+    if state_ref.invocation.status.load(Ordering::Acquire) != CoroStatus::Pending as i32 {
         return 0;
     }
     state_ref
+        .invocation
         .private_status
         .store(private_status, Ordering::Relaxed);
     // SAFETY: output initialization and exclusive execution are caller duties.
@@ -451,10 +620,10 @@ pub unsafe extern "C" fn hew_coro_state_private_status(state: *const HewCoroStat
     }
     // SAFETY: caller retains state and observes it only after execution returns.
     let state = unsafe { &*state };
-    match state.status.load(Ordering::Acquire) {
+    match state.invocation.status.load(Ordering::Acquire) {
         status if status == CoroStatus::Complete as i32 => 0,
         status if status == CoroStatus::Fault as i32 || status == CoroStatus::Cancelled as i32 => {
-            state.private_status.load(Ordering::Relaxed)
+            state.invocation.private_status.load(Ordering::Relaxed)
         }
         _ => 1,
     }
@@ -476,6 +645,7 @@ pub unsafe extern "C" fn hew_coro_state_publish(state: *mut HewCoroState, status
     // SAFETY: caller owns execution; CAS rejects repeated publication.
     i32::from(
         unsafe { &*state }
+            .invocation
             .status
             .compare_exchange(
                 CoroStatus::Pending as i32,
@@ -500,6 +670,7 @@ pub unsafe extern "C" fn hew_coro_state_resume_yield(state: *mut HewCoroState) -
     // SAFETY: caller owns the yield and the next resume.
     i32::from(
         unsafe { &*state }
+            .invocation
             .status
             .compare_exchange(
                 CoroStatus::Yielded as i32,
@@ -511,6 +682,84 @@ pub unsafe extern "C" fn hew_coro_state_resume_yield(state: *mut HewCoroState) -
     )
 }
 
+/// Borrow the invocation chain's countdown for generated safepoints.
+/// A deferred invocation returns null and runs through without polling.
+///
+/// # Safety
+/// The state and its retained budget outlive every use of the returned pointer.
+/// Only the currently executing invocation in this serial call chain may read
+/// or write the countdown, including after migration to another worker.
+#[no_mangle]
+pub unsafe extern "C" fn hew_coro_safepoint_budget(
+    state: *mut HewCoroState,
+    budget: u32,
+) -> *mut u32 {
+    // SAFETY: the invocation owner retains state throughout execution.
+    let state = unsafe { &*state };
+    if state.invocation.poll_suppression != 0 {
+        return std::ptr::null_mut();
+    }
+    if state.execution().budget.load(Ordering::Relaxed) == 0 {
+        state.execution().budget.store(budget, Ordering::Relaxed);
+    }
+    state.execution().budget.as_ptr()
+}
+
+/// Poll an exhausted compiler-authored countdown. Returns continue, yield or cancel.
+/// The execution chain shares its budget, including recursive calls.
+///
+/// # Safety
+/// `state` is live and exclusively executing on the current worker.
+/// `budget` is the positive scheduling budget supplied by the compiler.
+#[no_mangle]
+pub unsafe extern "C" fn hew_coro_safepoint(state: *mut HewCoroState, budget: u32) -> i32 {
+    // SAFETY: the invocation owner keeps the state live during execution.
+    let state = unsafe { &*state };
+    if state.invocation.poll_suppression != 0 {
+        return 0;
+    }
+    state.execution().budget.store(budget, Ordering::Relaxed);
+    crate::driver::safepoint_tick();
+    crate::actor_native::poll_turn_stop();
+    // SAFETY: state retains the current lexical cancellation ancestry.
+    if unsafe { hew_coro_state_is_cancelled(state) } != 0 {
+        return 2;
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    let runnable = crate::scheduler::has_runnable_work();
+    #[cfg(target_arch = "wasm32")]
+    let runnable = crate::driver::has_queued_work();
+    if runnable {
+        state.execution().waker.wake();
+        return 1;
+    }
+    0
+}
+
+/// Enter a non-suspending deferred region; child invocations inherit suppression.
+///
+/// # Safety
+/// `state` is live and exclusively executing; every enter has one matching leave.
+#[no_mangle]
+pub unsafe extern "C" fn hew_coro_safepoint_suppress(state: *mut HewCoroState) {
+    // SAFETY: the caller exclusively owns execution of the state.
+    unsafe {
+        (*state).invocation.poll_suppression += 1;
+    }
+}
+
+/// Leave a non-suspending deferred region.
+///
+/// # Safety
+/// `state` is live, exclusively executing, and has an unmatched suppression enter.
+#[no_mangle]
+pub unsafe extern "C" fn hew_coro_safepoint_restore(state: *mut HewCoroState) {
+    // SAFETY: the caller pairs this with the region's enter on every exit.
+    unsafe {
+        (*state).invocation.poll_suppression -= 1;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -518,17 +767,23 @@ mod tests {
 
     #[test]
     fn lexical_cancellation_reaches_nested_calls_then_restores_parent() {
-        let (_ready, waker) = Readiness::new();
+        let (ready, waker) = Readiness::new();
         // SAFETY: locally owned invocation and lexical tokens have balanced
         // references; nested calls stop before their enclosing scope is left.
         unsafe {
-            let state = hew_coro_state_new(waker.descriptor(), std::ptr::null_mut());
+            let root = hew_coro_state_new(waker.descriptor(), std::ptr::null_mut());
+            let mut state_storage = std::mem::MaybeUninit::uninit();
+            let state = state_storage.as_mut_ptr();
+            hew_coro_state_init_child(state, root);
             let parent = hew_coro_state_token(state);
             let lexical = hew_cancel_token_new_child(parent);
             hew_coro_state_enter_token(state, lexical);
-            let child = hew_coro_state_child(state);
+            let mut child_storage = std::mem::MaybeUninit::uninit();
+            let child = child_storage.as_mut_ptr();
+            hew_coro_state_init_child(child, state);
             hew_cancel_token_cancel(lexical, crate::fault::HEW_FAULT_DEADLINE);
             hew_cancel_token_cancel(lexical, 1);
+            assert!(ready.take_ready());
             assert_eq!(hew_coro_state_is_cancelled(state), 1);
             assert_eq!(hew_coro_state_is_cancelled(child), 1);
             assert_eq!(
@@ -541,12 +796,14 @@ mod tests {
             hew_cancel_token_release(lexical);
             assert_eq!(hew_coro_state_is_cancelled(state), 0);
             hew_cancel_token_cancel(parent, 1);
+            assert!(ready.take_ready());
             assert_eq!(hew_coro_state_is_cancelled(state), 1);
             assert_eq!(
                 hew_coro_state_cancel_code(state),
                 crate::fault::HEW_FAULT_CANCELLED
             );
             hew_coro_state_free(state);
+            hew_coro_state_free(root);
         }
     }
 
@@ -556,12 +813,15 @@ mod tests {
         // SAFETY: the test owns every state and token and releases children first.
         unsafe {
             let parent = hew_coro_state_new(waker.descriptor(), std::ptr::null_mut());
-            (*parent).request_deadline = crate::request_deadline::RequestDeadline::from_raw(0);
+            (*parent).execution_mut().request_deadline =
+                crate::request_deadline::RequestDeadline::from_raw(0);
             assert_eq!(hew_coro_state_is_cancelled(parent), 0);
             let lexical = hew_cancel_token_new_child(hew_coro_state_token(parent));
             (*lexical).deadline_ns.store(0, Ordering::Release);
             hew_coro_state_enter_token(parent, lexical);
-            let child = hew_coro_state_child(parent);
+            let mut child_storage = std::mem::MaybeUninit::uninit();
+            let child = child_storage.as_mut_ptr();
+            hew_coro_state_init_child(child, parent);
             assert_eq!(hew_coro_state_is_cancelled(child), 1);
             assert_eq!(
                 hew_coro_state_cancel_code(child),
@@ -604,15 +864,18 @@ mod tests {
     }
 
     #[test]
-    fn child_cancellation_preserves_siblings_and_parent_cancellation_reaches_all() {
-        let (_, waker) = Readiness::new();
+    fn independent_boundaries_cancel_separately_and_nested_calls_inherit() {
+        let (ready, waker) = Readiness::new();
         // SAFETY: the test owns all invocation states and releases children first.
         unsafe {
             let parent = hew_coro_state_new(waker.descriptor(), std::ptr::null_mut());
-            let first = hew_coro_state_child(parent);
-            let second = hew_coro_state_child(parent);
-            let grandchild = hew_coro_state_child(first);
+            let first = hew_coro_state_new(waker.descriptor(), hew_coro_state_token(parent));
+            let second = hew_coro_state_new(waker.descriptor(), hew_coro_state_token(parent));
+            let mut grandchild_storage = std::mem::MaybeUninit::uninit();
+            let grandchild = grandchild_storage.as_mut_ptr();
+            hew_coro_state_init_child(grandchild, first);
             hew_coro_state_cancel(first);
+            assert!(ready.take_ready());
             assert_eq!(hew_coro_state_is_cancelled(first), 1);
             assert_eq!(hew_coro_state_is_cancelled(grandchild), 1);
             assert_eq!(hew_coro_state_is_cancelled(parent), 0);
@@ -620,6 +883,7 @@ mod tests {
             hew_coro_state_free(grandchild);
             hew_coro_state_free(first);
             hew_coro_state_cancel(parent);
+            assert!(ready.take_ready());
             assert_eq!(hew_coro_state_is_cancelled(second), 1);
             hew_coro_state_free(second);
             hew_coro_state_free(parent);

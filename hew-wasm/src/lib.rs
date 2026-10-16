@@ -641,39 +641,7 @@ fn parse_and_type_check_with_inputs(
     let driver_diagnostics: Vec<_> = state
         .diagnostics
         .into_iter()
-        .filter_map(|diagnostic| {
-            if let hew_compile::FrontendDiagnosticKind::Parse(error) = diagnostic.kind {
-                if parse_result
-                    .errors
-                    .iter()
-                    .any(|parsed| parsed.span == error.span && parsed.message == error.message)
-                {
-                    return None;
-                }
-                let mut converted = parse_error_to_wasm(error);
-                converted.source_module = diagnostic.filename;
-                return Some(converted);
-            }
-            let hew_compile::FrontendDiagnosticKind::Message(message) = diagnostic.kind else {
-                return None;
-            };
-            let span = message.span.unwrap_or(0..0);
-            Some(WasmDiagnostic {
-                severity: "error".into(),
-                phase: "frontend",
-                message: message.message,
-                span: WasmSpan {
-                    start: span.start,
-                    end: span.end,
-                },
-                start_offset: span.start,
-                end_offset: span.end,
-                kind: message.code,
-                notes: Vec::new(),
-                suggestions: message.help,
-                source_module: diagnostic.filename,
-            })
-        })
+        .map(frontend_diagnostic_to_wasm)
         .collect();
     let (type_output, hir_diagnostics, semantic_diagnostics) =
         if let Some(tco) = state.typecheck_result.and_then(|result| result.tco) {
@@ -906,19 +874,47 @@ fn convert_parse_diagnostics(parse_errors: Vec<hew_parser::ParseError>) -> Vec<W
 }
 
 fn convert_diagnostics(
-    parse_errors: Vec<hew_parser::ParseError>,
-    type_output: Option<hew_types::TypeCheckOutput>,
     hir_diagnostics: Vec<hew_hir::HirDiagnostic>,
-    semantic_diagnostics: Vec<WasmDiagnostic>,
+    mut semantic_diagnostics: Vec<WasmDiagnostic>,
 ) -> Vec<WasmDiagnostic> {
-    let mut diagnostics = convert_parse_diagnostics(parse_errors);
-    if let Some(type_output) = type_output {
-        diagnostics.extend(type_output.errors.into_iter().map(type_error_to_wasm));
-        diagnostics.extend(type_output.warnings.into_iter().map(type_error_to_wasm));
-    }
-    diagnostics.extend(hir_diagnostics.into_iter().map(hir_diagnostic_to_wasm));
-    diagnostics.extend(semantic_diagnostics);
-    diagnostics
+    semantic_diagnostics.extend(hir_diagnostics.into_iter().map(hir_diagnostic_to_wasm));
+    semantic_diagnostics
+}
+
+fn frontend_diagnostic_to_wasm(diagnostic: hew_compile::FrontendDiagnostic) -> WasmDiagnostic {
+    use hew_compile::FrontendDiagnosticKind as Kind;
+    let mut converted = match diagnostic.kind {
+        Kind::Parse(error) => parse_error_to_wasm(error),
+        Kind::Type(error) => type_error_to_wasm(error),
+        Kind::Hir(error) => hir_diagnostic_to_wasm(error),
+        Kind::Message(message) => {
+            let span = WasmSpan::from_span(&message.span.unwrap_or(0..0));
+            WasmDiagnostic {
+                severity: "error".into(),
+                phase: "frontend",
+                message: message.message,
+                span,
+                start_offset: span.start,
+                end_offset: span.end,
+                kind: message.code,
+                notes: message
+                    .notes
+                    .into_iter()
+                    .map(|note| WasmNote {
+                        span: WasmSpan::from_span(&note.span),
+                        start_offset: note.span.start,
+                        end_offset: note.span.end,
+                        message: note.message,
+                        source_module: Some(note.filename),
+                    })
+                    .collect(),
+                suggestions: message.help,
+                source_module: None,
+            }
+        }
+    };
+    converted.source_module = diagnostic.filename;
+    converted
 }
 
 fn build_type_info(type_output: &hew_types::TypeCheckOutput) -> Vec<WasmTypeInfo> {
@@ -954,17 +950,11 @@ fn run_type_check_with_inputs(source: &str, inputs: hew_compile::SourceSet) -> T
         .map(build_type_info)
         .unwrap_or_default();
     let AnalyzedSource {
-        parse_result,
-        type_output,
         hir_diagnostics,
         semantic_diagnostics,
+        ..
     } = analysis;
-    let diagnostics = convert_diagnostics(
-        parse_result.errors,
-        type_output,
-        hir_diagnostics,
-        semantic_diagnostics,
-    );
+    let diagnostics = convert_diagnostics(hir_diagnostics, semantic_diagnostics);
 
     TypeCheckResult {
         diagnostics,
@@ -1023,17 +1013,11 @@ fn run_analysis_with_inputs(source: &str, inputs: hew_compile::SourceSet) -> Ana
     // destructure to pass errors and type_output by value to convert_diagnostics.
     let symbols = build_symbols(source, &analysis.parse_result);
     let AnalyzedSource {
-        parse_result,
-        type_output,
         hir_diagnostics,
         semantic_diagnostics,
+        ..
     } = analysis;
-    let diagnostics = convert_diagnostics(
-        parse_result.errors,
-        type_output,
-        hir_diagnostics,
-        semantic_diagnostics,
-    );
+    let diagnostics = convert_diagnostics(hir_diagnostics, semantic_diagnostics);
 
     AnalysisResult {
         diagnostics,

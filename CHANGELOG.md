@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+- Allow actor crash hooks to suspend within the child's stop budget, with
+  ordinary restart fallback after hook failure or deadline expiry.
+
 ## [0.6.1] - 2026-10-15
 
 - Add generic closures and associated-type projection bounds for reusable helpers.

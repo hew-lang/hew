@@ -2,7 +2,7 @@
 //!
 //! LLVM owns coroutine layout and may elide a frame into its caller. Handle
 //! operations read only the shared resume/destroy prefix. Heap allocation and
-//! deallocation alone access the private size header.
+//! deallocation alone access the private allocation header.
 //!
 //! Drivers serialize resume and destruction. Checked invocations cooperatively
 //! cancel and drain typed cleanup before destroying their completed frames.
@@ -12,6 +12,7 @@
     reason = "FFI entry-point module; SAFETY documented at fn signature."
 )]
 
+use std::alloc::{alloc, dealloc, handle_alloc_error, Layout};
 use std::cell::{Cell, RefCell};
 use std::ffi::c_void;
 use std::ptr;
@@ -29,8 +30,14 @@ const FRAME_ALIGN: usize = 16;
 /// address (for example, a page boundary) into a multi-kilobyte layout request.
 const MAX_STATE_ESCROW_ALIGN: usize = 64;
 
-/// One aligned header stores the block size for the matching heap deallocation.
-const FRAME_HEADER: usize = FRAME_ALIGN;
+/// Retain the validated allocation layout for the matching global deallocation.
+#[repr(C, align(16))]
+struct FrameHeader {
+    layout: Layout,
+}
+
+const FRAME_HEADER: usize = size_of::<FrameHeader>();
+const _: () = assert!(align_of::<FrameHeader>() == FRAME_ALIGN);
 
 /// `hew_cont_crash_cleanup_arm` result indicating malformed relocation input
 /// or a snapshot allocation that could not be represented. Zero is reserved
@@ -234,15 +241,20 @@ pub enum ResumePoll {
 /// Allocate a continuation frame of `size` bytes through the Hew heap.
 ///
 /// Codegen supplies the concrete layout size. A private allocation header
-/// records the full block size for the matching [`hew_cont_frame_free`].
+/// records the validated layout for the matching [`hew_cont_frame_free`].
 /// The returned frame starts after that header with [`FRAME_ALIGN`] alignment.
-/// Returns null for zero size or an unsuccessful allocation.
+/// Returns null for zero or unrepresentable sizes. A valid request that exhausts
+/// memory uses the global allocator's allocation-error handler.
 ///
 /// # Safety
 ///
 /// Safe to call with any `size`. A non-null block must be released exactly once
 /// via [`hew_cont_frame_free`].
 #[no_mangle]
+#[expect(
+    clippy::cast_ptr_alignment,
+    reason = "the global allocation has the frame header's exact alignment"
+)]
 pub unsafe extern "C" fn hew_cont_frame_alloc(size: u64) -> *mut c_void {
     if size == 0 {
         return ptr::null_mut();
@@ -257,15 +269,16 @@ pub unsafe extern "C" fn hew_cont_frame_alloc(size: u64) -> *mut c_void {
         // allocation; fail closed rather than wrap.
         return ptr::null_mut();
     };
-    // SAFETY: hew_alloc is safe for any (size, align); FRAME_ALIGN is a power
-    // of two. Returns null only for a degenerate/over-large request, which we
-    // propagate.
-    let base = unsafe { hew_alloc(total as u64, FRAME_ALIGN as u64) };
-    if base.is_null() {
+    let Ok(layout) = Layout::from_size_align(total, FRAME_ALIGN) else {
         return ptr::null_mut();
+    };
+    // SAFETY: the validated layout includes a nonempty aligned frame header.
+    let base = unsafe { alloc(layout) }; // ALLOCATOR-PAIRING: GlobalAlloc
+    if base.is_null() {
+        handle_alloc_error(layout);
     }
-    // SAFETY: the aligned allocation contains the size header and payload.
-    unsafe { ptr::write_unaligned(base.cast::<u64>(), total as u64) };
+    // SAFETY: the fresh allocation is aligned for and contains this header.
+    unsafe { base.cast::<FrameHeader>().write(FrameHeader { layout }) };
     crate::observe::record_coroutine_frame_alloc(size as u64);
     // SAFETY: the allocation is total = FRAME_HEADER + size bytes, so advancing
     // by FRAME_HEADER lands within the block with `size` usable bytes ahead.
@@ -274,16 +287,20 @@ pub unsafe extern "C" fn hew_cont_frame_alloc(size: u64) -> *mut c_void {
 
 /// Release a frame previously returned by [`hew_cont_frame_alloc`].
 ///
-/// Recovers the allocation header and frees the exact `(size, align)` pair.
+/// Recovers the allocation header and frees its exact validated layout.
 /// A null frame is a no-op.
 ///
 /// # Safety
 ///
 /// `frame`, if non-null, MUST be a pointer returned by
 /// [`hew_cont_frame_alloc`] and not yet freed. After this call it is dangling.
-/// The 8-byte header it reads must be intact (it is, unless the frame was
+/// The private allocation header must be intact (it is, unless the frame was
 /// written out of bounds — a compiler bug, not a recoverable condition).
 #[no_mangle]
+#[expect(
+    clippy::cast_ptr_alignment,
+    reason = "subtracting the aligned header recovers the global allocation base"
+)]
 pub unsafe extern "C" fn hew_cont_frame_free(frame: *mut c_void) {
     if frame.is_null() {
         return;
@@ -291,13 +308,11 @@ pub unsafe extern "C" fn hew_cont_frame_free(frame: *mut c_void) {
     // SAFETY: frame came from hew_cont_frame_alloc as base + FRAME_HEADER, so
     // subtracting FRAME_HEADER recovers the original block base.
     let base = unsafe { frame.cast::<u8>().sub(FRAME_HEADER) };
-    // SAFETY: the header at base holds the u64 block size written at alloc.
-    // `read_unaligned` matches the `write_unaligned` at alloc time.
-    let total = unsafe { ptr::read_unaligned(base.cast::<u64>()) };
-    crate::observe::record_coroutine_frame_free(total.saturating_sub(FRAME_HEADER as u64));
-    // SAFETY: base/total/FRAME_ALIGN are exactly the (ptr, size, align) triple
-    // hew_alloc returned, so this is the symmetric free hew_dealloc requires.
-    unsafe { hew_dealloc(base, total, FRAME_ALIGN as u64) };
+    // SAFETY: the live aligned header owns the layout recorded at allocation.
+    let layout = unsafe { base.cast::<FrameHeader>().read().layout };
+    crate::observe::record_coroutine_frame_free((layout.size() - FRAME_HEADER) as u64);
+    // SAFETY: this is the exact allocation base and its original layout.
+    unsafe { dealloc(base, layout) }; // ALLOCATOR-PAIRING: GlobalAlloc
 }
 
 #[cfg(test)]
@@ -1345,7 +1360,7 @@ pub unsafe extern "C-unwind" fn hew_gen_coro_destroy(companion: *mut c_void) {
     }
 
     // SAFETY: companion came from hew_cont_frame_alloc; this is its symmetric
-    // free (reads the size header hew_cont_frame_alloc stored).
+    // free (reads the allocation header hew_cont_frame_alloc stored).
     unsafe { hew_cont_frame_free(companion) };
 }
 
@@ -2443,9 +2458,7 @@ mod tests {
     }
 
     /// The frame allocator round-trips: a non-zero request returns a usable,
-    /// aligned block whose stored size lets the symmetric free reconstruct the
-    /// layout. Exercises the header push/pop and the (ptr, size, align)
-    /// symmetry the spike's accounting depends on.
+    /// aligned block whose stored layout supplies the symmetric free.
     #[test]
     fn frame_alloc_round_trips_aligned_and_frees_symmetric() {
         // SAFETY: round-trip a well-formed request through the FFI pair.
@@ -2459,18 +2472,23 @@ mod tests {
             );
             // The full block (header + body) is usable: write across it.
             ptr::write_bytes(frame.cast::<u8>(), 0xAB, 56);
-            // Symmetric free reads the stored size; a leak/double-free here
+            // Symmetric free reads the stored layout; a leak/double-free here
             // would surface under MallocScribble in the exec test.
             hew_cont_frame_free(frame);
         }
     }
 
-    /// A zero-size frame request fails closed (null), mirroring `hew_alloc(0)`.
+    /// Invalid sizes return null before attempting a heap allocation.
     #[test]
-    fn frame_alloc_zero_size_returns_null() {
-        // SAFETY: degenerate request; must not allocate.
-        let frame = unsafe { hew_cont_frame_alloc(0) };
-        assert!(frame.is_null(), "zero-size frame request must return null");
+    fn frame_alloc_rejects_unrepresentable_requests() {
+        for size in [0, u64::MAX, u64::try_from(isize::MAX).unwrap()] {
+            // SAFETY: degenerate or unrepresentable request; must not allocate.
+            let frame = unsafe { hew_cont_frame_alloc(size) };
+            assert!(
+                frame.is_null(),
+                "invalid frame size {size} must return null"
+            );
+        }
     }
 
     /// Freeing a null frame is a no-op (the `coro.free` conditional path when

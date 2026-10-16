@@ -14,6 +14,19 @@
       "blocks": [
         {
           "id": 0,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 1
+            },
+            "op": "goto",
+            "span": null
+          }
+        },
+        {
+          "id": 1,
           "ops": [
             {
               "dst": 0,
@@ -31,29 +44,13 @@
             "assertion": null,
             "cleanup": {
               "args": [],
-              "to": 1
+              "to": 3
             },
             "message": {
               "decision": "borrow",
               "value": 0
             },
             "op": "panic",
-            "span": {
-              "end": 22,
-              "start": 22
-            }
-          }
-        },
-        {
-          "id": 1,
-          "ops": [],
-          "params": [],
-          "term": {
-            "edge": {
-              "args": [],
-              "to": 4
-            },
-            "op": "goto",
             "span": {
               "end": 22,
               "start": 22
@@ -71,6 +68,22 @@
         },
         {
           "id": 3,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 5
+            },
+            "op": "goto",
+            "span": {
+              "end": 22,
+              "start": 22
+            }
+          }
+        },
+        {
+          "id": 4,
           "ops": [
             {
               "dst": null,
@@ -90,26 +103,26 @@
           }
         },
         {
-          "id": 4,
-          "ops": [],
-          "params": [],
-          "term": {
-            "edge": {
-              "args": [],
-              "to": 5
-            },
-            "op": "goto",
-            "span": null
-          }
-        },
-        {
           "id": 5,
           "ops": [],
           "params": [],
           "term": {
             "edge": {
               "args": [],
-              "to": 3
+              "to": 6
+            },
+            "op": "goto",
+            "span": null
+          }
+        },
+        {
+          "id": 6,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 4
             },
             "op": "goto",
             "span": null

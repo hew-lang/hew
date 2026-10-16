@@ -1,6 +1,7 @@
 //! Array, vector, map and set operations.
 
 use super::*;
+use inkwell::values::BasicValue;
 
 /// The C-ABI `HewVec` prefix used by checked element access.
 pub(super) fn vector_header_type<'ctx>(
@@ -17,6 +18,72 @@ pub(super) fn vector_header_type<'ctx>(
 }
 
 impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
+    fn make_vector_unique(&self, vector: PointerValue<'ctx>) -> CodegenResult<()> {
+        let target = TargetData::create(&self.module.target.data_layout);
+        let word = self.ctx.ptr_sized_int_type(&target, None);
+        let data = self
+            .builder
+            .build_load(
+                self.ctx.ptr_type(AddressSpace::default()),
+                vector,
+                "vector.data",
+            )
+            .llvm_ctx("load vector buffer before mutation")?
+            .into_pointer_value();
+        // SAFETY: the runtime buffer ABI places its atomic reference count one target
+        // word before data. Bounds checking has proved a nonempty live buffer.
+        let owner = unsafe {
+            self.builder.build_in_bounds_gep(
+                word,
+                data,
+                &[word.const_all_ones()],
+                "vector.buffer.owner",
+            )
+        }
+        .llvm_ctx("address vector buffer reference count")?;
+        let references = self
+            .builder
+            .build_load(word, owner, "vector.buffer.references")
+            .llvm_ctx("load vector buffer reference count")?;
+        references
+            .as_instruction_value()
+            .ok_or_else(|| CodegenError::FailClosed("vector reference count is not a load".into()))?
+            .set_atomic_ordering(inkwell::AtomicOrdering::Acquire)
+            .llvm_ctx("synchronize vector buffer ownership")?;
+        let unique = self
+            .builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                references.into_int_value(),
+                word.const_int(1, false),
+                "vector.buffer.unique",
+            )
+            .llvm_ctx("test vector buffer uniqueness")?;
+        let ready = self
+            .ctx
+            .append_basic_block(self.value, "vector.mutation.ready");
+        let detach = self
+            .ctx
+            .append_basic_block(self.value, "vector.buffer.detach");
+        self.builder
+            .build_conditional_branch(unique, ready, detach)
+            .llvm_ctx("select vector buffer detachment")?;
+        self.builder.position_at_end(detach);
+        let function = get_or_declare_external(
+            self.llvm,
+            "hew_vec_make_unique",
+            self.ctx
+                .void_type()
+                .fn_type(&[vector.get_type().into()], false),
+        )?;
+        self.runtime_call_void(function, &[vector.into()], "vector.make_unique")?;
+        self.builder
+            .build_unconditional_branch(ready)
+            .llvm_ctx("continue with unique vector storage")?;
+        self.builder.position_at_end(ready);
+        Ok(())
+    }
+
     fn vector_length(&self, vector: PointerValue<'ctx>) -> CodegenResult<IntValue<'ctx>> {
         let target = TargetData::create(&self.module.target.data_layout);
         let word = self.ctx.ptr_sized_int_type(&target, None);
@@ -363,6 +430,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 self.emit_vector_index_guard(vector, index, failure()?)?;
                 let moved = matches!(transfers.get(2), Some(ArgumentTransfer::Move(_)));
                 if scalar {
+                    self.make_vector_unique(vector)?;
                     let element = llvm_type(self.ctx, &element_layout.repr)?;
                     let slot = self.vector_element_slot(vector, index, element)?;
                     let replacement = self.load(source(2)?, "vector.replacement")?;

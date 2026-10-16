@@ -907,14 +907,37 @@ impl<'a> InstanceService<'a> {
             else {
                 continue;
             };
-            closes.push(lifecycle.close_declaration);
+            closes.push((lifecycle.close_declaration, shape.aggregate_ty.clone()));
         }
-        for declaration in closes {
-            if let Ok(id) = self.admit_monomorphic(declaration) {
+        for (declaration, owner) in closes {
+            if let Ok(id) = self.request_record_close(declaration, &owner) {
                 self.callable_facts.opaque_entries.insert(id);
                 self.request_body(id);
             }
         }
+    }
+
+    fn request_record_close(
+        &mut self,
+        declaration: DefId,
+        owner: &ResolvedTy,
+    ) -> Result<CallableId, String> {
+        let Some(template) = self.table.templates.get(&declaration) else {
+            return self.admit_monomorphic(declaration);
+        };
+        let function = template.function;
+        let [receiver] = function.params.as_slice() else {
+            return Err("resource close requires one receiver".into());
+        };
+        let type_args = self
+            .checked_facts
+            .inherent_method_type_args(declaration, owner)
+            .map_err(|error| format!("cannot bind resource close to its owner: {error}"))?;
+        let substitution = TypeSubstitution::for_instance(&self.module.defs, function, &type_args)?;
+        if substitution.apply(&receiver.ty) != *owner {
+            return Err("resource close receiver does not match its exact owner".into());
+        }
+        self.request_instance(declaration, type_args)
     }
 
     /// Demand the `close` body of every authored opaque `#[resource]` the
@@ -1151,7 +1174,8 @@ impl<'a> InstanceService<'a> {
             | CallableInstance::ActorSupervisorIntercept { .. }
             | CallableInstance::Closure(_)
             | CallableInstance::EntryAdapter
-            | CallableInstance::SupervisorChild { .. } => {
+            | CallableInstance::SupervisorChild { .. }
+            | CallableInstance::ActorConstruction { .. } => {
                 unreachable!("closure, entry adapter and child spawn inputs are resolved above")
             }
             CallableInstance::Monomorphic => {
@@ -1851,7 +1875,17 @@ impl<'a> InstanceService<'a> {
         // release: the type then has no value contract at all rather than a
         // release nothing can execute.
         for key in type_facts.keys() {
-            let close_of = |declaration| table.monomorphic_by_declaration.get(declaration).copied();
+            let close_of = |declaration: &DefId| {
+                table
+                    .callables
+                    .iter()
+                    .find(|callable| {
+                        callable.declaration == *declaration
+                            && callable.signature.params.len() == 1
+                            && callable.signature.params[0].ty == key.0
+                    })
+                    .map(|callable| callable.id)
+            };
             let release = if let Some(lifecycle) =
                 crate::resource::record_resource_lifecycle(module, &key.0)
             {

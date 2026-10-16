@@ -659,6 +659,14 @@ fn a_crash_hook_observes_the_last_valid_state_before_restart() {
         stdout(&trace),
         "CHANGED!\nlast valid crash state, fresh restart\n"
     );
+    // The 100ms compute deadline crosses 100 compiler-authored 4000-poll slices.
+    let trace = assert_native_manifest_options(
+        "crash-hook-suspension",
+        hew_compile::SourceSet::in_memory(),
+        r#"{"stepBudget":2000000}"#,
+    );
+    // One helper millisecond, two authored 100ms deadlines and eight 1ms releases.
+    assert_eq!(trace["final_state"]["virtual_clock"]["current_ms"], 209);
 }
 
 #[test]
@@ -979,6 +987,31 @@ fn imported_associated_projection_bounds_execute() {
 }
 
 #[test]
+fn imported_generic_resources_specialize_and_drain_on_every_exit() {
+    let mut inputs = hew_compile::SourceSet::in_memory();
+    inputs.insert(
+        "generic_resource_support/wrapper.hew",
+        include_str!("../../tests/core-acceptance/cases/generic_resource_support/wrapper.hew"),
+    );
+    assert_native_manifest("generic-resource-lifecycle", inputs.clone());
+    let rejected = hew_wasm::sandbox::compile_to_sandbox_bytecode_with_inputs(
+        include_str!("../../tests/core-acceptance/cases/generic-resource-consume-reject.hew"),
+        Some("sandbox-vm-export"),
+        inputs,
+    )
+    .expect("source refusal is a diagnostic");
+    assert!(rejected.bytecode.is_none());
+    assert!(rejected
+        .diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.severity == "error" && diagnostic.kind == "UseAfterMove"));
+    assert!(rejected
+        .diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.severity == "error" && diagnostic.kind == "UseAfterConsume"));
+}
+
+#[test]
 fn parent_relative_generic_actor_imports_execute() {
     let mut inputs = hew_compile::SourceSet::in_memory();
     inputs.insert(
@@ -990,7 +1023,15 @@ fn parent_relative_generic_actor_imports_execute() {
     assert_eq!(trace["final_state"]["exit_code"], 0);
 }
 
-fn assert_native_manifest(name: &str, inputs: hew_compile::SourceSet) {
+fn assert_native_manifest(name: &str, inputs: hew_compile::SourceSet) -> serde_json::Value {
+    assert_native_manifest_options(name, inputs, "{}")
+}
+
+fn assert_native_manifest_options(
+    name: &str,
+    inputs: hew_compile::SourceSet,
+    options: &str,
+) -> serde_json::Value {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../tests/core-acceptance");
     let manifest = std::fs::read_to_string(root.join(format!("cases/{name}.toml")))
         .expect("shared native manifest");
@@ -998,7 +1039,7 @@ fn assert_native_manifest(name: &str, inputs: hew_compile::SourceSet) {
     let case = &manifest["case"][0];
     let source = std::fs::read_to_string(root.join(case["source"].as_str().unwrap()))
         .expect("shared native source");
-    let trace = execute_options(&source, "ok", "{}", inputs);
+    let trace = execute_options(&source, "ok", options, inputs);
     assert_eq!(
         stdout(&trace),
         case["expected"]["stdout"].as_str().unwrap(),
@@ -1009,6 +1050,7 @@ fn assert_native_manifest(name: &str, inputs: hew_compile::SourceSet) {
         case["expected"]["exit"].as_integer(),
         "{name}"
     );
+    trace
 }
 
 #[test]
@@ -1041,8 +1083,36 @@ fn coalescing_accepts_replacement_and_reports_fallback_discard() {
 }
 
 #[test]
-fn actor_stop_drains_accepted_work_and_refuses_new_work_in_both_runtimes() {
+fn actor_constructor_cleanup_preserves_child_rc_owner() {
+    assert_native_manifest(
+        "actor-rc-constructor-close",
+        hew_compile::SourceSet::in_memory(),
+    );
+}
+
+#[test]
+fn actor_stop_drains_owned_work_in_both_runtimes() {
     assert_native_manifest("actor-stop-drains", hew_compile::SourceSet::in_memory());
+    let trace = assert_native_manifest("actor-rc-survivors", hew_compile::SourceSet::in_memory());
+    let sweeps: Vec<_> = trace["events"]
+        .as_array()
+        .expect("trace events")
+        .iter()
+        .filter(|event| event["message"] == "actor.rc_sweep")
+        .map(|event| {
+            serde_json::from_str::<serde_json::Value>(
+                event["text"].as_str().expect("snapshot payload"),
+            )
+            .expect("typed sweep")
+        })
+        .collect();
+    assert_eq!(
+        sweeps
+            .iter()
+            .map(|event| event["rc_sweep"]["count"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["132", "2"]
+    );
 }
 
 #[test]

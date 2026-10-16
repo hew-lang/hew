@@ -122,6 +122,8 @@ pub enum RuntimeValueKind {
     Named(&'static str),
     /// A concrete `#[opaque]` runtime-handle nominal with no type parameters.
     NamedOpaque(&'static str),
+    /// A canonical nominal argument, preserving the phase's checked type facts.
+    NominalArgument(&'static str),
     /// A monomorphic enum whose source declaration supplies its exact owner.
     MonomorphicBuiltin(BuiltinType),
     /// The signature's receiver, constrained by canonical builtin identity.
@@ -256,6 +258,20 @@ impl RuntimeValueKind {
             Self::StructuralOperand => receiver?.clone(),
             Self::Named(name) => ResolvedTy::named_user(contract(name)?, Vec::new()),
             Self::NamedOpaque(name) => ResolvedTy::named_opaque(contract(name)?, Vec::new()),
+            Self::NominalArgument(name) => {
+                let argument @ ResolvedTy::Named {
+                    head: crate::TypeHead::Nominal(head),
+                    args,
+                    ..
+                } = receiver?
+                else {
+                    return None;
+                };
+                if head.id != contract(name)?.id || !args.is_empty() {
+                    return None;
+                }
+                argument.clone()
+            }
             Self::BuiltinNominal(builtin) => ResolvedTy::named_builtin(builtin, Vec::new()),
             Self::MonomorphicBuiltin(builtin) => {
                 crate::builtin_enums::monomorphic_builtin_enum(builtin.canonical_name())?;
@@ -473,6 +489,8 @@ pub enum RuntimeLogicalFailure {
     IntegerOverflow,
     /// A selected user callback returns an existing logical fault owner.
     CallbackFault,
+    /// A terminally consumed shared payload cannot be read or resurrected.
+    RcUnavailable,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -487,12 +505,13 @@ impl RuntimeSemanticContract {
     /// any input. Its cleanup edge retains those owners for ordinary cleanup.
     #[must_use]
     pub fn preserves_inputs_on_failure(self) -> bool {
-        self.failures == [RuntimeLogicalFailure::IndexOutOfBounds]
-            && matches!(
-                self.result,
-                RuntimeResultEffect::UpdatedReceiver(_)
-                    | RuntimeResultEffect::UpdatedReceiverAndValue(_)
-            )
+        self.failures == [RuntimeLogicalFailure::RcUnavailable]
+            || self.failures == [RuntimeLogicalFailure::IndexOutOfBounds]
+                && matches!(
+                    self.result,
+                    RuntimeResultEffect::UpdatedReceiver(_)
+                        | RuntimeResultEffect::UpdatedReceiverAndValue(_)
+                )
     }
 
     /// All failures on this call's cleanup edge carry an active fault owner.
@@ -500,8 +519,12 @@ impl RuntimeSemanticContract {
     /// boundary before cleanup, preserving a single fault transfer path.
     #[must_use]
     pub fn propagates_fault(self) -> bool {
-        self.failures
-            .contains(&RuntimeLogicalFailure::CallbackFault)
+        self.failures.iter().any(|failure| {
+            matches!(
+                failure,
+                RuntimeLogicalFailure::CallbackFault | RuntimeLogicalFailure::RcUnavailable
+            )
+        })
     }
 
     /// Check a concrete language signature against this runtime operation.
@@ -607,6 +630,7 @@ impl RuntimeSemanticContract {
                     || matches!(
                         expected.ty,
                         RuntimeValueKind::PipeHalf(_)
+                            | RuntimeValueKind::NominalArgument(_)
                             | RuntimeValueKind::BuiltinArgument(_)
                             | RuntimeValueKind::StructuralOperand
                     ) {

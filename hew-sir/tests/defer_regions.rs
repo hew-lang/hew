@@ -216,13 +216,13 @@ fn defer_calls_require_transitive_non_suspending_effects() {
         .iter_mut()
         .find(|f| suspending.defs.path(f.declaration) == "fail")
         .unwrap();
-    callee.blocks[0].terminator = SemTerminator::RtCall {
-        id: OpId(0),
-        family: hew_types::RuntimeCallFamily::ActorCooperate,
-        args: vec![],
+    callee.blocks[0].terminator = SemTerminator::Suspend {
+        kind: SuspendKind::Yield,
+        inputs: vec![],
         result: CallResult::Unit,
-        normal: fixture::edge(1),
-        unwind: CallUnwind::NotApplicable,
+        resumes: vec![fixture::edge(1)],
+        cancel: fixture::edge(1),
+        unwind: fixture::edge(1),
     };
     rejects(suspending, "defer call has unproven or suspending effects");
 }

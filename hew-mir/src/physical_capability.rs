@@ -233,7 +233,8 @@ fn verify_user(
         | hew_sir::CallableInstance::ActorSupervisorIntercept { .. }
         | hew_sir::CallableInstance::Closure(_)
         | hew_sir::CallableInstance::EntryAdapter
-        | hew_sir::CallableInstance::SupervisorChild { .. } => false,
+        | hew_sir::CallableInstance::SupervisorChild { .. }
+        | hew_sir::CallableInstance::ActorConstruction { .. } => false,
         hew_sir::CallableInstance::Monomorphic => type_args.is_empty(),
         hew_sir::CallableInstance::Generic(key) => {
             key.template.declaration == declaration && key.type_args == type_args

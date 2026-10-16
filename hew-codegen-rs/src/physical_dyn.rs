@@ -29,6 +29,7 @@ fn vtable_slot_symbol(id: PhysicalVtableId, slot: u32) -> String {
 fn dispatch_type<'ctx>(
     ctx: &'ctx Context,
     signature: &hew_mir::physical::PhysicalCallSignature,
+    is_resumable: bool,
 ) -> CodegenResult<inkwell::types::FunctionType<'ctx>> {
     let pointer = ctx.ptr_type(AddressSpace::default());
     let mut params: Vec<BasicMetadataTypeEnum<'ctx>> = vec![pointer.into()];
@@ -42,7 +43,12 @@ fn dispatch_type<'ctx>(
         params.push(pointer.into());
     }
     params.push(pointer.into());
-    Ok(ctx.i32_type().fn_type(&params, false))
+    if is_resumable {
+        params.push(pointer.into());
+        Ok(pointer.fn_type(&params, false))
+    } else {
+        Ok(ctx.i32_type().fn_type(&params, false))
+    }
 }
 
 impl<'ctx> ModuleEmitter<'ctx, '_> {
@@ -121,14 +127,12 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         slot: &PhysicalVtableSlot,
     ) -> CodegenResult<PointerValue<'ctx>> {
         let callee = callable(self.module, slot.callee)?;
-        if callee.is_resumable {
-            return Err(CodegenError::FailClosed(format!(
-                "slot {} of `{}` names a resumable body; a suspending trait method has no vtable ABI",
-                slot.slot,
-                table.concrete_ty.user_facing()
-            )));
-        }
-        let target = *self.functions.get(&slot.callee).ok_or_else(|| {
+        let entries = if callee.is_resumable {
+            &self.ramps
+        } else {
+            &self.functions
+        };
+        let target = *entries.get(&slot.callee).ok_or_else(|| {
             CodegenError::FailClosed("trait-object slot has no emitted implementation".into())
         })?;
         let receiver = callee.params.first().ok_or_else(|| {
@@ -136,12 +140,30 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         })?;
         let function = self.llvm.add_function(
             &vtable_slot_symbol(table.id, slot.slot),
-            dispatch_type(self.ctx, &slot.signature)?,
+            dispatch_type(self.ctx, &slot.signature, slot.is_resumable)?,
             Some(Linkage::Internal),
         );
         let builder = self.ctx.create_builder();
         let entry = self.ctx.append_basic_block(function, "entry");
         builder.position_at_end(entry);
+        let state = slot
+            .is_resumable
+            .then(|| function.get_last_param().unwrap().into_pointer_value());
+        let frame = if callee.is_resumable {
+            Some(coro::begin(
+                self.ctx,
+                &self.llvm,
+                &builder,
+                function,
+                state.ok_or_else(|| {
+                    CodegenError::FailClosed(
+                        "resumable vtable implementation lacks its completion ABI".into(),
+                    )
+                })?,
+            )?)
+        } else {
+            None
+        };
         let data = function
             .get_nth_param(0)
             .ok_or_else(|| CodegenError::FailClosed("trait-object slot lacks its receiver".into()))?
@@ -179,13 +201,14 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         } else {
             None
         };
+        let fault_index = function.count_params() - 1 - u32::from(slot.is_resumable);
         let result_out = slot.signature.return_layout.as_ref().map(|_| {
             function
-                .get_nth_param(function.count_params() - 2)
+                .get_nth_param(fault_index - 1)
                 .unwrap()
                 .into_pointer_value()
         });
-        let arguments_end = function.count_params() - 1 - u32::from(result_out.is_some());
+        let arguments_end = fault_index - u32::from(result_out.is_some());
         for index in 1..arguments_end {
             arguments.push(
                 function
@@ -201,13 +224,24 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         } else if let Some(result_out) = result_out {
             arguments.push(result_out.into());
         }
-        arguments.push(function.get_last_param().unwrap().into());
-        let status = builder
-            .build_call(target, &arguments, "dyn.slot.status")
-            .llvm_ctx("forward vtable slot to its implementation")?
-            .try_as_basic_value()
-            .basic()
-            .ok_or_else(|| CodegenError::FailClosed("vtable slot returned no status".into()))?;
+        arguments.push(function.get_nth_param(fault_index).unwrap().into());
+        let status = if let Some(frame) = &frame {
+            let child = frame.init_child(self.ctx, &self.llvm, &builder)?;
+            arguments.push(child.into());
+            let child_frame = suspend::call_value(&builder, target, &arguments, "dyn.slot.frame")?
+                .into_pointer_value();
+            suspend::await_child(
+                self.ctx,
+                &self.llvm,
+                &builder,
+                function,
+                frame,
+                child,
+                child_frame,
+            )?
+        } else {
+            suspend::call_value(&builder, target, &arguments, "dyn.slot.status")?.into_int_value()
+        };
         if let Some((dual_ty, dual)) = handback {
             let returned_receiver = builder
                 .build_struct_gep(dual_ty, dual, 1, "dyn.returned.receiver")
@@ -228,7 +262,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                 let ok = builder
                     .build_int_compare(
                         inkwell::IntPredicate::EQ,
-                        status.into_int_value(),
+                        status,
                         self.ctx.i32_type().const_zero(),
                         "dyn.slot.ok",
                     )
@@ -252,9 +286,32 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                 builder.position_at_end(finish);
             }
         }
-        builder
-            .build_return(Some(&status))
-            .llvm_ctx("return vtable slot status")?;
+        if let Some(state) = state {
+            let pointer = self.ctx.ptr_type(AddressSpace::default());
+            let finish = get_or_declare_external(
+                &self.llvm,
+                "hew_coro_state_finish",
+                self.ctx
+                    .i32_type()
+                    .fn_type(&[pointer.into(), self.ctx.i32_type().into()], false),
+            )?;
+            builder
+                .build_call(finish, &[state.into(), status.into()], "")
+                .llvm_ctx("publish vtable slot outcome")?;
+            if let Some(frame) = frame {
+                builder
+                    .build_unconditional_branch(frame.finish)
+                    .llvm_ctx("finish vtable slot frame")?;
+            } else {
+                builder
+                    .build_return(Some(&pointer.const_null()))
+                    .llvm_ctx("finish synchronous vtable slot")?;
+            }
+        } else {
+            builder
+                .build_return(Some(&status))
+                .llvm_ctx("return vtable slot status")?;
+        }
         Ok(function.as_global_value().as_pointer_value())
     }
 }
@@ -337,6 +394,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
     )]
     pub(super) fn emit_dyn_call(
         &self,
+        is_resumable: bool,
         receiver: ArgumentTransfer,
         word: u32,
         signature: &hew_mir::physical::PhysicalCallSignature,
@@ -434,19 +492,45 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             arguments.push(self.slots[result.0 as usize].into());
         }
         arguments.push(self.active_fault.into());
-        let status = self
+        let child = if is_resumable {
+            let frame = self.frame.as_ref().ok_or_else(|| {
+                CodegenError::FailClosed(
+                    "resumable dynamic dispatch requires a resumable caller".into(),
+                )
+            })?;
+            let child = frame.init_child(self.ctx, self.llvm, &self.builder)?;
+            arguments.push(child.into());
+            Some((frame, child))
+        } else {
+            None
+        };
+        let outcome = self
             .builder
             .build_indirect_call(
-                dispatch_type(self.ctx, signature)?,
+                dispatch_type(self.ctx, signature, is_resumable)?,
                 callee,
                 &arguments,
-                "dyn.status",
+                "dyn.outcome",
             )
             .llvm_ctx("dispatch through the vtable slot")?
             .try_as_basic_value()
             .basic()
-            .ok_or_else(|| CodegenError::FailClosed("dynamic dispatch returned no status".into()))?
-            .into_int_value();
+            .ok_or_else(|| {
+                CodegenError::FailClosed("dynamic dispatch returned no outcome".into())
+            })?;
+        let status = if let Some((frame, child)) = child {
+            suspend::await_child(
+                self.ctx,
+                self.llvm,
+                &self.builder,
+                self.value,
+                frame,
+                child,
+                outcome.into_pointer_value(),
+            )?
+        } else {
+            outcome.into_int_value()
+        };
         self.builder
             .build_store(self.active_status, status)
             .llvm_ctx("store active dispatch status")?;

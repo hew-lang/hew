@@ -115,7 +115,7 @@ trap cleanup EXIT HUP INT TERM
 
 mkdir -p "$package_root/bin" "$package_root/lib/$native_triple" \
     "$package_root/lib/wasm32-wasip1" "$package_root/std" \
-    "$package_root/include" "$package_root/completions"
+    "$package_root/include" "$package_root/completions" "$package_root/share/hew"
 
 for binary in hew hew-lsp hew-observe; do
     cp "$bin_dir/$binary$bin_suffix" "$package_root/bin/$binary$bin_suffix"
@@ -128,6 +128,8 @@ for wasi_lib in libhew_runtime.a libhew_std.a; do
     cp "$wasi_lib_dir/$wasi_lib" "$package_root/lib/wasm32-wasip1/$wasi_lib"
 done
 cp -R "$source_dir/std/." "$package_root/std/"
+cp "$source_dir/scripts/debug/hew-gdb.py" "$source_dir/scripts/debug/hew_lldb.py" \
+    "$package_root/share/hew/"
 cp "$source_dir/hew-cabi/include/hew.h" "$source_dir/hew-cabi/include/hew_host.h" \
     "$package_root/include/"
 

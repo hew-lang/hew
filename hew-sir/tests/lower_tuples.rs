@@ -51,10 +51,12 @@ fn immutable_scalar_tuple_lowering_keeps_aggregate_semantics_in_sir() {
         "tuple SIR must verify before crossing to Raw MIR: {:#?}",
         verify_module(&lowered.module)
     );
-    let ops = &main.blocks[0].ops;
-    assert!(matches!(ops[0].kind, SemOpKind::ConstInteger(0)));
-    assert!(matches!(ops[1].kind, SemOpKind::ConstInteger(42)));
-    let tuple_value = ops[2]
+    let ops: Vec<_> = main.blocks.iter().flat_map(|block| &block.ops).collect();
+    let tuple_make = ops
+        .iter()
+        .find(|op| matches!(op.kind, SemOpKind::TupleMake { .. }))
+        .expect("main must construct a semantic tuple");
+    let tuple_value = tuple_make
         .results
         .first()
         .expect("tuple.make must define one semantic value");
@@ -62,19 +64,33 @@ fn immutable_scalar_tuple_lowering_keeps_aggregate_semantics_in_sir() {
         tuple_value.ty,
         ResolvedTy::Tuple(vec![ResolvedTy::I64, ResolvedTy::I64])
     );
-    assert!(matches!(
-        &ops[2].kind,
-        SemOpKind::TupleMake { elements }
-            if elements.iter().map(|element| element.value).collect::<Vec<_>>()
-                == vec![ops[0].results[0].id, ops[1].results[0].id]
-    ));
-    assert!(matches!(
-        &ops[3].kind,
-        SemOpKind::TupleGet { tuple, index: 0 }
-            if tuple.value == tuple_value.id
-    ));
-    assert!(ops[2].kind.effects().is_pure());
-    assert!(ops[3].kind.effects().is_pure());
+    let SemOpKind::TupleMake { elements } = &tuple_make.kind else {
+        unreachable!()
+    };
+    assert_eq!(elements.len(), 2);
+    for (element, expected) in elements.iter().zip([0, 42]) {
+        let producer = ops
+            .iter()
+            .find(|op| op.results.iter().any(|result| result.id == element.value))
+            .expect("each tuple element must have a producer");
+        assert!(matches!(producer.kind, SemOpKind::ConstInteger(value) if value == expected));
+    }
+    let tuple_get = ops
+        .iter()
+        .find(|op| {
+            matches!(
+                &op.kind,
+                SemOpKind::TupleGet { tuple, index: 0 } if tuple.value == tuple_value.id
+            )
+        })
+        .expect("main must project the first element of its tuple");
+    assert_eq!(tuple_get.results[0].ty, ResolvedTy::I64);
+    assert!(main.blocks.iter().any(|block| matches!(
+        &block.terminator,
+        SemTerminator::Return { value: Some(value) } if value.operand.value == tuple_get.results[0].id
+    )));
+    assert!(tuple_make.kind.effects().is_pure());
+    assert!(tuple_get.kind.effects().is_pure());
     assert_eq!(
         build_def_use(main).use_count(tuple_value.id),
         1,
@@ -82,25 +98,6 @@ fn immutable_scalar_tuple_lowering_keeps_aggregate_semantics_in_sir() {
     );
 
     let dump = dump_sir(&lowered.module);
-    assert_eq!(
-        dump,
-        concat!(
-            "fn __hew_fn_main() -> i64 {\n",
-            "bb0:\n",
-            "    %0 = const 0\n",
-            "    %1 = const 42\n",
-            "    %2 = tuple.make(%0, %1)\n",
-            "    %3 = tuple.get %2, 0\n",
-            "    goto bb1\n",
-            "bb1:\n",
-            "    return move %3\n",
-            "bb2:\n",
-            "    goto bb3\n",
-            "bb3:\n",
-            "    resume_unwind\n",
-            "}\n"
-        )
-    );
     assert!(
         !dump.contains("offset") && !dump.contains("alloca") && !dump.contains("field.load"),
         "SIR tuple text must not expose representation details: {dump}"

@@ -225,7 +225,20 @@ pub unsafe extern "C" fn hew_checked_scope_new(
         tasks: ptr::null_mut(),
         cancel_token,
         checked_deadline: ptr::null_mut(),
+        rc_owner: crate::rc::current_allocations(),
     }))
+}
+
+/// Bind independently scheduled children to their invocation's allocation owner.
+/// # Safety
+/// Both pointers are live and exclusively owned before any task is submitted.
+#[no_mangle]
+pub unsafe extern "C" fn hew_checked_scope_set_rc_owner(
+    scope: *mut HewTaskScope,
+    state: *const crate::coro_state::HewCoroState,
+) {
+    // SAFETY: construction of this lexical scope has not published children.
+    unsafe { (*scope).rc_owner.clone_from(&(*state).execution().rc_owner) };
 }
 
 unsafe extern "C" fn deadline_wake(token: *mut c_void) {

@@ -110,7 +110,7 @@ pub unsafe extern "C" fn hew_actor_wait_edge_new(
     operation: i32,
 ) -> *const HewActorWaitEdge {
     // SAFETY: the caller holds its invocation state throughout construction.
-    let owner = unsafe { &*state }.actor_turn;
+    let owner = unsafe { &*state }.execution().actor_turn;
     if owner.is_none() {
         return std::ptr::null();
     }
@@ -134,7 +134,7 @@ pub unsafe extern "C" fn hew_actor_wait_edge_new_for_wait(
     operation: i32,
 ) -> *const HewActorWaitEdge {
     // SAFETY: the caller retains both pointers for this call.
-    let owner = unsafe { &*state }.actor_turn;
+    let owner = unsafe { &*state }.execution().actor_turn;
     // SAFETY: the same caller retains this wait until registration returns.
     let target = unsafe { &*wait }.target;
     if owner.is_none() || target.is_none() {

@@ -1,0 +1,11 @@
+[[case]]
+id = "generic-resource-lifecycle"
+intent = "An imported resource wrapper specializes its consuming close for owning payloads, transfers returns and generic arguments, and drains once on ordinary, fault and cancellation exits."
+source = "cases/generic-resource-lifecycle.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "wrapper RETURNED\nticket 1\nwrapper STRING\nwrapper EXPLICIT\nticket 2\nwrapper LINEAR\nticket 5\nwrapper FAULT\nticket 3\nfault drained\nwrapper CANCEL\nticket 4\npicked 7\n"
+stderr = ""
+exit = 0

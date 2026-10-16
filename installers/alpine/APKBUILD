@@ -46,6 +46,10 @@ package() {
   fi
 
   mkdir -p "$pkgdir/usr/include"
+  if [ -d "$builddir/share" ]; then
+    mkdir -p "$pkgdir/usr/share"
+    cp -r "$builddir/share/." "$pkgdir/usr/share/"
+  fi
   cp -r "$builddir/include/." "$pkgdir/usr/include/"
 
   [ -f "$builddir/completions/hew.bash" ] && \

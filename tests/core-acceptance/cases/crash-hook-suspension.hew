@@ -1,0 +1,79 @@
+import std.failure;
+
+fn compute_forever() {
+    loop {}
+}
+
+fn settle() {
+    sleep(1ms);
+}
+
+#[resource]
+type Lease {
+}
+
+impl Lease {
+    fn close(consume self) {
+        sleep(1ms);
+        println("state released");
+    }
+}
+
+actor Worker {
+    var value: i64;
+    let mode: i64;
+    var lease: Lease = Lease {  };
+    receive fn get() -> i64 {
+        value
+    }
+    receive fn boom() {
+        panic("boom");
+    }
+    #[on(crash)]
+    fn on_crash(info: CrashInfo) -> CrashAction {
+        defer {
+            println("hook drained");
+            println(mode);
+        }
+        if mode == 1 {
+            sleep(30s);
+            println("unexpected expired hook completion");
+        } else if mode == 2 {
+            panic("hook failed");
+        } else if mode == 3 {
+            compute_forever();
+        } else {
+            settle();
+            println("hook settled");
+        }
+        CrashAction.Restart
+    }
+}
+
+supervisor App(grace: duration) {
+    strategy: one_for_one;
+    intensity: 5 within 60s;
+    child quick: Worker { value: 42, mode: 0 } stop: 100ms;
+    child slow: Worker { value: 42, mode: 1 } stop: grace;
+    child failing: Worker { value: 42, mode: 2 };
+    child computing: Worker { value: 42, mode: 3 } stop: grace;
+}
+
+fn main() -> i64 {
+    let sup = spawn App { grace: 100ms };
+    let _ = sup.quick.boom();
+    restarted(sup.quick);
+    assert(sup.quick.get().expect("restarted child replies") == 42);
+    let _ = sup.slow.boom();
+    restarted(sup.slow);
+    assert(sup.slow.get().expect("restarted child replies") == 42);
+    let _ = sup.failing.boom();
+    restarted(sup.failing);
+    assert(sup.failing.get().expect("restarted child replies") == 42);
+    let _ = sup.computing.boom();
+    restarted(sup.computing);
+    assert(sup.computing.get().expect("restarted computing child replies") == 42);
+    stop(sup);
+    stopped(sup);
+    0
+}

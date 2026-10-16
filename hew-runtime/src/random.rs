@@ -329,7 +329,8 @@ pub unsafe extern "C" fn hew_random_shuffle_i64(v: *mut HewVec) {
         if len <= 1 {
             return;
         }
-        let data = vec.data.cast::<i64>();
+        crate::vec::hew_vec_make_unique(v);
+        let data = (*v).data.cast::<i64>();
         MT_STATE.with(|s| {
             let mut st = s.borrow_mut();
             for i in (1..len).rev() {
@@ -501,6 +502,7 @@ unsafe fn load_rng_state(v: *mut HewVec, context: &str) -> Option<[u64; 4]> {
 unsafe fn store_rng_state(v: *mut HewVec, state: [u64; 4]) {
     // SAFETY: caller guarantees `v` is a valid HewVec with elem_size 8, len 4.
     unsafe {
+        crate::vec::hew_vec_make_unique(v);
         let data = (*v).data.cast::<u64>();
         data.write(state[0]);
         data.add(1).write(state[1]);
@@ -637,7 +639,8 @@ pub unsafe extern "C" fn hew_rng_shuffle_i64(state: *mut HewVec, target: *mut He
         let vec = &mut *target;
         let len = vec.len;
         if len > 1 {
-            let data = vec.data.cast::<i64>();
+            crate::vec::hew_vec_make_unique(target);
+            let data = (*target).data.cast::<i64>();
             for i in (1..len).rev() {
                 let j = xoshiro_randbelow(&mut st, (i + 1) as u64) as usize;
                 core::ptr::swap(data.add(i), data.add(j));

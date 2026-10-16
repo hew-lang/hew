@@ -245,6 +245,49 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
     pub(super) fn emit_finish(&self, status: IntValue<'ctx>) -> CodegenResult<()> {
         if let Some(frame) = &self.frame {
             let pointer = self.ctx.ptr_type(AddressSpace::default());
+            if matches!(
+                self.module.callables[self.function.callable.0 as usize].instance,
+                hew_mir::physical::CallableInstance::ActorConstruction { .. }
+            ) {
+                let sweep = get_or_declare_external(
+                    self.llvm,
+                    "hew_coro_state_rc_sweep",
+                    pointer.fn_type(&[pointer.into()], false),
+                )?;
+                let again = self
+                    .ctx
+                    .append_basic_block(self.value, "construction.rc.sweep");
+                let release = self
+                    .ctx
+                    .append_basic_block(self.value, "construction.rc.release");
+                let done = self
+                    .ctx
+                    .append_basic_block(self.value, "construction.rc.done");
+                self.builder
+                    .build_unconditional_branch(again)
+                    .llvm_ctx("finish constructor ownership")?;
+                self.builder.position_at_end(again);
+                let cursor = call_value(
+                    &self.builder,
+                    sweep,
+                    &[frame.state.into()],
+                    "construction.rc.cursor",
+                )?
+                .into_pointer_value();
+                let present = self
+                    .builder
+                    .build_is_not_null(cursor, "construction.rc.present")
+                    .llvm_ctx("test constructor survivors")?;
+                self.builder
+                    .build_conditional_branch(present, release, done)
+                    .llvm_ctx("drain constructor survivors")?;
+                self.builder.position_at_end(release);
+                super::release::drain(&self.value_emitter(), Some(frame), cursor)?;
+                self.builder
+                    .build_unconditional_branch(again)
+                    .llvm_ctx("drain next constructor wave")?;
+                self.builder.position_at_end(done);
+            }
             let finish = get_or_declare_external(
                 self.llvm,
                 "hew_coro_state_finish",
@@ -253,8 +296,18 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                     .fn_type(&[pointer.into(), self.ctx.i32_type().into()], false),
             )?;
             self.builder
-                .build_call(finish, &[frame.state.into(), status.into()], "")
+                .build_call(finish, &[frame.completion_state.into(), status.into()], "")
                 .llvm_ctx("publish checked coroutine outcome")?;
+            if frame.owns_state {
+                let free = get_or_declare_external(
+                    self.llvm,
+                    "hew_coro_state_free",
+                    self.ctx.void_type().fn_type(&[pointer.into()], false),
+                )?;
+                self.builder
+                    .build_call(free, &[frame.state.into()], "")
+                    .llvm_ctx("release authored close context after completion")?;
+            }
             self.builder
                 .build_unconditional_branch(frame.finish)
                 .llvm_ctx("finish checked coroutine")?;
@@ -291,6 +344,126 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .build_call(free, &[handle.into()], "")
             .llvm_ctx("release coroutine operation")?;
         Ok(())
+    }
+
+    pub(super) fn emit_safepoint(
+        &self,
+        normal: &PhysicalEdge,
+        cancel: Option<&PhysicalEdge>,
+    ) -> CodegenResult<()> {
+        let frame = self.frame.as_ref().ok_or_else(|| {
+            CodegenError::FailClosed("safepoint requires a resumable body".into())
+        })?;
+        let continuing = self
+            .ctx
+            .append_basic_block(self.value, "safepoint.continue");
+        let countdown = self
+            .ctx
+            .append_basic_block(self.value, "safepoint.countdown");
+        let slow = self.ctx.append_basic_block(self.value, "safepoint.poll");
+        let enabled = self
+            .builder
+            .build_is_not_null(frame.budget, "safepoint.enabled")
+            .llvm_ctx("test safepoint suppression")?;
+        self.builder
+            .build_conditional_branch(enabled, countdown, continuing)
+            .llvm_ctx("enter safepoint countdown")?;
+        self.builder.position_at_end(countdown);
+        let remaining = self
+            .builder
+            .build_load(self.ctx.i32_type(), frame.budget, "safepoint.remaining")
+            .llvm_ctx("read invocation countdown")?
+            .into_int_value();
+        let remaining = self
+            .builder
+            .build_int_sub(
+                remaining,
+                self.ctx.i32_type().const_int(1, false),
+                "safepoint.next",
+            )
+            .llvm_ctx("decrement invocation countdown")?;
+        self.builder
+            .build_store(frame.budget, remaining)
+            .llvm_ctx("save invocation countdown")?;
+        let exhausted = self
+            .builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                remaining,
+                self.ctx.i32_type().const_zero(),
+                "safepoint.exhausted",
+            )
+            .llvm_ctx("test invocation countdown")?;
+        self.builder
+            .build_conditional_branch(exhausted, slow, continuing)
+            .llvm_ctx("select safepoint slow path")?;
+        self.builder.position_at_end(slow);
+        let poll = get_or_declare_external(
+            self.llvm,
+            "hew_coro_safepoint",
+            self.ctx.i32_type().fn_type(
+                &[
+                    self.ctx.ptr_type(AddressSpace::default()).into(),
+                    self.ctx.i32_type().into(),
+                ],
+                false,
+            ),
+        )?;
+        let status = call_value(
+            &self.builder,
+            poll,
+            &[
+                frame.state.into(),
+                self.ctx
+                    .i32_type()
+                    .const_int(u64::from(hew_mir::SAFEPOINT_BUDGET), false)
+                    .into(),
+            ],
+            "safepoint.status",
+        )?
+        .into_int_value();
+        let yielding = self.ctx.append_basic_block(self.value, "safepoint.yield");
+        let resumed = self.ctx.append_basic_block(self.value, "safepoint.resume");
+        let cancelled = cancel.map_or(frame.invalid_destroy, |_| {
+            self.ctx.append_basic_block(self.value, "safepoint.cancel")
+        });
+        self.builder
+            .build_switch(
+                status,
+                continuing,
+                &[
+                    (self.ctx.i32_type().const_int(1, false), yielding),
+                    (self.ctx.i32_type().const_int(2, false), cancelled),
+                ],
+            )
+            .llvm_ctx("select safepoint outcome")?;
+        self.builder.position_at_end(yielding);
+        frame.suspend(self.ctx, &self.builder, resumed, cancelled)?;
+        self.builder.position_at_end(resumed);
+        if let Some(cancel) = cancel {
+            let cancellation = self.state_value("hew_coro_state_is_cancelled", frame.state)?;
+            let cancellation = self
+                .builder
+                .build_int_compare(
+                    IntPredicate::NE,
+                    cancellation,
+                    self.ctx.i32_type().const_zero(),
+                    "safepoint.cancelled",
+                )
+                .llvm_ctx("test resumed safepoint cancellation")?;
+            self.builder
+                .build_conditional_branch(cancellation, cancelled, continuing)
+                .llvm_ctx("select resumed safepoint outcome")?;
+            self.builder.position_at_end(cancelled);
+            self.initialize_cancellation_fault()?;
+            self.emit_edge(cancel)?;
+        } else {
+            self.builder
+                .build_unconditional_branch(continuing)
+                .llvm_ctx("continue mandatory close after yielding")?;
+        }
+        self.builder.position_at_end(continuing);
+        self.emit_edge(normal)
     }
 
     pub(super) fn emit_sleep(
@@ -429,19 +602,19 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         let frame = self.frame.as_ref().ok_or_else(|| {
             CodegenError::FailClosed("resumable call requires a resumable caller".into())
         })?;
-        let pointer = self.ctx.ptr_type(AddressSpace::default());
-        let child_fn = get_or_declare_external(
-            self.llvm,
-            "hew_coro_state_child",
-            pointer.fn_type(&[pointer.into()], false),
-        )?;
-        let child = call_value(
-            &self.builder,
-            child_fn,
-            &[frame.state.into()],
-            "call.child.state",
-        )?
-        .into_pointer_value();
+        let child = if matches!(
+            self.module.callables[callee.0 as usize].instance,
+            hew_mir::physical::CallableInstance::ActorConstruction { .. }
+        ) {
+            frame.init_child_with(
+                self.ctx,
+                self.llvm,
+                &self.builder,
+                "hew_coro_state_init_construction",
+            )?
+        } else {
+            frame.init_child(self.ctx, self.llvm, &self.builder)?
+        };
         let mut args = args.to_vec();
         args.push(child.into());
         let child_frame = call_value(
@@ -489,13 +662,11 @@ pub(super) fn await_child<'ctx>(
         .build_store(frame_slot, child_frame)
         .llvm_ctx("publish current child frame")?;
     let pointer = ctx.ptr_type(AddressSpace::default());
-    let state_value = |name: &str| -> CodegenResult<IntValue<'ctx>> {
+    let state_value = |private: bool| -> CodegenResult<IntValue<'ctx>> {
         let state = builder
             .build_load(pointer, state_slot, "call.child.state")
             .llvm_ctx("restore current child state")?;
-        let function =
-            get_or_declare_external(llvm, name, ctx.i32_type().fn_type(&[pointer.into()], false))?;
-        Ok(call_value(builder, function, &[state.into()], "child.status")?.into_int_value())
+        coro::invocation_outcome(ctx, builder, state.into_pointer_value(), private)
     };
     let free_handle = |name: &str, slot: PointerValue<'ctx>| -> CodegenResult<()> {
         let handle = builder
@@ -542,7 +713,7 @@ pub(super) fn await_child<'ctx>(
         .build_unconditional_branch(poll)
         .llvm_ctx("poll child call")?;
     builder.position_at_end(poll);
-    let status = state_value("hew_coro_state_status")?;
+    let status = state_value(false)?;
     let pending = builder
         .build_int_compare(
             IntPredicate::EQ,
@@ -572,7 +743,7 @@ pub(super) fn await_child<'ctx>(
         .build_unconditional_branch(outcome)
         .llvm_ctx("finish completed child")?;
     builder.position_at_end(outcome);
-    let status = state_value("hew_coro_state_private_status")?;
+    let status = state_value(true)?;
     free_handle("hew_coro_state_free", state_slot)?;
     Ok(status)
 }
@@ -586,19 +757,7 @@ pub(super) fn invoke_child<'ctx>(
     callee: FunctionValue<'ctx>,
     args: &[BasicMetadataValueEnum<'ctx>],
 ) -> CodegenResult<IntValue<'ctx>> {
-    let pointer = ctx.ptr_type(AddressSpace::default());
-    let create = get_or_declare_external(
-        llvm,
-        "hew_coro_state_child",
-        pointer.fn_type(&[pointer.into()], false),
-    )?;
-    let child = call_value(
-        builder,
-        create,
-        &[frame.state.into()],
-        "structural.child.state",
-    )?
-    .into_pointer_value();
+    let child = frame.init_child(ctx, llvm, builder)?;
     let mut args = args.to_vec();
     args.push(child.into());
     let child_frame =

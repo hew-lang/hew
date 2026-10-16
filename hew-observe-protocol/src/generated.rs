@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 pub const OBSERVE_SCHEMA_VERSION: &str = "v1";
 pub const ACTIONABLE_TRACE_EVENT_TYPES: &[&str] = &[
     "actor.delivery_refused",
+    "actor.rc_sweep",
     "send",
     "spawn",
     "crash",
@@ -208,6 +209,8 @@ pub struct Memory {
     pub bytes_live: u64,
     #[serde(with = "uint64_decimal")]
     pub peak_bytes_live: u64,
+    #[serde(default)]
+    pub rc_live_by_type: Option<Vec<RcSurvivorType>>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -421,6 +424,20 @@ pub struct TraceOverrun {
     pub count: u64,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct RcSurvivorType {
+    pub type_name: String,
+    #[serde(with = "uint64_decimal")]
+    pub count: u64,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct RcSweep {
+    #[serde(with = "uint64_decimal")]
+    pub count: u64,
+    pub by_type: Vec<RcSurvivorType>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct TraceEventWire {
     #[serde(with = "uint64_decimal")]
@@ -446,6 +463,8 @@ struct TraceEventWire {
     #[serde(deserialize_with = "deserialize_required_nullable")]
     handler_name: Option<String>,
     #[serde(default)]
+    rc_sweep: Option<RcSweep>,
+    #[serde(default)]
     reason: Option<String>,
 }
 
@@ -464,6 +483,7 @@ pub struct TraceEvent {
     pub msg_type: i32,
     pub timestamp_ns: u64,
     pub handler_name: Option<String>,
+    pub rc_sweep: Option<RcSweep>,
     pub reason: Option<String>,
 }
 
@@ -511,6 +531,7 @@ impl TryFrom<TraceEventWire> for TraceEvent {
             msg_type: value.msg_type,
             timestamp_ns: value.timestamp_ns,
             handler_name: value.handler_name,
+            rc_sweep: value.rc_sweep,
             reason: value.reason,
         })
     }
@@ -532,6 +553,7 @@ impl From<&TraceEvent> for TraceEventWire {
             msg_type: value.msg_type,
             timestamp_ns: value.timestamp_ns,
             handler_name: value.handler_name.clone(),
+            rc_sweep: value.rc_sweep.clone(),
             reason: value.reason.clone(),
         }
     }

@@ -290,6 +290,26 @@ fn assert_accept_fixture_parity(name: &str) {
     );
 }
 
+#[test]
+fn vector_value_snapshots_survive_native_and_wasi_mutation() {
+    require_codegen();
+    require_wasi_runner();
+    let source = repo_root().join("tests/core-acceptance/cases/vector-value-parameter.hew");
+    for (target, output) in [
+        ("native", support::run_bounded_hew_run(&source, repo_root())),
+        ("WASI", run_wasi_example(&source)),
+    ] {
+        assert!(
+            output.status.success(),
+            "{target} vector snapshot mutation failed\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+        assert_eq!(output.stdout, b"independent vector\n");
+        assert!(output.stderr.is_empty());
+    }
+}
+
 /// The read half waits on an empty pipe while an actor still holds the live
 /// sink. On wasm32 the waiting stack is the process driver, so this is the case
 /// that proves the driver runs the producer instead of parking forever.

@@ -108,8 +108,8 @@ public-host-stdlib = [
         assert!(stable_symbols().contains("hew_env_get"));
         assert!(stable_symbols().contains("hew_duration_is_zero"));
         assert!(is_classified_hew_ffi_symbol("hew_duration_is_zero"));
-        assert!(is_classified_hew_ffi_symbol("hew_actor_cooperate"));
-        assert!(!stable_symbols().contains("hew_actor_cooperate"));
+        assert!(is_classified_hew_ffi_symbol("hew_coro_safepoint"));
+        assert!(!stable_symbols().contains("hew_coro_safepoint"));
         assert!(!is_classified_hew_ffi_symbol("hew_testffi_name"));
     }
 }

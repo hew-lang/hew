@@ -309,6 +309,8 @@ pub struct PhysicalCallable {
     /// Derived from verified suspension and call edges, then checked again
     /// against the physical CFG before emission.
     pub is_resumable: bool,
+    /// Exact authored release body; invocation uses private cleanup ancestry.
+    pub is_authored_close: bool,
     /// A `var self` method: its fault exits write the receiver into the
     /// dual result's receiver field instead of releasing it.
     pub receiver_handback: bool,
@@ -434,6 +436,8 @@ pub struct PhysicalVtableId(pub u32);
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PhysicalVtableSlot {
     pub slot: u32,
+    /// Every table implementing this method uses the same completion ABI.
+    pub is_resumable: bool,
     /// Trait method declaration selected by the checker for this slot.
     pub method: hew_types::DefId,
     pub callee: CallableId,
@@ -1137,6 +1141,11 @@ pub enum PhysicalTerminator {
         cancel: PhysicalEdge,
         unwind: PhysicalEdge,
     },
+    /// A structural scheduling poll with SIR-authored cancellation cleanup.
+    Safepoint {
+        normal: PhysicalEdge,
+        cancel: Option<PhysicalEdge>,
+    },
     Sleep {
         duration: StorageId,
         normal: PhysicalEdge,
@@ -1199,6 +1208,8 @@ pub enum PhysicalTerminator {
     /// `word` is `VTABLE_PREFIX_WORDS + slot`.
     DynCall {
         receiver: ArgumentTransfer,
+        /// Completion ABI shared by every table implementing this method.
+        is_resumable: bool,
         /// The table word holding the slot: the layout slot past the
         /// runtime prefix.
         word: u32,

@@ -50,6 +50,7 @@ override_dh_auto_install:
 	              $(DESTDIR)/usr/lib/hew/libhew.a
 	cp -r hew-v$(HEW_VERSION)-linux-$(HEW_ARCH)/std/. $(DESTDIR)/usr/share/hew/std/ 2>/dev/null || true
 	cp -r hew-v$(HEW_VERSION)-linux-$(HEW_ARCH)/include/. $(DESTDIR)/usr/include/
+	if [ -d hew-v$(HEW_VERSION)-linux-$(HEW_ARCH)/share ]; then cp -r hew-v$(HEW_VERSION)-linux-$(HEW_ARCH)/share/. $(DESTDIR)/usr/share/; fi
 	cp hew-v$(HEW_VERSION)-linux-$(HEW_ARCH)/completions/hew.bash \
 	   $(DESTDIR)/usr/share/bash-completion/completions/hew 2>/dev/null || true
 	cp hew-v$(HEW_VERSION)-linux-$(HEW_ARCH)/completions/hew.zsh \

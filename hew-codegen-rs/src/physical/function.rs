@@ -49,7 +49,22 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     CodegenError::FailClosed("resumable body has no invocation state".into())
                 })?
                 .into_pointer_value();
-            Some(coro::begin(ctx, &module.llvm, &builder, value, state)?)
+            let execution = if callable.is_authored_close {
+                let pointer = ctx.ptr_type(AddressSpace::default());
+                let create = get_or_declare_external(
+                    &module.llvm,
+                    "hew_coro_state_cleanup_child",
+                    pointer.fn_type(&[pointer.into()], false),
+                )?;
+                suspend::call_value(&builder, create, &[state.into()], "close.context")?
+                    .into_pointer_value()
+            } else {
+                state
+            };
+            let mut frame = coro::begin(ctx, &module.llvm, &builder, value, execution)?;
+            frame.completion_state = state;
+            frame.owns_state = callable.is_authored_close;
+            Some(frame)
         } else {
             None
         };
@@ -124,6 +139,14 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 task_scopes.insert(*scope, slot);
             }
         }
+        let values = ValueEmitter {
+            module: module.module,
+            ctx,
+            llvm: &module.llvm,
+            builder: &builder,
+            value,
+            fault_sink: Some((active_fault, active_status)),
+        };
         let mut param_index = 0u32;
         for ((parameter, storage_id), physical_param) in value
             .get_params()
@@ -137,17 +160,13 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             }
             let loaded = match physical_param.carrier {
                 ParamCarrier::Direct => parameter,
-                ParamCarrier::Indirect => builder
-                    .build_load(
-                        llvm_type(ctx, &physical_param.layout.repr)?,
-                        parameter.into_pointer_value(),
-                        "param.indirect",
-                    )
-                    .llvm_ctx("load indirect physical parameter")?,
+                ParamCarrier::Indirect => values.load_value(
+                    parameter.into_pointer_value(),
+                    &physical_param.layout,
+                    "param.indirect",
+                )?,
             };
-            builder
-                .build_store(slots[storage_id.0 as usize], loaded)
-                .llvm_ctx("store physical parameter")?;
+            values.store_value(slots[storage_id.0 as usize], &physical_param.layout, loaded)?;
             if let Some((emitter, function_debug, _)) = &debug {
                 // Resumable parameter stores execute after coroutine initialization.
                 emitter.local_value(
@@ -796,6 +815,9 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             .map(|field| self.load(*field, "variant.make.field"))
             .collect::<CodegenResult<Vec<_>>>()?;
         self.write_variant_value(self.slots[dest.0 as usize], variant, &values, glue_id)?;
+        if self.debug.is_some() {
+            self.load(dest, "variant.debug.value")?;
+        }
         for field in fields {
             self.clear_owned(*field)?;
         }

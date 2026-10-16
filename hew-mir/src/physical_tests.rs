@@ -16,8 +16,8 @@ mod utf8_fixture {
 
 use hew_hir::{lower_program_host_target, ItemId, ResolutionCtx};
 use hew_sir::{
-    BoundaryOperand, CallableInstance, CheckedFailure, FunctionSourceOrigin, Operand, Provenance,
-    SemBlock, SemCallConv, SemCallable, SemCallableKind, SemSignature, ValueDef,
+    BoundaryOperand, CheckedFailure, FunctionSourceOrigin, Operand, Provenance, SemBlock,
+    SemCallConv, SemCallable, SemCallableKind, SemSignature, ValueDef,
 };
 use hew_types::{module_registry::ModuleRegistry, Checker, DefId, SendFact, TypeFacts, ValueClass};
 
@@ -521,6 +521,28 @@ fn main() {
         .unwrap()
         .into_unverified();
     verify_physical_module(&physical).expect("source dispatch verifies");
+    let mut wrong_slot_abi = physical.clone();
+    wrong_slot_abi.vtables[0].slots[0].is_resumable =
+        !wrong_slot_abi.vtables[0].slots[0].is_resumable;
+    assert!(verify_physical_module(&wrong_slot_abi)
+        .unwrap_err()
+        .message
+        .contains("vtable slot has an inconsistent resumable ABI"));
+    let mut wrong_call_abi = physical.clone();
+    let dispatch = wrong_call_abi
+        .functions
+        .iter_mut()
+        .flat_map(|function| &mut function.blocks)
+        .find_map(|block| match &mut block.terminator {
+            PhysicalTerminator::DynCall { is_resumable, .. } => Some(is_resumable),
+            _ => None,
+        })
+        .expect("dynamic call");
+    *dispatch = !*dispatch;
+    assert!(verify_physical_module(&wrong_call_abi)
+        .unwrap_err()
+        .message
+        .contains("dynamic dispatch has an inconsistent resumable ABI"));
     let methods: Vec<_> = physical
         .vtables
         .iter()
@@ -2140,6 +2162,7 @@ fn verifier_rejects_overwriting_a_maybe_live_owner() {
         instance: CallableInstance::Monomorphic,
         symbol: "malformed_owner_merge".to_string(),
         is_resumable: false,
+        is_authored_close: false,
         receiver_handback: false,
         params: vec![],
         return_ty: ResolvedTy::Unit,

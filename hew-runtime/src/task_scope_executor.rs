@@ -33,6 +33,7 @@ struct Driver {
     group: Option<RaceGroup>,
     fault: *mut HewFault,
     owner: u64,
+    rc_owner: Option<Arc<crate::rc::RcAllocations>>,
     request_deadline: crate::request_deadline::RequestDeadline,
 }
 
@@ -59,6 +60,8 @@ impl TaskExecution {
                 group: None,
                 fault: ptr::null_mut(),
                 owner: crate::fault::owning_actor_at_spawn(),
+                // SAFETY: the scope outlives every submitted child.
+                rc_owner: unsafe { (*(*task).scope).rc_owner.clone() },
                 request_deadline: crate::request_deadline::RequestDeadline::current(),
             }),
         });
@@ -114,6 +117,10 @@ impl Driver {
                     release,
                 };
                 self.state = hew_coro_state_new(&raw const waker, (*self.task).cancel_token);
+                (*self.state)
+                    .execution_mut()
+                    .rc_owner
+                    .clone_from(&self.rc_owner);
                 let (invocation, result) = {
                     let mut task = checked(self.task).lock_or_recover();
                     (

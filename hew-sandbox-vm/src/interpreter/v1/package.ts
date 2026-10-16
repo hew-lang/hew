@@ -201,6 +201,7 @@ export interface VtableShape {
 }
 
 export interface FunctionV1 {
+  actor_construction?: boolean;
   id: number;
   name: string;
   params: ValueDef[];
@@ -491,6 +492,7 @@ export type TermV1 =
   | (TermBase &
       CallShape & {
         op: "runtime.call";
+        shared_payload_type?: string;
         family: number;
         structural?: number | null;
         callbacks?: number[];
@@ -548,7 +550,7 @@ export type TermV1 =
       inputs: BoundaryOperand[];
       result: CallResult;
       resumes: Edge[];
-      cancel: Edge;
+      cancel: Edge | null;
       unwind: Edge | null;
     });
 
@@ -637,6 +639,7 @@ export interface SupervisorShape {
     role: { actor: number } | { supervisor: number };
     restart: string;
     stop_ns?: number | null;
+    stop_config?: number;
     pool_count?: number;
     spawn: number;
   }>;

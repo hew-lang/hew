@@ -995,6 +995,18 @@ fn imported_generic_resources_specialize_and_drain_on_every_exit() {
 }
 
 #[test]
+fn parent_relative_generic_actor_imports_execute() {
+    let mut inputs = hew_compile::SourceSet::in_memory();
+    inputs.insert(
+        "../worker.hew",
+        "pub actor Worker<T> { let value: T; receive fn read() -> i64 { 1 } }",
+    );
+    let source = "import \"../worker.hew\"; fn main() { let worker = spawn Worker { value: 1 }; assert(worker.read().expect(\"read\") == 1); stop(worker); stopped(worker); }";
+    let trace = execute_options(source, "ok", "{}", inputs);
+    assert_eq!(trace["final_state"]["exit_code"], 0);
+}
+
+#[test]
 fn confined_supplied_services_keep_generic_and_erased_cleanup_authority() {
     let mut inputs = hew_compile::SourceSet::in_memory();
     inputs.insert(

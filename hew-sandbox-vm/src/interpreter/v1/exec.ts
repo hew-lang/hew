@@ -2437,6 +2437,11 @@ class ExecutorV1 {
           this.takeEdge(act, term.resumes[0]!);
           return;
         }
+        if (act.context.pendingCancellation && term.cancel) {
+          act.fault = act.context.pendingCancellation;
+          this.takeEdge(act, term.cancel);
+          return;
+        }
         const budget = term.detail?.budget;
         if (!Number.isInteger(budget) || budget <= 0)
           throw new Error(

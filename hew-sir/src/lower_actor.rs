@@ -1140,7 +1140,14 @@ impl Builder<'_, '_> {
             }
             values.push(value);
         }
-        if argument_order.len() != signature.params.len() {
+        let pool_count = match &operation {
+            crate::ActorOperation::SupervisorSpawn(id) => self.service.supervisors[id.0 as usize]
+                .children
+                .iter()
+                .find_map(|child| child.pool_count),
+            _ => None,
+        };
+        if argument_order.len() + usize::from(pool_count.is_some()) != signature.params.len() {
             return Err("actor argument count differs from its protocol".into());
         }
         let mut args = Vec::new();
@@ -1185,6 +1192,10 @@ impl Builder<'_, '_> {
                 &parameter.ty,
                 Provenance::Site(expression.site),
             )?);
+        }
+        if let Some(count) = pool_count {
+            let count = self.lower_supervisor_pool_count(expression, count, &args)?;
+            args.push(count);
         }
         self.emit_actor_call(operation, signature, args)
     }

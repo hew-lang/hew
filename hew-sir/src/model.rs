@@ -107,6 +107,11 @@ pub enum CallableInstance {
         supervisor: crate::SupervisorId,
         child: u32,
     },
+    /// Construction-time pool count evaluated against borrowed config.
+    SupervisorPoolCount {
+        supervisor: crate::SupervisorId,
+        child: u32,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -765,11 +765,12 @@ fn primitive_repr(
         ]),
         // A pool view addresses its members the same way a role addresses one
         // child: the owning supervisor and the first of the pool's consecutive
-        // slots. The member count is a declaration fact, so it is not carried.
+        // slots, with the immutable extent evaluated at construction.
         pool if pool.is_builtin(hew_types::BuiltinType::SupervisorPool) => {
             PhysicalRepr::Struct(vec![
                 integer_layout(ctx, target, pointer_bits)?,
                 integer_layout(ctx, target, 32)?,
+                integer_layout(ctx, target, 64)?,
             ])
         }
         // A strong handle is the payload pointer and a weak handle the

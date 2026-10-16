@@ -16,10 +16,10 @@ struct hew_cabi_manifest_row {
   enum hew_cabi_manifest_ownership ownership;
 };
 
-#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1651u
+#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1652u
 #define HEW_CABI_MANIFEST_STATIC_COUNT 24u
 
-static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1651] = {
+static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1652] = {
     {"hew_actor_ask",
      "{\"native\": \"fn hew_actor_ask( *mut HewActor, i32, *mut c_void, usize, "
      ") -> *mut c_void\"}",
@@ -6892,6 +6892,11 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1651] = {
      "c_int, ) -> usize\"}",
      "native", "non-declarable", "not-applicable", "no-in-signature-extent",
      HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_supervisor_native_pool_count",
+     "{\"native\": \"fn hew_supervisor_native_pool_count( HewLocalPidId, *mut "
+     "*mut HewFault, ) -> i64\"}",
+     "native", "non-declarable", "not-applicable", "no-in-signature-extent",
+     HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_supervisor_native_restart_wait_free",
      "{\"native\": \"fn hew_supervisor_native_restart_wait_free( *mut "
      "HewNativeRestartWait)\"}",
@@ -6925,7 +6930,8 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1651] = {
     {"hew_supervisor_native_spawn",
      "{\"native\": \"fn hew_supervisor_native_spawn( c_int, c_int, c_int, *mut "
      "c_void, Option<unsafe extern \\\"C\\\" fn(*mut c_void)>, *const "
-     "HewNativeChildSpec, usize, *mut *mut HewFault, ) -> HewLocalPidId\"}",
+     "HewNativeChildSpec, usize, i64, *mut *mut HewFault, ) -> "
+     "HewLocalPidId\"}",
      "native", "non-declarable", "not-applicable", "no-in-signature-extent",
      HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_supervisor_nested_get",

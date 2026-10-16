@@ -1184,6 +1184,7 @@ impl<'a> InstanceService<'a> {
             | CallableInstance::Closure(_)
             | CallableInstance::EntryAdapter
             | CallableInstance::SupervisorChild { .. }
+            | CallableInstance::SupervisorPoolCount { .. }
             | CallableInstance::ActorConstruction { .. } => {
                 unreachable!("closure, entry adapter and child spawn inputs are resolved above")
             }

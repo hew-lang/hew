@@ -469,11 +469,8 @@ impl Checker {
     /// A static pool (`pool workers: Worker { .. } count: N`) spawns exactly N
     /// fungible members at bootstrap. The clause is REQUIRED on a pool
     /// declaration, must type as an integer, and — when a compile-time integer
-    /// literal — must be positive. A non-literal expr (`count: config.workers`)
-    /// is accepted here (the type resolves through the config record layout),
-    /// but codegen currently rejects it at compile time with
-    /// `CodegenError::FailClosed` — the dynamic `0..N` bootstrap loop is not
-    /// yet emitted. Use a literal `count: N` until that loop lands.
+    /// literal — must be positive. A non-literal expression is evaluated once
+    /// at construction and checked before any pool member is spawned.
     ///
     /// Must run with the supervisor's config params bound in scope (it is
     /// invoked from `check_supervisor_init_args`) so a `config.field` count

@@ -50,18 +50,17 @@ pub enum SemStopDeadline {
 }
 
 /// One declared child. Its runtime slots are its position among the children
-/// of the same role kind, in declaration order; a pool occupies `pool_count`
-/// consecutive slots from that base.
+/// of the same role kind, in declaration order. A pool is the sole declaration
+/// of a simple-one-for-one supervisor and fills its actor slots at construction.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SemSupervisorChild {
     pub name: String,
     pub role: SemSupervisedRole,
     pub restart: SemRestartPolicy,
     pub stop_deadline: SemStopDeadline,
-    /// `None` for `child name: Type`; `Some(n)` for `pool name: Type count: n`.
-    /// A pool's members are fungible: the same spawn callable fills every one
-    /// of its `n` slots, and each slot restarts on its own.
-    pub pool_count: Option<u32>,
+    /// A checked count callable over borrowed config, evaluated once before
+    /// bootstrap. `None` identifies an ordinary single child.
+    pub pool_count: Option<CallableId>,
     /// `fn(config...) -> handle`: evaluates the declared init arguments against
     /// the supervisor's config and spawns one incarnation. The supervisor calls
     /// it for the initial spawn and for every restart.
@@ -93,18 +92,6 @@ impl SemModule {
     }
 }
 
-impl SemSupervisorChild {
-    /// How many runtime slots this declaration occupies: one per static child,
-    /// `count` per pool.
-    #[must_use]
-    pub const fn slots(&self) -> u32 {
-        match self.pool_count {
-            None => 1,
-            Some(count) => count,
-        }
-    }
-}
-
 impl SemSupervisor {
     /// The first runtime slot of one child within its role kind. A pool's
     /// member `i` occupies `slot(child) + i`.
@@ -124,17 +111,7 @@ impl SemSupervisor {
         self.children[..child]
             .iter()
             .filter(|sibling| kind(&sibling.role))
-            .try_fold(0u32, |base, sibling| base.checked_add(sibling.slots()))
-    }
-
-    /// Every runtime slot the declared children occupy, in registration order.
-    #[must_use]
-    pub fn registered_slots(&self) -> u32 {
-        self.children
-            .iter()
-            .map(SemSupervisorChild::slots)
-            .try_fold(0u32, u32::checked_add)
-            .unwrap_or(u32::MAX)
+            .try_fold(0u32, |base, _| base.checked_add(1))
     }
 
     /// The stable role a lookup produces, for either child kind.
@@ -218,18 +195,22 @@ impl SemSupervisor {
         if self.window_secs == 0 {
             return Err("supervisor restart budget requires a positive window".into());
         }
+        if self.strategy == SemRestartStrategy::SimpleOneForOne
+            && (self.children.len() != 1 || self.children[0].pool_count.is_none())
+        {
+            return Err("simple_one_for_one requires exactly one pool".into());
+        }
         let mut names = std::collections::BTreeSet::new();
         for (index, child) in self.children.iter().enumerate() {
             if !names.insert(child.name.as_str()) {
                 return Err("supervisor child name is repeated".into());
             }
-            if let Some(count) = child.pool_count {
-                if count == 0 {
-                    return Err("a pool child requires a positive count".into());
-                }
-                if self.strategy != SemRestartStrategy::SimpleOneForOne {
-                    return Err("a pool child requires the `simple_one_for_one` strategy".into());
-                }
+            if child.pool_count.is_some()
+                && (self.strategy != SemRestartStrategy::SimpleOneForOne
+                    || self.children.len() != 1
+                    || !matches!(child.role, SemSupervisedRole::Actor(_)))
+            {
+                return Err("a pool requires one actor declaration and simple_one_for_one".into());
             }
             self.child_handle_ty(index, &module.actors, &module.supervisors)?;
             let spawned = match child.role {
@@ -244,6 +225,30 @@ impl SemSupervisor {
                 }
             }
             .ok_or("supervised role has no descriptor")?;
+            if let Some(count) = child.pool_count {
+                let callable = module.callable(count).ok_or("pool count has no callable")?;
+                if callable.kind != crate::SemCallableKind::HewDirect
+                    || !callable.signature.return_ty.is_integer()
+                    || callable.signature.params.len() != self.config.len()
+                    || callable
+                        .signature
+                        .params
+                        .iter()
+                        .zip(&self.config)
+                        .any(|(param, ty)| {
+                            param.ty != *ty
+                                || !matches!(
+                                    param.passing,
+                                    crate::SemParamPassing::ReadOnly
+                                        | crate::SemParamPassing::Borrow
+                                )
+                        })
+                {
+                    return Err(
+                        "pool count callable differs from its config or integer result".into(),
+                    );
+                }
+            }
             let callable = module
                 .callables
                 .iter()

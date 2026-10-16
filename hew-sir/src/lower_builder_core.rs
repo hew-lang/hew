@@ -293,6 +293,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             (
                 CallableInstance::Monomorphic
                 | CallableInstance::SupervisorChild { .. }
+                | CallableInstance::SupervisorPoolCount { .. }
                 | CallableInstance::ActorConstruction { .. },
                 true,
             ) => {}

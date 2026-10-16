@@ -240,8 +240,8 @@ pub struct SupervisorChild {
     pub stop_ns: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stop_config: Option<usize>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub pool_count: Option<u32>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub is_pool: bool,
     pub spawn: u32,
 }
 
@@ -967,7 +967,7 @@ impl<'m> Walker<'m> {
                                     hew_sir::SemStopDeadline::Config(index) => Some(index),
                                     _ => None,
                                 },
-                                pool_count: child.pool_count,
+                                is_pool: child.pool_count.is_some(),
                                 spawn: self.function_id(child.spawn)?,
                             })
                         })

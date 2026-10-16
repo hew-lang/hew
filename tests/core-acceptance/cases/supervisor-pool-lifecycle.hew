@@ -21,15 +21,20 @@ actor Worker {
     }
 }
 
-supervisor Farm {
+fn pool_size(size: i64, label: string) -> i64 {
+    println(label);
+    size + 1
+}
+
+supervisor Farm(size: i64, label: string) {
     strategy: simple_one_for_one;
     intensity: 5 within 60s;
 
-    pool workers: Worker { id: 3, tag: "pool-member" } count: 4;
+    pool workers: Worker { id: size, tag: label } count: pool_size(size, label);
 }
 
 fn main() {
-    let farm = spawn Farm;
+    let farm = spawn Farm { size: 3, label: "pool-member" };
     let workers = farm.workers;
     println(workers.len());
     match workers.get(4) {
@@ -75,4 +80,5 @@ fn main() {
     stop(farm);
     stopped(farm);
     println("stopped");
+    println(workers.len());
 }

@@ -653,7 +653,7 @@ impl BuiltinType {
     /// This is codegen representation authority, not an ownership or source-
     /// level handle classification. In particular, `RemotePid<T>` is excluded
     /// because its value is an inline location aggregate, while
-    /// `SupervisorPool<S, T>` is a two-field aggregate. Consumers must use this
+    /// `SupervisorPool<S, T>` is a three-field aggregate. Consumers must use this
     /// discriminator instead of presentation names so renamed builtin spellings
     /// retain their ABI and same-spelling user nominals cannot acquire it.
     #[must_use]

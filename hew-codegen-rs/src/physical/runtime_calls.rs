@@ -138,6 +138,13 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             _ => {}
         }
         match action.family {
+            RuntimeCallFamily::SupervisorPool(hew_types::runtime_call::SupervisorPoolOp::Len) => {
+                return self.emit_supervisor_pool_len(
+                    &transfers.iter().map(argument_source).collect::<Vec<_>>(),
+                    required_result()?,
+                    normal,
+                );
+            }
             RuntimeCallFamily::SupervisorPool(_) => {
                 let option = match action.carrier {
                     PhysicalRuntimeCarrier::Variant(id) => Some(id),

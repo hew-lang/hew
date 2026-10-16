@@ -83,7 +83,7 @@ impl RuntimeCallFamily {
                 // trapping and awaiting forms hand back the member itself.
                 physical: match op {
                     SupervisorPoolOp::Get => RuntimePhysicalForm::VariantResult,
-                    SupervisorPoolOp::Member => RuntimePhysicalForm::Direct,
+                    SupervisorPoolOp::Len | SupervisorPoolOp::Member => RuntimePhysicalForm::Direct,
                 },
                 c_return: RuntimeCReturn::Storage,
             },

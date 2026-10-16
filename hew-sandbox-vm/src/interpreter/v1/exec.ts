@@ -1993,8 +1993,15 @@ class ExecutorV1 {
     operation: string,
   ): void {
     const [view, index] = term.args.map((arg) => this.boundary(act, arg));
-    if (view?.kind !== "vector" || index?.kind !== "i64")
-      throw new Error("pool operation has no view and index");
+    if (view?.kind !== "vector") throw new Error("pool operation has no view");
+    if (operation === "Len") {
+      this.completeShim(act, term, {
+        kind: "i64",
+        value: BigInt(view.items.length),
+      });
+      return;
+    }
+    if (index?.kind !== "i64") throw new Error("pool operation has no index");
     const value = view.items[Number(index.value)];
     if (operation === "Get") {
       this.completeShim(
@@ -3385,21 +3392,48 @@ class ExecutorV1 {
           (layout) => layout.id === operation.supervisor,
         );
         if (!layout) throw new Error("supervisor descriptor is missing");
+        const isPool = layout.children.some((child) => child.is_pool);
+        const count = isPool ? args[args.length - 1] : undefined;
+        if (isPool && count?.kind !== "i64")
+          throw new Error("pool construction has no count");
+        const config = isPool ? args.slice(0, -1) : args;
+        if (
+          count?.kind === "i64" &&
+          (count.value <= 0n || count.value > 2147483647n)
+        ) {
+          const fault: Fault = {
+            kind: "panic",
+            message: "supervisor pool count must be between 1 and 2147483647",
+          };
+          this.running = false;
+          this.closeValueAsync(
+            { kind: "record", typeId: "", fields: config },
+            fault.message,
+            (closeFault) => {
+              this.raiseFault(
+                act,
+                combineFaults(fault, closeFault)!,
+                term.unwind,
+              );
+              this.scheduler.enqueue(act.context.id, () => this.runFrame(act));
+            },
+            act.context.actor,
+            act.rcOwner,
+          );
+          return;
+        }
+        const members = count?.kind === "i64" ? Number(count.value) : 1;
         const owner: SupervisorInstance = {
           id: this.ids.supervisor(),
           layout,
-          config: args,
-          children: layout.children.flatMap((child) =>
-            Array.from({ length: child.pool_count ?? 1 }, () => null),
+          config,
+          children: layout.children.flatMap(() =>
+            Array.from({ length: members }, () => null),
           ),
           specs: layout.children.flatMap((child) =>
-            Array.from({ length: child.pool_count ?? 1 }, () => child),
+            Array.from({ length: members }, () => child),
           ),
-          offsets: layout.children.map((_child, index) =>
-            layout.children
-              .slice(0, index)
-              .reduce((sum, child) => sum + (child.pool_count ?? 1), 0),
-          ),
+          offsets: layout.children.map((_child, index) => index),
           recovering: new Set(),
           restartBusy: false,
           pendingRestarts: [],
@@ -3458,7 +3492,7 @@ class ExecutorV1 {
           this.completeShim(act, term, {
             kind: "vector",
             elementType: "role",
-            items: Array.from({ length: spec.pool_count ?? 1 }, (_, index) =>
+            items: Array.from({ length: owner.children.length }, (_, index) =>
               makeRole(offset + index),
             ),
           });

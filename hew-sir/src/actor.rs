@@ -1051,7 +1051,15 @@ impl ActorOperation {
         };
         Ok(match self {
             Self::SupervisorSpawn(_) => {
-                consume(supervisor.config.clone(), supervisor.handle_ty.clone())
+                let mut arguments = supervisor.config.clone();
+                if supervisor
+                    .children
+                    .iter()
+                    .any(|child| child.pool_count.is_some())
+                {
+                    arguments.push(ResolvedTy::I64);
+                }
+                consume(arguments, supervisor.handle_ty.clone())
             }
             Self::SupervisorChild {
                 child,

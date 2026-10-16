@@ -82,7 +82,7 @@ pub unsafe extern "C" fn hew_node_peer_new(
                 PeerCredential::NoiseKey(bytes.try_into().map_err(|_| AskError::Unauthorized)?)
             }
             TransportSelection::QuicMesh if !bytes.is_empty() => PeerCredential::Spki(bytes),
-            _ => return Err(AskError::Unauthorized),
+            TransportSelection::QuicMesh => return Err(AskError::Unauthorized),
         };
         manager
             .auth

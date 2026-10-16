@@ -518,6 +518,7 @@ mod tests {
                 Some(drop_config),
                 [].as_ptr(),
                 0,
+                0,
                 &raw mut fault,
             );
             assert!(fault.is_null());
@@ -622,6 +623,7 @@ mod tests {
                 Some(drop_child),
                 [].as_ptr(),
                 0,
+                0,
                 &raw mut fault,
             );
             assert!(fault.is_null());
@@ -647,6 +649,7 @@ mod tests {
                 Some(drop_parent),
                 children.as_ptr(),
                 children.len(),
+                0,
                 &raw mut fault,
             );
             assert!(fault.is_null());

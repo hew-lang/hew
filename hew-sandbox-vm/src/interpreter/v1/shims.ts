@@ -78,7 +78,7 @@ export function resolveRuntimeShim(
 ): RuntimeShim | undefined {
   switch (entry.family) {
     case "SupervisorPool":
-      return ["Member", "Get"].includes(String(entry.detail))
+      return ["Len", "Member", "Get"].includes(String(entry.detail))
         ? () => {
             throw new Error("SupervisorPool requires its resumable executor");
           }

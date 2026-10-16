@@ -1590,6 +1590,7 @@ non-declarable = [
   # incarnation. It is the whole lowering of a `supervisor` declaration; user
   # code has no way to name it or the child table it reads.
   "hew_supervisor_native_child",
+  "hew_supervisor_native_pool_count",
   "hew_supervisor_native_restart_wait_free",
   "hew_supervisor_native_restart_wait_new",
   "hew_supervisor_native_restart_wait_poll",

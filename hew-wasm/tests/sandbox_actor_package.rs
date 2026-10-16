@@ -811,14 +811,39 @@ fn nested_supervisor_roles_follow_group_replacements() {
 
 #[test]
 fn pools_restart_only_the_failed_member_from_its_template() {
-    let trace = execute(include_str!(
-        "../../tests/core-acceptance/cases/supervisor-pool-lifecycle.hew"
-    ));
-    assert_eq!(
-        stdout(&trace),
-        "4\nno member 4\n4\n4\n4\n4\n1\n3\n11\n4\n4\n4\nstopped\n"
+    assert_native_manifest(
+        "supervisor-pool-lifecycle",
+        hew_compile::SourceSet::in_memory(),
     );
-    assert_eq!(trace["final_state"]["exit_code"], 0);
+}
+
+#[test]
+fn pool_count_refusal_precedes_child_bootstrap_and_cleans_the_caller() {
+    for source in [
+        include_str!("../../tests/core-acceptance/cases/supervisor-pool-count-zero.hew"),
+        include_str!("../../tests/core-acceptance/cases/supervisor-pool-count-negative.hew"),
+        include_str!("../../tests/core-acceptance/cases/supervisor-pool-count-overflow.hew"),
+    ] {
+        let trace = execute_expected(source, "panic");
+        assert_eq!(stdout(&trace), "count evaluated\ncaller cleaned\n");
+        assert_eq!(
+            trace["final_state"]["runtime_failures"][0]["message"],
+            "supervisor pool count must be between 1 and 2147483647",
+        );
+    }
+}
+
+#[test]
+fn pool_count_expression_fault_cleans_borrowed_construction_config() {
+    let trace = execute_expected(
+        include_str!("../../tests/core-acceptance/cases/supervisor-pool-count-fault.hew"),
+        "panic",
+    );
+    assert_eq!(stdout(&trace), "count evaluated\ncaller cleaned\n");
+    assert_eq!(
+        trace["final_state"]["runtime_failures"][0]["message"],
+        "count evaluated"
+    );
 }
 
 #[test]

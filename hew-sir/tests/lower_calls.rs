@@ -766,3 +766,37 @@ fn generic_scalar_instances_support_mutual_recursion_without_legacy_monomorphisa
         lowered.callable_statuses
     );
 }
+
+#[test]
+fn supervisor_pool_rejects_missing_or_noninteger_count_producer() {
+    let lowered = lower_source(
+        r"
+actor Worker { receive fn read() -> i64 { 1 } }
+supervisor Farm(size: i64) {
+    strategy: simple_one_for_one;
+    pool workers: Worker count: size + 1;
+}
+fn main() {
+    let farm = spawn Farm { size: 2 };
+    stop(farm);
+    stopped(farm);
+}
+",
+    );
+    assert!(
+        verify_module(&lowered.module).is_empty(),
+        "{:#?}",
+        verify_module(&lowered.module)
+    );
+    assert_eq!(lowered.module.supervisors.len(), 1);
+    let mut missing = lowered.module.clone();
+    missing.supervisors[0].children[0].pool_count = None;
+    assert!(format!("{:?}", verify_module(&missing))
+        .contains("simple_one_for_one requires exactly one pool"));
+
+    let mut noninteger = lowered.module;
+    noninteger.supervisors[0].children[0].pool_count =
+        Some(noninteger.supervisors[0].children[0].spawn);
+    assert!(format!("{:?}", verify_module(&noninteger))
+        .contains("pool count callable differs from its config or integer result"));
+}

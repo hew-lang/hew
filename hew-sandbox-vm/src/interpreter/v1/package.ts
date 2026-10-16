@@ -651,7 +651,7 @@ export interface SupervisorShape {
     restart: string;
     stop_ns?: number | null;
     stop_config?: number;
-    pool_count?: number;
+    is_pool?: boolean;
     spawn: number;
   }>;
 }

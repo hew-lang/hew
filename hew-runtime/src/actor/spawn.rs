@@ -931,25 +931,14 @@ pub unsafe extern "C" fn hew_actor_publish_native(
             // SAFETY: generated code provides this static descriptor slice.
             unsafe { std::slice::from_raw_parts(periodic, periodic_count) }
         };
-        for handler in handlers {
-            // SAFETY: the actor is pinned and remains undispatchable until publication.
-            if unsafe {
-                crate::timer_periodic::hew_actor_schedule_periodic(
-                    raw,
-                    handler.message,
-                    handler.interval_ms,
-                )
+        // SAFETY: the actor is pinned and undispatchable until publication.
+        if !unsafe { crate::timer_periodic::start_actor_periodic(raw, handlers) } {
+            // SAFETY: the caller provides an empty fault output.
+            unsafe {
+                *fault =
+                    crate::fault::hew_fault_new(crate::internal::types::HewError::ErrOom as i32);
             }
-            .is_null()
-            {
-                // SAFETY: the caller provides an empty fault output.
-                unsafe {
-                    *fault = crate::fault::hew_fault_new(
-                        crate::internal::types::HewError::ErrOom as i32,
-                    );
-                }
-                return 1;
-            }
+            return 1;
         }
         // SAFETY: successful construction transfers the exact Rc list to the actor.
         unsafe {

@@ -696,6 +696,8 @@ playground-check: playground-manifest-check sandbox-vm-deps ## Build: test and b
 
 # Focused curated playground WASI runtime preflight.
 playground-wasi-check: wasm-runtime hew-native
+	$(TEST_RUN_ENV) cargo test -p hew-cli --test wasi_run_e2e checked_tasks_select_and_scope_cleanup_run_under_wasi -- --exact
+	$(TEST_RUN_ENV) cargo test -p hew-cli --test wasi_run_e2e actor_periodic_timer_reaches_quiescence_on_native_and_wasi -- --exact
 	$(TEST_RUN_ENV) cargo test -p hew-cli --test wasi_run_e2e curated_playground_examples_run_under_wasi -- --exact
 	$(TEST_RUN_ENV) cargo test -p hew-cli --test wasi_run_e2e supervisor_stays_on_the_unsupported_diagnostic_path_under_wasi -- --exact
 

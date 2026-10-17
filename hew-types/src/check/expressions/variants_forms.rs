@@ -23,21 +23,6 @@ use crate::BuiltinType;
 use std::collections::VecDeque;
 
 impl Checker {
-    pub(in crate::check) fn reject_if_wasm_incompatible_expr(&mut self, expr: &Expr, span: &Span) {
-        if !self.wasm_target {
-            return;
-        }
-        match expr {
-            Expr::Scope { .. } | Expr::ScopeDeadline { .. } | Expr::Race(_) => {
-                self.reject_wasm_feature(span, WasmUnsupportedFeature::StructuredConcurrency);
-            }
-            Expr::ForkChild { .. } | Expr::ForkBlock { .. } => {
-                self.reject_wasm_feature(span, WasmUnsupportedFeature::Tasks);
-            }
-            _ => {}
-        }
-    }
-
     pub(in crate::check) fn display_impl_type(&mut self, ty: &Ty) -> Option<Ty> {
         let resolved = self.subst.resolve(ty).materialize_literal_defaults();
         if matches!(resolved, Ty::String) {

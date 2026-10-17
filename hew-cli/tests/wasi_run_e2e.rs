@@ -415,56 +415,6 @@ fn main() {
     );
 }
 
-/// `select {}` builds its readiness waitset in the task-scope runtime, which
-/// wasm32 does not compile. The manifest rejects it before code generation, so
-/// a select never reaches the linker with an unresolved carrier.
-#[test]
-fn select_stays_on_the_unsupported_diagnostic_path_under_wasi() {
-    let dir = tempdir();
-    let source = dir.path().join("select_pipe.hew");
-    fs::write(
-        &source,
-        r#"import std.stream;
-
-fn main() {
-    let (tx, rx): (stream.Sink<i64>, stream.Stream<i64>) = match stream.pipe(4) {
-        .Ok(pair) => pair,
-        .Err(error) => panic(f"stream.pipe failed: {error}"),
-    };
-    tx.send(7).expect("send");
-    select {
-        item from rx.recv() => {
-            match item {
-                .Some(value) => println(f"got {value}"),
-                .None => println("closed"),
-            }
-        }
-        after 1s => println("timeout"),
-    };
-    tx.close();
-    rx.close();
-}
-"#,
-    )
-    .expect("write select source");
-
-    let output = run_wasi_example(&source);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-
-    assert!(
-        !output.status.success(),
-        "select must not compile for wasm32; stderr:\n{stderr}"
-    );
-    assert!(
-        stderr.contains("`select {}` operations are not supported on WASM32"),
-        "the manifest row, not the linker, must refuse select; stderr:\n{stderr}"
-    );
-    assert!(
-        !stderr.contains("undefined symbol"),
-        "no select carrier may reach the linker unresolved; stderr:\n{stderr}"
-    );
-}
-
 #[test]
 fn actor_start_panic_remains_module_fatal_on_production_wasi() {
     require_wasi_runner();
@@ -493,62 +443,102 @@ fn actor_start_panic_remains_module_fatal_on_production_wasi() {
 }
 
 #[test]
-fn task_scope_stays_on_the_fail_closed_diagnostic_path_under_wasi() {
+fn checked_tasks_select_and_scope_cleanup_run_under_wasi() {
+    require_codegen();
     require_wasi_runner();
-
-    let dir = support::tempdir();
-    let source = dir.path().join("task_scope_wasi.hew");
-    fs::write(
-        &source,
-        r#"fn worker() {
-    println("worker ran");
-}
-
-actor Driver {
-    receive fn run() -> i64 {
-        scope {
-            let task = fork worker();
-            await task;
+    let output_dir = tempdir();
+    let root = repo_root().join("tests/core-acceptance");
+    for name in [
+        "task-call-values",
+        "fork-outlives-timed-select",
+        "select-first-completion",
+        "select-actor-dependencies",
+        "task-nested-deadline",
+        "race-unobserved-result-cleanup",
+    ] {
+        let manifest = fs::read_to_string(root.join(format!("cases/{name}.toml")))
+            .expect("shared acceptance manifest");
+        let manifest: toml::Value = toml::from_str(&manifest).expect("valid manifest");
+        let case = &manifest["case"][0];
+        let source = root.join(case["source"].as_str().expect("source path"));
+        let expected = &case["expected"];
+        for level in ["0", "2"] {
+            for target in ["native", "wasm32-wasi"] {
+                let extension = if target == "native" {
+                    std::env::consts::EXE_SUFFIX
+                } else {
+                    ".wasm"
+                };
+                let binary = output_dir
+                    .path()
+                    .join(format!("{name}-{target}-{level}{extension}"));
+                let mut build = support::hew_command();
+                build.current_dir(repo_root()).args([
+                    "build",
+                    source.to_str().expect("source path"),
+                    "--opt-level",
+                    level,
+                    "-o",
+                    binary.to_str().expect("binary path"),
+                ]);
+                if target != "native" {
+                    build.args(["--target", target]);
+                }
+                let compiled =
+                    support::run_bounded_command(build, format!("build {name} {target} O{level}"));
+                support::assert_success(&compiled, &format!("build {name} {target} O{level}"));
+                let mut run = if target == "native" {
+                    let mut command = Command::new(&binary);
+                    command.env("HEW_DETERMINISTIC", "schedule=fifo");
+                    command
+                } else {
+                    let mut command = Command::new(support::find_wasmtime().expect("WASI runner"));
+                    command.args(["run", "--env", "HEW_DETERMINISTIC=schedule=fifo"]);
+                    command
+                };
+                if let Some(environment) = case.get("env").and_then(toml::Value::as_table) {
+                    for (key, value) in environment {
+                        let value = value.as_str().expect("environment value");
+                        if target == "native" {
+                            run.env(key, value);
+                        } else {
+                            run.args(["--env", &format!("{key}={value}")]);
+                        }
+                    }
+                }
+                if target != "native" {
+                    run.arg(&binary);
+                }
+                run.current_dir(repo_root());
+                let output =
+                    support::run_bounded_command(run, format!("run {name} {target} O{level}"));
+                assert!(
+                    output.status.code().map(i64::from) == expected["exit"].as_integer(),
+                    "{name} {target} O{level}: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+                assert_eq!(
+                    String::from_utf8_lossy(&output.stdout),
+                    expected["stdout"].as_str().expect("expected stdout"),
+                    "{name} {target} O{level}"
+                );
+                if let Some(stderr) = expected.get("stderr").and_then(toml::Value::as_str) {
+                    let actual = String::from_utf8_lossy(&output.stderr);
+                    if target == "native" || stderr.is_empty() {
+                        assert_eq!(actual, stderr, "{name} {target} O{level}");
+                    } else {
+                        // WASI has no profiler name registry; compare the fault
+                        // itself, before the actor context diagnostic.
+                        assert_eq!(
+                            actual.lines().next(),
+                            stderr.lines().next(),
+                            "{name} {target} O{level}"
+                        );
+                    }
+                }
+            }
         }
-        7
     }
-}
-
-fn main() -> i64 {
-    let driver = spawn Driver;
-    match await driver.run() {
-        .Ok(value) => value - 7,
-        .Err(_error) => 1,
-    }
-}
-"#,
-    )
-    .expect("write task-scope WASI probe");
-
-    let output = run_wasi_example(&source);
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-
-    assert_eq!(
-        output.status.code(),
-        Some(1),
-        "task scope should fail in compile phase\nstdout:\n{stdout}\nstderr:\n{stderr}",
-    );
-    assert!(
-        stderr.contains("no cooperative task executor or non-blocking scope join"),
-        "scope diagnostic should name the missing wasm32 executor/join path\nstderr:\n{stderr}",
-    );
-    assert!(
-        stderr.contains("Task handles spawned from scopes are not supported on WASM32")
-            && stderr.contains("no wasm32 task executor"),
-        "task diagnostic should name the missing task spawn/executor path\nstderr:\n{stderr}",
-    );
-    assert!(
-        !stderr.contains("undefined symbol")
-            && !stderr.contains("wasm-ld")
-            && !stderr.contains("hew_task_"),
-        "task scope must fail before LLVM/linking exposes runtime symbols\nstderr:\n{stderr}",
-    );
 }
 
 #[test]

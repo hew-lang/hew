@@ -824,6 +824,6 @@ pub unsafe extern "C" fn hew_checked_scope_close(scope: *mut HewTaskScope) {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 #[path = "task_scope_checked_tests.rs"]
 mod tests;

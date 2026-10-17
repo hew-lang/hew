@@ -206,18 +206,13 @@ pub(crate) fn current_allocations() -> Option<Arc<RcAllocations>> {
             .as_ref()
             .map(|completion| completion.cleanup.rc.clone());
     }
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        // Independently scheduled scoped tasks retain their creator attribution.
-        let owner = crate::fault::owning_actor_at_spawn();
-        let pin = crate::lifetime::live_actors::pin_actor_by_id(owner)?;
-        pin.actor()
-            .native_completion
-            .as_ref()
-            .map(|completion| completion.cleanup.rc.clone())
-    }
-    #[cfg(target_arch = "wasm32")]
-    None
+    // Independently scheduled scoped tasks retain their creator attribution.
+    let owner = crate::fault::owning_actor_at_spawn();
+    let pin = crate::lifetime::live_actors::pin_actor_by_id(owner)?;
+    pin.actor()
+        .native_completion
+        .as_ref()
+        .map(|completion| completion.cleanup.rc.clone())
 }
 
 unsafe fn unlink(header: *mut HewRcInner) {

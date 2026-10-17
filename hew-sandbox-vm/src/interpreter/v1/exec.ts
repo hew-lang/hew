@@ -91,6 +91,7 @@ type Fault = (
       deadline?: boolean;
       handlerFailed?: boolean;
       timerOverdue?: boolean;
+      actorSendFailed?: boolean;
     }
   | { kind: "trap"; trap: TrapName; message?: string }
 ) & { primary?: Fault; secondary?: Fault[] };
@@ -154,12 +155,15 @@ interface SenderEndpoint {
 
 interface ActorTimer {
   cancel(): void;
+}
+
+interface OneShotTimer extends ActorTimer {
   started(): boolean;
   discarded(): void;
 }
 
 interface ActorMessage {
-  timer?: ActorTimer;
+  timer?: OneShotTimer;
   requestDeadline?: number;
   caller: CallerStamp;
   handler: ActorShape["handlers"][number];
@@ -472,7 +476,7 @@ class ExecutorV1 {
         id: "actor:root",
         actor: null,
         returned: (value) => {
-          this.rootComplete = true;
+          this.completeRoot();
           this.trace.exitCode =
             pkg.entry?.exit === "status" && value.kind === "i64"
               ? Number(value.value)
@@ -480,7 +484,7 @@ class ExecutorV1 {
         },
         failed: (fault) => {
           this.rootFault = fault;
-          this.rootComplete = true;
+          this.completeRoot();
         },
       },
     );
@@ -3511,6 +3515,7 @@ class ExecutorV1 {
           actor.active = null;
           act.rcOwner = null;
           actor.busy = false;
+          this.startPeriodicTimers(actor);
           this.dispatchActor(actor);
           this.completeShim(act, term, handle);
           this.scheduler.enqueue(act.context.id, () => this.runFrame(act));
@@ -3552,6 +3557,25 @@ class ExecutorV1 {
           (handler) => handler.message_id === operation.message,
         );
         if (!handler) throw new Error("timer schedule lost its handler");
+        if (this.rootComplete || actor.closing) {
+          this.running = false;
+          const refused: Fault = {
+            kind: "panic",
+            actorSendFailed: true,
+            message: "actor timer admission is closed",
+          };
+          this.closeValueAsync(
+            payload,
+            faultReport(refused),
+            (fault) => {
+              this.raiseFault(act, combineFaults(refused, fault)!, term.unwind);
+              this.scheduler.enqueue(act.context.id, () => this.runFrame(act));
+            },
+            actor,
+            act.rcOwner,
+          );
+          return;
+        }
         let phase: "scheduled" | "fired" | "started" | "cancelled" | "overdue" =
           "scheduled";
         let pending: VmValue | null = payload;
@@ -3582,7 +3606,7 @@ class ExecutorV1 {
             actor.active.cancel?.(actor.active.pendingCancellation);
           } else this.crashActor(actor, fault);
         };
-        const timer: ActorTimer = {
+        const timer: OneShotTimer = {
           cancel: () => {
             if (phase !== "overdue") phase = "cancelled";
             forget();
@@ -4299,6 +4323,56 @@ class ExecutorV1 {
     });
     this.dispatchActor(actor);
     return "accepted";
+  }
+
+  private completeRoot(): void {
+    this.rootComplete = true;
+    // Quiesce actor timers before draining accepted work; sleeps still wake.
+    for (const actor of this.actors.values()) this.cancelActorTimers(actor);
+  }
+
+  private startPeriodicTimers(actor: ActorInstance): void {
+    if (this.rootComplete || actor.closing) return;
+    for (const handler of actor.layout.handlers) {
+      if (handler.every_ns == null) continue;
+      const interval = Math.floor(handler.every_ns / 1_000_000);
+      let next = this.trace.virtualTimeMs + interval;
+      let disarm: (() => void) | null = null;
+      const timer: ActorTimer = {
+        cancel: () => {
+          disarm?.();
+          disarm = null;
+          actor.timers.delete(timer);
+        },
+      };
+      const fire = () => {
+        disarm = null;
+        if (!actor.timers.has(timer)) return;
+        this.admitActorMessage(actor, {
+          caller: { kind: "Timer" },
+          handler,
+          payload: [],
+          reply: false,
+          obligated: false,
+          complete: (_value, _error, drained) => drained?.(null),
+        });
+        if (!actor.timers.has(timer)) return;
+        next += interval;
+        if (next <= this.trace.virtualTimeMs)
+          next +=
+            (Math.floor((this.trace.virtualTimeMs - next) / interval) + 1) *
+            interval;
+        arm();
+      };
+      const arm = () => {
+        disarm = this.scheduler.after(
+          BigInt(Math.round((next - this.trace.virtualTimeMs) * 1_000_000)),
+          fire,
+        );
+      };
+      actor.timers.add(timer);
+      arm();
+    }
   }
 
   private cancelActorTimers(actor: ActorInstance): void {
@@ -5059,6 +5133,7 @@ function faultInfo(fault: Fault): [number, string] {
   if (fault.kind === "panic") {
     if (fault.handlerFailed) return [213, "ActorUnhandledFailure"];
     if (fault.timerOverdue) return [214, "ActorTimerOverdue"];
+    if (fault.actorSendFailed) return [206, "ActorSendFailed"];
     if (fault.cancelled) return [-1, "Cancelled"];
     if (fault.deadline) return [-2, "Deadline"];
     return [212, "UserPanic"];

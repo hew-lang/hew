@@ -250,3 +250,21 @@ test("a timer package cannot request waiting admission", () => {
   operation.policy = "drop_newest";
   assert.equal(admitPackage(bytecode), null);
 });
+
+
+test("periodic descriptors require a positive interval and zero-argument body", () => {
+  const bytecode = lifecyclePackage("stop");
+  const handler = {
+    name: "tick", message_id: 1, callable: 1, params: 0,
+    streams: false, fallible: false, result_shape: null, every_ns: 1_000_000,
+  };
+  bytecode.actors[0].handlers.push(handler);
+  assert.equal(admitPackage(bytecode), null);
+  for (const invalid of [0, -1, 999_999, 1_000_000.5]) {
+    handler.every_ns = invalid;
+    assert.equal(admitPackage(bytecode)?.code, "sandbox.package.invalid_periodic");
+  }
+  handler.every_ns = 1_000_000;
+  handler.params = 1;
+  assert.equal(admitPackage(bytecode)?.code, "sandbox.package.invalid_periodic");
+});

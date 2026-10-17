@@ -44,6 +44,7 @@ unsafe impl Send for TaskExecution {}
 unsafe impl Sync for TaskExecution {}
 
 impl TaskExecution {
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn has_live_tasks() -> bool {
         LIVE_TASKS.load(Ordering::Acquire) != 0
     }

@@ -6,7 +6,6 @@ use crate::coro_sleep::{
     hew_coro_sleep_free, hew_coro_sleep_status, hew_coro_sleep_until_new, HewCoroSleep,
 };
 use crate::internal::types::AskError;
-#[cfg(not(target_arch = "wasm32"))]
 use crate::lifetime::live_actors::ActorIncarnation;
 use crate::lifetime::local_handles::HewLocalPidId;
 use crate::mailbox::native::{
@@ -43,7 +42,6 @@ pub struct HewActorCall {
     expected_size: usize,
     reject: bool,
     state: CallState,
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) target: Option<ActorIncarnation>,
     cleanup_started: bool,
     cleanup: Option<Box<ReleaseDriver>>,
@@ -70,7 +68,6 @@ impl HewActorCall {
         }
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn has_deadline(&self) -> bool {
         !self.timer.is_null()
     }
@@ -359,7 +356,6 @@ pub(crate) unsafe fn actor_call_resume(
         expected_size: reply_size,
         reject: policy != 0,
         state: CallState::Admitting,
-        #[cfg(not(target_arch = "wasm32"))]
         target: crate::actor_native::wait_graph::resolve_target(token),
         cleanup_started: false,
         cleanup: None,
@@ -541,7 +537,6 @@ mod tests {
                     expected_size: size_of::<*const AtomicUsize>(),
                     reject: false,
                     state: CallState::Waiting,
-                    #[cfg(not(target_arch = "wasm32"))]
                     target: None,
                     cleanup_started: false,
                     cleanup: None,
@@ -619,7 +614,6 @@ mod tests {
                 expected_size: size_of::<*const AtomicUsize>(),
                 reject: false,
                 state: CallState::Waiting,
-                #[cfg(not(target_arch = "wasm32"))]
                 target: None,
                 cleanup_started: false,
                 cleanup: None,

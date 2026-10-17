@@ -3560,7 +3560,6 @@ pub(crate) unsafe fn hew_actor_trap_inner(
         TrapMailboxReclaim::OmitForTest => {}
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     if terminal == HewActorState::Crashed as i32 {
         let scope = crate::task_scope::current_task_scope();
         if !scope.is_null() {

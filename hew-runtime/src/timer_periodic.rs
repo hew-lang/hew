@@ -517,6 +517,44 @@ pub unsafe extern "C" fn hew_actor_schedule_periodic(
     }
 }
 
+/// Arm a newly published actor's periodic handlers while admission is open.
+/// Accepted actor turns may construct peers during shutdown drain. Those peers
+/// finish construction with periodic work quiesced, rather than failing spawn.
+///
+/// # Safety
+/// `actor` is pinned and remains undispatchable until publication; `handlers`
+/// contains the compiler-selected, positive periodic intervals.
+pub(crate) unsafe fn start_actor_periodic(
+    actor: *mut HewActor,
+    handlers: &[crate::actor::HewNativePeriodicHandler],
+) -> bool {
+    if handlers.is_empty() {
+        return true;
+    }
+    admit_timer(|| {
+        let wheel = global_wheel();
+        if wheel.is_null() {
+            return false;
+        }
+        // SAFETY: reading the runtime clock has no caller preconditions.
+        let now = unsafe { crate::clock::hew_now_ms() };
+        for handler in handlers {
+            if handler.interval_ms == 0 {
+                return false;
+            }
+            // SAFETY: admission retains the wheel; the caller pins the actor.
+            let timer = unsafe {
+                schedule_periodic_on_wheel(actor, handler.message, handler.interval_ms, wheel, now)
+            };
+            if timer.is_null() {
+                return false;
+            }
+        }
+        true
+    })
+    .unwrap_or(true)
+}
+
 /// Schedule one native periodic timer on a specific wheel and clock sample.
 ///
 /// # Safety

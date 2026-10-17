@@ -692,6 +692,14 @@ fn crash_info_uses_the_native_public_crash_kind() {
 }
 
 #[test]
+fn actor_periodic_handlers_follow_lifecycle_and_restart() {
+    assert_native_manifest(
+        "actor-periodic-handlers",
+        hew_compile::SourceSet::in_memory(),
+    );
+}
+
+#[test]
 fn actor_one_shot_timers_preserve_ownership_and_overdue_faults() {
     for name in [
         "actor-one-shot-lifetime",

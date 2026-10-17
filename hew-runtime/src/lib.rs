@@ -704,7 +704,6 @@ pub mod blocking_pool;
 /// The single-thread process driver: always on wasm32, selected natively by
 /// `HEW_DETERMINISTIC` for deterministic runs.
 pub mod driver;
-#[cfg(not(target_arch = "wasm32"))]
 pub mod task_scope;
 pub mod timer_actor;
 pub mod timer_periodic;

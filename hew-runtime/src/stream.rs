@@ -107,9 +107,7 @@ type Item = Vec<u8>;
 
 // ── Backing traits ────────────────────────────────────────────────────────────
 
-/// How `select` observes a content stream without taking an item. Select is
-/// native-only (a wasm32 manifest reject), so wasm32 has no reader.
-#[cfg(not(target_arch = "wasm32"))]
+/// How `select` observes a content stream without taking an item.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SelectReadiness {
     /// The next read never waits indefinitely: a regular file or an in-memory
@@ -117,6 +115,7 @@ pub(crate) enum SelectReadiness {
     Ready,
     /// Ready once this reactor handle (a connection or a child process pipe)
     /// is readable.
+    #[cfg(not(target_arch = "wasm32"))]
     Reactor(i32),
     /// This stream cannot report readiness without taking an item; the reason
     /// a selection over it refuses.
@@ -126,9 +125,9 @@ pub(crate) enum SelectReadiness {
 /// An adapter may hold only part of its next item when its upstream turns
 /// ready, so it is observable only over an upstream whose next read never
 /// waits.
-#[cfg(not(target_arch = "wasm32"))]
 fn adapter_select_readiness(upstream: SelectReadiness) -> SelectReadiness {
     match upstream {
+        #[cfg(not(target_arch = "wasm32"))]
         SelectReadiness::Reactor(_) => SelectReadiness::Unsupported(
             "select cannot observe a line, chunk or take adapter over a socket or pipe stream yet",
         ),
@@ -169,7 +168,6 @@ trait StreamBacking: Send + std::fmt::Debug {
     }
 
     /// How a selection observes this backing; see [`SelectReadiness`].
-    #[cfg(not(target_arch = "wasm32"))]
     fn select_readiness(&self) -> SelectReadiness {
         SelectReadiness::Unsupported("select cannot observe this stream yet")
     }
@@ -255,14 +253,12 @@ impl HewStream {
     /// The shared pipe core when this stream is the read half of an
     /// in-memory pipe; `None` for a content stream (socket, file, adapter).
     #[must_use]
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn pipe_core(&self) -> Option<&Arc<crate::channel_core::ChannelCore>> {
         self.channel.as_ref().filter(|_| !self.exhausted())
     }
 
     /// How a selection observes this content stream. A closed stream answers
     /// its next read at once.
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn select_readiness(&self) -> SelectReadiness {
         if self.exhausted() {
             SelectReadiness::Ready
@@ -340,7 +336,6 @@ impl StreamBacking for ChannelStream {
 }
 
 impl StreamBacking for VecStream {
-    #[cfg(not(target_arch = "wasm32"))]
     fn select_readiness(&self) -> SelectReadiness {
         SelectReadiness::Ready
     }
@@ -374,7 +369,6 @@ struct FileReadStream {
 impl StreamBacking for FileReadStream {
     /// Only a regular file answers its next read at once. A FIFO, a device or
     /// a terminal opens like a file, but its next read can wait indefinitely.
-    #[cfg(not(target_arch = "wasm32"))]
     fn select_readiness(&self) -> SelectReadiness {
         if self
             .reader
@@ -557,7 +551,6 @@ struct LinesStream {
 }
 
 impl StreamBacking for LinesStream {
-    #[cfg(not(target_arch = "wasm32"))]
     fn select_readiness(&self) -> SelectReadiness {
         adapter_select_readiness(self.upstream.select_readiness())
     }
@@ -667,7 +660,6 @@ struct ChunksStream {
 }
 
 impl StreamBacking for ChunksStream {
-    #[cfg(not(target_arch = "wasm32"))]
     fn select_readiness(&self) -> SelectReadiness {
         adapter_select_readiness(self.upstream.select_readiness())
     }
@@ -758,7 +750,6 @@ struct TakeStream {
 }
 
 impl StreamBacking for TakeStream {
-    #[cfg(not(target_arch = "wasm32"))]
     fn select_readiness(&self) -> SelectReadiness {
         adapter_select_readiness(self.upstream.select_readiness())
     }

@@ -163,7 +163,7 @@ fn tool_available(name: &str) -> bool {
         .is_ok_and(|output| output.status.success())
 }
 
-fn find_wasmtime() -> Option<PathBuf> {
+pub fn find_wasmtime() -> Option<PathBuf> {
     if tool_available("wasmtime") {
         return Some(PathBuf::from("wasmtime"));
     }

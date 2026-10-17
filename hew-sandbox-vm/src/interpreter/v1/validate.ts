@@ -134,7 +134,6 @@ function capabilityMessage(capability: string, native: boolean): string {
     Vector: "This vector operation",
     Map: "This map operation",
     Set: "This set operation",
-    "actor.periodic": "Periodic actor handlers",
     "actor.local_observation": "Actor links and monitors",
     "actor.heap_limit": "Per-actor heap limits",
     "actor.ingress_adapter": "Actor ingress adapters",
@@ -337,8 +336,28 @@ export function admitPackage(pkg: PackageV1): SandboxRejection | null {
         message: "crash hook lacks its exact info, kind or action shape",
         span: null,
       };
-    if (actor.handlers.some((handler) => handler.every_ns != null))
-      return unavailable("actor.periodic");
+    if (
+      actor.handlers.some(
+        (handler) =>
+          handler.every_ns != null &&
+          (!Number.isInteger(handler.every_ns) ||
+            handler.every_ns < 1_000_000 ||
+            handler.params !== 0 ||
+            handler.streams ||
+            handler.fallible ||
+            !pkg.functions.some(
+              (fn) => fn.id === handler.callable && fn.params.length === 1,
+            )),
+      )
+    )
+      return {
+        category: "invalid_package",
+        code: "sandbox.package.invalid_periodic",
+        capability: "actor.periodic",
+        message:
+          "periodic handler lacks its checked interval or zero-argument body",
+        span: null,
+      };
     if (actor.exit != null || actor.down != null)
       return unavailable("actor.local_observation");
     if (actor.max_heap_bytes != null) return unavailable("actor.heap_limit");

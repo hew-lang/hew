@@ -53,9 +53,9 @@ fn sort_by_core<T>(var v: Vec<T>, consume var less: fn[var](T, T) -> bool) -> Ve
             }
             start = end;
         }
-        for i in 0..n {
-            v.set(i, scratch[i]);
-        }
+        let previous = v;
+        v = scratch;
+        scratch = previous;
         width = if width > n / 2 {
             n
         } else {

@@ -1,0 +1,10 @@
+[[case]]
+id = "effect-graph-cleanup-composition"
+intent = "Recursive calls preserve generic resource-close receiver substitutions and resume nested cleanup, while scalar wrappers and reusable calls remain synchronous."
+source = "cases/effect-graph-cleanup-composition.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "closed 1\n4\nclosed 2\nclosed 3\nclosed 4\ndone\n"
+exit = 0

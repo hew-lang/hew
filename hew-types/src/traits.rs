@@ -6,7 +6,7 @@
 use crate::ty::Ty;
 use crate::BuiltinType;
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 /// Built-in marker traits that are automatically derived.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -195,9 +195,86 @@ pub struct TraitRegistry {
     type_params: HashMap<crate::TypeHead, Vec<crate::ParamHead>>,
 }
 
+type MarkerQuery = (Ty, MarkerTrait);
+
 struct MarkerDerivation<'a> {
-    visiting: HashSet<crate::TypeHead>,
+    facts: HashMap<MarkerQuery, bool>,
+    users: HashMap<MarkerQuery, HashSet<MarkerQuery>>,
+    parents: HashMap<MarkerQuery, Option<MarkerQuery>>,
+    pending: VecDeque<MarkerQuery>,
+    queued: HashSet<MarkerQuery>,
+    current: Option<MarkerQuery>,
     type_param_bound: &'a dyn Fn(crate::ParamHead, MarkerTrait) -> bool,
+}
+
+fn marker_type_contains(ty: &Ty, needle: &Ty) -> bool {
+    let mut pending = vec![ty];
+    while let Some(ty) = pending.pop() {
+        if ty == needle {
+            return true;
+        }
+        ty.for_each_child(&mut |child| pending.push(child));
+    }
+    false
+}
+
+impl MarkerDerivation<'_> {
+    fn schedule(&mut self, key: MarkerQuery) {
+        if self.queued.insert(key.clone()) {
+            self.pending.push_back(key);
+        }
+    }
+
+    fn query(&mut self, ty: &Ty, marker: MarkerTrait) -> bool {
+        let key = (ty.clone(), marker);
+        if let Some(current) = &self.current {
+            self.users
+                .entry(key.clone())
+                .or_default()
+                .insert(current.clone());
+        }
+        if let Some(proven) = self.facts.get(&key) {
+            return *proven;
+        }
+        let mut ancestor = if matches!(ty, Ty::Named { head, args } if head.nominal().is_some() && !args.is_empty())
+        {
+            self.current.as_ref()
+        } else {
+            None
+        };
+        let mut growing = false;
+        while let Some(previous) = ancestor {
+            if previous.1 == marker {
+                if let (
+                    Ty::Named {
+                        head: old_head,
+                        args: old,
+                    },
+                    Ty::Named { head, args },
+                ) = (&previous.0, ty)
+                {
+                    if old_head == head
+                        && old.len() == args.len()
+                        && old != args
+                        && old
+                            .iter()
+                            .zip(args)
+                            .all(|(old, actual)| marker_type_contains(actual, old))
+                    {
+                        growing = true;
+                        break;
+                    }
+                }
+            }
+            ancestor = self.parents.get(previous).and_then(Option::as_ref);
+        }
+        self.parents.insert(key.clone(), self.current.clone());
+        self.facts.insert(key.clone(), !growing);
+        if !growing {
+            self.schedule(key);
+        }
+        !growing
+    }
 }
 
 impl TraitRegistry {
@@ -347,30 +424,43 @@ impl TraitRegistry {
         type_param_bound: &dyn Fn(crate::ParamHead, MarkerTrait) -> bool,
     ) -> bool {
         let mut visiting = MarkerDerivation {
-            visiting: HashSet::new(),
+            facts: HashMap::new(),
+            users: HashMap::new(),
+            parents: HashMap::new(),
+            pending: VecDeque::new(),
+            queued: HashSet::new(),
+            current: None,
             type_param_bound,
         };
-        self.implements_marker_guarded(ty, marker, &mut visiting)
+        let root = (ty.clone(), marker);
+        visiting.query(ty, marker);
+        while let Some(key) = visiting.pending.pop_front() {
+            visiting.queued.remove(&key);
+            if !visiting.facts[&key] {
+                continue;
+            }
+            visiting.current = Some(key.clone());
+            if !self.evaluate_marker(&key.0, key.1, &mut visiting) {
+                visiting.facts.insert(key.clone(), false);
+                if let Some(users) = visiting.users.get(&key).cloned() {
+                    for user in users {
+                        visiting.schedule(user);
+                    }
+                }
+            }
+        }
+        visiting.facts[&root]
     }
 
-    /// Structural marker derivation with a recursion guard over named types.
-    ///
-    /// The guard makes the walk total on recursive type graphs. A type whose
-    /// member set transitively re-enters itself (`enum E { V(E) }`, or an
-    /// indirection-broken recursive enum `enum R { A(Vec<R>) }`) would
-    /// otherwise recurse forever through the `type_fields` / record / collection
-    /// member arms. On re-entry to a name already on the active stack we return
-    /// `true` (the neutral element of the `all(...)` member conjunction): the
-    /// re-entered edge contributes no NEW obligation, so the result is decided
-    /// by the non-recursive members. Genuine infinite-size value cycles are
-    /// rejected upstream by the dedicated cycle detector (`cycle.rs`); this
-    /// guard only prevents the derivation from diverging while computing a
-    /// marker for a type the cycle detector permits (the `Vec`-indirected case).
+    /// Coinductive marker facts start true and settle monotonically. Completed
+    /// failures invalidate their users, including earlier provisional cycle
+    /// answers; shared instantiated members are evaluated once unless a
+    /// dependency changes. Growing polymorphic instances fail closed.
     #[expect(
         clippy::too_many_lines,
         reason = "marker derivation covers many Ty variants"
     )]
-    fn implements_marker_guarded(
+    fn evaluate_marker(
         &self,
         ty: &Ty,
         marker: MarkerTrait,
@@ -393,7 +483,7 @@ impl TraitRegistry {
             return ty.is_numeric();
         }
         match ty {
-            Ty::GenericCallable { callable, .. } => self.implements_marker(callable, marker),
+            Ty::GenericCallable { callable, .. } => visiting.query(callable, marker),
             // Primitives: always Send, Sync, Frozen, Copy, Clone, Eq, Ord, Hash, Debug.
             // NOT Resource: primitives own no OS/runtime resource and need no drop close.
             // Isize/Usize are platform-sized integers: same marker set as fixed-width ints.
@@ -518,7 +608,7 @@ impl TraitRegistry {
                 ..
             } if args.len() == 1 => match marker {
                 MarkerTrait::Send | MarkerTrait::Sync => {
-                    self.implements_marker_guarded(&args[0], MarkerTrait::Send, visiting)
+                    visiting.query(&args[0], MarkerTrait::Send)
                 }
                 MarkerTrait::Clone => *kind == BuiltinType::Sink,
                 MarkerTrait::Resource | MarkerTrait::Debug => true,
@@ -537,27 +627,25 @@ impl TraitRegistry {
                 ..
             } if args.len() == 2 => match marker {
                 MarkerTrait::Send | MarkerTrait::Sync => {
-                    self.implements_marker_guarded(&args[0], MarkerTrait::Send, visiting)
-                        && self.implements_marker_guarded(&args[1], MarkerTrait::Send, visiting)
+                    visiting.query(&args[0], MarkerTrait::Send)
+                        && visiting.query(&args[1], MarkerTrait::Send)
                 }
                 MarkerTrait::Resource => true,
                 _ => false,
             },
 
             // Tuple: marker holds if ALL elements have it
-            Ty::Tuple(elems) => elems
-                .iter()
-                .all(|e| self.implements_marker_guarded(e, marker, visiting)),
+            Ty::Tuple(elems) => elems.iter().all(|e| visiting.query(e, marker)),
 
             // Array: marker holds if element has it
-            Ty::Array(inner, _) => self.implements_marker_guarded(inner, marker, visiting),
+            Ty::Array(inner, _) => visiting.query(inner, marker),
 
             // Slice: like array but NOT Copy (unsized)
             Ty::Slice(elem) => {
                 if marker == MarkerTrait::Copy {
                     false
                 } else {
-                    self.implements_marker_guarded(elem, marker, visiting)
+                    visiting.query(elem, marker)
                 }
             }
 
@@ -634,9 +722,7 @@ impl TraitRegistry {
                         | MarkerTrait::Frozen
                         | MarkerTrait::Ord
                         | MarkerTrait::PartialOrd => false,
-                        _ => args
-                            .iter()
-                            .all(|a| self.implements_marker_guarded(a, marker, visiting)),
+                        _ => args.iter().all(|a| visiting.query(a, marker)),
                     };
                 }
                 // Option<T> and Result<T,E>: pure value-type generic builtins.
@@ -651,12 +737,8 @@ impl TraitRegistry {
                 // MIR/codegen and is tracked as a follow-on lane.
                 if matches!(builtin, Some(BuiltinType::Option | BuiltinType::Result)) {
                     return match marker {
-                        MarkerTrait::Resource => args
-                            .iter()
-                            .any(|a| self.implements_marker_guarded(a, marker, visiting)),
-                        _ => args
-                            .iter()
-                            .all(|a| self.implements_marker_guarded(a, marker, visiting)),
+                        MarkerTrait::Resource => args.iter().any(|a| visiting.query(a, marker)),
+                        _ => args.iter().all(|a| visiting.query(a, marker)),
                     };
                 }
                 // Rc<T>/Weak<T>: reference-counted, single-threaded — explicitly
@@ -665,16 +747,6 @@ impl TraitRegistry {
                 if matches!(builtin, Some(BuiltinType::Rc | BuiltinType::Weak)) {
                     return matches!(marker, MarkerTrait::Clone | MarkerTrait::Drop);
                 }
-                // Recursion guard: a recursive type graph (e.g. an
-                // indirection-broken recursive enum `enum R { A(Vec<R>) }`)
-                // re-enters this name through its member walk. On re-entry,
-                // return the neutral `true` — the re-entered edge adds no new
-                // obligation; the result is decided by the non-recursive
-                // members. (Direct infinite-size cycles are rejected by
-                // `cycle.rs`; this only keeps the derivation total.)
-                if !visiting.visiting.insert(name) {
-                    return true;
-                }
                 // Record types: value types declared with `record`. Markers are
                 // derived entirely from field types with two exceptions:
                 //   - `Resource` is always false: a record wrapping a resource field
@@ -682,25 +754,23 @@ impl TraitRegistry {
                 // The two genuine exceptions (Resource, Num) are explicit; all
                 // other markers share the structural `field_derives(marker)` rule
                 // via the fallthrough.
-                let result = if self.records.contains(&name) {
+                if self.records.contains(&name) {
                     match marker {
                         // Records are not OS/runtime resources or scalar numeric values.
                         MarkerTrait::Resource | MarkerTrait::Num => false,
-                        // All other markers derive from field types. Clone the
-                        // member list so the `&self` borrow does not alias the
-                        // `&mut visiting` recursion below.
-                        _ => {
-                            let fields = self.type_fields.get(&name).cloned().unwrap_or_default();
-                            self.check_structural_fields(name, &fields, args, marker, visiting)
-                        }
+                        _ => self.check_structural_fields(
+                            name,
+                            self.type_fields.get(&name).map_or(&[], Vec::as_slice),
+                            args,
+                            marker,
+                            visiting,
+                        ),
                     }
-                } else if let Some(fields) = self.type_fields.get(&name).cloned() {
-                    self.check_structural_fields(name, &fields, args, marker, visiting)
+                } else if let Some(fields) = self.type_fields.get(&name) {
+                    self.check_structural_fields(name, fields, args, marker, visiting)
                 } else {
                     false // Unknown type — conservatively fail
-                };
-                visiting.visiting.remove(&name);
-                result
+                }
             }
 
             // Pointers: NOT Send (unless explicitly marked), but Copy
@@ -727,16 +797,12 @@ impl TraitRegistry {
             } => match marker {
                 MarkerTrait::Send | MarkerTrait::Sync => captures
                     .iter()
-                    .all(|capture| self.implements_marker_guarded(capture, marker, visiting)),
+                    .all(|capture| visiting.query(capture, marker)),
                 MarkerTrait::Clone => {
                     capabilities.clone
                         && captures.iter().all(|capture| {
-                            self.implements_marker_guarded(capture, MarkerTrait::Copy, visiting)
-                                || self.implements_marker_guarded(
-                                    capture,
-                                    MarkerTrait::Clone,
-                                    visiting,
-                                )
+                            visiting.query(capture, MarkerTrait::Copy)
+                                || visiting.query(capture, MarkerTrait::Clone)
                         })
                 }
                 _ => false,
@@ -767,9 +833,7 @@ impl TraitRegistry {
             // the full marker set for Task<T> is revisited when task handles
             // become user-accessible (v0.6+).
             Ty::Task(inner) => match marker {
-                MarkerTrait::Send | MarkerTrait::Sync => {
-                    self.implements_marker_guarded(inner, MarkerTrait::Send, visiting)
-                }
+                MarkerTrait::Send | MarkerTrait::Sync => visiting.query(inner, MarkerTrait::Send),
                 _ => false,
             },
         }
@@ -793,7 +857,7 @@ impl TraitRegistry {
         self.implements_marker(ty, MarkerTrait::Sync)
     }
 
-    /// Instantiate declaration-owned fields before recursively deriving markers.
+    /// Substitute declaration-owned binders before proving member markers.
     fn check_structural_fields(
         &self,
         parent_name: crate::TypeHead,
@@ -811,11 +875,13 @@ impl TraitRegistry {
             .zip(args.iter().cloned())
             .collect();
         fields.iter().all(|field| {
-            let field = field.substitute_type_params_parallel(&substitutions);
-            self.implements_marker_guarded(&field, marker, visiting)
-        }) && args
-            .iter()
-            .all(|arg| self.implements_marker_guarded(arg, marker, visiting))
+            if substitutions.is_empty() {
+                visiting.query(field, marker)
+            } else {
+                let field = field.substitute_type_params_parallel(&substitutions);
+                visiting.query(&field, marker)
+            }
+        }) && args.iter().all(|arg| visiting.query(arg, marker))
     }
 }
 
@@ -823,6 +889,120 @@ impl TraitRegistry {
 mod tests {
     use super::*;
     use crate::ty::TraitObjectBound;
+
+    fn vector(element: Ty) -> Ty {
+        Ty::builtin_named(BuiltinType::Vec, vec![element])
+    }
+
+    #[test]
+    fn marker_shared_vector_member_dag_preserves_leaf_proofs() {
+        for leaf in [Ty::I64, Ty::rc(Ty::I64)] {
+            let mut registry = TraitRegistry::new();
+            let base = Ty::user_for_test("MarkerDag0", vec![]);
+            registry.register_type(base.head().unwrap(), vec![leaf.clone()]);
+            let mut previous = base;
+            for level in 1..=26 {
+                let current = Ty::user_for_test(&format!("MarkerDag{level}"), vec![]);
+                let child = vector(previous);
+                registry.register_type(current.head().unwrap(), vec![child.clone(), child]);
+                previous = current;
+            }
+            assert_eq!(registry.is_send(&previous), leaf == Ty::I64);
+            assert_eq!(registry.is_sync(&previous), leaf == Ty::I64);
+            assert!(registry.implements_marker(&previous, MarkerTrait::Clone));
+        }
+    }
+
+    #[test]
+    fn marker_recursive_members_do_not_cache_provisional_success() {
+        let mut registry = TraitRegistry::new();
+        let first = Ty::user_for_test("MarkerCycleFirst", vec![]);
+        let second = Ty::user_for_test("MarkerCycleSecond", vec![]);
+        registry.register_type(
+            first.head().unwrap(),
+            vec![vector(second.clone()), Ty::rc(Ty::I64)],
+        );
+        registry.register_type(second.head().unwrap(), vec![vector(first.clone())]);
+        assert!(!registry.is_send(&Ty::Tuple(vec![second.clone(), first.clone()])));
+        registry.register_type(first.head().unwrap(), vec![vector(second.clone()), Ty::I64]);
+        assert!(registry.is_send(&first));
+        assert!(registry.is_sync(&second));
+    }
+
+    #[test]
+    fn marker_nested_generic_instances_preserve_substituted_members() {
+        let mut registry = TraitRegistry::new();
+        let head = Ty::user_for_test("MarkerHolder", vec![]).head().unwrap();
+        let parameter = crate::ParamHead::for_test("MarkerT");
+        registry.register_type_params(head, vec![parameter]);
+        registry.register_type(head, vec![vector(Ty::param(parameter))]);
+        let holder = |ty| Ty::named_head(head, vec![ty]);
+        let safe = holder(holder(Ty::I64));
+        let unsafe_value = holder(holder(Ty::rc(Ty::I64)));
+        assert!(registry.is_send(&safe));
+        assert!(!registry.is_send(&unsafe_value));
+        assert!(!registry.is_sync(&Ty::Tuple(vec![safe, unsafe_value])));
+    }
+
+    #[test]
+    fn marker_callable_clone_proof_uses_its_later_alternative() {
+        let registry = TraitRegistry::new();
+        let closure = Ty::Closure {
+            capabilities: crate::CallableCapabilities {
+                clone: true,
+                ..crate::CallableCapabilities::default()
+            },
+            params: Vec::new(),
+            ret: Box::new(Ty::I64),
+            captures: vec![Ty::String],
+            identity: crate::ty::EffectBody::Closure(crate::check::SpanKey::default()),
+        };
+        assert!(registry.implements_marker(&closure, MarkerTrait::Clone));
+        assert!(!registry.implements_marker(&closure, MarkerTrait::Copy));
+    }
+
+    #[test]
+    fn marker_growing_generic_members_terminate_without_granting_a_proof() {
+        for stored in [false, true] {
+            let mut registry = TraitRegistry::new();
+            let head = Ty::user_for_test("MarkerGrow", vec![]).head().unwrap();
+            let parameter = crate::ParamHead::for_test("GrowT");
+            registry.register_type_params(head, vec![parameter]);
+            let larger = Ty::Function {
+                capabilities: crate::CallableCapabilities::default(),
+                params: Vec::new(),
+                ret: Box::new(Ty::param(parameter)),
+            };
+            let mut fields = vec![vector(Ty::named_head(head, vec![larger]))];
+            if stored {
+                fields.push(Ty::param(parameter));
+            }
+            registry.register_type(head, fields);
+            assert!(!registry.is_send(&Ty::named_head(head, vec![Ty::I64])));
+        }
+    }
+
+    #[test]
+    fn marker_generic_callable_keeps_the_callers_parameter_bounds() {
+        let registry = TraitRegistry::new();
+        let parameter = crate::ParamHead::for_test("BoundT");
+        let callable = Ty::GenericCallable {
+            parameters: Vec::new(),
+            callable: Box::new(Ty::Closure {
+                capabilities: crate::CallableCapabilities::default(),
+                params: Vec::new(),
+                ret: Box::new(Ty::Unit),
+                captures: vec![Ty::param(parameter)],
+                identity: crate::ty::EffectBody::Closure(crate::check::SpanKey::default()),
+            }),
+        };
+        assert!(registry.implements_marker_with_bounds(
+            &callable,
+            MarkerTrait::Send,
+            &|head, marker| head == parameter && marker == MarkerTrait::Send
+        ));
+        assert!(!registry.is_send(&callable));
+    }
 
     #[test]
     fn test_primitives_are_send() {

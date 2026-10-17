@@ -6,6 +6,7 @@
     clippy::wildcard_imports,
     reason = "chunk files share the parent module's import header"
 )]
+use super::super::admissibility::{StructuralDemand, StructuralTypeWalk};
 #[allow(
     clippy::wildcard_imports,
     reason = "submodules mirror the legacy check namespace during the split"
@@ -231,262 +232,270 @@ impl Checker {
     }
 
     pub(super) fn structural_clone_blocker(&self, ty: &Ty) -> Option<CloneCapabilityBlocker> {
-        self.structural_clone_blocker_inner(ty, "", &mut std::collections::HashSet::new())
+        self.structural_clone_blocker_on_graph(ty, "", &mut StructuralTypeWalk::default())
     }
 
     #[expect(
         clippy::too_many_lines,
         reason = "the closed member walk keeps clone refusal paths aligned with every stored shape"
     )]
-    pub(super) fn structural_clone_blocker_inner(
+    fn structural_clone_blocker_on_graph(
         &self,
         ty: &Ty,
         path: &str,
-        visiting: &mut std::collections::HashSet<crate::TypeHead>,
+        walk: &mut StructuralTypeWalk,
     ) -> Option<CloneCapabilityBlocker> {
         use hew_parser::ast::ResourceMarker;
 
         let resolved = self.subst.resolve(ty).materialize_literal_defaults();
-        match &resolved {
-            Ty::Tuple(items) => {
-                for (index, item) in items.iter().enumerate() {
-                    let member = Self::clone_member_path(path, &index.to_string());
+        if !walk.explored.insert(resolved.clone()) {
+            return None;
+        }
+        if walk.growing(&resolved) {
+            let member = Self::clone_member_path(path, "type argument");
+            return walk
+                .demanded_arguments(self, &resolved, StructuralDemand::CloneBlocker)
+                .iter()
+                .find_map(|arg| self.structural_clone_blocker_on_graph(arg, &member, walk));
+        }
+        walk.active.push(resolved.clone());
+        let blocker = (|| {
+            match &resolved {
+                Ty::Tuple(items) => {
+                    for (index, item) in items.iter().enumerate() {
+                        let member = Self::clone_member_path(path, &index.to_string());
+                        if let Some(blocker) =
+                            self.structural_clone_blocker_on_graph(item, &member, walk)
+                        {
+                            return Some(blocker);
+                        }
+                    }
+                }
+                Ty::Named { head, args, .. } => {
+                    let name = head.registry_key();
+                    let builtin = head.builtin();
+                    if builtin.is_some_and(BuiltinType::is_affine_clone_terminal) {
+                        return None;
+                    }
+                    let member = if path.is_empty() { "value" } else { path };
+                    // Both pipe halves are affine: no composite recipe duplicates
+                    // one as a member, and the payload type is irrelevant to that.
+                    if builtin.is_some_and(BuiltinType::is_pipe_half) {
+                        return Some(CloneCapabilityBlocker::Missing {
+                            member: member.to_string(),
+                            member_ty: resolved.clone(),
+                        });
+                    }
+                    // Type-parameter capability inside a generic template comes
+                    // from the parameter's declared BOUND, never from a concrete
+                    // type (there is none yet). `T: Clone` makes every `T`-shaped
+                    // member clonable in the template; an unbounded `T` is not.
+                    // The concrete capability is decided at instantiation, where
+                    // `enforce_type_param_bounds` rejects an argument that does not
+                    // satisfy the bound — so an affine resource can never reach a
+                    // `T: Clone` position. This is the single template-capability
+                    // authority for Clone. Equality demands use
+                    // `finalize_generic_requirements` to select the exact concrete Eq
+                    // implementation at each instantiation.
+                    if let Some(capability) = self.type_param_template_clone_capability(&resolved) {
+                        return if capability {
+                            None
+                        } else {
+                            Some(CloneCapabilityBlocker::Missing {
+                                member: member.to_string(),
+                                member_ty: resolved.clone(),
+                            })
+                        };
+                    }
+                    if head
+                        .nominal()
+                        .is_some_and(|id| self.registry.is_resource(id))
+                    {
+                        return Some(CloneCapabilityBlocker::Affine {
+                            type_name: name.to_string(),
+                            marker: ResourceMarker::Resource,
+                            member: member.to_string(),
+                        });
+                    }
+                    if head.nominal().is_some_and(|id| self.registry.is_linear(id)) {
+                        return Some(CloneCapabilityBlocker::Affine {
+                            type_name: name.to_string(),
+                            marker: ResourceMarker::Linear,
+                            member: member.to_string(),
+                        });
+                    }
+                    if self.registry.is_owned_handle(*head)
+                        || head
+                            .nominal()
+                            .is_some_and(|id| self.opaque_type_ids.contains(&id))
+                    {
+                        // The carrier's own capability is canonical. In particular,
+                        // Receiver<T> is one non-cloneable endpoint regardless of T;
+                        // walking T first made diagnostics and semantics payload-dependent.
+                        return Some(CloneCapabilityBlocker::Opaque {
+                            type_name: name.to_string(),
+                            member: member.to_string(),
+                        });
+                    }
+                    if matches!(builtin, Some(BuiltinType::Option | BuiltinType::Result)) {
+                        for (index, arg) in args.iter().enumerate() {
+                            let label = if args.len() == 1 {
+                                "Some"
+                            } else if index == 0 {
+                                "Ok"
+                            } else {
+                                "Err"
+                            };
+                            let member = Self::clone_member_path(path, label);
+                            if let Some(blocker) =
+                                self.structural_clone_blocker_on_graph(arg, &member, walk)
+                            {
+                                return Some(blocker);
+                            }
+                        }
+                        return None;
+                    }
+                    if builtin.is_some() {
+                        for (index, arg) in args.iter().enumerate() {
+                            let label = if args.len() == 1 {
+                                "element".to_string()
+                            } else {
+                                index.to_string()
+                            };
+                            let member = Self::clone_member_path(path, &label);
+                            if let Some(blocker) =
+                                self.structural_clone_blocker_on_graph(arg, &member, walk)
+                            {
+                                return Some(blocker);
+                            }
+                        }
+                    }
+                    if let Some(type_def) = self.type_def_view().of(*head) {
+                        let mut field_names: Vec<&String> = type_def.fields.keys().collect();
+                        field_names.sort();
+                        for field_name in field_names {
+                            let field_ty = type_def
+                                .fields
+                                .get(field_name)
+                                .expect("field name came from this type definition");
+                            let field_ty = Self::instantiate_type_def_member(
+                                field_ty,
+                                &type_def.type_params,
+                                args,
+                            );
+                            let member = Self::clone_member_path(path, field_name);
+                            if let Some(blocker) =
+                                self.structural_clone_blocker_on_graph(&field_ty, &member, walk)
+                            {
+                                return Some(blocker);
+                            }
+                        }
+                        for (index, field_ty) in self
+                            .tuple_record_constructor_fields(*head, type_def)
+                            .iter()
+                            .enumerate()
+                        {
+                            let field_ty = Self::instantiate_type_def_member(
+                                field_ty,
+                                &type_def.type_params,
+                                args,
+                            );
+                            let member = Self::clone_member_path(path, &index.to_string());
+                            if let Some(blocker) =
+                                self.structural_clone_blocker_on_graph(&field_ty, &member, walk)
+                            {
+                                return Some(blocker);
+                            }
+                        }
+                        let mut variant_names: Vec<&String> = type_def.variants.keys().collect();
+                        variant_names.sort();
+                        for variant_name in variant_names {
+                            let variant = type_def
+                                .variants
+                                .get(variant_name)
+                                .expect("variant name came from this type definition");
+                            let blocker = match variant {
+                                VariantDef::Unit => None,
+                                VariantDef::Tuple(fields) => {
+                                    fields.iter().enumerate().find_map(|(index, field_ty)| {
+                                        let field_ty = Self::instantiate_type_def_member(
+                                            field_ty,
+                                            &type_def.type_params,
+                                            args,
+                                        );
+                                        let member = Self::clone_member_path(
+                                            path,
+                                            &format!("{variant_name}.{index}"),
+                                        );
+                                        self.structural_clone_blocker_on_graph(
+                                            &field_ty, &member, walk,
+                                        )
+                                    })
+                                }
+                                VariantDef::Struct(fields) => {
+                                    fields.iter().find_map(|(field_name, field_ty)| {
+                                        let field_ty = Self::instantiate_type_def_member(
+                                            field_ty,
+                                            &type_def.type_params,
+                                            args,
+                                        );
+                                        let member = Self::clone_member_path(
+                                            path,
+                                            &format!("{variant_name}.{field_name}"),
+                                        );
+                                        self.structural_clone_blocker_on_graph(
+                                            &field_ty, &member, walk,
+                                        )
+                                    })
+                                }
+                            };
+                            if blocker.is_some() {
+                                return blocker;
+                            }
+                        }
+                        return None;
+                    }
+                }
+                Ty::Array(elem, _) => {
+                    let member = Self::clone_member_path(path, "element");
                     if let Some(blocker) =
-                        self.structural_clone_blocker_inner(item, &member, visiting)
+                        self.structural_clone_blocker_on_graph(elem, &member, walk)
                     {
                         return Some(blocker);
                     }
                 }
+                _ => {}
             }
-            Ty::Named { head, args, .. } => {
-                let name = head.registry_key();
-                let builtin = head.builtin();
-                if builtin.is_some_and(BuiltinType::is_affine_clone_terminal) {
-                    return None;
-                }
-                let member = if path.is_empty() { "value" } else { path };
-                // Both pipe halves are affine: no composite recipe duplicates
-                // one as a member, and the payload type is irrelevant to that.
-                if builtin.is_some_and(BuiltinType::is_pipe_half) {
-                    return Some(CloneCapabilityBlocker::Missing {
-                        member: member.to_string(),
-                        member_ty: resolved.clone(),
-                    });
-                }
-                // Type-parameter capability inside a generic template comes
-                // from the parameter's declared BOUND, never from a concrete
-                // type (there is none yet). `T: Clone` makes every `T`-shaped
-                // member clonable in the template; an unbounded `T` is not.
-                // The concrete capability is decided at instantiation, where
-                // `enforce_type_param_bounds` rejects an argument that does not
-                // satisfy the bound — so an affine resource can never reach a
-                // `T: Clone` position. This is the single template-capability
-                // authority for Clone. Equality demands use
-                // `finalize_generic_requirements` to select the exact concrete Eq
-                // implementation at each instantiation.
-                if let Some(capability) = self.type_param_template_clone_capability(&resolved) {
-                    return if capability {
-                        None
-                    } else {
-                        Some(CloneCapabilityBlocker::Missing {
-                            member: member.to_string(),
-                            member_ty: resolved.clone(),
-                        })
-                    };
-                }
-                if head
-                    .nominal()
-                    .is_some_and(|id| self.registry.is_resource(id))
-                {
-                    return Some(CloneCapabilityBlocker::Affine {
-                        type_name: name.to_string(),
-                        marker: ResourceMarker::Resource,
-                        member: member.to_string(),
-                    });
-                }
-                if head.nominal().is_some_and(|id| self.registry.is_linear(id)) {
-                    return Some(CloneCapabilityBlocker::Affine {
-                        type_name: name.to_string(),
-                        marker: ResourceMarker::Linear,
-                        member: member.to_string(),
-                    });
-                }
-                if self.registry.is_owned_handle(*head)
-                    || head
-                        .nominal()
-                        .is_some_and(|id| self.opaque_type_ids.contains(&id))
-                {
-                    // The carrier's own capability is canonical. In particular,
-                    // Receiver<T> is one non-cloneable endpoint regardless of T;
-                    // walking T first made diagnostics and semantics payload-dependent.
-                    return Some(CloneCapabilityBlocker::Opaque {
-                        type_name: name.to_string(),
-                        member: member.to_string(),
-                    });
-                }
-                if matches!(builtin, Some(BuiltinType::Option | BuiltinType::Result)) {
-                    for (index, arg) in args.iter().enumerate() {
-                        let label = if args.len() == 1 {
-                            "Some"
-                        } else if index == 0 {
-                            "Ok"
-                        } else {
-                            "Err"
-                        };
-                        let member = Self::clone_member_path(path, label);
-                        if let Some(blocker) =
-                            self.structural_clone_blocker_inner(arg, &member, visiting)
-                        {
-                            return Some(blocker);
-                        }
-                    }
-                    return None;
-                }
-                if builtin.is_some() {
-                    for (index, arg) in args.iter().enumerate() {
-                        let label = if args.len() == 1 {
-                            "element".to_string()
-                        } else {
-                            index.to_string()
-                        };
-                        let member = Self::clone_member_path(path, &label);
-                        if let Some(blocker) =
-                            self.structural_clone_blocker_inner(arg, &member, visiting)
-                        {
-                            return Some(blocker);
-                        }
-                    }
-                }
-                if let Some(type_def) = self.type_def_view().of(*head) {
-                    let visit_key = *head;
-                    if !visiting.insert(visit_key) {
-                        return None;
-                    }
-                    let mut field_names: Vec<&String> = type_def.fields.keys().collect();
-                    field_names.sort();
-                    for field_name in field_names {
-                        let field_ty = type_def
-                            .fields
-                            .get(field_name)
-                            .expect("field name came from this type definition");
-                        let field_ty = Self::instantiate_type_def_member(
-                            field_ty,
-                            &type_def.type_params,
-                            args,
-                        );
-                        let member = Self::clone_member_path(path, field_name);
-                        if let Some(blocker) =
-                            self.structural_clone_blocker_inner(&field_ty, &member, visiting)
-                        {
-                            visiting.remove(&visit_key);
-                            return Some(blocker);
-                        }
-                    }
-                    for (index, field_ty) in self
-                        .tuple_record_constructor_fields(*head, type_def)
-                        .iter()
-                        .enumerate()
-                    {
-                        let field_ty = Self::instantiate_type_def_member(
-                            field_ty,
-                            &type_def.type_params,
-                            args,
-                        );
-                        let member = Self::clone_member_path(path, &index.to_string());
-                        if let Some(blocker) =
-                            self.structural_clone_blocker_inner(&field_ty, &member, visiting)
-                        {
-                            visiting.remove(&visit_key);
-                            return Some(blocker);
-                        }
-                    }
-                    let mut variant_names: Vec<&String> = type_def.variants.keys().collect();
-                    variant_names.sort();
-                    for variant_name in variant_names {
-                        let variant = type_def
-                            .variants
-                            .get(variant_name)
-                            .expect("variant name came from this type definition");
-                        let blocker = match variant {
-                            VariantDef::Unit => None,
-                            VariantDef::Tuple(fields) => {
-                                fields.iter().enumerate().find_map(|(index, field_ty)| {
-                                    let field_ty = Self::instantiate_type_def_member(
-                                        field_ty,
-                                        &type_def.type_params,
-                                        args,
-                                    );
-                                    let member = Self::clone_member_path(
-                                        path,
-                                        &format!("{variant_name}.{index}"),
-                                    );
-                                    self.structural_clone_blocker_inner(
-                                        &field_ty, &member, visiting,
-                                    )
-                                })
-                            }
-                            VariantDef::Struct(fields) => {
-                                fields.iter().find_map(|(field_name, field_ty)| {
-                                    let field_ty = Self::instantiate_type_def_member(
-                                        field_ty,
-                                        &type_def.type_params,
-                                        args,
-                                    );
-                                    let member = Self::clone_member_path(
-                                        path,
-                                        &format!("{variant_name}.{field_name}"),
-                                    );
-                                    self.structural_clone_blocker_inner(
-                                        &field_ty, &member, visiting,
-                                    )
-                                })
-                            }
-                        };
-                        if blocker.is_some() {
-                            visiting.remove(&visit_key);
-                            return blocker;
-                        }
-                    }
-                    visiting.remove(&visit_key);
-                    return None;
-                }
-            }
-            Ty::Array(elem, _) => {
-                let member = Self::clone_member_path(path, "element");
-                if let Some(blocker) = self.structural_clone_blocker_inner(elem, &member, visiting)
-                {
-                    return Some(blocker);
-                }
-            }
-            _ => {}
-        }
 
-        if self
-            .registry
-            .implements_marker(&resolved, MarkerTrait::Clone)
-        {
-            return None;
-        }
-        // The template-capability authority applies at EVERY position a type
-        // parameter appears, not just at a bare `T`. Reaching here means the
-        // structural walk above found no blocker, so every type-parameter
-        // position inside `resolved` was already decided by its declared bound.
-        // The marker registry cannot answer for a partially abstract type — it
-        // has no impl for `Vec<T>` — so letting it veto here rejected
-        // `fn dup<T: Clone>(v: Option<Vec<T>>)` even though every leaf was
-        // clonable. An unbounded parameter still refuses, with a member path,
-        // from the recursive call that examined it.
-        if resolved.has_type_parameters() {
-            return None;
-        }
-        Some(CloneCapabilityBlocker::Missing {
-            member: if path.is_empty() {
-                "value".to_string()
-            } else {
-                path.to_string()
-            },
-            member_ty: resolved,
-        })
+            if self
+                .registry
+                .implements_marker(&resolved, MarkerTrait::Clone)
+            {
+                return None;
+            }
+            // The template-capability authority applies at EVERY position a type
+            // parameter appears, not just at a bare `T`. Reaching here means the
+            // structural walk above found no blocker, so every type-parameter
+            // position inside `resolved` was already decided by its declared bound.
+            // The marker registry cannot answer for a partially abstract type — it
+            // has no impl for `Vec<T>` — so letting it veto here rejected
+            // `fn dup<T: Clone>(v: Option<Vec<T>>)` even though every leaf was
+            // clonable. An unbounded parameter still refuses, with a member path,
+            // from the recursive call that examined it.
+            if resolved.has_type_parameters() {
+                return None;
+            }
+            Some(CloneCapabilityBlocker::Missing {
+                member: if path.is_empty() {
+                    "value".to_string()
+                } else {
+                    path.to_string()
+                },
+                member_ty: resolved,
+            })
+        })();
+        walk.active.pop();
+        blocker
     }
 
     /// Transitive, substitution-aware walk of a (possibly generic) record's
@@ -498,36 +507,32 @@ impl Checker {
     /// no-op and behaviour is unchanged. Returns the first opaque field-type
     /// name found, or `None` if clean. The selected declaration's handle and
     /// opacity facts decide the leaf; display spelling cannot grant ownership.
-    pub(super) fn record_field_contains_opaque(
+    fn record_field_contains_opaque_on_graph(
         &self,
         head: crate::TypeHead,
         type_args: &[Ty],
-        visiting: &mut std::collections::HashSet<crate::TypeHead>,
         skip_channel_handles: bool,
+        walk: &mut StructuralTypeWalk,
     ) -> Option<String> {
-        if !visiting.insert(head) {
-            return None; // cycle protection
-        }
         let mut found = None;
         if let Some(type_def) = self.type_def_view().of(head) {
             for field_ty in type_def.fields.values() {
                 let field_ty =
                     Self::instantiate_type_def_member(field_ty, &type_def.type_params, type_args);
                 if let Some(opaque) =
-                    self.ty_field_contains_opaque(&field_ty, visiting, skip_channel_handles)
+                    self.ty_field_contains_opaque_on_graph(&field_ty, skip_channel_handles, walk)
                 {
                     found = Some(opaque);
                     break;
                 }
             }
         }
-        visiting.remove(&head);
         found
     }
 
     /// Transitive, substitution-aware walk of a (possibly generic) enum's
     /// variant payloads looking for an opaque-handle leaf — the enum twin of
-    /// [`Self::record_field_contains_opaque`]. Each variant payload type
+    /// [`Self::record_field_contains_opaque_on_graph`]. Each variant payload type
     /// (`Tuple` positional, `Struct` named) is instantiated with the concrete
     /// clone-site `type_args` before recursing, so `Maybe<Handle>` resolves its
     /// `Some(T)` payload to `Some(Handle)` and the opaque leaf is detected. A
@@ -535,16 +540,13 @@ impl Checker {
     /// the first opaque payload-type name found, or `None` if clean. Shares the
     /// `ty_field_contains_opaque` leaf classifier with the record walk, so the
     /// two stay in lockstep.
-    pub(super) fn enum_variant_contains_opaque(
+    fn enum_variant_contains_opaque_on_graph(
         &self,
         head: crate::TypeHead,
         type_args: &[Ty],
-        visiting: &mut std::collections::HashSet<crate::TypeHead>,
         skip_channel_handles: bool,
+        walk: &mut StructuralTypeWalk,
     ) -> Option<String> {
-        if !visiting.insert(head) {
-            return None; // cycle protection
-        }
         let mut found = None;
         if let Some(type_def) = self.type_def_view().of(head) {
             'variants: for variant in type_def.variants.values() {
@@ -559,105 +561,123 @@ impl Checker {
                         &type_def.type_params,
                         type_args,
                     );
-                    if let Some(opaque) =
-                        self.ty_field_contains_opaque(&payload_ty, visiting, skip_channel_handles)
-                    {
+                    if let Some(opaque) = self.ty_field_contains_opaque_on_graph(
+                        &payload_ty,
+                        skip_channel_handles,
+                        walk,
+                    ) {
                         found = Some(opaque);
                         break 'variants;
                     }
                 }
             }
         }
-        visiting.remove(&head);
         found
     }
 
     /// Return the first opaque message-payload type, exempting compiler-built-in
     /// channel endpoints and actor references that local actor delivery
     /// transfers as handle values.
-    pub(in crate::check) fn ty_message_payload_contains_opaque(
-        &self,
-        ty: &Ty,
-        visiting: &mut std::collections::HashSet<crate::TypeHead>,
-    ) -> Option<String> {
-        self.ty_field_contains_opaque(ty, visiting, true)
+    pub(in crate::check) fn ty_message_payload_contains_opaque(&self, ty: &Ty) -> Option<String> {
+        self.ty_field_contains_opaque_on_graph(ty, true, &mut StructuralTypeWalk::default())
     }
 
-    pub(super) fn ty_field_contains_opaque(
+    fn ty_field_contains_opaque_on_graph(
         &self,
         ty: &Ty,
-        visiting: &mut std::collections::HashSet<crate::TypeHead>,
         skip_channel_handles: bool,
+        walk: &mut StructuralTypeWalk,
     ) -> Option<String> {
         // Resolve inference vars so a field whose type is still a `Ty::Var`
         // bound in the substitution environment is walked at its concrete type
         // through each concrete member.
         let resolved = self.subst.resolve(ty);
-        match &resolved {
-            Ty::Named { head, args, .. } => {
-                let name = head.registry_key();
-                let builtin = head.builtin();
-                if skip_channel_handles
-                    && matches!(
-                        builtin,
-                        Some(
-                            crate::BuiltinType::Sink
-                                | crate::BuiltinType::Stream
-                                | crate::BuiltinType::ActorHandle
-                                | crate::BuiltinType::RemotePid
-                        )
-                    )
-                {
-                    return None;
-                }
-                // Direct opaque handle (imported via module registry OR user-declared #[opaque])?
-                if self.registry.is_owned_handle(*head)
-                    || head
-                        .nominal()
-                        .is_some_and(|id| self.opaque_type_ids.contains(&id))
-                {
-                    return Some(name.to_string());
-                }
-                // Recurse into type args (e.g. `Vec<Handle>`, `Option<Handle>`).
-                for arg in args {
-                    if let Some(n) =
-                        self.ty_field_contains_opaque(arg, visiting, skip_channel_handles)
-                    {
-                        return Some(n);
-                    }
-                }
-                // Recurse into the type def's fields, substituting the def's
-                // params with the concrete `args` at this use site.
-                if let Some(n) =
-                    self.record_field_contains_opaque(*head, args, visiting, skip_channel_handles)
-                {
-                    return Some(n);
-                }
-                // Recurse into enum variant payloads too — a nested enum with a
-                // hard-coded opaque payload (`enum Inner { B(Handle) }`) is
-                // reachable from neither the type-arg walk nor the record-field
-                // walk, so without this an outer clone would admit an
-                // unclonable leaf. (`record_field_contains_opaque` is a no-op
-                // for an enum, and vice-versa, so both calls are kind-safe.)
-                if let Some(n) =
-                    self.enum_variant_contains_opaque(*head, args, visiting, skip_channel_handles)
-                {
-                    return Some(n);
-                }
-                None
-            }
-            Ty::Tuple(items) => {
-                for item in items {
-                    if let Some(n) =
-                        self.ty_field_contains_opaque(item, visiting, skip_channel_handles)
-                    {
-                        return Some(n);
-                    }
-                }
-                None
-            }
-            _ => None,
+        if !walk.explored.insert(resolved.clone()) {
+            return None;
         }
+        if walk.growing(&resolved) {
+            if let Ty::Named { args, .. } = &resolved {
+                return args.iter().find_map(|arg| {
+                    self.ty_field_contains_opaque_on_graph(arg, skip_channel_handles, walk)
+                });
+            }
+        }
+        walk.active.push(resolved.clone());
+        let found = (|| {
+            match &resolved {
+                Ty::Named { head, args, .. } => {
+                    let name = head.registry_key();
+                    let builtin = head.builtin();
+                    if skip_channel_handles
+                        && matches!(
+                            builtin,
+                            Some(
+                                crate::BuiltinType::Sink
+                                    | crate::BuiltinType::Stream
+                                    | crate::BuiltinType::ActorHandle
+                                    | crate::BuiltinType::RemotePid
+                            )
+                        )
+                    {
+                        return None;
+                    }
+                    // Direct opaque handle (imported via module registry OR user-declared #[opaque])?
+                    if self.registry.is_owned_handle(*head)
+                        || head
+                            .nominal()
+                            .is_some_and(|id| self.opaque_type_ids.contains(&id))
+                    {
+                        return Some(name.to_string());
+                    }
+                    // Recurse into type args (e.g. `Vec<Handle>`, `Option<Handle>`).
+                    for arg in args {
+                        if let Some(n) =
+                            self.ty_field_contains_opaque_on_graph(arg, skip_channel_handles, walk)
+                        {
+                            return Some(n);
+                        }
+                    }
+                    // Recurse into the type def's fields, substituting the def's
+                    // params with the concrete `args` at this use site.
+                    if let Some(n) = self.record_field_contains_opaque_on_graph(
+                        *head,
+                        args,
+                        skip_channel_handles,
+                        walk,
+                    ) {
+                        return Some(n);
+                    }
+                    // Recurse into enum variant payloads too — a nested enum with a
+                    // hard-coded opaque payload (`enum Inner { B(Handle) }`) is
+                    // reachable from neither the type-arg walk nor the record-field
+                    // walk, so without this an outer clone would admit an
+                    // unclonable leaf. (`record_field_contains_opaque` is a no-op
+                    // for an enum, and vice-versa, so both calls are kind-safe.)
+                    if let Some(n) = self.enum_variant_contains_opaque_on_graph(
+                        *head,
+                        args,
+                        skip_channel_handles,
+                        walk,
+                    ) {
+                        return Some(n);
+                    }
+                    None
+                }
+                Ty::Tuple(items) => {
+                    for item in items {
+                        if let Some(n) =
+                            self.ty_field_contains_opaque_on_graph(item, skip_channel_handles, walk)
+                        {
+                            return Some(n);
+                        }
+                    }
+                    None
+                }
+                _ => None,
+            }
+        })();
+        walk.active.pop();
+        found
     }
 
     /// The single template-capability authority for `clone`.

@@ -9,7 +9,7 @@
 //! class and no "assume `BitCopy`". A type this module cannot class is an
 //! [`Err`] the caller fails closed on.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 
 use crate::builtin_type::BuiltinType;
 use crate::resolved_ty::{substitute_type_params as substitute, ResolvedTy};
@@ -285,24 +285,43 @@ impl ValueClass {
 /// # Errors
 ///
 /// See [`ValueClass::of_ty`].
+///
+/// # Panics
+///
+/// Panics if the internal classification graph does not produce its root fact.
 pub fn classify_ty(
     ty: &ResolvedTy,
     decls: &ClassContext<'_>,
 ) -> Result<(ValueClass, CloneKind), ClassError> {
     let mut walk = Walk::default();
-    classify(ty, decls, &mut walk)
+    classify(ty, decls, &mut walk)?;
+    walk.settle(decls);
+    walk.nodes[walk.identities[ty]]
+        .facts
+        .clone()
+        .expect("classified root")
 }
 
-/// The state one [`classify_ty`] carries across its member walk.
-///
-/// `on_path` is the §1.1 owning-edge cut, keyed by the instantiation the walk
-/// entered. `polymorphic` memoizes [`is_polymorphically_recursive`], which is a
-/// property of a declaration and not of any one walk, so it is answered once
-/// per declaration rather than once per member occurrence.
+type ClassFacts = Result<(ValueClass, CloneKind), ClassError>;
+
+/// One exact instantiated graph owns both class and clone facts. Recursive
+/// owning edges start at their heap floor; dependent facts settle before any
+/// query result is published.
 #[derive(Default)]
 struct Walk {
-    on_path: Vec<(crate::NominalId, Vec<ResolvedTy>)>,
+    identities: HashMap<ResolvedTy, usize>,
+    nodes: Vec<ClassNode>,
+    current: Option<usize>,
+    cyclic: bool,
     polymorphic: BTreeMap<crate::NominalId, bool>,
+}
+
+struct ClassNode {
+    ty: ResolvedTy,
+    facts: Option<ClassFacts>,
+    computing: bool,
+    users: HashSet<usize>,
+    queued: bool,
 }
 
 impl Walk {
@@ -313,6 +332,55 @@ impl Walk {
         let answer = is_polymorphically_recursive(id, decls);
         self.polymorphic.insert(id, answer);
         answer
+    }
+
+    fn intern(&mut self, ty: &ResolvedTy) -> usize {
+        let id = if let Some(id) = self.identities.get(ty) {
+            *id
+        } else {
+            let id = self.nodes.len();
+            self.identities.insert(ty.clone(), id);
+            self.nodes.push(ClassNode {
+                ty: ty.clone(),
+                facts: None,
+                computing: false,
+                users: HashSet::new(),
+                queued: false,
+            });
+            id
+        };
+        if let Some(current) = self.current {
+            self.nodes[id].users.insert(current);
+        }
+        id
+    }
+
+    fn settle(&mut self, decls: &ClassContext<'_>) {
+        if !self.cyclic {
+            return;
+        }
+        let mut pending: VecDeque<_> = (0..self.nodes.len()).collect();
+        for node in &mut self.nodes {
+            node.queued = true;
+        }
+        while let Some(id) = pending.pop_front() {
+            self.nodes[id].queued = false;
+            self.current = Some(id);
+            let ty = self.nodes[id].ty.clone();
+            let facts = classify_uncached(&ty, decls, self);
+            self.current = None;
+            if self.nodes[id].facts.as_ref() == Some(&facts) {
+                continue;
+            }
+            self.nodes[id].facts = Some(facts);
+            let users: Vec<_> = self.nodes[id].users.iter().copied().collect();
+            for user in users {
+                if !self.nodes[user].queued {
+                    self.nodes[user].queued = true;
+                    pending.push_back(user);
+                }
+            }
+        }
     }
 }
 
@@ -564,11 +632,29 @@ fn classify_all(
     tys.iter().map(|ty| classify(ty, decls, walk)).collect()
 }
 
+fn classify(ty: &ResolvedTy, decls: &ClassContext<'_>, walk: &mut Walk) -> ClassFacts {
+    let id = walk.intern(ty);
+    if let Some(facts) = &walk.nodes[id].facts {
+        return facts.clone();
+    }
+    if walk.nodes[id].computing {
+        walk.cyclic = true;
+        return Ok((ValueClass::CowValue, CloneKind::FieldWise));
+    }
+    walk.nodes[id].computing = true;
+    let parent = walk.current.replace(id);
+    let facts = classify_uncached(ty, decls, walk);
+    walk.current = parent;
+    walk.nodes[id].computing = false;
+    walk.nodes[id].facts = Some(facts.clone());
+    facts
+}
+
 #[expect(
     clippy::too_many_lines,
     reason = "the §1.1 table is one closed match with a row per ResolvedTy arm and BuiltinType variant"
 )]
-fn classify(
+fn classify_uncached(
     ty: &ResolvedTy,
     decls: &ClassContext<'_>,
     walk: &mut Walk,
@@ -825,15 +911,114 @@ fn classify_declaration(
             name: name.to_string(),
         });
     }
-    let instance = (id, args.to_vec());
-    if walk.on_path.contains(&instance) {
-        return Ok((ValueClass::CowValue, CloneKind::FieldWise));
+    let members = decls.declarations.instantiate_members(&declared, args)?;
+    Ok(aggregate_facts(&classify_all(&members, decls, walk)?))
+}
+
+#[cfg(test)]
+mod graph_tests {
+    use super::*;
+
+    fn nominal(name: &str) -> ResolvedTy {
+        ResolvedTy::user_for_test(name, vec![])
     }
-    walk.on_path.push(instance);
-    let facts = decls
-        .declarations
-        .instantiate_members(&declared, args)
-        .and_then(|members| classify_all(&members, decls, walk));
-    walk.on_path.pop();
-    Ok(aggregate_facts(&facts?))
+
+    #[test]
+    fn shared_member_graph_retains_complete_class_and_clone_facts() {
+        let mut declarations = BTreeMap::new();
+        let leaf = crate::NominalId::for_test("Node0");
+        declarations.insert(
+            leaf,
+            DeclaredType {
+                members: vec![ResolvedTy::I64],
+                ..DeclaredType::default()
+            },
+        );
+        let mut root = nominal("Node0");
+        for level in 1..=28 {
+            let name = format!("Node{level}");
+            declarations.insert(
+                crate::NominalId::for_test(&name),
+                DeclaredType {
+                    members: vec![root.clone(), root],
+                    ..DeclaredType::default()
+                },
+            );
+            root = nominal(&name);
+        }
+        assert_eq!(
+            classify_ty(&root, &ClassContext::new(&declarations)),
+            Ok((ValueClass::BitCopy, CloneKind::Bits))
+        );
+        declarations.get_mut(&leaf).unwrap().marker = DeclarationMarker::Resource;
+        assert_eq!(
+            classify_ty(&root, &ClassContext::new(&declarations)),
+            Ok((ValueClass::AffineResource, CloneKind::None))
+        );
+    }
+
+    #[test]
+    fn cycle_members_settle_before_a_sibling_callable_claims_clone() {
+        let resource = crate::NominalId::for_test("Resource");
+        let mut declarations = BTreeMap::from([
+            (
+                crate::NominalId::for_test("A"),
+                DeclaredType {
+                    members: vec![nominal("B"), nominal("Resource")],
+                    ..DeclaredType::default()
+                },
+            ),
+            (
+                crate::NominalId::for_test("B"),
+                DeclaredType {
+                    members: vec![nominal("A")],
+                    ..DeclaredType::default()
+                },
+            ),
+            (resource, DeclaredType::default()),
+        ]);
+        let closure = ResolvedTy::Closure {
+            capabilities: crate::CallableCapabilities {
+                clone: true,
+                ..crate::CallableCapabilities::default()
+            },
+            params: vec![],
+            ret: Box::new(ResolvedTy::Unit),
+            captures: vec![nominal("B")],
+        };
+        let root = ResolvedTy::Tuple(vec![nominal("A"), closure]);
+        assert_eq!(
+            classify_ty(&root, &ClassContext::new(&declarations)),
+            Ok((ValueClass::CowValue, CloneKind::FieldWise))
+        );
+        for marker in [DeclarationMarker::Resource, DeclarationMarker::Linear] {
+            declarations.get_mut(&resource).unwrap().marker = marker;
+            assert_eq!(
+                classify_ty(&root, &ClassContext::new(&declarations)),
+                Err(ClassError::CallableCloneConflict),
+                "an owning-cycle floor must not hide {marker:?} in a sibling's capture"
+            );
+        }
+    }
+
+    #[test]
+    fn completed_class_states_keep_generic_arguments_distinct() {
+        let parameter = crate::ParamHead::for_test("T");
+        let declarations = BTreeMap::from([(
+            crate::NominalId::for_test("Wrap"),
+            DeclaredType {
+                type_params: vec![parameter],
+                members: vec![ResolvedTy::TypeParam { name: parameter }],
+                ..DeclaredType::default()
+            },
+        )]);
+        let root = ResolvedTy::Tuple(vec![
+            ResolvedTy::user_for_test("Wrap", vec![ResolvedTy::I64]),
+            ResolvedTy::user_for_test("Wrap", vec![ResolvedTy::String]),
+        ]);
+        assert_eq!(
+            classify_ty(&root, &ClassContext::new(&declarations)),
+            Ok((ValueClass::CowValue, CloneKind::FieldWise))
+        );
+    }
 }

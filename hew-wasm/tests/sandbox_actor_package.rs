@@ -1097,17 +1097,8 @@ fn confined_supplied_services_keep_generic_and_erased_cleanup_authority() {
         include_str!("../../tests/core-acceptance/cases/confined_service_support/component.hew"),
     );
     assert_native_manifest("confined-service-summaries", inputs.clone());
-    let source = include_str!("../../tests/core-acceptance/cases/confined-service-summaries.hew")
-        .replace("impl Codec<i64> for TextCodec {", "impl TextCodec {")
-        .replace("    type Encoded = string;\n", "");
-    let structural =
-        include_str!("../../tests/core-acceptance/cases/confined_service_support/component.hew")
-            .replace("    type Encoded;\n", "")
-            .replace("Self.Encoded", "string")
-            .replace("Codec<i64, Encoded = string>", "Codec<i64>");
-    let mut structural_inputs = hew_compile::SourceSet::in_memory();
-    structural_inputs.insert("confined_service_support/component.hew", structural);
-    let trace = execute_options(&source, "ok", "{}", structural_inputs);
+    let source = include_str!("../../tests/core-acceptance/cases/confined-service-summaries.hew");
+    let trace = execute_options(source, "ok", "{}", inputs.clone());
     assert_eq!(stdout(&trace), "confined supplied service closed\n");
     assert_eq!(trace["final_state"]["exit_code"], 0);
     for (source, kind, message) in [
@@ -1883,4 +1874,12 @@ fn inline_actor_arguments_transfer_owned_fields_once() {
     source.replace_range(native_start..native_end, "");
     let trace = execute(&source);
     assert_eq!(stdout(&trace), "actor arguments evaluated once\n");
+}
+
+#[test]
+fn generic_cleanup_effect_composition_executes() {
+    assert_native_manifest(
+        "effect-graph-cleanup-composition",
+        hew_compile::SourceSet::in_memory(),
+    );
 }

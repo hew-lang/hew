@@ -21,40 +21,40 @@ impl Checker {
     pub(super) fn type_contains_owned_handle(
         &self,
         id: crate::NominalId,
-        visiting: &mut HashSet<crate::NominalId>,
+        explored: &mut HashSet<crate::NominalId>,
     ) -> bool {
-        if !visiting.insert(id) {
+        // This is one root reachability query. Retain declarations across
+        // siblings so a shared member graph is expanded once, including cycles.
+        if !explored.insert(id) {
             return false;
         }
-        let found = self.type_defs.get(&id).is_some_and(|definition| {
+        self.type_defs.get(&id).is_some_and(|definition| {
             definition.kind == TypeDefKind::Struct
                 && definition
                     .fields
                     .values()
-                    .any(|ty| self.ty_contains_owned_handle(ty, visiting))
-        });
-        visiting.remove(&id);
-        found
+                    .any(|ty| self.ty_contains_owned_handle(ty, explored))
+        })
     }
 
     pub(super) fn ty_contains_owned_handle(
         &self,
         ty: &Ty,
-        visiting: &mut HashSet<crate::NominalId>,
+        explored: &mut HashSet<crate::NominalId>,
     ) -> bool {
         match ty {
             Ty::Tuple(items) => items
                 .iter()
-                .any(|item_ty| self.ty_contains_owned_handle(item_ty, visiting)),
+                .any(|item_ty| self.ty_contains_owned_handle(item_ty, explored)),
             Ty::Array(element_ty, _) | Ty::Slice(element_ty) => {
-                self.ty_contains_owned_handle(element_ty, visiting)
+                self.ty_contains_owned_handle(element_ty, explored)
             }
             Ty::Named { head, args } => {
                 self.registry.is_owned_handle(*head)
                     || args
                         .iter()
-                        .any(|arg_ty| self.ty_contains_owned_handle(arg_ty, visiting))
-                    || head.nominal().is_some_and(|id| self.type_contains_owned_handle(id, visiting))
+                        .any(|arg_ty| self.ty_contains_owned_handle(arg_ty, explored))
+                    || head.nominal().is_some_and(|id| self.type_contains_owned_handle(id, explored))
             }
             Ty::I8
             | Ty::I16

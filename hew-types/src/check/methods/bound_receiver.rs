@@ -171,14 +171,13 @@ impl Checker {
     fn bound_receiver_method_candidates(
         &mut self,
         parameter: crate::ParamHead,
-        receiver_ty: &Ty,
+        _receiver_ty: &Ty,
         method: &str,
         required_trait: Option<crate::DefId>,
     ) -> (Vec<super::TraitRef>, Vec<(crate::DefId, FnSig)>) {
         let bounds: Vec<_> = self
             .active_bounds_of(parameter.id)
-            .iter()
-            .flat_map(|bound| self.applied_trait_closure(bound, Some(receiver_ty)))
+            .into_iter()
             .filter(|bound| required_trait.is_none_or(|required| bound.trait_id == required))
             .collect();
         let mut hits = Vec::new();

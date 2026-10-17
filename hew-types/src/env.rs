@@ -450,6 +450,8 @@ pub struct LoopCarriedMove {
 pub struct LoopExit {
     /// Deferred init fields whose initialization differs between paths.
     pub deferred_init_conflicts: Vec<TypeBindingId>,
+    /// Reaching live values hidden by the merged unavailable-place facts.
+    pub cleanup: Vec<Binding>,
     /// Values an iteration consumes and the next iteration uses again.
     pub carried_moves: Vec<LoopCarriedMove>,
     pub(crate) value_candidates: Vec<(
@@ -506,6 +508,15 @@ impl OwnershipSnapshot {
     pub fn is_empty(&self) -> bool {
         self.states.is_empty()
     }
+}
+
+/// Path facts retained when a diagnostic union makes a value unavailable.
+#[derive(Debug, Default)]
+pub struct OwnershipJoin {
+    /// Bindings whose initialization differs across reaching paths.
+    pub conflicts: Vec<TypeBindingId>,
+    /// Reaching live values hidden by the merged unavailable-place facts.
+    pub cleanup: Vec<Binding>,
 }
 
 /// A diagnostic about a binding discovered at scope exit.
@@ -803,7 +814,7 @@ impl TypeEnv {
                 binding.mutation = MutationState::Observed;
             }
         }
-        let deferred_init_conflicts = self.merge_ownership(&scope.entry, &scope.exits);
+        let join = self.merge_ownership(&scope.entry, &scope.exits);
         // A re-initialisation inside this loop's body is not one since the
         // head of a loop that is no longer active.
         let depth = self.loop_scope_floors.len();
@@ -814,7 +825,8 @@ impl TypeEnv {
             binding.loop_fresh.retain(|fresh| fresh.loops > 0);
         }
         LoopExit {
-            deferred_init_conflicts,
+            deferred_init_conflicts: join.conflicts,
+            cleanup: join.cleanup,
             carried_moves,
             value_candidates,
         }
@@ -1416,17 +1428,17 @@ impl TypeEnv {
     /// per path that reaches the join — including the implicit fall-through
     /// path of an `if` without an `else`.
     ///
-    /// Returns the deferred init fields (D447) whose initialization differs
-    /// between reaching paths: a field initialized on one path and not on
-    /// another has no single store kind, so the join is a source error.
+    /// Returns initialization conflicts and residual live-path cleanup.
+    /// The unavailable-place union must not erase a reaching path's release.
     pub fn merge_ownership(
         &mut self,
         entry: &OwnershipSnapshot,
         exits: &[OwnershipSnapshot],
-    ) -> Vec<TypeBindingId> {
+    ) -> OwnershipJoin {
         let mut merged: HashMap<TypeBindingId, OwnershipState> =
             HashMap::with_capacity(entry.states.len());
         let mut conflicts = Vec::new();
+        let mut cleanup = Vec::new();
         for (id, entry_state) in &entry.states {
             let mut reaching = exits.iter().filter_map(|exit| exit.states.get(id));
             // Entry identifies bindings, not an additional execution path.
@@ -1467,12 +1479,35 @@ impl TypeEnv {
                 }
                 state.loop_fresh = common_fresh_places(&state.loop_fresh, &exit_state.loop_fresh);
             }
+            if let Some(binding) = self.binding_by_id(*id) {
+                for exit in exits.iter().filter_map(|exit| exit.get(*id)) {
+                    let lost = state.is_moved
+                        || state.released_at.is_some()
+                        || state.init_state != exit.init_state
+                        || state.moved_places.iter().any(|place| {
+                            !exit.moved_places.iter().any(|old| old.path == place.path)
+                        })
+                        || exit
+                            .parameter_replacements
+                            .iter()
+                            .any(|place| !state.parameter_replacements.contains(place));
+                    if lost
+                        && !exit.is_moved
+                        && exit.released_at.is_none()
+                        && exit.init_state == InitState::Assigned
+                    {
+                        let mut residual = binding.clone();
+                        Self::apply_binding_ownership(&mut residual, exit);
+                        cleanup.push(residual);
+                    }
+                }
+            }
             merged.insert(*id, state);
         }
         Self::apply_ownership(&mut self.scopes, &merged);
         conflicts.sort_unstable_by_key(|id| id.0);
         conflicts.dedup();
-        conflicts
+        OwnershipJoin { conflicts, cleanup }
     }
 
     fn apply_ownership(
@@ -1482,22 +1517,26 @@ impl TypeEnv {
         for scope in scopes.iter_mut() {
             for binding in scope.values_mut() {
                 if let Some(state) = states.get(&binding.id) {
-                    binding.value_candidates.clone_from(&state.value_candidates);
-                    binding
-                        .parameter_replacements
-                        .clone_from(&state.parameter_replacements);
-                    binding
-                        .collection_borrow
-                        .clone_from(&state.collection_borrow);
-                    binding.is_moved = state.is_moved;
-                    binding.init_state = state.init_state;
-                    binding.moved_at.clone_from(&state.moved_at);
-                    binding.moved_places.clone_from(&state.moved_places);
-                    binding.released_at.clone_from(&state.released_at);
-                    binding.loop_fresh.clone_from(&state.loop_fresh);
+                    Self::apply_binding_ownership(binding, state);
                 }
             }
         }
+    }
+
+    fn apply_binding_ownership(binding: &mut Binding, state: &OwnershipState) {
+        binding.value_candidates.clone_from(&state.value_candidates);
+        binding
+            .parameter_replacements
+            .clone_from(&state.parameter_replacements);
+        binding
+            .collection_borrow
+            .clone_from(&state.collection_borrow);
+        binding.is_moved = state.is_moved;
+        binding.init_state = state.init_state;
+        binding.moved_at.clone_from(&state.moved_at);
+        binding.moved_places.clone_from(&state.moved_places);
+        binding.released_at.clone_from(&state.released_at);
+        binding.loop_fresh.clone_from(&state.loop_fresh);
     }
 
     /// Mark a variable as written (reassigned after definition).

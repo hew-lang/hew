@@ -104,7 +104,7 @@ const categoryMap = {
     keywords: [...new Set([
       ...kw.control_flow.filter(k => k !== 'for'),
       // Keep plain stream iteration distinct from the retired `for await`.
-      'select', 'race', 'yield', 'after', 'from', 'await', 'await_restart',
+      'select', 'race', 'yield', 'after', 'from', 'await',
       'scope',
     ])],
     extraLines: [

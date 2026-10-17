@@ -8,7 +8,9 @@
 > acceptance evidence.
 
 
-**Status:** normative for v0.6.0-rc1
+**Status:** normative for edition 2026. For a released compiler, use the
+[specification at its release tag](https://github.com/hew-lang/hew/blob/v0.6.1/docs/specs/HEW-DIST-SPEC.md)
+and its [migration notes](../releases/v0.6.1.md).
 **Protocol epoch:** 2
 **Targets:** native only
 
@@ -114,6 +116,15 @@ that already carries a validated location.
 
 ### Identity files
 
+Released v0.6.1 loads an existing identity file or creates one when absent.
+`NodeConfig.key` must be non-empty; `NodeConfig.at(address)` leaves it empty.
+Preserve that file across upgrades and keep it private. Replacing the key
+changes the node's identity and the credentials its peers must pin. For TCP,
+unreadable files and files with the wrong length are refused rather than regenerated.
+
+**Unreleased hardening on `main`:** the following stricter file checks and
+publication guarantees are not part of v0.6.1.
+
 Native node identities are created exclusively and published only after their complete
 contents are validated and synced. Concurrent creators adopt the same validated winner;
 loading never replaces or truncates an existing identity. Loads reject symbolic links,
@@ -122,7 +133,10 @@ or ACLs. Public and private key material must agree. Private mesh keys share zer
 storage and are omitted from diagnostic formatting.
 
 The supported node transports are TCP with Noise and mutually authenticated QUIC mesh.
-The legacy unbound QUIC selector and insecure opt-in are unavailable. Ordinary
+The legacy unbound QUIC selector and insecure opt-in are unavailable on `main`.
+In released v0.6.1, the legacy `HEW_TRANSPORT=quic` selector is still parsed,
+but cannot satisfy authenticated node startup. Its removal from the runtime
+is an [unreleased change](../releases/UNRELEASED.md). Ordinary
 `std.net.quic` endpoints remain a separate socket API.
 
 ## 3. Stable credentials and peer configuration
@@ -155,9 +169,9 @@ pinned peers. `NodeError.Config` reports invalid configuration, `Key` invalid
 identity or peer credentials, `Unreachable` a failed dial, and `Refused` denied
 admission or an unavailable node or transport. Re-dial with backoff is v0.8.0.
 
-`Node::identity_key()` returns the local public credential as lowercase
-hexadecimal for out-of-band exchange. There is no separate `Node::load_keys`,
-`Node::set_transport`, or `Node::allow_peer`: each carried one fact that is now
+`Node.identity_key()` returns the local public credential as lowercase
+hexadecimal for out-of-band exchange. There is no separate `Node.load_keys`,
+`Node.set_transport`, or `Node.allow_peer`: each carried one fact that is now
 a `NodeConfig` field, and a setup sequence whose steps can be reordered or
 skipped is a second configuration authority.
 
@@ -445,21 +459,22 @@ these surfaces. There is no wasm networking shim and no success-shaped fallback.
 
 ## 13. Configuration example
 
-Each operator exchanges the output of `Node::identity_key()` out of band and
+Each operator exchanges the output of `Node.identity_key()` out of band and
 lists the peer's credential in `NodeConfig.peers`. A peer's route slot is its
 one-based position in that vector, so the single peer below occupies slot `1`
 and slot `0` stays reserved for local dispatch:
 
-```hew,ignore
-var config = NodeConfig.at("0.0.0.0:9000");
-config.transport = "tcp";
-config.key = "server.key";
-config.peers = ["8f4c...64-hex-digits-total"];
-println(f"pin this credential on peers: {Node.identity_key()}");
+```hew,no_run
+import std.os;
 
-match Node.start(config) {
-    .Ok(_) => println("node up"),
-    .Err(e) => println(f"node refused: {e}"),
+fn main() {
+    var config = NodeConfig.at("127.0.0.1:9000");
+    config.transport = NodeTransport.Tcp;
+    config.key = "server.key";
+    config.peers = [os.env("HEW_PEER_CREDENTIAL").expect("supply the peer's public credential")];
+    Node.start(config).expect("node starts");
+    println(f"pin this credential on peers: {Node.identity_key()}");
+    Node.shutdown();
 }
 ```
 

@@ -9,6 +9,11 @@ The Hew standard library provides core types, data structures, networking, encod
 
 This file is the canonical index of shipped stdlib modules in this repository. Module links below go to the public `.hew` surface that Hew programs import.
 
+For the current released SDK, use the
+[v0.6.1 library index](https://github.com/hew-lang/hew/blob/v0.6.1/std/README.md)
+and [release notes](../docs/releases/v0.6.1.md). Changes after that tag are
+[unreleased](../docs/releases/UNRELEASED.md).
+
 For the curated language-only playground snippets, start with [`../examples/playground/manifest.json`](../examples/playground/manifest.json) and [`../examples/README.md`](../examples/README.md). Use this README when you need the canonical index of shipped `std.*` modules.
 
 ## Builtins — auto-imported, plain function calls
@@ -50,7 +55,7 @@ and cancellation govern scope failure.
 Actor `stop(actor)` requests a cooperative stop; `stopped(actor)` waits for
 terminal cleanup. `mailbox` is the submission view and
 `policy` selects completion-call admission. Supervisor lifecycle forms and
-typed request recovery in `ActorError` remain implementation gaps; see
+typed request recovery in `ActorError` follow the contracts in
 [builtins](builtins.hew).
 
 Resource cleanup uses `close(consume self)` returning unit, automatically at

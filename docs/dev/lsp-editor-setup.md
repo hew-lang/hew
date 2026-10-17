@@ -10,7 +10,14 @@ This page covers building, launching, and pointing an editor (VS Code first) at
 the server. For non-VS Code highlighting configs, see
 [`editors/README.md`](../../editors/README.md).
 
-## Build
+## Install a matching SDK
+
+The [v0.6.1 SDK](https://github.com/hew-lang/hew/releases/tag/v0.6.1) includes
+`hew`, `hew-lsp` and their matching standard library. Use the binaries from
+the same SDK so editor diagnostics and command-line checks agree. Confirm
+both with `hew --version` and `hew-lsp --version`.
+
+## Build from source
 
 From a source checkout:
 

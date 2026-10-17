@@ -1650,6 +1650,10 @@ pub fn lower_program_with_mono_cap(
         }
     }
 
+    let lowered_type_declarations: HashSet<_> = type_decl_cache
+        .values()
+        .map(|declaration| declaration.declaration)
+        .collect();
     let source_selected_impl_methods: HashSet<_> = ctx
         .direct_call_targets
         .values()
@@ -2976,6 +2980,7 @@ pub fn lower_program_with_mono_cap(
     );
     admit_resource_record_lifecycles(
         &items,
+        &lowered_type_declarations,
         ctx.display_facts.context(),
         &ctx.defs,
         &ctx.resource_close_discipline_failures,

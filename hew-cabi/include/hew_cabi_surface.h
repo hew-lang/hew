@@ -7138,19 +7138,24 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1664] = {
      "{\"native\": \"fn hew_supervisor_terminate_native( HewLocalPidId, )\"}",
      "native", "non-declarable", "not-applicable", "not-applicable",
      HEW_CABI_OWNERSHIP_UNMEASURED},
-    {"hew_task_free", "{\"native\": \"fn hew_task_free( *mut HewTask)\"}",
-     "native", "stable", "not-applicable", "no-in-signature-extent",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_task_free",
+     "{\"native\": \"fn hew_task_free( *mut HewTask)\", \"wasm32-wasip1\": "
+     "\"fn hew_task_free( *mut HewTask)\"}",
+     "native,wasm32-wasip1", "stable", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_task_scope_cancel_token",
      "{\"native\": \"fn hew_task_scope_cancel_token( *mut HewTaskScope, ) -> "
-     "*mut HewCancellationToken\"}",
-     "native", "stable", "not-applicable", "no-in-signature-extent",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
+     "*mut HewCancellationToken\", \"wasm32-wasip1\": \"fn "
+     "hew_task_scope_cancel_token( *mut HewTaskScope, ) -> *mut "
+     "HewCancellationToken\"}",
+     "native,wasm32-wasip1", "stable", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_task_scope_set_current",
      "{\"native\": \"fn hew_task_scope_set_current( *mut HewTaskScope) -> *mut "
-     "HewTaskScope\"}",
-     "native", "non-declarable", "not-applicable", "no-in-signature-extent",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
+     "HewTaskScope\", \"wasm32-wasip1\": \"fn hew_task_scope_set_current( *mut "
+     "HewTaskScope) -> *mut HewTaskScope\"}",
+     "native,wasm32-wasip1", "non-declarable", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_tcp_accept", "{\"native\": \"fn hew_tcp_accept( c_int) -> c_int\"}",
      "native", "stable", "not-applicable", "not-applicable",
      HEW_CABI_OWNERSHIP_UNMEASURED},

@@ -1,4 +1,5 @@
 import std.observe;
+
 import std.os;
 
 actor Lossy {
@@ -35,7 +36,11 @@ fn main() {
     let peer = os.env("HEW_OBSERVE_PEER") ?? "";
     if !key.is_empty() {
         let bind = os.env("HEW_OBSERVE_BIND") ?? "127.0.0.1:0";
-        let peers = if peer.is_empty() { Vec.new() } else { [peer] };
+        let peers = if peer.is_empty() {
+            Vec.new()
+        } else {
+            [peer]
+        };
         Node.start(NodeConfig { bind: bind, transport: NodeTransport.Tcp, key: key, peers: peers, seeds: [] }).expect("observe node");
         if (os.env("HEW_OBSERVE_MINT") ?? "") == "1" {
             println(f"IDENTITY {Node.identity_key()}");

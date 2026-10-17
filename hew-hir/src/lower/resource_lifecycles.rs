@@ -41,11 +41,12 @@ fn inherent_close_methods(
         .collect()
 }
 
-/// Admit field-bearing resource lifecycles while exact HIR declaration and
-/// body identities are simultaneously available. No downstream stage may
-/// reconstruct a close declaration from a record-layout or symbol spelling.
+/// Admit field-bearing lifecycles for declarations lowered from this program.
+/// Checker-only prelude metadata has no executable source in an inline program.
+/// Every selected declaration still requires its exact close declaration/body.
 pub(super) fn admit_resource_record_lifecycles(
     items: &[HirItem],
+    lowered_declarations: &HashSet<hew_types::DefId>,
     facts: &hew_types::TypeFactContext,
     identity: &hew_types::DefTable,
     resource_close_discipline_failures: &HashSet<hew_types::DefId>,
@@ -54,7 +55,8 @@ pub(super) fn admit_resource_record_lifecycles(
 ) {
     for (nominal, decl) in facts.declarations() {
         let declaration = nominal.declaration();
-        if decl.is_opaque
+        if !lowered_declarations.contains(&declaration)
+            || decl.is_opaque
             || decl.marker != hew_types::value_class::DeclarationMarker::Resource
             || !facts
                 .types()

@@ -304,6 +304,7 @@ fn with_current_node_read<R>(f: impl FnOnce(&usize) -> R) -> R {
     }
 }
 
+#[cfg(feature = "profiler")]
 pub(crate) fn with_current_node_snapshot<R>(f: impl FnOnce(Option<&HewNode>) -> R) -> R {
     with_current_node_read(|pointer| {
         // SAFETY: the current-node read guard excludes stop/free until the callback returns.

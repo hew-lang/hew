@@ -610,8 +610,8 @@
             "scrutinee": 0,
             "shape": 0,
             "span": {
-              "end": 45614,
-              "start": 45614
+              "end": 46566,
+              "start": 46566
             }
           }
         },
@@ -671,8 +671,8 @@
               "op": "const.str",
               "own": "owned",
               "span": {
-                "end": 45618,
-                "start": 45618
+                "end": 46570,
+                "start": 46570
               },
               "str": 0
             }
@@ -687,8 +687,8 @@
             },
             "op": "goto",
             "span": {
-              "end": 45618,
-              "start": 45618
+              "end": 46570,
+              "start": 46570
             }
           }
         },
@@ -700,8 +700,8 @@
               "op": "const.str",
               "own": "owned",
               "span": {
-                "end": 45622,
-                "start": 45622
+                "end": 46574,
+                "start": 46574
               },
               "str": 1
             }
@@ -716,8 +716,8 @@
             },
             "op": "goto",
             "span": {
-              "end": 45622,
-              "start": 45622
+              "end": 46574,
+              "start": 46574
             }
           }
         },
@@ -729,8 +729,8 @@
               "op": "const.str",
               "own": "owned",
               "span": {
-                "end": 45626,
-                "start": 45626
+                "end": 46578,
+                "start": 46578
               },
               "str": 2
             }
@@ -745,8 +745,8 @@
             },
             "op": "goto",
             "span": {
-              "end": 45626,
-              "start": 45626
+              "end": 46578,
+              "start": 46578
             }
           }
         },
@@ -766,8 +766,8 @@
             },
             "op": "goto",
             "span": {
-              "end": 45628,
-              "start": 45628
+              "end": 46580,
+              "start": 46580
             }
           }
         },
@@ -778,8 +778,8 @@
           "term": {
             "op": "return",
             "span": {
-              "end": 45628,
-              "start": 45628
+              "end": 46580,
+              "start": 46580
             },
             "value": {
               "decision": "move",
@@ -867,8 +867,8 @@
             "result_member_shapes": [],
             "result_shape": null,
             "span": {
-              "end": 45248,
-              "start": 45248
+              "end": 46200,
+              "start": 46200
             },
             "structural": null,
             "unwind": null
@@ -936,8 +936,8 @@
               "own": "owned",
               "place": 1,
               "span": {
-                "end": 45248,
-                "start": 45248
+                "end": 46200,
+                "start": 46200
               }
             },
             {
@@ -966,8 +966,8 @@
               "own": "none",
               "shape": 3,
               "span": {
-                "end": 45256,
-                "start": 45256
+                "end": 46208,
+                "start": 46208
               },
               "variant": 0
             },
@@ -991,8 +991,8 @@
               "own": "none",
               "shape": 2,
               "span": {
-                "end": 45262,
-                "start": 45262
+                "end": 46214,
+                "start": 46214
               },
               "variant": 1
             },
@@ -1014,8 +1014,8 @@
               "op": "const.str",
               "own": "owned",
               "span": {
-                "end": 45272,
-                "start": 45272
+                "end": 46224,
+                "start": 46224
               },
               "str": 3
             },
@@ -1038,8 +1038,8 @@
               "own": "none",
               "place": 0,
               "span": {
-                "end": 45556,
-                "start": 45556
+                "end": 46508,
+                "start": 46508
               }
             }
           ],
@@ -1080,8 +1080,8 @@
             "scrutinee": 9,
             "shape": 0,
             "span": {
-              "end": 45556,
-              "start": 45556
+              "end": 46508,
+              "start": 46508
             }
           }
         },
@@ -1104,8 +1104,8 @@
             "scrutinee": 1,
             "shape": 1,
             "span": {
-              "end": 45366,
-              "start": 45366
+              "end": 46318,
+              "start": 46318
             }
           }
         },
@@ -1128,8 +1128,8 @@
             "scrutinee": 1,
             "shape": 1,
             "span": {
-              "end": 45458,
-              "start": 45458
+              "end": 46410,
+              "start": 46410
             }
           }
         },
@@ -1152,8 +1152,8 @@
             "scrutinee": 1,
             "shape": 1,
             "span": {
-              "end": 45550,
-              "start": 45550
+              "end": 46502,
+              "start": 46502
             }
           }
         },
@@ -1165,8 +1165,8 @@
               "op": "const.str",
               "own": "owned",
               "span": {
-                "end": 45360,
-                "start": 45360
+                "end": 46312,
+                "start": 46312
               },
               "str": 4
             },
@@ -1175,8 +1175,8 @@
               "op": "store.assign",
               "place": 5,
               "span": {
-                "end": 45360,
-                "start": 45360
+                "end": 46312,
+                "start": 46312
               },
               "value": 10
             },
@@ -1185,8 +1185,8 @@
               "op": "const.int",
               "own": "none",
               "span": {
-                "end": 45300,
-                "start": 45300
+                "end": 46252,
+                "start": 46252
               },
               "ty": "i64",
               "value": "0"
@@ -1200,8 +1200,8 @@
               "own": "none",
               "shape": 2,
               "span": {
-                "end": 45302,
-                "start": 45302
+                "end": 46254,
+                "start": 46254
               },
               "variant": 0
             },
@@ -1210,8 +1210,8 @@
               "op": "store.assign",
               "place": 4,
               "span": {
-                "end": 45302,
-                "start": 45302
+                "end": 46254,
+                "start": 46254
               },
               "value": 12
             },
@@ -1222,8 +1222,8 @@
               "own": "none",
               "shape": 0,
               "span": {
-                "end": 45314,
-                "start": 45314
+                "end": 46266,
+                "start": 46266
               },
               "variant": 1
             }
@@ -1260,8 +1260,8 @@
             "scrutinee": 13,
             "shape": 0,
             "span": {
-              "end": 45352,
-              "start": 45352
+              "end": 46304,
+              "start": 46304
             }
           }
         },
@@ -1275,8 +1275,8 @@
               "own": "none",
               "shape": 0,
               "span": {
-                "end": 45328,
-                "start": 45328
+                "end": 46280,
+                "start": 46280
               },
               "variant": 0
             }
@@ -1291,8 +1291,8 @@
             },
             "op": "goto",
             "span": {
-              "end": 45328,
-              "start": 45328
+              "end": 46280,
+              "start": 46280
             }
           }
         },
@@ -1306,8 +1306,8 @@
               "own": "none",
               "shape": 0,
               "span": {
-                "end": 45338,
-                "start": 45338
+                "end": 46290,
+                "start": 46290
               },
               "variant": 1
             }
@@ -1322,8 +1322,8 @@
             },
             "op": "goto",
             "span": {
-              "end": 45338,
-              "start": 45338
+              "end": 46290,
+              "start": 46290
             }
           }
         },
@@ -1337,8 +1337,8 @@
               "own": "none",
               "shape": 0,
               "span": {
-                "end": 45348,
-                "start": 45348
+                "end": 46300,
+                "start": 46300
               },
               "variant": 2
             }
@@ -1353,8 +1353,8 @@
             },
             "op": "goto",
             "span": {
-              "end": 45348,
-              "start": 45348
+              "end": 46300,
+              "start": 46300
             }
           }
         },
@@ -1376,8 +1376,8 @@
             },
             "op": "goto",
             "span": {
-              "end": 45356,
-              "start": 45356
+              "end": 46308,
+              "start": 46308
             }
           }
         },
@@ -1399,8 +1399,8 @@
             },
             "op": "goto",
             "span": {
-              "end": 45368,
-              "start": 45368
+              "end": 46320,
+              "start": 46320
             }
           }
         },
@@ -1412,8 +1412,8 @@
               "op": "const.str",
               "own": "owned",
               "span": {
-                "end": 45452,
-                "start": 45452
+                "end": 46404,
+                "start": 46404
               },
               "str": 4
             },
@@ -1422,8 +1422,8 @@
               "op": "store.assign",
               "place": 5,
               "span": {
-                "end": 45452,
-                "start": 45452
+                "end": 46404,
+                "start": 46404
               },
               "value": 19
             },
@@ -1432,8 +1432,8 @@
               "op": "const.int",
               "own": "none",
               "span": {
-                "end": 45392,
-                "start": 45392
+                "end": 46344,
+                "start": 46344
               },
               "ty": "i64",
               "value": "1"
@@ -1447,8 +1447,8 @@
               "own": "none",
               "shape": 2,
               "span": {
-                "end": 45394,
-                "start": 45394
+                "end": 46346,
+                "start": 46346
               },
               "variant": 0
             },
@@ -1457,8 +1457,8 @@
               "op": "store.assign",
               "place": 4,
               "span": {
-                "end": 45394,
-                "start": 45394
+                "end": 46346,
+                "start": 46346
               },
               "value": 21
             },
@@ -1469,8 +1469,8 @@
               "own": "none",
               "shape": 0,
               "span": {
-                "end": 45406,
-                "start": 45406
+                "end": 46358,
+                "start": 46358
               },
               "variant": 2
             }
@@ -1507,8 +1507,8 @@
             "scrutinee": 22,
             "shape": 0,
             "span": {
-              "end": 45444,
-              "start": 45444
+              "end": 46396,
+              "start": 46396
             }
           }
         },
@@ -1522,8 +1522,8 @@
               "own": "none",
               "shape": 0,
               "span": {
-                "end": 45420,
-                "start": 45420
+                "end": 46372,
+                "start": 46372
               },
               "variant": 0
             }
@@ -1538,8 +1538,8 @@
             },
             "op": "goto",
             "span": {
-              "end": 45420,
-              "start": 45420
+              "end": 46372,
+              "start": 46372
             }
           }
         },
@@ -1553,8 +1553,8 @@
               "own": "none",
               "shape": 0,
               "span": {
-                "end": 45430,
-                "start": 45430
+                "end": 46382,
+                "start": 46382
               },
               "variant": 1
             }
@@ -1569,8 +1569,8 @@
             },
             "op": "goto",
             "span": {
-              "end": 45430,
-              "start": 45430
+              "end": 46382,
+              "start": 46382
             }
           }
         },
@@ -1584,8 +1584,8 @@
               "own": "none",
               "shape": 0,
               "span": {
-                "end": 45440,
-                "start": 45440
+                "end": 46392,
+                "start": 46392
               },
               "variant": 2
             }
@@ -1600,8 +1600,8 @@
             },
             "op": "goto",
             "span": {
-              "end": 45440,
-              "start": 45440
+              "end": 46392,
+              "start": 46392
             }
           }
         },
@@ -1623,8 +1623,8 @@
             },
             "op": "goto",
             "span": {
-              "end": 45448,
-              "start": 45448
+              "end": 46400,
+              "start": 46400
             }
           }
         },
@@ -1646,8 +1646,8 @@
             },
             "op": "goto",
             "span": {
-              "end": 45460,
-              "start": 45460
+              "end": 46412,
+              "start": 46412
             }
           }
         },
@@ -1659,8 +1659,8 @@
               "op": "const.str",
               "own": "owned",
               "span": {
-                "end": 45544,
-                "start": 45544
+                "end": 46496,
+                "start": 46496
               },
               "str": 4
             },
@@ -1669,8 +1669,8 @@
               "op": "store.assign",
               "place": 5,
               "span": {
-                "end": 45544,
-                "start": 45544
+                "end": 46496,
+                "start": 46496
               },
               "value": 28
             },
@@ -1679,8 +1679,8 @@
               "op": "const.int",
               "own": "none",
               "span": {
-                "end": 45484,
-                "start": 45484
+                "end": 46436,
+                "start": 46436
               },
               "ty": "i64",
               "value": "2"
@@ -1694,8 +1694,8 @@
               "own": "none",
               "shape": 2,
               "span": {
-                "end": 45486,
-                "start": 45486
+                "end": 46438,
+                "start": 46438
               },
               "variant": 0
             },
@@ -1704,8 +1704,8 @@
               "op": "store.assign",
               "place": 4,
               "span": {
-                "end": 45486,
-                "start": 45486
+                "end": 46438,
+                "start": 46438
               },
               "value": 30
             },
@@ -1716,8 +1716,8 @@
               "own": "none",
               "shape": 0,
               "span": {
-                "end": 45498,
-                "start": 45498
+                "end": 46450,
+                "start": 46450
               },
               "variant": 0
             }
@@ -1754,8 +1754,8 @@
             "scrutinee": 31,
             "shape": 0,
             "span": {
-              "end": 45536,
-              "start": 45536
+              "end": 46488,
+              "start": 46488
             }
           }
         },
@@ -1769,8 +1769,8 @@
               "own": "none",
               "shape": 0,
               "span": {
-                "end": 45512,
-                "start": 45512
+                "end": 46464,
+                "start": 46464
               },
               "variant": 0
             }
@@ -1785,8 +1785,8 @@
             },
             "op": "goto",
             "span": {
-              "end": 45512,
-              "start": 45512
+              "end": 46464,
+              "start": 46464
             }
           }
         },
@@ -1800,8 +1800,8 @@
               "own": "none",
               "shape": 0,
               "span": {
-                "end": 45522,
-                "start": 45522
+                "end": 46474,
+                "start": 46474
               },
               "variant": 1
             }
@@ -1816,8 +1816,8 @@
             },
             "op": "goto",
             "span": {
-              "end": 45522,
-              "start": 45522
+              "end": 46474,
+              "start": 46474
             }
           }
         },
@@ -1831,8 +1831,8 @@
               "own": "none",
               "shape": 0,
               "span": {
-                "end": 45532,
-                "start": 45532
+                "end": 46484,
+                "start": 46484
               },
               "variant": 2
             }
@@ -1847,8 +1847,8 @@
             },
             "op": "goto",
             "span": {
-              "end": 45532,
-              "start": 45532
+              "end": 46484,
+              "start": 46484
             }
           }
         },
@@ -1870,8 +1870,8 @@
             },
             "op": "goto",
             "span": {
-              "end": 45540,
-              "start": 45540
+              "end": 46492,
+              "start": 46492
             }
           }
         },
@@ -1893,8 +1893,8 @@
             },
             "op": "goto",
             "span": {
-              "end": 45552,
-              "start": 45552
+              "end": 46504,
+              "start": 46504
             }
           }
         },
@@ -1907,8 +1907,8 @@
               "own": "owned",
               "place": 2,
               "span": {
-                "end": 45566,
-                "start": 45566
+                "end": 46518,
+                "start": 46518
               }
             },
             {
@@ -1917,8 +1917,8 @@
               "own": "none",
               "place": 3,
               "span": {
-                "end": 45568,
-                "start": 45568
+                "end": 46520,
+                "start": 46520
               }
             },
             {
@@ -1927,8 +1927,8 @@
               "own": "owned",
               "place": 5,
               "span": {
-                "end": 45570,
-                "start": 45570
+                "end": 46522,
+                "start": 46522
               }
             },
             {
@@ -1937,8 +1937,8 @@
               "own": "none",
               "place": 4,
               "span": {
-                "end": 45572,
-                "start": 45572
+                "end": 46524,
+                "start": 46524
               }
             },
             {
@@ -1953,8 +1953,8 @@
               "own": "owned",
               "shape": 0,
               "span": {
-                "end": 45576,
-                "start": 45576
+                "end": 46528,
+                "start": 46528
               }
             },
             {
@@ -1975,8 +1975,8 @@
               "op": "store.assign",
               "place": 0,
               "span": {
-                "end": 45586,
-                "start": 45586
+                "end": 46538,
+                "start": 46538
               },
               "value": 37
             },
@@ -1986,8 +1986,8 @@
               "own": "owned",
               "place": 6,
               "span": {
-                "end": 45590,
-                "start": 45590
+                "end": 46542,
+                "start": 46542
               }
             },
             {
@@ -1996,8 +1996,8 @@
               "own": "none",
               "place": 0,
               "span": {
-                "end": 45596,
-                "start": 45596
+                "end": 46548,
+                "start": 46548
               }
             },
             {
@@ -2010,8 +2010,8 @@
               "own": "owned",
               "shape": null,
               "span": {
-                "end": 45590,
-                "start": 45590
+                "end": 46542,
+                "start": 46542
               }
             }
           ],
@@ -2028,8 +2028,8 @@
             },
             "op": "goto",
             "span": {
-              "end": 45590,
-              "start": 45590
+              "end": 46542,
+              "start": 46542
             }
           }
         },
@@ -2077,8 +2077,8 @@
           "term": {
             "op": "return",
             "span": {
-              "end": 45590,
-              "start": 45590
+              "end": 46542,
+              "start": 46542
             },
             "value": {
               "decision": "move",

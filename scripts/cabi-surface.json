@@ -18883,40 +18883,46 @@
     },
     {
       "availability": [
-        "native"
+        "native",
+        "wasm32-wasip1"
       ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_task_free( *mut HewTask)"
+        "native": "fn hew_task_free( *mut HewTask)",
+        "wasm32-wasip1": "fn hew_task_free( *mut HewTask)"
       },
       "symbol": "hew_task_free"
     },
     {
       "availability": [
-        "native"
+        "native",
+        "wasm32-wasip1"
       ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_task_scope_cancel_token( *mut HewTaskScope, ) -> *mut HewCancellationToken"
+        "native": "fn hew_task_scope_cancel_token( *mut HewTaskScope, ) -> *mut HewCancellationToken",
+        "wasm32-wasip1": "fn hew_task_scope_cancel_token( *mut HewTaskScope, ) -> *mut HewCancellationToken"
       },
       "symbol": "hew_task_scope_cancel_token"
     },
     {
       "availability": [
-        "native"
+        "native",
+        "wasm32-wasip1"
       ],
       "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_task_scope_set_current( *mut HewTaskScope) -> *mut HewTaskScope"
+        "native": "fn hew_task_scope_set_current( *mut HewTaskScope) -> *mut HewTaskScope",
+        "wasm32-wasip1": "fn hew_task_scope_set_current( *mut HewTaskScope) -> *mut HewTaskScope"
       },
       "symbol": "hew_task_scope_set_current"
     },

@@ -3301,7 +3301,7 @@ class ExecutorV1 {
       actor,
       rcOwner,
       returned,
-      failed,
+      failed: (fault) => failed(fault),
     };
     const frame = this.activate(
       this.functionAt(callable),

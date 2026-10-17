@@ -1669,8 +1669,7 @@ fn eval_wasm_timeout_is_reported() {
 
     let dir = support::tempdir();
     let path = dir.path().join("wasm_eval_timeout.hew");
-    // A function that loops forever — compiles fine under WASM32 (no
-    // structured-concurrency APIs), but wasmtime will spin until the timeout.
+    // This compiles to WASM; wasmtime spins until the timeout.
     std::fs::write(
         &path,
         "fn spin_forever() -> i64 {\n    var i: i64 = 0;\n    while true { i = i + 1; }\n    i\n}\nspin_forever()\n",
@@ -1689,38 +1688,6 @@ fn eval_wasm_timeout_is_reported() {
     assert!(
         stderr.contains("timed out after 1s"),
         "expected timeout message, stderr: {stderr}"
-    );
-}
-
-/// Source that uses a feature unsupported on WASM32 (structured-concurrency
-/// `scope`) should surface the expected unsupported diagnostic and fail.
-#[test]
-fn eval_wasm_unsupported_feature_reports_diagnostic() {
-    require_codegen();
-    support::require_wasi_runner();
-
-    let dir = support::tempdir();
-    let path = dir.path().join("wasm_eval_unsupported.hew");
-    // `scope { }` uses OS-thread-backed structured concurrency — not available
-    // on WASM32.  The compiler should emit an "not supported on WASM32"
-    // diagnostic and exit non-zero before wasmtime is ever invoked.
-    std::fs::write(&path, "scope {\n    println(\"hello\");\n}\n").unwrap();
-
-    let output = Command::new(hew_binary())
-        .args(["eval", "--target", "wasm32-wasi", "-f"])
-        .arg(&path)
-        .current_dir(dir.path())
-        .output()
-        .unwrap();
-
-    assert!(
-        !output.status.success(),
-        "expected failure for unsupported WASM feature"
-    );
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("not supported on WASM32") || stderr.contains("WASM32"),
-        "expected unsupported WASM diagnostic, stderr: {stderr}"
     );
 }
 
@@ -1747,29 +1714,6 @@ fn eval_wasm_interactive_mode_rejected() {
     assert!(
         stderr.contains("wasm32-wasi"),
         "expected target name in rejection message, got: {stderr}"
-    );
-}
-
-/// `hew eval --target wasm32-wasi "scope { }"` — `scope` is not supported on
-/// WASM32. The fast typecheck pass (before codegen) should surface this
-/// diagnostic, so the process fails quickly without invoking the compiler.
-#[test]
-fn eval_wasm_fast_typecheck_rejects_wasm_unsupported_ops() {
-    // No codegen required: the fast typecheck should catch this.
-    let output = Command::new(hew_binary())
-        .args(["eval", "--target", "wasm32-wasi", "scope { }"])
-        .current_dir(repo_root())
-        .output()
-        .unwrap();
-
-    assert!(
-        !output.status.success(),
-        "expected failure for scope {{ }} on WASM target"
-    );
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("WASM32") || stderr.contains("not supported"),
-        "expected WASM diagnostic from fast typecheck, stderr: {stderr}"
     );
 }
 

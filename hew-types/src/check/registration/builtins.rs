@@ -736,13 +736,11 @@ impl Checker {
         // can contain user and imported-source functions.  No call-site may
         // infer a runtime endpoint merely because a signature happens to have
         // a runtime-looking name.
-        // Namespace separators are source syntax, not ABI spelling.  The
-        // only compiler builtin with a namespace-qualified source name today
-        // is `instant::now`; retain an explicit mapping rather than making
-        // arbitrary source names look like runtime symbols.
+        // Namespace-qualified builtins retain their exact runtime row symbols.
         let runtime_symbol = match name {
             "instant::now" => "hew_instant_now".to_string(),
             "Node::peer" => "hew_node_peer_new".to_string(),
+            "Node::register" | "Node::lookup" => name.to_string(),
             _ => format!("hew_{name}"),
         };
         let target = crate::runtime_call::RuntimeCallFamily::from_c_symbol(&runtime_symbol)

@@ -933,8 +933,27 @@ mod tests {
             tcp_error_count: 18,
             ..Default::default()
         });
-        let parsed: serde_json::Value =
+        let mut parsed: serde_json::Value =
             serde_json::from_str(&json).expect("current metrics must be valid json");
+        let series: Vec<hew_observe_protocol::RuntimeSeries> = serde_json::from_value(
+            parsed
+                .as_object_mut()
+                .unwrap()
+                .remove("runtime_series")
+                .expect("current metrics include runtime series"),
+        )
+        .expect("runtime series retain typed decimal counter values");
+        assert!(!series.is_empty());
+        assert_eq!(
+            series
+                .into_iter()
+                .map(|s| (s.name, s.kind))
+                .collect::<Vec<_>>(),
+            crate::observe::runtime_series_snapshot()
+                .into_iter()
+                .map(|s| (s.name, s.kind))
+                .collect::<Vec<_>>()
+        );
         assert_eq!(
             parsed,
             json!({

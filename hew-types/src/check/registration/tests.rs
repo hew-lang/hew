@@ -61,7 +61,7 @@ mod canonical_type_publication_tests {
 #[cfg(test)]
 mod node_builtin_catalog_tests {
     use super::*;
-    use crate::runtime_call::RuntimeCallFamily;
+    use crate::check::dispatch::CallTarget;
 
     #[test]
     fn emitted_node_builtins_are_catalogued_for_wasm_rejection() {
@@ -83,6 +83,7 @@ mod node_builtin_catalog_tests {
                 "Node::id",
                 "Node::identity_key",
                 "Node::lookup",
+                "Node::peer",
                 "Node::register",
                 "Node::shutdown",
                 "Node::start",
@@ -90,8 +91,9 @@ mod node_builtin_catalog_tests {
         );
 
         for name in emitted {
-            let family = RuntimeCallFamily::from_c_symbol(name)
-                .unwrap_or_else(|| panic!("registered Node builtin {name:?} is not catalogued"));
+            let CallTarget::Runtime(family) = checker.call_target_for_signature(name) else {
+                panic!("registered Node builtin {name:?} must publish its runtime authority");
+            };
             assert!(
                 family.is_node_builtin(),
                 "registered Node builtin {name:?} is not classified for wasm rejection"

@@ -438,7 +438,7 @@ mod tests {
             output: None,
             target: None,
             emit_obj: false,
-            export_c: None,
+            export_c: Vec::new(),
             emit_llvm: false,
             release: false,
             trim_paths: false,

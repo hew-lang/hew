@@ -1927,6 +1927,11 @@ non-declarable = [
   "hew_trace_reset",
   # Compiler-private consumed-string normalization; absent from hew_host.h.
   "hew_host_text_from_owned",
+  # Generated opaque-value wrappers own initialization, transfer and release.
+  "hew_host_value_new",
+  "hew_host_value_storage",
+  "hew_host_value_forget",
+  "hew_host_value_release",
 ]
 
 [ownership]
@@ -7551,5 +7556,33 @@ symbol = "hew_service_export_close"
 result = "none"
 params = ["consume"]
 resource-param-types = ["std.net.Export"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_host_value_new"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_host_value_forget"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_host_value_storage"
+result = "borrowed"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_host_value_forget"
+result = "none"
+params = ["consume"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_host_value_release"
+result = "none"
+params = ["consume", "borrow"]
 release-symbol = ""
 discharge-depth = "none"

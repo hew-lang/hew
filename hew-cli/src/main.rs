@@ -993,16 +993,16 @@ fn emit_obj_only(
     package: Option<&hew_pkg::project::ResolvedPackage>,
     profile: &str,
     output: Option<&Path>,
-    host_export: Option<&str>,
+    host_export: &[String],
 ) -> Result<(PathBuf, Vec<PathBuf>), DiagChannel> {
     let final_path = resolve_output(Artifact::Object, input, package, profile, target, output);
-    if let Some(selection) = host_export {
+    if !host_export.is_empty() {
         // `--emit-deps` conflicts with `--export-c` at the argument parser.
         host::emit(
             input,
             target,
             options,
-            selection,
+            host_export,
             &final_path,
             opt_level,
             emit_llvm,
@@ -1143,7 +1143,7 @@ fn cmd_build_run(a: &args::BuildArgs) -> i32 {
             resolved.package(),
             profile,
             a.output.as_deref(),
-            a.export_c.as_deref(),
+            &a.export_c,
         ) {
             Ok((object, prerequisites)) => {
                 write_deps(a.emit_deps.as_deref(), &object, &prerequisites)

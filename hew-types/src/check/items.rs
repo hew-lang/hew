@@ -1970,7 +1970,7 @@ impl Checker {
         let qualified_name = format!("{actor_name}::init");
         let prev_function = self.current_function.take();
         self.current_function = Some(qualified_name.clone());
-        let previous_effect_body = self.enter_named_effect_body(&qualified_name);
+        let previous_effect_body = self.enter_named_effect_body(&format!("{actor_name}::<init>"));
 
         // Bind actor fields directly in scope (bare field access, all
         // writable in the init body — init is where `let` fields receive

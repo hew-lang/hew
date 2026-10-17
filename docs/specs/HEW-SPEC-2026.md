@@ -7489,6 +7489,30 @@ library `-lm`, producing a standalone native executable. WASM
 linking uses LLVM's WASM linker and a WASI libc; thread-dependent
 runtime modules are gated out for Tier 2.
 
+### 8.3.1 Explicit C host exports
+
+Native same-build libraries may select public monomorphic root-source functions
+with repeated `hew build --emit-obj --export-c SOURCE=SYMBOL` options. The compiler
+emits a matching C11/C++17 header. Selection does not grant source authority:
+ordinary confinement, effects, ownership and cleanup checks still apply.
+
+Fixed-width scalars cross directly; `bool` is a `uint8_t` zero or one, and unit
+needs no C slot. Other concrete values use typed opaque owners. An opaque
+consuming parameter takes an owner-slot pointer and clears it at handoff, even
+when the checked call subsequently faults. Borrowed parameters pin their owners
+until the call completes; mutable borrows require exclusive host access. Text
+inputs preserve the public text API's borrowed-copy contract. Results and errors
+are independent owners. Scalar result slots are written only on success.
+
+Calls and generated typed release functions complete before returning, including
+suspension and mandatory cleanup. Cleanup uses the compiler's existing value
+descriptors and combines cleanup faults with the primary fault. Actor and I/O
+components require the process-default runtime. All owners must be released
+before runtime shutdown or unloading their descriptor code. This experimental
+boundary requires one host thread and matching compiler/runtime builds; it adds
+no cross-version or independent-runtime isolation guarantee. The C preconditions
+and an executable supplied-directory component are documented in `tests/host`.
+
 ### 8.4 Runtime contract
 
 `libhew_runtime` exports a stable C ABI consumed by every compiled Hew

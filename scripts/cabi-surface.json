@@ -9057,6 +9057,58 @@
       "availability": [
         "native"
       ],
+      "classification": "non-declarable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_host_value_forget( *mut HewHostValue)"
+      },
+      "symbol": "hew_host_value_forget"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "non-declarable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_host_value_new( *const HewValueLayout) -> *mut HewHostValue"
+      },
+      "symbol": "hew_host_value_new"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "non-declarable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_host_value_release( *mut HewHostValue, *mut *mut HewError, ) -> i32"
+      },
+      "symbol": "hew_host_value_release"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "non-declarable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_host_value_storage( *const HewHostValue) -> *mut c_void"
+      },
+      "symbol": "hew_host_value_storage"
+    },
+    {
+      "availability": [
+        "native"
+      ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",

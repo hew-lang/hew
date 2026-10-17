@@ -2,7 +2,7 @@ import std.fs;
 import std.os;
 import worker;
 
-type DirectoryOrders {
+pub type DirectoryOrders {
     root: fs.ReadDir;
 }
 
@@ -15,7 +15,7 @@ impl worker.OrderInput for DirectoryOrders {
     }
 }
 
-type DirectoryReceipts {
+pub type DirectoryReceipts {
     root: fs.WriteDir;
 }
 

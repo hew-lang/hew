@@ -13,7 +13,7 @@ pub(super) fn emit(
     input: &Path,
     target: &target::TargetSpec,
     options: &compile::CompileOptions,
-    selection: &str,
+    selections: &[String],
     output: &Path,
     opt_level: hew_codegen_rs::OptLevel,
     emit_llvm: bool,
@@ -22,10 +22,19 @@ pub(super) fn emit(
     if target.is_wasm() {
         return Err(fail("C exports require a native target"));
     }
-    let (source_name, symbol) = selection
-        .split_once('=')
-        .filter(|(source, symbol)| !source.is_empty() && !symbol.is_empty())
-        .ok_or_else(|| fail("--export-c expects SOURCE=SYMBOL"))?;
+    let selections = selections
+        .iter()
+        .map(|selection| {
+            selection
+                .split_once('=')
+                .filter(|(source, symbol)| !source.is_empty() && !symbol.is_empty())
+                .ok_or_else(|| fail("--export-c expects SOURCE=SYMBOL"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let source_names = selections
+        .iter()
+        .map(|(source, _)| *source)
+        .collect::<Vec<_>>();
     let input_name = input.display().to_string();
     let frontend = compile::frontend_options(target, options);
     let state =
@@ -46,15 +55,24 @@ pub(super) fn emit(
         },
         &frontend,
     );
-    let semantic = session
-        .lower_host_program(&state.program, checked, source_name)
+    let (semantic, declarations) = session
+        .lower_host_program(&state.program, checked, &source_names)
         .map_err(|error| fail(&error.to_string()))?;
-    let [selected] = semantic.compiled_roots() else {
-        return Err(fail("C export must resolve exactly one compilation root"));
-    };
     let physical = lower_session_to_physical(&semantic, target)?;
-    let export =
-        HostExport::new(&physical, *selected, symbol).map_err(|error| fail(&error.to_string()))?;
+    let selected = declarations
+        .iter()
+        .zip(&selections)
+        .map(|(declaration, (_, symbol))| {
+            physical
+                .module()
+                .callables
+                .iter()
+                .find(|callee| callee.declaration == *declaration)
+                .map(|callee| (callee.id, *symbol))
+                .ok_or_else(|| fail("C export has no compiled declaration"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let export = HostExport::new(&physical, &selected).map_err(|error| fail(&error.to_string()))?;
     let out_dir = output
         .parent()
         .filter(|path| !path.as_os_str().is_empty())

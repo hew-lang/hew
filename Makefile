@@ -1144,6 +1144,7 @@ test-extern-bytes-safety: core-safety-build ## Test: instrument C and Hew extern
 test-host-client: hew-native ## Test: execute C11 and C++17 clients calling compiled Hew
 	python3 tests/host/run.py --hew-bin "$(abspath $(DEBUG_HEW))" --hew-lib "$(abspath $(LIBHEW))" \
 		--out-dir "$(abspath $(DEBUG_DIR))/host-client" $(HOST_CLIENT_ARGS)
+	HEW_BIN="$(DEBUG_HEW)" cargo test -p hew-cli --test host_export_e2e
 
 # Build the compiler and runtime together so the selected compiler resolves the
 # sanitizer archive from its own Cargo profile directory. The safety runner also

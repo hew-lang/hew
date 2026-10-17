@@ -64,6 +64,20 @@ pub unsafe extern "C" fn hew_coro_run_root(
     result_out: *mut c_void,
     fault_out: *mut *mut HewFault,
 ) -> i32 {
+    // SAFETY: the root closure drains and destroys its frame before returning.
+    unsafe {
+        with_root_invocation(|state, readiness| {
+            drive_root(start, arguments, result_out, fault_out, state, readiness)
+        })
+    }
+}
+
+/// Enter the shared host/root context until all invocation children are drained.
+/// # Safety
+/// `run` must finish all child frames before returning and must not unwind.
+pub(crate) unsafe fn with_root_invocation(
+    run: impl FnOnce(*mut HewCoroState, &Readiness) -> i32,
+) -> i32 {
     let previous = current_context();
     let parent_token = if previous.is_null() {
         std::ptr::null_mut()
@@ -83,6 +97,25 @@ pub unsafe extern "C" fn hew_coro_run_root(
     let state = unsafe { hew_coro_state_new(waker.descriptor(), token) };
     let _previous = set_current_context(&raw mut context);
     let enclosing_root = ROOT_CONTEXT.with(|root| root.replace(&raw mut context));
+    let status = run(state, &readiness);
+    ROOT_CONTEXT.with(|root| root.set(enclosing_root));
+    let _installed = set_current_context(previous);
+    // SAFETY: the operation drained every frame and subscription before return.
+    unsafe {
+        hew_coro_state_free(state);
+        hew_cancel_token_release(token);
+    }
+    status
+}
+
+unsafe fn drive_root(
+    start: HewRootStart,
+    arguments: *mut c_void,
+    result_out: *mut c_void,
+    fault_out: *mut *mut HewFault,
+    state: *mut HewCoroState,
+    readiness: &Readiness,
+) -> i32 {
     // SAFETY: caller supplies the generated adapter and correctly typed slots.
     let frame = unsafe { start(arguments, result_out, fault_out, state) };
     // SAFETY: this function owns both invocation state and returned frame.
@@ -110,15 +143,7 @@ pub unsafe extern "C" fn hew_coro_run_root(
         unsafe { hew_cont_destroy(frame) };
     }
     // SAFETY: completion was observed above and the state is still owned here.
-    let status = unsafe { hew_coro_state_private_status(state) };
-    ROOT_CONTEXT.with(|root| root.set(enclosing_root));
-    let _installed = set_current_context(previous);
-    // SAFETY: no frame accesses state; drop subscription before root token.
-    unsafe {
-        hew_coro_state_free(state);
-        hew_cancel_token_release(token);
-    }
-    status
+    unsafe { hew_coro_state_private_status(state) }
 }
 
 /// Drive an erased callable at an explicit synchronous hosting boundary.

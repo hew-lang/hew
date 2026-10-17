@@ -16,10 +16,10 @@ struct hew_cabi_manifest_row {
   enum hew_cabi_manifest_ownership ownership;
 };
 
-#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1660u
+#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1664u
 #define HEW_CABI_MANIFEST_STATIC_COUNT 24u
 
-static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1660] = {
+static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1664] = {
     {"hew_actor_abort_construction",
      "{\"native\": \"fn hew_actor_abort_construction( HewLocalPidId, *mut "
      "HewCoroState, )\", \"wasm32-wasip1\": \"fn hew_actor_abort_construction( "
@@ -3509,6 +3509,25 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1660] = {
      "\"wasm32-wasip1\": \"fn hew_host_text_release( *mut HewText)\"}",
      "native,wasm32-wasip1", "public-host", "not-applicable",
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_host_value_forget",
+     "{\"native\": \"fn hew_host_value_forget( *mut HewHostValue)\"}", "native",
+     "non-declarable", "not-applicable", "no-in-signature-extent",
+     HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_host_value_new",
+     "{\"native\": \"fn hew_host_value_new( *const HewValueLayout) -> *mut "
+     "HewHostValue\"}",
+     "native", "non-declarable", "not-applicable", "no-in-signature-extent",
+     HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_host_value_release",
+     "{\"native\": \"fn hew_host_value_release( *mut HewHostValue, *mut *mut "
+     "HewError, ) -> i32\"}",
+     "native", "non-declarable", "not-applicable", "no-in-signature-extent",
+     HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_host_value_storage",
+     "{\"native\": \"fn hew_host_value_storage( *const HewHostValue) -> *mut "
+     "c_void\"}",
+     "native", "non-declarable", "not-applicable", "no-in-signature-extent",
+     HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_hostname", "{\"native\": \"fn hew_hostname() -> *mut HewString\"}",
      "native", "stable", "not-applicable", "no-in-signature-extent",
      HEW_CABI_OWNERSHIP_UNMEASURED},

@@ -30,6 +30,8 @@ pub struct CompilationInput {
     pub path: PathBuf,
     pub display_path: String,
     pub sha256: Option<String>,
+    /// Declared dependency package selected by canonical import resolution.
+    pub dependency_root: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone)]

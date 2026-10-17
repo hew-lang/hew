@@ -116,6 +116,7 @@ pub struct SourceSet {
     sources: BTreeMap<PathBuf, SourceContent>,
     filesystem: bool,
     reads: Arc<std::sync::Mutex<BTreeMap<PathBuf, Option<String>>>>,
+    dependency_roots: Arc<std::sync::Mutex<HashSet<PathBuf>>>,
 }
 
 impl Default for SourceSet {
@@ -124,6 +125,7 @@ impl Default for SourceSet {
             sources: BTreeMap::new(),
             filesystem: true,
             reads: Arc::default(),
+            dependency_roots: Arc::default(),
         }
     }
 }
@@ -199,6 +201,10 @@ impl SourceSet {
     /// Panics if the shared input table's mutex is poisoned.
     #[must_use]
     pub fn inputs(&self) -> Vec<hew_types::compile_time::CompilationInput> {
+        let dependency_roots = self
+            .dependency_roots
+            .lock()
+            .expect("source dependency table poisoned");
         self.reads
             .lock()
             .expect("source input table poisoned")
@@ -207,6 +213,11 @@ impl SourceSet {
                 path: path.clone(),
                 display_path: path.to_string_lossy().replace('\\', "/"),
                 sha256: sha256.clone(),
+                dependency_root: dependency_roots
+                    .iter()
+                    .filter(|root| path.starts_with(root))
+                    .max_by_key(|root| root.components().count())
+                    .cloned(),
             })
             .collect()
     }
@@ -3561,9 +3572,9 @@ fn resolve_file_imports_internal(
                 // Collect ALL candidates that resolve, then deduplicate by canonical path.
                 // If two or more distinct canonical paths resolve, the import is ambiguous —
                 // fail-closed rather than silently picking the first match.
-                let mut resolved: Vec<(PathBuf, CandidateForm)> = Vec::new();
+                let mut resolved: Vec<(PathBuf, CandidateForm, CandidateRoot)> = Vec::new();
                 for entry in &candidates {
-                    let (candidate, form, _) = entry;
+                    let (candidate, form, origin) = entry;
                     if let Some(canonical) = resolve_module_candidate(ctx, &std_roots, entry)? {
                         if let Some((_, check)) = locked_project_candidates
                             .iter()
@@ -3573,22 +3584,22 @@ fn resolve_file_imports_internal(
                         }
                         // One file reached by both shapes is a directory module
                         // named by its directory: the directory candidate wins.
-                        match resolved.iter_mut().find(|(path, _)| *path == canonical) {
-                            Some((_, existing)) => {
+                        match resolved.iter_mut().find(|(path, _, _)| *path == canonical) {
+                            Some((_, existing, _)) => {
                                 if *form == CandidateForm::Directory {
                                     *existing = CandidateForm::Directory;
                                 }
                             }
-                            None => resolved.push((canonical, *form)),
+                            None => resolved.push((canonical, *form, *origin)),
                         }
                     }
                 }
-                resolved.sort_by(|(left, _), (right, _)| left.cmp(right));
+                resolved.sort_by(|(left, _, _), (right, _, _)| left.cmp(right));
 
                 if resolved.len() > 1 {
                     let paths = resolved
                         .iter()
-                        .map(|(path, _)| path.display().to_string())
+                        .map(|(path, _, _)| path.display().to_string())
                         .collect::<Vec<_>>()
                         .join("` and `");
                     return Err(FrontendFailure::coded_message("E_IMPORT_AMBIGUOUS", format!(
@@ -3596,9 +3607,29 @@ fn resolve_file_imports_internal(
                     )));
                 }
 
-                if let Some((canonical, form)) = resolved.into_iter().next() {
+                if let Some((canonical, form, origin)) = resolved.into_iter().next() {
                     use hew_types::module_registry::{MembershipRole, ModuleAnchor};
                     let membership = membership_of(&canonical, &std_roots, ctx.documents)?;
+                    if origin == CandidateRoot::Dependency {
+                        if let (
+                            ModuleAnchor::Package { dir: importer, .. },
+                            ModuleAnchor::Package {
+                                dir,
+                                name: Some(name),
+                            },
+                        ) = (&anchor, &membership.anchor)
+                        {
+                            let (dependencies, _) =
+                                load_manifest_metadata_from(importer, ctx.documents)?;
+                            if dependencies.is_some_and(|deps| deps.contains(&name.dotted())) {
+                                ctx.documents
+                                    .dependency_roots
+                                    .lock()
+                                    .expect("source dependency table poisoned")
+                                    .insert(dir.clone());
+                            }
+                        }
+                    }
                     let directory_module = || segments[..segments.len() - 1].join(".");
                     match membership.role {
                         MembershipRole::Entry

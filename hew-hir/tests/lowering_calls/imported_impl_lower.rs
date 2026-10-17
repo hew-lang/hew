@@ -310,10 +310,7 @@ fn main() -> i64 {
 }
 
 #[test]
-fn imported_private_generic_struct_typedecl_stays_unemitted() {
-    // Generic private handles such as std::stream::Stream<T>/Sink<T> have
-    // intrinsic codegen paths. Emitting them as ordinary record TypeDecls would
-    // misclassify those handles at the MIR/codegen boundary.
+fn imported_private_generic_struct_typedecl_retains_its_declaration() {
     let imported_src = r"type PrivateBox<T> {
     value: T;
 }
@@ -336,14 +333,14 @@ fn main() -> i64 {
         .iter()
         .any(|item| matches!(item, HirItem::TypeDecl(td) if td.name == "PrivateBox"));
     assert!(
-        !generic_emitted,
-        "private imported generic struct TypeDecls must stay on their existing non-record path"
+        generic_emitted,
+        "private generic declarations must retain their ordinary layout and lifecycle authority"
     );
 
     let result = output.into_result();
     assert!(
         result.is_ok(),
-        "skipping a private imported generic struct TypeDecl must remain clean. Got: {:#?}",
+        "emitting a private imported generic struct TypeDecl must remain clean. Got: {:#?}",
         result.err()
     );
 }

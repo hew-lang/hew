@@ -503,71 +503,6 @@ pub(crate) unsafe fn restart_child_supervisor_with_budget(
     unsafe { restart_children_for_strategy(sup, strategy, failed, record) }
 }
 
-/// Invoke a child's `#[on(crash)]` handler (if installed) and return its
-/// `CrashAction` decision as an i32 tag, or `None` when no handler is installed.
-///
-/// The handler receives the crash code (widened to i64), a trap-kind diagnostic
-/// message (e.g. "HeapExceeded"/"Signal"), and the child's template seed-state
-/// pointer.
-///
-/// String-ABI contract (M-5): `crash_message` is typed `string` on the Hew side
-/// (`CrashInfo.message`), so it MUST be a Hew header-aware allocation. The codegen
-/// prologue CLONES it (`hew_string_clone`, a refcount bump) into the owned
-/// `CrashInfo.message` field; both `hew_string_clone` and the hook's `CrashInfo`
-/// drop (`hew_string_drop`) read the 16-byte header at `data -
-/// CSTRING_HEADER_SIZE`. A bare Rust `CString` carries no header, so those
-/// primitives OOB-read and `abort()` — the reported M-5 critical bug. We therefore
-/// allocate the message through the Hew string allocator (`str_to_malloc`, rc==1)
-/// and the supervisor REMAINS the owner of that original: it frees it via
-/// `free_cstring` after the call. The hook's clone is an independent `+1` owner
-/// released by the hook's own `CrashInfo` drop, so the two releases balance to a
-/// single free with no double-free — eliminating the abort/heap-corruption the
-/// pre-fix headerless-`CString` + move-of-borrow produced on every real crash.
-///
-/// # Safety
-///
-/// `handler` (when `Some`) must be a valid `HewOnCrashFn` fn-pointer; `ctx` must
-/// be the live execution context for the in-flight supervisor dispatch;
-/// `state_ptr` must be the child's supervisor-owned template state.
-unsafe fn invoke_on_crash_handler(
-    handler: Option<HewOnCrashFn>,
-    state_ptr: *mut c_void,
-    crash_code: c_int,
-    ctx: *mut crate::execution_context::HewExecutionContext,
-) -> Option<i32> {
-    let handler = handler?;
-    // Allocate the trap-kind message as a Hew header-aware string (rc == 1) so
-    // the handler's `hew_string_clone` ingress and `CrashInfo` drop operate on a
-    // valid refcount header. `trap_kind_name` is a non-empty `&'static str`, so
-    // `str_to_malloc` only returns null on allocation failure; pass null through
-    // (the codegen clone/drop are null-safe).
-    let crash_message: *mut c_char =
-        crate::cabi::str_to_malloc(ExitReason::from_error_code(crash_code).trap_kind_name());
-    // Widen crash_code from c_int to i64 at the call boundary. `HewOnCrashFn`
-    // uses i64 to match `CrashInfo.code: i64` in std/failure.hew.
-    #[allow(
-        clippy::cast_lossless,
-        reason = "c_int to i64: intentional widening to match HewOnCrashFn ABI"
-    )]
-    let crash_code_i64 = crash_code as i64;
-    // SAFETY: `handler` is a valid `HewOnCrashFn`; `ctx` is the live execution
-    // context; `state_ptr` is the child's supervisor-owned template state;
-    // `crash_message` is a Hew header-aware allocation (or null), owned by this
-    // frame and live across the call. The hook clones it into its own owner.
-    let action = unsafe { handler(ctx, crash_code_i64, crash_message, state_ptr) };
-    let tag = action.tag_i32();
-    // Release the supervisor's original owner of the header-aware message. The
-    // hook cloned (retained) it into `CrashInfo.message` and released that owner
-    // on return, so this brings the refcount to zero and frees the buffer exactly
-    // once. `free_cstring` is null-safe.
-    if !crash_message.is_null() {
-        // SAFETY: `crash_message` came from `str_to_malloc` (header-aware) and is
-        // not null; the only other owner (the hook's clone) was already released.
-        unsafe { crate::cabi::free_cstring(crash_message) };
-    }
-    Some(tag)
-}
-
 /// Apply the restart strategy after a child failure, then settle that
 /// failure's process exit-status record.
 ///
@@ -590,7 +525,6 @@ unsafe fn apply_restart(
     failed_identity: u64,
     end_reason: crate::internal::types::ActorEndReason,
     crash_code: c_int,
-    ctx: *mut crate::execution_context::HewExecutionContext,
     record: FaultRecord,
     native_action: Option<i32>,
 ) {
@@ -601,7 +535,6 @@ unsafe fn apply_restart(
             failed_identity,
             end_reason,
             crash_code,
-            ctx,
             record,
             native_action,
         )
@@ -676,14 +609,12 @@ unsafe fn decide_child_failure(
     failed_identity: u64,
     end_reason: crate::internal::types::ActorEndReason,
     crash_code: c_int,
-    ctx: *mut crate::execution_context::HewExecutionContext,
     record: FaultRecord,
     native_action: Option<i32>,
 ) -> FaultRuling {
     let crashed = end_reason == crate::internal::types::ActorEndReason::Crashed;
-    let (spec_identity, template, on_crash, sup_actor_id) = {
-        // SAFETY: caller keeps `sup` live; crash accounting and callback
-        // snapshot are serialized with setters and dynamic removal.
+    let (spec_identity, sup_actor_id) = {
+        // SAFETY: caller keeps `sup` live; the roster serializes crash accounting.
         let mut guard = unsafe { &(*sup).roster }.lock_or_recover();
         // SAFETY: the guard serializes this scoped mutable roster access.
         let s = &mut *guard;
@@ -701,28 +632,10 @@ unsafe fn decide_child_failure(
         if crashed {
             circuit_breaker_record_crash(spec, crash_code, sup_actor_id);
         }
-        (
-            spec.identity,
-            Arc::clone(&spec.state_template),
-            spec.on_crash,
-            sup_actor_id,
-        )
+        (spec.identity, sup_actor_id)
     };
 
-    // The arbitrary on-crash callback runs without `roster`. The Arc
-    // lease keeps the exact template generation alive across a concurrent
-    // clone setter or remove_child.
-    let crash_action_tag = if native_action.is_some() {
-        native_action
-    } else if crashed {
-        // SAFETY: `ctx` is the live supervisor dispatch context and `template`
-        // leases the state allocation for the complete synchronous callback.
-        unsafe { invoke_on_crash_handler(on_crash, template.allocation.state, crash_code, ctx) }
-    } else {
-        None
-    };
-
-    match crash_action_tag {
+    match native_action {
         // The hook chose termination over recovery. Deliberate, but not a
         // recovery: nothing restarts this child, so the slot is spent.
         Some(CRASH_ACTION_KILL) => {
@@ -731,7 +644,7 @@ unsafe fn decide_child_failure(
         }
         Some(CRASH_ACTION_ESCALATE) => {
             // SAFETY: the caller keeps `sup` live; only non-roster parent state
-            // is inspected after the callback lease has been released.
+            // is inspected after the roster guard has been released.
             if unsafe { (*sup).parent.is_null() } {
                 // Escalating past the root has nowhere to go: the fault reached
                 // the top of the supervision tree with no authority left.
@@ -844,7 +757,6 @@ pub(crate) unsafe extern "C-unwind" fn supervisor_sys_dispatch(
 /// point to at least `data_size` readable bytes.
 pub(crate) unsafe fn dispatch_child_lifecycle_event(
     sup: *mut HewSupervisor,
-    ctx: *mut crate::execution_context::HewExecutionContext,
     data: *mut c_void,
     data_size: usize,
 ) {
@@ -901,17 +813,13 @@ pub(crate) unsafe fn dispatch_child_lifecycle_event(
         unsafe { actor::hew_actor_free(child) };
     }
 
-    // SAFETY: sup is valid; ctx is the supervisor's own dispatch
-    // context, threaded through so a registered on_crash handler
-    // receives the supervisor's ctx (preserves task-scope
-    // cancellation propagation per f4df6354).
+    // SAFETY: this dispatch keeps the supervisor live through its ruling.
     unsafe {
         apply_restart(
             sup,
             spec_identity,
             event.end_reason,
             event.crash_code,
-            ctx,
             FaultRecord::from_raw(event.fault_record),
             native_action,
         );

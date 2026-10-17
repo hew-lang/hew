@@ -7,7 +7,7 @@ fn is_palindrome(s: string) -> bool {
     var left = 0;
     var right = n - 1;
     while left < right {
-        if s.char_at(left) != s.char_at(right) {
+        if s.get(left) != s.get(right) {
             return false;
         }
         left = left + 1;

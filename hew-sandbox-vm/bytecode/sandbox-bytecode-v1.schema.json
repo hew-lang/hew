@@ -656,6 +656,7 @@
             "task_scope.enter",
             "task_scope.close",
             "task.spawn",
+            "task.invoke",
             "task.race",
             "actor.ingress_adapter"
           ]
@@ -839,6 +840,9 @@
           }
         },
         "crash_info": {
+          "$ref": "#/$defs/id"
+        },
+        "crash_kind": {
           "$ref": "#/$defs/id"
         },
         "crash_action": {

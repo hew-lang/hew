@@ -198,17 +198,16 @@ Every shipped module under `std/` should appear here.
 
 ### Text, time, and utilities
 
-| Module                                   | Import              | Use for                                            |
-| ---------------------------------------- | ------------------- | -------------------------------------------------- |
-| [`regex`](text/regex/regex.hew)          | `std.text.regex`    | Regular expression matching                        |
-| [`semver`](text/semver/semver.hew)       | `std.text.semver`   | Semantic version parsing and comparison            |
-| [`template`](text/template/template.hew) | `std.text.template` | Go-style text template parsing and rendering       |
-| [`unicode`](text/unicode/unicode.hew)    | `std.text.unicode`  | Unicode classification and UTF-8 codepoint helpers |
-| [`datetime`](time/datetime/datetime.hew) | `std.time.datetime` | Date and time operations                           |
-| [`cron`](time/cron/cron.hew)             | `std.time.cron`     | Cron expression parsing and scheduling             |
-| [`log`](misc/log/log.hew)                | `std.misc.log`      | Structured logging                                 |
-| [`uuid`](misc/uuid/uuid.hew)             | `std.misc.uuid`     | UUID generation and validation                     |
-| [`random`](random/random.hew)            | `std.random`        | Seedable random numbers, shuffling, and sampling   |
+| Module                                   | Import              | Use for                                          |
+| ---------------------------------------- | ------------------- | ------------------------------------------------ |
+| [`regex`](text/regex/regex.hew)          | `std.text.regex`    | Regular expression matching                      |
+| [`semver`](text/semver/semver.hew)       | `std.text.semver`   | Semantic version parsing and comparison          |
+| [`template`](text/template/template.hew) | `std.text.template` | Go-style text template parsing and rendering     |
+| [`datetime`](time/datetime/datetime.hew) | `std.time.datetime` | Date and time operations                         |
+| [`cron`](time/cron/cron.hew)             | `std.time.cron`     | Cron expression parsing and scheduling           |
+| [`log`](misc/log/log.hew)                | `std.misc.log`      | Structured logging                               |
+| [`uuid`](misc/uuid/uuid.hew)             | `std.misc.uuid`     | UUID generation and validation                   |
+| [`random`](random/random.hew)            | `std.random`        | Seedable random numbers, shuffling, and sampling |
 
 ### Testing and benchmarking
 

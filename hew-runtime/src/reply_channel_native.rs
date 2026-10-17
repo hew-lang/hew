@@ -78,9 +78,19 @@ pub unsafe extern "C" fn hew_reply_channel_status_native(
     // SAFETY: the caller owns the receiver reference. The ready acquire publishes
     // the sender's payload and classification before either is inspected.
     unsafe {
-        if hew_reply_channel_failure_kind(channel) == crate::internal::types::HEW_REPLY_FAIL_TIMEOUT
-        {
-            return AskError::Timeout as i32;
+        let failure = hew_reply_channel_failure_kind(channel);
+        let terminal = match failure {
+            crate::internal::types::HEW_REPLY_FAIL_TIMEOUT => Some(AskError::Timeout),
+            crate::internal::types::HEW_REPLY_FAIL_UNAUTHORIZED => Some(AskError::Unauthorized),
+            crate::internal::types::HEW_REPLY_FAIL_STALE_REF => Some(AskError::StaleRef),
+            crate::internal::types::HEW_REPLY_FAIL_CONNECTION_DROPPED => {
+                Some(AskError::ConnectionDropped)
+            }
+            crate::internal::types::HEW_REPLY_FAIL_LOCAL_SHUTDOWN => Some(AskError::LocalShutdown),
+            _ => None,
+        };
+        if let Some(terminal) = terminal {
+            return terminal as i32;
         }
         if !hew_reply_channel_is_ready(channel) {
             return -1;
@@ -115,6 +125,26 @@ pub unsafe extern "C" fn hew_reply_channel_status_native(
 /// # Safety
 /// The optional channel remains retained through this call.
 pub(crate) unsafe fn expire_native_request(channel: *mut HewReplyChannel) {
+    // SAFETY: the caller retains this optional reply owner.
+    unsafe { fail_native_request(channel, crate::internal::types::HEW_REPLY_FAIL_TIMEOUT) };
+}
+
+/// Refuse a queued remote request through its existing terminal reply owner.
+///
+/// # Safety
+/// The scheduler retains this channel through the refusal.
+pub(crate) unsafe fn reject_remote_request(channel: *mut HewReplyChannel, reason: AskError) {
+    let failure = match reason {
+        AskError::StaleRef => crate::internal::types::HEW_REPLY_FAIL_STALE_REF,
+        AskError::ConnectionDropped => crate::internal::types::HEW_REPLY_FAIL_CONNECTION_DROPPED,
+        AskError::LocalShutdown => crate::internal::types::HEW_REPLY_FAIL_LOCAL_SHUTDOWN,
+        _ => crate::internal::types::HEW_REPLY_FAIL_UNAUTHORIZED,
+    };
+    // SAFETY: this retained reply owner settles the queued request.
+    unsafe { fail_native_request(channel, failure) };
+}
+
+unsafe fn fail_native_request(channel: *mut HewReplyChannel, failure: i32) {
     // SAFETY: the caller retains the optional reply owner.
     let Some(channel_ref) = (unsafe { channel.as_ref() }) else {
         return;
@@ -129,7 +159,7 @@ pub(crate) unsafe fn expire_native_request(channel: *mut HewReplyChannel) {
         .fail_reason
         .compare_exchange(
             HEW_REPLY_FAIL_NONE,
-            crate::internal::types::HEW_REPLY_FAIL_TIMEOUT,
+            failure,
             Ordering::AcqRel,
             Ordering::Acquire,
         )

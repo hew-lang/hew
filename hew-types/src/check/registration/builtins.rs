@@ -36,9 +36,6 @@ impl Checker {
         // Numeric conversion. The math functions live in `std.math`; there is
         // no bare spelling for them (A409).
 
-        // String operations
-        self.register_builtin_fn("len", vec![Ty::Var(TypeVar::fresh())], Ty::I64);
-
         // I/O and system
         // `instant::now` has no source declaration, but it is an ordinary
         // compiler-provided runtime call.  Register its joined parser spelling
@@ -202,6 +199,14 @@ impl Checker {
         self.register_builtin_fn("Node::start", vec![node_config], node_result.clone());
         self.register_builtin_fn("Node::shutdown", vec![], Ty::Unit);
         self.register_builtin_fn("Node::connect", vec![Ty::String], node_result);
+        self.register_builtin_fn(
+            "Node::peer",
+            vec![Ty::String],
+            Ty::result(
+                crate::actor_delivery::nominal(crate::KnownDecl::PeerSession, Vec::new()),
+                Ty::builtin_named(BuiltinType::NodeError, Vec::new()),
+            ),
+        );
         self.register_builtin_fn("Node::identity_key", vec![], Ty::String);
         self.register_builtin_fn(
             "Node::id",
@@ -608,9 +613,9 @@ impl Checker {
                 &items,
                 StdlibBarePublication::Prelude,
             );
-            // `CrashInfo` / `CrashAction` are genuine prelude: a
-            // `#[on(crash)]` signature names them with no import, always.
-            for source_name in ["CrashInfo", "CrashAction"] {
+            // Crash hooks and their public crash class are available through
+            // the prelude, including field reads and variant construction.
+            for source_name in ["CrashInfo", "CrashAction", "CrashKind"] {
                 self.bind_prelude_item("std.failure", source_name);
                 self.canonical_lifecycle_import_authority.insert((
                     None,
@@ -618,7 +623,7 @@ impl Checker {
                     format!("std.failure.{source_name}"),
                 ));
             }
-            // The linked-actor payloads (`CrashNotification` / `CrashKind`)
+            // The linked-actor payloads (`CrashNotification` / `DownTarget`)
             // require an explicit `import std::failure` whenever the module
             // graph can supply that source. With no stdlib search path there
             // is no import to write — this compiled-in projection IS the
@@ -737,6 +742,7 @@ impl Checker {
         // arbitrary source names look like runtime symbols.
         let runtime_symbol = match name {
             "instant::now" => "hew_instant_now".to_string(),
+            "Node::peer" => "hew_node_peer_new".to_string(),
             _ => format!("hew_{name}"),
         };
         let target = crate::runtime_call::RuntimeCallFamily::from_c_symbol(&runtime_symbol)

@@ -3,6 +3,13 @@ use serde::{Deserialize, Serialize};
 
 pub const OBSERVE_SCHEMA_VERSION: &str = "v1";
 pub const ACTIONABLE_TRACE_EVENT_TYPES: &[&str] = &[
+    "supervisor_restart",
+    "supervisor_escalate",
+    "supervisor_circuit_open",
+    "supervisor_circuit_half_open",
+    "supervisor_circuit_close",
+    "supervisor_max_restarts",
+    "supervisor_backoff",
     "actor.delivery_refused",
     "actor.rc_sweep",
     "send",
@@ -193,6 +200,16 @@ pub struct Metrics {
     pub tcp_connect_count: u64,
     #[serde(with = "uint64_decimal")]
     pub tcp_error_count: u64,
+    #[serde(default)]
+    pub runtime_series: Option<Vec<RuntimeSeries>>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct RuntimeSeries {
+    pub name: String,
+    pub kind: String,
+    #[serde(with = "uint64_decimal")]
+    pub value: u64,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -229,6 +246,32 @@ pub struct ActorInfo {
     pub mbox_depth: i64,
     #[serde(with = "int64_decimal")]
     pub mbox_hwm: i64,
+    #[serde(default)]
+    pub origin: Option<ActorOrigin>,
+    #[serde(default)]
+    pub mailbox: Option<MailboxStats>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ActorOrigin {
+    #[serde(with = "hex128_lower")]
+    pub producer_instance_id: String,
+    pub identity: ActorIdentity,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct MailboxStats {
+    #[serde(with = "int64_decimal")]
+    pub capacity: i64,
+    pub policy: String,
+    #[serde(with = "uint64_decimal")]
+    pub dropped_new: u64,
+    #[serde(with = "uint64_decimal")]
+    pub dropped_old: u64,
+    #[serde(with = "uint64_decimal")]
+    pub coalesced: u64,
+    #[serde(with = "uint64_decimal")]
+    pub dropped_on_stop: u64,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -638,9 +681,29 @@ pub struct TraceStreamMismatch {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SupervisorDetails {
+    #[serde(with = "hex128_lower")]
+    pub producer_instance_id: String,
+    pub kind: String,
+    #[serde(deserialize_with = "deserialize_required_nullable")]
+    pub actor: Option<ActorIdentity>,
+    #[serde(deserialize_with = "deserialize_required_nullable")]
+    pub owner: Option<ActorIdentity>,
+    #[serde(deserialize_with = "deserialize_required_nullable")]
+    pub role: Option<String>,
+    pub strategy: String,
+    #[serde(with = "optional_uint64_decimal")]
+    pub restarts: Option<u64>,
+    #[serde(with = "optional_uint64_decimal")]
+    pub pool_members: Option<u64>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SupervisorRow {
     pub depth: u16,
     pub label: String,
+    #[serde(default)]
+    pub details: Option<SupervisorDetails>,
     pub state: String,
 }
 

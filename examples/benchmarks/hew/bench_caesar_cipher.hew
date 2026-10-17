@@ -5,7 +5,7 @@ fn caesar_checksum(s: string, lower: string, table: Vec<i64>) -> i64 {
         var found = 0 - 1;
         var p = 0;
         while p < 26 {
-            if s.char_at(i) == lower.char_at(p) {
+            if s.get(i) == lower.get(p) {
                 found = p;
                 p = 26;
             } else {

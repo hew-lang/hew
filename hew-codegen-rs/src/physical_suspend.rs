@@ -8,9 +8,7 @@ pub(super) fn call_value<'ctx>(
     args: &[BasicMetadataValueEnum<'ctx>],
     name: &str,
 ) -> CodegenResult<BasicValueEnum<'ctx>> {
-    builder
-        .build_call(function, args, name)
-        .llvm_ctx("call coroutine runtime")?
+    c_abi::emit_call(builder, function, args, name)?
         .try_as_basic_value()
         .basic()
         .ok_or_else(|| CodegenError::FailClosed("coroutine runtime returned no value".into()))

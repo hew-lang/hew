@@ -1,0 +1,19 @@
+[[case]]
+id = "actor-timer-send-reject"
+intent = "A wrapped timer remains non-Send and cannot cross an actor message boundary."
+source = "cases/actor-timer-send-reject.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "OpaqueMessagePayload"
+line = 6
+column = 28
+message = "opaque type `std.builtins.Timer` cannot be used as a receive-fn parameter; actor message payloads must be CBOR-serializable, and opaque handles have no serializable layout. Open or construct the handle locally inside the handler instead [E_OPAQUE_MESSAGE_PAYLOAD]"
+
+[[case.expected.diagnostics]]
+code = "BoundsNotSatisfied"
+line = 12
+column = 5
+message = "type `WrappedTimer` does not implement trait `Send` required by `T`"

@@ -68,7 +68,7 @@ fn send_reply_envelope_bails_before_touching_stopping_connmgr() {
 
     let shutdown_started = Arc::new(AtomicBool::new(true));
     let dangling_mgr = std::ptr::NonNull::<connection::HewConnMgr>::dangling().as_ptr();
-    send_reply_envelope(999, 123, &[], dangling_mgr, shutdown_started.as_ref());
+    send_reply_envelope(999, 123, 0, &[], dangling_mgr, shutdown_started.as_ref());
 
     // SAFETY: node pointer remains valid until drop.
     unsafe {
@@ -122,6 +122,7 @@ fn inbound_router_no_spawn_after_shutdown_started() {
             1,
             (*node.as_ptr()).conn_mgr,
             crate::node_identity::HewNodeId::default(),
+            0,
             0,
             -1,
         );
@@ -246,6 +247,7 @@ fn node_stop_waits_to_free_connmgr_until_inbound_ask_error_worker_drains() {
                 manager as *mut connection::HewConnMgr,
                 crate::node_identity::HewNodeId::default(),
                 0,
+                0,
                 -1,
             );
         }
@@ -363,6 +365,7 @@ fn node_stop_drain_waits_for_router_wedged_after_counter_increment() {
                 1,
                 conn_mgr_addr as *mut connection::HewConnMgr,
                 crate::node_identity::HewNodeId::default(),
+                0,
                 0,
                 -1,
             );
@@ -525,6 +528,7 @@ fn handle_inbound_ask_capture_safe_for_secondary_node_freed_connmgr() {
             shutdown_started,
             crate::actor_caller::HewCallerStamp::default(),
             0,
+            0,
             crate::request_deadline::RequestDeadline::default(),
         );
     });
@@ -557,12 +561,23 @@ fn handle_inbound_ask_capture_safe_for_secondary_node_freed_connmgr() {
 #[test]
 fn queued_withdrawal_requires_the_exact_request_and_connection_publication() {
     let _guard = crate::runtime_test_guard();
-    let (node, _port) = start_tcp_test_listener_node(365);
+    let (node, port, peer, _) = start_authorized_tcp_pair(365, 366);
+    crate::pid::hew_pid_set_local_node(365);
     let actor = spawn_remote_test_actor(noop_dispatch);
     inbound_test_codec(noop_dispatch, 0);
     // SAFETY: this test retains the node and actor through every admission.
     let (actor_id, manager) = unsafe { ((*actor).id, &*(*node.as_ptr()).conn_mgr) };
-    for publication in [11, 12] {
+    // SAFETY: the test retains both authenticated nodes through every admission.
+    let peer_id = unsafe { (*peer.as_ptr()).auth.node_identity().unwrap() };
+    let address = CString::new(format!("365@127.0.0.1:{port}")).unwrap();
+    for _ in 0..2 {
+        // SAFETY: each connect publishes a fresh authenticated connection.
+        unsafe {
+            connect_with_retry(peer.as_ptr(), &address);
+            wait_for_handshake(peer.as_ptr(), node.as_ptr());
+        }
+        let claim = connection::claim_send_by_identity(manager, peer_id, None).unwrap();
+        let publication = claim.publication_token;
         handle_inbound_ask(
             actor_id,
             "tests.Counter.handle",
@@ -571,8 +586,9 @@ fn queued_withdrawal_requires_the_exact_request_and_connection_publication() {
             366,
             SendConnMgr(ptr::from_ref(manager).cast_mut()),
             Arc::new(AtomicBool::new(false)),
-            crate::actor_caller::HewCallerStamp::default(),
+            crate::actor_caller::HewCallerStamp::peer(peer_id.into()),
             publication,
+            0,
             crate::request_deadline::RequestDeadline::default(),
         );
         assert_eq!(manager.inbound_ask_active.load(Ordering::Acquire), 1);
@@ -590,6 +606,112 @@ fn queued_withdrawal_requires_the_exact_request_and_connection_publication() {
         assert_eq!(manager.inbound_ask_active.load(Ordering::Acquire), 0);
     }
     // SAFETY: the queued requests have released their ownership above.
+    unsafe {
+        crate::actor::hew_actor_free(actor);
+        assert_eq!(hew_node_stop(node.as_ptr()), 0);
+    }
+}
+
+#[test]
+fn service_revocation_refuses_an_already_queued_dispatch_claim() {
+    unsafe extern "C" fn drop_unit(_payload: *mut c_void) {}
+    let _guard = crate::runtime_test_guard();
+    let (node, port, peer, _) = start_authorized_tcp_pair(367, 368);
+    crate::pid::hew_pid_set_local_node(367);
+    let actor = spawn_remote_test_actor(noop_dispatch);
+    inbound_test_codec(noop_dispatch, 0);
+    let address = CString::new(format!("367@127.0.0.1:{port}")).unwrap();
+    // SAFETY: this test retains both nodes and the actor until all requests retire.
+    let (actor_id, incarnation, manager, peer_id) = unsafe {
+        connect_with_retry(peer.as_ptr(), &address);
+        wait_for_handshake(peer.as_ptr(), node.as_ptr());
+        (
+            (*actor).id,
+            crate::lifetime::live_actors::ActorIncarnation::of(actor),
+            &*(*node.as_ptr()).conn_mgr,
+            (*peer.as_ptr()).auth.node_identity().unwrap(),
+        )
+    };
+    let claim = connection::claim_send_by_identity(manager, peer_id, None).unwrap();
+    let location = connection::local_location_for_actor(manager, actor_id).unwrap();
+    let (export, offer) = manager
+        .service_exports
+        .export(
+            claim.peer_session(),
+            99,
+            incarnation,
+            location,
+            vec!["tests.Counter.handle".into()],
+        )
+        .unwrap();
+    assert!(matches!(
+        super::super::service::RemoteAdmission::new(
+            manager,
+            incarnation,
+            peer_id,
+            claim.publication_token,
+            0,
+            "tests.Counter.handle",
+        ),
+        Err(AskError::Unauthorized)
+    ));
+    assert!(matches!(
+        super::super::service::RemoteAdmission::new(
+            manager,
+            incarnation,
+            peer_id,
+            claim.publication_token,
+            offer.grant_id,
+            "tests.Counter.other",
+        ),
+        Err(AskError::Unauthorized)
+    ));
+    let admission = super::super::service::RemoteAdmission::new(
+        manager,
+        incarnation,
+        peer_id,
+        claim.publication_token,
+        offer.grant_id,
+        "tests.Counter.handle",
+    )
+    .unwrap();
+    let (_readiness, waker) = crate::wake::blocking::Readiness::new();
+    // SAFETY: the test transfers one request with a live readiness owner.
+    let operation = unsafe {
+        crate::actor_call_native::actor_call_new(
+            (*actor).local_pid_id,
+            1,
+            crate::mem::buf_alloc(1),
+            1,
+            drop_unit,
+            0,
+            None,
+            waker.descriptor(),
+            -1,
+            0,
+            None,
+            None,
+            crate::actor_caller::HewCallerStamp::peer(peer_id.into()),
+            Some(admission),
+        )
+    };
+    drop(export);
+    drop(claim);
+    // SAFETY: the test is the mailbox's sole consumer; no scheduler runs this actor.
+    unsafe {
+        let message = crate::mailbox::hew_mailbox_try_recv((*actor).mailbox.cast());
+        assert!(!message.is_null(), "the request must already be queued");
+        assert!(!crate::reply_channel::claim_native_request_dispatch(
+            (*message).reply_channel.cast()
+        ));
+        crate::mailbox::hew_msg_node_free(message);
+        assert_eq!(
+            crate::actor_call_native::hew_actor_call_poll(operation),
+            AskError::Unauthorized as i32
+        );
+        crate::actor_call_native::hew_actor_call_free(operation);
+    }
+    // SAFETY: revocation and withdrawal released every queued request owner.
     unsafe {
         crate::actor::hew_actor_free(actor);
         assert_eq!(hew_node_stop(node.as_ptr()), 0);

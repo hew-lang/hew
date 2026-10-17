@@ -244,12 +244,18 @@ mod platform {
         kq: RawFd,
     }
 
-    fn change(ident: usize, filter: i16, flags: u16, fflags: u32, token: u64) -> libc::kevent {
+    fn change(
+        ident: usize,
+        filter: i16,
+        flags: u16,
+        filter_flags: u32,
+        token: u64,
+    ) -> libc::kevent {
         libc::kevent {
             ident,
             filter,
             flags,
-            fflags,
+            fflags: filter_flags,
             data: 0,
             udata: token as usize as *mut libc::c_void,
             #[cfg(target_os = "freebsd")]

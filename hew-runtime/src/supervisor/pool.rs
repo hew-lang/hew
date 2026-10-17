@@ -452,7 +452,11 @@ pub struct HewNativeChildSpec {
     pub stop_ns: i64,
 }
 
-fn register_native_child(s: &mut SupervisorRoster, child: &HewNativeChildSpec) -> Option<usize> {
+fn register_native_child(
+    s: &mut SupervisorRoster,
+    child: &HewNativeChildSpec,
+    pool_index: Option<usize>,
+) -> Option<usize> {
     if (child.role_kind == ROLE_KIND_SUPERVISOR && child.stop_ns != -1)
         || (child.role_kind == ROLE_KIND_ACTOR && child.stop_ns < 0)
     {
@@ -487,7 +491,15 @@ fn register_native_child(s: &mut SupervisorRoster, child: &HewNativeChildSpec) -
         spec.config = s.config_buf;
         if !child.name.is_null() {
             // SAFETY: the generated table stores each name as a C string literal.
-            spec.name = unsafe { crate::cabi::cstr_strdup(child.name) };
+            let name = unsafe { std::ffi::CStr::from_ptr(child.name) };
+            let member_name = pool_index.map(|index| {
+                let mut bytes = name.to_bytes().to_vec();
+                bytes.extend_from_slice(format!("[{index}]").as_bytes());
+                std::ffi::CString::new(bytes).expect("member name contains no NUL")
+            });
+            let name = member_name.as_deref().unwrap_or(name);
+            // SAFETY: the name remains live until strdup has copied it.
+            spec.name = unsafe { crate::cabi::cstr_strdup(name.as_ptr()) };
         }
         s.child_specs.push(spec);
         s.children.push(ptr::null_mut());
@@ -496,6 +508,21 @@ fn register_native_child(s: &mut SupervisorRoster, child: &HewNativeChildSpec) -
     };
     s.next_child_spec_identity = next_identity;
     Some(index)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+unsafe fn release_unadopted_config(
+    config: *mut c_void,
+    config_drop: Option<unsafe extern "C" fn(*mut c_void)>,
+) {
+    if let Some(drop_fn) = config_drop {
+        // SAFETY: the caller still owns the unadopted config and its fields.
+        unsafe { drop_fn(config) };
+    }
+    if !config.is_null() {
+        // SAFETY: generated construction allocated this buffer with buf_malloc.
+        unsafe { crate::mem::buf_free(config) }; // ALLOCATOR-PAIRING: GlobalAlloc
+    }
 }
 
 /// Construct a declared supervisor: adopt its config, spawn every declared
@@ -522,6 +549,7 @@ pub unsafe extern "C" fn hew_supervisor_native_spawn(
     config_drop: Option<unsafe extern "C" fn(*mut c_void)>,
     children: *const HewNativeChildSpec,
     child_count: usize,
+    pool_count: i64,
     fault: *mut *mut crate::fault::HewFault,
 ) -> crate::lifetime::local_handles::HewLocalPidId {
     let invalid = crate::lifetime::local_handles::HewLocalPidId::INVALID;
@@ -530,17 +558,32 @@ pub unsafe extern "C" fn hew_supervisor_native_spawn(
         unsafe { *fault = crate::fault::hew_fault_new(code) };
         invalid
     };
+    let is_pool = strategy == STRATEGY_SIMPLE_ONE_FOR_ONE;
+    if (is_pool && (!(1..=i64::from(i32::MAX)).contains(&pool_count) || child_count != 1))
+        || (!is_pool && pool_count != 0)
+    {
+        // SAFETY: construction still owns the config before adoption.
+        unsafe { release_unadopted_config(config, config_drop) };
+        // SAFETY: the caller provides a writable, empty fault slot.
+        unsafe {
+            *fault = Box::into_raw(Box::new(crate::fault::HewFault::with_message(
+                crate::internal::types::HEW_TRAP_USER_PANIC,
+                "supervisor pool count must be between 1 and 2147483647".into(),
+            )));
+        }
+        return invalid;
+    }
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "the validated count is positive and bounded by i32::MAX"
+    )]
+    let members = if is_pool { pool_count as usize } else { 1 };
     // SAFETY: construction has no preconditions.
     let sup = unsafe { hew_supervisor_new(strategy, max_restarts, window_secs) };
     if sup.is_null() {
-        if let Some(drop_fn) = config_drop {
-            // SAFETY: nothing adopted the config, so this call still owns it.
-            unsafe { drop_fn(config) };
-        }
-        if !config.is_null() {
-            // SAFETY: the buffer came from the generated caller's allocator.
-            unsafe { crate::mem::buf_free(config) }; // ALLOCATOR-PAIRING: GlobalAlloc
-        }
+        // SAFETY: construction still owns the config before adoption.
+        unsafe { release_unadopted_config(config, config_drop) };
         return refuse(crate::internal::types::HewError::ErrOom as i32);
     }
     {
@@ -551,11 +594,14 @@ pub unsafe extern "C" fn hew_supervisor_native_spawn(
     }
     // SAFETY: the caller supplies `child_count` readable child specs.
     let children = unsafe { std::slice::from_raw_parts(children, child_count) };
-    for child in children {
+    for (child, pool_index) in children
+        .iter()
+        .flat_map(|child| (0..members).map(move |index| (child, is_pool.then_some(index))))
+    {
         let index = {
             // SAFETY: construction owns the parent until start publishes it.
             let mut roster = unsafe { &(*sup).roster }.lock_or_recover();
-            register_native_child(&mut roster, child)
+            register_native_child(&mut roster, child, pool_index)
         };
         let Some(index) = index else {
             // SAFETY: failed registration has not transferred another child.
@@ -629,6 +675,38 @@ pub unsafe extern "C" fn hew_supervisor_native_spawn(
     }
     // SAFETY: `hew_supervisor_new` published this allocation's token.
     unsafe { (*sup).local_pid_id }
+}
+
+/// Read the immutable extent of a native pool from its owning roster.
+///
+/// # Safety
+/// `fault` is writable and initially null.
+#[cfg(not(target_arch = "wasm32"))]
+#[no_mangle]
+pub unsafe extern "C" fn hew_supervisor_native_pool_count(
+    token: crate::lifetime::local_handles::HewLocalPidId,
+    fault: *mut *mut crate::fault::HewFault,
+) -> i64 {
+    if let Some(pin) = crate::lifetime::local_handles::pin_current_supervisor(token) {
+        // SAFETY: the pin retains this supervisor throughout the roster read.
+        let supervisor = unsafe { &*pin.supervisor() };
+        if supervisor.strategy == STRATEGY_SIMPLE_ONE_FOR_ONE {
+            let roster = supervisor.roster.lock_or_recover();
+            #[expect(
+                clippy::cast_possible_wrap,
+                reason = "native pool construction bounds the roster count by i32::MAX"
+            )]
+            return roster.child_count as i64;
+        }
+    }
+    // SAFETY: the caller provides a writable, empty fault slot.
+    unsafe {
+        *fault = Box::into_raw(Box::new(crate::fault::HewFault::with_message(
+            crate::internal::types::HEW_TRAP_USER_PANIC,
+            "supervisor pool is no longer available".into(),
+        )));
+    }
+    0
 }
 
 /// Resolve one declared child's current incarnation, reporting what the role
@@ -911,6 +989,67 @@ mod tests {
         unsafe { (*sup).running.store(1, Ordering::Release) };
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn invalid_native_pool_count_releases_config_without_spawning() {
+        use super::{hew_supervisor_native_spawn, HewNativeChildSpec, ROLE_KIND_ACTOR};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static DROPS: AtomicUsize = AtomicUsize::new(0);
+        static SPAWNS: AtomicUsize = AtomicUsize::new(0);
+        unsafe extern "C" fn drop_config(_config: *mut c_void) {
+            DROPS.fetch_add(1, Ordering::SeqCst);
+        }
+        unsafe extern "C-unwind" fn spawn_child(
+            _config: *const c_void,
+            _fault: *mut *mut crate::fault::HewFault,
+        ) -> crate::lifetime::local_handles::HewLocalPidId {
+            SPAWNS.fetch_add(1, Ordering::SeqCst);
+            crate::lifetime::local_handles::HewLocalPidId::INVALID
+        }
+        let _runtime = crate::runtime_test_guard();
+        DROPS.store(0, Ordering::SeqCst);
+        SPAWNS.store(0, Ordering::SeqCst);
+        let child = HewNativeChildSpec {
+            restart_policy: 0,
+            role_kind: ROLE_KIND_ACTOR,
+            spawn: spawn_child,
+            name: ptr::null(),
+            stop_ns: 0,
+        };
+        for (index, count) in [-1, 0, i64::from(i32::MAX) + 1, i64::MAX]
+            .into_iter()
+            .enumerate()
+        {
+            // SAFETY: native spawn adopts this allocation and the valid descriptor;
+            // the local fault slot is initially empty and consumed below.
+            unsafe {
+                let config = crate::mem::buf_try_alloc(1).cast::<c_void>();
+                assert!(!config.is_null());
+                let mut fault = ptr::null_mut();
+                let token = hew_supervisor_native_spawn(
+                    STRATEGY_SIMPLE_ONE_FOR_ONE,
+                    3,
+                    5,
+                    config,
+                    Some(drop_config),
+                    &raw const child,
+                    1,
+                    count,
+                    &raw mut fault,
+                );
+                assert_eq!(
+                    token,
+                    crate::lifetime::local_handles::HewLocalPidId::INVALID
+                );
+                assert!(!fault.is_null());
+                assert_eq!((*fault).code(), crate::internal::types::HEW_TRAP_USER_PANIC);
+                drop(Box::from_raw(fault));
+            }
+            assert_eq!(DROPS.load(Ordering::SeqCst), index + 1);
+            assert_eq!(SPAWNS.load(Ordering::SeqCst), 0);
+        }
+    }
+
     #[test]
     fn dynamic_add_reservation_cannot_publish_into_removed_or_swapped_slot() {
         let _rt = crate::runtime_test_guard();
@@ -930,7 +1069,6 @@ mod tests {
             message_drop_fn: None,
             arena_cap_bytes: 0,
             cycle_capable: 0,
-            on_crash: None,
             lifecycle_fn: None,
             init_fn: None,
             config: ptr::null_mut(),
@@ -965,7 +1103,6 @@ mod tests {
                 message_drop_fn: None,
                 arena_cap_bytes: 0,
                 cycle_capable: 0,
-                on_crash: None,
                 lifecycle_fn: None,
                 init_fn: None,
                 config: ptr::null_mut(),
@@ -1338,7 +1475,6 @@ mod tests {
             message_drop_fn: None,
             arena_cap_bytes: 0,
             cycle_capable: 0,
-            on_crash: None,
             lifecycle_fn: None,
             init_fn: Some(init_closure_thunk),
             config,

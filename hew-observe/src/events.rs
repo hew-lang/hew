@@ -305,19 +305,14 @@ pub const CURRENT_TRACE_EVENT_METADATA: &[TraceEventMeta] = &[
         group: TraceEventGroup::Internal,
         actionable: false,
     },
-    // Native supervisor lifecycle events (producer-side emission landed in the
-    // runtime: see `hew-runtime/src/supervisor.rs` + `tracing.rs`
-    // `SPAN_SUPERVISOR_*`). Kept non-actionable until the observe UI has
-    // deliberate supervisor drill-down; they render as point spans on the
-    // existing trace surface. Partition / max-heap / link / monitor families
-    // remain deferred shims below pending their own native emission.
+    // Supervisor decisions support exact actor-incarnation drill-down.
     TraceEventMeta {
         name: "supervisor_restart",
         label: "supervisor restart",
         glyph: '\u{21BB}',
         tone: TraceEventTone::Warning,
         group: TraceEventGroup::Lifecycle,
-        actionable: false,
+        actionable: true,
     },
     TraceEventMeta {
         name: "supervisor_escalate",
@@ -325,7 +320,7 @@ pub const CURRENT_TRACE_EVENT_METADATA: &[TraceEventMeta] = &[
         glyph: '\u{2191}',
         tone: TraceEventTone::Error,
         group: TraceEventGroup::Lifecycle,
-        actionable: false,
+        actionable: true,
     },
     TraceEventMeta {
         name: "supervisor_circuit_open",
@@ -333,7 +328,7 @@ pub const CURRENT_TRACE_EVENT_METADATA: &[TraceEventMeta] = &[
         glyph: '\u{26A0}',
         tone: TraceEventTone::Error,
         group: TraceEventGroup::Lifecycle,
-        actionable: false,
+        actionable: true,
     },
     TraceEventMeta {
         name: "supervisor_circuit_half_open",
@@ -341,7 +336,7 @@ pub const CURRENT_TRACE_EVENT_METADATA: &[TraceEventMeta] = &[
         glyph: '\u{26A1}',
         tone: TraceEventTone::Warning,
         group: TraceEventGroup::Lifecycle,
-        actionable: false,
+        actionable: true,
     },
     TraceEventMeta {
         name: "supervisor_circuit_close",
@@ -349,7 +344,7 @@ pub const CURRENT_TRACE_EVENT_METADATA: &[TraceEventMeta] = &[
         glyph: '\u{2713}',
         tone: TraceEventTone::Healthy,
         group: TraceEventGroup::Lifecycle,
-        actionable: false,
+        actionable: true,
     },
     TraceEventMeta {
         name: "supervisor_max_restarts",
@@ -357,7 +352,7 @@ pub const CURRENT_TRACE_EVENT_METADATA: &[TraceEventMeta] = &[
         glyph: '\u{2716}',
         tone: TraceEventTone::Error,
         group: TraceEventGroup::Lifecycle,
-        actionable: false,
+        actionable: true,
     },
     TraceEventMeta {
         name: "supervisor_backoff",
@@ -365,7 +360,7 @@ pub const CURRENT_TRACE_EVENT_METADATA: &[TraceEventMeta] = &[
         glyph: '\u{23F3}',
         tone: TraceEventTone::Warning,
         group: TraceEventGroup::Lifecycle,
-        actionable: false,
+        actionable: true,
     },
     // SHIM: pending native-M3 producer-side emission. WHY: partition
     // detection, max_heap enforcement, and link/monitor substrates have no
@@ -579,7 +574,7 @@ mod tests {
     }
 
     #[test]
-    fn native_supervisor_events_are_present_but_not_actionable() {
+    fn native_supervisor_events_support_drill_down() {
         for event_type in [
             "supervisor_restart",
             "supervisor_escalate",
@@ -597,8 +592,8 @@ mod tests {
             assert_ne!(meta.label, UNKNOWN_TRACE_EVENT_META.label);
             assert_eq!(meta.group, TraceEventGroup::Lifecycle);
             assert!(
-                !meta.is_actionable(),
-                "{event_type} stays non-actionable until the observe UI has supervisor drill-down"
+                meta.is_actionable(),
+                "{event_type} supports supervisor drill-down"
             );
         }
     }

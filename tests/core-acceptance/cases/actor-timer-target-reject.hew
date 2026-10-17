@@ -1,0 +1,8 @@
+actor Worker {
+    receive fn tick() {}
+    receive fn run(other: Worker) {
+        let _ = mailbox(other, after: 1ms).tick();
+    }
+}
+
+fn main() {}

@@ -153,7 +153,7 @@ fn lookup_list_len(ctx: Ctx, key: string) -> i64 {
 
 // ── Internal tag classifiers ──────────────────────────────────────────
 fn tag_is_dot_key(tag: string) -> bool {
-    tag.len() >= 2 && tag.slice(0, 1) == "." && tag.slice(1, 2) != " "
+    tag.len() >= 2 && tag[0..1] == "." && tag[1..2] != " "
 }
 
 fn tag_is_if(tag: string) -> bool {
@@ -166,9 +166,9 @@ fn tag_is_range(tag: string) -> bool {
 
 // Extract the key from `if .key` → `key`.
 fn if_key(tag: string) -> string {
-    let after_if = tag.slice(3, tag.len()).trim();
-    if after_if.len() >= 1 && after_if.slice(0, 1) == "." {
-        after_if.slice(1, after_if.len())
+    let after_if = tag[3..tag.len()].trim();
+    if after_if.len() >= 1 && after_if[0..1] == "." {
+        after_if[1..after_if.len()]
     } else {
         after_if
     }
@@ -176,9 +176,9 @@ fn if_key(tag: string) -> string {
 
 // Extract the key from `range .key` → `key`.
 fn range_key(tag: string) -> string {
-    let after_range = tag.slice(6, tag.len()).trim();
-    if after_range.len() >= 1 && after_range.slice(0, 1) == "." {
-        after_range.slice(1, after_range.len())
+    let after_range = tag[6..tag.len()].trim();
+    if after_range.len() >= 1 && after_range[0..1] == "." {
+        after_range[1..after_range.len()]
     } else {
         after_range
     }
@@ -197,7 +197,7 @@ fn consume_if_body(tmpl: string, start: i64, tlen: i64, ctx: Ctx, range_elem: st
     var end_pos = -1; // byte offset right after the `{{end}}` that closes this if
     var end_tag_start = -1; // byte offset of the `{{` of that closing `{{end}}`
     while pos < tlen {
-        let rest = tmpl.slice(pos, tlen);
+        let rest = tmpl[pos..tlen];
         let open = match rest.find("{{") {
             .Some(i) => i,
             .None => {
@@ -205,14 +205,14 @@ fn consume_if_body(tmpl: string, start: i64, tlen: i64, ctx: Ctx, range_elem: st
             }
         };
         let tag_start = pos + open + 2;
-        let after_open = tmpl.slice(tag_start, tlen);
+        let after_open = tmpl[tag_start..tlen];
         let close = match after_open.find("}}") {
             .Some(i) => i,
             .None => {
                 return .Err(TemplateError.UnclosedDirective("template: unclosed `{{` inside `{{if}}` body"));
             }
         };
-        let tag = tmpl.slice(tag_start, tag_start + close).trim();
+        let tag = tmpl[tag_start .. tag_start + close].trim();
         let next_pos = tag_start + close + 2;
         if tag_is_if(tag) || tag_is_range(tag) {
             depth = depth + 1;
@@ -246,7 +246,7 @@ fn consume_if_body(tmpl: string, start: i64, tlen: i64, ctx: Ctx, range_elem: st
         return .Err(TemplateError.UnclosedBlock("template: unclosed `{{if}}` — missing `{{end}}`"));
     }
     if cond {
-        let branch = tmpl.slice(start, true_end);
+        let branch = tmpl[start..true_end];
         let rendered = render_segment(branch, ctx, range_elem, in_range);
         match rendered {
             .Ok(s) => .Ok((s, end_pos)),
@@ -259,7 +259,7 @@ fn consume_if_body(tmpl: string, start: i64, tlen: i64, ctx: Ctx, range_elem: st
             // Deriving it from `end_pos` would assume `{{end}}` is exactly
             // seven bytes and mis-slice a spaced `{{ end }}`.
             let false_end = end_tag_start;
-            let branch = tmpl.slice(false_start, false_end);
+            let branch = tmpl[false_start..false_end];
             let rendered = render_segment(branch, ctx, range_elem, in_range);
             match rendered {
                 .Ok(s) => .Ok((s, end_pos)),
@@ -281,7 +281,7 @@ fn consume_range_body(tmpl: string, start: i64, tlen: i64, ctx: Ctx, key: string
     var body_end = -1;
     var end_pos = -1;
     while pos < tlen {
-        let rest = tmpl.slice(pos, tlen);
+        let rest = tmpl[pos..tlen];
         let open = match rest.find("{{") {
             .Some(i) => i,
             .None => {
@@ -289,14 +289,14 @@ fn consume_range_body(tmpl: string, start: i64, tlen: i64, ctx: Ctx, key: string
             }
         };
         let tag_start = pos + open + 2;
-        let after_open = tmpl.slice(tag_start, tlen);
+        let after_open = tmpl[tag_start..tlen];
         let close = match after_open.find("}}") {
             .Some(i) => i,
             .None => {
                 return .Err(TemplateError.UnclosedDirective("template: unclosed `{{` inside `{{range}}` body"));
             }
         };
-        let tag = tmpl.slice(tag_start, tag_start + close).trim();
+        let tag = tmpl[tag_start .. tag_start + close].trim();
         let next_pos = tag_start + close + 2;
         if tag_is_if(tag) || tag_is_range(tag) {
             depth = depth + 1;
@@ -317,7 +317,7 @@ fn consume_range_body(tmpl: string, start: i64, tlen: i64, ctx: Ctx, key: string
     if end_pos < 0 {
         return .Err(TemplateError.UnclosedBlock("template: unclosed `{{range}}` — missing `{{end}}`"));
     }
-    let body = tmpl.slice(start, body_end);
+    let body = tmpl[start..body_end];
     let list_start = lookup_list_start(ctx, key);
     let list_len = lookup_list_len(ctx, key);
     var out = "";
@@ -344,7 +344,7 @@ fn render_segment(tmpl: string, ctx: Ctx, range_elem: string, in_range: bool) ->
     var pos = 0;
     let tlen = tmpl.len();
     while pos < tlen {
-        let rest = tmpl.slice(pos, tlen);
+        let rest = tmpl[pos..tlen];
         let open = match rest.find("{{") {
             .Some(i) => i,
             .None => {
@@ -353,16 +353,16 @@ fn render_segment(tmpl: string, ctx: Ctx, range_elem: string, in_range: bool) ->
             }
         };
         // Append literal text before `{{`.
-        out = out + tmpl.slice(pos, pos + open);
+        out = out + tmpl[pos .. pos + open];
         let tag_start = pos + open + 2;
-        let after_open = tmpl.slice(tag_start, tlen);
+        let after_open = tmpl[tag_start..tlen];
         let close = match after_open.find("}}") {
             .Some(i) => i,
             .None => {
                 return .Err(TemplateError.UnclosedDirective("template: unclosed `{{` directive"));
             }
         };
-        let tag = tmpl.slice(tag_start, tag_start + close).trim();
+        let tag = tmpl[tag_start .. tag_start + close].trim();
         pos = tag_start + close + 2;
         if tag == "." {
             if !in_range {
@@ -370,7 +370,7 @@ fn render_segment(tmpl: string, ctx: Ctx, range_elem: string, in_range: bool) ->
             }
             out = out + range_elem;
         } else if tag_is_dot_key(tag) {
-            let key = tag.slice(1, tag.len());
+            let key = tag[1..tag.len()];
             out = out + lookup_scalar(ctx, key);
         } else if tag_is_if(tag) {
             let key = if_key(tag);
@@ -422,7 +422,7 @@ fn validate(tmpl: string) -> Result<i64, TemplateError> {
     var pos = 0;
     let tlen = tmpl.len();
     while pos < tlen {
-        let rest = tmpl.slice(pos, tlen);
+        let rest = tmpl[pos..tlen];
         let open = match rest.find("{{") {
             .Some(i) => i,
             .None => {
@@ -434,14 +434,14 @@ fn validate(tmpl: string) -> Result<i64, TemplateError> {
             }
         };
         let tag_start = pos + open + 2;
-        let after_open = tmpl.slice(tag_start, tlen);
+        let after_open = tmpl[tag_start..tlen];
         let close = match after_open.find("}}") {
             .Some(i) => i,
             .None => {
                 return .Err(TemplateError.UnclosedDirective("template: unclosed `{{` directive"));
             }
         };
-        let tag = tmpl.slice(tag_start, tag_start + close).trim();
+        let tag = tmpl[tag_start .. tag_start + close].trim();
         pos = tag_start + close + 2;
         if tag == "." {
             if range_depth <= 0 {

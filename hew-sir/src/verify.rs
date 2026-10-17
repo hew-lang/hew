@@ -1913,6 +1913,18 @@ fn verify_callable_table<'a>(
                     }));
                 }
             }
+            CallableInstance::SupervisorPoolCount { supervisor, child } => {
+                if module
+                    .supervisor(*supervisor)
+                    .and_then(|supervisor| supervisor.children.get(*child as usize))
+                    .is_none_or(|declared| declared.pool_count != Some(callable.id))
+                {
+                    diagnostics.push(module_diag(SirDiagnosticKind::InvalidCallable {
+                        callable: callable.id,
+                        reason: "pool count body is not its declaration's checked count".into(),
+                    }));
+                }
+            }
             CallableInstance::EntryAdapter => {
                 if module.entry_callable != Some(callable.id)
                     && !module
@@ -2547,7 +2559,7 @@ fn verify_capture_operation(
             return Err("capture load changes its field type".to_string());
         }
         if borrowed {
-            if OwnKind::of_ty(&decl.ty, facts) != Ok(OwnKind::Owned) {
+            if result.own != OwnKind::Guaranteed {
                 return Err(
                     "capture loan requires its exact environment and an owning field".to_string(),
                 );
@@ -2824,51 +2836,7 @@ fn verify_dyn_call(
             "dynamic dispatch requires cleanup that propagates the original fault".to_string(),
         );
     }
-    let ty = types
-        .get(&receiver.operand.value)
-        .ok_or_else(|| "dynamic dispatch has no typed receiver".to_string())?;
-    if !matches!(ty, ResolvedTy::TraitObject { .. })
-        || OwnKind::of_ty(ty, facts) != Ok(OwnKind::Owned)
-    {
-        return Err("dynamic dispatch requires an owned trait-object receiver".to_string());
-    }
-    crate::model::require_dyn_trait_ids(ty)?;
-    let context = context
-        .ok_or_else(|| "dynamic dispatch requires its module's dispatch tables".to_string())?;
-    let own_tables = context.vtables_for(ty);
-    for table in own_tables {
-        let published = table
-            .slots
-            .iter()
-            .find(|published| published.slot == *slot)
-            .ok_or_else(|| {
-                format!(
-                    "`{}` publishes no slot {slot} for `{}`",
-                    table.concrete_ty.user_facing(),
-                    ty.user_facing()
-                )
-            })?;
-        if published.method != *method {
-            return Err(format!(
-                "dynamic dispatch of `{}` names slot {slot}, which `{}` fills with `{}`",
-                context.defs.path(*method),
-                table.concrete_ty.user_facing(),
-                context.defs.path(published.method)
-            ));
-        }
-        let expected = match published.receiver {
-            SemParamPassing::ReadOnly => crate::BoundaryDecision::Copy,
-            SemParamPassing::Borrow => crate::BoundaryDecision::Borrow,
-            SemParamPassing::BorrowMut => crate::BoundaryDecision::BorrowMut,
-            SemParamPassing::Consume => crate::BoundaryDecision::Move,
-        };
-        if receiver.decision != expected || &published.signature != signature {
-            return Err(format!(
-                "dynamic dispatch of slot {slot} differs from the boundary `{}` was erased under",
-                table.concrete_ty.user_facing()
-            ));
-        }
-    }
+    verify_dyn_boundary(receiver, *slot, *method, signature, types, facts, context)?;
     if args.len() != signature.params.len() {
         return Err("dynamic dispatch argument count differs from its signature".to_string());
     }
@@ -2900,6 +2868,66 @@ fn verify_dyn_call(
     }
 }
 
+fn verify_dyn_boundary(
+    receiver: &crate::BoundaryOperand,
+    slot: u32,
+    method: hew_types::DefId,
+    signature: &crate::SemSignature,
+    types: &HashMap<ValueId, ResolvedTy>,
+    facts: &TypeFactTable,
+    context: Option<&CallableContext<'_>>,
+) -> Result<(), String> {
+    if signature.failure_domain != hew_types::CallableFailureDomain::HewFault {
+        return Err("dynamic dispatch requires the recoverable fault ABI".into());
+    }
+    let ty = types
+        .get(&receiver.operand.value)
+        .ok_or_else(|| "dynamic dispatch has no typed receiver".to_string())?;
+    if !matches!(ty, ResolvedTy::TraitObject { .. })
+        || OwnKind::of_ty(ty, facts) != Ok(OwnKind::Owned)
+    {
+        return Err("dynamic dispatch requires an owned trait-object receiver".to_string());
+    }
+    crate::model::require_dyn_trait_ids(ty)?;
+    let context = context
+        .ok_or_else(|| "dynamic dispatch requires its module's dispatch tables".to_string())?;
+    let own_tables = context.vtables_for(ty);
+    for table in own_tables {
+        let published = table
+            .slots
+            .iter()
+            .find(|published| published.slot == slot)
+            .ok_or_else(|| {
+                format!(
+                    "`{}` publishes no slot {slot} for `{}`",
+                    table.concrete_ty.user_facing(),
+                    ty.user_facing()
+                )
+            })?;
+        if published.method != method {
+            return Err(format!(
+                "dynamic dispatch of `{}` names slot {slot}, which `{}` fills with `{}`",
+                context.defs.path(method),
+                table.concrete_ty.user_facing(),
+                context.defs.path(published.method)
+            ));
+        }
+        let expected = match published.receiver {
+            SemParamPassing::ReadOnly => crate::BoundaryDecision::Copy,
+            SemParamPassing::Borrow => crate::BoundaryDecision::Borrow,
+            SemParamPassing::BorrowMut => crate::BoundaryDecision::BorrowMut,
+            SemParamPassing::Consume => crate::BoundaryDecision::Move,
+        };
+        if receiver.decision != expected || &published.signature != signature {
+            return Err(format!(
+                "dynamic dispatch of slot {slot} differs from the boundary `{}` was erased under",
+                table.concrete_ty.user_facing()
+            ));
+        }
+    }
+    Ok(())
+}
+
 #[expect(
     clippy::too_many_lines,
     reason = "one construction contract per callable-shaped operation"
@@ -2920,6 +2948,7 @@ fn verify_callable_operation(
             | SemOpKind::GeneratorCoerce { .. }
             | SemOpKind::CallableCoerce { .. }
             | SemOpKind::DynMake { .. }
+            | SemOpKind::TaskInvoke { .. }
     ) {
         return;
     }
@@ -2931,6 +2960,123 @@ fn verify_callable_operation(
             "callable construction requires its module's semantic contract".to_string()
         })?;
         match &operation.kind {
+            SemOpKind::TaskInvoke {
+                callee, signature, ..
+            } => match callee {
+                crate::InvocationCallee::Direct(id) => {
+                    let target = context
+                        .callable(*id)
+                        .ok_or("prepared direct call has no target")?;
+                    if target.kind != SemCallableKind::HewDirect
+                        || target.signature.hands_back_receiver()
+                        || &target.signature != signature
+                    {
+                        return Err(
+                            "prepared direct call differs from its declaration signature".into(),
+                        );
+                    }
+                }
+                crate::InvocationCallee::Mutable {
+                    target,
+                    receiver,
+                    update,
+                } => {
+                    let target = context
+                        .callable(*target)
+                        .ok_or("prepared mutable target is absent")?;
+                    let mut expected = target.signature.clone();
+                    let output = expected
+                        .erased_return_ty(crate::SemParamPassing::BorrowMut)?
+                        .clone();
+                    let parameter = expected.params.remove(0);
+                    expected.return_ty = output;
+                    if !target.signature.hands_back_receiver()
+                        || target.kind != SemCallableKind::HewDirect
+                        || &expected != signature
+                        || types.get(&receiver.operand.value) != Some(&parameter.ty)
+                        || receiver.decision != crate::BoundaryDecision::BorrowMut
+                        || !callable_mutation_permitted(
+                            function,
+                            receiver.operand.value,
+                            Some(context),
+                        )
+                        || (*update == hew_types::ReceiverUpdate::Staged
+                            && facts
+                                .get(&hew_types::TypeInstanceKey(parameter.ty))
+                                .is_none_or(|facts| facts.clone == hew_types::CloneKind::None))
+                    {
+                        return Err(
+                            "prepared mutable call differs from its checked receiver contract"
+                                .into(),
+                        );
+                    }
+                }
+                crate::InvocationCallee::Dyn {
+                    receiver,
+                    slot,
+                    method,
+                } => {
+                    verify_dyn_boundary(
+                        receiver,
+                        *slot,
+                        *method,
+                        signature,
+                        types,
+                        facts,
+                        Some(context),
+                    )?;
+                    if receiver.decision == crate::BoundaryDecision::BorrowMut
+                        && !callable_mutation_permitted(
+                            function,
+                            receiver.operand.value,
+                            Some(context),
+                        )
+                    {
+                        return Err("prepared mutable dispatch lacks a writable receiver".into());
+                    }
+                }
+                crate::InvocationCallee::Indirect {
+                    receiver,
+                    specialization,
+                } => {
+                    let ty = types
+                        .get(&receiver.operand.value)
+                        .ok_or("prepared indirect call has no receiver type")?;
+                    let invocation = match specialization {
+                        Some(id) => ty
+                            .instantiate_callable(
+                                context
+                                    .callable_specializations
+                                    .get(id.0 as usize)
+                                    .ok_or("prepared indirect call has no specialization")?,
+                            )
+                            .ok_or("prepared specialization differs from its scheme")?,
+                        None if !matches!(ty, ResolvedTy::GenericCallable { .. }) => ty.clone(),
+                        None => return Err("prepared generic call lacks a specialization".into()),
+                    };
+                    if &crate::callable_value_signature(&invocation, facts)? != signature {
+                        return Err(
+                            "prepared indirect call differs from its callable signature".into()
+                        );
+                    }
+                    let (_, _, capabilities) = crate::callable_parts(ty)?;
+                    let expected = match capabilities.call {
+                        hew_types::CallableCallMode::Read => crate::BoundaryDecision::Borrow,
+                        hew_types::CallableCallMode::Var => crate::BoundaryDecision::BorrowMut,
+                        hew_types::CallableCallMode::Once => crate::BoundaryDecision::Move,
+                    };
+                    if receiver.decision != expected
+                        || (capabilities.call == hew_types::CallableCallMode::Var
+                            && !callable_mutation_permitted(
+                                function,
+                                receiver.operand.value,
+                                Some(context),
+                            ))
+                    {
+                        return Err("prepared receiver differs from its callable capability".into());
+                    }
+                }
+            },
             SemOpKind::FunctionMake { callable } => {
                 let target = context
                     .callable(*callable)
@@ -3395,6 +3541,41 @@ fn verify_operation_shape(
                 );
             }
         }
+        SemOpKind::TaskInvoke {
+            args, signature, ..
+        } => {
+            let valid = result.ty == ResolvedTy::Task(Box::new(signature.return_ty.clone()))
+                && args.len() == signature.params.len()
+                && args
+                    .iter()
+                    .zip(&signature.params)
+                    .all(|(argument, parameter)| {
+                        types.get(&argument.operand.value) == Some(&parameter.ty)
+                            && argument.decision
+                                == match parameter.passing {
+                                    crate::SemParamPassing::ReadOnly => {
+                                        crate::BoundaryDecision::Copy
+                                    }
+                                    crate::SemParamPassing::Borrow => {
+                                        crate::BoundaryDecision::Borrow
+                                    }
+                                    crate::SemParamPassing::BorrowMut => {
+                                        crate::BoundaryDecision::BorrowMut
+                                    }
+                                    crate::SemParamPassing::Consume => {
+                                        crate::BoundaryDecision::Move
+                                    }
+                                }
+                    });
+            if !valid {
+                invalid_operation(
+                    function,
+                    operation.id,
+                    "prepared task call disagrees with its checked signature".into(),
+                    diagnostics,
+                );
+            }
+        }
         SemOpKind::TaskSpawn { callable, .. } => {
             let valid = types.get(&callable.value).is_some_and(|ty| {
                 crate::callable_parts(ty).is_ok_and(|(params, output, caps)| {
@@ -3804,15 +3985,6 @@ fn verify_operation_shape(
                     diagnostics,
                 );
             }
-            if borrowing && recipe.own != crate::OwnKind::Owned {
-                invalid_operation(
-                    function,
-                    operation.id,
-                    "aggregate.project_borrow requires an owning field; no-drop fields use an ordinary copy"
-                        .to_string(),
-                    diagnostics,
-                );
-            }
             if !borrowing && recipe.clone == hew_types::CloneKind::None {
                 invalid_operation(
                     function,
@@ -4111,13 +4283,11 @@ fn verify_operation_shape(
             }
         }
         SemOpKind::BeginBorrow { owner } => {
-            if types.get(&owner.value) != Some(&result.ty)
-                || crate::OwnKind::of_ty(&result.ty, facts) != Ok(crate::OwnKind::Owned)
-            {
+            if types.get(&owner.value) != Some(&result.ty) {
                 invalid_operation(
                     function,
                     operation.id,
-                    "begin_borrow must preserve the exact type of an owning value".to_string(),
+                    "begin_borrow must preserve its exact typed storage".to_string(),
                     diagnostics,
                 );
             }
@@ -5873,26 +6043,56 @@ fn verify_terminator_shape(
                             return None;
                         };
                         descriptor
-                            .remote_signature(*message, target, value.ty.clone(), true)
+                            .remote_signature(
+                                variants.defs,
+                                *message,
+                                target,
+                                value.ty.clone(),
+                                true,
+                            )
                             .ok()
                     })
                     .is_some_and(|signature| {
                         // The pid is read to address the peer, the message
                         // transfers into its encoding and the timeout is a copy.
-                        let decisions = [
-                            crate::BoundaryDecision::Borrow,
-                            crate::BoundaryDecision::Move,
-                            crate::BoundaryDecision::Copy,
-                        ];
                         resumes.len() == 1
-                            && inputs.len() == decisions.len()
-                            && inputs.iter().zip(&signature.params).zip(decisions).all(
-                                |((input, parameter), decision)| {
+                            && inputs.len() == signature.params.len()
+                            && inputs.iter().zip(&signature.params).enumerate().all(
+                                |(index, (input, parameter))| {
+                                    let decision = if index == 0 {
+                                        crate::BoundaryDecision::Borrow
+                                    } else if index + 1 == inputs.len() {
+                                        crate::BoundaryDecision::Copy
+                                    } else {
+                                        crate::BoundaryDecision::Move
+                                    };
                                     input.decision == decision
                                         && types.get(&input.operand.value) == Some(&parameter.ty)
                                 },
                             )
                     }),
+                crate::SuspendKind::ServiceAcquire { actor, export } => {
+                    let operation = if *export {
+                        hew_types::runtime_call::ServiceOp::Export
+                    } else {
+                        hew_types::runtime_call::ServiceOp::Receive
+                    };
+                    callable_context.and_then(|context| context.actors.get(actor.0 as usize)).is_some_and(|descriptor| {
+                        let argument_types = inputs.iter().map(|input| types.get(&input.operand.value).cloned()).collect::<Option<Vec<_>>>();
+                        resumes.len() == 1
+                            && descriptor.id == *actor
+                            && !descriptor.handlers.is_empty()
+                            && descriptor.handlers.iter().all(|handler| handler.codec.is_some())
+                            && inputs.iter().all(|input| input.decision == crate::BoundaryDecision::Borrow)
+                            && matches!(result, crate::CallResult::Value(value)
+                                if argument_types.is_some_and(|arguments| {
+                                    operation.row().contract.expect("service contract").matches_signature(variants.defs, &arguments, &value.ty)
+                                        && matches!(&value.ty, ResolvedTy::Named { args, .. }
+                                            if matches!(args.first(), Some(ResolvedTy::Named { args, .. }) if args.as_slice() == [descriptor.handle_ty.clone()]))
+                                        && (!*export || arguments.get(1) == Some(&descriptor.handle_ty))
+                                }) && OwnKind::of_ty(&value.ty, variants.facts) == Ok(value.own))
+                    })
+                }
                 crate::SuspendKind::NativeIo { operation } => {
                     let argument_types = inputs
                         .iter()

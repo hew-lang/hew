@@ -78,8 +78,8 @@ const BUILTIN_ENUM_ABI: &[BuiltinEnumAbi] = &[
     BuiltinEnumAbi {
         module: "std.failure",
         name: "CrashKind",
-        variant_count: 3,
-        order_fingerprint: 0x8201_2311_7fda_bb95,
+        variant_count: 5,
+        order_fingerprint: 0xdf72_537c_328f_482d,
         suppress_from_sandbox_emit: true,
     },
 ];
@@ -200,7 +200,6 @@ pub fn derive_monitor_ref_projection(
                             decl.name.name.as_str(),
                             "PartitionPolicy"
                                 | "MonitorId"
-                                | "DownTarget"
                                 | "DownReason"
                                 | "DownNotification"
                                 | "MonitorRef"
@@ -248,7 +247,6 @@ fn ensure_monitor_projection_complete(items: &[Item]) -> Result<(), String> {
         "LinkError",
         "PartitionPolicy",
         "MonitorId",
-        "DownTarget",
         "DownReason",
         "DownNotification",
         "MonitorRef",

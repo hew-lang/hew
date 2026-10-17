@@ -31,6 +31,8 @@ mod inbound;
 mod inbound_call;
 mod monitor_link;
 mod remote_call;
+pub(crate) mod service;
+mod service_api;
 #[cfg(test)]
 mod tests;
 
@@ -302,6 +304,73 @@ fn with_current_node_read<R>(f: impl FnOnce(&usize) -> R) -> R {
     }
 }
 
+pub(crate) fn with_current_node_snapshot<R>(f: impl FnOnce(Option<&HewNode>) -> R) -> R {
+    with_current_node_read(|pointer| {
+        // SAFETY: the current-node read guard excludes stop/free until the callback returns.
+        f(unsafe { (*pointer as *const HewNode).as_ref() })
+    })
+}
+
+pub(crate) fn observe_metric(name: &str) -> Option<u64> {
+    with_current_node_read(|pointer| {
+        // SAFETY: the current-node read guard excludes stop/free for this snapshot.
+        let node = unsafe { (*pointer as *const HewNode).as_ref() };
+        let value = match name {
+            "node.pending_asks" => crate::runtime::rt_current_opt().map_or(0, |rt| {
+                rt.node
+                    .reply_table
+                    .pending
+                    .lock_or_recover()
+                    .values()
+                    .filter(|pending| matches!(pending.kind, PendingReplyKind::Ask(_)))
+                    .count() as u64
+            }),
+            "swim.quarantined" => crate::runtime::rt_current_opt().map_or(0, |rt| {
+                rt.node
+                    .quarantine
+                    .access(|quarantine| quarantine.len() as u64)
+            }),
+            "registry.names" => node.map_or_else(
+                || crate::registry::metrics_snapshot().0,
+                |node| {
+                    // SAFETY: the node owns its registry until the current-node guard releases.
+                    unsafe { node.registry.as_ref() }.map_or(0, |registry| {
+                        registry.remote_names.lock_or_recover().len() as u64
+                    })
+                },
+            ),
+            "node.routes" => node.map_or(0, |node| {
+                // SAFETY: the node owns its routing table under this guard.
+                unsafe { node.routing_table.as_ref() }
+                    .map_or(0, crate::routing::HewRoutingTable::route_count)
+            }),
+            "node.peers" | "node.gossip_in_total" | "node.gossip_out_total" => {
+                let (peers, received, sent) = node.map_or((0, 0, 0), |node| {
+                    // SAFETY: the node owns its connection manager under this guard.
+                    unsafe { node.conn_mgr.as_ref() }
+                        .map_or((0, 0, 0), crate::connection::HewConnMgr::observe_counts)
+                });
+                match name {
+                    "node.peers" => peers,
+                    "node.gossip_in_total" => received,
+                    _ => sent,
+                }
+            }
+            "swim.alive" | "swim.suspect" | "swim.dead" => node.map_or(0, |node| {
+                let state = match name {
+                    "swim.alive" => crate::cluster::MEMBER_ALIVE,
+                    "swim.suspect" => crate::cluster::MEMBER_SUSPECT,
+                    _ => crate::cluster::MEMBER_DEAD,
+                };
+                // SAFETY: the node owns its cluster under this guard.
+                unsafe { node.cluster.as_ref() }.map_or(0, |cluster| cluster.member_count(state))
+            }),
+            _ => return None,
+        };
+        Some(value)
+    })
+}
+
 /// Run `f` with write access to the current runtime's active-node slot.
 fn with_current_node<R>(f: impl FnOnce(&mut usize) -> R) -> R {
     crate::runtime::rt_current().node.current.access(f)
@@ -431,13 +500,13 @@ struct ReplyOutcome {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct ConnectionKey {
+pub(crate) struct ConnectionKey {
     conn_mgr: usize,
     conn_id: c_int,
 }
 
 impl ConnectionKey {
-    fn new(conn_mgr: *const HewConnMgr, conn_id: c_int) -> Self {
+    pub(crate) fn new(conn_mgr: *const HewConnMgr, conn_id: c_int) -> Self {
         Self {
             conn_mgr: conn_mgr.cast::<()>() as usize,
             conn_id,
@@ -453,7 +522,9 @@ pub(crate) enum RemoteSetupKind {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum PendingReplyKind {
-    Ask,
+    Ask(u64),
+    Offer(u64),
+    Import(u64),
     Setup(RemoteSetupKind, u64),
 }
 
@@ -515,7 +586,7 @@ impl ReplyRoutingTable {
     /// Allocate a new request ID and register a blocking pending ask reply.
     #[cfg(test)]
     fn register(&self, connection: ConnectionKey) -> (u64, Arc<PendingReply>) {
-        self.register_with_waker(connection, None, PendingReplyKind::Ask)
+        self.register_with_waker(connection, None, PendingReplyKind::Ask(0))
     }
 
     fn register_setup(
@@ -706,10 +777,11 @@ impl ReplyRoutingTable {
         &self,
         request_id: u64,
         expected: ConnectionKey,
+        publication: u64,
         payload: Vec<u8>,
     ) -> bool {
         if let Some(pending) =
-            self.remove_if_connection(request_id, expected, PendingReplyKind::Ask)
+            self.remove_if_connection(request_id, expected, PendingReplyKind::Ask(publication))
         {
             Self::complete_pending(
                 &pending,
@@ -758,10 +830,11 @@ impl ReplyRoutingTable {
         &self,
         request_id: u64,
         expected: ConnectionKey,
+        publication: u64,
         ask_error: AskError,
     ) -> bool {
         if let Some(pending) =
-            self.remove_if_connection(request_id, expected, PendingReplyKind::Ask)
+            self.remove_if_connection(request_id, expected, PendingReplyKind::Ask(publication))
         {
             Self::fail_pending_with_reason(&pending, ask_error);
             true
@@ -792,12 +865,14 @@ static REMOTE_VOID_REPLY_SENTINEL: u8 = 0;
 pub(crate) fn complete_remote_reply(
     conn_mgr: *const HewConnMgr,
     conn_id: c_int,
+    publication: u64,
     request_id: u64,
     payload: &[u8],
 ) -> bool {
     let expected = ConnectionKey::new(conn_mgr, conn_id);
-    reply_table_opt()
-        .is_some_and(|table| table.complete_from_connection(request_id, expected, payload.to_vec()))
+    reply_table_opt().is_some_and(|table| {
+        table.complete_from_connection(request_id, expected, publication, payload.to_vec())
+    })
 }
 
 pub(crate) fn complete_remote_setup_reply(
@@ -866,14 +941,20 @@ enum AskRejectionReasonCode {
     LocalShutdown = AskError::LocalShutdown as u8,
     HandlerTrapped = AskError::HandlerTrapped as u8,
     Refused = AskError::Refused as u8,
+    Unauthorized = AskError::Unauthorized as u8,
+    StaleRef = AskError::StaleRef as u8,
+    ConnectionDropped = AskError::ConnectionDropped as u8,
 }
 
 /// Errors returned by [`AskRejectionReasonCode::decode`].
 #[derive(Debug, PartialEq)]
 enum AskRejectionDecodeError {
+    InvalidLength,
     /// The payload's first byte is not a recognised rejection-reason code.
     /// Decoders MUST reject rather than silently substitute a default reason.
-    UnknownAskRejectionReason { code: u8 },
+    UnknownAskRejectionReason {
+        code: u8,
+    },
 }
 
 impl AskRejectionReasonCode {
@@ -892,14 +973,20 @@ impl AskRejectionReasonCode {
             AskError::LocalShutdown => Self::LocalShutdown,
             AskError::HandlerTrapped => Self::HandlerTrapped,
             AskError::Refused => Self::Refused,
+            AskError::Unauthorized => Self::Unauthorized,
+            AskError::StaleRef => Self::StaleRef,
+            AskError::ConnectionDropped => Self::ConnectionDropped,
             _ => return None,
         };
         Some(code as u8)
     }
 
     fn decode(reason_payload: &[u8]) -> Result<AskError, AskRejectionDecodeError> {
+        if reason_payload.len() != 1 {
+            return Err(AskRejectionDecodeError::InvalidLength);
+        }
         match reason_payload.first().copied() {
-            None => Ok(AskError::WorkerAtCapacity), // empty payload: legacy peer
+            None => unreachable!("one-byte rejection"),
             Some(x) if x == Self::Timeout as u8 => Ok(AskError::Timeout),
             Some(x) if x == Self::EncodeFailed as u8 => Ok(AskError::EncodeFailed),
             Some(x) if x == Self::SendFailed as u8 => Ok(AskError::SendFailed),
@@ -913,6 +1000,9 @@ impl AskRejectionReasonCode {
             Some(x) if x == Self::LocalShutdown as u8 => Ok(AskError::LocalShutdown),
             Some(x) if x == Self::HandlerTrapped as u8 => Ok(AskError::HandlerTrapped),
             Some(x) if x == Self::Refused as u8 => Ok(AskError::Refused),
+            Some(x) if x == Self::Unauthorized as u8 => Ok(AskError::Unauthorized),
+            Some(x) if x == Self::StaleRef as u8 => Ok(AskError::StaleRef),
+            Some(x) if x == Self::ConnectionDropped as u8 => Ok(AskError::ConnectionDropped),
             Some(code) => Err(AskRejectionDecodeError::UnknownAskRejectionReason { code }),
         }
     }
@@ -926,12 +1016,12 @@ fn decode_rejection_reason(reason_payload: &[u8]) -> Result<AskError, AskRejecti
 ///
 /// Called by the reader thread when a **rejection** reply envelope arrives
 /// (one with explicit [`crate::envelope::EnvelopeMessage::Rejected`] status).
-/// Empty payloads from older peers still default to `WorkerAtCapacity`.
 /// The rejection resolves the ask only when it arrives on the same
 /// `(conn_mgr, conn_id)` the ask was issued on (issue #2652, D12).
 pub(crate) fn fail_remote_reply(
     conn_mgr: *const HewConnMgr,
     conn_id: c_int,
+    publication: u64,
     request_id: u64,
     reason_payload: &[u8],
 ) -> bool {
@@ -940,8 +1030,9 @@ pub(crate) fn fail_remote_reply(
     match decode_rejection_reason(reason_payload) {
         Ok(reason) => {
             let expected = ConnectionKey::new(conn_mgr, conn_id);
-            reply_table_opt()
-                .is_some_and(|table| table.fail_from_connection(request_id, expected, reason))
+            reply_table_opt().is_some_and(|table| {
+                table.fail_from_connection(request_id, expected, publication, reason)
+            })
         }
         Err(_) => false,
     }
@@ -1573,9 +1664,6 @@ pub unsafe extern "C" fn hew_node_start(node: *mut HewNode) -> c_int {
         }
     });
 
-    // Start the profiler with distributed runtime context if HEW_PPROF is set.
-    crate::profiler::maybe_start_with_context(node.cluster, node.conn_mgr, node.routing_table);
-
     // Drive the SWIM failure detector: a periodic ticker that calls
     // hew_cluster_tick every protocol period, issuing PING/PING_REQ probes and
     // escalating ALIVE→SUSPECT→DEAD. Without it, failure detection is inert.
@@ -1661,9 +1749,6 @@ pub unsafe extern "C" fn hew_node_stop(node: *mut HewNode) -> c_int {
         // reactor's ticker-joined-before-free ordering).
         // SAFETY: node pointer is used only as the driver registry key.
         unsafe { crate::swim_driver::stop_swim_driver(ptr::from_mut(node)) };
-
-        // Shutdown profiler threads before freeing node resources they might access.
-        crate::profiler::shutdown();
 
         // Remove this node's published names from the local registry before the
         // cluster state is torn down. Remote nodes drop cached names when the
@@ -2071,6 +2156,10 @@ impl InboundRequest {
     }
 
     /// Start an owned request through the same non-blocking admission as local calls.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the decoded request retains its exact remote admission"
+    )]
     fn ask_start(
         self,
         token: crate::lifetime::local_handles::HewLocalPidId,
@@ -2079,6 +2168,7 @@ impl InboundRequest {
         caller: crate::actor_caller::HewCallerStamp,
         waker: &crate::wake::HewWaker,
         deadline: crate::request_deadline::RequestDeadline,
+        admission: service::RemoteAdmission,
     ) -> *mut crate::actor_call_native::HewActorCall {
         let (wrapper, size, drop) = (self.wrapper, self.size, self.drop);
         std::mem::forget(self);
@@ -2098,6 +2188,7 @@ impl InboundRequest {
                 None,
                 None,
                 caller,
+                Some(admission),
             )
         }
     }

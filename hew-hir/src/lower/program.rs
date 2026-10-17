@@ -196,7 +196,7 @@ pub fn lower_program_with_mono_cap(
     for name in hew_types::actor_delivery::DECLARATIONS
         .iter()
         .map(|known| known.path().trim_start_matches("std.builtins."))
-        .chain(SOURCE_PRELUDE_ENUMS.iter().copied())
+        .chain(SOURCE_PRELUDE_TYPES.iter().copied())
     {
         let canonical = format!("std.builtins.{name}");
         ctx.source_type_identities.insert(canonical.clone());
@@ -1489,15 +1489,6 @@ pub fn lower_program_with_mono_cap(
         }
     }
 
-    // Discovery-only layout universe (#2755): imported record/enum decls that
-    // the visibility guard below excludes from HIR-item emission (a module-
-    // private generic record behind a pub API). Collected under each owning
-    // module's context in §4b so their field types resolve correctly, then
-    // handed to `run_layout_mono_pass` so a `Vec<PrivateSlot<T>>` element
-    // reached through a substituted body gets its `RecordLayout` registered.
-    // These are NEVER pushed into `items` — no naming-surface leak.
-    let mut layout_universe_decls: Vec<HirItem> = Vec::new();
-
     // §4b — Imported-module type-decl + machine pre-pass.
     //
     // Mirror the root second pass above for `program.module_graph` non-root
@@ -1539,12 +1530,7 @@ pub fn lower_program_with_mono_cap(
                         .item_index(mod_id, item_idx)
                         .unwrap_or_default();
                     match item {
-                        Item::TypeDecl(decl)
-                            if decl.visibility.is_pub()
-                                || decl.kind == TypeDeclKind::Enum
-                                || (decl.kind == TypeDeclKind::Struct
-                                    && decl.type_params.is_none()) =>
-                        {
+                        Item::TypeDecl(decl) => {
                             let Some(hir_decl) =
                                 ctx.lower_imported_type_decl(decl, span.clone(), &source_module)
                             else {
@@ -1619,56 +1605,6 @@ pub fn lower_program_with_mono_cap(
                                 span,
                             );
                         }
-                        // #2755: a type-decl the emission guard above excluded
-                        // (a module-private generic struct — pub/enum/non-generic
-                        // structs are handled by the guarded arm) never becomes a
-                        // `HirItem`, so `run_layout_mono_pass` has no decl for it
-                        // and a `Vec<Slot<T>>` element behind a pub API fails
-                        // closed with a missing `RecordLayout`. Lower its shape
-                        // once under this module's context, then (a) register it
-                        // in `record_registry` (bare + qualified) so an imported
-                        // fn body lowered later keeps the concrete type args on a
-                        // `Slot { .. }` StructInit's `expr.ty` — without this the
-                        // args are dropped and MIR probes the bare `Slot` field
-                        // order — and (b) hand it to the discovery-only layout
-                        // universe. No `HirItem` is emitted: visibility still
-                        // governs NAMING (the checker's authority and the emit
-                        // guard are untouched), only ABI discovery is widened.
-                        Item::TypeDecl(decl) => {
-                            let Some(hir_decl) =
-                                ctx.lower_imported_type_decl(decl, span.clone(), &source_module)
-                            else {
-                                continue;
-                            };
-                            let entry_fields: Vec<(String, ResolvedTy)> = hir_decl
-                                .fields
-                                .iter()
-                                .map(|f| (f.name.clone(), f.ty.clone()))
-                                .collect();
-                            ctx.record_registry.insert(
-                                format!("{source_module}.{}", hir_decl.name),
-                                RecordEntry {
-                                    id: hir_decl.id,
-                                    type_params: hir_decl.type_params.clone(),
-                                    fields: entry_fields.clone(),
-                                },
-                            );
-                            ctx.record_registry
-                                .entry(hir_decl.name.clone())
-                                .or_insert_with(|| RecordEntry {
-                                    id: hir_decl.id,
-                                    type_params: hir_decl.type_params.clone(),
-                                    fields: entry_fields,
-                                });
-                            layout_universe_decls.push(HirItem::TypeDecl(hir_decl));
-                        }
-                        // A module-private record excluded from emission (the
-                        // emission arm admits only pub records) — same rationale.
-                        // No enum-variant/machine descriptors to cache for
-                        // these items in imported modules (§4b pre-pass). If
-                        // a new Item variant is added, the compiler will force
-                        // a conscious decision here. Item::Machine is handled
-                        // by the arm above; pub records are emitted elsewhere.
                         Item::Macro(_)
                         | Item::MacroCall(_)
                         | Item::Import(_)
@@ -1883,55 +1819,13 @@ pub fn lower_program_with_mono_cap(
     // Prelude declarations must precede lazy body checking, independently of
     // whether their executable methods are needed or have checked successfully.
     let actor_intercept_types = ctx.lower_actor_intercept_types();
-    let prelude_enums: Vec<_> = SOURCE_PRELUDE_ENUMS
-        .iter()
-        .copied()
-        .filter_map(|name| {
-            let builtins = builtin_declarations.as_ref()?;
-            let (source, span) = builtins.items.iter().find_map(|(item, span)| match item {
-                Item::TypeDecl(decl) if decl.name.name.as_str() == name => Some((decl, span)),
-                _ => None,
-            })?;
-            let canonical_name = format!("std.builtins.{name}");
-            let Some(declaration) = ctx.defs.lookup_path(&canonical_name) else {
-                ctx.unsupported(
-                    span.clone(),
-                    "prelude enum declaration identity",
-                    "checker-boundary",
-                );
-                return None;
-            };
-            let mut source = source.clone();
-            // The lowered declaration carries its canonical owner spelling.
-            source.name = Ident::new(&canonical_name);
-            let decl = ctx.lower_type_decl_with_identity(&source, span.clone(), declaration)?;
-            ctx.type_classes
-                .insert(canonical_name.clone(), (decl.marker, None));
-            ctx.type_member_tys.insert(
-                canonical_name.clone(),
-                decl.variants
-                    .iter()
-                    .flat_map(hew_hir_variant_field_tys)
-                    .collect(),
-            );
-            ctx.enum_variants_by_name
-                .insert(canonical_name.clone(), decl.variants.clone());
-            ctx.enum_type_params
-                .insert(canonical_name.clone(), decl.type_params.clone());
-            ctx.enum_item_ids.insert(canonical_name.clone(), decl.id);
-            for (index, variant) in decl.variants.iter().enumerate() {
-                ctx.machine_ctor_registry.insert(
-                    format!("{canonical_name}::{}", variant.name),
-                    (canonical_name.clone(), index),
-                );
-            }
-            Some(decl)
-        })
-        .collect();
-    let mut delivery_declarations = Vec::new();
+    let mut prelude_declarations = Vec::new();
     if let Some(builtins) = builtin_declarations.as_ref() {
-        for known in hew_types::actor_delivery::DECLARATIONS {
-            let name = known.path().trim_start_matches("std.builtins.");
+        for name in SOURCE_PRELUDE_TYPES.iter().copied().chain(
+            hew_types::actor_delivery::DECLARATIONS
+                .iter()
+                .map(|known| known.path().trim_start_matches("std.builtins.")),
+        ) {
             let Some((source, span)) = builtins.items.iter().find_map(|(item, span)| match item {
                 Item::TypeDecl(decl) if decl.name.name.as_str() == name => Some((decl, span)),
                 _ => None,
@@ -1942,7 +1836,7 @@ pub fn lower_program_with_mono_cap(
             let Some(declaration) = ctx.defs.lookup_path(&canonical_name) else {
                 ctx.unsupported(
                     span.clone(),
-                    "actor delivery declaration identity",
+                    "source prelude declaration identity",
                     "checker-boundary",
                 );
                 continue;
@@ -1990,7 +1884,7 @@ pub fn lower_program_with_mono_cap(
                     );
                 }
             }
-            delivery_declarations.push(decl);
+            prelude_declarations.push(decl);
         }
     }
     let mut items: Vec<HirItem> = Vec::new();
@@ -2262,7 +2156,7 @@ pub fn lower_program_with_mono_cap(
     // Pub TypeDecls are emitted here for the same reason: imported stdlib
     // record types must appear as `HirItem::TypeDecl` so that `hew-mir`'s layout
     // pass (which walks `module.items`) can populate `record_field_orders` and
-    // emit a `RecordLayout`. Without this, field accesses like `info.code` in
+    // emit a `RecordLayout`. Without this, field accesses like `info.kind` in
     // `#[on(crash)]` bodies fail at MIR time because the payload record layout
     // is absent from `record_field_orders`.
     if let Some(ref mg) = program.module_graph {
@@ -2405,12 +2299,7 @@ pub fn lower_program_with_mono_cap(
                                 items.push(HirItem::Function(lowered));
                             }
                         }
-                        Item::TypeDecl(decl)
-                            if decl.visibility.is_pub()
-                                || decl.kind == TypeDeclKind::Enum
-                                || (decl.kind == TypeDeclKind::Struct
-                                    && decl.type_params.is_none()) =>
-                        {
+                        Item::TypeDecl(decl) => {
                             if item_is_duplicated_in_preferred_module(
                                 program,
                                 &preferred_modules,
@@ -2424,9 +2313,7 @@ pub fn lower_program_with_mono_cap(
                             // shares the same `ItemId` already seeded into
                             // `enum_item_ids`. Re-lowering here would mint a
                             // fresh id and silently drift the registry's view
-                            // of the enum from the emitted decl. Non-enum
-                            // TypeDecls (records) were not cached above — fall
-                            // back to lowering them inline.
+                            // of the enum from the emitted decl.
                             let hir_decl = if let Some(hir_decl) =
                                 type_decl_cache.remove(&(decl as *const _))
                             {
@@ -2668,7 +2555,6 @@ pub fn lower_program_with_mono_cap(
                         | Item::MacroCall(_)
                         | Item::Import(_)
                         | Item::Function(_)
-                        | Item::TypeDecl(_)
                         | Item::TypeAlias(_)
                         | Item::Machine(_) => {}
                     }
@@ -2918,11 +2804,8 @@ pub fn lower_program_with_mono_cap(
             span: hew_parser::ast::Span::default(),
         }));
     }
-    items.extend(delivery_declarations.into_iter().map(HirItem::TypeDecl));
+    items.extend(prelude_declarations.into_iter().map(HirItem::TypeDecl));
     items.extend(actor_intercept_types.into_iter().map(HirItem::TypeDecl));
-    for decl in prelude_enums {
-        items.push(HirItem::TypeDecl(decl));
-    }
 
     // Monomorphic builtin enums (e.g. `LookupError`) intentionally do NOT
     // appear in `items` here. Their declarations live in
@@ -3018,7 +2901,6 @@ pub fn lower_program_with_mono_cap(
         crate::layout_mono::run_layout_mono_pass(
             &ctx.defs,
             &items,
-            &layout_universe_decls,
             &monomorphisations,
             &record_layouts,
             &enum_layouts,
@@ -3094,6 +2976,7 @@ pub fn lower_program_with_mono_cap(
     );
     admit_resource_record_lifecycles(
         &items,
+        ctx.display_facts.context(),
         &ctx.defs,
         &ctx.resource_close_discipline_failures,
         &mut ctx.type_classes,
@@ -3128,7 +3011,12 @@ pub fn lower_program_with_mono_cap(
     }
 }
 
-const SOURCE_PRELUDE_ENUMS: &[&str] = &["ScopeFailure", "NodeTransport"];
+const SOURCE_PRELUDE_TYPES: &[&str] = &[
+    "ScopeFailure",
+    "NodeTransport",
+    "MachineDisposition",
+    "MachineStepInfo",
+];
 
 pub(super) fn finalize_user_record_value_classes(
     record_registry: &HashMap<String, RecordEntry>,

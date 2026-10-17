@@ -1,0 +1,310 @@
+//! Bounded, lag-visible observation of an explicitly owned machine.
+//!
+//! Stepping calls the machine's ordinary evaluator. Subscribers independently
+//! read committed notices; outputs remain owned by the caller of `step`.
+
+import std.stream;
+
+pub type Snapshot<M> {
+    state: M;
+    revision: i64;
+}
+
+pub type Notice<M> {
+    state: M;
+    revision: i64;
+    transition: MachineStepInfo;
+}
+
+pub type Lag {
+    last_seen: i64;
+    available_from: i64;
+}
+
+pub enum SubscribeError {
+    Closed;
+    Limit;
+    Exhausted;
+}
+
+impl Display for SubscribeError {
+    fn fmt(self) -> string {
+        match self {
+            .Closed => "observation closed",
+            .Limit => "subscriber limit reached",
+            .Exhausted => "subscription identity exhausted",
+        }
+    }
+}
+
+impl Display for Lag {
+    fn fmt(self) -> string {
+        f"observation lagged after {self.last_seen}; available from {self.available_from}"
+    }
+}
+
+#[resource]
+pub type Owner<E, R> {
+    drive: fn[suspends](E) -> R;
+}
+
+impl<E, R> Owner<E, R> {
+    fn step(var self, event: E) -> R {
+        self.drive(event)
+    }
+    fn close(consume self) {}
+}
+
+pub type Feed<M> {
+    subscribe_to: fn[clone, suspends]() -> Result<Subscription<M>, SubscribeError>;
+}
+
+impl<M> Feed<M> {
+    fn subscribe(self) -> Result<Subscription<M>, SubscribeError> {
+        self.subscribe_to()
+    }
+}
+
+#[resource]
+pub type Subscription<M> {
+    snapshot: Snapshot<M>;
+    receive_notice: fn[suspends]() -> Result<Option<Notice<M>>, Lag>;
+}
+
+impl<M> Subscription<M> {
+    fn initial(self) -> Snapshot<M> {
+        self.snapshot
+    }
+    fn recv(self) -> Result<Option<Notice<M>>, Lag> {
+        self.receive_notice()
+    }
+    fn close(consume self) {}
+}
+
+type State<M> {
+    current: M;
+    revision: i64;
+    notices: Vec<Notice<M>>;
+}
+
+type Cursor {
+    id: i64;
+    last_seen: i64;
+    wake: stream.Sink<()>;
+}
+
+enum Read<M> {
+    Item(Notice<M>);
+    Pending;
+    End(bool);
+    Lagged(Lag, bool);
+}
+
+actor Core<M: Machine<Event = E, Step = R> + Send, E: Send, R: Send> {
+    var committed: State<M>;
+    var cursors: Vec<Cursor>;
+    var closed: bool;
+    var next_id: i64;
+    let capacity: i64;
+    let limit: i64;
+
+    receive fn step(event: E) -> Result<R, string> {
+        if closed {
+            return .Err("observed machine is closed");
+        }
+        if committed.revision == 9223372036854775807 {
+            return .Err("observed machine revision exhausted");
+        }
+        let result: Result<R, string> = scope {
+            var candidate = committed.current;
+            let report = candidate.step(event);
+            let notice = Notice { state: candidate, revision: committed.revision + 1, transition: candidate.step_info(report) };
+            var notices = committed.notices;
+            notices.push(notice);
+            if notices.len() > capacity {
+                let _old = notices.remove(0);
+            }
+            let replacement = State { current: candidate, revision: notice.revision, notices: notices };
+            // Readers awakened here queue behind this same actor turn.
+            for cursor in cursors {
+                let _ready = cursor.wake.try_send(());
+            }
+            committed = replacement;
+            Result.Ok(report)
+        } handle failure {
+            match failure {
+                .Fault { message } => Result.Err(message),
+                .Deadline { message } => Result.Err(message),
+            }
+        };
+        result
+    }
+
+    receive fn subscribe() -> Result<(Snapshot<M>, i64, stream.Stream<()>), SubscribeError> {
+        if closed {
+            return .Err(.Closed);
+        }
+        var i = 0;
+        while i < cursors.len() {
+            match cursors[i].wake.try_send(()) {
+                .Err(.Closed) => {
+                    let _gone = cursors.remove(i);
+                }
+                _ => {
+                    i = i + 1;
+                }
+            }
+        }
+        if cursors.len() >= limit {
+            return .Err(.Limit);
+        }
+        if next_id == 9223372036854775807 {
+            return .Err(.Exhausted);
+        }
+        let (wake, input): (stream.Sink<()>, stream.Stream<()>) = stream.pipe(1).expect("observation readiness");
+        let snapshot = Snapshot { state: committed.current, revision: committed.revision };
+        let id = next_id;
+        next_id = next_id + 1;
+        cursors.push(Cursor { id: id, last_seen: snapshot.revision, wake: wake });
+        .Ok((snapshot, id, input))
+    }
+
+    receive fn read(id: i64) -> Read<M> {
+        for i in 0..cursors.len() {
+            if cursors[i].id == id {
+                let seen = cursors[i].last_seen;
+                let available = if committed.notices.is_empty() {
+                    committed.revision + 1
+                } else {
+                    committed.notices[0].revision
+                };
+                if seen < available - 1 {
+                    let gone = cursors.remove(i);
+                    gone.wake.finish();
+                    return .Lagged(Lag { last_seen: seen, available_from: available }, closed && cursors.is_empty());
+                }
+                if seen < committed.revision {
+                    let notice = committed.notices[seen + 1 - available];
+                    var cursor = cursors.remove(i);
+                    cursor.last_seen = notice.revision;
+                    if notice.revision < committed.revision {
+                        let _ready = cursor.wake.try_send(());
+                    }
+                    cursors.push(cursor);
+                    return .Item(notice);
+                }
+                if closed {
+                    let gone = cursors.remove(i);
+                    gone.wake.finish();
+                    return .End(cursors.is_empty());
+                }
+                return .Pending;
+            }
+        }
+        .End(closed && cursors.is_empty())
+    }
+
+    receive fn detach(id: i64) -> bool {
+        for i in 0..cursors.len() {
+            if cursors[i].id == id {
+                let gone = cursors.remove(i);
+                gone.wake.finish();
+                break;
+            }
+        }
+        closed && cursors.is_empty()
+    }
+
+    receive fn finish() -> bool {
+        closed = true;
+        for cursor in cursors {
+            cursor.wake.finish();
+        }
+        cursors.is_empty()
+    }
+}
+
+#[resource]
+type Lifetime<M: Machine<Event = E, Step = R> + Send, E: Send, R: Send> {
+    core: Core<M, E, R>;
+}
+
+impl<M: Machine<Event = E, Step = R> + Send, E: Send, R: Send> Lifetime<M, E, R> {
+    fn close(consume self) {
+        match self.core.finish() {
+            .Ok(true) => stop(self.core),
+            _ => {}
+        }
+    }
+}
+
+#[resource]
+type Registration<M: Machine<Event = E, Step = R> + Send, E: Send, R: Send> {
+    core: Core<M, E, R>;
+    id: i64;
+    input: stream.Stream<()>;
+}
+
+impl<M: Machine<Event = E, Step = R> + Send, E: Send, R: Send> Registration<M, E, R> {
+    fn close(consume self) {
+        match self.core.detach(self.id) {
+            .Ok(true) => stop(self.core),
+            _ => {}
+        }
+    }
+}
+
+/// Create an independent observed copy, with bounded history and subscribers.
+pub fn observe<M: Machine + Send>(initial: M, capacity: i64, subscribers: i64) -> Result<(Owner<M.Event, M.Step>, Feed<M>), string> where M.Event: Send, M.Step: Send {
+    if capacity <= 0 || subscribers <= 0 {
+        return .Err("observation capacity and subscriber limit must be positive");
+    }
+    let core = spawn Core<M, M.Event, M.Step> { committed: State { current: initial, revision: 0, notices: [] }, cursors: [], closed: false, next_id: 0, capacity: capacity, limit: subscribers };
+    let life = Lifetime { core: core };
+    let drive = move |event: M.Event| -> M.Step {
+        life.core.step(event).expect("observation owner failed").expect("machine step failed")
+    };
+    let subscribe_to = || -> Result<Subscription<M>, SubscribeError> {
+        match core.subscribe() {
+            .Ok(.Ok(pair)) => {
+                let (snapshot, id, input) = pair;
+                let registration = Registration { core: core, id: id, input: input };
+                let receive_notice = move || -> Result<Option<Notice<M>>, Lag> {
+                    loop {
+                        // Cancellation can consume a wake without advancing the cursor.
+                        // Check committed history before parking again.
+                        match registration.core.read(registration.id) {
+                            .Ok(.Item(notice)) => return .Ok(.Some(notice)),
+                            .Ok(.Lagged(lag, finished)) => {
+                                if finished {
+                                    stop(registration.core);
+                                }
+                                return .Err(lag);
+                            }
+                            .Ok(.End(finished)) => {
+                                if finished {
+                                    stop(registration.core);
+                                }
+                                return .Ok(.None);
+                            }
+                            .Ok(.Pending) => {
+                                let _ready = registration.input.recv();
+                            }
+                            .Err(_) => {
+                                let ready = registration.input.recv();
+                                if ready.is_none() {
+                                    return .Ok(.None);
+                                }
+                                panic("observation owner failed");
+                            }
+                        }
+                    }
+                };
+                .Ok(Subscription { snapshot: snapshot, receive_notice: receive_notice })
+            }
+            .Ok(.Err(error)) => .Err(error),
+            .Err(_) => .Err(.Closed),
+        }
+    };
+    .Ok((Owner { drive: drive }, Feed { subscribe_to: subscribe_to }))
+}

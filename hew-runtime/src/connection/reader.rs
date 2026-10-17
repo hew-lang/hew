@@ -150,7 +150,7 @@ pub(super) fn reader_loop(
                 // the normal inbound router.
                 if envelope.request_id > 0 && envelope.target.is_none() && envelope.source.is_none()
                 {
-                    deposit_reply_envelope(mgr, conn_id, peer_feature_flags, &envelope);
+                    deposit_reply_envelope(mgr, conn_id, claim_token, &envelope);
                 } else {
                     let Some((authenticated, peer_identity)) =
                         authenticated_peer_identity(mgr, conn_id, claim_token, "envelope")
@@ -192,10 +192,15 @@ pub(super) fn reader_loop(
                         );
                         continue;
                     }
-                    let crate::envelope::EnvelopeMessage::Handler(identity) = &envelope.message
-                    else {
-                        set_last_error("request envelope has reply status");
-                        continue;
+                    let (identity, grant) = match &envelope.message {
+                        crate::envelope::EnvelopeMessage::Handler(identity) => (identity, 0),
+                        crate::envelope::EnvelopeMessage::Service { handler, grant_id } => {
+                            (handler, *grant_id)
+                        }
+                        _ => {
+                            set_last_error("request envelope has reply status");
+                            continue;
+                        }
                     };
                     let identity = std::ffi::CString::new(identity.as_str())
                         .expect("decoded wire identity excludes NUL");
@@ -224,6 +229,7 @@ pub(super) fn reader_loop(
                             mgr,
                             peer_identity.node_id.into(),
                             claim_token,
+                            grant,
                             deadline.raw(),
                         );
                     }

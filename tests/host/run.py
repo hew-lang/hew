@@ -60,6 +60,7 @@ def main():
     root = Path(__file__).resolve().parents[2]
     config_source = root / "tests/host/config_policy.hew"
     regex_source = root / "tests/host/regex_policy.hew"
+    component_source = root / "tests/host/copy_component.hew"
     output = args.out_dir.resolve()
     output.mkdir(parents=True, exist_ok=True)
     env = os.environ.copy()
@@ -73,10 +74,34 @@ def main():
         directory = output / f"o{opt}"
         directory.mkdir(exist_ok=True)
         objects = []
-        for stem, source, selection in (
-            ("config_policy", config_source, "normalize_label=config_normalize_label"),
-            ("take_policy", config_source, "take_label=config_take_label"),
-            ("regex_policy", regex_source, "classify_text=config_classify_text"),
+        for stem, source, selections in (
+            (
+                "config_policy",
+                config_source,
+                ["normalize_label=config_normalize_label"],
+            ),
+            ("take_policy", config_source, ["take_label=config_take_label"]),
+            ("regex_policy", regex_source, ["classify_text=config_classify_text"]),
+            (
+                "copy_component",
+                component_source,
+                [
+                    f"{name}=orders_{name}"
+                    for name in (
+                        "open_input",
+                        "open_output",
+                        "create",
+                        "run",
+                        "shutdown",
+                        "create_failed",
+                        "faulting_owner",
+                        "add",
+                        "invert",
+                        "abandon_faulting",
+                        "unit_echo",
+                    )
+                ],
+            ),
         ):
             obj = directory / f"{stem}.o"
             run(
@@ -86,8 +111,13 @@ def main():
                     source,
                     "--emit-obj",
                     "--emit-llvm",
-                    "--export-c",
-                    selection,
+                    *[
+                        argument
+                        for selection in selections
+                        for argument in ("--export-c", selection)
+                    ],
+                    "--pkg-path",
+                    root / "tests/core-acceptance/fixtures/construction-capabilities",
                     "--opt-level",
                     opt,
                     "-o",
@@ -133,7 +163,25 @@ def main():
                     executable,
                 ]
             )
-            result = run([executable], env=env)
+            supplied = directory / ("supplied-c" if language == "c" else "supplied-cpp")
+            for child in ("input", "output", "missing"):
+                (supplied / child).mkdir(parents=True, exist_ok=True)
+            (supplied / "input/orders.csv").write_text("order-41")
+            marker = supplied / "close-marker"
+            result = run(
+                [
+                    executable,
+                    supplied / "input",
+                    supplied / "output",
+                    supplied / "missing",
+                    marker,
+                ],
+                env=env,
+            )
+            if (
+                supplied / "output/receipt.csv"
+            ).read_text() != "receipt:order-41" or marker.read_text() != "closed once":
+                raise RuntimeError("host component copy/release result differs")
             if (
                 result.stdout.replace(b"\r\n", b"\n")
                 != b"host client: compiled Hew, independent values and owned errors OK\n"

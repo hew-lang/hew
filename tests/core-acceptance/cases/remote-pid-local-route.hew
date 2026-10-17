@@ -4,7 +4,8 @@
 // two-process fixture covers a linked crash, whose report names actor ids.
 import std.os;
 
-import std.link_monitor.{DownNotification, DownReason, DownTarget, MonitorRef, PartitionPolicy,};
+import std.failure.{DownTarget};
+import std.link_monitor.{DownNotification, DownReason, MonitorRef, PartitionPolicy,};
 
 extern "C" {
     fn hew_actor_self_stop();

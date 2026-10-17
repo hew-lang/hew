@@ -16,6 +16,11 @@ mod coverage;
 mod host_admission;
 pub use coverage::{SourceCoverageCounter, SourceCoverageMap};
 mod host;
+mod source_paths;
+pub use source_paths::{
+    display_source_path, register_source_path, source_path_policy, SourcePathPolicy,
+    SourcePathScope,
+};
 
 /// Source entries checked against their host-operation admission profile.
 /// Each deterministic test is checked separately from its real-time siblings.

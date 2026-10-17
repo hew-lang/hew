@@ -183,6 +183,54 @@ fn return_widening(function: FunctionValue<'_>) -> Option<Widen> {
     })
 }
 
+/// Realize stored Hew booleans at a declared C call boundary. Other scalar
+/// carriers already have their ABI widths; an arbitrary integer is not a bool.
+pub(super) fn emit_call<'ctx>(
+    builder: &Builder<'ctx>,
+    function: FunctionValue<'ctx>,
+    arguments: &[BasicMetadataValueEnum<'ctx>],
+    name: &str,
+) -> CodegenResult<CallSiteValue<'ctx>> {
+    let mut arguments = arguments.to_vec();
+    if function.count_basic_blocks() == 0 && function.get_intrinsic_id() == 0 {
+        for (parameter, argument) in function
+            .get_type()
+            .get_param_types()
+            .iter()
+            .zip(&mut arguments)
+        {
+            let BasicMetadataTypeEnum::IntType(parameter) = parameter else {
+                continue;
+            };
+            if parameter.get_bit_width() != 1 {
+                continue;
+            }
+            let BasicMetadataValueEnum::IntValue(value) = *argument else {
+                return Err(CodegenError::FailClosed(
+                    "C bool argument lacks an integer carrier".into(),
+                ));
+            };
+            match value.get_type().get_bit_width() {
+                1 => {}
+                8 => {
+                    *argument = builder
+                        .build_int_truncate(value, *parameter, "c.bool")
+                        .llvm_ctx("convert stored bool to C bool")?
+                        .into();
+                }
+                _ => {
+                    return Err(CodegenError::FailClosed(
+                        "C bool argument is not a stored Hew bool".into(),
+                    ))
+                }
+            }
+        }
+    }
+    builder
+        .build_call(function, &arguments, name)
+        .llvm_ctx("emit physical runtime call")
+}
+
 /// Check every function against the narrow-scalar contract and mirror each
 /// declaration's widening onto its direct call sites.
 ///
@@ -381,9 +429,20 @@ mod tests {
         let caller = module.add_function("caller", ctx.void_type().fn_type(&[], false), None);
         let builder = ctx.create_builder();
         builder.position_at_end(ctx.append_basic_block(caller, "entry"));
-        let call = builder
-            .build_call(callee, &[ctx.bool_type().const_int(1, false).into()], "")
-            .expect("call");
+        assert!(error(emit_call(
+            &builder,
+            callee,
+            &[ctx.i64_type().const_int(1, false).into()],
+            ""
+        ))
+        .contains("not a stored Hew bool"));
+        let call = emit_call(
+            &builder,
+            callee,
+            &[ctx.i8_type().const_int(1, false).into()],
+            "",
+        )
+        .expect("stored bool call");
         let slot = builder.build_alloca(ctx.i64_type(), "slot").expect("slot");
         builder
             .build_call(
@@ -399,6 +458,9 @@ mod tests {
             .expect("memset");
         builder.build_return(None).expect("return");
         seal_c_scalar_widening(&module).expect("seal");
+        module
+            .verify()
+            .expect("the bool argument has its declared ABI width");
         assert!(call
             .get_enum_attribute(AttributeLoc::Param(0), Widen::Zero.kind_id())
             .is_some());

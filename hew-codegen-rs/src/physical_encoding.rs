@@ -2,7 +2,7 @@
 
 use super::*;
 use hew_mir::physical::PhysicalExternResultAbi;
-use hew_types::{RuntimeCReturn, RuntimeCallFamily, RuntimeResultEffect};
+use hew_types::{RuntimeCReturn, RuntimeCallFamily};
 use inkwell::attributes::{Attribute, AttributeLoc};
 use inkwell::types::AnyType;
 
@@ -15,10 +15,10 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
     ) -> CodegenResult<()> {
         let transfers: &[ArgumentTransfer] = arguments;
         let row = family.row();
-        let contract = row.contract.ok_or_else(|| {
+        row.contract.ok_or_else(|| {
             CodegenError::FailClosed("runtime operation lacks its semantic contract".into())
         })?;
-        let updated_receiver = matches!(contract.result, RuntimeResultEffect::UpdatedReceiver(_));
+        let in_place = row.c_return == RuntimeCReturn::ReceiverInPlace;
         // Load moved owners before clearing their logical source storage.
         // File validity and error-presence Booleans use their audited C widths;
         // other scalar and handle carriers agree with physical storage.
@@ -29,9 +29,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 self.emit_physical_argument(transfer, *carrier, "runtime.argument")
             })
             .collect::<CodegenResult<Vec<_>>>()?;
-        if let (RuntimeCReturn::Storage, false, Some(result)) =
-            (row.c_return, updated_receiver, result)
-        {
+        if let (RuntimeCReturn::Storage, false, Some(result)) = (row.c_return, in_place, result) {
             // A C struct result travels by the target's C convention (x8 sret
             // on AAPCS64 for a 32-byte `HewLocation`), which a first-class
             // LLVM aggregate return does not follow.
@@ -47,7 +45,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .map(|value| value.get_type().into())
             .collect::<Vec<_>>();
         let return_type = result
-            .filter(|_| !updated_receiver)
+            .filter(|_| !in_place)
             .map(|id| llvm_type(self.ctx, &self.storage(id)?.layout.repr))
             .transpose()?;
         // A runtime entry that answers a question returns a C truth of its own
@@ -58,6 +56,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             RuntimeCReturn::TruthI32 => Some(self.ctx.i32_type().into()),
             RuntimeCReturn::TruthBool => Some(self.ctx.bool_type().into()),
             RuntimeCReturn::Storage => return_type,
+            RuntimeCReturn::ReceiverInPlace => None,
         };
         let signature = abi_return.map_or_else(
             || self.ctx.void_type().fn_type(&parameters, false),
@@ -80,6 +79,11 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             let destination = result.expect("value-returning runtime operation");
             let value = match truth {
                 RuntimeCReturn::Storage => value,
+                RuntimeCReturn::ReceiverInPlace => {
+                    return Err(CodegenError::FailClosed(
+                        "in-place C mutation unexpectedly returns a value".into(),
+                    ))
+                }
                 RuntimeCReturn::TruthI32 | RuntimeCReturn::TruthBool => {
                     let bit = if truth == RuntimeCReturn::TruthI32 {
                         self.builder
@@ -104,7 +108,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             self.store(destination, value)?;
         } else {
             self.runtime_call_void(function, &arguments, "runtime.operation")?;
-            if updated_receiver {
+            if in_place {
                 // ObjectSet/ArrayPush consume the child and mutate the receiver
                 // through a C-void call. The same receiver remains the result owner.
                 self.store(

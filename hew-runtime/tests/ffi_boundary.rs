@@ -36,12 +36,11 @@ use hew_runtime::mailbox::{
     hew_msg_node_free,
 };
 use hew_runtime::string::{
-    hew_bool_to_string, hew_float_to_string, hew_int_to_string, hew_string_byte_length,
-    hew_string_char_at, hew_string_char_at_utf8, hew_string_char_count, hew_string_clone,
-    hew_string_concat, hew_string_contains, hew_string_drop, hew_string_ends_with,
-    hew_string_equals, hew_string_find, hew_string_from_char, hew_string_is_ascii,
-    hew_string_length, hew_string_repeat, hew_string_replace, hew_string_reverse_utf8,
-    hew_string_slice, hew_string_split, hew_string_starts_with, hew_string_substring_utf8,
+    hew_bool_to_string, hew_char_to_string, hew_float_to_string, hew_int_to_string,
+    hew_string_byte_length, hew_string_clone, hew_string_concat, hew_string_contains,
+    hew_string_drop, hew_string_ends_with, hew_string_equals, hew_string_find, hew_string_get,
+    hew_string_get_range, hew_string_is_ascii, hew_string_length, hew_string_repeat,
+    hew_string_replace, hew_string_slice_codepoints, hew_string_split, hew_string_starts_with,
     hew_string_to_bytes, hew_string_to_int, hew_string_to_lowercase, hew_string_to_uppercase,
     hew_string_trim,
 };
@@ -382,17 +381,17 @@ fn string_equals() {
 fn string_slice() {
     unsafe {
         let s = cstr("hello world");
-        let sliced = hew_string_slice(s.as_ptr(), 6, 11);
+        let sliced = hew_string_slice_codepoints(s.as_ptr(), 6, 11);
         assert_eq!(read_cstr(sliced), "world");
         free_hew_string(sliced);
 
-        // Clamped: start < 0, end > len.
-        let full = hew_string_slice(s.as_ptr(), -5, 999);
-        assert_eq!(read_cstr(full), "hello world");
-        free_hew_string(full);
+        // Invalid ranges are absent, never clamped.
+        assert!(hew_string_get_range(s.as_ptr(), -5, 999, false, false).is_null());
+        assert!(hew_string_get_range(ptr::null(), 0, 5, false, false).is_null());
 
-        // Null input → empty string.
-        let empty = hew_string_slice(ptr::null(), 0, 5);
+        // A valid empty range remains distinguishable from absence at the ABI.
+        let empty = hew_string_get_range(ptr::null(), 0, 0, false, false);
+        assert!(!empty.is_null());
         assert_eq!(read_cstr(empty), "");
         free_hew_string(empty);
     }
@@ -1529,9 +1528,9 @@ mod string_extended {
     fn char_at_valid() {
         unsafe {
             let s = cstr("abc");
-            assert_eq!(hew_string_char_at(s.as_ptr(), 0), i32::from(b'a'));
-            assert_eq!(hew_string_char_at(s.as_ptr(), 1), i32::from(b'b'));
-            assert_eq!(hew_string_char_at(s.as_ptr(), 2), i32::from(b'c'));
+            assert_eq!(hew_string_get(s.as_ptr(), 0), i32::from(b'a'));
+            assert_eq!(hew_string_get(s.as_ptr(), 1), i32::from(b'b'));
+            assert_eq!(hew_string_get(s.as_ptr(), 2), i32::from(b'c'));
         }
     }
 
@@ -1539,16 +1538,16 @@ mod string_extended {
     fn char_at_oob() {
         unsafe {
             let s = cstr("ab");
-            assert_eq!(hew_string_char_at(s.as_ptr(), 2), -1);
-            assert_eq!(hew_string_char_at(s.as_ptr(), -1), -1);
-            assert_eq!(hew_string_char_at(ptr::null(), 0), -1);
+            assert_eq!(hew_string_get(s.as_ptr(), 2), -1);
+            assert_eq!(hew_string_get(s.as_ptr(), -1), -1);
+            assert_eq!(hew_string_get(ptr::null(), 0), -1);
         }
     }
 
     #[test]
-    fn from_char() {
+    fn char_to_string() {
         unsafe {
-            let r = hew_string_from_char(i32::from(b'Z'));
+            let r = hew_char_to_string(i32::from(b'Z'));
             assert_eq!(read_cstr(r), "Z");
             free_hew_string(r);
         }
@@ -2166,19 +2165,19 @@ mod iter_tests {
 mod utf8_string_tests {
     use super::*;
 
-    // --- hew_string_char_count ---
+    // --- hew_string_length ---
 
     #[test]
     fn char_count_ascii() {
         let s = cstr("hello");
-        assert_eq!(unsafe { hew_string_char_count(s.as_ptr()) }, 5);
+        assert_eq!(unsafe { hew_string_length(s.as_ptr()) }, 5);
     }
 
     #[test]
     fn char_count_multibyte() {
         // "héllo" — é is 2 bytes, so 5 codepoints, 6 bytes
         let s = cstr("héllo");
-        assert_eq!(unsafe { hew_string_char_count(s.as_ptr()) }, 5);
+        assert_eq!(unsafe { hew_string_length(s.as_ptr()) }, 5);
         assert_eq!(unsafe { hew_string_byte_length(s.as_ptr()) }, 6);
     }
 
@@ -2186,7 +2185,7 @@ mod utf8_string_tests {
     fn char_count_cjk() {
         // "日本語" — 3 codepoints, 9 bytes
         let s = cstr("日本語");
-        assert_eq!(unsafe { hew_string_char_count(s.as_ptr()) }, 3);
+        assert_eq!(unsafe { hew_string_length(s.as_ptr()) }, 3);
         assert_eq!(unsafe { hew_string_byte_length(s.as_ptr()) }, 9);
     }
 
@@ -2194,19 +2193,19 @@ mod utf8_string_tests {
     fn char_count_emoji() {
         // "🦀" — 1 codepoint, 4 bytes
         let s = cstr("🦀");
-        assert_eq!(unsafe { hew_string_char_count(s.as_ptr()) }, 1);
+        assert_eq!(unsafe { hew_string_length(s.as_ptr()) }, 1);
         assert_eq!(unsafe { hew_string_byte_length(s.as_ptr()) }, 4);
     }
 
     #[test]
     fn char_count_empty() {
         let s = cstr("");
-        assert_eq!(unsafe { hew_string_char_count(s.as_ptr()) }, 0);
+        assert_eq!(unsafe { hew_string_length(s.as_ptr()) }, 0);
     }
 
     #[test]
     fn char_count_null() {
-        assert_eq!(unsafe { hew_string_char_count(ptr::null()) }, 0);
+        assert_eq!(unsafe { hew_string_length(ptr::null()) }, 0);
     }
 
     // --- hew_string_byte_length ---
@@ -2263,167 +2262,48 @@ mod utf8_string_tests {
         assert_eq!(unsafe { hew_string_is_ascii(s.as_ptr()) }, 1);
     }
 
-    // --- hew_string_char_at_utf8 ---
+    // --- hew_string_get ---
 
     #[test]
     fn char_at_utf8_ascii() {
         let s = cstr("hello");
-        assert_eq!(
-            unsafe { hew_string_char_at_utf8(s.as_ptr(), 0) },
-            'h' as i32
-        );
-        assert_eq!(
-            unsafe { hew_string_char_at_utf8(s.as_ptr(), 4) },
-            'o' as i32
-        );
+        assert_eq!(unsafe { hew_string_get(s.as_ptr(), 0) }, 'h' as i32);
+        assert_eq!(unsafe { hew_string_get(s.as_ptr(), 4) }, 'o' as i32);
     }
 
     #[test]
     fn char_at_utf8_multibyte() {
         // "héllo" — codepoint index 1 is 'é'
         let s = cstr("héllo");
-        assert_eq!(
-            unsafe { hew_string_char_at_utf8(s.as_ptr(), 0) },
-            'h' as i32
-        );
-        assert_eq!(
-            unsafe { hew_string_char_at_utf8(s.as_ptr(), 1) },
-            'é' as i32
-        );
-        assert_eq!(
-            unsafe { hew_string_char_at_utf8(s.as_ptr(), 2) },
-            'l' as i32
-        );
+        assert_eq!(unsafe { hew_string_get(s.as_ptr(), 0) }, 'h' as i32);
+        assert_eq!(unsafe { hew_string_get(s.as_ptr(), 1) }, 'é' as i32);
+        assert_eq!(unsafe { hew_string_get(s.as_ptr(), 2) }, 'l' as i32);
     }
 
     #[test]
     fn char_at_utf8_cjk() {
         let s = cstr("日本語");
-        assert_eq!(
-            unsafe { hew_string_char_at_utf8(s.as_ptr(), 0) },
-            '日' as i32
-        );
-        assert_eq!(
-            unsafe { hew_string_char_at_utf8(s.as_ptr(), 1) },
-            '本' as i32
-        );
-        assert_eq!(
-            unsafe { hew_string_char_at_utf8(s.as_ptr(), 2) },
-            '語' as i32
-        );
+        assert_eq!(unsafe { hew_string_get(s.as_ptr(), 0) }, '日' as i32);
+        assert_eq!(unsafe { hew_string_get(s.as_ptr(), 1) }, '本' as i32);
+        assert_eq!(unsafe { hew_string_get(s.as_ptr(), 2) }, '語' as i32);
     }
 
     #[test]
     fn char_at_utf8_emoji() {
         let s = cstr("🦀");
-        assert_eq!(
-            unsafe { hew_string_char_at_utf8(s.as_ptr(), 0) },
-            '🦀' as i32
-        );
+        assert_eq!(unsafe { hew_string_get(s.as_ptr(), 0) }, '🦀' as i32);
     }
 
     #[test]
     fn char_at_utf8_out_of_bounds() {
         let s = cstr("hi");
-        assert_eq!(unsafe { hew_string_char_at_utf8(s.as_ptr(), 2) }, -1);
-        assert_eq!(unsafe { hew_string_char_at_utf8(s.as_ptr(), -1) }, -1);
+        assert_eq!(unsafe { hew_string_get(s.as_ptr(), 2) }, -1);
+        assert_eq!(unsafe { hew_string_get(s.as_ptr(), -1) }, -1);
     }
 
     #[test]
     fn char_at_utf8_null() {
-        assert_eq!(unsafe { hew_string_char_at_utf8(ptr::null(), 0) }, -1);
-    }
-
-    // --- hew_string_substring_utf8 ---
-
-    #[test]
-    fn substring_utf8_ascii() {
-        let s = cstr("hello world");
-        let result = unsafe { hew_string_substring_utf8(s.as_ptr(), 0, 5) };
-        assert!(!result.is_null());
-        let rs = unsafe { read_cstr(result) };
-        assert_eq!(rs, "hello");
-        unsafe { free_hew_string(result) };
-    }
-
-    #[test]
-    fn substring_utf8_multibyte() {
-        // "héllo" — take codepoints [1, 4) = "éll"
-        let s = cstr("héllo");
-        let result = unsafe { hew_string_substring_utf8(s.as_ptr(), 1, 4) };
-        assert!(!result.is_null());
-        let rs = unsafe { read_cstr(result) };
-        assert_eq!(rs, "éll");
-        unsafe { free_hew_string(result) };
-    }
-
-    #[test]
-    fn substring_utf8_cjk() {
-        let s = cstr("日本語");
-        let result = unsafe { hew_string_substring_utf8(s.as_ptr(), 1, 3) };
-        assert!(!result.is_null());
-        let rs = unsafe { read_cstr(result) };
-        assert_eq!(rs, "本語");
-        unsafe { free_hew_string(result) };
-    }
-
-    #[test]
-    fn substring_utf8_invalid_range() {
-        let s = cstr("hello");
-        assert!(unsafe { hew_string_substring_utf8(s.as_ptr(), 3, 1) }.is_null());
-        assert!(unsafe { hew_string_substring_utf8(s.as_ptr(), -1, 3) }.is_null());
-    }
-
-    #[test]
-    fn substring_utf8_null() {
-        assert!(unsafe { hew_string_substring_utf8(ptr::null(), 0, 1) }.is_null());
-    }
-
-    // --- hew_string_reverse_utf8 ---
-
-    #[test]
-    fn reverse_utf8_ascii() {
-        let s = cstr("hello");
-        let result = unsafe { hew_string_reverse_utf8(s.as_ptr()) };
-        assert!(!result.is_null());
-        let rs = unsafe { read_cstr(result) };
-        assert_eq!(rs, "olleh");
-        unsafe { free_hew_string(result) };
-    }
-
-    #[test]
-    fn reverse_utf8_multibyte() {
-        let s = cstr("héllo");
-        let result = unsafe { hew_string_reverse_utf8(s.as_ptr()) };
-        assert!(!result.is_null());
-        let rs = unsafe { read_cstr(result) };
-        assert_eq!(rs, "olléh");
-        unsafe { free_hew_string(result) };
-    }
-
-    #[test]
-    fn reverse_utf8_cjk() {
-        let s = cstr("日本語");
-        let result = unsafe { hew_string_reverse_utf8(s.as_ptr()) };
-        assert!(!result.is_null());
-        let rs = unsafe { read_cstr(result) };
-        assert_eq!(rs, "語本日");
-        unsafe { free_hew_string(result) };
-    }
-
-    #[test]
-    fn reverse_utf8_emoji() {
-        let s = cstr("a🦀b");
-        let result = unsafe { hew_string_reverse_utf8(s.as_ptr()) };
-        assert!(!result.is_null());
-        let rs = unsafe { read_cstr(result) };
-        assert_eq!(rs, "b🦀a");
-        unsafe { free_hew_string(result) };
-    }
-
-    #[test]
-    fn reverse_utf8_null() {
-        assert!(unsafe { hew_string_reverse_utf8(ptr::null()) }.is_null());
+        assert_eq!(unsafe { hew_string_get(ptr::null(), 0) }, -1);
     }
 
     // --- hew_string_to_bytes ---
@@ -3211,7 +3091,6 @@ mod rest_for_one_tests {
                     sys_dispatch: None,
                     arena_cap_bytes: 0,
                     cycle_capable: 0,
-                    on_crash: None,
                     lifecycle_fn: None,
                     init_fn: None,
                     config: std::ptr::null_mut(),
@@ -3385,7 +3264,6 @@ mod supervisor_escalation_tests {
             sys_dispatch: None,
             arena_cap_bytes: 0,
             cycle_capable: 0,
-            on_crash: None,
             lifecycle_fn: None,
             init_fn: None,
             config: std::ptr::null_mut(),
@@ -3443,7 +3321,6 @@ mod supervisor_escalation_tests {
                 sys_dispatch: None,
                 arena_cap_bytes: 0,
                 cycle_capable: 0,
-                on_crash: None,
                 lifecycle_fn: None,
                 init_fn: None,
                 config: std::ptr::null_mut(),
@@ -3528,7 +3405,6 @@ mod supervisor_escalation_tests {
                 sys_dispatch: None,
                 arena_cap_bytes: 0,
                 cycle_capable: 0,
-                on_crash: None,
                 lifecycle_fn: None,
                 init_fn: None,
                 config: std::ptr::null_mut(),
@@ -3645,7 +3521,6 @@ mod supervisor_escalation_tests {
                 sys_dispatch: None,
                 arena_cap_bytes: 0,
                 cycle_capable: 0,
-                on_crash: None,
                 lifecycle_fn: None,
                 init_fn: None,
                 config: std::ptr::null_mut(),
@@ -3824,7 +3699,6 @@ mod circuit_breaker_tests {
                 sys_dispatch: None,
                 arena_cap_bytes: 0,
                 cycle_capable: 0,
-                on_crash: None,
                 lifecycle_fn: None,
                 init_fn: None,
                 config: std::ptr::null_mut(),
@@ -3916,7 +3790,6 @@ mod dynamic_supervision_tests {
                 sys_dispatch: None,
                 arena_cap_bytes: 0,
                 cycle_capable: 0,
-                on_crash: None,
                 lifecycle_fn: None,
                 init_fn: None,
                 config: std::ptr::null_mut(),
@@ -3956,7 +3829,6 @@ mod dynamic_supervision_tests {
                 sys_dispatch: None,
                 arena_cap_bytes: 0,
                 cycle_capable: 0,
-                on_crash: None,
                 lifecycle_fn: None,
                 init_fn: None,
                 config: std::ptr::null_mut(),
@@ -4011,7 +3883,6 @@ mod dynamic_supervision_tests {
                 sys_dispatch: None,
                 arena_cap_bytes: 0,
                 cycle_capable: 0,
-                on_crash: None,
                 lifecycle_fn: None,
                 init_fn: None,
                 config: std::ptr::null_mut(),
@@ -4050,7 +3921,6 @@ mod dynamic_supervision_tests {
                 sys_dispatch: None,
                 arena_cap_bytes: 0,
                 cycle_capable: 0,
-                on_crash: None,
                 lifecycle_fn: None,
                 init_fn: None,
                 config: std::ptr::null_mut(),

@@ -85,6 +85,25 @@ pub(crate) fn verify_operation_storage(
                 _ => return Err(PhysicalError::new("race result layout disagrees")),
             }
         }
+        PhysicalOp::TaskInvoke {
+            callee,
+            args,
+            dest,
+            output,
+            ..
+        } => {
+            let ret = callable::verify_prepared_call(module, function, callee, args)?;
+            if storage(function, *dest)?.ty != ResolvedTy::Task(Box::new(ret.clone())) {
+                return Err(PhysicalError::new(
+                    "prepared call disagrees with its callable result",
+                ));
+            }
+            match output {
+                Some(output) if output.ty == ret => verify_value_recipe(module, output)?,
+                None if ret == ResolvedTy::Never => {}
+                _ => return Err(PhysicalError::new("prepared call result recipe differs")),
+            }
+        }
         PhysicalOp::TaskSpawn {
             callable,
             dest,
@@ -369,11 +388,7 @@ pub(crate) fn verify_whole_value_borrow(
 ) -> Result<(), PhysicalError> {
     require_same_storage_type(function, dest, source, "physical borrow")?;
     let ty = &storage(function, source)?.ty;
-    if OwnKind::of_class(semantic_type_facts(module, ty)?.class) != OwnKind::Owned {
-        return Err(PhysicalError::new(
-            "physical borrow requires an owning value",
-        ));
-    }
+    semantic_type_facts(module, ty)?;
     verify_borrow_dependency(function, dest, source)
 }
 
@@ -1001,6 +1016,17 @@ pub(crate) fn apply_operation(
             }
             define(function, borrows, state, *dest, block, "race handle")?;
         }
+        PhysicalOp::TaskInvoke {
+            callee, args, dest, ..
+        } => {
+            let transfers: Vec<_> = callee
+                .receiver()
+                .into_iter()
+                .chain(args.iter().copied())
+                .collect();
+            apply_argument_transfers(function, borrows, &transfers, state, block)?;
+            define(function, borrows, state, *dest, block, "prepared call task")?;
+        }
         PhysicalOp::GeneratorMake { callable, dest, .. }
         | PhysicalOp::TaskSpawn { callable, dest, .. } => {
             initialized(function, state, *callable, block, "task callable")?;
@@ -1357,6 +1383,41 @@ pub(crate) fn call_successors(
     )
 }
 
+fn apply_argument_transfers(
+    function: &PhysicalFunction,
+    borrows: &BorrowDependents,
+    args: &[ArgumentTransfer],
+    state: &mut FlowState,
+    block: BlockId,
+) -> Result<(), PhysicalError> {
+    for argument in args {
+        let (source, moves) = match argument {
+            ArgumentTransfer::Borrow(source)
+            | ArgumentTransfer::BorrowMut(source)
+            | ArgumentTransfer::Clone { source, .. } => (*source, false),
+            ArgumentTransfer::Move(source) => (*source, true),
+        };
+        if matches!(argument, ArgumentTransfer::BorrowMut(_)) {
+            require_no_live_borrows(function, borrows, state, source)?;
+        }
+        initialized(function, state, source, block, "call argument")?;
+        if storage(function, source)?.own == OwnKind::Guaranteed
+            && !matches!(
+                argument,
+                ArgumentTransfer::Borrow(_) | ArgumentTransfer::BorrowMut(_)
+            )
+        {
+            return Err(PhysicalError::new(
+                "physical guaranteed call argument must use its borrow contract",
+            ));
+        }
+        if moves {
+            consume_if_owned(function, borrows, state, source)?;
+        }
+    }
+    Ok(())
+}
+
 /// A `var self` call's unwind edge also defines the receiver its failing
 /// callee handed back.
 #[allow(
@@ -1380,31 +1441,7 @@ pub(crate) fn call_successors_with_handback(
             block.0
         )));
     }
-    for argument in args {
-        let (source, moves) = match argument {
-            ArgumentTransfer::Borrow(source)
-            | ArgumentTransfer::BorrowMut(source)
-            | ArgumentTransfer::Clone { source, .. } => (*source, false),
-            ArgumentTransfer::Move(source) => (*source, true),
-        };
-        if matches!(argument, ArgumentTransfer::BorrowMut(_)) {
-            require_no_live_borrows(function, borrows, &state, source)?;
-        }
-        initialized(function, &state, source, block, "call argument")?;
-        if storage(function, source)?.own == OwnKind::Guaranteed
-            && !matches!(
-                argument,
-                ArgumentTransfer::Borrow(_) | ArgumentTransfer::BorrowMut(_)
-            )
-        {
-            return Err(PhysicalError::new(
-                "physical guaranteed call argument must use its borrow contract",
-            ));
-        }
-        if moves {
-            consume_if_owned(function, borrows, &mut state, source)?;
-        }
-    }
+    apply_argument_transfers(function, borrows, args, &mut state, block)?;
     let mut normal_state = state.clone();
     if let Some(result) = result {
         define(

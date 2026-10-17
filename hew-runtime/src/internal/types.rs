@@ -81,104 +81,6 @@ pub type HewSysDispatchFn = unsafe extern "C-unwind" fn(
     data_size: usize,
 ) -> *mut std::ffi::c_void;
 
-/// Crash handler function signature for supervised actors.
-///
-/// Called by the supervisor when a child actor crashes, before the restart
-/// policy is applied. Receives the execution context, the crash code
-/// (trap kind integer), the crash message (diagnostic string, may be null),
-/// and the actor's current state pointer; returns the hook's `CrashAction`
-/// control decision through its natural two-byte tagged-union ABI.
-///
-/// # Arguments
-///
-/// - `crash_code: i64` — the trap-kind integer captured from the crashed
-///   actor's `error_code` slot. `i64` matches the `code: i64` field of
-///   `CrashInfo` in `std/failure.hew`. The supervisor's internal plumbing
-///   tracks the code as `c_int` and widens it to `i64` at the call site so
-///   the internal event struct and the public C ABI
-///   (`hew_supervisor_notify_child_event`) stay unchanged.
-/// - `crash_message: *const c_char` — a NUL-terminated diagnostic string for
-///   the `CrashInfo.message` field, or null when no message is available. The
-///   callee (the codegen-emitted `__on_crash` body) BORROWS this pointer to
-///   construct its own owned `CrashInfo.message` string; ownership of the
-///   underlying buffer stays with the caller (the supervisor), which is
-///   responsible for its lifetime across the call. Null is rendered as the
-///   empty string by the codegen prologue.
-/// - `actor_state_ptr: *mut c_void` — the child's supervisor-owned restart
-///   template. The crashed actor itself has already been torn down, and the
-///   hook runs in the supervisor's execution context, so this explicit pointer
-///   is the only authoritative state address for hook field reads and writes.
-///   A successful write is observed by the next restarted child.
-///
-/// # Return value
-///
-/// The hook's `CrashAction` decision, returned as the `CrashAction`
-/// tagged-union value by its NATURAL enum-return ABI. The codegen-emitted
-/// `__on_crash` returns the `CrashAction` LLVM struct
-/// (`%CrashAction = { i8, [1 x i8] }`); [`HewCrashActionAbi`] mirrors that
-/// layout `#[repr(C)]` so the supervisor reads the variant `tag` byte directly.
-/// Returning the value naturally (rather than extracting a tag in MIR) lets
-/// EVERY return position — the tail expression and any explicit
-/// `return CrashAction::X;` — lower identically through the existing
-/// enum-return path. The tag is `Restart = 0`, `Escalate = 1`, `Kill = 2`
-/// (declaration order); the supervisor decodes it, treating any value outside
-/// `0..=2` fail-closed as `Restart` — see
-/// `hew-runtime/src/supervisor.rs::apply_restart`.
-///
-/// `HewCrashActionAbi (*on_crash)(HewExecutionContext *ctx, int64_t crash_code, const char *crash_message, void *actor_state_ptr)`
-pub type HewOnCrashFn = unsafe extern "C" fn(
-    ctx: *mut HewExecutionContext,
-    crash_code: i64,
-    crash_message: *const std::ffi::c_char,
-    actor_state_ptr: *mut std::ffi::c_void,
-) -> HewCrashActionAbi;
-
-/// `#[repr(C)]` mirror of the `CrashAction` tagged-union LLVM struct
-/// (`%CrashAction = { i8, [1 x i8] }`) — the by-value return of
-/// [`HewOnCrashFn`].
-///
-/// A `CrashAction` is a payload-free 3-variant enum; its tagged-union layout is
-/// a 1-byte discriminant tag plus a 1-byte zero-sized-payload pad (codegen rounds
-/// the 2-bit tag up to `i8`). The supervisor reads [`Self::tag`] to recover the
-/// variant. ABI-critical: this layout MUST match what codegen emits for the
-/// `CrashAction` enum — a mismatch is wrong-code at the FFI boundary.
-///
-/// ONLY FIELD 0 (`tag`) IS ABI-LOAD-BEARING. Cross-target correctness rests on
-/// the supervisor reading `tag` (field 0) and nothing else: a 2-byte all-integer
-/// struct returns its field 0 in the low byte of the return register on both
-/// `x86_64` System V (AL of RAX) and ARM64 `AAPCS64` (low byte of x0) under both
-/// the LLVM raw-aggregate producer and the `#[repr(C)]` consumer, so the decoded
-/// `tag` always agrees. The codegen producer uses LLVM's raw aggregate return,
-/// which scatters `payload_pad` to a DIFFERENT register than the C-ABI consumer
-/// expects and leaves it undef — so `payload_pad` is GARBAGE across the boundary.
-/// Do NOT read `payload_pad`, derive `PartialEq`/`Eq`-based comparisons of the
-/// whole struct across the FFI boundary, or widen this struct without re-checking
-/// the producer/consumer register agreement on every target (Windows x64 MSVC in
-/// particular is unverified — a 2-byte struct returns in RAX there so it is very
-/// likely fine, but flag it if Windows becomes a target). The fail-closed
-/// `0..=2 → Restart` default in `apply_restart` is a second layer of protection.
-#[repr(C)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct HewCrashActionAbi {
-    /// Variant discriminant: `Restart = 0`, `Escalate = 1`, `Kill = 2`. The ONLY
-    /// ABI-load-bearing field — read via [`Self::tag_i32`]; see the type doc.
-    pub tag: u8,
-    /// Zero-sized-payload pad matching the LLVM `[1 x i8]` payload slot.
-    /// ABI-required (keeps the struct's 2-byte size in sync with the enum
-    /// layout); NOT read by the supervisor and GARBAGE across the FFI boundary
-    /// (the producer scatters it to a different register and leaves it undef).
-    pub payload_pad: [u8; 1],
-}
-
-impl HewCrashActionAbi {
-    /// The variant tag as an `i32`, for decoding against the
-    /// `CRASH_ACTION_*` supervisor constants.
-    #[must_use]
-    pub const fn tag_i32(self) -> i32 {
-        self.tag as i32
-    }
-}
-
 /// Lifecycle wrapper function signature for supervised actors.
 ///
 /// Codegen emits one `__hew_lifecycle_<Actor>(*mut HewActor)` per child actor
@@ -273,6 +175,8 @@ pub enum HewActorState {
     /// `docs/internal/engineering-invariants.md`
     /// and `raii-null-after-move`.
     Crashing = 8,
+    /// Init and start own the state; admission queues without dispatch.
+    Constructing = 9,
 }
 
 /// Semantic terminal cause, independent of the scheduler's physical state.
@@ -695,6 +599,8 @@ pub const HEW_TRAP_USER_PANIC: i32 = 212;
 /// the failure has no caller to answer: it becomes the actor's own fault and
 /// reaches its supervisor. The diagnostic carries the error's `Display` text.
 pub const HEW_TRAP_ACTOR_UNHANDLED_FAILURE: i32 = 213;
+/// An actor-owned one-shot request missed its handler-start deadline.
+pub const HEW_TRAP_ACTOR_TIMER_OVERDUE: i32 = 214;
 
 // ── Reply-failure classification ─────────────────────────────────────────
 //
@@ -720,6 +626,14 @@ pub const HEW_REPLY_FAIL_PAYLOAD_ALLOC_FAILED: i32 = 4;
 pub const HEW_REPLY_FAIL_REFUSED: i32 = 5;
 /// The completion budget expired before reply publication.
 pub const HEW_REPLY_FAIL_TIMEOUT: i32 = 6;
+/// The authenticated service grant refused dispatch.
+pub const HEW_REPLY_FAIL_UNAUTHORIZED: i32 = 7;
+/// The service's exact actor incarnation retired before dispatch.
+pub const HEW_REPLY_FAIL_STALE_REF: i32 = 8;
+/// The authenticated request publication retired before dispatch.
+pub const HEW_REPLY_FAIL_CONNECTION_DROPPED: i32 = 9;
+/// The owning node closed service admission before dispatch.
+pub const HEW_REPLY_FAIL_LOCAL_SHUTDOWN: i32 = 10;
 
 /// Name a reply-failure discriminant for diagnostics. Fail-closed: an
 /// unrecognized discriminant names itself rather than borrowing a real
@@ -734,6 +648,10 @@ pub const fn reply_fail_kind_name(kind: i32) -> &'static str {
         HEW_REPLY_FAIL_PAYLOAD_ALLOC_FAILED => "reply payload allocation failed",
         HEW_REPLY_FAIL_REFUSED => "delivery refused by interceptor",
         HEW_REPLY_FAIL_TIMEOUT => "completion deadline elapsed",
+        HEW_REPLY_FAIL_UNAUTHORIZED => "service grant refused dispatch",
+        HEW_REPLY_FAIL_STALE_REF => "service actor incarnation retired",
+        HEW_REPLY_FAIL_CONNECTION_DROPPED => "request publication retired",
+        HEW_REPLY_FAIL_LOCAL_SHUTDOWN => "node closed service admission",
         _ => "(unrecognized reply-failure discriminant)",
     }
 }
@@ -792,6 +710,8 @@ pub enum ExitReason {
     /// A `fails` handler submitted through a mailbox view returned its
     /// declared error with no caller to receive it (error code 213).
     ActorUnhandledFailure,
+    /// An actor-owned one-shot request did not start before its overdue deadline.
+    ActorTimerOverdue,
     /// Actor crashed with a hardware signal or via `hew_panic`. The raw
     /// signal number is preserved.
     Signal(i32),
@@ -824,6 +744,7 @@ impl ExitReason {
             ExitReason::JoinBranchFailed => "JoinBranchFailed",
             ExitReason::UserPanic => "UserPanic",
             ExitReason::ActorUnhandledFailure => "ActorUnhandledFailure",
+            ExitReason::ActorTimerOverdue => "ActorTimerOverdue",
             ExitReason::Signal(_) => "Signal",
             ExitReason::Normal => "Normal",
         }
@@ -849,6 +770,7 @@ impl ExitReason {
             HEW_TRAP_JOIN_BRANCH_FAILED => ExitReason::JoinBranchFailed,
             HEW_TRAP_USER_PANIC => ExitReason::UserPanic,
             HEW_TRAP_ACTOR_UNHANDLED_FAILURE => ExitReason::ActorUnhandledFailure,
+            HEW_TRAP_ACTOR_TIMER_OVERDUE => ExitReason::ActorTimerOverdue,
             sig => ExitReason::Signal(sig),
         }
     }
@@ -868,22 +790,22 @@ impl ExitReason {
     ///
     /// Current mapping (per `std/failure.hew::CrashKind` contract):
     /// - `HeapExceeded` → `CrashKind::HeapExceeded` (the per-actor arena cap).
+    /// - `ActorUnhandledFailure` → `CrashKind::HandlerFailed`.
+    /// - `ActorTimerOverdue` → `CrashKind::TimerOverdue`.
     /// - every other fault class (traps, signals, send failures, internal
     ///   compiler-invariant traps, wire-decode failures) → `CrashKind::Crashed`.
     /// - `Normal` is not a crash; it projects to `Crashed` defensively but a
     ///   normal exit never reaches the crash-propagation path
     ///   (`propagate_exit_to_links` is called from the trap path, not clean stop).
     ///
-    /// `CrashKind::PartitionDetected` has NO source `ExitReason` today: the
-    /// runtime carries no duplex/mailbox-partition exit reason yet. The variant
-    /// is reserved (the std doc's additive-widening note) for when one is added;
-    /// the new reason's arm here will map to it. A `CrashKind` variant that no
-    /// `ExitReason` projects to is the documented-allowed direction (the runtime
-    /// may surface fewer classes than `CrashKind` names).
+    /// Remote observation loss carries `CrashKind::PartitionDetected` directly;
+    /// it has no actor-local `ExitReason` projection.
     #[must_use]
     pub const fn to_crash_kind(self) -> CrashKind {
         match self {
             ExitReason::HeapExceeded => CrashKind::HeapExceeded,
+            ExitReason::ActorUnhandledFailure => CrashKind::HandlerFailed,
+            ExitReason::ActorTimerOverdue => CrashKind::TimerOverdue,
             ExitReason::IntegerOverflow
             | ExitReason::DivideByZero
             | ExitReason::SignedMinDivNegOne
@@ -896,7 +818,6 @@ impl ExitReason {
             | ExitReason::WireDecodeFailed
             | ExitReason::JoinBranchFailed
             | ExitReason::UserPanic
-            | ExitReason::ActorUnhandledFailure
             | ExitReason::Signal(_)
             | ExitReason::Normal => CrashKind::Crashed,
         }
@@ -907,9 +828,9 @@ impl ExitReason {
 /// `std/failure.hew::CrashKind`.
 ///
 /// The discriminants match the std enum's DECLARATION ORDER (the tagged-union
-/// tag a Hew `CrashKind` value carries): `Crashed = 0`, `HeapExceeded = 1`,
-/// `PartitionDetected = 2`. M-7 delivers this tag in a typed
-/// `CrashNotification { actor_id, kind }` to a linked actor's exit hook; the
+/// tag a Hew `CrashKind` value carries): `Fault = 0`, `HeapExceeded = 1`,
+/// `PartitionDetected = 2`, `HandlerFailed = 3`, `TimerOverdue = 4`. M-7 delivers this tag in a typed
+/// `CrashNotification { target, kind }` to a linked actor's exit hook; the
 /// `as i32` tag is the wire value.
 ///
 /// Adding a variant here REQUIRES a matching variant in `std/failure.hew`
@@ -922,9 +843,12 @@ pub enum CrashKind {
     Crashed = 0,
     /// Per-actor arena cap exceeded.
     HeapExceeded = 1,
-    /// A duplex / mailbox partition was observed on a recv path the crashed
-    /// actor was awaiting. Reserved: no `ExitReason` projects to it yet.
+    /// A remote link became unreachable under its partition policy.
     PartitionDetected = 2,
+    /// A mailbox handler returned a declared error without a waiting caller.
+    HandlerFailed = 3,
+    /// An actor-owned timer missed its handler-start deadline.
+    TimerOverdue = 4,
 }
 
 impl CrashKind {
@@ -957,10 +881,15 @@ mod crash_kind_projection_tests {
         assert_eq!(CrashKind::Crashed.tag(), 0);
         assert_eq!(CrashKind::HeapExceeded.tag(), 1);
         assert_eq!(CrashKind::PartitionDetected.tag(), 2);
+        assert_eq!(CrashKind::HandlerFailed.tag(), 3);
+        assert_eq!(CrashKind::TimerOverdue.tag(), 4);
+        assert_eq!(
+            CrashKind::tag_from_error_code(HEW_TRAP_ACTOR_TIMER_OVERDUE),
+            4
+        );
     }
 
-    /// `HeapExceeded` is the ONLY reason that projects to a non-`Crashed` kind.
-    /// Exact-value assertion per `wire-contract-test-presence`.
+    /// Distinct public failure classes retain their canonical tags.
     #[test]
     fn heap_exceeded_projects_to_heap_exceeded_kind() {
         assert_eq!(
@@ -971,9 +900,13 @@ mod crash_kind_projection_tests {
             CrashKind::tag_from_error_code(HEW_TRAP_HEAP_EXCEEDED),
             CrashKind::HeapExceeded.tag()
         );
+        assert_eq!(
+            CrashKind::tag_from_error_code(HEW_TRAP_ACTOR_UNHANDLED_FAILURE),
+            CrashKind::HandlerFailed.tag()
+        );
     }
 
-    /// Every non-heap fault class projects to `Crashed`. Exhaustive over the
+    /// Ordinary traps and hardware signals project to `Crashed`. Exhaustive over the
     /// runtime trap-code surface: if a NEW `ExitReason` variant is added, the
     /// no-wildcard match in `to_crash_kind` fails to compile until mapped, and
     /// THIS test must gain the new code's expected projection — the two together

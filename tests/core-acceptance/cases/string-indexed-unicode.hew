@@ -1,0 +1,112 @@
+actor Echo {
+    receive fn echo(value: string) -> string {
+        sleep(1ms);
+        value
+    }
+}
+
+fn inspect(text: string, unit: string) {
+    assert(text.len() == unit.len() * 37);
+    assert(text.byte_len() == unit.byte_len() * 37);
+    for index in 0..text.len() {
+        let expected = unit[index % unit.len()];
+        assert(text[index] == expected);
+        assert(text.get(index).expect("present scalar") == expected);
+    }
+    // Every boundary around the index's stride must be a scalar boundary.
+    assert(text[31..33] == "é\0");
+    assert(text[63..66] == "🦀e\u{301}");
+    assert(text[text.len()..] == "");
+    assert(text[31..32] + text[32..65] == text[31..65]);
+    assert(text.get(-1).is_none());
+    assert(text.get(text.len()).is_none());
+    assert(text.first().expect("first") == 'A');
+    assert(text.last().expect("last") == '\u{301}');
+    assert(text.get(31..33).expect("range") == "é\0");
+    assert(text.get(31..=32).expect("inclusive range") == "é\0");
+    assert(text.get(text.len()..).expect("empty range") == "");
+    assert(text.get(-1..2).is_none());
+    assert(text.get(3..2).is_none());
+    assert(text.get(..=9223372036854775807).is_none());
+    let narrow: i16 = 3;
+    assert(text[narrow] == '🦀');
+    assert(text.find_from("🦀", 4).expect("next crab") == 9);
+    assert(text.find_from("", text.len()).expect("end") == text.len());
+    assert(text.find_from("", -1).is_none());
+    assert(text.find_from("A", text.len() + 1).is_none());
+    assert(text[..].to_bytes().len() == text.byte_len());
+    println(f"{text.len()}:{text.byte_len()}");
+}
+
+fn main() {
+    let unit = "Aé\0🦀e\u{301}";
+    assert(unit.len() == 6);
+    assert(unit.byte_len() == 11);
+    assert(unit[0] == 'A');
+    assert(unit[1] == 'é');
+    assert(unit[2] == '\0');
+    assert(unit[3] == '🦀');
+    assert(unit[5] == '\u{301}');
+    let text = unit.repeat(37);
+    inspect(text, unit);
+    let echo = spawn Echo;
+    let returned = echo.echo(text).expect("echo");
+    inspect(returned, unit);
+    assert(returned == text);
+    var grown = "";
+    for index in 0..37 { grown += unit; }
+    assert(grown == text);
+    let saved = grown;
+    var cursor = grown.iter();
+    grown.push('雪');
+    assert(saved == text);
+    assert(grown.len() == text.len() + 1);
+    var count = 0;
+    while let .Some(scalar) = cursor.next() {
+        assert(scalar == text[count]);
+        count += 1;
+    }
+    assert(count == text.len());
+    var self_append = "é\0";
+    self_append += self_append;
+    assert(self_append == "é\0é\0");
+    grown.clear();
+    assert(grown.is_empty());
+    assert(saved == text);
+    assert("".first().is_none());
+    assert("".last().is_none());
+    assert('é'.is_letter());
+    assert('5'.is_digit());
+    assert(!'٥'.is_digit());
+    assert(!'٥'.is_alphanumeric());
+    assert(' '.is_whitespace());
+    assert('A'.is_upper() && 'a'.is_lower());
+    assert('—'.is_punctuation());
+    assert('\0'.is_control());
+    assert('A'.is_ascii() && !'é'.is_ascii());
+    assert('🦀'.len_utf8() == 4);
+    assert('ß'.to_upper() == 'ß');
+    assert('İ'.to_lower() == 'İ');
+    assert('ǆ'.to_title() == 'ǅ');
+    assert('f'.to_digit(16).expect("hex digit") == 15);
+    assert('f'.to_digit(10).is_none());
+    assert('0'.to_digit(1).is_none());
+    assert('0'.to_digit(37).is_none());
+    assert((-1).try_to_char().is_none());
+    assert((0xd800).try_to_char().is_none());
+    assert((0x110000).try_to_char().is_none());
+    assert((0x10ffff).try_to_char().expect("last scalar").as_u32() == (0x10ffff as u32));
+    let max_unsigned: u64 = 18446744073709551615;
+    assert(max_unsigned.try_to_char().is_none());
+    assert((65 as i8).try_to_char().expect("i8") == 'A');
+    assert((65 as i16).try_to_char().expect("i16") == 'A');
+    assert((65 as i32).try_to_char().expect("i32") == 'A');
+    assert((65 as i64).try_to_char().expect("i64") == 'A');
+    assert((65 as isize).try_to_char().expect("isize") == 'A');
+    assert((65 as u8).try_to_char().expect("u8") == 'A');
+    assert((65 as u16).try_to_char().expect("u16") == 'A');
+    assert((65 as u32).try_to_char().expect("u32") == 'A');
+    assert((65 as u64).try_to_char().expect("u64") == 'A');
+    assert((65 as usize).try_to_char().expect("usize") == 'A');
+    println("indexed Unicode preserved");
+}

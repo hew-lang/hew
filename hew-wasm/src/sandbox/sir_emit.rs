@@ -104,6 +104,11 @@ pub struct VariantShape {
 fn runtime_role_name(role: RuntimeVariantRole) -> &'static str {
     use RuntimeVariantRole as Role;
     match role {
+        Role::CrashKindFault => "CrashKindFault",
+        Role::CrashKindHeapExceeded => "CrashKindHeapExceeded",
+        Role::CrashKindPartitionDetected => "CrashKindPartitionDetected",
+        Role::CrashKindHandlerFailed => "CrashKindHandlerFailed",
+        Role::CrashKindTimerOverdue => "CrashKindTimerOverdue",
         Role::OptionSome => "OptionSome",
         Role::OptionNone => "OptionNone",
         Role::ResultOk => "ResultOk",
@@ -174,6 +179,8 @@ pub struct Actor {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub crash_info: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub crash_kind: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub crash_action: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub exit: Option<u32>,
@@ -240,8 +247,8 @@ pub struct SupervisorChild {
     pub stop_ns: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stop_config: Option<usize>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub pool_count: Option<u32>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub is_pool: bool,
     pub spawn: u32,
 }
 
@@ -886,6 +893,14 @@ impl<'m> Walker<'m> {
                         .and_then(|callable| callable.signature.params.get(1))
                         .and_then(|parameter| self.module.aggregate_shape_for_type(&parameter.ty))
                         .map(|shape| shape.id.0),
+                    crash_kind: actor
+                        .crash
+                        .and_then(|id| self.module.callable(id))
+                        .and_then(|callable| callable.signature.params.get(1))
+                        .and_then(|parameter| self.module.aggregate_shape_for_type(&parameter.ty))
+                        .and_then(|shape| shape.fields.first())
+                        .and_then(|field| self.module.variant_shape_for_type(&field.ty))
+                        .map(|shape| shape.id.0),
                     crash_action: actor
                         .crash
                         .and_then(|id| self.module.callable(id))
@@ -967,7 +982,7 @@ impl<'m> Walker<'m> {
                                     hew_sir::SemStopDeadline::Config(index) => Some(index),
                                     _ => None,
                                 },
-                                pool_count: child.pool_count,
+                                is_pool: child.pool_count.is_some(),
                                 spawn: self.function_id(child.spawn)?,
                             })
                         })
@@ -1515,6 +1530,22 @@ impl<'m> Walker<'m> {
                 "scope": scope.0,
                 "callable": operand(callable),
             }),
+            SemOpKind::TaskInvoke {
+                scope,
+                callee,
+                args,
+                ..
+            } => serde_json::json!({
+                "op": "task.invoke",
+                "scope": scope.0,
+                "callee": match callee {
+                    hew_sir::InvocationCallee::Direct(target) => serde_json::json!({ "direct": target.0 }),
+                    hew_sir::InvocationCallee::Mutable { target, receiver, update } => serde_json::json!({ "mutable": target.0, "receiver": boundary(receiver), "staged": *update == hew_types::ReceiverUpdate::Staged }),
+                    hew_sir::InvocationCallee::Dyn { receiver, slot, method } => serde_json::json!({ "dyn": slot, "method": self.module.defs.name(*method), "receiver": boundary(receiver) }),
+                    hew_sir::InvocationCallee::Indirect { receiver, specialization } => serde_json::json!({ "receiver": boundary(receiver), "specialization": specialization.map(|id| id.0) }),
+                },
+                "args": args.iter().map(boundary).collect::<Vec<_>>(),
+            }),
             SemOpKind::ActorIngressAdapter(adapter) => serde_json::json!({
                 "op": "actor.ingress_adapter",
                 "actor": adapter.actor.0,
@@ -1702,6 +1733,27 @@ impl<'m> Walker<'m> {
                             .to_string(),
                     );
                 }
+                if let Some(hew_types::runtime_call::RuntimeSemanticContract {
+                    result: hew_types::runtime_call::RuntimeResultEffect::FreshOwnedVariant(kind),
+                    ..
+                }) = family.semantic_contract()
+                {
+                    let CallResult::Value(value) = result else {
+                        return Err(EmitError::new("runtime variant result has no value"));
+                    };
+                    let shapes = hew_sir::runtime_variant_shape_refs(
+                        &self.module.defs,
+                        kind,
+                        &value.ty,
+                        &self.module.aggregate_shapes,
+                        &self.module.variant_shapes,
+                    )
+                    .map_err(EmitError::new)?;
+                    call["variant_result_shapes"] = serde_json::json!({
+                        "error": shapes.error.0,
+                        "error_len": shapes.error_len.0,
+                    });
+                }
                 // A failure that leaves the inputs with the caller, whose
                 // unwind edge stores the moved receiver back.
                 if family
@@ -1854,18 +1906,33 @@ impl<'m> Walker<'m> {
                 normal,
                 unwind,
                 ..
-            } => serde_json::json!({
-                "op": "actor.call",
-                "operation": actor_operation(operation),
-                "submission_shapes": self.submission_shapes(result),
-                "error_shape": self.error_shape(result),
+            } => {
+                let mut operation_json = actor_operation(operation);
+                if matches!(operation, hew_sir::ActorOperation::TimerSchedule { .. }) {
+                    let CallResult::Value(result) = result else {
+                        return Err(EmitError::new("timer has no resource result"));
+                    };
+                    let resource = self
+                        .module
+                        .resources
+                        .keys()
+                        .position(|ty| *ty == result.ty)
+                        .ok_or_else(|| EmitError::new("timer has no checked release recipe"))?;
+                    operation_json["resource"] = serde_json::json!(resource);
+                }
+                serde_json::json!({
+                    "op": "actor.call",
+                    "operation": operation_json,
+                    "submission_shapes": self.submission_shapes(result),
+                    "error_shape": self.error_shape(result),
                     "request_shapes": self.request_shapes(result),
-                "args": boundaries(args),
-                "result": call_result(result),
-                "result_shape": self.result_shape(result),
-                "normal": encode_edge(normal),
-                "unwind": encode_unwind(unwind),
-            }),
+                    "args": boundaries(args),
+                    "result": call_result(result),
+                    "result_shape": self.result_shape(result),
+                    "normal": encode_edge(normal),
+                    "unwind": encode_unwind(unwind),
+                })
+            }
             SemTerminator::WireCodec {
                 codec,
                 plan,
@@ -2132,6 +2199,14 @@ fn actor_operation(operation: &hew_sir::ActorOperation) -> serde_json::Value {
             "actor": actor.0,
             "policy": send_policy_name(*policy),
         }),
+        Op::TimerSchedule {
+            actor,
+            message,
+            policy,
+        } => serde_json::json!({
+            "op": "timer_schedule", "actor": actor.0, "message": message,
+            "policy": send_policy_name(*policy),
+        }),
         Op::StreamStart { actor, message, .. } => serde_json::json!({
             "op": "stream_start",
             "actor": actor.0,
@@ -2183,6 +2258,7 @@ fn actor_operation(operation: &hew_sir::ActorOperation) -> serde_json::Value {
 const fn join_mode_name(mode: hew_sir::TaskScopeJoinMode) -> &'static str {
     match mode {
         hew_sir::TaskScopeJoinMode::Wait => "wait",
+        hew_sir::TaskScopeJoinMode::CancelLosers => "cancel_losers",
         hew_sir::TaskScopeJoinMode::PropagateFault => "propagate_fault",
     }
 }
@@ -2270,6 +2346,10 @@ fn suspend_shape(kind: &SuspendKind) -> (&'static str, serde_json::Value) {
     match kind {
         SuspendKind::Sleep => ("Sleep", serde_json::Value::Null),
         SuspendKind::SleepUntil => ("SleepUntil", serde_json::Value::Null),
+        SuspendKind::ServiceAcquire { actor, export } => (
+            "ServiceAcquire",
+            serde_json::json!({"actor": actor.0, "export": export}),
+        ),
         SuspendKind::NativeIo { operation } => (
             "NativeIo",
             serde_json::json!({ "operation": format!("{operation:?}") }),

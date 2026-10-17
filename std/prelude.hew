@@ -6,6 +6,6 @@
 
 import std.builtins.{Display, Error, From, Index, IntoIterator, Iterator, Option, Result};
 
-import std.failure.{CrashInfo, CrashAction, CrashNotification, CrashKind};
+import std.failure.{CrashInfo, CrashAction, CrashNotification, CrashKind, DownTarget};
 
-import std.link_monitor.{PartitionPolicy, MonitorId, DownTarget, DownReason, DownNotification, MonitorRef, set_partition_policy,};
+import std.link_monitor.{PartitionPolicy, MonitorId, DownReason, DownNotification, MonitorRef, set_partition_policy,};

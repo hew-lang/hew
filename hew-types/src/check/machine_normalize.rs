@@ -144,7 +144,7 @@ pub(super) fn normalize(
                             .get(ordinal)
                             .or_else(|| module.source_paths.first());
                         if let Some(source) = source {
-                            sources.extend(std::iter::repeat_n(source.clone(), 5));
+                            sources.extend(std::iter::repeat_n(source.clone(), 6));
                         }
                     }
                 }
@@ -327,6 +327,8 @@ fn machine_companion(machine: &MachineDecl, suffix: &str) -> Ident {
 
 const OUTPUTS: &str = "_$machine_outputs";
 const DISPOSITION: &str = "_$machine_disposition";
+const RULE: &str = "_$machine_rule";
+const INPUT: &str = "_$machine_input";
 const CANDIDATE: &str = "_$machine_candidate";
 
 impl Builder {
@@ -345,6 +347,14 @@ impl Builder {
     }
     fn ident(&mut self, name: impl crate::env::LexicalName) -> Spanned<Expr> {
         self.expr(Expr::Ident(name.lexical_key()))
+    }
+    fn field(&mut self, object: &str, name: &str) -> Spanned<Expr> {
+        let object = self.ident(object);
+        let field = (Ident::new(name), self.span());
+        self.expr(Expr::FieldAccess {
+            object: Box::new(object),
+            field,
+        })
     }
     fn ty(&mut self, name: impl crate::env::LexicalName) -> Spanned<TypeExpr> {
         let span = self.span();
@@ -618,7 +628,7 @@ impl Builder {
 
     #[expect(
         clippy::too_many_lines,
-        reason = "build the six ordinary declarations from one machine"
+        reason = "build ordinary declarations from one machine"
     )]
     fn machine(
         &mut self,
@@ -711,7 +721,7 @@ impl Builder {
         };
         // These shells contain only ordinary source syntax. All copied source
         // expressions are transformed below, with fresh node spans.
-        let source = format!("type {name}Step{generic} {{ outputs: Vec<{name}Output{generic}>; disposition: {name}StepDisposition; }} impl{generic} {name}{generic} {{ fn step(var self, event: {name}.Event{generic}) -> {name}Step{generic} {{}} fn state_name(self) -> string {{}} }}", name = machine.name);
+        let source = format!("type {name}Step{generic} {{ outputs: Vec<{name}Output{generic}>; disposition: {name}StepDisposition; input: string; rule: Option<i64>; }} impl{generic} {name}{generic} {{ fn step(var self, event: {name}.Event{generic}) -> {name}Step{generic} {{}} fn state_name(self) -> string {{}} }} impl{generic} Machine for {name}{generic} {{ type Event = {name}.Event{generic}; type Step = {name}Step{generic}; fn step_info(self, report: {name}Step{generic}) -> MachineStepInfo {{}} }}", name = machine.name);
         let mut contexts = hew_parser::macro_syntax::TokenContexts::default();
         let machine_names = [
             machine.name,
@@ -807,6 +817,44 @@ impl Builder {
             trailing_expr: Some(Box::new(expression)),
         };
         self.refresh_signature(state_name);
+        let implementation_span = impl_start..self.next_span;
+        let contract_start = self.next_span;
+        let Item::Impl(mut contract) = shell.next().expect("machine trait shell").0 else {
+            unreachable!("machine trait shell must be an impl")
+        };
+        contract.type_params.clone_from(&params);
+        contract.where_clause.clone_from(&machine.where_clause);
+        self.refresh_generics(
+            contract.type_params.as_mut(),
+            contract.where_clause.as_mut(),
+        );
+        self.refresh_type(&mut contract.target_type);
+        for alias in &mut contract.type_aliases {
+            alias.span = self.span();
+            self.refresh_type(&mut alias.ty);
+        }
+        let info = &mut contract.methods[0];
+        info.origin = DeclarationOrigin::MachineCompanion;
+        info.visibility = machine.visibility;
+        info.body = self.step_info_body();
+        self.refresh_signature(info);
+        let mut forwarding = implementation.methods[0].clone();
+        forwarding.origin = DeclarationOrigin::MachineCompanion;
+        let receiver = self.ident("self");
+        let method = (Ident::new("step"), self.span());
+        let event = self.ident("event");
+        let call = self.expr(Expr::MethodCall {
+            receiver: Box::new(receiver),
+            method,
+            args: vec![CallArg::Positional(event)],
+        });
+        forwarding.body = Block {
+            stmts: Vec::new(),
+            trailing_expr: Some(Box::new(call)),
+        };
+        self.refresh_signature(&mut forwarding);
+        contract.methods.insert(0, forwarding);
+        let contract_span = contract_start..self.next_span;
         let mut generated = vec![
             Item::TypeDecl(state_enum),
             Item::TypeDecl(event_enum),
@@ -814,8 +862,8 @@ impl Builder {
             Item::TypeDecl(disposition_enum),
             Item::TypeDecl(report),
             Item::Impl(implementation),
+            Item::Impl(contract),
         ];
-        let impl_span = impl_start..self.next_span;
         let mut spans = Vec::new();
         for (index, item) in generated[..4].iter_mut().enumerate() {
             let start = self.next_span;
@@ -830,12 +878,50 @@ impl Builder {
             self.span();
             spans.push(start..self.next_span);
         }
-        spans.extend([report_span, impl_span]);
+        spans.extend([report_span, implementation_span, contract_span]);
         for span in &spans {
             self.source_spans.insert(span.clone(), self.origin.clone());
         }
         self.hierarchies.insert(key.clone(), hierarchy);
         Ok(generated.into_iter().zip(spans).collect())
+    }
+
+    fn step_info_body(&mut self) -> Block {
+        let input = self.field("report", "input");
+        let rule = self.field("report", "rule");
+        let scrutinee = self.field("report", "disposition");
+        let arms = ["Taken", "Ignored"]
+            .into_iter()
+            .map(|name| {
+                let pattern = self.pattern(Ident::new(name), &[], "");
+                let body = self.variant(Ident::new(name), Vec::new(), Vec::new());
+                MatchArm {
+                    pattern,
+                    guard: None,
+                    body,
+                }
+            })
+            .collect();
+        let disposition = self.expr(Expr::Match {
+            scrutinee: Box::new(scrutinee),
+            arms,
+        });
+        let path = Path::single(Ident::new("MachineStepInfo"), self.span());
+        let value = self.expr(Expr::StructInit {
+            path,
+            fields: vec![
+                (Ident::new("input"), input),
+                (Ident::new("rule"), rule),
+                (Ident::new("disposition"), disposition),
+            ],
+            field_labels: Vec::new(),
+            type_args: None,
+            base: None,
+        });
+        Block {
+            stmts: Vec::new(),
+            trailing_expr: Some(Box::new(value)),
+        }
     }
 
     fn enum_decl(
@@ -971,6 +1057,10 @@ impl Builder {
         Ok(())
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "normalize dispatch and report construction before the single state commit"
+    )]
     fn step_body(
         &mut self,
         machine: &MachineDecl,
@@ -990,6 +1080,20 @@ impl Builder {
         let disposition_ty = self.ty(machine_companion(machine, "StepDisposition"));
         let taken = self.variant(Ident::new("Taken"), Vec::new(), Vec::new());
         let disposition = self.var(DISPOSITION, Some(disposition_ty), taken);
+        let none = self.variant(Ident::new("None"), Vec::new(), Vec::new());
+        let rule_ty = self.ty("i64");
+        let option_span = self.span();
+        let rule_ty = (
+            TypeExpr::Named {
+                path: Path::single(Ident::new("Option"), option_span.clone()),
+                type_args: Some(vec![rule_ty]),
+            },
+            option_span,
+        );
+        let rule_binding = self.var(RULE, Some(rule_ty), none);
+        let empty = self.expr(Expr::Literal(Literal::String(String::new())));
+        let input_ty = self.ty("string");
+        let input_binding = self.var(INPUT, Some(input_ty), empty);
         let mut state_arms = Vec::new();
         for state in &machine.states {
             let pattern = self.pattern(state.name, &state.fields, "_$machine_in_");
@@ -1021,6 +1125,14 @@ impl Builder {
                         taken
                     };
                 }
+                let target = self.ident(INPUT);
+                let value = self.expr(Expr::Literal(Literal::String(event.name.to_string())));
+                let input = self.stmt(Stmt::Assign {
+                    target,
+                    op: None,
+                    value,
+                });
+                let selected = self.block(vec![input], selected);
                 event_arms.push(MatchArm {
                     pattern: event_pattern,
                     guard: None,
@@ -1050,12 +1162,16 @@ impl Builder {
         // ordinary candidate/output failure cleanup precedes any commit.
         let output_value = self.ident(OUTPUTS);
         let disposition_value = self.ident(DISPOSITION);
+        let input_value = self.ident(INPUT);
+        let rule_value = self.ident(RULE);
         let report_path = Path::single(machine_companion(machine, "Step"), self.span());
         let report = self.expr(Expr::StructInit {
             path: report_path,
             fields: vec![
                 (Ident::new("outputs"), output_value),
                 (Ident::new("disposition"), disposition_value),
+                (Ident::new("input"), input_value),
+                (Ident::new("rule"), rule_value),
             ],
             field_labels: Vec::new(),
             type_args: None,
@@ -1072,7 +1188,15 @@ impl Builder {
         });
         let result = self.ident("_$machine_report");
         let mut stmts = self.const_param_bindings(machine);
-        stmts.extend([outputs, disposition, candidate, report_binding, commit]);
+        stmts.extend([
+            outputs,
+            disposition,
+            rule_binding,
+            input_binding,
+            candidate,
+            report_binding,
+            commit,
+        ]);
         Ok(Block {
             stmts,
             trailing_expr: Some(Box::new(result)),
@@ -1095,6 +1219,23 @@ impl Builder {
         let target = hierarchy.target(index).map(|node| hierarchy.leaf(node));
         let run_hooks = rule.reenter || hierarchy.target(index) != Some(source);
         let mut stmts = Vec::new();
+        let function = self.variant(Ident::new("Some"), Vec::new(), Vec::new());
+        let rule_index = self.expr(Expr::Literal(Literal::Integer {
+            value: i128::try_from(index).expect("checked rule index"),
+            radix: IntRadix::Decimal,
+        }));
+        let value = self.expr(Expr::Call {
+            function: Box::new(function),
+            type_args: None,
+            args: vec![CallArg::Positional(rule_index)],
+            is_tail_call: false,
+        });
+        let rule_target = self.ident(RULE);
+        stmts.push(self.stmt(Stmt::Assign {
+            target: rule_target,
+            op: None,
+            value,
+        }));
         if run_hooks {
             let exits = hierarchy
                 .ancestors(source)

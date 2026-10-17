@@ -31,7 +31,12 @@ import std.fs;
 
 import std.stream;
 
-import std.link_monitor.{DownNotification, DownReason, DownTarget, MonitorRef, PartitionPolicy,};
+import std.net;
+
+import std.encoding.utf8;
+
+import std.failure.{CrashNotification, CrashKind, DownTarget};
+import std.link_monitor.{DownNotification, DownReason, MonitorRef, PartitionPolicy,};
 
 // hew_node_api_unregister: the repoint_preserves_ref scenario re-points a
 // registered name to a DIFFERENT actor. `Node::unregister` is not yet a Hew
@@ -97,6 +102,202 @@ enum WireCmd {
 type WireResult {
     tag: i64 @1;
     sum: i64 @2;
+}
+
+actor ServiceFacade {
+    let file: fs.ReadFile;
+    let started: Sink<i64>;
+    let gate: Stream<i64>;
+    var held_calls: i64 = 0;
+    receive fn read() -> bytes { self.file.read().expect("supplied read") }
+    receive fn add(left: i64, right: i64) -> i64 { left + right }
+    receive fn handle(value: i64) -> i64 { value + 1 }
+    receive fn finish() {}
+    receive fn held() -> i64 {
+        held_calls += 1;
+        started.send(1).expect("held service started");
+        let _ = gate.recv();
+        held_calls
+    }
+    receive fn calls() -> i64 { held_calls }
+    receive fn decline() -> i64 fails string { return error "declared-service-error"; }
+}
+
+impl ActorMsg for ServiceFacade {
+    type Msg = i64;
+    type Reply = i64;
+}
+
+#[confined]
+fn supplied_sum(service: net.Service<ServiceFacade>) -> i64 {
+    service.add(right: 5, left: 37).expect("supplied add")
+}
+
+fn authenticated_peer(credential: string) -> net.PeerSession {
+    var attempts: i64 = 0;
+    loop {
+        match Node.peer(credential) {
+            .Ok(peer) => return peer,
+            .Err(_) => {
+                attempts += 1;
+                if attempts >= 100 { panic("authenticated peer unavailable"); }
+                sleep(20ms);
+            }
+        }
+    }
+}
+
+fn new_service_facade(path: string) -> ServiceFacade {
+    let (started, _begins): (Sink<i64>, Stream<i64>) = stream.pipe(1).expect("started");
+    let (_release, gate): (Sink<i64>, Stream<i64>) = stream.pipe(1).expect("gate");
+    spawn ServiceFacade { file: fs.open_read(path).expect("file"), started: started, gate: gate }
+}
+
+fn connect_service_peer(port: string) {
+    var attempts: i64 = 0;
+    loop {
+        match Node.connect(f"1@127.0.0.1:{port}") {
+            .Ok(_) => return,
+            .Err(_) => {
+                attempts += 1;
+                if attempts >= 100 { panic("service peer reconnect"); }
+                sleep(20ms);
+            }
+        }
+    }
+}
+
+fn scenario_server_service_grants(kx: string) {
+    let path = f"{kx}/service.txt";
+    let _ = fs.write(path, "supplied-file");
+    let (started, begins): (Sink<i64>, Stream<i64>) = stream.pipe(1).expect("started");
+    let (release, gate): (Sink<i64>, Stream<i64>) = stream.pipe(1).expect("gate");
+    let facade = spawn ServiceFacade { file: fs.open_read(path).expect("file"), started: started, gate: gate };
+    Node.register("service-facade", facade);
+    let credential = wait_for_file(f"{kx}/client.pub");
+    let peer = authenticated_peer(credential);
+    let generic = spawn GenericEcho<i64>;
+    let generic_export = peer.export(generic).expect("generic offer admission");
+    let export = peer.export(facade).expect("offer admission");
+    publish_atomic(kx, "service.admitted", "1");
+    let _ = begins.recv();
+    publish_atomic(kx, "service.held", "1");
+    let _ = wait_for_file(f"{kx}/service.reconnected");
+    release.send(1).expect("release interrupted service turn");
+    let _ = wait_for_file(f"{kx}/service.disconnected");
+    export.close();
+    publish_atomic(kx, "service.revoked", "1");
+    let _ = wait_for_file(f"{kx}/service.reuse-refused");
+    let live_export = peer.export(facade).expect("second offer");
+    publish_atomic(kx, "service.second", "1");
+    let _ = wait_for_file(f"{kx}/service.retire");
+    stop(facade);
+    stopped(facade);
+    let replacement = new_service_facade(path);
+    let replacement_export = peer.export(replacement).expect("replacement offer");
+    publish_atomic(kx, "service.actor-restarted", "1");
+    let _ = wait_for_file(f"{kx}/service.restart-node");
+    Node.shutdown();
+    stop(replacement);
+    stopped(replacement);
+    let port = wait_for_server_listening(kx);
+    Node.start(NodeConfig { bind: f"127.0.0.1:{port}", transport: NodeTransport.Tcp,
+        key: f"{kx}/server.key", peers: [credential], seeds: [] }).expect("restart node");
+    publish_atomic(kx, "service.node-restarted", "1");
+    let restarted_peer = authenticated_peer(credential);
+    let restarted = new_service_facade(path);
+    let restarted_export = restarted_peer.export(restarted).expect("restarted node offer");
+    let _ = wait_for_file(f"{kx}/service.done");
+}
+
+fn scenario_service_grants(kx: string, port: string) -> i64 {
+    let credential = wait_for_file(f"{kx}/server.pub");
+    let peer = authenticated_peer(credential);
+    let _ = wait_for_file(f"{kx}/service.admitted");
+    match peer.receive_service<GenericEcho<string>>() {
+        .Err(ActorError.RoutingFailed) => {}
+        _ => panic("incompatible generic service admitted"),
+    }
+    let generic = peer.receive_service<GenericEcho<i64>>().expect("generic service");
+    assert(generic.handle(42).expect("generic service reply") == 42);
+    match peer.receive_service<WireProbe>() {
+        .Err(ActorError.RoutingFailed) => {}
+        _ => panic("incompatible service interface admitted"),
+    }
+    let service = peer.receive_service<ServiceFacade>().expect("receive service");
+    scope within 20ms {
+        let _ = peer.receive_service<ServiceFacade>();
+        panic("absent offer completed");
+    } handle failure {
+        match failure {
+            .Deadline { message } => {}
+            .Fault { message } => panic(message),
+        }
+    };
+    assert(supplied_sum(service) == 42);
+    assert(utf8.decode(service.read().expect("service read")).expect("utf8") == "supplied-file");
+    service.finish().expect("unit completion");
+    match service.decline() {
+        .Err(ActorError.Failed(message)) => assert(message == "declared-service-error"),
+        _ => panic("service declared failure envelope"),
+    }
+    let raw = lookup_generic_with_retry<ServiceFacade>("service-facade").expect("raw location");
+    match raw.ask(8, 1000) {
+        .Err(ActorError.RoutingFailed) => {}
+        _ => panic("raw location bypassed service grant"),
+    }
+    let reused_service = scope {
+        let interrupted = fork {
+            let outcome = service.held();
+            (service, outcome)
+        };
+        let _ = wait_for_file(f"{kx}/service.held");
+        connect_service_peer(port);
+        publish_atomic(kx, "service.reconnected", "1");
+        let (returned, outcome) = await interrupted;
+        match outcome {
+            .Err(ActorError.ConnectionDropped) => {}
+            _ => panic("interrupted service call replayed"),
+        }
+        returned
+    };
+    assert(reused_service.calls().expect("same-session grant") == 1);
+    assert(supplied_sum(reused_service) == 42);
+    publish_atomic(kx, "service.disconnect", "1");
+    let _ = wait_for_file(f"{kx}/service.disconnected");
+    let _ = wait_for_file(f"{kx}/service.revoked");
+    publish_atomic(kx, "service.reconnect", "1");
+    connect_service_peer(port);
+    match reused_service.add(1, 2) {
+        .Err(ActorError.RoutingFailed) => {}
+        _ => panic("revoked disconnected service executed"),
+    }
+    publish_atomic(kx, "service.reuse-refused", "1");
+    let actor_service = peer.receive_service<ServiceFacade>().expect("second service");
+    publish_atomic(kx, "service.retire", "1");
+    let _ = wait_for_file(f"{kx}/service.actor-restarted");
+    match actor_service.add(1, 2) {
+        .Err(ActorError.Dead) => {}
+        _ => panic("retired actor grant executed"),
+    }
+    let replacement = peer.receive_service<ServiceFacade>().expect("replacement service");
+    assert(supplied_sum(replacement) == 42);
+    publish_atomic(kx, "service.restart-node", "1");
+    let _ = wait_for_file(f"{kx}/service.node-restarted");
+    connect_service_peer(port);
+    match replacement.add(1, 2) {
+        .Err(ActorError.Dead) => {}
+        _ => panic("retired node session grant executed"),
+    }
+    match peer.receive_service<ServiceFacade>() {
+        .Err(ActorError.Dead) => {}
+        _ => panic("stale peer session imported service"),
+    }
+    let restarted = authenticated_peer(credential).receive_service<ServiceFacade>().expect("restarted service");
+    assert(supplied_sum(restarted) == 42);
+    publish_atomic(kx, "service.done", "1");
+    println("PASS service_grants file=supplied-file sum=42 unit declared-failure incompatible generic-incompatible cancelled raw-refused reconnect no-replay disconnected-revoke actor-restart node-restart");
+    0
 }
 
 actor GenericEcho<T> {
@@ -520,6 +721,33 @@ actor PartitionInjector {
             }
             sleep(2ms);
         }
+    }
+}
+
+actor RemoteCrashObserver {
+    let expected: Location;
+    var notices: i64 = 0;
+
+    receive fn attach(peer: RemotePid<KeyValue>) -> Result<(), LinkError> {
+        link_remote(peer, PartitionPolicy.CrashLinked)
+    }
+
+    receive fn count() -> i64 {
+        notices
+    }
+
+    #[on(link)]
+    fn on_link(note: CrashNotification) {
+        match note.target {
+            DownTarget.Remote(location) => {
+                assert(location.node_id().display() == expected.node_id().display());
+                assert(location.slot() == expected.slot());
+                assert(location.incarnation() == expected.incarnation());
+            }
+            DownTarget.Local(_) => panic("remote link reported a local origin"),
+        }
+        assert(note.kind == CrashKind.Fault);
+        notices = notices + 1;
     }
 }
 
@@ -1261,7 +1489,9 @@ fn run_server(scenario: string) {
         publish_atomic(kx, "server.restarted", "1");
     }
     println(f"READY {port}");
-    if scenario == "monitor_watcher_node_death" {
+    if scenario == "service_grants" {
+        scenario_server_service_grants(kx);
+    } else if scenario == "monitor_watcher_node_death" {
         scenario_server_watcher_node_death(0);
     } else {
         if scenario == "cross_node_monitor_close_reclaim" {
@@ -2116,6 +2346,25 @@ fn scenario_link_remote_clean_exit(kv: RemotePid<KeyValue>) -> i64 {
     link_cascade_common(kv, "link_remote_clean_exit", "stop")
 }
 
+fn scenario_link_remote_typed_crash(kv: RemotePid<KeyValue>) -> i64 {
+    let observer = spawn RemoteCrashObserver { expected: kv.location() };
+    observer.attach(kv).expect("observer alive").expect("remote link registered");
+    kv.send(KvReq.CrashSelf).expect("remote crash submitted");
+    var attempts = 0;
+    while observer.count().expect("typed hook survives") == 0 {
+        attempts = attempts + 1;
+        assert(attempts < 300);
+        sleep(100ms);
+    }
+    assert(observer.count().expect("first notification") == 1);
+    sleep(100ms);
+    assert(observer.count().expect("one notification after settling") == 1);
+    stop(observer);
+    stopped(observer);
+    println("PASS link_remote_typed_crash remote-origin class=fault count=1");
+    0
+}
+
 fn scenario_link_remote_crash(kv: RemotePid<KeyValue>) -> i64 {
     link_cascade_common(kv, "link_remote_crash", "crash")
 }
@@ -2567,10 +2816,13 @@ fn scenario_stale_incarnation_restart(old: RemotePid<KeyValue>, kx: string, port
 fn run_client(scenario: string) -> i64 {
     let kx = os.env("HEW_DIST_KX_DIR") ?? "";
     start_pinned(kx, "client", "server", "127.0.0.1:0");
-    let port = wait_for_server_listening(kx);
+    let bound_port = wait_for_server_listening(kx);
+    let port = os.env("HEW_DIST_PROXY_PORT") ?? bound_port;
     let remote_addr = f"1@127.0.0.1:{port}";
     let _ = Node.connect(remote_addr);
-    let status = if scenario == "deadline_budget" {
+    let status = if scenario == "service_grants" {
+        scenario_service_grants(kx, port)
+    } else if scenario == "deadline_budget" {
         scenario_deadline_budget()
     } else if scenario == "handshake_reject" {
         scenario_handshake_reject()
@@ -2642,6 +2894,8 @@ fn run_client(scenario: string) -> i64 {
                     scenario_inbound_isolation(kv, kx)
                 } else if scenario == "linker_local_crash" {
                     scenario_linker_local_crash()
+                } else if scenario == "link_remote_typed_crash" {
+                    scenario_link_remote_typed_crash(kv)
                 } else if scenario == "local_route" {
                     scenario_local_route(kv)
                 } else {

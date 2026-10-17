@@ -1,0 +1,157 @@
+import std.stream;
+
+actor Audit {
+    var count: i64 = 0;
+    receive fn closed() {
+        count += 1;
+    }
+    receive fn total() -> i64 {
+        count
+    }
+}
+
+#[resource]
+type Ticket {
+    audit: Audit;
+    id: i64;
+}
+
+impl Ticket {
+    fn close(consume self) {
+        self.audit.closed().expect("closed");
+    }
+}
+
+actor Worker {
+    let audit: Audit;
+    let done: Sink<i64>;
+
+    receive fn schedule() {
+        let cancelled = mailbox(self, after: 1h).tick(Ticket { audit: audit, id: 1 });
+        cancelled.cancel();
+        // Dropping the handle retains the actor-owned request.
+        let _ = mailbox(self, after: 1ms, overdue: 1s).tick(Ticket { audit: audit, id: 2 });
+        let _ = mailbox(self, after: 1h).tick(Ticket { audit: audit, id: 3 });
+    }
+
+    receive fn cancel_after_firing() {
+        let timer = mailbox(self, after: 0ms, overdue: 50ms).tick(Ticket { audit: audit, id: 4 });
+        // The earlier wheel entry fires before this sleep wakes. Its message
+        // cannot start while this actor still owns the turn.
+        sleep(10ms);
+        timer.cancel();
+        sleep(80ms);
+    }
+
+    receive fn tick(ticket: Ticket) {
+        assert(ticket.id == 2 || ticket.id == 4);
+        if ticket.id == 2 {
+            sleep(1100ms);
+        }
+        done.send(ticket.id).expect("done");
+    }
+}
+
+actor Origins {
+    var last: Option<ActorId> = .None;
+
+    #[intercept]
+    fn guard(call: Call<Self>) -> Outcome<Self> {
+        let author = match call.caller() {
+            .Actor(id) => id,
+            _ => panic("construction call lost its actor author"),
+        };
+        if call.handler_name() == "notice" {
+            last = .Some(author);
+        } else {
+            assert(last == .Some(author));
+        }
+        call.proceed()
+    }
+
+    receive fn notice() {}
+    receive fn identity() -> ActorId {
+        last.clone().expect("notice author")
+    }
+}
+
+fn notice_author(origins: Origins) {
+    mailbox(origins, on_full: .Reject).notice().expect("notice without waiting");
+}
+
+fn report_author(origins: Origins, reject: bool) -> ActorId {
+    if reject {
+        notice_author(origins);
+    } else {
+        mailbox(origins, on_full: .Wait).notice().expect("waiting notice");
+    }
+    origins.identity().expect("observed author")
+}
+
+actor Started {
+    let audit: Audit;
+    let done: Sink<i64>;
+    let origins: Origins;
+    let parent: ActorId;
+    var init_author: Option<ActorId> = .None;
+    var ready: bool = false;
+
+    init() {
+        init_author = .Some(report_author(origins, true));
+        let _ = mailbox(self, after: 0ms).tick(Ticket { audit: audit, id: 5 });
+        sleep(10ms);
+    }
+
+    #[on(start)]
+    fn started() {
+        assert(init_author == .Some(report_author(origins, false)));
+        let _ = mailbox(self, after: 0ms).tick(Ticket { audit: audit, id: 6 });
+        sleep(10ms);
+        ready = true;
+    }
+
+    receive fn tick(ticket: Ticket) {
+        assert(ready);
+        assert(init_author == .Some(report_author(origins, true)));
+        assert(init_author != .Some(parent));
+        done.send(ticket.id).expect("constructed timer");
+    }
+}
+
+actor Factory {
+    receive fn create(audit: Audit, done: Sink<i64>, origins: Origins) -> Started {
+        let parent = report_author(origins, true);
+        spawn Started { audit: audit, done: done, origins: origins, parent: parent }
+    }
+}
+
+fn main() {
+    let audit = spawn Audit;
+    let (tx, rx): (Sink<i64>, Stream<i64>) = stream.pipe(1).expect("pipe");
+    let worker = spawn Worker { audit: audit, done: tx };
+    worker.schedule().expect("schedule");
+    assert(rx.recv().expect("first timer") == 2);
+    worker.cancel_after_firing().expect("overdue was disarmed");
+    assert(rx.recv().expect("admitted timer") == 4);
+    stop(worker);
+    stopped(worker);
+    assert(audit.total().expect("audit") == 4);
+    rx.close();
+    let factory = spawn Factory;
+    let origins = spawn Origins;
+    let (constructed_tx, constructed_rx): (Sink<i64>, Stream<i64>) = stream.pipe(2).expect("constructed pipe");
+    let constructed = factory.create(audit, constructed_tx, origins).expect("nested construction");
+    assert(constructed_rx.recv().expect("init timer") == 5);
+    assert(constructed_rx.recv().expect("start timer") == 6);
+    stop(constructed);
+    stopped(constructed);
+    assert(audit.total().expect("construction audit") == 6);
+    constructed_rx.close();
+    stop(factory);
+    stopped(factory);
+    stop(origins);
+    stopped(origins);
+    stop(audit);
+    stopped(audit);
+    println("one-shot ownership and cancellation");
+}

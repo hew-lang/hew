@@ -15,7 +15,7 @@ impl Checker {
     /// values remain conservative because their members may do so.
     fn type_may_carry_value_candidates(ty: &crate::Ty) -> bool {
         match ty {
-            crate::Ty::String | crate::Ty::Bytes => false,
+            crate::Ty::Never | crate::Ty::String | crate::Ty::Bytes => false,
             crate::Ty::Tuple(items) => items.iter().any(Self::type_may_carry_value_candidates),
             crate::Ty::Array(item, _) | crate::Ty::Slice(item) => {
                 Self::type_may_carry_value_candidates(item)
@@ -71,12 +71,27 @@ impl Checker {
         expr: &Expr,
         span: &Span,
     ) -> IndirectCallCandidates {
+        let candidates = self.unerased_value_candidates(expr, span);
+        let site = SpanKey::in_module(span, self.current_module_idx);
+        if self.dyn_trait_coercions.contains_key(&site) {
+            IndirectCallCandidates::single(CallableCandidate::Erasure {
+                site,
+                value: Box::new(candidates),
+            })
+        } else {
+            candidates
+        }
+    }
+
+    fn unerased_value_candidates(&self, expr: &Expr, span: &Span) -> IndirectCallCandidates {
         let key = SpanKey::in_module(span, self.current_module_idx);
-        if self.expr_types.get(&key).is_some_and(|ty| {
-            !Self::type_may_carry_value_candidates(
-                &self.subst.resolve(ty).materialize_literal_defaults(),
-            )
-        }) {
+        if matches!(expr, Expr::Literal(_))
+            || self.expr_types.get(&key).is_some_and(|ty| {
+                !Self::type_may_carry_value_candidates(
+                    &self.subst.resolve(ty).materialize_literal_defaults(),
+                )
+            })
+        {
             return IndirectCallCandidates {
                 known: Vec::new(),
                 may_be_unknown: false,
@@ -88,10 +103,7 @@ impl Checker {
 
         match expr {
             Expr::ForkChild { .. } | Expr::ForkBlock { .. } | Expr::Race(_) => {
-                IndirectCallCandidates::single(CallableCandidate::TaskProducer(SpanKey::in_module(
-                    span,
-                    self.current_module_idx,
-                )))
+                IndirectCallCandidates::single(CallableCandidate::TaskProducer(key))
             }
             Expr::Await(value) => self
                 .callable_candidates_for_expr(&value.0, &value.1)
@@ -100,27 +112,26 @@ impl Checker {
             Expr::Array(values) => self.callable_sequence_candidates(
                 values.iter().map(hew_parser::ast::ArrayElement::expr),
             ),
-            Expr::Spawn { .. } | Expr::StructInit { .. } => IndirectCallCandidates::single(
-                CallableCandidate::Aggregate(SpanKey::in_module(span, self.current_module_idx)),
-            ),
-            Expr::Lambda { .. } | Expr::SpawnLambdaActor { .. } => IndirectCallCandidates::single(
-                CallableCandidate::Closure(SpanKey::in_module(span, self.current_module_idx)),
-            ),
+            Expr::Spawn { .. } | Expr::StructInit { .. } => {
+                IndirectCallCandidates::single(CallableCandidate::Aggregate(key))
+            }
+            Expr::Lambda { .. } | Expr::SpawnLambdaActor { .. } => {
+                IndirectCallCandidates::single(CallableCandidate::Closure(key))
+            }
+            Expr::GenBlock { .. } => {
+                IndirectCallCandidates::single(CallableCandidate::GeneratorBlock(key))
+            }
             Expr::Ident(_) => self.resolved_callable_candidate(span),
             Expr::FieldAccess { object, field } => self.callable_field_candidates(object, field),
             Expr::GenericApplySuffix { target, .. } => {
                 self.callable_candidates_for_expr(&target.0, &target.1)
             }
             Expr::ContextVariant(context) if context.record.is_some() => {
-                IndirectCallCandidates::single(CallableCandidate::Aggregate(SpanKey::in_module(
-                    span,
-                    self.current_module_idx,
-                )))
+                IndirectCallCandidates::single(CallableCandidate::Aggregate(key))
             }
             Expr::Call { args, .. }
                 if matches!(
-                    self.actor_delivery_calls
-                        .get(&SpanKey::in_module(span, self.current_module_idx)),
+                    self.actor_delivery_calls.get(&key),
                     Some(crate::actor_delivery::ActorDeliveryCall::Policy { .. })
                 ) =>
             {
@@ -139,9 +150,12 @@ impl Checker {
             {
                 self.callable_sequence_candidates(args.iter().map(CallArg::expr))
             }
-            Expr::Call { .. } | Expr::MethodCall { .. } => IndirectCallCandidates::single(
-                CallableCandidate::CallResult(SpanKey::in_module(span, self.current_module_idx)),
-            ),
+            Expr::Call { .. } | Expr::MethodCall { .. } | Expr::Index { .. }
+                if !matches!(expr, Expr::Index { .. })
+                    || self.selected_callable_target(span).is_some() =>
+            {
+                IndirectCallCandidates::single(CallableCandidate::CallResult(key))
+            }
             Expr::If { .. } | Expr::IfLet { .. } | Expr::Match { .. } => {
                 self.branch_value_candidates(expr)
             }
@@ -210,7 +224,29 @@ impl Checker {
         field: &Spanned<Ident>,
     ) -> IndirectCallCandidates {
         let key = SpanKey::in_module(&field.1, self.current_module_idx);
-        if let Some(Resolution::Field(owner, index)) = self.scopes.resolutions().get(&key) {
+        let identity =
+            if let Some(Resolution::Field(owner, index)) = self.scopes.resolutions().get(&key) {
+                Some((*owner, *index))
+            } else {
+                // Method syntax for a callable field uses the same declaration
+                // identity even when name resolution recorded a method site.
+                let ty = self
+                    .expr_types
+                    .get(&SpanKey::in_module(&object.1, self.current_module_idx));
+                ty.and_then(|ty| match self.subst.resolve(ty) {
+                    crate::Ty::Named { head, .. } => {
+                        let owner = head.nominal()?;
+                        let definition = self.head_type_def(head)?;
+                        let index = definition
+                            .field_order
+                            .iter()
+                            .position(|name| name == field.0.name.as_str())?;
+                        Some((owner, u32::try_from(index).ok()?))
+                    }
+                    _ => None,
+                })
+            };
+        if let Some((owner, index)) = identity {
             let receiver = self.callable_candidates_for_expr(&object.0, &object.1);
             IndirectCallCandidates {
                 known: receiver
@@ -218,8 +254,8 @@ impl Checker {
                     .into_iter()
                     .map(|receiver| CallableCandidate::Field {
                         receiver: Box::new(receiver),
-                        owner: *owner,
-                        index: *index,
+                        owner,
+                        index,
                     })
                     .collect(),
                 may_be_unknown: receiver.may_be_unknown,
@@ -244,12 +280,13 @@ impl Checker {
         &self,
         block: &hew_parser::ast::Block,
     ) -> IndirectCallCandidates {
-        block
-            .trailing_expr
-            .as_ref()
-            .map_or_else(IndirectCallCandidates::unknown, |value| {
-                self.callable_candidates_for_expr(&value.0, &value.1)
-            })
+        block.trailing_expr.as_ref().map_or_else(
+            || IndirectCallCandidates {
+                known: Vec::new(),
+                may_be_unknown: false,
+            },
+            |value| self.callable_candidates_for_expr(&value.0, &value.1),
+        )
     }
 
     pub(super) fn record_binding_value_candidates(
@@ -443,10 +480,14 @@ impl Checker {
         }
     }
 
-    fn selected_callable_target(&self, span: &Span) -> Option<&CallTarget> {
+    pub(super) fn selected_callable_target(&self, span: &Span) -> Option<&CallTarget> {
         let key = SpanKey::in_module(span, self.current_module_idx);
+        self.selected_callable_target_at(&key)
+    }
+
+    fn selected_callable_target_at(&self, key: &SpanKey) -> Option<&CallTarget> {
         self.method_call_rewrites
-            .get(&key)
+            .get(key)
             .and_then(|rewrite| match rewrite {
                 MethodCallRewrite::RewriteToFunction { target, .. }
                 | MethodCallRewrite::RewriteModuleQualifiedToFunction { target, .. }
@@ -457,17 +498,25 @@ impl Checker {
                 }) => Some(target),
                 _ => None,
             })
-            .or_else(|| self.direct_call_targets.get(&key))
-            .or_else(|| self.resolved_calls.get(&key).map(|call| &call.target))
+            .or_else(|| self.direct_call_targets.get(key))
+            .or_else(|| {
+                self.dyn_trait_method_calls
+                    .get(key)
+                    .map(|call| &call.target)
+            })
+            .or_else(|| self.resolved_calls.get(key).map(|call| &call.target))
     }
 
     fn selected_callable_declaration(&self, span: &Span) -> Option<crate::DefId> {
-        self.selected_callable_target(span)
+        self.selected_callable_declaration_at(&SpanKey::in_module(span, self.current_module_idx))
+    }
+
+    pub(super) fn selected_callable_declaration_at(&self, key: &SpanKey) -> Option<crate::DefId> {
+        self.selected_callable_target_at(key)
             .and_then(Self::callable_target_declaration)
             .or_else(|| {
-                let key = SpanKey::in_module(span, self.current_module_idx);
                 self.actor_method_dispatch
-                    .get(&key)
+                    .get(key)
                     .map(|dispatch| match dispatch {
                         super::ActorMethodKind::Ask { method, .. }
                         | super::ActorMethodKind::Message { method, .. }
@@ -480,9 +529,14 @@ impl Checker {
     /// declaration. Formal IDs may be registered later in source order; the
     /// completed table joins them at the output boundary.
     pub(super) fn record_call_argument_sources(&mut self, expr: &Expr, span: &Span) {
+        let indexed_argument;
         let (receiver, args): (Option<&Spanned<Expr>>, &[CallArg]) = match expr {
             Expr::Call { args, .. } => (None, args),
             Expr::MethodCall { receiver, args, .. } => (Some(receiver), args),
+            Expr::Index { object, index } => {
+                indexed_argument = CallArg::Positional((**index).clone());
+                (Some(object), std::slice::from_ref(&indexed_argument))
+            }
             _ => return,
         };
         let key = SpanKey::in_module(span, self.current_module_idx);
@@ -493,15 +547,28 @@ impl Checker {
                 Some(MethodCallRewrite::BinderStaticCall(_))
             )
         });
-        if matches!(
-            self.selected_callable_target(span),
-            Some(CallTarget::StaticTraitMethod { .. } | CallTarget::IndirectFunctionValue)
-        ) {
-            let receiver = receiver.filter(|_| {
-                matches!(
-                    self.selected_callable_target(span),
-                    Some(CallTarget::StaticTraitMethod { .. })
+        let generator = matches!(
+            self.method_call_rewrites.get(&key),
+            Some(MethodCallRewrite::GeneratorNext { .. })
+        );
+        if generator
+            || matches!(
+                self.selected_callable_target(span),
+                Some(
+                    CallTarget::StaticTraitMethod { .. }
+                        | CallTarget::DynamicVtable { .. }
+                        | CallTarget::IndirectFunctionValue
                 )
+            )
+        {
+            let receiver = receiver.filter(|_| {
+                generator
+                    || matches!(
+                        self.selected_callable_target(span),
+                        Some(
+                            CallTarget::StaticTraitMethod { .. } | CallTarget::DynamicVtable { .. }
+                        )
+                    )
             });
             let receiver_offset = usize::from(receiver.is_some());
             let mut actuals = Vec::with_capacity(args.len() + receiver_offset);
@@ -521,10 +588,12 @@ impl Checker {
             }
             self.generic_trait_call_arguments
                 .insert(key.clone(), actuals);
-            if matches!(
-                self.selected_callable_target(span),
-                Some(CallTarget::StaticTraitMethod { .. })
-            ) {
+            if generator
+                || matches!(
+                    self.selected_callable_target(span),
+                    Some(CallTarget::StaticTraitMethod { .. } | CallTarget::DynamicVtable { .. })
+                )
+            {
                 return;
             }
         }

@@ -2,7 +2,7 @@ import std.string;
 
 fn main() -> i64 {
     let n: i64 = -4200;
-    let n_text = string.from_int(n);
+    let n_text = f"{n}";
     println(n_text);
     match string.to_int(n_text) {
         .Ok(back) => println(back == n),

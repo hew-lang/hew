@@ -350,7 +350,6 @@ fn supervised_actor_crash_and_restart() {
             sys_dispatch: None,
             arena_cap_bytes: 0,
             cycle_capable: 0,
-            on_crash: None,
             lifecycle_fn: None,
             init_fn: None,
             config: std::ptr::null_mut(),
@@ -472,7 +471,6 @@ fn lifecycle_wrapper_fires_on_initial_spawn_and_restart() {
             sys_dispatch: None,
             arena_cap_bytes: 0,
             cycle_capable: 0,
-            on_crash: None,
             // The load-bearing carrier: the initial-spawn fire reads this
             // literal field inside add_child_spec, BEFORE the setter below runs.
             lifecycle_fn: Some(recording_lifecycle),
@@ -569,7 +567,6 @@ fn circuit_breaker_trips_on_repeated_crashes() {
             sys_dispatch: None,
             arena_cap_bytes: 0,
             cycle_capable: 0,
-            on_crash: None,
             lifecycle_fn: None,
             init_fn: None,
             config: std::ptr::null_mut(),
@@ -792,7 +789,6 @@ fn linked_actor_receives_exit_before_supervisor_restarts() {
             sys_dispatch: None,
             arena_cap_bytes: 0,
             cycle_capable: 0,
-            on_crash: None,
             lifecycle_fn: None,
             init_fn: None,
             config: std::ptr::null_mut(),
@@ -921,9 +917,12 @@ fn monitor_detects_crash() {
         .copied()
         .expect("DOWN notification should be recorded");
     assert_eq!(down.monitor_id, ref_id);
-    assert_eq!(down.target_kind, 0);
+    assert_eq!(down.target.kind, 0);
     assert_eq!(down.reason_kind, 2);
-    assert_eq!(down.slot, hew_runtime::pid::hew_pid_serial(target_id));
+    assert_eq!(
+        down.target.slot,
+        hew_runtime::pid::hew_pid_serial(target_id)
+    );
 
     hew_deterministic_reset();
 }
@@ -1013,9 +1012,12 @@ fn late_monitor_after_crash_delivers_immediate_down() {
         .copied()
         .expect("DOWN notification should be recorded");
     assert_eq!(down.monitor_id, ref_id);
-    assert_eq!(down.target_kind, 0);
+    assert_eq!(down.target.kind, 0);
     assert_eq!(down.reason_kind, 2);
-    assert_eq!(down.slot, hew_runtime::pid::hew_pid_serial(target_id));
+    assert_eq!(
+        down.target.slot,
+        hew_runtime::pid::hew_pid_serial(target_id)
+    );
 
     hew_actor_demonitor(ref_id);
     watcher.send_empty(77);
@@ -1154,7 +1156,6 @@ fn shallow_supervisor_restart_keeps_borrowed_state_non_owning() {
             sys_dispatch: None,
             arena_cap_bytes: 0,
             cycle_capable: 0,
-            on_crash: None,
             lifecycle_fn: None,
             init_fn: None,
             config: std::ptr::null_mut(),
@@ -1255,7 +1256,6 @@ fn dynamic_shallow_child_restart_keeps_borrowed_state_non_owning() {
             sys_dispatch: None,
             arena_cap_bytes: 0,
             cycle_capable: 0,
-            on_crash: None,
             lifecycle_fn: None,
             init_fn: None,
             config: std::ptr::null_mut(),
@@ -1353,7 +1353,6 @@ fn one_for_all_borrowed_shallow_siblings_never_claim_typed_drop() {
             sys_dispatch: None,
             arena_cap_bytes: 0,
             cycle_capable: 0,
-            on_crash: None,
             lifecycle_fn: None,
             init_fn: None,
             config: std::ptr::null_mut(),
@@ -1381,7 +1380,6 @@ fn one_for_all_borrowed_shallow_siblings_never_claim_typed_drop() {
             sys_dispatch: None,
             arena_cap_bytes: 0,
             cycle_capable: 0,
-            on_crash: None,
             lifecycle_fn: None,
             init_fn: None,
             config: std::ptr::null_mut(),

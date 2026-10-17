@@ -15,7 +15,7 @@ actor VecSetCrasher {
 
     #[on(crash)]
     fn on_crash(info: CrashInfo) -> CrashAction {
-        if info.code == 205 {
+        if info.kind == CrashKind.Fault {
             CrashAction.Restart
         } else {
             CrashAction.GiveUp

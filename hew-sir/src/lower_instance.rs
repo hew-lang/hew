@@ -654,11 +654,17 @@ impl<'a> InstanceService<'a> {
         for (index, layout_slot) in layout.slots.iter().enumerate() {
             let slot = u32::try_from(index)
                 .map_err(|_| "trait-object method count exceeds u32".to_string())?;
+            let trait_args = layout_slot
+                .trait_args
+                .iter()
+                .map(|ty| ResolvedTy::from_ty(ty).map(|ty| substitution.apply(&ty)))
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|error| format!("unresolved trait-object slot arguments: {error:?}"))?;
             let target = self.resolve_static_trait_call(
                 layout_slot.declaring_trait,
                 layout_slot.method,
                 concrete_ty,
-                &[],
+                &trait_args,
                 site,
                 substitution,
             )?;
@@ -975,12 +981,15 @@ impl<'a> InstanceService<'a> {
                 continue;
             };
             let declaration = lifecycle.close_declaration;
-            if self.demanded_opaque_closes.insert(declaration) {
-                closes.push(declaration);
+            if self
+                .demanded_opaque_closes
+                .insert((declaration, key.0.clone()))
+            {
+                closes.push((declaration, key.0.clone()));
             }
         }
-        for declaration in closes {
-            if let Ok(id) = self.admit_monomorphic(declaration) {
+        for (declaration, owner) in closes {
+            if let Ok(id) = self.request_record_close(declaration, &owner) {
                 self.callable_facts.opaque_entries.insert(id);
                 self.request_body(id);
             }
@@ -1175,6 +1184,7 @@ impl<'a> InstanceService<'a> {
             | CallableInstance::Closure(_)
             | CallableInstance::EntryAdapter
             | CallableInstance::SupervisorChild { .. }
+            | CallableInstance::SupervisorPoolCount { .. }
             | CallableInstance::ActorConstruction { .. } => {
                 unreachable!("closure, entry adapter and child spawn inputs are resolved above")
             }

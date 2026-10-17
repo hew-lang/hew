@@ -2,8 +2,8 @@
 //!
 //! A Hew string value is one opaque pointer to an immutable allocation. The
 //! pointer names the allocation header, never a C character buffer. The exact
-//! byte length in the header makes every Unicode operation length-bounded and
-//! permits embedded NUL bytes. Foreign C strings enter and leave only through
+//! byte and scalar lengths plus an eagerly built bounded-stride index make
+//! scalar indexing constant time and preserve embedded NUL bytes. Foreign C strings enter and leave only through
 //! explicit copying adapters.
 
 use core::slice;
@@ -25,12 +25,17 @@ pub struct HewString {
 #[repr(C)]
 struct HewStringHeader<Length = usize> {
     byte_len: Length,
+    capacity: Length,
+    scalar_len: Length,
     rc: AtomicU32,
 }
 
 /// Native-target offset of the byte length for read-only debugger tooling.
 /// Runtime and package code should use [`string_as_bytes`] instead.
 pub const STRING_DEBUG_BYTE_LEN_OFFSET: usize = core::mem::offset_of!(HewStringHeader, byte_len);
+
+/// Native-target offset of the atomic owner count for read-only inspection.
+pub const STRING_DEBUG_REFCOUNT_OFFSET: usize = core::mem::offset_of!(HewStringHeader, rc);
 
 /// Header size for a debugger describing a supported target's managed strings.
 /// Derive cross-target offsets from the allocation header declaration as well.
@@ -47,6 +52,59 @@ pub const fn string_debug_header_size(pointer_bytes: u64) -> Option<u64> {
 }
 
 const MAX_REFCOUNT: u32 = u32::MAX / 2;
+const INDEX_STRIDE: usize = 32;
+
+// Non-ASCII allocations keep a byte offset for every INDEX_STRIDE-th scalar
+// after the UTF-8 capacity. The table belongs to the same allocation and is
+// fully initialized before a handle can be shared.
+fn index_offset(capacity: usize) -> usize {
+    let align = core::mem::align_of::<usize>();
+    core::mem::size_of::<HewStringHeader>()
+        .checked_add(capacity)
+        .and_then(|size| size.checked_add(align - 1))
+        .map_or_else(|| std::process::abort(), |size| size & !(align - 1))
+}
+
+fn allocation_size(capacity: usize, indexed: bool) -> usize {
+    let size = if indexed {
+        capacity
+            .div_ceil(INDEX_STRIDE)
+            .checked_mul(core::mem::size_of::<usize>())
+            .and_then(|table| index_offset(capacity).checked_add(table))
+    } else {
+        core::mem::size_of::<HewStringHeader>().checked_add(capacity)
+    };
+    size.filter(|size| isize::try_from(*size).is_ok())
+        .unwrap_or_else(|| std::process::abort())
+}
+
+unsafe fn index_table(value: *const HewString) -> *const usize {
+    // SAFETY: callers hold a live non-ASCII allocation. Its table starts at
+    // the aligned end of the UTF-8 capacity, within its single owned block.
+    unsafe {
+        value
+            .cast::<u8>()
+            .add(index_offset((*header(value)).capacity))
+            .cast()
+    }
+}
+
+unsafe fn write_index(value: *mut HewString, byte_start: usize, scalar_start: usize) {
+    // SAFETY: the caller has exclusive access to initialized UTF-8 bytes and
+    // allocated table capacity. Table writes are disjoint from the byte slice.
+    unsafe {
+        let table = index_table(value).cast_mut();
+        for (index, (offset, _)) in string_as_str(value)[byte_start..]
+            .char_indices()
+            .enumerate()
+        {
+            let scalar = scalar_start + index;
+            if scalar.is_multiple_of(INDEX_STRIDE) {
+                table.add(scalar / INDEX_STRIDE).write(byte_start + offset);
+            }
+        }
+    }
+}
 
 /// Why a foreign C string could not be copied into managed string storage.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -99,34 +157,32 @@ pub unsafe fn string_alloc_utf8_unchecked(source: *const u8, len: usize) -> *mut
 
 // Shared allocator for the private null-empty and public non-null-empty views.
 unsafe fn string_alloc_nonnull(source: *const u8, len: usize) -> *mut HewString {
-    if source.is_null() {
+    if source.is_null() || isize::try_from(len).is_err() {
         std::process::abort();
     }
-    let Some(total) = core::mem::size_of::<HewStringHeader>().checked_add(len) else {
-        std::process::abort();
-    };
-    if isize::try_from(total).is_err() {
-        std::process::abort();
-    }
-
-    // SAFETY: `total` is non-zero and fits pointer-offset arithmetic.
+    // SAFETY: the caller supplies valid UTF-8 readable for its complete length.
+    let text = unsafe { str::from_utf8_unchecked(slice::from_raw_parts(source, len)) };
+    let scalar_len = text.chars().count();
+    let indexed = scalar_len != len;
+    let total = allocation_size(len, indexed);
+    // SAFETY: the checked allocation size contains the header, bytes and index.
     let allocation = crate::mem::buf_try_alloc(total).cast::<HewStringHeader>();
     if allocation.is_null() {
         std::process::abort();
     }
-    // SAFETY: malloc storage is suitably aligned and writable for the header.
+    // SAFETY: the allocation is aligned and writable for this header and its
+    // complete payload. The private index is initialized before publication.
     unsafe {
         allocation.write(HewStringHeader {
             byte_len: len,
+            capacity: len,
+            scalar_len,
             rc: AtomicU32::new(1),
         });
-        core::ptr::copy_nonoverlapping(
-            source,
-            allocation
-                .cast::<u8>()
-                .add(core::mem::size_of::<HewStringHeader>()),
-            len,
-        );
+        core::ptr::copy_nonoverlapping(source, data(allocation.cast()).cast_mut(), len);
+        if indexed {
+            write_index(allocation.cast(), 0, 0);
+        }
     }
     allocation.cast()
 }
@@ -293,6 +349,214 @@ pub unsafe fn string_as_bytes<'a>(value: *const HewString) -> &'a [u8] {
 pub unsafe fn string_as_str<'a>(value: *const HewString) -> &'a str {
     // SAFETY: managed-string construction establishes the UTF-8 invariant.
     unsafe { str::from_utf8_unchecked(string_as_bytes(value)) }
+}
+
+/// Number of Unicode scalar values, in constant time.
+///
+/// # Safety
+/// `value` must be null or a live managed string handle.
+#[must_use]
+pub unsafe fn string_scalar_len(value: *const HewString) -> usize {
+    if value.is_null() {
+        return 0;
+    }
+    // SAFETY: the caller holds a live initialized allocation.
+    unsafe { (*header(value)).scalar_len }
+}
+
+/// Byte offset of a scalar boundary, including the end boundary.
+/// At most 31 scalars are skipped, independent of string length.
+///
+/// # Safety
+/// `value` must be null or a live managed string handle.
+#[must_use]
+pub unsafe fn string_scalar_byte_offset(value: *const HewString, index: usize) -> Option<usize> {
+    // SAFETY: the caller holds the managed owner throughout this read.
+    let scalar_len = unsafe { string_scalar_len(value) };
+    if index > scalar_len {
+        return None;
+    }
+    if value.is_null() {
+        return Some(0);
+    }
+    // SAFETY: a non-null managed handle has an initialized header.
+    let byte_len = unsafe { (*header(value)).byte_len };
+    if index == scalar_len {
+        return Some(byte_len);
+    }
+    if byte_len == scalar_len {
+        return Some(index);
+    }
+    // SAFETY: construction initialized an entry for each group of scalars.
+    let offset = unsafe { *index_table(value).add(index / INDEX_STRIDE) };
+    // SAFETY: both offsets name scalar boundaries within the live UTF-8 bytes.
+    (unsafe { string_as_str(value) })[offset..]
+        .char_indices()
+        .nth(index % INDEX_STRIDE)
+        .map(|(tail, _)| offset + tail)
+}
+
+/// Read one Unicode scalar in constant time, or report an absent index.
+///
+/// # Safety
+/// `value` must be null or a live managed string handle.
+#[must_use]
+pub unsafe fn string_scalar_at(value: *const HewString, index: usize) -> Option<char> {
+    // SAFETY: all reads borrow the same live owner.
+    unsafe {
+        if index >= string_scalar_len(value) {
+            return None;
+        }
+        let offset = string_scalar_byte_offset(value, index)?;
+        string_as_str(value)[offset..].chars().next()
+    }
+}
+
+/// Scalar offset of a byte boundary found by a UTF-8 substring search.
+/// The index selects a group by binary search, then scans at most one group.
+///
+/// # Safety
+/// `value` must be null or a live managed string handle.
+#[must_use]
+pub unsafe fn string_byte_scalar_offset(value: *const HewString, offset: usize) -> Option<usize> {
+    // SAFETY: the caller holds the managed owner throughout this read.
+    let text = unsafe { string_as_str(value) };
+    if !text.is_char_boundary(offset) {
+        return None;
+    }
+    // SAFETY: the same managed owner remains live.
+    let scalar_len = unsafe { string_scalar_len(value) };
+    if offset == text.len() {
+        return Some(scalar_len);
+    }
+    if scalar_len == text.len() {
+        return Some(offset);
+    }
+    // SAFETY: non-ASCII strings initialize exactly this many index entries.
+    let table =
+        unsafe { slice::from_raw_parts(index_table(value), scalar_len.div_ceil(INDEX_STRIDE)) };
+    let group = table.partition_point(|start| *start <= offset) - 1;
+    Some(group * INDEX_STRIDE + text[table[group]..offset].chars().count())
+}
+
+/// Append a borrowed string to an owned receiver, copying shared storage.
+/// Unique storage grows geometrically; only newly appended scalars are indexed.
+///
+/// # Safety
+/// `value` transfers one live owner (or null); `suffix` is borrowed and must
+/// remain live through this call. It may name the receiver's allocation.
+#[must_use]
+pub unsafe fn string_append(value: *mut HewString, suffix: *const HewString) -> *mut HewString {
+    // SAFETY: both handles remain live until the receiver is consumed below.
+    unsafe {
+        if value.cast_const() == suffix && !value.is_null() {
+            // A self-append can reallocate its source. Copy the appended bytes
+            // before consuming that source; their size is the appended size.
+            let bytes = string_as_bytes(suffix).to_vec();
+            return append_utf8(value, &bytes, string_scalar_len(suffix));
+        }
+        append_utf8(value, string_as_bytes(suffix), string_scalar_len(suffix))
+    }
+}
+
+/// Append one scalar to an owned receiver, copying shared storage.
+///
+/// # Safety
+/// `value` transfers one live owner or is null.
+#[must_use]
+pub unsafe fn string_push(value: *mut HewString, scalar: char) -> *mut HewString {
+    let mut bytes = [0u8; 4];
+    // SAFETY: char encoding is valid UTF-8 and contains exactly one scalar.
+    unsafe { append_utf8(value, scalar.encode_utf8(&mut bytes).as_bytes(), 1) }
+}
+
+unsafe fn append_utf8(
+    mut value: *mut HewString,
+    suffix: &[u8],
+    added_scalars: usize,
+) -> *mut HewString {
+    if suffix.is_empty() {
+        return value;
+    }
+    if value.is_null() {
+        // SAFETY: callers supply valid UTF-8 and the empty receiver has no owner.
+        return unsafe { string_alloc_nonnull(suffix.as_ptr(), suffix.len()) };
+    }
+    // SAFETY: the transferred receiver is a live allocation throughout the
+    // capacity change. A shared receiver is only read, then released once.
+    unsafe {
+        let old = &*header(value);
+        let old_len = old.byte_len;
+        let old_scalars = old.scalar_len;
+        let old_capacity = old.capacity;
+        let old_indexed = old_scalars != old_len;
+        let new_len = old_len
+            .checked_add(suffix.len())
+            .unwrap_or_else(|| std::process::abort());
+        let new_scalars = old_scalars
+            .checked_add(added_scalars)
+            .unwrap_or_else(|| std::process::abort());
+        let indexed = new_scalars != new_len;
+        let capacity = if new_len > old_capacity {
+            new_len.max(old_capacity.saturating_mul(2)).max(16)
+        } else {
+            old_capacity
+        };
+        let total = allocation_size(capacity, indexed);
+        if old.rc.load(Ordering::Acquire) != 1 {
+            let allocation = crate::mem::buf_try_alloc(total).cast::<HewStringHeader>();
+            if allocation.is_null() {
+                std::process::abort();
+            }
+            allocation.write(HewStringHeader {
+                byte_len: new_len,
+                capacity,
+                scalar_len: new_scalars,
+                rc: AtomicU32::new(1),
+            });
+            let new_value = allocation.cast::<HewString>();
+            core::ptr::copy_nonoverlapping(data(value), data(new_value).cast_mut(), old_len);
+            core::ptr::copy_nonoverlapping(
+                suffix.as_ptr(),
+                data(new_value).cast_mut().add(old_len),
+                suffix.len(),
+            );
+            if indexed {
+                write_index(new_value, 0, 0);
+            }
+            string_release(value);
+            return new_value;
+        }
+        if capacity != old_capacity || indexed != old_indexed {
+            value = crate::mem::buf_realloc(value.cast(), total).cast();
+            if old_indexed {
+                // The index moves when the UTF-8 capacity grows. Copy permits
+                // overlap and runs before appended bytes overwrite its old area.
+                core::ptr::copy(
+                    value.cast::<u8>().add(index_offset(old_capacity)),
+                    value.cast::<u8>().add(index_offset(capacity)),
+                    old_scalars.div_ceil(INDEX_STRIDE) * core::mem::size_of::<usize>(),
+                );
+            }
+        }
+        let current = &mut *value.cast::<HewStringHeader>();
+        current.byte_len = new_len;
+        current.capacity = capacity;
+        current.scalar_len = new_scalars;
+        core::ptr::copy_nonoverlapping(
+            suffix.as_ptr(),
+            data(value).cast_mut().add(old_len),
+            suffix.len(),
+        );
+        if indexed {
+            if old_indexed {
+                write_index(value, old_len, old_scalars);
+            } else {
+                write_index(value, 0, 0);
+            }
+        }
+    }
+    value
 }
 
 /// Retain one additional owner of a managed string and return the same handle.

@@ -203,9 +203,16 @@ pub(super) fn inbound_ask_denied_unverified(
 pub(super) fn deposit_reply_envelope(
     mgr: *mut HewConnMgr,
     conn_id: c_int,
-    _peer_feature_flags: u32,
+    publication: u64,
     envelope: &EnvelopeFrame,
 ) {
+    // SAFETY: the reader pins this manager throughout envelope dispatch.
+    if unsafe { mgr.as_ref() }
+        .and_then(|manager| super::claim_send(manager, conn_id, Some(publication)))
+        .is_none()
+    {
+        return;
+    }
     if envelope.message == crate::envelope::EnvelopeMessage::Rejected {
         // Rejection reply: the remote node hit its inbound ask path and sent an
         // encoded AskError reason. Mark the pending ask as failed so the
@@ -213,6 +220,7 @@ pub(super) fn deposit_reply_envelope(
         crate::hew_node::fail_remote_reply(
             mgr.cast_const(),
             conn_id,
+            publication,
             envelope.request_id,
             envelope.payload.as_slice(),
         );
@@ -220,6 +228,7 @@ pub(super) fn deposit_reply_envelope(
         crate::hew_node::complete_remote_reply(
             mgr.cast_const(),
             conn_id,
+            publication,
             envelope.request_id,
             envelope.payload.as_slice(),
         );

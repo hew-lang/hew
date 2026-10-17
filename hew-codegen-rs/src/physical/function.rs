@@ -437,6 +437,13 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 dest,
                 ..
             } => self.emit_task_spawn(*scope, *callable, *dest),
+            PhysicalOp::TaskInvoke {
+                scope,
+                callee,
+                args,
+                dest,
+                ..
+            } => self.emit_task_invoke(*scope, callee, args, *dest),
             PhysicalOp::ClosureMake {
                 dest,
                 closure,
@@ -791,8 +798,9 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     }
                 ) {
                     if let Some(action) = destroy {
-                        let value = self.load(*storage, "seat.release")?;
-                        self.release_loaded(value, &self.storage(*storage)?.layout, *action)?;
+                        self.destroy_value(*storage, *action, cleanup)?;
+                    } else {
+                        self.clear_owned(*storage)?;
                     }
                     return Ok(());
                 }

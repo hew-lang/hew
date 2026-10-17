@@ -579,7 +579,7 @@ struct InstanceService<'a> {
     scanned_record_closes: usize,
     /// Authored opaque `#[resource]` closes already demanded, so a repeated
     /// projection scan does not queue the same body twice.
-    demanded_opaque_closes: std::collections::HashSet<hew_types::DefId>,
+    demanded_opaque_closes: std::collections::HashSet<(hew_types::DefId, ResolvedTy)>,
     pending: VecDeque<CallableId>,
     functions: Vec<SemFunction>,
     aggregate_shapes: Vec<SemAggregateShape>,
@@ -1062,6 +1062,13 @@ pub(crate) fn runtime_variant_tags(
             (Role::ActorErrorPartition, "Partition"),
         ],
         TypeHead::Builtin(BuiltinType::LinkError) => &[(Role::LinkErrorNoContext, "NoContext")],
+        TypeHead::Builtin(BuiltinType::CrashKind) => &[
+            (Role::CrashKindFault, "Fault"),
+            (Role::CrashKindHeapExceeded, "HeapExceeded"),
+            (Role::CrashKindPartitionDetected, "PartitionDetected"),
+            (Role::CrashKindHandlerFailed, "HandlerFailed"),
+            (Role::CrashKindTimerOverdue, "TimerOverdue"),
+        ],
         head if *head == KnownDecl::Delivery.head() => &[
             (Role::DeliveryAccepted, "Accepted"),
             (Role::DeliveryDiscarded, "Discarded"),
@@ -1607,7 +1614,7 @@ fn is_opaque_handle(facts: &TypeFactService, ty: &ResolvedTy) -> bool {
 /// a checker-discovered one names the producers that mint the handle, and an
 /// authored one is the `close` HIR admitted as the type's own release.
 fn is_checked_opaque_resource(module: &HirModule, ty: &ResolvedTy) -> bool {
-    matches!(ty, ResolvedTy::Named { head: hew_types::TypeHead::Nominal(_) | hew_types::TypeHead::Param(_) | hew_types::TypeHead::Unresolved(_), is_opaque: true, args, .. } if args.is_empty())
+    matches!(ty, ResolvedTy::Named { head: hew_types::TypeHead::Nominal(_) | hew_types::TypeHead::Param(_) | hew_types::TypeHead::Unresolved(_), is_opaque: true, args, .. } if args.is_empty() || hew_types::runtime_call::ServiceHandleKind::of_ty(ty).is_some())
         && (crate::resource::authored_opaque_lifecycle(module, ty).is_some()
             || module
                 .type_classes

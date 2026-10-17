@@ -33,6 +33,7 @@ impl Drop for HewNativeSend {
 /// window without parking an actor worker or retaining an actor allocation.
 ///
 /// # Safety
+/// `caller` points to a live stamp copied before this function returns.
 /// The payload is a unique malloc wrapper with shallow fields still owned by
 /// the caller's message. The descriptor and destructor are valid for that type.
 #[allow(
@@ -49,6 +50,7 @@ pub unsafe extern "C" fn hew_actor_send_wait_new(
     waker: *const HewWaker,
     payload_release: Option<hew_cabi::value::HewValueReleaseStart>,
     obligated: i32,
+    caller: *const crate::actor_caller::HewCallerStamp,
 ) -> *mut HewNativeSend {
     // SAFETY: the caller supplies a unique unpublished wrapper and live waker.
     let (envelope, waker) = unsafe {
@@ -66,7 +68,8 @@ pub unsafe extern "C" fn hew_actor_send_wait_new(
     unsafe { (*envelope).release_start = payload_release };
     crate::actor::register_native_capacity(token, &waker);
     Box::into_raw(Box::new(HewNativeSend {
-        caller: crate::actor_caller::local_sender(),
+        // SAFETY: the caller retains its explicit stamp through this constructor.
+        caller: unsafe { *caller },
         obligated: obligated != 0,
         token,
         message,
@@ -460,6 +463,7 @@ mod tests {
                     waker.descriptor(),
                     None,
                     0,
+                    &crate::actor_caller::local_sender(),
                 );
                 drop(waker);
                 if poll {

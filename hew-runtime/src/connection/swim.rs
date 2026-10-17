@@ -156,7 +156,7 @@ pub(crate) unsafe fn hew_connmgr_send_swim(
     if !supports_gossip(flags) {
         return -1;
     }
-    let Some(send_claim) = claim_send_to_route(mgr_ref, conn_id, peer_node_id) else {
+    let Some(send_claim) = claim_send_to_route(mgr_ref, conn_id, peer_node_id, None) else {
         return -1;
     };
 
@@ -307,6 +307,7 @@ pub(super) fn handle_swim_control_frame(
     // and synchronize internally via Mutex/Atomic, so a shared reference is
     // sound even with the SWIM driver thread concurrently calling tick().
     // C6: fold piggybacked membership gossip into our view.
+    mgr_ref.record_gossip_received();
     cluster.apply_swim_gossip(&gossip);
     // C5: if any gossip suspects us, refute by bumping our incarnation. The
     // refutation rides out on our next PING/ACK as an ALIVE-about-self event.

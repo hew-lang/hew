@@ -67,7 +67,7 @@ use hew_runtime::hashmap::{
 // themselves live on the heap and were produced by `CString::into_raw`. Same
 // shape for V slots. `drop_fn` reclaims via `CString::from_raw` + drop.
 
-extern "C" fn cstring_slot_drop(blob: *mut c_void) {
+extern "C-unwind" fn cstring_slot_drop(blob: *mut c_void) {
     unsafe {
         let cstr_ptr = *blob.cast::<*mut c_char>();
         if !cstr_ptr.is_null() {

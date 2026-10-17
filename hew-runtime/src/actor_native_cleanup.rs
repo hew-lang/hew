@@ -13,7 +13,7 @@ use std::{collections::VecDeque, ffi::c_void, ptr, sync::Mutex};
 #[derive(Debug)]
 pub struct HewNativeCrashContext {
     pub state: *mut c_void,
-    pub code: i64,
+    pub kind: crate::internal::types::CrashKind,
     pub message: *const hew_cabi::string::HewString,
     pub stop_ns: i64,
     pub action: i32,
@@ -148,6 +148,9 @@ impl Cleanup {
 
 /// Wake queued cleanup without taking the actor away from an active handler.
 pub(crate) fn wake(actor: &HewActor) {
+    if actor.actor_state.load(Ordering::Acquire) == HewActorState::Constructing as i32 {
+        return;
+    }
     let raw = ptr::from_ref(actor).cast_mut();
     if actor
         .actor_state
@@ -308,7 +311,8 @@ pub(crate) unsafe fn drive_actor_cleanup(actor: &HewActor) -> bool {
                     let stop_ns = crate::actor::DEFAULT_STOP_BUDGET_NS;
                     work.crash = Some(HewNativeCrashContext {
                         state: actor.state,
-                        code: i64::from(code),
+                        kind: crate::internal::types::ExitReason::from_error_code(code)
+                            .to_crash_kind(),
                         message: hew_cabi::string::string_from_str(
                             crate::internal::types::ExitReason::from_error_code(code)
                                 .trap_kind_name(),

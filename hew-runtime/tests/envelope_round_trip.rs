@@ -238,6 +238,13 @@ fn cddl_envelope_shape(frame: &EnvelopeFrame) {
         EnvelopeMessage::Reply => assert_integer_value(find_field(entries, 5), 0),
         EnvelopeMessage::Rejected => assert_integer_value(find_field(entries, 5), 1),
         EnvelopeMessage::Withdraw => assert_integer_value(find_field(entries, 5), 2),
+        EnvelopeMessage::Service { handler, grant_id } => {
+            let Value::Map(service) = find_field(entries, 5) else {
+                panic!("service map");
+            };
+            assert_eq!(find_field(service, 1), &Value::Text(handler.clone()));
+            assert_integer_value(find_field(service, 2), i128::from(*grant_id));
+        }
     }
     assert_bytes_value(find_field(entries, 6), &frame.payload);
     assert_integer_value(find_field(entries, 7), i128::from(frame.request_id));
@@ -324,6 +331,60 @@ fn frame_type_discriminants_match_cddl() {
         FRAME_TYPE_ENVELOPE, 1,
         "envelope frame discriminant must be 1"
     );
+}
+
+#[test]
+fn service_offer_and_request_reject_noncanonical_authority() {
+    use hew_runtime::envelope::{
+        decode_service_offer_payload, encode_service_offer_payload, ServiceOfferPayload,
+    };
+    let offer = ServiceOfferPayload {
+        request_id: 3,
+        grant_id: 7,
+        target: location(1, 8, 2),
+        recipient: node_session(2, 4),
+        handlers: vec!["tests.Service.read".into()],
+    };
+    let bytes = encode_service_offer_payload(&offer).unwrap();
+    assert_eq!(decode_service_offer_payload(&bytes).unwrap(), offer);
+    let mut trailing = bytes.clone();
+    trailing.push(0);
+    assert!(decode_service_offer_payload(&trailing).is_err());
+    let mut duplicate = decode_value(&bytes);
+    let Value::Map(entries) = &mut duplicate else {
+        panic!("offer map");
+    };
+    entries.push(entries[0].clone());
+    assert!(decode_service_offer_payload(&value_to_cbor(&duplicate)).is_err());
+    for handlers in [
+        vec![],
+        vec!["tests.Service.read".into(); 2],
+        vec!["bad\0handler".into()],
+    ] {
+        let invalid = ServiceOfferPayload {
+            handlers,
+            ..offer.clone()
+        };
+        assert!(encode_service_offer_payload(&invalid).is_err());
+    }
+    let mut request = minimal_envelope();
+    request.request_id = 3;
+    request.message = EnvelopeMessage::Service {
+        handler: offer.handlers[0].clone(),
+        grant_id: 7,
+    };
+    assert_eq!(
+        decode_envelope_frame(&encode_envelope_frame(&request).unwrap()).unwrap(),
+        request
+    );
+    request.request_id = 0;
+    assert!(encode_envelope_frame(&request).is_err());
+    request.request_id = 3;
+    request.message = EnvelopeMessage::Service {
+        handler: offer.handlers[0].clone(),
+        grant_id: 0,
+    };
+    assert!(encode_envelope_frame(&request).is_err());
 }
 
 // -- EnvelopeFrame round-trip tests ----------------------------------------

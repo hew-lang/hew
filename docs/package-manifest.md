@@ -94,6 +94,29 @@ its `[native]` code builds with the program. `[dev-dependencies]` is used by `he
 reaches a consumer of the package. `[features]` maps feature names to the
 features they enable.
 
+## Build paths
+
+`hew build --trim-paths` removes the checkout prefix from source diagnostics
+and compiled debug paths. Release builds enable it by default; use
+`hew build --release --no-trim-paths` to retain original paths.
+
+Project files use paths relative to `.`. Imported packages outside the
+project use `packages/<name>/<version>`, and standard-library files use `std`.
+The compiler still reads and tracks the original files: module identities,
+package checksums and Make dependency files keep their usual meaning.
+
+```sh
+hew build --release -g
+# After relocating the sources, in GDB:
+# set substitute-path . /path/to/checkout
+# In LLDB:
+# settings set target.source-map . /path/to/checkout
+```
+
+Native C, C++ and Rust compilation uses the same prefix mappings. Existing
+Cargo flags remain active. `hew native build` trims the native archive when
+it is produced; a consumer keeps a signed prebuilt archive unchanged.
+
 ## `[native]`
 
 `[native]` declares the native code behind the package's `extern "C"`
@@ -116,6 +139,29 @@ Cargo builds the crate with a non-LTO `release-lib` profile. The crate must be
 built by the same rustc release as the Hew runtime, which a
 `rust-toolchain.toml` in the crate pins; a mismatch is refused with
 `E_NATIVE_TOOLCHAIN` before Cargo runs.
+
+### Native prebuilts
+
+Published Rust `staticlib` packages may provide native prebuilts beside their
+source archives. `hew install` selects the host artifact and `hew build`
+selects the requested native target. Compatibility requires the exact compiler
+build version and runtime rustc release/host stamp. The Rust compiler host stamp
+is independent of the selected native target, including for cross-built SDKs.
+The package name, version,
+source archive checksum and compatibility identity are inside the archive
+covered by the ordinary publisher checksum signature. The registry countersigns
+the source checksum, compatibility identity, archive checksum, publisher
+signature and publication time using its existing signing key. Missing or
+invalid countersignatures refuse installation. `hew.lock` records the
+selected qualified archive checksum alongside the source package. Offline
+linking verifies the cached archive against this pin.
+
+Only an absent artifact record permits source compilation. Invalid signatures,
+checksum or identity mismatches, damaged cached archives and failed downloads
+of advertised artifacts refuse. Verified archives retain the existing immutable
+cache generation through the final link and can be reused without registry
+access. Native C/C++/assembly sources and system library requirements still
+follow the fields below.
 
 ### C, C++ and assembly sources
 

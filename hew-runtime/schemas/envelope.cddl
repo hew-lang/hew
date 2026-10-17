@@ -45,6 +45,8 @@ wire-frame = control-frame / envelope-frame
 ;                                              identifying payload as link req).
 ; ctrl_kind = 9 carries setup-result-payload  (monitor setup acknowledgement).
 ; ctrl_kind = 10 carries setup-result-payload (link setup acknowledgement).
+; ctrl_kind = 11 carries service-offer-payload (authenticated service offer).
+; ctrl_kind = 12 carries setup-result-payload (recipient offer-admission acknowledgement).
 
 control-frame = {
     version:    1 => wire-version,
@@ -132,7 +134,7 @@ envelope-frame = {
     frame_type:       2 => 1,            ; 1 = envelope
     target:           3 => location / nil, ; nil only for replies
     source:           4 => location / nil,
-    message:          5 => handler-identity / reply-status / withdrawal,
+    message:          5 => handler-identity / service-request / reply-status / withdrawal,
     payload:          6 => bstr,         ; serialised message body; 0..* bytes.
                                          ; The bytes inside this bstr are the
                                          ; per-`#[wire]`-type CBOR body described
@@ -143,13 +145,26 @@ envelope-frame = {
 
 ; ── Primitive aliases ────────────────────────────────────────────────────────
 
+service-offer-payload = {
+    grant_id: 1 => uint .gt 0,
+    target: 2 => location,
+    recipient: 3 => node-session,
+    handlers: 4 => [1*256 handler-identity], ; strictly ordered, no duplicates
+    request_id: 5 => uint .gt 0,
+} ; complete encoded payload at most 65536 bytes
+
+service-request = {
+    handler: 1 => handler-identity,
+    grant_id: 2 => uint .gt 0,
+} ; only with target and positive request_id
+
 handler-identity = text ; canonical package.module.Actor.handler; 1..4096 UTF-8 bytes, no NUL
 reply-status = 0 / 1    ; success / rejection; only for replies (nil target/source, positive request_id)
 
 ; Withdrawal has a target, nil source/budget, positive request_id and empty payload.
 withdrawal = 2
 
-wire-version = 4        ; current schema version; decoders reject unknown values
+wire-version = 5        ; current schema version; decoders reject unknown values
 node-id = bstr .size 16
 location = {
     node:        1 => node-id,

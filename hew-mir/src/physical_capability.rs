@@ -234,6 +234,7 @@ fn verify_user(
         | hew_sir::CallableInstance::Closure(_)
         | hew_sir::CallableInstance::EntryAdapter
         | hew_sir::CallableInstance::SupervisorChild { .. }
+        | hew_sir::CallableInstance::SupervisorPoolCount { .. }
         | hew_sir::CallableInstance::ActorConstruction { .. } => false,
         hew_sir::CallableInstance::Monomorphic => type_args.is_empty(),
         hew_sir::CallableInstance::Generic(key) => {

@@ -3061,11 +3061,10 @@ pub(crate) fn notify_monitors_on_death(
 /// # Safety
 ///
 /// `actor` must be a valid pointer returned by a spawn function.
-#[cfg(not(target_arch = "wasm32"))]
 #[no_mangle]
 pub unsafe extern "C" fn hew_actor_trap(actor: *mut HewActor, error_code: i32) {
-    // A parked checked turn still owns its coroutine frame and state borrow.
-    // Drain it through the scheduler before publishing a terminal crash, so a
+    // A checked turn owns its coroutine frame and state borrow while running
+    // or parked. Drain it before publishing a terminal crash, so a
     // supervisor cannot reclaim an incarnation with a live invocation.
     if error_code != 0 {
         // SAFETY: the public trap contract keeps `actor` valid throughout this
@@ -3081,38 +3080,78 @@ pub unsafe extern "C" fn hew_actor_trap(actor: *mut HewActor, error_code: i32) {
     unsafe { hew_actor_trap_inner(actor, error_code, TrapMailboxReclaim::IfQuiescent) };
 }
 
-/// Request a terminal crash after a parked checked turn has cancelled itself.
+/// Request a terminal crash through the native activation owner.
 ///
-/// Returns true only after recording the first external crash code and asking
-/// the existing cooperative-stop path to wake the parked continuation.
+/// The same fault slot and stop latch cover computing, parked and idle turns.
+/// The activation publishes the fault only after checked cancellation drains.
 ///
 /// # Safety
 ///
 /// `actor` must be valid for the duration of this call.
-#[cfg(not(target_arch = "wasm32"))]
 unsafe fn defer_external_trap_until_checked_drain(actor: *mut HewActor, error_code: i32) -> bool {
     if actor.is_null() {
         return false;
     }
     // SAFETY: caller guarantees a live actor allocation.
     let a = unsafe { &*actor };
-    if a.checked_invocation.load(Ordering::Acquire).is_null()
-        || a.actor_state.load(Ordering::Acquire) != HewActorState::Suspended as i32
+    if a.native_completion
+        .as_ref()
+        .is_none_or(|completion| completion.cleanup.terminal_in_progress())
     {
         return false;
     }
-    // The first terminal request owns the diagnostic. A second caller must not
-    // overwrite the cause whose cancellation it is joining.
+    let state = a.actor_state.load(Ordering::Acquire);
+    if ![
+        HewActorState::Idle as i32,
+        HewActorState::Runnable as i32,
+        HewActorState::Running as i32,
+        HewActorState::Suspended as i32,
+        HewActorState::Constructing as i32,
+    ]
+    .contains(&state)
+    {
+        return false;
+    }
+    // The first request owns the diagnostic. Safepoints observe the existing
+    // stop latch; only the activation owner touches its checked invocation.
     if a.pending_external_trap_code
         .compare_exchange(0, error_code, Ordering::AcqRel, Ordering::Acquire)
         .is_err()
     {
         return true;
     }
-    // SAFETY: the pending code is published before this call can wake the
-    // parked continuation. `hew_actor_stop` latches cancellation and performs
-    // the Suspended -> Runnable hand-off when it still owns that transition.
-    unsafe { hew_actor_stop(actor) };
+    // SAFETY: the caller pins this actor and its mailbox. Publishing the cause
+    // before closing admission preserves it on a racing terminal edge.
+    unsafe {
+        mailbox::mailbox_close(a.mailbox.cast());
+        mailbox::mailbox_request_stop(a.mailbox.cast());
+    }
+    if a.native_completion
+        .as_ref()
+        .is_some_and(|completion| completion.cancel_construction(error_code))
+    {
+        return true;
+    }
+    // Latch then recheck: a Running turn may have parked or become idle while
+    // the request was published. Queue it rather than terminalizing it here.
+    loop {
+        let state = a.actor_state.load(Ordering::Acquire);
+        if state != HewActorState::Idle as i32 && state != HewActorState::Suspended as i32 {
+            break;
+        }
+        if a.actor_state
+            .compare_exchange(
+                state,
+                HewActorState::Runnable as i32,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_ok()
+        {
+            crate::resume::sched_enqueue(actor);
+            break;
+        }
+    }
     true
 }
 
@@ -3127,7 +3166,6 @@ pub(crate) enum TrapMailboxReclaim {
     /// The caller is the scheduler frame that owns the mailbox consumer.
     OwnedActivation,
     /// Drain only if no scheduler frame owns the mailbox consumer.
-    #[cfg(not(target_arch = "wasm32"))]
     IfQuiescent,
     /// Exact pre-fix counterfactual used by the ownership witness.
     #[cfg(test)]
@@ -3503,7 +3541,6 @@ pub(crate) unsafe fn hew_actor_trap_inner(
             // SAFETY: the calling activation owns the mailbox consumer.
             unsafe { mailbox::mailbox_reclaim_queued_terminal(mb) };
         }
-        #[cfg(not(target_arch = "wasm32"))]
         TrapMailboxReclaim::IfQuiescent => {
             // Test activation ownership under the same terminal-reclaim lock as
             // ActivationOwnership's terminal-state test, final drain, and
@@ -3523,7 +3560,6 @@ pub(crate) unsafe fn hew_actor_trap_inner(
         TrapMailboxReclaim::OmitForTest => {}
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     if terminal == HewActorState::Crashed as i32 {
         let scope = crate::task_scope::current_task_scope();
         if !scope.is_null() {
@@ -3772,20 +3808,19 @@ pub extern "C" fn hew_actor_self_pid() -> u64 {
     unsafe { &*actor }.id
 }
 
-/// The running actor's own `LocalPid` token, or `0` outside an actor.
-///
-/// `self` in an actor body is that actor's handle, and a handle is the same
-/// token `hew_actor_spawn_native` hands back — not the `HewActor*` that
-/// [`hew_actor_self`] returns. Reading it from the registry keeps one authority
-/// for local handle identity, so a self-handle routes exactly as a spawned one
-/// does.
+/// Resolve `self` from the checked invocation, including init and start.
+/// # Safety
+/// `state` is the live invocation executing this actor body.
 #[no_mangle]
-pub extern "C" fn hew_actor_self_token() -> usize {
-    let actor_id = hew_actor_self_pid();
-    if actor_id == 0 {
-        return 0;
-    }
-    crate::lifetime::local_handles::current_actor_token(actor_id).map_or(0, usize::from)
+pub unsafe extern "C" fn hew_actor_self_token(
+    state: *const crate::coro_state::HewCoroState,
+) -> usize {
+    // SAFETY: the generated call retains its invocation throughout this read.
+    let target = unsafe { &*state }.execution().actor_turn;
+    crate::lifetime::live_actors::with_live_incarnation(target, |actor| {
+        usize::from(actor.actor().local_pid_id)
+    })
+    .unwrap_or(0)
 }
 
 /// Self-stop: the currently running actor requests its own shutdown.

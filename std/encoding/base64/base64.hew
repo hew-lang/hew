@@ -51,22 +51,22 @@ pub fn decode(s: string) -> bytes fails DecodeError {
     if slen == 0 {
         return out;
     }
-    let has_padding = s.slice(slen - 1, slen) == "=";
+    let has_padding = s[slen - 1 .. slen] == "=";
     if has_padding && slen % 4 != 0 {
         return error .InvalidLength(slen);
     }
     // Strip trailing '=' padding
     var data_len = slen;
-    if data_len > 0 && s.slice(data_len - 1, data_len) == "=" {
+    if data_len > 0 && s[data_len - 1 .. data_len] == "=" {
         data_len = data_len - 1;
     }
-    if data_len > 0 && s.slice(data_len - 1, data_len) == "=" {
+    if data_len > 0 && s[data_len - 1 .. data_len] == "=" {
         data_len = data_len - 1;
     }
     // Collect 6-bit values
     var vals: bytes = bytes.new();
     for i in 0..data_len {
-        let ch = s.slice(i, i + 1);
+        let ch = s[i .. i + 1];
         let v = decode_char(ch);
         if v < 0 {
             return error .InvalidCharacter { index: i, text: ch };

@@ -278,10 +278,26 @@ impl MarkerDerivation<'_> {
 }
 
 impl TraitRegistry {
-    /// Create a new empty trait registry.
+    /// Create a trait registry with the builtin marker constraints.
     #[must_use]
     pub fn new() -> Self {
-        Self::default()
+        let mut registry = Self::default();
+        registry.register_negative_impl(
+            crate::KnownDecl::ActorTimerMailbox.head(),
+            MarkerTrait::Send,
+        );
+        registry.register_negative_impl(
+            crate::KnownDecl::ActorTimerMailbox.head(),
+            MarkerTrait::Sync,
+        );
+        registry.register_negative_impl(
+            crate::KnownDecl::ActorTimerMailbox.head(),
+            MarkerTrait::Frozen,
+        );
+        registry.register_negative_impl(crate::KnownDecl::Timer.head(), MarkerTrait::Send);
+        registry.register_negative_impl(crate::KnownDecl::Timer.head(), MarkerTrait::Sync);
+        registry.register_negative_impl(crate::KnownDecl::Timer.head(), MarkerTrait::Frozen);
+        registry
     }
 
     /// Register a type definition with its field types.
@@ -683,7 +699,7 @@ impl TraitRegistry {
                             | MarkerTrait::Drop
                     );
                 }
-                // Actors are always Send + Sync
+                // Actors are always Send and Sync
                 if self.actors.contains(&name)
                     && matches!(marker, MarkerTrait::Send | MarkerTrait::Sync)
                 {

@@ -204,7 +204,9 @@ pub(crate) struct ImplMethodBinders {
     pub receiver: crate::Ty,
     pub impl_params: Vec<crate::ParamHead>,
     pub method_params: Vec<crate::ParamHead>,
-    pub obligations: Option<Vec<(crate::TypeParamId, ImplMethodObligation)>>,
+    pub obligations: Vec<(crate::TypeParamId, ImplMethodObligation)>,
+    pub checked_receivers: HashSet<ResolvedTy>,
+    pub implemented_trait: Option<crate::check::TraitRef>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -212,9 +214,37 @@ pub(crate) enum ImplMethodObligation {
     Marker(MarkerTrait),
     Display,
     Serializable,
+    Checked,
 }
 
 impl ImplMethodBinders {
+    pub(crate) fn implementation_arguments(
+        &self,
+        defs: &crate::DefTable,
+        method: crate::DefId,
+        receiver: &ResolvedTy,
+        trait_args: &[crate::Ty],
+    ) -> Option<Vec<ResolvedTy>> {
+        let arguments = self.receiver_arguments(defs, method, receiver).ok()?;
+        let substitutions = self
+            .impl_params
+            .iter()
+            .copied()
+            .zip(arguments.iter().map(ResolvedTy::to_ty))
+            .collect();
+        if let Some(bound) = &self.implemented_trait {
+            let implemented: Vec<_> = bound
+                .args
+                .iter()
+                .map(|ty| ty.substitute_type_params_parallel(&substitutions))
+                .collect();
+            if implemented != trait_args {
+                return None;
+            }
+        }
+        Some(arguments)
+    }
+
     #[cfg(test)]
     fn instantiate(
         &self,
@@ -237,10 +267,13 @@ impl ImplMethodBinders {
         decide: &mut dyn FnMut(&ResolvedTy, ImplMethodObligation) -> Result<bool, ClassError>,
     ) -> Result<Vec<ResolvedTy>, ClassError> {
         let type_args = self.arguments(defs, method, receiver)?;
+        if self.checked_receivers.contains(receiver) {
+            return Ok(type_args);
+        }
         let refusal = || ClassError::UnknownDeclaration {
             name: defs.display(method).to_string(),
         };
-        for (param, obligation) in self.obligations.as_ref().ok_or_else(refusal)? {
+        for (param, obligation) in &self.obligations {
             let position = self
                 .impl_params
                 .iter()
@@ -250,6 +283,7 @@ impl ImplMethodBinders {
                 ImplMethodObligation::Marker(marker) => {
                     registry.implements_marker(&type_args[position].to_ty(), *marker)
                 }
+                ImplMethodObligation::Checked => false,
                 other => decide(&type_args[position], *other)?,
             };
             if !satisfied {
@@ -258,7 +292,7 @@ impl ImplMethodBinders {
         }
         Ok(type_args)
     }
-    fn arguments(
+    pub(crate) fn arguments(
         &self,
         defs: &crate::DefTable,
         method: crate::DefId,
@@ -267,6 +301,15 @@ impl ImplMethodBinders {
         if let Some(name) = self.method_params.first() {
             return Err(ClassError::TypeParam { param: *name });
         }
+        self.receiver_arguments(defs, method, receiver)
+    }
+
+    fn receiver_arguments(
+        &self,
+        defs: &crate::DefTable,
+        method: crate::DefId,
+        receiver: &ResolvedTy,
+    ) -> Result<Vec<ResolvedTy>, ClassError> {
         let variables: Vec<_> = self
             .impl_params
             .iter()
@@ -376,6 +419,7 @@ pub(crate) fn selected_impl_method(
 #[derive(Debug, Clone, Default)]
 pub struct TypeFactContext {
     declarations: BTreeMap<crate::NominalId, DeclaredType>,
+    associated_types: crate::check::AssociatedTypeSchemas,
     registry: TraitRegistry,
     type_defs: HashMap<crate::NominalId, TypeDef>,
     method_ids: HashMap<ImplMethodKey, crate::DefId>,
@@ -432,6 +476,30 @@ impl RenderingMembers {
 }
 
 impl TypeFactContext {
+    /// Bind an implementation's receiver and match its checked trait arguments.
+    #[must_use]
+    pub fn implementation_arguments(
+        &self,
+        method: crate::DefId,
+        receiver: &ResolvedTy,
+        trait_args: &[crate::Ty],
+    ) -> Option<Vec<ResolvedTy>> {
+        self.method_binders
+            .get(&method)?
+            .implementation_arguments(&self.defs, method, receiver, trait_args)
+    }
+
+    pub(crate) fn impl_method_arguments(
+        &self,
+        method: crate::DefId,
+        receiver: &ResolvedTy,
+    ) -> Option<Vec<ResolvedTy>> {
+        self.method_binders
+            .get(&method)?
+            .arguments(&self.defs, method, receiver)
+            .ok()
+    }
+
     /// The type definitions, read by declaration.
     #[must_use]
     pub fn types(&self) -> crate::check::TypeDefView<'_> {
@@ -446,6 +514,7 @@ impl TypeFactContext {
     ) -> Self {
         Self {
             declarations,
+            associated_types: crate::check::AssociatedTypeSchemas::default(),
             registry,
             type_defs,
             method_ids: HashMap::new(),
@@ -456,6 +525,34 @@ impl TypeFactContext {
             rendering_members: HashMap::new(),
             serial_layouts: HashMap::new(),
         }
+    }
+
+    pub(crate) fn with_associated_types(
+        mut self,
+        associated: crate::check::AssociatedTypeSchemas,
+    ) -> Self {
+        self.associated_types = associated;
+        self
+    }
+
+    fn instantiate_member(
+        &self,
+        member: &ResolvedTy,
+        parameters: &[crate::ParamHead],
+        arguments: &[ResolvedTy],
+    ) -> Result<ResolvedTy, ClassError> {
+        let member = self
+            .associated_types
+            .instantiate_resolved_member(member, parameters, arguments, &self.defs)?;
+        Ok(crate::check::restore_member_opacity(
+            member,
+            &self.defs,
+            &|id| {
+                self.declarations
+                    .get(&id)
+                    .is_some_and(|declaration| declaration.is_opaque)
+            },
+        ))
     }
 
     pub(crate) fn with_impl_methods(
@@ -531,6 +628,28 @@ impl TypeFactContext {
 pub struct TypeFactService {
     context: TypeFactContext,
     rows: BTreeMap<TypeInstanceKey, TypeFacts>,
+}
+
+impl crate::value_class::ClassDeclarations for TypeFactContext {
+    fn declared_type(&self, id: crate::NominalId) -> Option<DeclaredType> {
+        self.declarations.get(&id).cloned()
+    }
+
+    fn builtin_declaration(&self, builtin: BuiltinType) -> Option<crate::NominalId> {
+        crate::value_class::ClassDeclarations::builtin_declaration(&self.declarations, builtin)
+    }
+
+    fn instantiate_members(
+        &self,
+        declaration: &DeclaredType,
+        arguments: &[ResolvedTy],
+    ) -> Result<Vec<ResolvedTy>, ClassError> {
+        declaration
+            .members
+            .iter()
+            .map(|member| self.instantiate_member(member, &declaration.type_params, arguments))
+            .collect()
+    }
 }
 
 impl TypeFactService {
@@ -632,16 +751,12 @@ impl TypeFactService {
             .into_iter()
             .zip(&declaration.members)
             .map(|(name, field)| {
-                (
-                    name,
-                    crate::resolved_ty::substitute_type_params(
-                        field,
-                        &definition.type_params,
-                        &instance.args,
-                    ),
-                )
+                self.context
+                    .instantiate_member(field, &definition.type_params, &instance.args)
+                    .map(|field| (name, field))
+                    .map_err(|error| error.to_string())
             })
-            .collect();
+            .collect::<Result<Vec<_>, _>>()?;
         Ok((instance, fields))
     }
 
@@ -1014,7 +1129,7 @@ impl TypeFactService {
         walk: &mut CapabilityWalk,
         calls: &mut Vec<(crate::DefId, Vec<ResolvedTy>)>,
     ) -> Result<Option<ValueMethodPlan>, ClassError> {
-        crate::value_class::classify_ty(ty, &ClassContext::new(&self.context.declarations))?;
+        crate::value_class::classify_ty(ty, &ClassContext::new(&self.context))?;
         require_concrete_capability_type(ty)?;
         let method = selected_impl_method(
             &self.context.method_ids,
@@ -1286,18 +1401,15 @@ impl TypeFactService {
                 name: ty.user_facing().to_string(),
             });
         }
-        if declaration.marker == crate::DeclarationMarker::None {
-            return Ok(declaration
+        if declaration.marker == crate::DeclarationMarker::None || !declaration.members.is_empty() {
+            return declaration
                 .members
                 .iter()
                 .map(|member| {
-                    crate::resolved_ty::substitute_type_params(
-                        member,
-                        &declaration.type_params,
-                        args,
-                    )
+                    self.context
+                        .instantiate_member(member, &declaration.type_params, args)
                 })
-                .collect());
+                .collect();
         }
         // A marked declaration keeps no members when one of them could not be
         // rendered at the boundary: its class came from the marker anyway.
@@ -1326,8 +1438,14 @@ impl TypeFactService {
         types
             .into_iter()
             .map(|member| {
+                let member = self.context.associated_types.instantiate_member(
+                    member,
+                    &declaration.type_params,
+                    args,
+                    &self.context.defs,
+                );
                 let member =
-                    ResolvedTy::from_ty(member).map_err(|_| ClassError::UnknownDeclaration {
+                    ResolvedTy::from_ty(&member).map_err(|_| ClassError::UnknownDeclaration {
                         name: name.to_string(),
                     })?;
                 let member =
@@ -1337,11 +1455,7 @@ impl TypeFactService {
                             .get(&name)
                             .is_some_and(|decl| decl.is_opaque)
                     });
-                Ok(crate::resolved_ty::substitute_type_params(
-                    &member,
-                    &declaration.type_params,
-                    args,
-                ))
+                Ok(member)
             })
             .collect()
     }
@@ -1511,7 +1625,7 @@ impl TypeFactService {
     }
 
     fn contextual_facts(&self, ty: &ResolvedTy) -> Result<TypeFacts, ClassError> {
-        let declarations = ClassContext::new(&self.context.declarations);
+        let declarations = ClassContext::new(&self.context);
         let as_ty = ty.to_ty();
         let send = self.send_fact(ty, &as_ty);
         let hash = self.select_capability(ty, ValueCapability::Hash)?.is_some();
@@ -1653,7 +1767,7 @@ pub fn push_type_components(ty: &ResolvedTy, out: &mut Vec<ResolvedTy>) {
 mod tests {
     use super::{selected_impl_method, ImplMethodKey};
     use std::collections::BTreeMap;
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
 
     use super::{
         CloneKind, SendFact, TypeFactContext, TypeFactService, TypeFacts, TypeInstanceKey,
@@ -1680,7 +1794,9 @@ mod tests {
             ),
             impl_params: vec![crate::ParamHead::for_test("T")],
             method_params: vec![],
-            obligations: Some(vec![]),
+            obligations: vec![],
+            checked_receivers: HashSet::new(),
+            implemented_trait: None,
         }
     }
 
@@ -1776,9 +1892,7 @@ fn main() {}"#,
         let mut service = TypeFactService::new(output.type_fact_context, output.type_facts);
         // Repeated obligations model a shared proof edge without duplicating the owned type tree.
         for binders in service.context.method_binders.values_mut() {
-            if let Some(obligations) = &mut binders.obligations {
-                obligations.extend(obligations.clone());
-            }
+            binders.obligations.extend(binders.obligations.clone());
         }
         let wrap = |leaf: ResolvedTy| {
             (0..28).fold(leaf, |ty, _| {
@@ -1841,7 +1955,7 @@ fn main() {}"#,
                 members: vec![ResolvedTy::String, ResolvedTy::I64],
             },
         );
-        // `std/failure.hew::CrashInfo { code: i64, message: string }`.
+        // `std/failure.hew::CrashInfo { kind: CrashKind, message: string }`.
         decls.insert(
             crate::NominalId::for_test("std.failure.CrashInfo"),
             DeclaredType {
@@ -1849,10 +1963,13 @@ fn main() {}"#,
                 is_opaque: false,
                 marker: DeclarationMarker::None,
                 type_params: vec![],
-                members: vec![ResolvedTy::I64, ResolvedTy::String],
+                members: vec![
+                    named("CrashKind", Some(BuiltinType::CrashKind), vec![]),
+                    ResolvedTy::String,
+                ],
             },
         );
-        // `std/failure.hew::CrashNotification { actor_id: u64, kind: CrashKind }`.
+        // `std/failure.hew::CrashNotification { target: DownTarget, kind: CrashKind }`.
         decls.insert(
             crate::NominalId::for_test("std.failure.CrashNotification"),
             DeclaredType {
@@ -1861,7 +1978,7 @@ fn main() {}"#,
                 marker: DeclarationMarker::None,
                 type_params: vec![],
                 members: vec![
-                    ResolvedTy::U64,
+                    named("DownTarget", Some(BuiltinType::DownTarget), vec![]),
                     named("CrashKind", Some(BuiltinType::CrashKind), vec![]),
                 ],
             },

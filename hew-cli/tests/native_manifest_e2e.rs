@@ -91,6 +91,231 @@ fn write_c_package(root: &Path) {
 }
 
 #[test]
+fn trimmed_package_paths_are_stable_across_roots() {
+    require_codegen();
+    let dir = workspace();
+    let roots = [
+        dir.path().join("first"),
+        dir.path().join("a-longer-second-root"),
+    ];
+    for root in &roots {
+        std::fs::create_dir_all(root).unwrap();
+        write_c_package(root);
+        write(&root.join("native/calc.c"), "#include <stdio.h>\n#include \"calc.h\"\nint32_t calc_answer(int32_t extra) { fprintf(stderr, \"%s\\n\", __FILE__); return CALC_BASE + extra; }\n");
+    }
+    let original: Vec<_> = roots
+        .iter()
+        .map(|root| emit_package_paths(root, &["--release", "--no-trim-paths"]))
+        .collect();
+    assert_ne!(original[0].0, original[1].0);
+    for (root, (_, llvm)) in roots.iter().zip(&original) {
+        assert!(
+            llvm.contains(root.to_str().unwrap()),
+            "untrimmed debug source"
+        );
+    }
+    for flags in [&["--trim-paths"][..], &["--release"][..]] {
+        let objects: Vec<_> = roots
+            .iter()
+            .map(|root| emit_package_paths(root, flags))
+            .collect();
+        assert!(objects[0].0 == objects[1].0, "trimmed object bytes");
+        assert_eq!(objects[0].1, objects[1].1, "trimmed LLVM");
+        for root in &roots {
+            assert!(!objects[0].1.contains(root.to_str().unwrap()));
+            let mut args = vec!["build", ".", "-g", "-o", "linked"];
+            args.extend_from_slice(flags);
+            assert_ok(&hew(root, &args), "link native package");
+            let output = run_binary(&binary(root, "linked"));
+            assert_ok(&output, "run native package");
+            assert_eq!(stdout(&output), "42\n");
+            assert_eq!(stderr(&output), "native/calc.c\n");
+        }
+    }
+    assert_native_objects_match(&roots);
+    let native_errors: Vec<_> = roots
+        .iter()
+        .map(|root| {
+            write(&root.join("native/calc.c"), "#error source-path-check\n");
+            let output = hew(root, &["build", ".", "--release"]);
+            assert!(!output.status.success());
+            assert!(!stderr(&output).contains(root.to_str().unwrap()));
+            stderr(&output)
+        })
+        .collect();
+    assert_eq!(
+        native_errors[0], native_errors[1],
+        "native compiler diagnostics"
+    );
+    for root in &roots {
+        write(
+            &root.join("broken.hew"),
+            "fn main() { let value: i64 = true; println(value); }\n",
+        );
+    }
+    for root in &roots {
+        assert_trimmed_rust_package(root);
+    }
+    for format in [&[][..], &["--format", "json"][..]] {
+        let diagnostics: Vec<_> = roots
+            .iter()
+            .map(|root| {
+                let source = root.join("broken.hew");
+                let mut args = vec!["build", source.to_str().unwrap(), "--trim-paths"];
+                args.extend_from_slice(format);
+                let output = hew(root, &args);
+                assert!(!output.status.success());
+                (output.stdout, output.stderr)
+            })
+            .collect();
+        assert_eq!(diagnostics[0], diagnostics[1], "trimmed diagnostics");
+    }
+    for root in &roots {
+        let missing = root.join("missing.hew");
+        let output = hew(
+            root,
+            &[
+                "build",
+                missing.to_str().unwrap(),
+                "--trim-paths",
+                "--format",
+                "json",
+            ],
+        );
+        assert!(!output.status.success());
+        let diagnostics: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(diagnostics, serde_json::json!([]));
+        assert!(!stdout(&output).contains(root.to_str().unwrap()));
+        assert!(!stderr(&output).contains(root.to_str().unwrap()));
+    }
+    #[cfg(target_os = "linux")]
+    assert_remapped_debug_source(dir.path(), &roots);
+}
+
+fn emit_package_paths(root: &Path, flags: &[&str]) -> (Vec<u8>, String) {
+    let mut args = vec![
+        "build",
+        ".",
+        "-g",
+        "--emit-llvm",
+        "--emit-obj",
+        "-o",
+        "probe.o",
+    ];
+    args.extend_from_slice(flags);
+    assert_ok(&hew(root, &args), "emit package object");
+    (
+        std::fs::read(root.join("probe.o")).unwrap(),
+        std::fs::read_to_string(root.join("probe.ll")).unwrap(),
+    )
+}
+
+fn assert_native_objects_match(roots: &[PathBuf; 2]) {
+    let objects: Vec<_> = roots
+        .iter()
+        .map(|root| {
+            let mut objects: Vec<_> = std::fs::read_dir(root.join("target/native"))
+                .unwrap()
+                .flat_map(|entry| {
+                    let dir = entry.unwrap().path();
+                    [dir.join("native/calc.c.o"), dir.join("native/calc.c.obj")]
+                })
+                .filter(|path| path.is_file())
+                .map(|path| std::fs::read(path).unwrap())
+                .collect();
+            assert_eq!(objects.len(), 2, "O0 and O2 native objects");
+            objects.sort();
+            objects
+        })
+        .collect();
+    assert!(
+        objects[0] == objects[1],
+        "native C object bytes across roots"
+    );
+}
+
+#[cfg(target_os = "linux")]
+fn assert_remapped_debug_source(dir: &Path, roots: &[PathBuf; 2]) {
+    let moved = dir.join("moved-build");
+    std::fs::rename(&roots[0], &moved).unwrap();
+    write(
+        &roots[1].join("main.hew"),
+        "// relocated-source-marker\nfn main() {}\n",
+    );
+    let mut command = Command::new("gdb");
+    command
+        .current_dir(dir)
+        .args(["--batch", "--nx", "-ex"])
+        .arg(format!("set substitute-path . {}", roots[1].display()))
+        .args(["-ex", "list main.hew:1"])
+        .arg(binary(&moved, "linked"));
+    let output = run_bounded_command(command, "read remapped debugger source");
+    assert_ok(&output, "debugger source remapping");
+    assert!(
+        stdout(&output).contains("relocated-source-marker"),
+        "{}",
+        describe_output(&output)
+    );
+}
+
+fn assert_trimmed_rust_package(root: &Path) {
+    write(
+        &root.join("hew.toml"),
+        "[package]\nname = \"acme.paths\"\nversion = \"0.1.0\"\nedition = \"2026\"\ninclude = [\"hew.toml\", \"main.hew\", \"native/Cargo.toml\", \"native/Cargo.lock\", \"native/src/**\", \"native/.cargo/**\", \"dependency/**\"]\n[native]\nlib = \"rustbridge\"\ncrate = \"native\"\n",
+    );
+    write(&root.join("native/Cargo.toml"), "[workspace]\n[package]\nname = \"rustbridge\"\nversion = \"0.1.0\"\nedition = \"2021\"\n[lib]\ncrate-type = [\"staticlib\"]\n[dependencies]\npath_dep = { path = \"../dependency\" }\n[profile.release]\ndebug = 1\n");
+    write(&root.join("native/.cargo/config.toml"), "[build]\nrustflags = [\"--cfg\", \"hew_native_trim_flags\", \"--check-cfg=cfg(hew_native_trim_flags)\"]\n");
+    write(&root.join("native/src/lib.rs"), "#[cfg(not(hew_native_trim_flags))]\ncompile_error!(\"native build lost Cargo flags\");\n#[no_mangle]\npub extern \"C\" fn path_probe() -> *const u8 { path_dep::source().as_ptr() }\n#[no_mangle]\npub extern \"C\" fn calc_answer(extra: i32) -> i32 { 40 + extra }\n");
+    write(
+        &root.join("dependency/Cargo.toml"),
+        "[workspace]\n[package]\nname = \"path_dep\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    );
+    write(
+        &root.join("dependency/src/lib.rs"),
+        "pub fn source() -> &'static str { file!() }\n",
+    );
+    let output = hew(root, &["build", ".", "--release", "-o", "rust-linked"]);
+    assert_ok(&output, "build trimmed Rust package");
+    assert!(
+        !stderr(&output).contains(root.to_str().unwrap()),
+        "trimmed Cargo output"
+    );
+    let target = std::env::var_os("CARGO_TARGET_DIR")
+        .map_or_else(|| root.join("native/target"), PathBuf::from);
+    let target = if target.is_absolute() {
+        target
+    } else {
+        root.join("native").join(target)
+    };
+    let identity = hew_pkg::native::embedded_rustc_identity();
+    let artifact = target
+        .join(identity.host)
+        .join("release-lib")
+        .join(if cfg!(windows) {
+            "rustbridge.lib"
+        } else {
+            "librustbridge.a"
+        });
+    let assert_trimmed = || {
+        let archive = std::fs::read(&artifact).unwrap();
+        let prefix = root.to_str().unwrap().as_bytes();
+        assert!(
+            !archive.windows(prefix.len()).any(|bytes| bytes == prefix),
+            "native Rust dependency retains checkout path"
+        );
+    };
+    assert_trimmed();
+    assert_ok(
+        &hew(
+            root,
+            &["native", "build", "--output", "target/paths.tar.zst"],
+        ),
+        "build trimmed native archive from staged source",
+    );
+    assert_trimmed();
+}
+
+#[test]
 fn c_package_builds_and_runs_at_o0_and_o2() {
     require_codegen();
     let dir = workspace();

@@ -133,7 +133,6 @@ fn divide_by_zero_trap_surfaces_trap_kind_on_observe_event_surface() {
             sys_dispatch: None,
             arena_cap_bytes: 0,
             cycle_capable: 0,
-            on_crash: None,
             lifecycle_fn: None,
             init_fn: None,
             config: std::ptr::null_mut(),

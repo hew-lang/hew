@@ -1,6 +1,6 @@
 //! string conversion and manipulation utilities.
 //!
-//! Most string operations (`.find()`, `.slice()`, `.trim()`, etc.)
+//! String operations (`.find()`, `.trim()`, etc.)
 //! are built-in methods available on all strings. This module provides
 //! type-conversion helpers and additional string utilities.
 //!
@@ -10,63 +10,14 @@
 //! import std.string;
 //!
 //! fn main() {
-//!     let s = string.from_int(42);        // "42"
+//!     let s = f"{42}";        // "42"
 //!     let n = string.to_int("42").expect("to_int succeeds");       // 42
 //!     let f = string.to_float("3.14").expect("to_float succeeds");     // 3.14
-//!     let nl = string.from_char(10);      // "\n"
-//!     let stars = string.repeat("*", 3);  // "***"
+//!     let nl = f"{(10).try_to_char().expect("valid Unicode scalar")}";      // "\n"
+//!     let stars = ("*").repeat(3);  // "***"
 //!     let padded = string.pad_left("7", 3, "0");  // "007"
 //! }
 //! ```
-
-/// Convert an integer to its string representation.
-///
-/// # Examples
-///
-/// ```
-/// import std.string;
-///
-/// fn main() {
-///     let s = string.from_int(42);  // "42"
-/// }
-/// ```
-pub fn from_int(n: i64) -> string {
-    f"{n}"
-}
-
-/// Convert a float to its string representation.
-pub fn from_float(f: f64) -> string {
-    f"{f}"
-}
-
-/// Convert a bool to `"true"` or `"false"`.
-pub fn from_bool(b: bool) -> string {
-    if b {
-        "true"
-    } else {
-        "false"
-    }
-}
-
-/// Convert a character code to a single-character string.
-///
-/// # Examples
-///
-/// ```
-/// import std.string;
-///
-/// fn main() {
-///     let newline = string.from_char(10);
-/// }
-/// ```
-pub fn from_char(code: i64) -> string {
-    if code < 0 || code > 0x10FFFF || code >= 0xD800 && code <= 0xDFFF {
-        panic(f"string.from_char: invalid Unicode scalar value {code}");
-    }
-    unsafe {
-        hew_char_to_string(code as i32)
-    }
-}
 
 /// Text that is not the number `to_int` or `to_float` was asked to read.
 pub enum NumberError {
@@ -97,7 +48,7 @@ pub fn to_int(s: string) -> i64 fails NumberError {
     }
     var start = 0;
     var negative = false;
-    let first = s.slice(0, 1);
+    let first = s[0..1];
     if first == "-" {
         negative = true;
         start = 1;
@@ -119,7 +70,7 @@ pub fn to_int(s: string) -> i64 fails NumberError {
     };
     var result = 0;
     for i in start..slen {
-        let digit = s.slice(i, i + 1);
+        let digit = s[i .. i + 1];
         let d = digit_value(digit);
         if d < 0 {
             return error .Invalid(s);
@@ -173,7 +124,7 @@ fn is_valid_float_literal(s: string) -> bool {
 
 fn float_parse_start(s: string, slen: i64) -> i64 {
     var start = 0;
-    let first = s.slice(0, 1);
+    let first = s[0..1];
     let has_sign = first == "-" || first == "+";
     if has_sign {
         start = 1;
@@ -187,7 +138,7 @@ fn float_parse_start(s: string, slen: i64) -> i64 {
 fn parse_valid_float_literal(s: string) -> f64 {
     let slen = s.len();
     let start = float_parse_start(s, slen);
-    let first = s.slice(0, 1);
+    let first = s[0..1];
     let negative = first == "-";
     let exponent_index = find_exponent_index(s, start, slen);
     let significand_end = if exponent_index < 0 {
@@ -227,7 +178,7 @@ fn digit_value(ch: string) -> i64 {
 fn find_exponent_index(s: string, start: i64, end: i64) -> i64 {
     var exponent_index = -1;
     for i in start..end {
-        let ch = s.slice(i, i + 1);
+        let ch = s[i .. i + 1];
         let is_exponent = ch == "e" || ch == "E";
         if is_exponent {
             if exponent_index >= 0 {
@@ -246,7 +197,7 @@ fn is_valid_float_significand(s: string, start: i64, end: i64) -> bool {
     var saw_digit = false;
     var saw_decimal = false;
     for i in start..end {
-        let ch = s.slice(i, i + 1);
+        let ch = s[i .. i + 1];
         let is_decimal = ch == ".";
         if is_decimal {
             if saw_decimal {
@@ -269,7 +220,7 @@ fn is_valid_float_exponent(s: string, start: i64, end: i64) -> bool {
         return false;
     }
     var index = start;
-    let first = s.slice(start, start + 1);
+    let first = s[start .. start + 1];
     let has_sign = first == "-" || first == "+";
     if has_sign {
         index = start + 1;
@@ -278,7 +229,7 @@ fn is_valid_float_exponent(s: string, start: i64, end: i64) -> bool {
         return false;
     }
     for i in index..end {
-        let digit = s.slice(i, i + 1);
+        let digit = s[i .. i + 1];
         let value = digit_value(digit);
         if value < 0 {
             return false;
@@ -293,7 +244,7 @@ fn parse_float_significand(s: string, start: i64, end: i64) -> f64 {
     var fraction_scale = 1.0;
     var saw_decimal = false;
     for i in start..end {
-        let ch = s.slice(i, i + 1);
+        let ch = s[i .. i + 1];
         let is_decimal = ch == ".";
         if is_decimal {
             saw_decimal = true;
@@ -314,7 +265,7 @@ fn parse_float_significand(s: string, start: i64, end: i64) -> f64 {
 fn parse_float_exponent(s: string, start: i64, end: i64) -> i64 {
     var index = start;
     var negative = false;
-    let first = s.slice(start, start + 1);
+    let first = s[start .. start + 1];
     let has_negative_sign = first == "-";
     let has_positive_sign = first == "+";
     if has_negative_sign {
@@ -325,7 +276,7 @@ fn parse_float_exponent(s: string, start: i64, end: i64) -> i64 {
     }
     var exponent = 0;
     for i in index..end {
-        let digit = s.slice(i, i + 1);
+        let digit = s[i .. i + 1];
         let value = digit_value(digit);
         exponent = exponent * 10 + value;
     }
@@ -369,38 +320,6 @@ fn digit_to_float(digit: i64) -> f64 {
     }
 }
 
-// ── Pure Hew string utilities ────────────────────────────────────────
-/// Check if a string is empty.
-///
-/// # Examples
-///
-/// ```
-/// import std.string;
-///
-/// fn main() {
-///     println(string.is_empty(""));   // true
-///     println(string.is_empty("hi"));   // false
-/// }
-/// ```
-pub fn is_empty(s: string) -> bool {
-    s.is_empty()
-}
-
-/// Repeat a string `n` times.
-///
-/// # Examples
-///
-/// ```
-/// import std.string;
-///
-/// fn main() {
-///     let stars = string.repeat("*", 5);  // "*****"
-/// }
-/// ```
-pub fn repeat(s: string, n: i64) -> string {
-    s.repeat(n)
-}
-
 /// Pad a string on the left to reach the given width.
 ///
 /// If `s` is already at least `width` characters, returns `s` unchanged.
@@ -416,15 +335,15 @@ pub fn repeat(s: string, n: i64) -> string {
 /// }
 /// ```
 pub fn pad_left(s: string, width: i64, pad: string) -> string {
-    let pad_len = pad.char_count_utf8();
+    let pad_len = pad.len();
     if pad_len != 1 {
         panic("string.pad_left: pad must contain exactly one character");
     }
-    let slen = s.char_count_utf8();
+    let slen = s.len();
     if slen >= width {
         return s;
     }
-    repeat(pad, width - slen) + s
+    pad.repeat(width - slen) + s
 }
 
 /// Pad a string on the right to reach the given width.
@@ -441,15 +360,15 @@ pub fn pad_left(s: string, width: i64, pad: string) -> string {
 /// }
 /// ```
 pub fn pad_right(s: string, width: i64, pad: string) -> string {
-    let pad_len = pad.char_count_utf8();
+    let pad_len = pad.len();
     if pad_len != 1 {
         panic("string.pad_right: pad must contain exactly one character");
     }
-    let slen = s.char_count_utf8();
+    let slen = s.len();
     if slen >= width {
         return s;
     }
-    s + repeat(pad, width - slen)
+    s + pad.repeat(width - slen)
 }
 
 /// Check if a string contains only ASCII digits (0-9).
@@ -473,7 +392,7 @@ pub fn is_numeric(s: string) -> bool {
         return false;
     }
     for i in 0..slen {
-        let d = digit_value(s.slice(i, i + 1));
+        let d = digit_value(s[i .. i + 1]);
         if d < 0 {
             return false;
         }
@@ -502,63 +421,14 @@ pub fn count(haystack: string, needle: string) -> i64 {
     var pos = 0;
     let hlen = haystack.len();
     while pos <= hlen - nlen {
-        let rest = haystack.slice(pos, hlen);
-        let idx = match rest.find(needle) {
+        let idx = match haystack.find_from(needle, pos) {
             .Some(i) => i,
             .None => return n,
         };
         n = n + 1;
-        pos = pos + idx + nlen;
+        pos = idx + nlen;
     }
     n
-}
-
-/// Check if a string starts with the given prefix.
-///
-/// # Examples
-///
-/// ```
-/// import std.string;
-///
-/// fn main() {
-///     println(string.starts_with("hello", "he"));   // true
-///     println(string.starts_with("hello", "lo"));   // false
-/// }
-/// ```
-pub fn starts_with(s: string, prefix: string) -> bool {
-    s.starts_with(prefix)
-}
-
-/// Check if a string ends with the given suffix.
-///
-/// # Examples
-///
-/// ```
-/// import std.string;
-///
-/// fn main() {
-///     println(string.ends_with("hello", "lo"));   // true
-///     println(string.ends_with("hello", "he"));   // false
-/// }
-/// ```
-pub fn ends_with(s: string, suffix: string) -> bool {
-    s.ends_with(suffix)
-}
-
-/// Check if a string contains the given substring.
-///
-/// # Examples
-///
-/// ```
-/// import std.string;
-///
-/// fn main() {
-///     println(string.contains("hello world", "world"));   // true
-///     println(string.contains("hello", "xyz"));   // false
-/// }
-/// ```
-pub fn contains(s: string, sub: string) -> bool {
-    s.contains(sub)
 }
 
 /// Check if a string contains only ASCII characters (code points 0–127).
@@ -576,9 +446,9 @@ pub fn contains(s: string, sub: string) -> bool {
 pub fn is_ascii(s: string) -> bool {
     let len = s.len();
     for i in 0..len {
-        // In-bounds loop: char_at(i) is always Some; treat the unreachable
+        // In-bounds loop: get(i) is always Some; treat the unreachable
         // None defensively as non-ASCII rather than unwrapping.
-        let ch = match s.char_at(i) {
+        let ch = match s.get(i) {
             .Some(c) => c,
             .None => return false,
         };
@@ -589,119 +459,12 @@ pub fn is_ascii(s: string) -> bool {
     true
 }
 
-/// Trim leading and trailing whitespace from a string.
-pub fn trim(s: string) -> string {
-    s.trim()
-}
-
-/// Replace all occurrences of `old` in `s` with `new_val`.
-pub fn replace(s: string, old: string, new_val: string) -> string {
-    s.replace(old, new_val)
-}
-
-/// Split a string by `sep` into a list of substrings.
-///
-/// An empty separator splits the string into its individual Unicode characters
-/// (one element per codepoint). Empty input with an empty separator returns an
-/// empty list. A trailing delimiter produces a trailing empty element.
-///
-/// # Examples
-///
-/// ```
-/// import std.string;
-///
-/// fn main() {
-///     let parts = string.split("a,b,c", ",");  // ["a", "b", "c"]
-///     let trail = string.split("a,b,", ",");   // ["a", "b", ""]
-///     let chars = string.split("café", "");    // ["c", "a", "f", "é"]
-///     let empty = string.split("", "");        // []
-/// }
-/// ```
-pub fn split(s: string, sep: string) -> Vec<string> {
-    // Delegate to the method, which routes to hew_string_split FFI.
-    // That implementation is O(n) for both the empty-separator (codepoints)
-    // and non-empty-separator (windows scan) paths.
-    s.split(sep)
-}
-
-/// Split a string into lines, stripping `\r\n` or `\n` endings.
-///
-/// Always emits a final element for the text after the last newline
-/// (which will be empty when the string ends with a newline), matching
-/// the FFI behaviour.
-///
-/// # Examples
-///
-/// ```
-/// import std.string;
-///
-/// fn main() {
-///     let lines = string.lines("foo\nbar");   // ["foo", "bar"]
-///     let crlf  = string.lines("a\r\nb");    // ["a", "b"]
-///     let trail = string.lines("foo\n");     // ["foo", ""]
-/// }
-/// ```
-pub fn lines(s: string) -> Vec<string> {
-    var result: Vec<string> = Vec.new();
-    let slen = s.len();
-    var start = 0;
-    while start < slen {
-        let rest = s.slice(start, slen);
-        let found = rest.find("\n");
-        if found.is_none() {
-            break;
-        }
-        let idx = found ?? 0;
-        var end = start + idx;
-        if end > start && s.slice(end - 1, end) == "\r" {
-            end = end - 1;
-        }
-        result.push(s.slice(start, end));
-        start = start + idx + 1;
-    }
-    // Always emit the final segment (may be empty when string ends with \n).
-    var final_end = slen;
-    if final_end > start && s.slice(final_end - 1, final_end) == "\r" {
-        final_end = final_end - 1;
-    }
-    result.push(s.slice(start, final_end));
-    result
-}
-
-/// Join a list of strings with `sep` between each element.
-///
-/// Returns an empty string for an empty list.
-///
-/// # Examples
-///
-/// ```
-/// import std.string;
-///
-/// fn main() {
-///     let s = string.join(["a", "b", "c"], ", ");  // "a, b, c"
-///     let e = string.join([], ",");                // ""
-/// }
-/// ```
-pub fn join(parts: Vec<string>, sep: string) -> string {
-    let n = parts.len();
-    if n == 0 {
-        return "";
-    }
-    var result = parts[0];
-    for i in 1..n {
-        result = result + sep + parts[i];
-    }
-    result
-}
-
-// ── Declarative receiver FFI ─────────────────────────────────────────
+/// Scalar-indexed UTF-8 string operations.
 impl string {
-    /// Number of encoded UTF-8 bytes, distinct from the codepoint length.
     #[extern_symbol(hew_string_byte_length)]
     fn byte_len(self) -> i64 {
         0
     }
-    /// Number of Unicode scalars. Use `byte_len()` for the encoded byte length.
     #[extern_symbol(hew_string_length)]
     fn len(self) -> i64 {
         0
@@ -734,18 +497,6 @@ impl string {
     fn trim(self) -> string {
         ""
     }
-    #[extern_symbol(hew_string_is_digit)]
-    fn is_digit(self) -> bool {
-        false
-    }
-    #[extern_symbol(hew_string_is_alpha)]
-    fn is_alpha(self) -> bool {
-        false
-    }
-    #[extern_symbol(hew_string_is_alphanumeric)]
-    fn is_alphanumeric(self) -> bool {
-        false
-    }
     #[extern_symbol(hew_string_clone)]
     fn clone(self) -> string {
         ""
@@ -762,63 +513,30 @@ impl string {
     fn lines(self) -> Vec<string> {
         Vec.new()
     }
-    /// Return `Some` of the Unicode scalar index of the first occurrence of `needle`,
-    /// or `None` when `needle` does not occur.
     #[extern_symbol(hew_string_find)]
     fn find(self, needle: string) -> Option<i64> {
         .None
     }
-    /// Copy the range from `start` inclusive to `end` exclusive, in Unicode scalars.
-    #[extern_symbol(hew_string_slice)]
-    fn slice(self, start: i64, end: i64) -> string {
-        ""
+    #[extern_symbol(hew_string_find_from)]
+    fn find_from(self, needle: string, start: i64) -> Option<i64> {
+        .None
     }
     #[extern_symbol(hew_string_repeat)]
     fn repeat(self, n: i64) -> string {
         ""
     }
-    /// Return `Some` of the Unicode scalar at `idx`, or `None` when the
-    /// scalar index is out of bounds, like `get`.
-    #[extern_symbol(hew_string_char_at)]
-    fn char_at(self, idx: i64) -> Option<char> {
-        .None
-    }
-    /// Return the `char` at codepoint-index `index`, or `None` when the index
-    /// is out of bounds. This is the non-trapping `Index.get` accessor,
-    /// de-aliased from the trapping `s[i]` sugar (which aborts on OOB). It is
-    /// the same runtime operation as `char_at`, under the `Index` spelling.
-    #[extern_symbol(hew_string_char_at)]
+    #[extern_symbol(hew_string_get)]
     fn get(self, index: i64) -> Option<char> {
         .None
     }
-    #[extern_symbol(hew_string_chars)]
-    fn chars(self) -> Vec<char> {
-        Vec.new()
-    }
-    /// Return the number of Unicode codepoints (runes) in this string.
-    ///
-    /// This equals `len()`. Use `byte_len()` for the UTF-8 byte length.
-    #[extern_symbol(hew_string_char_count)]
-    fn char_count_utf8(self) -> i64 {
-        0
-    }
-    /// Return `Some` of the Unicode codepoint at codepoint-index `i`, or
-    /// `None` if out of bounds. The index is a rune (codepoint) offset, not a
-    /// byte offset.
-    #[extern_symbol(hew_string_char_at_utf8)]
-    fn codepoint_at_utf8(self, i: i64) -> Option<i64> {
-        .None
-    }
-    /// Return the UTF-8 byte encoding of this string as an owned `bytes` value.
-    ///
-    /// This is the canonical string-to-`bytes` conversion: use it to build a
-    /// `bytes` payload (network writes, byte streams, hashing) from text without
-    /// reaching for raw FFI. Decode with `std.encoding.utf8.decode` to validate
-    /// arbitrary bytes, or use its explicitly named `decode_lossy` operation.
     #[extern_symbol(hew_string_to_bytes)]
     fn to_bytes(self) -> bytes {
         bytes.new()
     }
+    #[extern_symbol(hew_string_push)]
+    fn push(self, value: char) {}
+    #[extern_symbol(hew_string_clear)]
+    fn clear(self) {}
 }
 
 // ── Trait: ToString ──────────────────────────────────────────────────
@@ -839,9 +557,4 @@ impl string {
 pub trait ToString {
     /// Convert this value to its string representation.
     fn to_str(self) -> string;
-}
-
-// ── FFI bindings ─────────────────────────────────────────────────────
-extern "C" {
-    fn hew_char_to_string(code: i32) -> string;
 }

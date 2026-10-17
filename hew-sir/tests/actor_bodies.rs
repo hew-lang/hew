@@ -115,6 +115,35 @@ fn methods_and_hooks_are_private_bodies_of_their_actor() {
 }
 
 #[test]
+fn service_acquisition_cannot_reuse_a_local_suspend_contract() {
+    let mut module = lower_source(COUNTER);
+    let main = body_named(&module, "main");
+    let actor = module.actors[0].id;
+    let kind = module
+        .functions
+        .iter_mut()
+        .find(|function| function.callable == main)
+        .unwrap()
+        .blocks
+        .iter_mut()
+        .find_map(|block| match &mut block.terminator {
+            SemTerminator::Suspend { kind, .. } => Some(kind),
+            _ => None,
+        })
+        .expect("main observes actor completion");
+    *kind = hew_sir::SuspendKind::ServiceAcquire {
+        actor,
+        export: false,
+    };
+    assert!(verify_module(&module).iter().any(|diagnostic| matches!(
+        &diagnostic.kind,
+        SirDiagnosticKind::InvalidTerminator { reason }
+            if reason.contains("ServiceAcquire {")
+                && reason.contains("no matching input/result/resume contract")
+    )));
+}
+
+#[test]
 fn a_body_returning_an_owned_state_field_copies_it_out_of_the_seat() {
     const SOURCE: &str = r#"actor Ledger {
     var label: string = "ledger";

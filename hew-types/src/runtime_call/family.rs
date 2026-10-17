@@ -29,6 +29,7 @@ use strum::EnumIter;
 pub enum RuntimeCallFamily {
     AsyncIo(AsyncIoOp),
     FileRead(FileReadOp),
+    Service(super::ServiceOp),
     Tcp(TcpOp),
     /// Semantic operations over a distinct, owning encoding value.
     Encoding {
@@ -340,6 +341,8 @@ pub enum RuntimeCallFamily {
     /// `stream.forward(from, to)`: drain `from` into `to`, finishing `to` at
     /// EOF. Both halves are consumed.
     StreamForward,
+    StreamFromGenerator,
+    SinkFromEncoder,
     StreamLines,
     StreamNextLayout,
     /// The two halves of one `stream.pipe` allocation, extracted by the
@@ -351,10 +354,31 @@ pub enum RuntimeCallFamily {
     StreamTryNextLayout,
     StreamTrySendLayout,
 
+    CharIsDigit,
+    CharIsLetter,
+    CharIsAlphanumeric,
+    CharIsWhitespace,
+    CharIsUpper,
+    CharIsLower,
+    CharIsPunctuation,
+    CharIsControl,
+    CharIsAscii,
+    CharToUpper,
+    CharToLower,
+    CharToTitle,
+    CharLenUtf8,
+    CharToDigit,
+    CharFromI64,
+    CharFromU64,
+
     // --- String runtime helpers --------------------------------------------
-    StringCharAt,
-    StringCharAtUtf8,
-    StringCharCount,
+    StringGet,
+    StringGetRange,
+    StringSliceRange,
+    StringAppend,
+    StringPush,
+    StringClear,
+    StringFindFrom,
     StringByteLen,
     StringConcat,
     StringEquals,
@@ -363,9 +387,6 @@ pub enum RuntimeCallFamily {
     StringEndsWith,
     StringContains,
     StringIsEmpty,
-    StringIsDigit,
-    StringIsAlpha,
-    StringIsAlphanumeric,
     StructuralFormat,
     StringFind,
     StringIndex,
@@ -378,11 +399,8 @@ pub enum RuntimeCallFamily {
     StringSplit,
     /// `s.lines()` - a fresh `Vec<string>` split on line boundaries.
     StringLines,
-    /// `s.chars()` - a fresh `Vec<char>` of the string's Unicode scalars.
-    StringChars,
     StringSliceCodepoints,
     StringSliceCodepointsFrom,
-    StringSlice,
     StringToLowercase,
     StringToBytes,
     StringToUppercase,
@@ -585,6 +603,134 @@ const STRING: &[CanonicalExternTy] = &[CanonicalExternTy::String];
 /// Admission still requires exact source signatures and trusted modules.
 const HANDWRITTEN_STD_IO_EXTERN_SIGNATURES: &[CanonicalStdlibExternSignature] = &[
     CanonicalStdlibExternSignature {
+        module: "std.builtins",
+        signature_key: "char::is_digit",
+        symbol: "hew_char_is_digit",
+        family: Some(RuntimeCallFamily::CharIsDigit),
+        params: EMPTY,
+        result: CanonicalExternTy::Bool,
+    },
+    CanonicalStdlibExternSignature {
+        module: "std.builtins",
+        signature_key: "char::is_letter",
+        symbol: "hew_char_is_letter",
+        family: Some(RuntimeCallFamily::CharIsLetter),
+        params: EMPTY,
+        result: CanonicalExternTy::Bool,
+    },
+    CanonicalStdlibExternSignature {
+        module: "std.builtins",
+        signature_key: "char::is_alphanumeric",
+        symbol: "hew_char_is_alphanumeric",
+        family: Some(RuntimeCallFamily::CharIsAlphanumeric),
+        params: EMPTY,
+        result: CanonicalExternTy::Bool,
+    },
+    CanonicalStdlibExternSignature {
+        module: "std.builtins",
+        signature_key: "char::is_whitespace",
+        symbol: "hew_char_is_whitespace",
+        family: Some(RuntimeCallFamily::CharIsWhitespace),
+        params: EMPTY,
+        result: CanonicalExternTy::Bool,
+    },
+    CanonicalStdlibExternSignature {
+        module: "std.builtins",
+        signature_key: "char::is_upper",
+        symbol: "hew_char_is_upper",
+        family: Some(RuntimeCallFamily::CharIsUpper),
+        params: EMPTY,
+        result: CanonicalExternTy::Bool,
+    },
+    CanonicalStdlibExternSignature {
+        module: "std.builtins",
+        signature_key: "char::is_lower",
+        symbol: "hew_char_is_lower",
+        family: Some(RuntimeCallFamily::CharIsLower),
+        params: EMPTY,
+        result: CanonicalExternTy::Bool,
+    },
+    CanonicalStdlibExternSignature {
+        module: "std.builtins",
+        signature_key: "char::is_punctuation",
+        symbol: "hew_char_is_punctuation",
+        family: Some(RuntimeCallFamily::CharIsPunctuation),
+        params: EMPTY,
+        result: CanonicalExternTy::Bool,
+    },
+    CanonicalStdlibExternSignature {
+        module: "std.builtins",
+        signature_key: "char::is_control",
+        symbol: "hew_char_is_control",
+        family: Some(RuntimeCallFamily::CharIsControl),
+        params: EMPTY,
+        result: CanonicalExternTy::Bool,
+    },
+    CanonicalStdlibExternSignature {
+        module: "std.builtins",
+        signature_key: "char::is_ascii",
+        symbol: "hew_char_is_ascii",
+        family: Some(RuntimeCallFamily::CharIsAscii),
+        params: EMPTY,
+        result: CanonicalExternTy::Bool,
+    },
+    CanonicalStdlibExternSignature {
+        module: "std.builtins",
+        signature_key: "char::to_upper",
+        symbol: "hew_char_to_upper",
+        family: Some(RuntimeCallFamily::CharToUpper),
+        params: EMPTY,
+        result: CanonicalExternTy::Char,
+    },
+    CanonicalStdlibExternSignature {
+        module: "std.builtins",
+        signature_key: "char::to_lower",
+        symbol: "hew_char_to_lower",
+        family: Some(RuntimeCallFamily::CharToLower),
+        params: EMPTY,
+        result: CanonicalExternTy::Char,
+    },
+    CanonicalStdlibExternSignature {
+        module: "std.builtins",
+        signature_key: "char::to_title",
+        symbol: "hew_char_to_title",
+        family: Some(RuntimeCallFamily::CharToTitle),
+        params: EMPTY,
+        result: CanonicalExternTy::Char,
+    },
+    CanonicalStdlibExternSignature {
+        module: "std.builtins",
+        signature_key: "char::len_utf8",
+        symbol: "hew_char_len_utf8",
+        family: Some(RuntimeCallFamily::CharLenUtf8),
+        params: EMPTY,
+        result: CanonicalExternTy::I64,
+    },
+    CanonicalStdlibExternSignature {
+        module: "std.builtins",
+        signature_key: "char::to_digit",
+        symbol: "hew_char_to_digit",
+        family: Some(RuntimeCallFamily::CharToDigit),
+        params: I64,
+        result: CanonicalExternTy::OptionI64,
+    },
+    CanonicalStdlibExternSignature {
+        module: "std.builtins",
+        signature_key: "i64::try_to_char",
+        symbol: "hew_char_from_i64",
+        family: Some(RuntimeCallFamily::CharFromI64),
+        params: EMPTY,
+        result: CanonicalExternTy::OptionChar,
+    },
+    CanonicalStdlibExternSignature {
+        module: "std.builtins",
+        signature_key: "u64::try_to_char",
+        symbol: "hew_char_from_u64",
+        family: Some(RuntimeCallFamily::CharFromU64),
+        params: EMPTY,
+        result: CanonicalExternTy::OptionChar,
+    },
+    CanonicalStdlibExternSignature {
         module: "std.io",
         signature_key: "bytes::append",
         symbol: "hew_bytes_append",
@@ -674,30 +820,6 @@ const HANDWRITTEN_STD_IO_EXTERN_SIGNATURES: &[CanonicalStdlibExternSignature] = 
     },
     CanonicalStdlibExternSignature {
         module: "std.string",
-        signature_key: "string::is_digit",
-        symbol: "hew_string_is_digit",
-        family: Some(RuntimeCallFamily::StringIsDigit),
-        params: EMPTY,
-        result: CanonicalExternTy::Bool,
-    },
-    CanonicalStdlibExternSignature {
-        module: "std.string",
-        signature_key: "string::is_alpha",
-        symbol: "hew_string_is_alpha",
-        family: Some(RuntimeCallFamily::StringIsAlpha),
-        params: EMPTY,
-        result: CanonicalExternTy::Bool,
-    },
-    CanonicalStdlibExternSignature {
-        module: "std.string",
-        signature_key: "string::is_alphanumeric",
-        symbol: "hew_string_is_alphanumeric",
-        family: Some(RuntimeCallFamily::StringIsAlphanumeric),
-        params: EMPTY,
-        result: CanonicalExternTy::Bool,
-    },
-    CanonicalStdlibExternSignature {
-        module: "std.string",
         signature_key: "string::find",
         symbol: "hew_string_find",
         family: Some(RuntimeCallFamily::StringFind),
@@ -706,27 +828,35 @@ const HANDWRITTEN_STD_IO_EXTERN_SIGNATURES: &[CanonicalStdlibExternSignature] = 
     },
     CanonicalStdlibExternSignature {
         module: "std.string",
-        signature_key: "string::char_at",
-        symbol: "hew_string_char_at",
-        family: Some(RuntimeCallFamily::StringCharAt),
-        params: I64,
-        result: CanonicalExternTy::OptionChar,
+        signature_key: "string::push",
+        symbol: "hew_string_push",
+        family: Some(RuntimeCallFamily::StringPush),
+        params: &[CanonicalExternTy::Char],
+        result: CanonicalExternTy::Unit,
+    },
+    CanonicalStdlibExternSignature {
+        module: "std.string",
+        signature_key: "string::clear",
+        symbol: "hew_string_clear",
+        family: Some(RuntimeCallFamily::StringClear),
+        params: EMPTY,
+        result: CanonicalExternTy::Unit,
+    },
+    CanonicalStdlibExternSignature {
+        module: "std.string",
+        signature_key: "string::find_from",
+        symbol: "hew_string_find_from",
+        family: Some(RuntimeCallFamily::StringFindFrom),
+        params: &[CanonicalExternTy::String, CanonicalExternTy::I64],
+        result: CanonicalExternTy::OptionI64,
     },
     CanonicalStdlibExternSignature {
         module: "std.string",
         signature_key: "string::get",
-        symbol: "hew_string_char_at",
-        family: Some(RuntimeCallFamily::StringCharAt),
+        symbol: "hew_string_get",
+        family: Some(RuntimeCallFamily::StringGet),
         params: I64,
         result: CanonicalExternTy::OptionChar,
-    },
-    CanonicalStdlibExternSignature {
-        module: "std.string",
-        signature_key: "string::codepoint_at_utf8",
-        symbol: "hew_string_char_at_utf8",
-        family: Some(RuntimeCallFamily::StringCharAtUtf8),
-        params: I64,
-        result: CanonicalExternTy::OptionI64,
     },
     CanonicalStdlibExternSignature {
         module: "std.string",
@@ -750,14 +880,6 @@ const HANDWRITTEN_STD_IO_EXTERN_SIGNATURES: &[CanonicalStdlibExternSignature] = 
         symbol: "hew_string_to_uppercase",
         family: Some(RuntimeCallFamily::StringToUppercase),
         params: EMPTY,
-        result: CanonicalExternTy::String,
-    },
-    CanonicalStdlibExternSignature {
-        module: "std.string",
-        signature_key: "string::slice",
-        symbol: "hew_string_slice",
-        family: Some(RuntimeCallFamily::StringSlice),
-        params: &[CanonicalExternTy::I64, CanonicalExternTy::I64],
         result: CanonicalExternTy::String,
     },
     CanonicalStdlibExternSignature {
@@ -791,14 +913,6 @@ const HANDWRITTEN_STD_IO_EXTERN_SIGNATURES: &[CanonicalStdlibExternSignature] = 
         family: Some(RuntimeCallFamily::StringLines),
         params: EMPTY,
         result: CanonicalExternTy::VecString,
-    },
-    CanonicalStdlibExternSignature {
-        module: "std.string",
-        signature_key: "string::chars",
-        symbol: "hew_string_chars",
-        family: Some(RuntimeCallFamily::StringChars),
-        params: EMPTY,
-        result: CanonicalExternTy::VecChar,
     },
     CanonicalStdlibExternSignature {
         module: "std.string",
@@ -1026,6 +1140,8 @@ impl RuntimeCallFamily {
             Self::StreamPairSink => Some("std.stream.pair_sink"),
             Self::StreamPairStream => Some("std.stream.pair_stream"),
             Self::StreamForward => Some("std.stream.forward"),
+            Self::StreamFromGenerator => Some("std.stream.from_generator"),
+            Self::SinkFromEncoder => Some("std.stream.from_encoder"),
             Self::BytesDecodeUtf8 => Some("std.encoding.utf8.decode"),
             Self::BytesDecodeUtf8Lossy => Some("std.encoding.utf8.decode_lossy"),
             _ => None,
@@ -1036,7 +1152,11 @@ impl RuntimeCallFamily {
     #[must_use]
     pub const fn source_intrinsic_type_params(self) -> &'static [&'static str] {
         match self {
-            Self::StreamPairSink | Self::StreamPairStream | Self::StreamForward => &["T"],
+            Self::StreamPairSink
+            | Self::StreamPairStream
+            | Self::StreamForward
+            | Self::StreamFromGenerator
+            | Self::SinkFromEncoder => &["T"],
             _ => &[],
         }
     }
@@ -1045,6 +1165,7 @@ impl RuntimeCallFamily {
     /// runtime family. Catalogue endpoint identity is established before this
     /// call; arbitrary source names never reach it.
     #[must_use]
+    #[expect(clippy::too_many_lines, reason = "exact source catalogue endpoints")]
     pub fn from_catalog_endpoint(endpoint: &str) -> Option<Self> {
         match endpoint {
             "hew_node_id_display" => Some(Self::NodeIdDisplay),
@@ -1060,6 +1181,8 @@ impl RuntimeCallFamily {
             "stream.pair_sink" => Some(Self::StreamPairSink),
             "stream.pair_stream" => Some(Self::StreamPairStream),
             "stream.forward" => Some(Self::StreamForward),
+            "stream.from_generator" => Some(Self::StreamFromGenerator),
+            "stream.from_encoder" => Some(Self::SinkFromEncoder),
             "println_i32" => Some(Self::Print {
                 kind: PrintKind::I32,
                 newline: true,
@@ -1139,6 +1262,7 @@ impl RuntimeCallFamily {
             "utf8.decode_lossy" => Some(Self::BytesDecodeUtf8Lossy),
             "Node::start" => Some(Self::NodeStart),
             "Node::connect" => Some(Self::NodeConnect),
+            "Node::peer" => Some(Self::Service(super::ServiceOp::Peer)),
             "Node::register" => Some(Self::NodeRegister),
             "Node::lookup" => Some(Self::NodeLookup),
             "Node::shutdown" => Some(Self::NodeShutdown),

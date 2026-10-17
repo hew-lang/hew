@@ -16,6 +16,38 @@ struct CacheMetadata {
     tree_checksum: String,
 }
 
+pub(crate) fn source_provenance(
+    root: &Path,
+    manifest: &crate::manifest::HewManifest,
+) -> Result<Option<(String, String, Vec<u8>)>, String> {
+    let text = match std::fs::read_to_string(root.join(CACHE_METADATA_FILE)) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(format!("cannot read package provenance: {error}")),
+    };
+    let metadata: CacheMetadata =
+        toml::from_str(&text).map_err(|error| format!("invalid package provenance: {error}"))?;
+    let archive = std::fs::read(root.join(CACHE_ARCHIVE_FILE))
+        .map_err(|error| format!("cannot read retained package archive: {error}"))?;
+    let archive_tree = crate::tarball::unpacked_tree_checksum(&archive)
+        .map_err(|error| format!("invalid retained package archive: {error}"))?;
+    let actual_tree = crate::checksum::compute_dir_checksum(root)
+        .map_err(|error| format!("cannot verify package tree: {error}"))?;
+    if metadata.name != manifest.package.name
+        || metadata.version != manifest.package.version
+        || crate::tarball::checksum_bytes(&archive) != metadata.registry_checksum
+        || archive_tree != metadata.tree_checksum
+        || actual_tree != metadata.tree_checksum
+    {
+        return Err("package provenance integrity check failed".to_string());
+    }
+    Ok(Some((
+        metadata.registry,
+        metadata.registry_checksum,
+        archive,
+    )))
+}
+
 /// An installed package discovered in the global registry.
 #[derive(Debug)]
 pub struct InstalledPackage {

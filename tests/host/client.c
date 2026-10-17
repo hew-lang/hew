@@ -1,4 +1,5 @@
 #include "config_policy.h"
+#include "copy_component.h"
 #include "hew_host.h"
 #include "regex_policy.h"
 #include "take_policy.h"
@@ -6,6 +7,141 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifdef __linux__
+#include <dirent.h>
+#endif
+
+typedef HewOwned_std_24mfs_24mReadDir ReadDir;
+typedef HewOwned_std_24mfs_24mWriteDir WriteDir;
+typedef HewOwned_CopyInstance CopyInstance;
+
+static int descriptor_count(void) {
+#ifdef __linux__
+  DIR *directory = opendir("/proc/self/fd");
+  assert(directory);
+  int count = 0;
+  while (readdir(directory))
+    ++count;
+  closedir(directory);
+  return count;
+#else
+  return 0;
+#endif
+}
+
+static HewText *path_text(const char *path) {
+  HewText *text = NULL;
+  HewError *error = NULL;
+  assert(hew_host_text_from_utf8((const unsigned char *)path, strlen(path),
+                                 &text, &error) == HEW_OK);
+  assert(text && !error);
+  return text;
+}
+
+static void open_directories(const char *source, const char *destination,
+                             ReadDir **input, WriteDir **output) {
+  HewError *error = NULL;
+  HewText *path = path_text(source);
+  assert(orders_open_input(path, input, &error) == HEW_OK && !error && *input);
+  hew_host_text_release(path);
+  path = path_text(destination);
+  assert(orders_open_output(path, output, &error) == HEW_OK && !error &&
+         *output);
+  hew_host_text_release(path);
+}
+
+static void error_contains(const HewError *error, const char *needle) {
+  size_t len = 0;
+  const unsigned char *message = hew_host_error_message(error, &len);
+  size_t size = strlen(needle);
+  size_t index = 0;
+  while (index + size <= len && memcmp(message + index, needle, size))
+    ++index;
+  assert(index + size <= len);
+}
+
+static void compiled_component(const char *source, const char *destination,
+                               const char *missing, const char *marker) {
+  HewRuntime *runtime = hew_runtime_new();
+  ReadDir *input = NULL;
+  WriteDir *output = NULL;
+  CopyInstance *instance = NULL;
+  HewError *error = NULL;
+  int64_t count = -99;
+  uint8_t boolean = 99;
+  open_directories(source, destination, &input, &output);
+  assert(orders_create(&input, &output, &instance, &error) == HEW_OK);
+  assert(!input && !output && instance && !error);
+  assert(orders_run(instance, &count, &error) == HEW_OK && count == 16 &&
+         !error);
+  assert(orders_run(instance, &count, &error) == HEW_OK && count == 16 &&
+         !error);
+  assert(orders_shutdown(&instance, &error) == HEW_OK && !instance && !error);
+  hew_runtime_shutdown(runtime);
+  hew_runtime_release(runtime);
+  int retired = descriptor_count();
+  runtime = hew_runtime_new();
+  int idle = descriptor_count();
+  open_directories(source, destination, &input, &output);
+  assert(orders_create(&input, &output, &instance, &error) == HEW_OK &&
+         !input && !output);
+  assert(HewOwned_CopyInstance_release(&instance, &error) == HEW_OK &&
+         !instance && !error);
+  assert(descriptor_count() == idle);
+  open_directories(source, destination, &input, &output);
+  assert(orders_create_failed(&input, &output, &instance, &error) ==
+         HEW_LOGICAL_FAULT);
+  assert(!input && !output && !instance && error);
+  error_contains(error, "host constructor failed");
+  hew_host_error_release(error);
+  error = NULL;
+  assert(descriptor_count() == idle);
+  open_directories(missing, destination, &input, &output);
+  assert(orders_create(&input, &output, &instance, &error) == HEW_OK &&
+         !input && !output);
+  count = -99;
+  assert(orders_run(instance, &count, &error) == HEW_LOGICAL_FAULT &&
+         count == -99 && error);
+  HewError *retained = error;
+  error = NULL;
+  assert(HewOwned_CopyInstance_release(&instance, &error) == HEW_OK &&
+         !instance && !error);
+  assert(orders_add(20, 22, &count, &error) == HEW_OK && count == 42 && !error);
+  error_contains(retained, "read orders");
+  hew_host_error_release(retained);
+  assert(descriptor_count() == idle);
+  HewText *path = path_text(marker);
+  HewOwned_FaultingOwner *faulting = NULL;
+  assert(orders_faulting_owner(path, &faulting, &error) == HEW_OK && faulting &&
+         !error);
+  assert(HewOwned_FaultingOwner_release(&faulting, &error) ==
+             HEW_LOGICAL_FAULT &&
+         !faulting && error);
+  error_contains(error, "host close failed");
+  hew_host_error_release(error);
+  error = NULL;
+  assert(HewOwned_FaultingOwner_release(&faulting, &error) == HEW_OK && !error);
+  assert(orders_abandon_faulting(path, &error) == HEW_LOGICAL_FAULT && error);
+  error_contains(error, "host primary failed");
+  error_contains(error, "host close failed");
+  hew_host_error_release(error);
+  error = NULL;
+  hew_host_text_release(path);
+  assert(descriptor_count() == idle);
+  open_directories(source, destination, &input, &output);
+  assert(HewOwned_std_24mfs_24mReadDir_release(&input, &error) == HEW_OK &&
+         !input && !error);
+  assert(HewOwned_std_24mfs_24mWriteDir_release(&output, &error) == HEW_OK &&
+         !output && !error);
+  assert(orders_invert(0, &boolean, &error) == HEW_OK && boolean == 1 &&
+         !error);
+  assert(orders_invert(1, &boolean, &error) == HEW_OK && boolean == 0 &&
+         !error);
+  assert(orders_unit_echo(&count, &error) == HEW_OK && count == 41 && !error);
+  hew_runtime_shutdown(runtime);
+  hew_runtime_release(runtime);
+  assert(descriptor_count() == retired);
+}
 
 static void text_is(const HewText *text, const unsigned char *expected,
                     size_t size) {
@@ -123,7 +259,8 @@ static void compiled_regex_policy(void) {
     HewText *input = NULL, *result = NULL;
     HewError *error = NULL;
     assert(hew_host_text_from_utf8((const unsigned char *)inputs[i],
-                                   strlen(inputs[i]), &input, &error) == HEW_OK &&
+                                   strlen(inputs[i]), &input,
+                                   &error) == HEW_OK &&
            !error);
     assert(config_classify_text(input, &result, &error) == HEW_OK && !error);
     text_is(result, (const unsigned char *)expected[i], strlen(expected[i]));
@@ -132,7 +269,9 @@ static void compiled_regex_policy(void) {
   }
 }
 
-int main(void) {
+int main(int argc, char **argv) {
+  assert(argc == 5);
+  compiled_component(argv[1], argv[2], argv[3], argv[4]);
   compiled_policy();
   compiled_regex_policy();
   HewError *error = NULL, *next_error = NULL;

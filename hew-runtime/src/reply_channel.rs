@@ -117,6 +117,8 @@ pub struct HewReplyChannel {
     /// and the request owner race one CAS, so a queued loser cannot execute.
     native_dispatch: AtomicU8,
     native_deadline: crate::request_deadline::RequestDeadline,
+    #[cfg(not(target_arch = "wasm32"))]
+    native_admission: Option<crate::hew_node::service::RemoteAdmission>,
 }
 
 // SAFETY: `HewReplyChannel` is designed for cross-thread use. The atomic
@@ -165,6 +167,8 @@ pub extern "C" fn hew_reply_channel_new() -> *mut HewReplyChannel {
         native_waker: Mutex::new(None),
         native_dispatch: AtomicU8::new(0),
         native_deadline: crate::request_deadline::RequestDeadline::default(),
+        #[cfg(not(target_arch = "wasm32"))]
+        native_admission: None,
     }))
 }
 
@@ -202,13 +206,40 @@ pub(crate) unsafe fn claim_native_request_dispatch(channel: *mut HewReplyChannel
         unsafe { native::expire_native_request(channel) };
     }
     // SAFETY: a non-null channel is retained by the owned message node.
-    let Some(channel) = (unsafe { channel.as_ref() }) else {
+    let Some(channel_ref) = (unsafe { channel.as_ref() }) else {
         return true;
     };
-    channel
-        .native_dispatch
-        .compare_exchange(1, 2, Ordering::AcqRel, Ordering::Acquire)
-        != Err(3)
+    let claim = || {
+        channel_ref
+            .native_dispatch
+            .compare_exchange(1, 2, Ordering::AcqRel, Ordering::Acquire)
+            != Err(3)
+    };
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(admission) = &channel_ref.native_admission {
+        return match admission.claim(claim) {
+            Ok(claimed) => claimed,
+            Err(reason) => {
+                // SAFETY: the scheduler's request node retains this channel.
+                unsafe { native::reject_remote_request(channel, reason) };
+                false
+            }
+        };
+    }
+    claim()
+}
+
+/// Attach authenticated admission before publishing the request or reply owner.
+///
+/// # Safety
+/// The channel is exclusively owned and no request has been published.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) unsafe fn set_native_request_admission(
+    channel: *mut HewReplyChannel,
+    admission: Option<crate::hew_node::service::RemoteAdmission>,
+) {
+    // SAFETY: construction owns this unpublished channel.
+    unsafe { (*channel).native_admission = admission };
 }
 
 /// Read immutable request metadata from its retained reply owner.

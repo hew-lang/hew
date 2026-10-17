@@ -1,0 +1,100 @@
+import "confined_service_support/component.hew";
+
+actor ReceiptBook {
+    var entries: Vec<string> = Vec.new();
+
+    receive fn record(value: string) {
+        entries.push(value);
+    }
+
+    receive fn all() -> Vec<string> {
+        entries
+    }
+}
+
+type MemoryService {
+    book: ReceiptBook;
+}
+
+impl Service for MemoryService {
+    fn send(self, value: string) {
+        self.book.record(value).expect("record receipt");
+    }
+}
+
+type TextCodec {
+}
+
+impl Codec<i64> for TextCodec {
+    type Encoded = string;
+    fn encode(self, value: i64) -> string {
+        f"receipt:{value}"
+    }
+}
+
+type InheritedService {
+    offset: i64;
+}
+
+impl InheritedService {
+    fn take(self, value: i64) -> i64 {
+        value + self.offset
+    }
+
+    fn tag(self) -> i64 {
+        self.offset
+    }
+
+    fn make(value: i64) -> InheritedService {
+        InheritedService { offset: value }
+    }
+}
+
+type NominalService {
+    offset: i64;
+}
+
+impl ValueParent<i64> for NominalService {
+    fn take(self, value: i64) -> i64 {
+        value + self.offset
+    }
+}
+
+impl ValueChild<i64> for NominalService {
+    fn tag(self) -> i64 {
+        self.offset
+    }
+}
+
+type SafeFactory {
+}
+
+fn safe_action() -> i64 {
+    42
+}
+
+impl ActionFactory for SafeFactory {
+    fn action(self) -> fn() -> i64 {
+        safe_action
+    }
+}
+
+fn main() {
+    assert(inherited_value(InheritedService { offset: 1 }) == 42);
+    assert(inherited_make<InheritedService>() == 42);
+    let inherited: dyn ValueChild<i64> = InheritedService { offset: 2 };
+    assert(inherited_dynamic(inherited) == 42);
+    assert(run_factory(SafeFactory {}) == 42);
+    assert(inherited_value(NominalService { offset: 1 }) == 42);
+    let nominal: dyn ValueChild<i64> = NominalService { offset: 2 };
+    assert(inherited_dynamic(nominal) == 42);
+    let book = spawn ReceiptBook;
+    let copier = spawn Copier { service: MemoryService { book: book }, codec: TextCodec {  } };
+    assert(copier.copy().expect("copy") == 42);
+    assert(book.all().expect("receipts") == ["receipt:42", "callback", "receipt:42", "receipt:42", "receipt:42", "dynamic", "receipt:42", "receipt:42"]);
+    stop(copier);
+    stopped(copier);
+    stop(book);
+    stopped(book);
+    println("confined supplied service closed");
+}

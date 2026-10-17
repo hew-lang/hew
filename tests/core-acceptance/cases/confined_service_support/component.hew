@@ -1,0 +1,124 @@
+pub trait Service {
+    fn[suspends] send(self, value: string);
+}
+
+pub trait Codec<T> {
+    type Encoded;
+    fn encode(self, value: T) -> Self.Encoded;
+}
+
+#[resource]
+pub type Delivery<S, C> {
+    service: S;
+    codec: C;
+}
+
+impl<C: Codec<i64, Encoded = string>, S: Service> Delivery<S, C> {
+    pub fn close(consume self) {
+        self.service.send(self.codec.encode(42));
+    }
+}
+
+pub fn deliver<S: Service, C: Codec<i64, Encoded = string>>(consume service: S, consume codec: C) {
+    let held = Delivery<S, C> { service: service, codec: codec };
+}
+
+impl<C: Codec<i64, Encoded = string>, S: Service> Service for Delivery<S, C> {
+    fn send(self, value: string) {
+        self.service.send(value);
+    }
+}
+
+pub fn callback<S: Service>(consume service: S) -> fn[once, suspends]() {
+    move || service.send("callback")
+}
+
+pub fn close_later<S: Service, C: Codec<i64, Encoded = string>>(consume service: S, consume codec: C) -> fn[once, suspends]() {
+    let held = Delivery<S, C> { service: service, codec: codec };
+    move || held.close()
+}
+
+#[confined]
+pub fn run_callback(consume action: fn[once, suspends]()) {
+    action();
+}
+
+#[confined]
+pub fn discard_callback(consume action: fn[once, suspends]()) {}
+
+#[confined]
+pub fn discard_callbacks(consume actions: (fn[once, suspends](), fn[once, suspends]())) {}
+
+#[confined]
+pub fn run_service(consume service: dyn Service) {
+    service.send("dynamic");
+}
+
+pub gen fn pending<S: Service, C: Codec<i64, Encoded = string>>(consume service: S, consume codec: C) -> i64 {
+    let held = Delivery<S, C> { service: service, codec: codec };
+    yield 7;
+}
+
+#[confined]
+pub fn first(consume source: Generator<i64, ()>) -> i64 {
+    source.next().expect("yielded value")
+}
+
+#[confined]
+pub actor Copier<S: Service + Clone, C: Codec<i64, Encoded = string> + Clone> {
+    let service: S;
+    let codec: C;
+
+    receive fn copy() -> i64 {
+        deliver(service.clone(), codec.clone());
+        run_callback(callback(service.clone()));
+        run_callback(close_later(service.clone(), codec.clone()));
+        discard_callback(close_later(service.clone(), codec.clone()));
+        discard_callbacks((close_later(service.clone(), codec.clone()), callback(service.clone())));
+        let erased: dyn Service = Delivery<S, C> { service: service.clone(), codec: codec.clone() };
+        run_service(erased);
+        assert(first(pending(service.clone(), codec.clone())) == 7);
+        42
+    }
+}
+
+pub trait ValueParent<T> {
+    fn take(self, value: T) -> T;
+}
+
+pub trait ValueChild<U>: ValueParent<U> {
+    fn tag(self) -> i64;
+}
+
+pub trait MakerParent<T> {
+    fn make(value: T) -> Self;
+}
+
+pub trait MakerChild<U>: MakerParent<U> {
+    fn tag(self) -> i64;
+}
+
+pub trait ActionFactory {
+    fn action(self) -> fn() -> i64;
+}
+
+#[confined]
+pub fn inherited_value<C: ValueChild<i64>>(value: C) -> i64 {
+    value.take(40) + value.tag()
+}
+
+#[confined]
+pub fn inherited_make<M: MakerChild<i64>>() -> i64 {
+    M.make(42).tag()
+}
+
+#[confined]
+pub fn inherited_dynamic(consume value: dyn ValueChild<i64>) -> i64 {
+    value.take(40)
+}
+
+#[confined]
+pub fn run_factory<F: ActionFactory>(factory: F) -> i64 {
+    let action = factory.action();
+    action()
+}

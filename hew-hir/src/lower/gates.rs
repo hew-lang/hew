@@ -113,6 +113,8 @@ pub(super) fn check_coroutine_gate(ctx: &mut LowerCtx, program: &Program) {
 /// `isize`/`usize` predicates can resolve operand types.
 pub(super) struct BinopGateCtx<'a> {
     pub(super) diagnostics: &'a mut Vec<HirDiagnostic>,
+    method_call_rewrites: &'a HashMap<SpanKey, MethodCallRewrite>,
+    module_idx: u32,
 }
 
 /// FC-P1-D entry point. Scans every user expression body in `program` for
@@ -131,6 +133,8 @@ pub(super) struct BinopGateCtx<'a> {
 pub(super) fn check_binary_operator_gates(ctx: &mut LowerCtx, program: &Program) {
     let mut gate_ctx = BinopGateCtx {
         diagnostics: &mut ctx.diagnostics,
+        method_call_rewrites: &ctx.method_call_rewrites,
+        module_idx: ctx.current_module_idx,
     };
     for (item, _span) in &program.items {
         match item {
@@ -378,9 +382,14 @@ pub(super) fn scan_expr_for_binop_gates(
         }
         Expr::MethodCall { receiver, args, .. } => {
             scan_expr_for_binop_gates(&receiver.0, &receiver.1, false, ctx);
-            for arg in args {
+            let checked_range = matches!(
+                ctx.method_call_rewrites.get(&SpanKey::in_module(span, ctx.module_idx)),
+                Some(MethodCallRewrite::RewriteToFunction { descriptor: Some(descriptor), .. })
+                    if descriptor.family() == hew_types::RuntimeCallFamily::StringGetRange
+            );
+            for (index, arg) in args.iter().enumerate() {
                 let a = arg.expr();
-                scan_expr_for_binop_gates(&a.0, &a.1, false, ctx);
+                scan_expr_for_binop_gates(&a.0, &a.1, checked_range && index == 0, ctx);
             }
         }
         Expr::Call { function, args, .. } => {

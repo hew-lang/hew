@@ -1,89 +1,44 @@
-// Selecting on machine transitions across actors.
-//
-// Machines are value types — there is no shared machine instance an
-// observer could subscribe to. The supported observation pattern is the
-// notification pipe: the OWNER steps its machine and publishes each
-// observed transition into a `Sink<Transition>`; the OBSERVER receives
-// the pipe half through an actor message (local handle transfer) and
-// selects on the receive arm with an `after` safety net. End of stream
-// (`None`) is the cancellation-clean teardown. Replay semantics are
-// transitions-after-subscribe; the owner sends the current state as a
-// self-transition at attach so a watcher joining an already-started
-// machine fires immediately.
+// A reusable subscription receives typed notices in an ordinary select loop.
 import std.concurrency.lifecycle.{Lifecycle};
 
-import std.stream;
-
-/// One observed transition, with the previous and next state names.
-type Transition {
-    from_state: string;
-    to_state: string;
-}
-
-actor Owner {
-    var lc: Lifecycle<i64> = .Created;
-    receive fn drive(consume tx: stream.Sink<Transition>) {
-
-        // Attach snapshot: a self-transition naming the current state.
-        let current = lc.state_name();
-        tx.send(Transition { from_state: current, to_state: lc.state_name() }).expect("send");
-        let before_init = lc.state_name();
-        lc.step(Lifecycle.Event.Initialise);
-        if before_init != lc.state_name() {
-            tx.send(Transition { from_state: before_init, to_state: lc.state_name() }).expect("send");
-        }
-        let before_start = lc.state_name();
-        lc.step(Lifecycle.Event.Started { handle: 7 });
-        if before_start != lc.state_name() {
-            tx.send(Transition { from_state: before_start, to_state: lc.state_name() }).expect("send");
-        }
-        tx.close();
-    }
-}
-
-actor Observer {
-    receive fn watch(consume rx: stream.Stream<Transition>) {
-        var waiting = true;
-        while waiting {
-            select {
-                t from rx.recv() => {
-                    match t {
-                        .Some(tr) => {
-                            println(f"{tr.from_state} -> {tr.to_state}");
-                            match tr.to_state {
-                                "Running" => println("observer: child is up"),
-                                "Faulted" => println("observer: child faulted"),
-                                _ => {}
-                            }
-                        }
-                        .None => {
-                            println("watch closed");
-                            waiting = false;
-                        }
-                    }
-                }
-                after 2s => {
-                    println("observer: watch timed out");
-                    waiting = false;
-                }
-            };
-        }
-        rx.close();
-    }
-}
+import std.machine.watch;
 
 fn main() {
-    let (tx, rx): (stream.Sink<Transition>, stream.Stream<Transition>) = match stream.pipe(8) {
-        .Ok(pair) => pair,
-        .Err(err) => panic(f"stream.pipe failed: {err}"),
+    let initial: Lifecycle<i64> = .Created;
+    let (owner, feed) = watch.observe(initial, capacity: 8, subscribers: 1).expect("observe lifecycle");
+    var lifecycle = owner;
+    let updates = feed.subscribe().expect("subscribe");
+    let timed_out = select {
+        item from updates.recv() => false,
+        after 1ms => true,
     };
-    let obs = spawn Observer;
-    // `fork` starts the watcher concurrently: an ordinary call would wait for
-    // the handler to finish before `main` reaches the owner below, and the
-    // watcher cannot finish until the owner publishes.
-    let watching = fork obs.watch(rx);
-    let owner = spawn Owner;
-    let _ = owner.drive(tx);
-    // The watcher reports every transition and the close before `main` ends.
-    let _ = await watching;
+    assert(timed_out);
+    let _ = lifecycle.step(.Initialise);
+    let _ = lifecycle.step(.Started { handle: 7 });
+    lifecycle.close();
+    var previous = updates.initial().state.state_name();
+    loop {
+        select {
+            item from updates.recv() => {
+                match item {
+                    .Ok(.Some(notice)) => {
+                        let current = notice.state.state_name();
+                        println(f"{previous} -> {current}");
+                        previous = current;
+                        if current == "Running" {
+                            println("observer: child is up");
+                        }
+                    }
+                    .Ok(.None) => {
+                        println("watch closed");
+                        return;
+                    }
+                    .Err(lag) => {
+                        panic(f"history incomplete: {lag}");
+                    }
+                }
+            }
+            after 1s => panic("watch did not advance"),
+        };
+    }
 }

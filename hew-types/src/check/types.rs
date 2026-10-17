@@ -361,17 +361,28 @@ pub enum CheckedSelectSource {
     ActorAsk {
         call: SpanKey,
     },
+    Call {
+        call: SpanKey,
+    },
     StreamReceive {
         call: SpanKey,
     },
 }
 
-/// A task place borrowed while later selection sources are evaluated.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum PreparedSelectAccess {
+    Task,
+    Shared,
+    Exclusive,
+}
+
+/// An input place borrowed while later selection sources are evaluated.
 #[derive(Debug, Clone)]
-pub(super) struct PreparedSelectTask {
+pub(super) struct PreparedSelectInput {
     pub binding: TypeBindingId,
     pub path: Vec<String>,
     pub span: Span,
+    pub access: PreparedSelectAccess,
 }
 
 /// How one `for` loop binds each `Vec<T>` element (D432).
@@ -1112,6 +1123,11 @@ pub enum CallableCandidate {
     Declaration(crate::DefId),
     /// A closure literal in the checked source module.
     Closure(SpanKey),
+    GeneratorBlock(SpanKey),
+    Erasure {
+        site: SpanKey,
+        value: Box<IndirectCallCandidates>,
+    },
     TaskProducer(SpanKey),
     TaskResult(Box<CallableCandidate>),
     Sequence(Vec<IndirectCallCandidates>),
@@ -1197,7 +1213,8 @@ pub struct IndirectCallCandidates {
 }
 
 impl IndirectCallCandidates {
-    pub(crate) fn unknown() -> Self {
+    #[must_use]
+    pub fn unknown() -> Self {
         Self {
             known: Vec::new(),
             may_be_unknown: true,
@@ -1994,10 +2011,15 @@ pub enum MethodCallRewrite {
     /// HIR consumes this structured marker and emits a dedicated
     /// `HirExprKind::RemoteActorAsk`, preserving the checker-authoritative
     /// `Result<T::Reply, AskError>` return type.
-    RemoteActorAsk,
+    RemoteActorAsk {
+        member: crate::actor_protocol::RemoteActorMember,
+        service: bool,
+    },
     /// Remote `RemotePid<T>::send(msg)` one-way submission, lowered by HIR to
     /// `HirExprKind::RemoteActorSend` with its `Result<(), SendError>` type.
-    RemoteActorSend,
+    RemoteActorSend {
+        member: crate::actor_protocol::RemoteActorMember,
+    },
     /// Builtin `Vec<T>` higher-order pipeline call (`map` / `filter` /
     /// `reduce`, spec §3.8.6). HIR expands the call site into a counted
     /// loop over the receiver — bind the receiver and the closure argument
@@ -2066,6 +2088,7 @@ pub enum MethodCallRewrite {
         /// (e.g. "T" in `fn foo<T: Show>(x: T)`). Used by MIR to look up the
         /// concrete type from the monomorphization substitution map.
         receiver_type_param: crate::ParamHead,
+        trait_args: Vec<Ty>,
         /// Checker-owned receiver ABI bit from the declaring trait signature.
         requires_mutable_receiver: bool,
         /// Checker-owned receiver ownership bit from the declaring trait.
@@ -2419,6 +2442,7 @@ pub(super) struct GenericRequirement {
 pub(super) enum GenericRequirementKind {
     Eq,
     BorrowedTransfer { root: String },
+    ResourceClose,
 }
 
 /// One generic function call site, recorded so type obligations
@@ -3653,7 +3677,7 @@ pub struct Checker {
     /// distinguish an actor ask under `await` (valid) from an actor ask without
     /// Only these operand calls are explicitly awaited or forked.
     pub(super) suspension_operands: HashSet<SpanKey>,
-    pub(super) prepared_select_tasks: Vec<PreparedSelectTask>,
+    pub(super) prepared_select_inputs: Vec<PreparedSelectInput>,
     pub(super) loop_depth: u32,
     /// Loop and label floors of a currently checked deferred body.
     pub(super) deferred_body: Option<(u32, usize)>,
@@ -3671,7 +3695,7 @@ pub struct Checker {
     pub(super) trait_defs: HashMap<crate::DefId, TraitInfo>,
     /// The direct super-traits of each trait, resolved where the trait
     /// declares them.
-    pub(super) trait_super: HashMap<crate::DefId, Vec<crate::DefId>>,
+    pub(super) trait_super: HashMap<crate::DefId, Vec<TraitRef>>,
     /// Declared trait impls: the receiver with its type arguments erased and
     /// the trait, to the trait arguments of each impl.
     pub(super) trait_impls: HashMap<(ResolvedTy, crate::DefId), Vec<TraitImplArgs>>,
@@ -4118,16 +4142,6 @@ pub struct Checker {
     /// registering a trait method signature). The carrier is collapsed at
     /// call sites where `Self` is substituted by a concrete type.
     pub(super) current_trait_for_self_projection: Option<crate::DefId>,
-    /// Resolved impl-side `type Bar = X` bindings, keyed by
-    /// `(impl_type_name, trait_name, assoc_name)`. Populated at impl
-    /// registration so that downstream projection-collapse
-    /// (`project_assoc_types`) can substitute `Ty::AssocType` carriers once
-    /// their `base` becomes concrete.
-    ///
-    /// Distinct from `ImplAliasScope.entries`, which is the per-impl scope
-    /// stack used for `Self::Bar` lookup during impl-body checking.
-    pub(super) impl_assoc_type_bindings:
-        HashMap<(ResolvedTy, crate::DefId, Symbol), Vec<ImplAssociatedType>>,
     pub(super) associated_schema_parameters: super::AssociatedTypeSchemas,
     /// Whether warnings for WASM-only builds should be emitted.
     pub(super) wasm_target: bool,
@@ -4545,7 +4559,7 @@ impl Checker {
             in_generator: false,
             implied_display_context: None,
             suspension_operands: HashSet::new(),
-            prepared_select_tasks: Vec::new(),
+            prepared_select_inputs: Vec::new(),
             loop_depth: 0,
             deferred_body: None,
             loop_labels: Vec::new(),
@@ -4644,7 +4658,6 @@ impl Checker {
             lambda_actor_declarations: HashMap::new(),
             impl_alias_scopes: Vec::new(),
             current_trait_for_self_projection: None,
-            impl_assoc_type_bindings: HashMap::new(),
             associated_schema_parameters: super::AssociatedTypeSchemas::default(),
             wasm_target: false,
             repl_fragment: false,

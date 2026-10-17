@@ -1,0 +1,14 @@
+[[case]]
+id = "service-acquisition-confined"
+intent = "Confined components must receive a service instead of acquiring an authenticated peer."
+source = "cases/service-acquisition-confined.hew"
+kind = "reject"
+timeout_seconds = 15
+suites = ["acceptance"]
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "E_CONFINED_AUTHORITY"
+line = 3
+column = 27
+message = "confined `acquire` reaches `Node.peer`: ambient authority acquisition; supply a narrow resource or service at construction"

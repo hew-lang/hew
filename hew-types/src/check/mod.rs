@@ -306,6 +306,7 @@ impl crate::value_class::ClassDeclarations for CheckerClassDeclarations<'_> {
             let ty = self
                 .checker
                 .normalize_for_type_params(&ty, &definition.type_params);
+            let ty = self.checker.bind_associated_schema_type(&ty);
             // A member the boundary cannot render leaves the whole declaration
             // unclassifiable: an aggregate over the members that happened to
             // convert would be a guess. A marked declaration's class comes
@@ -345,6 +346,31 @@ impl crate::value_class::ClassDeclarations for CheckerClassDeclarations<'_> {
             type_params: definition.type_params.clone(),
             members,
         })
+    }
+
+    fn instantiate_members(
+        &self,
+        declaration: &crate::value_class::DeclaredType,
+        arguments: &[ResolvedTy],
+    ) -> Result<Vec<ResolvedTy>, crate::value_class::ClassError> {
+        declaration
+            .members
+            .iter()
+            .map(|member| {
+                let member = self
+                    .checker
+                    .associated_schema_parameters
+                    .instantiate_resolved_member(
+                        member,
+                        &declaration.type_params,
+                        arguments,
+                        &self.checker.defs,
+                    )?;
+                Ok(restore_member_opacity(member, &self.checker.defs, &|id| {
+                    self.is_opaque_type(id)
+                }))
+            })
+            .collect()
     }
 }
 
@@ -735,6 +761,7 @@ impl Checker {
             })
             .collect();
         TypeFactContext::new(rendered, self.registry.clone(), self.type_defs.clone())
+            .with_associated_types(self.associated_schema_parameters.clone())
             .with_defs(std::sync::Arc::new(self.defs.clone()))
             .with_aliases(
                 self.type_aliases
@@ -2981,7 +3008,7 @@ impl Checker {
             failure_edge_inferred: self.failure_edge_inferred.clone(),
             in_generator: self.in_generator.clone(),
             suspension_operands: self.suspension_operands.clone(),
-            prepared_select_tasks: self.prepared_select_tasks.clone(),
+            prepared_select_inputs: self.prepared_select_inputs.clone(),
             loop_depth: self.loop_depth.clone(),
             deferred_body: self.deferred_body.clone(),
             loop_labels: self.loop_labels.clone(),
@@ -3080,7 +3107,6 @@ impl Checker {
             lambda_actor_declarations: self.lambda_actor_declarations.clone(),
             impl_alias_scopes: self.impl_alias_scopes.clone(),
             current_trait_for_self_projection: self.current_trait_for_self_projection.clone(),
-            impl_assoc_type_bindings: self.impl_assoc_type_bindings.clone(),
             associated_schema_parameters: self.associated_schema_parameters.clone(),
             wasm_target: self.wasm_target.clone(),
             repl_fragment: self.repl_fragment.clone(),
@@ -3553,9 +3579,9 @@ impl Checker {
         self.report_completion_call_cycles();
         let checked_impl_body_callees = self.checked_impl_body_callees();
         self.call_type_args = resolved_call_type_args;
-        let suspension_effects = self.finish_suspension_effects();
-        let mut resolved_call_type_args = std::mem::take(&mut self.call_type_args);
         let callable_argument_flows = self.finish_callable_argument_flows();
+        let suspension_effects = self.finish_suspension_effects(&callable_argument_flows);
+        let mut resolved_call_type_args = std::mem::take(&mut self.call_type_args);
         self.finish_task_lifetimes(&callable_argument_flows);
         self.pending_callable_arguments.clear();
         let resolved_closure_capture_facts = std::mem::take(&mut self.closure_capture_facts)
@@ -3771,6 +3797,7 @@ impl Checker {
         // `self.actor_protocol_descriptors`. Take it for the typed output here
         // rather than rebuilding: a rebuild would re-run collision detection
         // and double-emit the diagnostics.
+        self.select_service_codecs(program);
         self.select_actor_codecs();
         let actor_protocol_descriptors = std::mem::take(&mut self.actor_protocol_descriptors);
 

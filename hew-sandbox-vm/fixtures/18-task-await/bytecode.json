@@ -825,7 +825,7 @@
       ],
       "entry": 0,
       "id": 1,
-      "name": "__hew_fn_main$closure$47",
+      "name": "__hew_fn_main$closure$49",
       "params": [
         {
           "own": "owned",
@@ -841,12 +841,28 @@
           "ops": [],
           "params": [],
           "term": {
-            "edge": {
+            "cancel": {
               "args": [],
-              "to": 1
+              "to": 2
             },
-            "op": "goto",
-            "span": null
+            "detail": {
+              "budget": 4000
+            },
+            "error_shape": null,
+            "inputs": [],
+            "kind": "Safepoint",
+            "op": "suspend",
+            "request_shapes": null,
+            "result": null,
+            "result_shape": null,
+            "resumes": [
+              {
+                "args": [],
+                "to": 1
+              }
+            ],
+            "span": null,
+            "unwind": null
           }
         },
         {
@@ -868,7 +884,7 @@
           "term": {
             "edge": {
               "args": [],
-              "to": 2
+              "to": 6
             },
             "op": "goto",
             "span": {
@@ -879,6 +895,54 @@
         },
         {
           "id": 2,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 4
+            },
+            "op": "goto",
+            "span": null
+          }
+        },
+        {
+          "id": 3,
+          "ops": [],
+          "params": [],
+          "term": {
+            "op": "resume_unwind",
+            "span": null
+          }
+        },
+        {
+          "id": 4,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 5
+            },
+            "op": "goto",
+            "span": null
+          }
+        },
+        {
+          "id": 5,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 3
+            },
+            "op": "goto",
+            "span": null
+          }
+        },
+        {
+          "id": 6,
           "ops": [],
           "params": [],
           "term": {

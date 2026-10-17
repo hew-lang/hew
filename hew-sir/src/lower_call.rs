@@ -28,14 +28,23 @@ impl Builder<'_, '_> {
     /// a field chain therefore protects its root without copying intermediate
     /// owning records. Whole-value operands already have the call's borrow
     /// boundary and do not need an additional projection loan.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one borrow boundary covers bindings, projections and computed supervisor roles"
-    )]
     pub(super) fn lower_borrowed_read(
         &mut self,
         expr: &HirExpr,
         loans: &mut Vec<ValueId>,
+    ) -> Result<Operand, String> {
+        self.lower_place_read(expr, loans, false)
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one borrow boundary covers bindings, projections and computed supervisor roles"
+    )]
+    pub(super) fn lower_place_read(
+        &mut self,
+        expr: &HirExpr,
+        loans: &mut Vec<ValueId>,
+        exclusive: bool,
     ) -> Result<Operand, String> {
         // Declared child access computes a stable role; it does not borrow a
         // field from the supervisor handle's physical representation.
@@ -50,13 +59,13 @@ impl Builder<'_, '_> {
         if let Some(place) = self.expression_projection(expr)? {
             let owning = OwnKind::of_ty(&self.ty(&expr.ty), self.service.checked_facts.rows())?
                 == OwnKind::Owned;
-            let kind = if owning {
+            let kind = if owning || exclusive {
                 SemOpKind::LoadBorrow { place }
             } else {
                 SemOpKind::LoadCopy { place }
             };
             let value = self.emit(expr, kind)?;
-            if owning {
+            if owning || exclusive {
                 loans.push(value);
             }
             return Ok(Operand { value });
@@ -67,7 +76,9 @@ impl Builder<'_, '_> {
         } = &expr.kind
         {
             if let Some((place, field)) = self.capture_field(*binding) {
-                if OwnKind::of_ty(&field.ty, self.service.checked_facts.rows())? == OwnKind::Owned {
+                if OwnKind::of_ty(&field.ty, self.service.checked_facts.rows())? == OwnKind::Owned
+                    || exclusive
+                {
                     let value = self.emit_typed(
                         Provenance::Site(expr.site),
                         &field.ty,
@@ -89,15 +100,19 @@ impl Builder<'_, '_> {
         }
         let (object, shape, field) = match &expr.kind {
             HirExprKind::FieldAccess { object, field } => {
-                require_initial_scalar_read(expr.intent)?;
+                if !exclusive {
+                    require_initial_scalar_read(expr.intent)?;
+                }
                 let (shape, field) = self.aggregate_projection_shape(expr, object, field)?;
                 (object.as_ref(), shape, field)
             }
             HirExprKind::TupleIndex { tuple, index } => {
-                require_initial_scalar_read(expr.intent)?;
+                if !exclusive {
+                    require_initial_scalar_read(expr.intent)?;
+                }
                 let field = self.tuple_projection_index(expr, tuple, *index)?;
                 let ty = self.ty(&tuple.ty);
-                if is_initial_value_type(&ty) {
+                if is_initial_value_type(&ty) && !exclusive {
                     return self.lower_read_operand(expr, "borrowed call argument");
                 }
                 (
@@ -110,7 +125,7 @@ impl Builder<'_, '_> {
                 if self.ty(&source.ty) != self.ty(&expr.ty) {
                     return Err("transparent borrowed value must preserve its exact type".into());
                 }
-                return self.lower_borrowed_read(source, loans);
+                return self.lower_place_read(source, loans, exclusive);
             }
             _ if expr.intent == IntentKind::Read => {
                 return self.lower_read_operand(expr, "borrowed call argument")
@@ -126,10 +141,10 @@ impl Builder<'_, '_> {
                 })
             }
         };
-        let aggregate = self.lower_borrowed_read(object, loans)?;
+        let aggregate = self.lower_place_read(object, loans, exclusive)?;
         let owning = OwnKind::of_ty(&self.ty(&expr.ty), self.service.checked_facts.rows())?
             == OwnKind::Owned;
-        let kind = if owning {
+        let kind = if owning || exclusive {
             SemOpKind::AggregateProjectBorrow {
                 shape,
                 aggregate,
@@ -143,7 +158,7 @@ impl Builder<'_, '_> {
             }
         };
         let value = self.emit(expr, kind)?;
-        if owning {
+        if owning || exclusive {
             loans.push(value);
         }
         Ok(Operand { value })
@@ -730,6 +745,33 @@ impl Builder<'_, '_> {
         evaluation_order: &[usize],
         value_required: bool,
     ) -> Result<Option<ValueId>, String> {
+        self.lower_dyn_call_in_scope(
+            expr,
+            receiver,
+            target,
+            args,
+            evaluation_order,
+            value_required,
+            None,
+            &mut Vec::new(),
+        )
+    }
+
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "normal and prepared dispatch share the checked receiver and argument boundary"
+    )]
+    fn lower_dyn_call_in_scope(
+        &mut self,
+        expr: &HirExpr,
+        receiver: &HirExpr,
+        target: &hew_types::CallTarget,
+        args: &[HirExpr],
+        evaluation_order: &[usize],
+        value_required: bool,
+        scope: Option<crate::TaskScopeId>,
+        retained_loans: &mut Vec<ValueId>,
+    ) -> Result<Option<ValueId>, String> {
         let hew_types::CallTarget::DynamicVtable { method, slot, .. } = target else {
             return Err("dynamic dispatch carries no checker vtable target".to_string());
         };
@@ -764,6 +806,26 @@ impl Builder<'_, '_> {
         };
         let lowered_args =
             self.lower_user_arguments(args, evaluation_order, &dispatch.params, &mut loans)?;
+        if let Some(scope) = scope {
+            retained_loans.extend(loans);
+            return self
+                .emit_prepared_call(
+                    expr,
+                    scope,
+                    crate::InvocationCallee::Dyn {
+                        receiver: crate::BoundaryOperand {
+                            operand: Operand { value },
+                            decision,
+                        },
+                        slot: *slot,
+                        method: *method,
+                    },
+                    dispatch,
+                    lowered_args,
+                    retained_loans,
+                )
+                .map(Some);
+        }
         self.finish_user_call(
             PreparedCallee::Dyn {
                 receiver: crate::BoundaryOperand {
@@ -783,14 +845,58 @@ impl Builder<'_, '_> {
     }
 
     /// Direct and indirect user calls share argument capture and both cleanup paths.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one user-call boundary owns evaluation order, receiver transfer and both continuations"
-    )]
     pub(super) fn lower_direct_call(
         &mut self,
         expr: &HirExpr,
         value_required: bool,
+    ) -> Result<Option<ValueId>, String> {
+        self.lower_direct_call_in_scope(expr, value_required, None, &mut Vec::new())
+    }
+
+    pub(super) fn lower_select_call(
+        &mut self,
+        expr: &HirExpr,
+        scope: crate::TaskScopeId,
+        loans: &mut Vec<ValueId>,
+    ) -> Result<ValueId, String> {
+        let result = if let HirExprKind::CallDynMethod {
+            receiver,
+            target,
+            args,
+            evaluation_order,
+            ..
+        } = &expr.kind
+        {
+            self.lower_dyn_call_in_scope(
+                expr,
+                receiver,
+                target,
+                args,
+                evaluation_order,
+                true,
+                Some(scope),
+                loans,
+            )?
+        } else if matches!(expr.kind, HirExprKind::VarSelfMethodCall { .. }) {
+            return self.lower_prepared_var_self_call(expr, scope, loans);
+        } else if matches!(expr.kind, HirExprKind::CallTraitMethodStatic { .. }) {
+            self.lower_static_trait_call_in_scope(expr, true, Some(scope), loans)?
+        } else {
+            self.lower_direct_call_in_scope(expr, true, Some(scope), loans)?
+        };
+        result.ok_or_else(|| "prepared select call has no task handle".into())
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one user-call boundary owns evaluation order, receiver transfer and both continuations"
+    )]
+    fn lower_direct_call_in_scope(
+        &mut self,
+        expr: &HirExpr,
+        value_required: bool,
+        scope: Option<crate::TaskScopeId>,
+        retained_loans: &mut Vec<ValueId>,
     ) -> Result<Option<ValueId>, String> {
         let HirExprKind::Call {
             target,
@@ -974,6 +1080,15 @@ impl Builder<'_, '_> {
                 },
             );
         }
+        if let Some(scope) = scope {
+            if actor.is_some() {
+                return Err("a prepared ordinary call cannot borrow actor state".into());
+            }
+            retained_loans.extend(loans);
+            return self
+                .start_prepared_call(expr, scope, callee, signature, lowered_args, retained_loans)
+                .map(Some);
+        }
         let result = self.finish_user_call(
             callee,
             signature,
@@ -1000,6 +1115,91 @@ impl Builder<'_, '_> {
         Ok(result)
     }
 
+    fn start_prepared_call(
+        &mut self,
+        expr: &HirExpr,
+        scope: crate::TaskScopeId,
+        callee: PreparedCallee,
+        signature: SemSignature,
+        lowered_args: Vec<crate::BoundaryOperand>,
+        loans: &mut Vec<ValueId>,
+    ) -> Result<ValueId, String> {
+        let callee = match callee {
+            PreparedCallee::Direct { target, site } => {
+                if let Some(site) = site {
+                    self.service
+                        .record_checked_call(self.callable.id, site, target);
+                }
+                crate::InvocationCallee::Direct(target)
+            }
+            PreparedCallee::Indirect {
+                receiver,
+                specialization,
+                ..
+            } => crate::InvocationCallee::Indirect {
+                receiver,
+                specialization,
+            },
+            PreparedCallee::Dyn { .. } => {
+                return Err("prepared dyn call has no invocation adapter".into())
+            }
+        };
+        self.emit_prepared_call(expr, scope, callee, signature, lowered_args, loans)
+    }
+
+    pub(super) fn emit_prepared_call(
+        &mut self,
+        expr: &HirExpr,
+        scope: crate::TaskScopeId,
+        mut callee: crate::InvocationCallee,
+        signature: SemSignature,
+        mut lowered_args: Vec<crate::BoundaryOperand>,
+        loans: &mut Vec<ValueId>,
+    ) -> Result<ValueId, String> {
+        let task_ty = ResolvedTy::Task(Box::new(signature.return_ty.clone()));
+        self.service.require_type_facts(&task_ty)?;
+        for argument in callee.receiver_mut().into_iter().chain(&mut lowered_args) {
+            if matches!(
+                argument.decision,
+                crate::BoundaryDecision::Borrow | crate::BoundaryDecision::BorrowMut
+            ) {
+                let ty = self
+                    .value_ty(argument.operand.value)
+                    .ok_or("prepared input lacks its checked type")?;
+                let loan = self.emit_typed(
+                    Provenance::Site(expr.site),
+                    &ty,
+                    SemOpKind::BeginBorrow {
+                        owner: argument.operand.clone(),
+                    },
+                )?;
+                argument.operand.value = loan;
+                loans.push(loan);
+            }
+        }
+        for argument in &lowered_args {
+            if argument.decision == crate::BoundaryDecision::Move {
+                self.owned_live.remove(&argument.operand.value);
+            }
+        }
+        if let Some(receiver) = callee.receiver() {
+            if receiver.decision == crate::BoundaryDecision::Move {
+                self.owned_live.remove(&receiver.operand.value);
+            }
+        }
+        let task = self.emit_typed(
+            Provenance::Site(expr.site),
+            &task_ty,
+            SemOpKind::TaskInvoke {
+                scope,
+                callee,
+                args: lowered_args,
+                signature,
+            },
+        )?;
+        Ok(task)
+    }
+
     /// Lower a trait-method call reached through a where-clause bound.
     ///
     /// Once the implementation is selected the receiver is simply its first
@@ -1009,6 +1209,16 @@ impl Builder<'_, '_> {
         &mut self,
         expr: &HirExpr,
         value_required: bool,
+    ) -> Result<Option<ValueId>, String> {
+        self.lower_static_trait_call_in_scope(expr, value_required, None, &mut Vec::new())
+    }
+
+    fn lower_static_trait_call_in_scope(
+        &mut self,
+        expr: &HirExpr,
+        value_required: bool,
+        scope: Option<crate::TaskScopeId>,
+        retained_loans: &mut Vec<ValueId>,
     ) -> Result<Option<ValueId>, String> {
         let HirExprKind::CallTraitMethodStatic {
             receiver,
@@ -1068,6 +1278,22 @@ impl Builder<'_, '_> {
             &signature.params,
             &mut loans,
         )?;
+        if let Some(scope) = scope {
+            retained_loans.extend(loans);
+            return self
+                .start_prepared_call(
+                    expr,
+                    scope,
+                    PreparedCallee::Direct {
+                        target: callee.id,
+                        site: Some(expr.site),
+                    },
+                    signature,
+                    lowered_args,
+                    retained_loans,
+                )
+                .map(Some);
+        }
         self.finish_user_call(
             PreparedCallee::Direct {
                 target: callee.id,
@@ -1604,6 +1830,16 @@ impl Builder<'_, '_> {
             return self.emit_actor_call(operation, signature, vec![value]);
         }
 
+        if let hew_types::RuntimeCallFamily::Service(
+            operation @ (hew_types::runtime_call::ServiceOp::Export
+            | hew_types::runtime_call::ServiceOp::Receive),
+        ) = family
+        {
+            if !evaluation_order.is_empty() {
+                return Err("service acquisition takes positional arguments".into());
+            }
+            return self.lower_service_acquire(expr, operation, args);
+        }
         if let hew_types::RuntimeCallFamily::AsyncIo(operation) = family {
             if !evaluation_order.is_empty() {
                 return Err("native I/O takes positional arguments only".into());
@@ -2307,8 +2543,12 @@ impl Builder<'_, '_> {
                 "unit-valued runtime family `{family:?}` cannot produce an SSA value"
             ));
         }
-        for value in argument_temporaries.into_iter().rev() {
-            self.emit_destroy(value)?;
+        // A loan keeps its argument owners until the surrounding expression
+        // ends it, including snapshots taken before effectful later arguments.
+        if !result_is_loan {
+            for value in argument_temporaries.into_iter().rev() {
+                self.emit_destroy(value)?;
+            }
         }
         self.dispatch_runtime_release(receiver_release.as_ref())?;
         Ok(result)

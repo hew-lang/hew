@@ -5,7 +5,7 @@
 //! removes the subscription; ordinary resource cleanup closes it at scope exit.
 //! `LinkError` is available from the prelude; local and remote monitors share it.
 
-import std.failure.{CrashKind};
+import std.failure.{CrashKind, DownTarget};
 
 /// Policy for resolving actor operations across network partitions.
 pub enum PartitionPolicy {
@@ -24,14 +24,6 @@ pub enum PartitionPolicy {
 /// Stable identifier for one monitor registration.
 pub type MonitorId {
     value: u64;
-}
-
-/// Actor identity carried by a DOWN notification.
-pub enum DownTarget {
-    /// A process-local actor slot.
-    Local(u64);
-    /// A complete remote actor location.
-    Remote(Location);
 }
 
 /// Terminal cause carried by a DOWN notification.

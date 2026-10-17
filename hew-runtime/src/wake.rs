@@ -6,7 +6,6 @@
 
 use std::ffi::c_void;
 
-#[cfg(not(target_arch = "wasm32"))]
 #[path = "wake_scheduled.rs"]
 pub(crate) mod scheduled;
 

@@ -413,10 +413,15 @@ pub enum KnownDecl {
     Caller,
     Call,
     Outcome,
+    PeerSession,
+    Service,
+    ServiceExport,
+    ActorTimerMailbox,
+    Timer,
 }
 
 impl KnownDecl {
-    pub const ALL: [Self; 23] = [
+    pub const ALL: [Self; 28] = [
         Self::ActorError,
         Self::Never,
         Self::ActorMailbox,
@@ -440,6 +445,11 @@ impl KnownDecl {
         Self::Caller,
         Self::Call,
         Self::Outcome,
+        Self::PeerSession,
+        Self::Service,
+        Self::ServiceExport,
+        Self::ActorTimerMailbox,
+        Self::Timer,
     ];
 
     /// The declaration's canonical path in `std.builtins`.
@@ -450,6 +460,8 @@ impl KnownDecl {
             Self::ActorError => "std.builtins.ActorError",
             Self::Never => "std.builtins.Never",
             Self::ActorMailbox => "std.builtins.ActorMailbox",
+            Self::ActorTimerMailbox => "std.builtins.ActorTimerMailbox",
+            Self::Timer => "std.builtins.Timer",
             Self::ActorPolicy => "std.builtins.ActorPolicy",
             Self::Message => "std.builtins.Message",
             Self::SendFailure => "std.builtins.SendFailure",
@@ -469,6 +481,9 @@ impl KnownDecl {
             Self::Caller => "std.builtins.Caller",
             Self::Call => "std.builtins.Call",
             Self::Outcome => "std.builtins.Outcome",
+            Self::PeerSession => "std.net.PeerSession",
+            Self::Service => "std.net.Service",
+            Self::ServiceExport => "std.net.Export",
         }
     }
 
@@ -478,6 +493,8 @@ impl KnownDecl {
             Self::ActorError => "ActorError",
             Self::Never => "Never",
             Self::ActorMailbox => "ActorMailbox",
+            Self::ActorTimerMailbox => "ActorTimerMailbox",
+            Self::Timer => "Timer",
             Self::ActorPolicy => "ActorPolicy",
             Self::Message => "Message",
             Self::SendFailure => "SendFailure",
@@ -497,6 +514,9 @@ impl KnownDecl {
             Self::Caller => "Caller",
             Self::Call => "Call",
             Self::Outcome => "Outcome",
+            Self::PeerSession => "PeerSession",
+            Self::Service => "Service",
+            Self::ServiceExport => "Export",
         }
     }
 

@@ -12,48 +12,12 @@ fn swap<A, B>(consume first: A, consume second: B, n: i64) {
 fn main() { swap(1, "second", 2); }
 "#;
     assert_call_effect(source, "swap(1, \"second\", 2)", SuspensionEffect::Never);
-}
-
-#[test]
-fn growing_scalar_cleanup_keeps_plain_callable_boundaries() {
-    let source = r"
-fn grow<T>(consume value: T, n: i64) {
-    if n > 0 { grow<Vec<T>>(Vec.new(), n - 1); }
-}
-fn scalar() { grow(1, 2); }
-fn main() { let callback: fn() -> () = scalar; callback(); }
-";
-    assert_call_effect(source, "grow(1, 2)", SuspensionEffect::Never);
-    assert_call_effect(source, "callback()", SuspensionEffect::Never);
-}
-
-#[test]
-fn growing_scalar_array_cleanup_remains_synchronous() {
-    let source = r"
-fn grow<T>(consume value: T, n: i64) {
-    if n > 0 { grow([value], n - 1); }
-}
-fn scalar() { grow(1, 2); }
-fn main() { let callback: fn() -> () = scalar; callback(); }
-";
-    assert_call_effect(source, "grow(1, 2)", SuspensionEffect::Never);
-}
-
-#[test]
-fn growing_resource_close_keeps_its_suspension_effect() {
-    let source = r"
-#[resource]
-type Wrapper<T> { value: T; }
-impl<T> Wrapper<T> {
-    fn close(consume self) { sleep(1ms); discard(self.value); }
-}
-fn discard<T>(consume value: T) {}
-fn grow<T>(consume value: T, n: i64) {
-    if n > 0 { grow(Wrapper { value: value }, n - 1); }
-}
-fn main() { grow(1, 2); }
-";
-    assert_call_effect(source, "grow(1, 2)", SuspensionEffect::MaySuspend);
+    let resource = source.replace("fn main() { swap(1, \"second\", 2); }", "#[resource] type Ticket {} impl Ticket { fn close(consume self) { sleep(1ms); } } fn main() { swap(Ticket {}, 7, 2); }");
+    assert_call_effect(
+        &resource,
+        "swap(Ticket {}, 7, 2)",
+        SuspensionEffect::MaySuspend,
+    );
 }
 
 #[test]

@@ -24,6 +24,10 @@ fn vtable_slot_symbol(id: PhysicalVtableId, slot: u32) -> String {
     format!("__hew_vtable_{}_slot_{slot}", id.0)
 }
 
+pub(super) fn prepared_dyn_symbol(callable: CallableId, result: StorageId) -> String {
+    format!("__hew_prepared_dyn_{}_{}", callable.0, result.0)
+}
+
 /// The dispatch function type for one slot: the erased receiver rides a
 /// pointer, the rest of the ABI is the private call convention.
 fn dispatch_type<'ctx>(
@@ -52,6 +56,184 @@ fn dispatch_type<'ctx>(
 }
 
 impl<'ctx> ModuleEmitter<'ctx, '_> {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "uniform prepared entry adapts the existing checked vtable ABI"
+    )]
+    pub(super) fn emit_prepared_dyn_descriptor(
+        &self,
+        name: &str,
+        environment: PointerValue<'ctx>,
+        callee: &hew_mir::physical::PhysicalInvocationCallee,
+    ) -> CodegenResult<()> {
+        let hew_mir::physical::PhysicalInvocationCallee::Dyn {
+            receiver,
+            slot,
+            is_resumable,
+            signature,
+            ..
+        } = callee
+        else {
+            unreachable!("prepared dynamic descriptor requires a checked dynamic callee")
+        };
+        let pointer = self.ctx.ptr_type(AddressSpace::default());
+        let function = self.llvm.add_function(
+            &format!("{name}_invoke"),
+            pointer.fn_type(&[pointer.into(); 5], false),
+            Some(Linkage::Internal),
+        );
+        let builder = self.ctx.create_builder();
+        builder.position_at_end(self.ctx.append_basic_block(function, "entry"));
+        let object_slot = function.get_nth_param(0).unwrap().into_pointer_value();
+        let slots = function.get_nth_param(1).unwrap().into_pointer_value();
+        let result = function.get_nth_param(2).unwrap().into_pointer_value();
+        let fault = function.get_nth_param(3).unwrap().into_pointer_value();
+        let state = function.get_nth_param(4).unwrap().into_pointer_value();
+        let frame = is_resumable
+            .then(|| coro::begin(self.ctx, &self.llvm, &builder, function, state))
+            .transpose()?;
+        let object = builder
+            .build_load(
+                self.ctx.struct_type(&[pointer.into(); 2], false),
+                object_slot,
+                "dyn.object",
+            )
+            .llvm_ctx("read prepared trait object")?
+            .into_struct_value();
+        let data = builder
+            .build_extract_value(object, 0, "dyn.data")
+            .llvm_ctx("read erased receiver")?
+            .into_pointer_value();
+        let table = builder
+            .build_extract_value(object, 1, "dyn.table")
+            .llvm_ctx("read checked vtable")?
+            .into_pointer_value();
+        let word = hew_mir::physical::VTABLE_PREFIX_WORDS + *slot;
+        // SAFETY: the checked physical slot belongs to this trait object.
+        let entry = unsafe {
+            builder.build_in_bounds_gep(
+                pointer,
+                table,
+                &[self.ctx.i32_type().const_int(u64::from(word), false)],
+                "dyn.entry",
+            )
+        }
+        .llvm_ctx("address prepared vtable slot")?;
+        let target = builder
+            .build_load(pointer, entry, "dyn.target")
+            .llvm_ctx("read prepared vtable entry")?
+            .into_pointer_value();
+        let mut args: Vec<BasicMetadataValueEnum<'ctx>> = vec![data.into()];
+        for (index, parameter) in signature.params.iter().enumerate() {
+            // SAFETY: verified TaskInvoke supplies one typed address per argument.
+            let address = unsafe {
+                builder.build_in_bounds_gep(
+                    pointer,
+                    slots,
+                    &[self.ctx.i64_type().const_int(index as u64, false)],
+                    "dyn.argument.address",
+                )
+            }
+            .llvm_ctx("address prepared argument")?;
+            let address = builder
+                .build_load(pointer, address, "dyn.argument.slot")
+                .llvm_ctx("read prepared argument address")?
+                .into_pointer_value();
+            args.push(match parameter.carrier {
+                ParamCarrier::Indirect => address.into(),
+                ParamCarrier::Direct => builder
+                    .build_load(
+                        llvm_type(self.ctx, &parameter.layout.repr)?,
+                        address,
+                        "dyn.argument",
+                    )
+                    .llvm_ctx("read typed prepared argument")?
+                    .into(),
+            });
+        }
+        if signature.return_layout.is_some() {
+            args.push(result.into());
+        }
+        args.push(fault.into());
+        let child = frame
+            .as_ref()
+            .map(|frame| frame.init_child(self.ctx, &self.llvm, &builder))
+            .transpose()?;
+        if let Some(child) = child {
+            args.push(child.into());
+        }
+        let outcome = builder
+            .build_indirect_call(
+                dispatch_type(self.ctx, signature, *is_resumable)?,
+                target,
+                &args,
+                "dyn.outcome",
+            )
+            .llvm_ctx("invoke prepared vtable slot")?
+            .try_as_basic_value()
+            .basic()
+            .ok_or_else(|| {
+                CodegenError::FailClosed("prepared vtable entry has no outcome".into())
+            })?;
+        let status = if let Some(child) = child {
+            suspend::await_child(
+                self.ctx,
+                &self.llvm,
+                &builder,
+                function,
+                frame.as_ref().unwrap(),
+                child,
+                outcome.into_pointer_value(),
+            )?
+        } else {
+            outcome.into_int_value()
+        };
+        if matches!(receiver, ArgumentTransfer::Move(_)) {
+            let values = ValueEmitter {
+                module: self.module,
+                ctx: self.ctx,
+                llvm: &self.llvm,
+                builder: &builder,
+                value: function,
+                fault_sink: None,
+            };
+            values.free_dyn_box(data, table)?;
+        }
+        let finish = get_or_declare_external(
+            &self.llvm,
+            "hew_coro_state_finish",
+            self.ctx
+                .i32_type()
+                .fn_type(&[pointer.into(), self.ctx.i32_type().into()], false),
+        )?;
+        builder
+            .build_call(finish, &[state.into(), status.into()], "")
+            .llvm_ctx("publish prepared dispatch outcome")?;
+        if let Some(frame) = frame {
+            builder
+                .build_unconditional_branch(frame.finish)
+                .llvm_ctx("finish prepared dispatch frame")?;
+        } else {
+            builder
+                .build_return(Some(&pointer.const_null()))
+                .llvm_ctx("finish prepared synchronous dispatch")?;
+        }
+        let descriptor_ty = super::callable::callable_descriptor_type(self.ctx);
+        let descriptor = self.llvm.add_global(descriptor_ty, None, name);
+        descriptor.set_linkage(Linkage::Internal);
+        descriptor.set_constant(true);
+        let invoke = function.as_global_value().as_pointer_value();
+        descriptor.set_initializer(&descriptor_ty.const_named_struct(&[
+            environment.into(),
+            invoke.into(),
+            invoke.into(),
+            pointer.const_null().into(),
+            pointer.const_null().into(),
+            pointer.const_null().into(),
+        ]));
+        Ok(())
+    }
+
     pub(super) fn emit_vtables(&self) -> CodegenResult<()> {
         for table in &self.module.vtables {
             self.emit_vtable(table)?;
@@ -580,7 +762,7 @@ impl<'ctx> ValueEmitter<'_, 'ctx> {
     }
 
     /// Free one erased box using its table's `size_of`/`align_of` prefix.
-    fn free_dyn_box(
+    pub(super) fn free_dyn_box(
         &self,
         data: PointerValue<'ctx>,
         table: PointerValue<'ctx>,

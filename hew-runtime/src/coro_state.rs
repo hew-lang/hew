@@ -25,6 +25,18 @@ pub enum CoroStatus {
     Yielded = 4,
 }
 
+impl CoroStatus {
+    pub(crate) fn from_private_status(status: i32) -> Self {
+        if status == 0 {
+            Self::Complete
+        } else if status == crate::fault::HEW_FAULT_CANCELLED {
+            Self::Cancelled
+        } else {
+            Self::Fault
+        }
+    }
+}
+
 /// One local completion record, with the exact compiler-private C ABI.
 #[repr(transparent)]
 #[derive(Debug)]
@@ -46,6 +58,42 @@ pub(crate) struct InvocationContext {
     token: *mut HewCancellationToken,
     observer: *mut HewCancelObserver,
     previous: *mut InvocationContext,
+}
+
+/// Retained readiness and cancellation for a construction owned by its caller.
+/// It never points into the caller's frame.
+#[derive(Debug)]
+pub(crate) struct ConstructionWake {
+    token: *mut HewCancellationToken,
+    waker: OwnedWaker,
+}
+
+// SAFETY: the retained token and readiness descriptor support concurrent requests.
+unsafe impl Send for ConstructionWake {}
+
+impl ConstructionWake {
+    pub(crate) fn new(state: &HewCoroState) -> Self {
+        let execution = state.execution();
+        // SAFETY: the live invocation retains this token through the increment.
+        unsafe { hew_cancel_token_retain(execution.token) };
+        Self {
+            token: execution.token,
+            waker: execution.waker.clone(),
+        }
+    }
+
+    pub(crate) fn cancel(&self, reason: i32) {
+        // SAFETY: this registration retains the independent construction token.
+        unsafe { hew_cancel_token_cancel(self.token, reason) };
+        self.waker.wake();
+    }
+}
+
+impl Drop for ConstructionWake {
+    fn drop(&mut self) {
+        // SAFETY: this registration owns one retained reference.
+        unsafe { hew_cancel_token_release(self.token) };
+    }
 }
 
 #[repr(u8)]
@@ -242,18 +290,18 @@ pub unsafe extern "C" fn hew_coro_state_init_construction(
     // SAFETY: the suspended caller retains its execution context and token.
     let parent = unsafe { &*parent };
     let execution = parent.execution();
-    // SAFETY: this owned context retains the same cancellation ancestry.
-    unsafe { hew_cancel_token_retain(execution.token) };
+    // SAFETY: construction can be cancelled independently of its spawning caller.
+    let token = unsafe { hew_cancel_token_new_child(execution.token) };
     // SAFETY: parent retains the descriptor through initialization.
     let mut context = unsafe {
         context_with_token(
             execution.waker.descriptor(),
-            execution.token,
+            token,
             execution.budget.clone(),
             std::ptr::null_mut(),
         )
     };
-    context.actor_turn = execution.actor_turn;
+    context.actor_turn = crate::lifetime::live_actors::ActorIncarnation::NONE;
     context.actor_message_type = execution.actor_message_type;
     context.actor_caller = execution.actor_caller;
     context.request_deadline = execution.request_deadline;
@@ -304,24 +352,18 @@ pub unsafe extern "C" fn hew_coro_state_cleanup_child(
     let Some(parent) = (unsafe { parent.as_ref() }) else {
         return std::ptr::null_mut();
     };
-    let execution = parent.execution();
     // SAFETY: parent retains its descriptor; null starts fresh token ancestry.
-    let child = unsafe {
-        new_state(
-            execution.waker.descriptor(),
+    let mut state = unsafe {
+        owned_child(
+            parent,
             std::ptr::null_mut(),
-            execution.budget.clone(),
-            parent.invocation.poll_suppression,
+            crate::request_deadline::RequestDeadline::default(),
         )
     };
+    state.invocation.flags |= hew_cabi::coro::HEAP_ALLOCATED;
+    let child = Box::into_raw(Box::new(state));
     // SAFETY: the new state and context are uniquely owned until returned.
     unsafe {
-        let child_execution = (*child).execution_mut();
-        child_execution.actor_turn = execution.actor_turn;
-        child_execution.rc_owner.clone_from(&execution.rc_owner);
-        child_execution.actor_message_type = execution.actor_message_type;
-        child_execution.actor_caller = execution.actor_caller;
-        child_execution.request_deadline = crate::request_deadline::RequestDeadline::default();
         (*child).invocation.cleanup_fault.store(
             if parent.invocation.cleanup_fault.load(Ordering::Acquire) == CleanupFault::None as u8 {
                 CleanupFault::None as u8
@@ -335,6 +377,50 @@ pub unsafe extern "C" fn hew_coro_state_cleanup_child(
         }
     }
     child
+}
+
+/// A native operation can cancel its callback without cancelling the caller.
+/// Its record lives in the operation, which destroys the frame before this state.
+/// # Safety
+/// The parent is live during construction and its wake target obeys the ABI.
+pub(crate) unsafe fn operation_child(parent: &HewCoroState) -> HewCoroState {
+    // SAFETY: the parent retains its token and context during construction.
+    unsafe {
+        owned_child(
+            parent,
+            parent.execution().token,
+            parent.execution().request_deadline,
+        )
+    }
+}
+
+unsafe fn owned_child(
+    parent: &HewCoroState,
+    parent_token: *mut HewCancellationToken,
+    deadline: crate::request_deadline::RequestDeadline,
+) -> HewCoroState {
+    let execution = parent.execution();
+    // SAFETY: parent retains its token and wake target during child creation.
+    let token = unsafe { hew_cancel_token_new_child(parent_token) };
+    // SAFETY: the new context takes this token and retains the shared wake target.
+    let mut context = unsafe {
+        context_with_token(
+            execution.waker.descriptor(),
+            token,
+            execution.budget.clone(),
+            std::ptr::null_mut(),
+        )
+    };
+    context.actor_turn = execution.actor_turn;
+    context.rc_owner.clone_from(&execution.rc_owner);
+    context.actor_message_type = execution.actor_message_type;
+    context.actor_caller = execution.actor_caller;
+    context.request_deadline = deadline;
+    HewCoroState::with_context(
+        Box::into_raw(Box::new(context)),
+        hew_cabi::coro::OWNS_CONTEXT,
+        parent.invocation.poll_suppression,
+    )
 }
 
 /// Retain the fault-disclosure state of one consuming cleanup invocation.
@@ -551,6 +637,20 @@ pub unsafe extern "C" fn hew_coro_state_is_cancelled(state: *const HewCoroState)
 pub unsafe extern "C" fn hew_coro_state_cancel_code(state: *const HewCoroState) -> i32 {
     // SAFETY: the live state's retained token owns its complete ancestry.
     let reason = unsafe { cancel_token_reason((*state).execution().token) };
+    // The actor's existing latch is the authority for an external construction fault.
+    // SAFETY: the caller retains this live invocation throughout the query.
+    let target = unsafe { &*state }.execution().actor_turn;
+    let external = crate::lifetime::live_actors::with_live_incarnation(target, |actor| {
+        // SAFETY: the send guard pins this incarnation.
+        actor
+            .actor()
+            .pending_external_trap_code
+            .load(Ordering::Acquire)
+    })
+    .unwrap_or(0);
+    if external != 0 {
+        return external;
+    }
     match reason {
         crate::fault::HEW_FAULT_DEADLINE | crate::fault::HEW_FAULT_RACE_LOST => reason,
         _ => crate::fault::HEW_FAULT_CANCELLED,
@@ -598,13 +698,7 @@ pub unsafe extern "C" fn hew_coro_state_finish(
     unsafe {
         hew_coro_state_publish(
             state,
-            if private_status == 0 {
-                CoroStatus::Complete as i32
-            } else if private_status == crate::fault::HEW_FAULT_CANCELLED {
-                CoroStatus::Cancelled as i32
-            } else {
-                CoroStatus::Fault as i32
-            },
+            CoroStatus::from_private_status(private_status) as i32,
         )
     }
 }

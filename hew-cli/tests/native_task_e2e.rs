@@ -483,11 +483,14 @@ fn main() {
 fn task_selection_releases_prepared_loans_when_timer_evaluation_faults() {
     run_task(
         r#"
+fn work(label: string) -> i64 { sleep(1s); label.len() }
 fn duration() -> duration { panic("timer preparation failed"); }
 fn main() {
     defer println("parent cleanup");
+    let label = "retained argument".to_upper();
     let child = fork { sleep(1s); 42 };
     select {
+        prepared from work(label) => println(prepared),
         value from child => println(value),
         after duration() => println("timer"),
     };
@@ -496,6 +499,25 @@ fn main() {
         "parent cleanup\n",
         1,
         "timer preparation failed",
+    );
+    let dir = tempdir();
+    let input = dir.path().join("exclusive-select.hew");
+    std::fs::write(&input, "fn main() { let n = 0; var counter = move capture(var n) || -> i64 { sleep(1ms); n += 1; n }; let result = select { a from counter() => a, b from counter() => b }; println(result); }").unwrap();
+    let mut build = Command::new(hew_binary());
+    build
+        .arg("build")
+        .arg(&input)
+        .arg("-o")
+        .arg(hew_testutil::compiled_binary_path(
+            dir.path(),
+            "exclusive-select",
+        ));
+    let output = run_bounded_command(build, "reject overlapping select receivers");
+    assert!(!output.status.success(), "{}", describe_output(&output));
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("exclusive"),
+        "{}",
+        describe_output(&output)
     );
 }
 

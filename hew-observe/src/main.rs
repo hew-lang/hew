@@ -382,6 +382,7 @@ fn handle_tab_keys(app: &mut App, key: KeyCode) -> bool {
         Tab::Supervisors => match key {
             KeyCode::Up => app.tree_prev(),
             KeyCode::Down => app.tree_next(),
+            KeyCode::Enter => app.supervisor_show_events(),
             _ => {}
         },
         Tab::Crashes => match key {

@@ -1434,7 +1434,7 @@ fn main() {}
             actor Watcher {
                 #[on(exit)]
                 fn on_peer_exit(note: CrashNotification) {
-                    let _id = note.actor_id;
+                    let _id = note.target;
                 }
 
                 receive fn watch(peer: u64) {
@@ -1506,51 +1506,11 @@ fn main() {}
     }
 
     #[test]
-    fn wasm_rejects_structured_concurrency_scope() {
-        let output = check_wasm(structured_concurrency_scope_source());
-        assert!(
-            has_platform_limitation_error(&output),
-            "scope expressions should be a WASM error; got errors: {:?}",
-            output.errors
-        );
-        assert!(
-            platform_error_contains(&output, "Structured concurrency"),
-            "error message should mention Structured concurrency feature; got: {:?}",
-            output.errors
-        );
-        assert!(
-            platform_error_contains(&output, "no cooperative task executor"),
-            "error message should name the missing wasm32 task executor; got: {:?}",
-            output.errors
-        );
-    }
-
-    #[test]
     fn native_scope_no_platform_error() {
         let output = check_native(structured_concurrency_scope_source());
         assert!(
             !has_platform_limitation_error(&output),
             "scope expressions should not emit PlatformLimitation on native target; got: {:?}",
-            output.errors
-        );
-    }
-
-    #[test]
-    fn wasm_rejects_scope_tasks() {
-        let output = check_wasm(scope_tasks_source());
-        assert!(
-            has_platform_limitation_error(&output),
-            "scope tasks should be a WASM error; got errors: {:?}",
-            output.errors
-        );
-        assert!(
-            platform_error_contains(&output, "Task handles"),
-            "error message should mention Task feature; got: {:?}",
-            output.errors
-        );
-        assert!(
-            platform_error_contains(&output, "no wasm32 task executor"),
-            "error message should name the missing task spawn/executor path; got: {:?}",
             output.errors
         );
     }
@@ -1716,64 +1676,6 @@ fn main() {}
         assert!(
             !has_platform_limitation_error(&output),
             "RemotePid::ask must not emit PlatformLimitation on native; got: {:?}",
-            output.errors
-        );
-    }
-
-    #[test]
-    fn wasm_rejects_a_computed_timed_select_like_any_other() {
-        // The literal-timeout twin of this case is gone: both existed to pin
-        // that a select emitted no spurious warning on wasm32, and the reject
-        // that replaced that claim does not read the timeout expression at all.
-        let output = check_wasm(
-            r"actor Responder {
-    let value: i64;
-    receive fn get() -> i64 {
-        value
-    }
-}
-
-fn main() {
-    let a = spawn Responder { value: 1 };
-    let b = spawn Responder { value: 2 };
-    let timeout = 1ms;
-    let result = select {
-        x from a.get() => match x {
-            .Ok(value) => value,
-            .Err(_) => -2,
-        }
-        y from b.get() => match y {
-            .Ok(value) => value,
-            .Err(_) => -2,
-        }
-        after timeout => -1,
-    };
-    println(result);
-}
-",
-        );
-        // A select builds its readiness waitset in the task-scope runtime, which
-        // wasm32 does not compile, so the reject is the select itself and does
-        // not depend on how the timeout is spelled: one error, no warning.
-        assert!(
-            !output.warnings.iter().any(
-                |w| w.kind == TypeErrorKind::PlatformLimitation && w.message.contains("Select")
-            ),
-            "the select reject is an error, not a warning; got warnings: {:?}",
-            output.warnings
-        );
-        let rejects: Vec<_> = output
-            .errors
-            .iter()
-            .filter(|e| {
-                e.kind == TypeErrorKind::PlatformLimitation
-                    && e.message.contains("`select {}` operations")
-            })
-            .collect();
-        assert_eq!(
-            rejects.len(),
-            1,
-            "a computed timeout must not change the select reject; got errors: {:?}",
             output.errors
         );
     }

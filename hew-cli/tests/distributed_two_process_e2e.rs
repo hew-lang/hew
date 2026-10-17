@@ -134,8 +134,14 @@ fn compiled_node_binary() -> &'static Path {
             let emit_dir = tempfile::tempdir().expect("create dist_node compile dir");
             let emit_path = emit_dir.path().to_path_buf();
 
-            let mut command = Command::new(hew_binary());
+            let compiler =
+                std::env::var_os("HEW_DIST_E2E_HEW_BIN").map_or_else(hew_binary, PathBuf::from);
+            let mut command = Command::new(compiler);
             command.arg("compile");
+            let sanitize = std::env::var("HEW_SANITIZE_ADDRESS").is_ok_and(|value| value == "1");
+            if sanitize {
+                command.arg("--emit-llvm");
+            }
             // The same scenarios prove the optimized build when requested.
             if let Ok(level) = std::env::var("HEW_DIST_E2E_OPT_LEVEL") {
                 command.arg("--opt-level").arg(level);
@@ -145,8 +151,17 @@ fn compiled_node_binary() -> &'static Path {
                 .arg(&emit_path)
                 .arg(&source)
                 .current_dir(repo_root());
-            let output =
-                support::run_bounded_command(command, format!("hew compile {}", source.display()));
+            let compile_timeout = if sanitize {
+                Duration::from_mins(2)
+            } else {
+                hew_testutil::DEFAULT_EXEC_TIMEOUT
+            };
+            let output = support::try_run_bounded_command(
+                command,
+                format!("hew compile {}", source.display()),
+                compile_timeout,
+            )
+            .unwrap_or_else(|error| panic!("{error}"));
             assert!(
                 output.status.success(),
                 "compiling dist_node.hew failed\n{}",
@@ -159,6 +174,12 @@ fn compiled_node_binary() -> &'static Path {
                 "compiled dist_node binary missing at {}",
                 binary.display()
             );
+            if sanitize {
+                let ir = std::fs::read_to_string(binary.with_extension("ll"))
+                    .expect("read instrumented distributed LLVM IR");
+                assert!(ir.contains("sanitize_address"));
+                assert!(ir.contains("call void @__asan_init()"));
+            }
             CompiledNodeBinary {
                 _emit_dir: emit_dir,
                 path: binary,
@@ -180,6 +201,95 @@ impl Drop for ManagedChild {
         // after the client finishes (it otherwise sleeps to a safety ceiling).
         let _ = self.child.kill();
         let _ = self.child.wait();
+    }
+}
+
+struct PeerLink {
+    port: u16,
+    stopped: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    worker: Option<std::thread::JoinHandle<()>>,
+}
+
+impl PeerLink {
+    fn new(directory: &Path) -> Self {
+        use std::net::{Shutdown, TcpListener, TcpStream};
+        use std::sync::{atomic::Ordering, Arc};
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind peer gate");
+        let port = listener.local_addr().unwrap().port();
+        listener.set_nonblocking(true).unwrap();
+        let directory = directory.to_owned();
+        let stopped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let stop = Arc::clone(&stopped);
+        let worker = std::thread::spawn(move || {
+            let mut sockets: Vec<TcpStream> = Vec::new();
+            let mut transfers = Vec::new();
+            while !stop.load(Ordering::Acquire) {
+                if directory.join("service.disconnect").exists()
+                    && !directory.join("service.reconnect").exists()
+                {
+                    for socket in sockets.drain(..) {
+                        let _ = socket.shutdown(Shutdown::Both);
+                    }
+                    std::fs::write(directory.join("service.disconnected"), "1").unwrap();
+                    std::thread::sleep(Duration::from_millis(5));
+                    continue;
+                }
+                match listener.accept() {
+                    Ok((client, _)) => {
+                        let server_port = std::fs::read_to_string(directory.join("server.ready"))
+                            .expect("published server port")
+                            .parse::<u16>()
+                            .unwrap();
+                        let address = std::net::SocketAddr::from((
+                            std::net::Ipv4Addr::LOCALHOST,
+                            server_port,
+                        ));
+                        let Ok(server) =
+                            TcpStream::connect_timeout(&address, Duration::from_millis(500))
+                        else {
+                            continue;
+                        };
+                        sockets.extend([client.try_clone().unwrap(), server.try_clone().unwrap()]);
+                        for (mut input, mut output) in [
+                            (client.try_clone().unwrap(), server.try_clone().unwrap()),
+                            (server, client),
+                        ] {
+                            transfers.push(std::thread::spawn(move || {
+                                let _ = std::io::copy(&mut input, &mut output);
+                                let _ = output.shutdown(Shutdown::Write);
+                            }));
+                        }
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(Duration::from_millis(5));
+                    }
+                    Err(error) => panic!("peer gate accept: {error}"),
+                }
+            }
+            for socket in sockets {
+                let _ = socket.shutdown(Shutdown::Both);
+            }
+            for transfer in transfers {
+                transfer.join().expect("peer gate transfer");
+            }
+        });
+        Self {
+            port,
+            stopped,
+            worker: Some(worker),
+        }
+    }
+}
+
+impl Drop for PeerLink {
+    fn drop(&mut self) {
+        self.stopped
+            .store(true, std::sync::atomic::Ordering::Release);
+        self.worker
+            .take()
+            .unwrap()
+            .join()
+            .expect("peer gate worker");
     }
 }
 
@@ -960,6 +1070,19 @@ fn remote_ask_under_partition_fails_closed_not_hang() {
     );
 }
 
+#[test]
+fn authenticated_service_grants_supply_and_revoke_exact_interface() {
+    let scene = SecureScenario::new();
+    let gate = PeerLink::new(scene.kx_dir.path());
+    let mut server = scene.spawn_server("service_grants");
+    let gate_port = gate.port.to_string();
+    let client = scene.spawn_client("service_grants", &[("HEW_DIST_PROXY_PORT", &gate_port)]);
+    let _server_stdout = wait_for_server_ready(&mut server);
+    let stdout = run_client_to_completion(client, 0, StderrExpectation::Ignore);
+    run_client_to_completion(server, 0, StderrExpectation::Ignore);
+    assert!(stdout.contains("PASS service_grants file=supplied-file sum=42 unit declared-failure incompatible generic-incompatible cancelled raw-refused reconnect no-replay disconnected-revoke actor-restart node-restart"), "{stdout}");
+}
+
 /// The linchpin assertion: a real two-process remote-ask round-trip over a
 /// loopback socket returns the exact values stored on the remote actor.
 #[test]
@@ -1242,6 +1365,17 @@ fn link_remote_crash_cascade_on_clean_exit() {
         !stdout.contains("FAIL "),
         "client reported a FAIL on the link clean-exit cascade; client stdout:\n{stdout}"
     );
+}
+
+/// The typed hook retains the peer's complete Location and handles one crash.
+#[test]
+fn link_remote_typed_crash_preserves_origin_once() {
+    let stdout = run_two_process_scenario("link_remote_typed_crash");
+    assert!(
+        stdout.contains("PASS link_remote_typed_crash remote-origin class=fault count=1"),
+        "typed remote link notification failed: {stdout}"
+    );
+    assert!(!stdout.contains("FAIL "), "{stdout}");
 }
 
 /// A `CrashLinked` cross-node link crashes the LOCAL linked actor when the remote

@@ -163,16 +163,12 @@ native-only. Raw host sockets remain outside the supported Tier 2 surface.\
 
 [[feature]]
 id = "select"
-enum_variant = "Select"
 label = "`select {}` operations"
 prose_label = "`select {}` (any arm kind, any timeout expression)"
-reason = "a select builds its readiness waitset through the task-scope runtime (`hew_checked_task_select_*`), which is not compiled for wasm32"
-checker = "reject"
-runtime = "unavailable"
-runtime_status = "Module not compiled"
+checker = "pass"
+runtime = "implemented"
+runtime_status = "Checked readiness waitsets for tasks, actor calls, streams and timers on the cooperative driver"
 categories = ["runtime", "actors"]
-tracking = "WASM-TODO"
-tracking_label = "WASM-TODO(suspending-select):"
 
 [[feature]]
 id = "supervision-trees"
@@ -202,30 +198,21 @@ tracking_label = "WASM-TODO(link-monitor):"
 
 [[feature]]
 id = "structured-concurrency"
-enum_variant = "StructuredConcurrency"
 label = "Structured concurrency scopes"
 prose_label = "Structured concurrency (`scope {}`, `fork`, `await`)"
-reason = "the wasm32 scheduler has no cooperative task executor or non-blocking scope join"
-checker = "reject"
-runtime = "native-only"
-runtime_status = "Native scheduler-owned task continuations and scope joins; the task-scope runtime is not compiled for wasm32"
+checker = "pass"
+runtime = "implemented"
+runtime_status = "Checked scope joins, cancellation and cleanup on the cooperative driver"
 categories = ["runtime", "scope"]
-tracking = "WASM-TODO"
-tracking_label = "WASM-TODO(scope):"
-note = "Tier 2 requires scheduler-owned task work, completion wakeups, and non-blocking joins; a synchronous shim would erase concurrency and can deadlock task/actor coordination."
 
 [[feature]]
 id = "tasks"
-enum_variant = "Tasks"
 label = "Task handles spawned from scopes"
 prose_label = "Scope-spawned `Task` handles"
-reason = "the scheduler-owned task continuation executor is not compiled for wasm32, so forked bodies have no wasm32 task executor"
-checker = "reject"
-runtime = "native-only"
-runtime_status = "Native task spawn queues checked continuations for the scheduler; no task executor drives forked bodies on wasm32"
+checker = "pass"
+runtime = "implemented"
+runtime_status = "Checked task continuations, ordered batches and races on the cooperative driver"
 categories = ["runtime", "scope"]
-tracking = "WASM-TODO"
-tracking_label = "WASM-TODO(scope):"
 
 [[feature]]
 id = "semaphore-non-blocking"
@@ -256,7 +243,7 @@ prose_label = "`sleep_ms`, `sleep`"
 reason = "timers are cooperative on wasm32: a sleep parks the coroutine and an #[every(duration)] handler fires when the process driver next ticks the shared timer wheel, so granularity follows the driver steps rather than a dedicated ticker"
 checker = "warn"
 runtime = "cooperative"
-runtime_status = "Cooperative park at message boundary"
+runtime_status = "Cooperative coroutine suspension, including within actor handlers"
 categories = ["runtime", "scheduler"]
 tracking_label = "Implemented"
 
@@ -268,7 +255,7 @@ prose_label = "`#[every(duration)]` periodic handlers"
 reason = "timers are cooperative on wasm32: a sleep parks the coroutine and an #[every(duration)] handler fires when the process driver next ticks the shared timer wheel, so granularity follows the driver steps rather than a dedicated ticker"
 checker = "warn"
 runtime = "cooperative"
-runtime_status = "Cooperative periodic dispatch via host-driven timer queue"
+runtime_status = "Cooperative periodic dispatch on WASI and checked periodic handlers in the browser VM"
 categories = ["runtime", "scheduler"]
 tracking_label = "Implemented"
 
@@ -733,6 +720,11 @@ generate_endpoints = [
   "hew_node_monitor_location",
   "hew_node_link_remote_location",
   "hew_remote_call_new",
+  "hew_node_peer_new",
+  "hew_service_export",
+  "hew_service_receive",
+  "hew_service_acquire_new",
+  "hew_service_call_new",
   "hew_remote_call_poll",
   "hew_remote_call_take",
 ]
@@ -749,6 +741,11 @@ deterministic_endpoints = [
   "hew_node_monitor_location",
   "hew_node_link_remote_location",
   "hew_remote_call_new",
+  "hew_node_peer_new",
+  "hew_service_export",
+  "hew_service_receive",
+  "hew_service_acquire_new",
+  "hew_service_call_new",
   "hew_remote_call_poll",
   "hew_remote_call_take",
 ]
@@ -983,12 +980,6 @@ blocker = "OS-thread-free exit propagation"
 tracking_label = "WASM-TODO(link-monitor):"
 
 [[backlog]]
-id = "scope"
-gap = "Structured concurrency scopes"
-blocker = "Cooperative task work queue integrated with hew_sched_run, TaskEntry continuation/resume, completion wakeups, and non-blocking scope joins"
-tracking_label = "WASM-TODO(scope):"
-
-[[backlog]]
 id = "actor-drain"
 gap = "Actor-set drain parity"
 blocker = "WASM scheduler integration for observing and quiescing a requested actor set"
@@ -1085,24 +1076,6 @@ id = "smtp"
 gap = "SMTP client parity"
 blocker = "A wasm32 transport bridge for the native-only SMTP wrapper"
 tracking_label = "WASM-TODO(smtp):"
-
-[[backlog]]
-id = "suspending-select"
-gap = "Execution-context select suspension parity"
-blocker = "A WASM readiness waitset and non-recursive resume path for suspending select"
-tracking_label = "WASM-TODO(suspending-select):"
-
-[[backlog]]
-id = "suspension-deadline"
-gap = "Shared suspension-deadline runtime parity"
-blocker = "A WASM deadline scheduler for select, sleep, and scope continuations"
-tracking_label = "WASM-TODO(suspension-deadline):"
-
-[[backlog]]
-id = "timer-suspension"
-gap = "Mid-handler timer suspension parity"
-blocker = "A WASM timer continuation that resumes within a handler instead of parking only at the message boundary"
-tracking_label = "WASM-TODO(timer-suspension):"
 
 [[backlog]]
 id = "wasi-errno"

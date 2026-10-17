@@ -751,6 +751,12 @@ pub enum TypeErrorKind {
     InvalidSend,
     /// Operation not supported for this type
     InvalidOperation,
+    /// A one-shot timer can target only the current actor.
+    TimerTarget,
+    /// Timer admission cannot wait for mailbox capacity.
+    TimerWait,
+    /// Strings do not support scalar or range assignment.
+    StringIndexAssign,
     /// Distinct closures cannot share the required callable shape.
     ClosureShapeMismatch,
     /// Binary operands have incompatible types for the selected operator.
@@ -1501,6 +1507,9 @@ impl TypeErrorKind {
             Self::PathKindMismatch => "E_PATH_KIND_MISMATCH",
             Self::InvalidSend => "InvalidSend",
             Self::InvalidOperation => "InvalidOperation",
+            Self::TimerTarget => "E_TIMER_TARGET",
+            Self::TimerWait => "E_TIMER_WAIT",
+            Self::StringIndexAssign => "E_STRING_INDEX_ASSIGN",
             Self::ClosureShapeMismatch => "E_CLOSURE_SHAPE_MISMATCH",
             Self::BinaryOperandTypes => "E_BINARY_OPERAND_TYPES",
             Self::RangeBoundTypes => "E_RANGE_BOUND_TYPES",

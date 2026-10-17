@@ -553,11 +553,11 @@ fn main() {
     );
     let select = find_first_select(&output);
     assert!(
-        matches!(&select.arms[0].kind, HirSelectArmKind::ActorAsk { call } if matches!(&call.kind, HirExprKind::ActorAsk { handler, args, .. } if output.module.defs.path(*handler).ends_with("process") && args.len() == 1))
+        matches!(&select.arms[0].kind, HirSelectArmKind::Call { call } if matches!(&call.kind, HirExprKind::ActorAsk { handler, args, .. } if output.module.defs.path(*handler).ends_with("process") && args.len() == 1))
     );
 }
 
-/// A select arm source is a task, an actor call or a channel receive. A value
+/// A select arm source is a task, a checked call or a channel receive. A value
 /// that is none of those is refused, and so is `await` written on a source that
 /// would otherwise be valid.
 #[test]

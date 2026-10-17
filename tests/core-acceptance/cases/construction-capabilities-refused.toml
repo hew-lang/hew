@@ -121,23 +121,17 @@ message = "confined `through_iterator_cleanup` reaches `fs.open_read`: ambient a
 [[case.expected.diagnostics]]
 severity = "error"
 code = "E_CONFINED_AUTHORITY"
-line = 68
-column = 5
-message = "confined `through_generator_cleanup` reaches `through_generator_cleanup`: cleanup of `Generator<i64, ()>` without a checked authority summary"
-
-[[case.expected.diagnostics]]
-severity = "error"
-code = "E_CONFINED_AUTHORITY"
-line = 70
-column = 5
-message = "confined `through_generator_next` reaches `through_generator_next`: cleanup of `Generator<i64, ()>` without a checked authority summary"
-
-[[case.expected.diagnostics]]
-severity = "error"
-code = "E_CONFINED_AUTHORITY"
-line = 285
+line = 5
 column = 13
-message = "confined `through_generator_next` reaches `pending.next`: a callable without a checked body or authority summary"
+message = "confined `through_generator_cleanup` reaches `fs.open_read`: ambient authority acquisition"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "E_CONFINED_AUTHORITY"
+line = 5
+column = 13
+message = "confined `through_generator_next` reaches `fs.open_read`: ambient authority acquisition"
+
 
 [[case.expected.diagnostics]]
 severity = "error"

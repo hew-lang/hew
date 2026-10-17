@@ -1999,40 +1999,30 @@ fn main() {
     );
 }
 
-// ── string::chars() typechecks and arity-guards ─────────────────────────────
-
 #[test]
-fn string_chars_returns_vec_char() {
-    // chars() must typecheck cleanly and produce Vec<char> with zero args.
-    let output = typecheck(
-        r#"
-        fn main() {
-            let s = "hello";
-            let cs: Vec<char> = s.chars();
-        }
-    "#,
-    );
-    assert!(
-        output.errors.is_empty(),
-        "string::chars() should typecheck without errors; got: {:?}",
-        output.errors
-    );
-}
-
-#[test]
-fn string_chars_rejects_extra_args() {
-    let output = typecheck(
-        r#"
-        fn main() {
-            let s = "hello";
-            let cs = s.chars(1);
-        }
-    "#,
-    );
-    assert!(
-        !output.errors.is_empty(),
-        "string::chars(arg) should produce a typecheck error"
-    );
+fn removed_string_aliases_are_refused() {
+    for method in [
+        "chars()",
+        "char_at(0)",
+        "char_count_utf8()",
+        "codepoint_at_utf8(0)",
+        "slice(0, 1)",
+        "is_digit()",
+        "is_alpha()",
+        "is_alphanumeric()",
+    ] {
+        let output = typecheck(&format!(
+            "fn main() {{ let text = \"hello\"; text.{method}; }}"
+        ));
+        assert!(
+            output
+                .errors
+                .iter()
+                .any(|error| error.kind == TypeErrorKind::UndefinedMethod),
+            "{method}: {:?}",
+            output.errors
+        );
+    }
 }
 
 // ── 24. ArityMismatch — empty `<>` on generic struct / enum-variant init ──────

@@ -1,0 +1,88 @@
+trait Producer {
+    type Output;
+    fn output(self) -> Self.Output;
+}
+type Number {}
+impl Producer for Number {
+    type Output = i64;
+    fn output(self) -> i64 { 1 }
+}
+#[resource]
+type Holder<P: Producer> {
+    value: fn() -> P.Output;
+}
+impl<P: Producer> Holder<P> {
+    fn close(consume self) {}
+}
+fn hold<P: Producer>(consume value: fn() -> P.Output) -> Holder<P> {
+    Holder { value: value }
+}
+fn read_holder<P: Producer>(holder: Holder<P>) -> P.Output {
+    (holder.value)()
+}
+type Item<P: Producer> {
+    value: P.Output;
+}
+fn read_item<P: Producer>(item: Item<P>) -> P.Output {
+    item.value
+}
+
+type Table {
+    value: i64;
+}
+
+impl Index<string> for Table {
+    type Output = i64;
+    fn get(self, index: string) -> Option<i64> {
+        .Some(self.at(index))
+    }
+    fn at(self, index: string) -> i64 {
+        if index == "value" { self.value } else { 0 }
+    }
+}
+
+impl Table {
+    fn at(self, index: string) -> i64 { 900 }
+}
+
+type Callbacks {
+    value: fn[clone]() -> i64;
+}
+
+impl Index<string> for Callbacks {
+    type Output = fn[clone]() -> i64;
+    fn get(self, index: string) -> Option<fn[clone]() -> i64> { .Some(self.value.clone()) }
+    fn at(self, index: string) -> fn[clone]() -> i64 { self.value.clone() }
+}
+
+fn generic_callback<T: Index<string, Output = fn[clone]() -> i64>>(table: T) -> i64 {
+    table["value"]()
+}
+
+fn dynamic_callback(table: dyn Index<string, Output = fn[clone]() -> i64>) -> i64 {
+    table["value"]()
+}
+
+fn generic_at<T: Index<string, Output = i64>>(table: T) -> i64 {
+    table["value"]
+}
+
+fn dynamic_at(table: dyn Index<string, Output = i64>) -> i64 {
+    table["value"]
+}
+
+fn main() {
+    let holder = hold<Number>(|| -> i64 { 43 });
+    assert(read_holder(holder) == 43);
+    holder.close();
+    let item: Item<Number> = Item { value: 44 };
+    assert(read_item(item) == 44);
+    let table = Table { value: 45 };
+    assert(table.at("value") == 900);
+    assert(table["value"] == 45);
+    assert(generic_at(Table { value: 41 }) == 41);
+    assert(dynamic_at(Table { value: 42 }) == 42);
+    assert(generic_callback(Callbacks { value: || -> i64 { 46 } }) == 46);
+    assert(dynamic_callback(Callbacks { value: || -> i64 { 47 } }) == 47);
+    println("indexed");
+}

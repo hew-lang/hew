@@ -11,6 +11,19 @@ pub(super) fn operation_storage(
     locals: &mut BTreeSet<StorageId>,
 ) {
     match operation {
+        PhysicalOp::TaskInvoke {
+            callee, args, dest, ..
+        } => {
+            defined.insert(*dest);
+            for transfer in callee.receiver().iter().chain(args) {
+                used.insert(match transfer {
+                    ArgumentTransfer::Borrow(source)
+                    | ArgumentTransfer::BorrowMut(source)
+                    | ArgumentTransfer::Move(source)
+                    | ArgumentTransfer::Clone { source, .. } => *source,
+                });
+            }
+        }
         PhysicalOp::TaskScopeEnter { duration, .. } => used.extend(duration),
         PhysicalOp::TaskScopeClose { .. } => {}
         PhysicalOp::StreamPipe { stream, sink, .. } => {
@@ -154,6 +167,7 @@ pub(super) fn terminator_storage(term: &PhysicalTerminator, used: &mut BTreeSet<
         }
         PhysicalTerminator::ActorAsk { args, result, .. }
         | PhysicalTerminator::NativeIo { args, result, .. }
+        | PhysicalTerminator::ServiceAcquire { args, result, .. }
         | PhysicalTerminator::ValueCall { args, result, .. } => {
             used.extend(args.iter().map(source));
             used.insert(*result);
@@ -165,7 +179,8 @@ pub(super) fn terminator_storage(term: &PhysicalTerminator, used: &mut BTreeSet<
             result,
             ..
         } => {
-            used.extend([*target, *payload, *timeout, *result]);
+            used.extend([*target, *timeout, *result]);
+            used.extend(payload);
         }
         PhysicalTerminator::TaskSelect {
             sources,

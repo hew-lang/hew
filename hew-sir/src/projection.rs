@@ -449,11 +449,9 @@ pub(crate) fn verify_operation(
             return Err("aggregate place load changes its field type".into());
         }
         if borrowed {
-            if result.own != OwnKind::Guaranteed
-                || OwnKind::of_ty(&place.ty, facts) != Ok(OwnKind::Owned)
-            {
+            if result.own != OwnKind::Guaranteed {
                 return Err(
-                    "aggregate field loan requires its exact root and an owning field".into(),
+                    "aggregate field loan requires its exact root and guaranteed access".into(),
                 );
             }
         } else if matches!(operation.kind, SemOpKind::LoadCopy { .. })

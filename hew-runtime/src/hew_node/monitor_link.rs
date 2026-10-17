@@ -69,15 +69,21 @@ fn link_unreachable(
 ) -> i32 {
     let fire = ref_id.is_none_or(|ref_id| {
         rt.monitors
-            .deliver_link_down_to_ref(ref_id, target, crate::monitor::MONITOR_REASON_LOST)
+            .deliver_link_down_to_ref(
+                ref_id,
+                target,
+                crate::monitor::MONITOR_REASON_LOST,
+                crate::internal::types::CrashKind::PartitionDetected.tag(),
+            )
             .is_some()
     });
     if fire {
         let _ = crate::link::deliver_cross_node_link_exit(
             local_actor_id,
-            target.slot(),
+            target,
             crate::monitor::MONITOR_REASON_LOST,
             policy_tag,
+            crate::internal::types::CrashKind::PartitionDetected.tag(),
         );
     }
     0
@@ -518,7 +524,12 @@ fn apply_observation_notice(notice: ObservationNotice) {
         ObservationNotice::Unlink(payload) => handle_inbound_unlink(&payload),
         ObservationNotice::MonitorDown(payload) => handle_inbound_monitor_down(&payload),
         ObservationNotice::LinkDown(payload) => {
-            handle_inbound_link_down(payload.ref_id, payload.target, payload.reason);
+            handle_inbound_link_down(
+                payload.ref_id,
+                payload.target,
+                payload.reason,
+                payload.crash_kind,
+            );
         }
     }
 }
@@ -1264,12 +1275,14 @@ fn rollback_inbound_link_setup(payload: &crate::envelope::LinkReqPayload, revers
         reverse_ref,
         payload.linker,
         crate::monitor::MONITOR_REASON_LOST,
+        crate::internal::types::CrashKind::PartitionDetected.tag(),
     ) {
         let _ = crate::link::deliver_cross_node_link_exit(
             down.local_actor_id,
-            down.remote_target_serial,
+            down.target,
             down.reason,
             down.policy_tag,
+            down.crash_kind,
         );
     }
 }
@@ -1431,17 +1444,26 @@ pub(crate) fn handle_inbound_monitor_down(payload: &crate::envelope::MonitorDown
 /// forged `ref_id` this node never linked NOR a genuinely-connected but
 /// unrelated peer that merely guessed/learned a pending link `ref_id` can crash
 /// an actor we linked to a DIFFERENT, still-alive peer.
-pub(crate) fn handle_inbound_link_down(ref_id: u64, target: Location, reason: i32) {
+pub(crate) fn handle_inbound_link_down(
+    ref_id: u64,
+    target: Location,
+    reason: i32,
+    crash_kind: i32,
+) {
     let Some(rt) = crate::runtime::rt_current_opt() else {
         set_last_error("handle_inbound_link_down: no runtime installed");
         return;
     };
-    if let Some(down) = rt.monitors.deliver_link_down_to_ref(ref_id, target, reason) {
+    if let Some(down) = rt
+        .monitors
+        .deliver_link_down_to_ref(ref_id, target, reason, crash_kind)
+    {
         let _ = crate::link::deliver_cross_node_link_exit(
             down.local_actor_id,
-            down.remote_target_serial,
+            down.target,
             down.reason,
             down.policy_tag,
+            down.crash_kind,
         );
     }
 }
@@ -1487,15 +1509,14 @@ pub(crate) fn fan_out_monitor_lost_for_identity(dead_node: crate::node_identity:
     // HewSysMsg::Exit into the LOCAL linked actor's mailbox and crashes it. The
     // one-shot slot makes this exactly-once vs a definitive CTRL_LINK_DOWN that
     // may already have fired.
-    let link_downs = rt
-        .monitors
-        .take_link_downs_for_node(dead_node, crate::monitor::MONITOR_REASON_LOST);
+    let link_downs = rt.monitors.take_link_downs_for_node(dead_node);
     for down in link_downs {
         let _ = crate::link::deliver_cross_node_link_exit(
             down.local_actor_id,
-            down.remote_target_serial,
+            down.target,
             down.reason,
             down.policy_tag,
+            down.crash_kind,
         );
     }
     // Prune target-side watcher entries (monitor AND link) the dead node had
@@ -1517,17 +1538,16 @@ pub(crate) fn fan_out_monitor_lost_for_session(
     for down in monitor_downs {
         rt.monitors.enqueue_lost(down);
     }
-    let link_downs = rt.monitors.take_link_downs_for_session(
-        dead_node,
-        session_incarnation,
-        crate::monitor::MONITOR_REASON_LOST,
-    );
+    let link_downs = rt
+        .monitors
+        .take_link_downs_for_session(dead_node, session_incarnation);
     for down in link_downs {
         let _ = crate::link::deliver_cross_node_link_exit(
             down.local_actor_id,
-            down.remote_target_serial,
+            down.target,
             down.reason,
             down.policy_tag,
+            down.crash_kind,
         );
     }
     let _ = rt

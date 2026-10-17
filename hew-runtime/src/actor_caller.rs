@@ -47,6 +47,34 @@ pub(crate) fn local_sender() -> HewCallerStamp {
     }
 }
 
+/// Snapshot the author of a checked call, including helper calls during construction.
+/// # Safety
+/// `state` is a live checked invocation and `out` is writable for one stamp.
+#[no_mangle]
+pub unsafe extern "C" fn hew_coro_state_sender(
+    state: *const crate::coro_state::HewCoroState,
+    out: *mut HewCallerStamp,
+) {
+    // SAFETY: the caller retains its invocation throughout this snapshot.
+    let id = unsafe { &*state }.execution().actor_turn.actor_id();
+    let caller = if id == 0 {
+        HewCallerStamp::default()
+    } else {
+        HewCallerStamp::actor(id)
+    };
+    // SAFETY: the caller supplies the complete output slot.
+    unsafe { out.write(caller) };
+}
+
+/// Snapshot an unstructured host ingress sender through its existing runtime authority.
+/// # Safety
+/// `out` is writable for one stamp.
+#[no_mangle]
+pub unsafe extern "C" fn hew_local_sender(out: *mut HewCallerStamp) {
+    // SAFETY: the caller supplies the complete output slot.
+    unsafe { out.write(local_sender()) };
+}
+
 /// Read the delivery identity of the current actor turn.
 ///
 /// # Safety

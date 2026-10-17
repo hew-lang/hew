@@ -263,8 +263,8 @@ pub fn parse_endpoint(context: string, addr: string) -> Endpoint fails NetError 
     let colon = addr.find(":");
     match colon {
         .Some(i) => {
-            let host = addr.slice(0, i);
-            let port_text = addr.slice(i + 1, addr.len());
+            let host = addr[0..i];
+            let port_text = addr[i + 1 .. addr.len()];
             // A second colon outside brackets is an unbracketed IPv6 literal:
             // its grammar is ambiguous with `host:port` and it is rejected
             // rather than silently split at the first colon.
@@ -286,18 +286,18 @@ fn try_parse_bracketed_endpoint(context: string, addr: string) -> Endpoint fails
     let close = addr.find("]");
     match close {
         .Some(end) => {
-            let host = addr.slice(1, end);
+            let host = addr[1..end];
             if host == "" {
                 return error endpoint_reject(context, addr, "empty bracketed host");
             }
-            let rest = addr.slice(end + 1, addr.len());
+            let rest = addr[end + 1 .. addr.len()];
             if rest == "" {
                 return error endpoint_reject(context, addr, "missing ':port'");
             }
             if !rest.starts_with(":") {
                 return error endpoint_reject(context, addr, "expected ':port' after ']'");
             }
-            let port = try_endpoint_port(context, addr, rest.slice(1, rest.len()))?;
+            let port = try_endpoint_port(context, addr, rest[1..rest.len()])?;
             Endpoint { host: host, port: port }
         }
         .None => return error endpoint_reject(context, addr, "unterminated '[' in IPv6 literal"),
@@ -758,4 +758,61 @@ extern "C" {
     // when the stream closes. Not available on wasm32.
     fn hew_tcp_incoming(consume listener: Listener) -> stream.StreamPair;
     fn hew_stream_pair_is_valid(pair: stream.StreamPair) -> bool;
+}
+
+/// An authenticated configured peer in the current node and peer sessions.
+#[resource]
+#[opaque]
+pub type PeerSession {
+}
+
+/// An imported actor interface supplied by one authenticated peer.
+#[resource]
+#[opaque]
+pub type Service<A> {
+}
+
+/// The sole close authority for one exported actor interface.
+#[resource]
+#[opaque]
+pub type Export<A> {
+}
+
+impl PeerSession {
+    /// Offer this local actor's portable interface and wait for admission.
+    #[extern_symbol(hew_service_export)]
+    fn export<A>(self, target: A) -> Result<Export<A>, ActorError<Never, Never>> {
+        panic("service export requires native lowering")
+    }
+
+    /// Wait cancellably for this peer to supply the requested actor interface.
+    #[extern_symbol(hew_service_receive)]
+    fn receive_service<A>(self) -> Result<Service<A>, ActorError<Never, Never>> {
+        panic("service import requires native lowering")
+    }
+
+    fn close(consume self) {
+        self.release();
+    }
+
+    #[extern_symbol(hew_peer_session_close)]
+    fn release(consume self) {}
+}
+
+impl<A> Service<A> {
+    fn close(consume self) {
+        self.release();
+    }
+
+    #[extern_symbol(hew_service_close)]
+    fn release(consume self) {}
+}
+
+impl<A> Export<A> {
+    fn close(consume self) {
+        self.release();
+    }
+
+    #[extern_symbol(hew_service_export_close)]
+    fn release(consume self) {}
 }

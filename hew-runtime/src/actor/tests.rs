@@ -134,12 +134,8 @@ fn system_dispatch_is_reachable_only_by_the_system_channel() {
 
     let down = crate::monitor::HewDownMessage {
         monitor_id: 0,
-        target_kind: 0,
+        target: crate::monitor::HewNotificationTarget::local(0),
         reason_kind: 0,
-        node_hi: 0,
-        node_lo: 0,
-        slot: 0,
-        session_incarnation: 0,
         crash_kind: 0,
     };
     // SAFETY: the actor is live, so its mailbox is valid; `down` outlives
@@ -200,7 +196,7 @@ fn system_dispatch_is_reachable_only_by_the_system_channel() {
 /// raw `msg_type` regardless of provenance, so `hew_actor_send(actor, 103,
 /// null, 0)` — a legal public C-ABI call — arrived byte-for-byte as a
 /// runtime-originated EXIT signal: the generated trampoline's EXIT arm
-/// read a 16-byte `ExitMessage` out of the null payload (no `data_size`
+/// read an `ExitMessage` out of the null payload (no `data_size`
 /// guard existed) and called `hew_actor_exit_unhandled` with the loaded
 /// reason. There is now no shared namespace to collide in: the system
 /// entry point takes `HewSysMsg` discriminants and is reachable only from
@@ -4713,8 +4709,14 @@ fn native_graceful_stop_drains_accepted_turns_before_completion() {
     }
     let mut fault = ptr::null_mut();
     // SAFETY: all callback signatures and state ownership match native spawn.
+    let (_construction_ready, construction_waker) = crate::wake::blocking::Readiness::new();
+    // SAFETY: the test retains this descriptor throughout synchronous construction.
+    let construction = unsafe {
+        crate::coro_state::hew_coro_state_new(construction_waker.descriptor(), ptr::null_mut())
+    };
+    // SAFETY: the callbacks and initialized state obey the native construction ABI.
     let token = unsafe {
-        crate::actor::hew_actor_spawn_native(
+        crate::actor::hew_actor_construct_native(
             state.cast(),
             std::mem::size_of::<StopState>(),
             dispatch,
@@ -4724,8 +4726,6 @@ fn native_graceful_stop_drains_accepted_turns_before_completion() {
             0,
             0,
             0,
-            ptr::null(),
-            0,
             None,
             None,
             &raw mut fault,
@@ -4733,9 +4733,23 @@ fn native_graceful_stop_drains_accepted_turns_before_completion() {
             0,
             None,
             ptr::null_mut(),
-            ptr::null_mut(),
+            construction,
         )
     };
+    // SAFETY: test state is initialized and construction has no suspended borrower.
+    unsafe {
+        assert_eq!(
+            crate::actor::hew_actor_publish_native(
+                token,
+                ptr::null(),
+                0,
+                construction,
+                &raw mut fault
+            ),
+            0
+        );
+        crate::coro_state::hew_coro_state_free(construction);
+    }
     assert!(fault.is_null());
     assert_ne!(
         token,
@@ -5922,7 +5936,7 @@ fn live_borrow_receive_retains_escaping_payload_releases_once() {
         // load it and release one owner.
         let handle = unsafe { *payload.cast::<*mut hew_cabi::string::HewString>() };
         // SAFETY: `handle` is a live header-aware String produced by
-        // `hew_string_from_char` (or a clone of it), released exactly once.
+        // `hew_char_to_string` (or a clone of it), released exactly once.
         unsafe { crate::string::hew_string_drop(handle) };
         DROP_COUNT.fetch_add(1, Ordering::SeqCst);
     }
@@ -5935,7 +5949,7 @@ fn live_borrow_receive_retains_escaping_payload_releases_once() {
         // retain/drop, then release the envelope. Every pointer is live for
         // the block and freed exactly once.
         unsafe {
-            let s = crate::string::hew_string_from_char(i32::from(b'x'));
+            let s = crate::string::hew_char_to_string(i32::from(b'x'));
             let slot = std::mem::size_of::<*mut hew_cabi::string::HewString>();
             let buf = crate::mem::buf_try_alloc(slot).cast::<*mut hew_cabi::string::HewString>();
             assert!(!buf.is_null());
@@ -5966,7 +5980,7 @@ fn live_borrow_receive_retains_escaping_payload_releases_once() {
         // SAFETY: same self-contained envelope lifecycle as the borrow arm;
         // copy mode emits no clone, so the envelope release is the sole free.
         unsafe {
-            let s = crate::string::hew_string_from_char(i32::from(b'y'));
+            let s = crate::string::hew_char_to_string(i32::from(b'y'));
             let slot = std::mem::size_of::<*mut hew_cabi::string::HewString>();
             let buf = crate::mem::buf_try_alloc(slot).cast::<*mut hew_cabi::string::HewString>();
             assert!(!buf.is_null());

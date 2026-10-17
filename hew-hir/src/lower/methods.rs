@@ -78,6 +78,23 @@ impl LowerCtx {
                         ResolvedTy::Unit,
                     );
                 };
+                if hew_types::actor_delivery::timer_view_parts(&lowered_receiver.ty.to_ty())
+                    .is_some()
+                {
+                    return (
+                        HirExprKind::ActorDelivery {
+                            receiver: Box::new(lowered_receiver),
+                            args: lowered_args,
+                            operation:
+                                hew_types::actor_delivery::ActorDeliveryCall::TimerSchedule {
+                                    method: handler,
+                                    policy,
+                                    evaluation_order,
+                                },
+                        },
+                        ty,
+                    );
+                }
                 // The call IS the send: a `receive fn` without a reply
                 // builds its addressed description and submits it at the
                 // same site. The description is an internal temporary.
@@ -811,7 +828,7 @@ impl LowerCtx {
                     .and_then(|ty| ResolvedTy::from_ty(ty).ok());
                 self.lower_codec(args, codec, value_ty, checked_ty, span)
             }
-            Some(MethodCallRewrite::RemoteActorSend) => {
+            Some(MethodCallRewrite::RemoteActorSend { member }) => {
                 self.try_register_enum_instantiation(&span);
                 let ret_ty = self
                     .expr_types
@@ -836,16 +853,20 @@ impl LowerCtx {
                 let receiver = Box::new(self.lower_expr(receiver, IntentKind::Read));
                 let msg = Box::new(self.lower_expr(msg.expr(), IntentKind::Read));
                 let status = self.make_expr(
-                    HirExprKind::RemoteActorSend { receiver, msg },
+                    HirExprKind::RemoteActorSend {
+                        member,
+                        receiver,
+                        msg,
+                    },
                     ResolvedTy::I32,
                     IntentKind::Read,
                     span.clone(),
                 );
                 self.lower_send_status_result(status, ret_ty, REMOTE_SEND_STATUS, &span)
             }
-            Some(MethodCallRewrite::RemoteActorAsk) => {
+            Some(MethodCallRewrite::RemoteActorAsk { member, service }) => {
                 self.try_register_enum_instantiation(&span);
-                if args.len() != 2 {
+                if !service && args.len() != 2 {
                     self.diagnostics.push(HirDiagnostic::new(
                         HirDiagnosticKind::CheckerBoundaryViolation {
                             name: "RemotePid.ask".to_string(),
@@ -896,12 +917,30 @@ impl LowerCtx {
                     );
                 };
                 let lowered_receiver = self.lower_expr(receiver, IntentKind::Read);
-                let lowered_msg = self.lower_expr(args[0].expr(), IntentKind::Read);
-                let lowered_timeout = self.lower_expr(args[1].expr(), IntentKind::Read);
+                let (lowered_args, evaluation_order, lowered_timeout) = if service {
+                    let LoweredCallArgs {
+                        args,
+                        evaluation_order,
+                    } = self.lower_call_args(args, &span);
+                    (
+                        args,
+                        evaluation_order,
+                        self.make_int_literal(i128::from(u64::MAX), ResolvedTy::U64, span.clone()),
+                    )
+                } else {
+                    (
+                        vec![self.lower_expr(args[0].expr(), IntentKind::Read)],
+                        Vec::new(),
+                        self.lower_expr(args[1].expr(), IntentKind::Read),
+                    )
+                };
                 (
                     HirExprKind::RemoteActorAsk {
+                        member,
+                        service,
+                        args: lowered_args,
+                        evaluation_order,
                         receiver: Box::new(lowered_receiver),
-                        msg: Box::new(lowered_msg),
                         timeout_ms: Box::new(lowered_timeout),
                         reply_ty,
                     },
@@ -918,6 +957,46 @@ impl LowerCtx {
                 returns_receiver_identity,
                 ..
             }) => {
+                if descriptor.as_ref().is_some_and(|descriptor| {
+                    descriptor.family() == hew_types::RuntimeCallFamily::StringGetRange
+                }) {
+                    self.try_register_enum_instantiation(&span);
+                    let result_ty = self
+                        .checker_expr_ty(&span, "string range get")
+                        .unwrap_or(ResolvedTy::Unit);
+                    let container = self.lower_expr(receiver, IntentKind::Read);
+                    let (start, end, inclusive) = match &args[0].expr().0 {
+                        Expr::Range {
+                            start,
+                            end,
+                            inclusive,
+                        } => (start.as_deref(), end.as_deref(), *inclusive),
+                        Expr::Binary {
+                            left,
+                            op: op @ (BinaryOp::Range | BinaryOp::RangeInclusive),
+                            right,
+                        } => (
+                            Some(left.as_ref()),
+                            Some(right.as_ref()),
+                            *op == BinaryOp::RangeInclusive,
+                        ),
+                        _ => {
+                            return (
+                                HirExprKind::Unsupported("string range get has no range".into()),
+                                result_ty,
+                            )
+                        }
+                    };
+                    let kind = self.lower_string_range_call(
+                        container,
+                        (start, end),
+                        inclusive,
+                        true,
+                        &result_ty,
+                        &span,
+                    );
+                    return (kind, result_ty);
+                }
                 if !self.ensure_executable_target(&target, &c_symbol, &span) {
                     return (
                         HirExprKind::Unsupported(
@@ -1276,6 +1355,7 @@ impl LowerCtx {
             Some(MethodCallRewrite::StaticTraitDispatch {
                 target,
                 receiver_type_param,
+                trait_args,
                 requires_mutable_receiver,
                 consumes_receiver,
                 returns_receiver_identity,
@@ -1423,6 +1503,24 @@ impl LowerCtx {
                 }
 
                 self.record_call_type_args(&span, site);
+                let Ok(trait_args) = trait_args
+                    .iter()
+                    .map(ResolvedTy::from_ty)
+                    .collect::<Result<Vec<_>, _>>()
+                else {
+                    self.diagnostics.push(HirDiagnostic::new(
+                        HirDiagnosticKind::CheckerBoundaryViolation {
+                            name: "static trait call".into(),
+                            reason: "selected trait arguments are unresolved".into(),
+                        },
+                        span.clone(),
+                        "checker selected unresolved trait arguments",
+                    ));
+                    return (
+                        HirExprKind::Unsupported("unresolved trait arguments".into()),
+                        ret_ty,
+                    );
+                };
 
                 if requires_mutable_receiver {
                     let lowered_receiver = self.lower_expr(receiver, IntentKind::Consume);
@@ -1435,6 +1533,7 @@ impl LowerCtx {
                             call_target: target,
                             target: HirVarSelfMethodTarget::StaticTrait {
                                 receiver_type_param,
+                                trait_args,
                             },
                             args: lowered_args.args,
                             evaluation_order: lowered_args.evaluation_order,
@@ -1456,7 +1555,7 @@ impl LowerCtx {
                 (
                     self.make_static_trait_dispatch_call(
                         crate::StaticTraitSelf::Receiver(Box::new(lowered_receiver)),
-                        Vec::new(),
+                        trait_args,
                         target,
                         receiver_type_param,
                         lowered_args,

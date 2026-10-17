@@ -827,6 +827,18 @@ pub(crate) fn activate_queued_actor(actor: *mut HewActor) {
                 let t0 = std::time::Instant::now();
                 // SAFETY: `msg` is exclusively owned by this worker.
                 let msg_ref = unsafe { &*msg };
+                #[cfg(not(target_arch = "wasm32"))]
+                if msg_ref.reply_channel.is_null() && msg_ref.caller.kind == 3 {
+                    // SAFETY: this worker holds the current actor activation.
+                    let target =
+                        unsafe { crate::lifetime::live_actors::ActorIncarnation::of(actor) };
+                    if crate::lifetime::live_actors::remote_grant_required(target) != Some(false) {
+                        // SAFETY: this unclaimed node and its payload belong to this worker.
+                        unsafe { hew_msg_node_free(msg) };
+                        msgs_processed += 1;
+                        continue;
+                    }
+                }
                 // The call owner may withdraw until this exact dispatch claim.
                 // Once claimed, losing its select only tombstones the reply;
                 // it does not cancel a handler that has already started.
@@ -838,6 +850,17 @@ pub(crate) fn activate_queued_actor(actor: *mut HewActor) {
                 } {
                     // SAFETY: this worker owns the unclaimed node and its typed
                     // request; normal node retirement settles the sender debt.
+                    unsafe { hew_msg_node_free(msg) };
+                    msgs_processed += 1;
+                    continue;
+                }
+                // A timer's start claim races its one overdue deadline. Losing
+                // the claim leaves this payload to ordinary node cleanup.
+                // SAFETY: this worker exclusively owns the dequeued envelope.
+                let timer = unsafe { msg_ref.envelope.as_ref() }
+                    .and_then(|envelope| envelope.timer.as_ref());
+                if timer.is_some_and(|timer| !timer.started()) {
+                    // SAFETY: no handler has borrowed this request.
                     unsafe { hew_msg_node_free(msg) };
                     msgs_processed += 1;
                     continue;

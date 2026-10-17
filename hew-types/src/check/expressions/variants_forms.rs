@@ -23,21 +23,6 @@ use crate::BuiltinType;
 use std::collections::VecDeque;
 
 impl Checker {
-    pub(in crate::check) fn reject_if_wasm_incompatible_expr(&mut self, expr: &Expr, span: &Span) {
-        if !self.wasm_target {
-            return;
-        }
-        match expr {
-            Expr::Scope { .. } | Expr::ScopeDeadline { .. } | Expr::Race(_) => {
-                self.reject_wasm_feature(span, WasmUnsupportedFeature::StructuredConcurrency);
-            }
-            Expr::ForkChild { .. } | Expr::ForkBlock { .. } => {
-                self.reject_wasm_feature(span, WasmUnsupportedFeature::Tasks);
-            }
-            _ => {}
-        }
-    }
-
     pub(in crate::check) fn display_impl_type(&mut self, ty: &Ty) -> Option<Ty> {
         let resolved = self.subst.resolve(ty).materialize_literal_defaults();
         if matches!(resolved, Ty::String) {
@@ -722,25 +707,20 @@ else needs `impl Display for {rendered}`)"
     pub(super) fn record_dyn_index_method_call(
         &mut self,
         traits: &[crate::ty::TraitObjectBound],
-        bound: &crate::ty::TraitObjectBound,
         span: &Span,
-    ) {
-        let Some(trait_id) = bound.trait_id else {
-            return;
-        };
+    ) -> Option<FnSig> {
+        let trait_id = self.lang_trait(crate::LangItem::Index)?;
         let trait_name = self.defs.path(trait_id).to_string();
-        let Some(layout_slot) = self.dyn_layout_slot_of(traits, trait_id, "at", span) else {
-            return;
-        };
+        let layout_slot = self.dyn_layout_slot_of(traits, trait_id, "at", span)?;
+        let bound = &traits[layout_slot.bound];
         let slot = layout_slot.slot;
-        // Compute the substituted `at` signature for the originating
-        // bound (the bound's assoc bindings carry e.g. `Output = T`).
-        // W3.031 Stage 1.6: the typed `FnSig` is self-contained on
-        // the call-site side table; no codegen-time re-derivation.
-        let Some(mut sig) = self.lookup_trait_method(layout_slot.trait_id, "at") else {
-            return;
-        };
-        self.apply_trait_object_bound_substitutions(&mut sig, bound);
+        let slot_facts = self
+            .trait_object_layouts
+            .get(traits)?
+            .slots
+            .get(slot as usize)?;
+        let sig = slot_facts.signature.clone();
+        let effect = slot_facts.effect;
         let target = crate::check::dispatch::CallTarget::DynamicVtable {
             declaring_trait: layout_slot.declaring_trait,
             method: layout_slot.method,
@@ -753,16 +733,15 @@ else needs `impl Display for {rendered}`)"
                 trait_name: bound.trait_name.clone(),
                 method_name: "at".to_string(),
                 slot,
-                signature: sig,
-                effect: self
-                    .dyn_slot_effect(traits, layout_slot.method)
-                    .expect("dyn_layout records the layout it returns"),
+                signature: sig.clone(),
+                effect,
             },
         );
         self.record_method_call_receiver_kind(
             span,
             crate::check::types::MethodCallReceiverKind::TraitObject { trait_name },
         );
+        Some(sig)
     }
 
     pub(in crate::check) fn context_variant_expected_owner(

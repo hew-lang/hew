@@ -1,0 +1,7 @@
+[[case]]
+id = "confined-service-library"
+intent = "A generic confined service library retains its construction obligations when checked without clients."
+source = "cases/confined_service_support/component.hew"
+kind = "check"
+suites = ["acceptance"]
+timeout_seconds = 15

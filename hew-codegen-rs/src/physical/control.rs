@@ -16,7 +16,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 cancel,
                 unwind,
             } => self.emit_remote_ask(
-                *actor, *message, *target, *payload, *timeout, *result, normal, cancel, unwind,
+                *actor, *message, *target, payload, *timeout, *result, normal, cancel, unwind,
             ),
             PhysicalTerminator::ActorAsk {
                 actor,
@@ -68,6 +68,15 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 normal,
                 unwind,
             } => self.emit_task_scope_join(*scope, *mode, normal, unwind),
+            PhysicalTerminator::ServiceAcquire {
+                actor,
+                export,
+                args,
+                result,
+                normal,
+                cancel,
+                unwind,
+            } => self.emit_service_acquire(*actor, *export, args, *result, normal, cancel, unwind),
             PhysicalTerminator::NativeIo {
                 operation,
                 args,
@@ -839,9 +848,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
         arguments: &[BasicMetadataValueEnum<'ctx>],
         name: &str,
     ) -> CodegenResult<BasicValueEnum<'ctx>> {
-        self.builder
-            .build_call(function, arguments, name)
-            .llvm_ctx("emit physical runtime call")?
+        c_abi::emit_call(&self.builder, function, arguments, name)?
             .try_as_basic_value()
             .basic()
             .ok_or_else(|| {
@@ -857,10 +864,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
         arguments: &[BasicMetadataValueEnum<'ctx>],
         name: &str,
     ) -> CodegenResult<()> {
-        let call = self
-            .builder
-            .build_call(function, arguments, name)
-            .llvm_ctx("emit physical runtime call")?;
+        let call = c_abi::emit_call(&self.builder, function, arguments, name)?;
         if call.try_as_basic_value().basic().is_some() {
             return Err(CodegenError::FailClosed(format!(
                 "physical runtime call `{name}` unexpectedly returned a value"

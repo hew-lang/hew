@@ -29,12 +29,12 @@ impl Parcel {
 }
 
 fn make_person(seed: string) -> dyn Labeled {
-    let erased: dyn Labeled = Person { label: string.repeat(seed, 64) };
+    let erased: dyn Labeled = Person { label: (seed).repeat(64) };
     erased
 }
 
 fn make_parcel(seed: string) -> dyn Labeled {
-    let erased: dyn Labeled = Parcel { label: string.repeat(seed, 96) };
+    let erased: dyn Labeled = Parcel { label: (seed).repeat(96) };
     erased
 }
 

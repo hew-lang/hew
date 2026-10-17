@@ -374,6 +374,7 @@ impl SemActor {
     /// Refuses a member without codecs, another actor's pid or another result.
     pub fn remote_signature(
         &self,
+        defs: &hew_types::DefTable,
         message: u32,
         target: &ResolvedTy,
         result_ty: ResolvedTy,
@@ -384,44 +385,44 @@ impl SemActor {
             .iter()
             .find(|handler| handler.message_id == message && handler.codec.is_some())
             .ok_or("remote call has no portable receive member")?;
-        let [msg] = handler.params.as_slice() else {
-            return Err("a remote member takes exactly its message".into());
-        };
-        let addressed = matches!(target, ResolvedTy::Named { head: hew_types::TypeHead::Builtin(hew_types::BuiltinType::RemotePid), args, .. } if args.as_slice() == std::slice::from_ref(&self.handle_ty));
+        let addressed = matches!(target, ResolvedTy::Named { head, args, .. }
+            if (*head == hew_types::TypeHead::Builtin(hew_types::BuiltinType::RemotePid)
+                || head.nominal() == Some(hew_types::KnownDecl::Service.nominal()))
+                && args.as_slice() == std::slice::from_ref(&self.handle_ty));
         if !addressed {
-            return Err("remote call target is not this actor's RemotePid".into());
-        }
-        if ask {
-            let [reply, error] =
-                result_parts(&result_ty).ok_or("a remote ask must return its checked Result")?;
-            let expected = hew_types::Ty::actor_error_with_request(
-                hew_types::Ty::never_type(),
-                hew_types::Ty::never_type(),
-            );
-            if *reply != handler.return_ty || error.to_ty() != expected {
-                return Err("remote ask differs from its member's reply and failure".into());
-            }
-        } else if result_ty != ResolvedTy::I32 {
-            // HIR folds the node's submission status into `Result<(), SendError>`.
-            return Err("remote send answers with its i32 submission status".into());
+            return Err("remote call target differs from its exact actor interface".into());
         }
         let param = |ty: &ResolvedTy, passing| crate::SemAbiParam {
             ty: ty.clone(),
             passing,
             caller_visible_projection: false,
         };
-        let mut params = vec![
-            param(target, crate::SemParamPassing::Borrow),
-            param(msg, crate::SemParamPassing::Consume),
-        ];
+        let mut signature = if ask {
+            self.ask_signature(defs, message, &self.handle_ty, result_ty, false)?
+        } else {
+            if result_ty != ResolvedTy::I32 {
+                return Err("remote send answers with its i32 submission status".into());
+            }
+            let mut params = vec![param(target, crate::SemParamPassing::Borrow)];
+            params.extend(
+                handler
+                    .params
+                    .iter()
+                    .map(|ty| param(ty, crate::SemParamPassing::Consume)),
+            );
+            crate::SemSignature {
+                failure_domain: hew_types::CallableFailureDomain::HewFault,
+                params,
+                return_ty: result_ty,
+            }
+        };
+        signature.params[0].ty = target.clone();
         if ask {
-            params.push(param(&ResolvedTy::U64, crate::SemParamPassing::ReadOnly));
+            signature
+                .params
+                .push(param(&ResolvedTy::U64, crate::SemParamPassing::ReadOnly));
         }
-        Ok(crate::SemSignature {
-            failure_domain: hew_types::CallableFailureDomain::HewFault,
-            params,
-            return_ty: result_ty,
-        })
+        Ok(signature)
     }
 
     /// Check the handle spelling this descriptor answers to.
@@ -971,6 +972,12 @@ pub enum ActorOperation {
         /// The handle or role the request addresses.
         target: ResolvedTy,
     },
+    /// Transfer one checked request to its actor-owned one-shot timer.
+    TimerSchedule {
+        actor: ActorId,
+        message: u32,
+        policy: hew_types::actor_delivery::SendPolicy,
+    },
     Submit {
         actor: ActorId,
         policy: hew_types::actor_delivery::SendPolicy,
@@ -1050,7 +1057,15 @@ impl ActorOperation {
         };
         Ok(match self {
             Self::SupervisorSpawn(_) => {
-                consume(supervisor.config.clone(), supervisor.handle_ty.clone())
+                let mut arguments = supervisor.config.clone();
+                if supervisor
+                    .children
+                    .iter()
+                    .any(|child| child.pool_count.is_some())
+                {
+                    arguments.push(ResolvedTy::I64);
+                }
+                consume(arguments, supervisor.handle_ty.clone())
             }
             Self::SupervisorChild {
                 child,
@@ -1207,7 +1222,8 @@ impl ActorOperation {
             Self::Spawn(id)
             | Self::SelfHandle(id)
             | Self::StreamStart { actor: id, .. }
-            | Self::Submit { actor: id, .. } => *id,
+            | Self::Submit { actor: id, .. }
+            | Self::TimerSchedule { actor: id, .. } => *id,
             Self::RemoteSend {
                 actor,
                 message,
@@ -1217,7 +1233,7 @@ impl ActorOperation {
                     .get(actor.0 as usize)
                     .filter(|candidate| candidate.id == *actor)
                     .ok_or("unknown remote actor identity")?;
-                return actor.remote_signature(*message, target, ResolvedTy::I32, false);
+                return actor.remote_signature(defs, *message, target, ResolvedTy::I32, false);
             }
             Self::SupervisorSpawn(_)
             | Self::SupervisorChild { .. }
@@ -1271,6 +1287,34 @@ impl ActorOperation {
                     .collect::<Vec<_>>(),
                 actor.handle_ty.clone(),
             ),
+            Self::TimerSchedule {
+                message, policy, ..
+            } => {
+                if policy.may_suspend() {
+                    return Err("a timer cannot wait for mailbox capacity".into());
+                }
+                let handler = actor
+                    .handlers
+                    .iter()
+                    .find(|handler| handler.message_id == *message && handler.owes_no_reply())
+                    .ok_or("timer requires an exact one-way handler protocol")?;
+                (
+                    vec![
+                        actor.handle_ty.clone(),
+                        ResolvedTy::Duration,
+                        ResolvedTy::Duration,
+                        ResolvedTy::Bool,
+                        ResolvedTy::Tuple(handler.params.clone()),
+                    ],
+                    ResolvedTy::named_opaque(
+                        hew_types::NominalHead::new(
+                            hew_types::KnownDecl::Timer.nominal(),
+                            hew_types::KnownDecl::Timer.path(),
+                        ),
+                        Vec::new(),
+                    ),
+                )
+            }
             Self::Submit {
                 policy,
                 message_ty,

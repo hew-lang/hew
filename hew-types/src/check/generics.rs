@@ -40,24 +40,29 @@ impl Checker {
         let Some(trait_id) = bound.trait_id else {
             return;
         };
-        if let Some(trait_info) = self.trait_info(trait_id) {
-            let type_params = &trait_info.type_params;
-            if type_params.len() == bound.args.len() {
-                // Build the substitution map once and apply in parallel so
-                // permuted trait args (e.g. `dyn Mapper<B, A>` for a trait
-                // declared `Mapper<A, B>`) don't alias under sequential
-                // per-pair substitution.
-                let subst_map: HashMap<crate::ParamHead, Ty> = type_params
-                    .iter()
-                    .zip(bound.args.iter())
-                    .map(|(p, a)| (*p, a.clone()))
-                    .collect();
-                for param_ty in &mut sig.params {
-                    *param_ty = param_ty.substitute_type_params_parallel(&subst_map);
-                }
-                sig.return_type = sig.return_type.substitute_type_params_parallel(&subst_map);
-            }
+        let applied = self.applied_trait_closure(
+            &TraitRef {
+                trait_id,
+                args: bound.args.clone(),
+                assoc: Vec::new(),
+            },
+            None,
+        );
+        let substitutions: HashMap<_, _> = applied
+            .iter()
+            .flat_map(|bound| {
+                self.trait_info(bound.trait_id)
+                    .into_iter()
+                    .flat_map(|info| info.type_params.iter().copied())
+                    .zip(bound.args.iter().cloned())
+            })
+            .collect();
+        for parameter in &mut sig.params {
+            *parameter = parameter.substitute_type_params_parallel(&substitutions);
         }
+        sig.return_type = sig
+            .return_type
+            .substitute_type_params_parallel(&substitutions);
         // TRANSITION(A1c4): WHY `Ty::AssocType` names its trait by the
         // declaration's path render, a carrier HIR also reads. WHEN the carrier
         // holds the trait's `DefId`, this compares ids. WHAT: `AssocType` by id.
@@ -272,6 +277,19 @@ impl Checker {
         let Some(type_def) = self.lookup_type_def(type_name) else {
             return;
         };
+        if type_def.kind == TypeDefKind::Actor {
+            self.record_generic_instantiation_site(
+                self.current_function.clone(),
+                type_def.name.clone(),
+                type_def
+                    .type_params
+                    .iter()
+                    .copied()
+                    .zip(type_args.iter().cloned())
+                    .collect(),
+                span,
+            );
+        }
         if type_def.bounds.is_empty() {
             return;
         }
@@ -862,7 +880,7 @@ impl Checker {
         // super-traits can still observe the same ancestor. Their effective
         // surfaces are merged back together here so sibling shadowing/default
         // coverage is preserved at the parent trait.
-        for &super_trait in self.trait_supers(trait_id) {
+        for super_trait in self.trait_supers(trait_id) {
             let mut super_visited = visited.clone();
             let super_surface =
                 self.collect_structural_method_surface(super_trait, &mut super_visited)?;
@@ -912,7 +930,15 @@ impl Checker {
     /// the LLVM emitter; the checker populates `TypeCheckOutput::dyn_trait_coercions`
     /// at every accepted coercion site and rejects non-object-safe traits
     /// (generic methods, `Self`-returning methods) with `E_TRAIT_NOT_OBJECT_SAFE`.
-    pub(super) fn type_structurally_satisfies(&mut self, ty: &Ty, trait_id: crate::DefId) -> bool {
+    pub(super) fn type_structurally_satisfies_bound(&mut self, ty: &Ty, bound: &TraitRef) -> bool {
+        let trait_id = bound.trait_id;
+        let Some(info) = self.trait_info(trait_id) else {
+            return false;
+        };
+        if info.type_params.len() != bound.args.len() || !bound.assoc.is_empty() {
+            return false;
+        }
+        let applied = self.applied_trait_closure(bound, Some(ty));
         // A trait that declares no methods of its own - `trait Error: Display {}`
         // - is a marker over its super-traits. Having the super-trait's methods
         // says nothing about the marker, so it still needs an explicit impl.
@@ -940,16 +966,14 @@ impl Checker {
         }
 
         // The concrete type, used for Self substitution in trait signatures.
-        let concrete_ty = match ty {
-            Ty::Named { head, .. } => Ty::named_head(*head, Vec::new()),
-            other => other.clone(),
-        };
-        let receiver = crate::ParamHead::receiver(trait_id);
+        let concrete_ty = ty.clone();
 
         for method_name in &required {
             // Resolve the trait method's expected signature.
             // lookup_trait_method strips the receiver and walks super-traits.
-            let Some(trait_sig) = self.lookup_trait_method(trait_id, method_name) else {
+            let Some((declaring, trait_sig)) =
+                self.lookup_trait_method_with_origin(trait_id, method_name)
+            else {
                 return false;
             };
 
@@ -970,25 +994,43 @@ impl Checker {
                 return false;
             }
 
-            // Return-type check (Self → concrete type in trait side).
-            let expected_ret = trait_sig
-                .return_type
-                .substitute_type_param(receiver, &concrete_ty);
-            if expected_ret != type_sig.return_type {
-                return false;
-            }
-
-            // Per-parameter type check (Self → concrete type in trait side).
-            for (trait_param, type_param) in trait_sig.params.iter().zip(type_sig.params.iter()) {
-                let expected = trait_param.substitute_type_param(receiver, &concrete_ty);
-                if expected != *type_param {
+            for applied in applied.iter().filter(|bound| bound.trait_id == declaring) {
+                let mut substitutions =
+                    HashMap::from([(crate::ParamHead::receiver(declaring), concrete_ty.clone())]);
+                if let Some(info) = self.trait_info(declaring) {
+                    substitutions.extend(
+                        info.type_params
+                            .iter()
+                            .copied()
+                            .zip(applied.args.iter().cloned()),
+                    );
+                }
+                // Return-type check (Self → concrete type in trait side).
+                let expected_ret = trait_sig
+                    .return_type
+                    .substitute_type_params_parallel(&substitutions);
+                if expected_ret != type_sig.return_type {
                     return false;
+                }
+
+                // Per-parameter type check (Self → concrete type in trait side).
+                for (trait_param, type_param) in trait_sig.params.iter().zip(type_sig.params.iter())
+                {
+                    let expected = trait_param.substitute_type_params_parallel(&substitutions);
+                    if expected != *type_param {
+                        return false;
+                    }
                 }
             }
         }
 
         self.record_structural_witnesses(trait_id, &concrete_ty, &required);
         true
+    }
+
+    #[cfg(test)]
+    pub(super) fn type_structurally_satisfies(&mut self, ty: &Ty, trait_id: crate::DefId) -> bool {
+        self.type_structurally_satisfies_bound(ty, &TraitRef::bare(trait_id))
     }
 
     /// Publish the inherent method that fills each required method of
@@ -1144,7 +1186,10 @@ impl Checker {
                 return None;
             }
         }
-        self.record_trait_object_layout(traits, closure, &layout);
+        if let Err(message) = self.record_trait_object_layout(traits, closure, &layout) {
+            self.report_error(TypeErrorKind::InvalidOperation, span, message);
+            return None;
+        }
         Some(layout)
     }
 
@@ -1159,7 +1204,7 @@ impl Checker {
         if !visited.insert(trait_id) {
             return Ok(());
         }
-        for &super_trait in self.trait_supers(trait_id) {
+        for super_trait in self.trait_supers(trait_id) {
             self.push_dyn_layout_trait(super_trait, bound, visited, closure, layout)?;
         }
         closure.push(trait_id);
@@ -1343,7 +1388,7 @@ impl Checker {
             ));
         }
         // Walk super-traits — propagate origin unchanged from the recursion.
-        for super_trait in self.trait_supers(trait_id).to_vec() {
+        for super_trait in self.trait_supers(trait_id).collect::<Vec<_>>() {
             if let Some(result) =
                 self.lookup_trait_method_with_origin_inner(super_trait, method, skip_receiver)
             {

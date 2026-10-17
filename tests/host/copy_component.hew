@@ -1,0 +1,91 @@
+import std.fs;
+
+import worker;
+
+import directory;
+
+#[resource]
+pub type CopyInstance {
+    copier: worker.OrderCopier<directory.DirectoryOrders, directory.DirectoryReceipts>;
+}
+
+impl CopyInstance {
+    fn close(consume self) {
+        stop(self.copier);
+        stopped(self.copier);
+    }
+}
+
+pub fn open_input(path: string) -> fs.ReadDir {
+    fs.open_read_dir(path).expect("open supplied input")
+}
+
+pub fn open_output(path: string) -> fs.WriteDir {
+    fs.open_write_dir(path).expect("open supplied output")
+}
+
+#[confined]
+pub fn create(consume input: fs.ReadDir, consume output: fs.WriteDir) -> CopyInstance {
+    CopyInstance { copier: spawn worker.OrderCopier { input: directory.DirectoryOrders { root: input }, output: directory.DirectoryReceipts { root: output } } }
+}
+
+#[confined]
+pub fn run(instance: CopyInstance) -> i64 {
+    instance.copier.copy().expect("copy actor reply").expect("copy order")
+}
+
+#[confined]
+pub fn shutdown(consume instance: CopyInstance) {
+    instance.close();
+}
+
+#[confined]
+actor FailedCopier {
+    let input: fs.ReadDir;
+    let output: fs.WriteDir;
+
+    init() {
+        panic("host constructor failed");
+    }
+}
+
+#[confined]
+pub fn create_failed(consume input: fs.ReadDir, consume output: fs.WriteDir) -> CopyInstance {
+    let _failed = spawn FailedCopier { input: input, output: output };
+    panic("failed construction returned");
+}
+
+#[resource]
+pub type FaultingOwner {
+    output: fs.WriteFile;
+}
+
+impl FaultingOwner {
+    fn close(consume self) {
+        let FaultingOwner { output } = self;
+        output.write("closed once".to_bytes()).expect("write release marker");
+        output.close();
+        panic("host close failed");
+    }
+}
+
+pub fn faulting_owner(path: string) -> FaultingOwner {
+    FaultingOwner { output: fs.open_write(path).expect("open release marker") }
+}
+
+pub fn add(a: i64, b: i64) -> i64 {
+    a + b
+}
+
+pub fn invert(value: bool) -> bool {
+    !value
+}
+
+pub fn abandon_faulting(path: string) {
+    let _owner = faulting_owner(path);
+    panic("host primary failed");
+}
+
+pub fn unit_echo(_value: ()) -> i64 {
+    41
+}

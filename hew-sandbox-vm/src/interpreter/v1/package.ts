@@ -71,6 +71,11 @@ export interface VariantShape {
 }
 
 export type RuntimeVariantRole =
+  | "CrashKindFault"
+  | "CrashKindHeapExceeded"
+  | "CrashKindPartitionDetected"
+  | "CrashKindHandlerFailed"
+  | "CrashKindTimerOverdue"
   | "OptionSome"
   | "OptionNone"
   | "ResultOk"
@@ -401,6 +406,17 @@ export type OpV1 =
       dst: number;
       scope: number;
       callable: Operand;
+    })
+  | (OpBase & {
+      op: "task.invoke";
+      dst: number;
+      scope: number;
+      callee:
+        | { direct: number }
+        | { mutable: number; receiver: BoundaryOperand; staged: boolean }
+        | { dyn: number; method: string; receiver: BoundaryOperand }
+        | { receiver: BoundaryOperand; specialization: number | null };
+      args: BoundaryOperand[];
     });
 
 export type OpName = OpV1["op"];
@@ -499,6 +515,7 @@ export type TermV1 =
         releases_contents?: boolean;
         keeps_inputs_on_failure?: boolean;
         result_member_shapes?: Array<number | null>;
+        variant_result_shapes?: { error: number; error_len: number };
         result_shape: number | null;
       })
   | (TermBase &
@@ -582,6 +599,13 @@ export type ActorOperation =
   | { op: "call_start" | "call_take"; protocol: ActorProtocol }
   | { op: "submit"; actor: number; policy: ActorProtocol["policy"] }
   | { op: "stream_start"; actor: number; message: number }
+  | {
+      op: "timer_schedule";
+      actor: number;
+      message: number;
+      resource: number;
+      policy: "reject" | "drop_newest";
+    }
   | { op: "local_observation"; kind: string }
   | {
       op:
@@ -607,6 +631,7 @@ export interface ActorShape {
   stop: number[];
   crash?: number;
   crash_info?: number;
+  crash_kind?: number;
   crash_action?: number;
   exit?: number;
   down?: number;
@@ -640,7 +665,7 @@ export interface SupervisorShape {
     restart: string;
     stop_ns?: number | null;
     stop_config?: number;
-    pool_count?: number;
+    is_pool?: boolean;
     spawn: number;
   }>;
 }

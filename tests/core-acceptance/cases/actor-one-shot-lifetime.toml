@@ -1,0 +1,13 @@
+[[case]]
+id = "actor-one-shot-lifetime"
+intent = "Init and start target the new actor and defer dispatch until construction succeeds; dropping a timer handle retains delivery; cancellation before firing releases its payload, cancellation after firing disarms overdue, and owner stop releases pending payloads."
+source = "cases/actor-one-shot-lifetime.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "1"
+
+[case.expected]
+stdout = "one-shot ownership and cancellation\n"
+exit = 0

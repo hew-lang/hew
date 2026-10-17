@@ -84,7 +84,7 @@ pub(super) fn cast_is_valid(actual: &Ty, target: &Ty) -> bool {
         // The reverse (`<integer> as char`) is deliberately NOT admitted: not
         // every integer is a valid scalar value, so it would need a checked
         // conversion rather than an `as` cast.
-        || (*actual == Ty::Char && target.is_integer())
+        || (*actual == Ty::Char && matches!(target, Ty::I32 | Ty::I64 | Ty::U32 | Ty::U64 | Ty::Isize | Ty::Usize))
 }
 
 impl Checker {
@@ -662,6 +662,16 @@ impl Checker {
         // object-safe (and the caller's type-implements check would already
         // have rejected it).
         let trait_id = bound.trait_id?;
+        if let Some(predicate) = crate::DefTable::as_predicate(trait_id) {
+            return (matches!(predicate, crate::Predicate::Send | crate::Predicate::Sync)
+                && bound.args.is_empty()
+                && bound.assoc_bindings.is_empty()
+                && self.type_has_marker(
+                    concrete_type,
+                    crate::traits::MarkerTrait::of_predicate(predicate),
+                ))
+            .then_some(false);
+        }
         let trait_info = self.trait_info(trait_id).cloned()?;
         if !Self::dyn_assoc_bindings_complete(&trait_info, bound) {
             return None;
@@ -694,9 +704,18 @@ impl Checker {
         // Prefer the nominal impl registries; fall back to the structural
         // match path so a bare `impl T { fn ... }` that structurally
         // satisfies a trait also fills the table.
-        let nominal_impl = self.type_implements_trait(concrete_type, trait_id);
+        let predicate = TraitRef {
+            trait_id,
+            args: bound.args.clone(),
+            assoc: bound
+                .assoc_bindings
+                .iter()
+                .map(|(name, ty)| (Symbol::intern(name), ty.clone()))
+                .collect(),
+        };
+        let nominal_impl = self.type_implements_trait_ref(concrete_type, &predicate);
         let structural_ok =
-            !nominal_impl && self.type_structurally_satisfies(concrete_type, trait_id);
+            !nominal_impl && self.type_structurally_satisfies_bound(concrete_type, &predicate);
         if !nominal_impl && !structural_ok {
             return None;
         }

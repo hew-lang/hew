@@ -37,7 +37,7 @@ fn main() {
             };
             let crlf = "\r\n";
             let status_line = match text.find(crlf) {
-                .Some(cut) => text.slice(0, cut),
+                .Some(cut) => text[0..cut],
                 .None => text,
             };
             println(f"response: {status_line}");

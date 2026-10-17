@@ -63,6 +63,7 @@ struct ActualSource {
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 enum Projection {
     TaskResult,
+    ErasureBoundary,
     Field(crate::NominalId, u32),
     Element(usize),
     /// Recursive projection growth requires a conservative value summary.
@@ -72,9 +73,9 @@ enum Projection {
 type Visit = (CallableCandidate, Vec<Projection>, usize);
 
 #[derive(Clone, PartialEq, Eq, Hash)]
-struct ValueOrigin {
-    candidate: CallableCandidate,
-    actuals: usize,
+pub(super) struct ValueOrigin {
+    pub(super) candidate: CallableCandidate,
+    pub(super) actuals: usize,
 }
 
 struct OriginEnvironment {
@@ -85,7 +86,8 @@ struct OriginEnvironment {
 type EnvironmentKey = (Option<usize>, Vec<(TypeBindingId, ActualSource)>);
 
 #[derive(Default)]
-struct OriginEnvironments {
+pub(super) struct OriginEnvironments {
+    incomplete: usize,
     values: Vec<OriginEnvironment>,
     identities: HashMap<EnvironmentKey, usize>,
     task_carriers: HashMap<crate::Ty, bool>,
@@ -114,6 +116,7 @@ struct OriginNode {
     origins: HashSet<ValueOrigin>,
     dependents: HashSet<usize>,
     queued: bool,
+    incomplete: bool,
 }
 
 impl OriginGraph {
@@ -152,6 +155,7 @@ impl OriginGraph {
                 origins: HashSet::new(),
                 dependents: HashSet::new(),
                 queued: true,
+                incomplete: false,
             });
             self.pending.push_back(id);
             id
@@ -248,6 +252,58 @@ impl OriginGraph {
 }
 
 impl OriginEnvironments {
+    pub(super) fn expands(&self, current: usize, previous: usize) -> bool {
+        if current == previous {
+            return false;
+        }
+        let current = &self.values[current];
+        let previous = &self.values[previous];
+        if current.bindings.len() != previous.bindings.len() {
+            return false;
+        }
+        let mut grew = false;
+        for (formal, source) in &current.bindings {
+            let Some(old) = previous.bindings.get(formal) else {
+                return false;
+            };
+            if source.candidates != old.candidates || !self.contains(source.actuals, old.actuals) {
+                return false;
+            }
+            grew |= source.actuals != old.actuals;
+        }
+        match (current.parent, previous.parent) {
+            (Some(current), Some(previous)) => {
+                if !self.contains(current, previous) {
+                    return false;
+                }
+                grew |= current != previous;
+            }
+            (None, None) => {}
+            _ => return false,
+        }
+        grew
+    }
+
+    fn contains(&self, current: usize, previous: usize) -> bool {
+        let mut pending = vec![current];
+        let mut seen = HashSet::new();
+        while let Some(id) = pending.pop() {
+            if id == previous {
+                return true;
+            }
+            if seen.insert(id) {
+                pending.extend(self.values[id].parent);
+                pending.extend(
+                    self.values[id]
+                        .bindings
+                        .values()
+                        .map(|source| source.actuals),
+                );
+            }
+        }
+        false
+    }
+
     fn intern(&mut self, actuals: Actuals, parent: Option<usize>) -> usize {
         let mut identity: Vec<_> = actuals
             .iter()
@@ -269,6 +325,155 @@ impl OriginEnvironments {
 }
 
 impl Checker {
+    fn seed_value_sources(
+        flows: &HashMap<SpanKey, Vec<CallableArgumentFlow>>,
+        environments: &mut OriginEnvironments,
+    ) {
+        for flow in flows.values().flatten() {
+            environments
+                .formal_sources
+                .entry(flow.formal)
+                .or_default()
+                .push(flow.candidates.clone());
+        }
+    }
+
+    pub(super) fn value_environments(
+        flows: &HashMap<SpanKey, Vec<CallableArgumentFlow>>,
+    ) -> OriginEnvironments {
+        let mut environments = OriginEnvironments::default();
+        Self::seed_value_sources(flows, &mut environments);
+        environments.intern(Actuals::new(), None);
+        environments
+    }
+
+    pub(super) fn resolve_callable_values(
+        &self,
+        candidates: &IndirectCallCandidates,
+        actuals: usize,
+        environments: &mut OriginEnvironments,
+    ) -> (Vec<ValueOrigin>, bool) {
+        self.solve_task_origins(candidates, actuals, environments);
+        let incomplete = environments.incomplete;
+        let values = Self::task_value_origins(candidates, actuals, &[], environments);
+        (values, incomplete == environments.incomplete)
+    }
+
+    pub(super) fn resolve_erased_values(
+        &self,
+        candidates: &IndirectCallCandidates,
+        actuals: usize,
+        environments: &mut OriginEnvironments,
+    ) -> (Vec<ValueOrigin>, bool) {
+        let projections = &[Projection::ErasureBoundary];
+        self.solve_value_origins(candidates, actuals, projections, environments);
+        let incomplete = environments.incomplete;
+        let values = Self::task_value_origins(candidates, actuals, projections, environments);
+        (values, incomplete == environments.incomplete)
+    }
+
+    pub(super) fn callable_environment(
+        &self,
+        owner: &EffectBody,
+        site: Option<&SpanKey>,
+        (types, actuals): (&HashMap<crate::ParamHead, crate::Ty>, usize),
+        receiver: Option<IndirectCallCandidates>,
+        environments: &mut OriginEnvironments,
+    ) -> usize {
+        let mut arguments = site
+            .and_then(|site| {
+                self.pending_callable_arguments
+                    .get(site)
+                    .map(|pending| self.task_call_arguments(owner, site, pending, actuals))
+            })
+            .unwrap_or_default();
+        if let Some(receiver) = receiver {
+            if let Some(formal) = self
+                .callable_formals
+                .get(owner)
+                .and_then(|formals| formals.first())
+            {
+                arguments.retain(|(binding, _)| binding != formal);
+                arguments.push((
+                    *formal,
+                    ActualSource {
+                        candidates: receiver,
+                        actuals,
+                    },
+                ));
+            }
+        }
+        if arguments.is_empty() {
+            if let (Some(site), Some(formals)) = (site, self.callable_formals.get(owner)) {
+                for actual in self
+                    .generic_trait_call_arguments
+                    .get(site)
+                    .into_iter()
+                    .flatten()
+                {
+                    if let Some(formal) = formals.get(actual.slot) {
+                        arguments.push((
+                            *formal,
+                            ActualSource {
+                                candidates: actual.candidates.clone(),
+                                actuals,
+                            },
+                        ));
+                    }
+                }
+            }
+        }
+        let parameters = match owner {
+            EffectBody::Declaration(declaration) => self
+                .fn_sigs
+                .get(declaration)
+                .map(|signature| signature.params.clone()),
+            EffectBody::Closure(site) => self
+                .expr_types
+                .get(site)
+                .and_then(|ty| ty.callable_signature())
+                .map(|(_, params, _)| params.to_vec()),
+            _ => None,
+        };
+        if let (Some(formals), Some(parameters)) = (self.callable_formals.get(owner), parameters) {
+            if let Some(offset) = formals.len().checked_sub(parameters.len()) {
+                let closed: HashSet<_> = formals
+                    .iter()
+                    .skip(offset)
+                    .zip(parameters)
+                    .filter_map(|(formal, ty)| {
+                        let ty = self
+                            .subst
+                            .resolve(&ty)
+                            .substitute_type_params_parallel(types);
+                        (!self.task_carrier_type(&ty, &mut environments.task_carriers))
+                            .then_some(*formal)
+                    })
+                    .collect();
+                arguments.retain(|(formal, _)| !closed.contains(formal));
+            }
+        }
+        // Forwarding a formal preserves its existing source environment. This
+        // also makes ordinary recursive forwarding a finite instance.
+        for (_, source) in &mut arguments {
+            if source.candidates.known.is_empty() && !source.candidates.may_be_unknown {
+                source.actuals = 0;
+            }
+            let mut seen = HashSet::new();
+            while let [CallableCandidate::Formal(formal)] = source.candidates.known.as_slice() {
+                if source.candidates.may_be_unknown || !seen.insert((*formal, source.actuals)) {
+                    break;
+                }
+                let Some(parent) = environments.values[source.actuals].bindings.get(formal) else {
+                    break;
+                };
+                *source = parent.clone();
+            }
+        }
+        let parent = matches!(owner, EffectBody::Closure(_)).then_some(actuals);
+        environments.intern(arguments.into_iter().collect(), parent)
+    }
+
     fn current_task_lifetime(&self) -> TaskLifetime {
         let owner = self.effect_graph.current_body.clone();
         self.task_lifetimes
@@ -681,6 +886,154 @@ impl Checker {
         }
     }
 
+    pub(super) fn value_candidates_have_marker(
+        &self,
+        ty: &crate::Ty,
+        candidates: &IndirectCallCandidates,
+        marker: crate::traits::MarkerTrait,
+        flows: &HashMap<SpanKey, Vec<CallableArgumentFlow>>,
+    ) -> bool {
+        let mut environments = OriginEnvironments::default();
+        Self::seed_value_sources(flows, &mut environments);
+        let actuals = environments.intern(Actuals::new(), None);
+        self.value_marker(
+            ty,
+            candidates,
+            marker,
+            actuals,
+            &mut HashSet::new(),
+            &mut environments,
+        )
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "reuse canonical value projections and their exact call environments"
+    )]
+    fn value_marker(
+        &self,
+        ty: &crate::Ty,
+        candidates: &IndirectCallCandidates,
+        marker: crate::traits::MarkerTrait,
+        actuals: usize,
+        seen: &mut HashSet<(SpanKey, usize)>,
+        environments: &mut OriginEnvironments,
+    ) -> bool {
+        let ty = self.subst.resolve(ty);
+        if self.type_has_marker(&ty, marker) {
+            return true;
+        }
+        let captures_have_marker =
+            |site: &SpanKey,
+             actuals,
+             seen: &mut HashSet<_>,
+             environments: &mut OriginEnvironments| {
+                if !seen.insert((site.clone(), actuals)) {
+                    return false;
+                }
+                let proven = self
+                    .closure_capture_facts
+                    .get(site)
+                    .is_some_and(|captures| {
+                        captures.iter().all(|capture| {
+                            self.value_marker(
+                                &capture.ty,
+                                &capture.value_candidates,
+                                marker,
+                                actuals,
+                                seen,
+                                environments,
+                            )
+                        })
+                    });
+                seen.remove(&(site.clone(), actuals));
+                proven
+            };
+        if let crate::Ty::Closure {
+            identity: EffectBody::Closure(site),
+            ..
+        } = ty.callable_body()
+        {
+            return captures_have_marker(site, actuals, seen, environments);
+        }
+        match &ty {
+            crate::Ty::Function { .. } | crate::Ty::GenericCallable { .. } => {
+                let (origins, complete) =
+                    self.resolve_callable_values(candidates, actuals, environments);
+                complete
+                    && !origins.is_empty()
+                    && origins.iter().all(|origin| match &origin.candidate {
+                        CallableCandidate::Declaration(_) => true,
+                        CallableCandidate::Closure(site) => {
+                            captures_have_marker(site, origin.actuals, seen, environments)
+                        }
+                        _ => false,
+                    })
+            }
+            crate::Ty::Tuple(fields) => fields.iter().enumerate().all(|(index, ty)| {
+                let projected = IndirectCallCandidates {
+                    known: candidates
+                        .known
+                        .iter()
+                        .cloned()
+                        .map(|receiver| CallableCandidate::Element {
+                            receiver: Box::new(receiver),
+                            index,
+                        })
+                        .collect(),
+                    may_be_unknown: candidates.may_be_unknown,
+                };
+                self.value_marker(ty, &projected, marker, actuals, seen, environments)
+            }),
+            crate::Ty::Named { head, args }
+                if args.iter().all(|ty| self.type_has_marker(ty, marker)) =>
+            {
+                let Some(owner) = head.nominal() else {
+                    return false;
+                };
+                let Some(definition) = self.head_type_def(*head) else {
+                    return false;
+                };
+                if !matches!(
+                    definition.kind,
+                    super::TypeDefKind::Struct | super::TypeDefKind::Record
+                ) || definition.fields.is_empty()
+                {
+                    return false;
+                }
+                definition
+                    .field_order
+                    .iter()
+                    .enumerate()
+                    .all(|(index, name)| {
+                        let Ok(index) = u32::try_from(index) else {
+                            return false;
+                        };
+                        let Some(ty) = definition.fields.get(name) else {
+                            return false;
+                        };
+                        let ty =
+                            Self::instantiate_type_def_member(ty, &definition.type_params, args);
+                        let projected = IndirectCallCandidates {
+                            known: candidates
+                                .known
+                                .iter()
+                                .cloned()
+                                .map(|receiver| CallableCandidate::Field {
+                                    receiver: Box::new(receiver),
+                                    owner,
+                                    index,
+                                })
+                                .collect(),
+                            may_be_unknown: candidates.may_be_unknown,
+                        };
+                        self.value_marker(&ty, &projected, marker, actuals, seen, environments)
+                    })
+            }
+            _ => false,
+        }
+    }
+
     fn task_candidates_escape(
         &self,
         candidates: &IndirectCallCandidates,
@@ -737,12 +1090,24 @@ impl Checker {
         actuals: usize,
         environments: &mut OriginEnvironments,
     ) -> Vec<ValueOrigin> {
-        Self::task_value_origins(candidates, actuals, &[], environments);
+        self.solve_value_origins(candidates, actuals, &[], environments)
+    }
+
+    fn solve_value_origins(
+        &self,
+        candidates: &IndirectCallCandidates,
+        actuals: usize,
+        projections: &[Projection],
+        environments: &mut OriginEnvironments,
+    ) -> Vec<ValueOrigin> {
+        Self::task_value_origins(candidates, actuals, projections, environments);
         while let Some(id) = environments.origins.pending.pop_front() {
             environments.origins.nodes[id].queued = false;
             let (candidate, projections, actuals) = environments.origins.nodes[id].query.clone();
             environments.origins.current = Some(id);
+            let incomplete = environments.incomplete;
             let origins = self.task_value_origin(&candidate, actuals, &projections, environments);
+            let incomplete = environments.incomplete != incomplete;
             environments.origins.current = None;
             for origin in &origins {
                 if let CallableCandidate::Closure(site) = &origin.candidate {
@@ -763,7 +1128,9 @@ impl Checker {
             let node = &mut environments.origins.nodes[id];
             let before = node.origins.len();
             node.origins.extend(origins);
-            if node.origins.len() != before {
+            let changed = incomplete && !node.incomplete;
+            node.incomplete |= incomplete;
+            if changed || node.origins.len() != before {
                 let dependents: Vec<_> = node.dependents.iter().copied().collect();
                 for dependent in dependents {
                     let node = &mut environments.origins.nodes[dependent];
@@ -774,7 +1141,7 @@ impl Checker {
                 }
             }
         }
-        Self::task_value_origins(candidates, actuals, &[], environments)
+        Self::task_value_origins(candidates, actuals, projections, environments)
     }
 
     fn task_value_origins(
@@ -783,10 +1150,20 @@ impl Checker {
         projections: &[Projection],
         environments: &mut OriginEnvironments,
     ) -> Vec<ValueOrigin> {
+        if candidates.may_be_unknown {
+            environments.incomplete += 1;
+        }
         let mut origins: Vec<_> = candidates
             .known
             .iter()
-            .flat_map(|candidate| environments.origins.read(candidate, projections, actuals))
+            .flat_map(|candidate| {
+                let origins = environments.origins.read(candidate, projections, actuals);
+                let query = (candidate.clone(), projections.to_vec(), actuals);
+                if environments.origins.nodes[environments.origins.identities[&query]].incomplete {
+                    environments.incomplete += 1;
+                }
+                origins
+            })
             .collect();
         let mut unique = HashSet::new();
         origins.retain(|origin| unique.insert(origin.clone()));
@@ -806,6 +1183,17 @@ impl Checker {
     ) -> Vec<ValueOrigin> {
         let descendants = projections.last() == Some(&Projection::Descendants);
         match candidate {
+            CallableCandidate::Erasure { .. }
+                if projections.last() == Some(&Projection::ErasureBoundary) =>
+            {
+                vec![ValueOrigin {
+                    candidate: candidate.clone(),
+                    actuals,
+                }]
+            }
+            CallableCandidate::Erasure { value, .. } => {
+                Self::task_value_origins(value, actuals, projections, environments)
+            }
             CallableCandidate::Formal(formal) => {
                 let mut sources =
                     if let Some(source) = environments.values[actuals].bindings.get(formal) {
@@ -842,6 +1230,9 @@ impl Checker {
                     };
                 if let Some(recursive) = environments.recursive_sources.get(&(*formal, actuals)) {
                     sources.extend(recursive.iter().cloned());
+                }
+                if sources.is_empty() {
+                    environments.incomplete += 1;
                 }
                 sources
                     .iter()
@@ -970,6 +1361,7 @@ impl Checker {
             }
             CallableCandidate::TaskProducer(_)
             | CallableCandidate::Closure(_)
+            | CallableCandidate::GeneratorBlock(_)
             | CallableCandidate::Declaration(_)
                 if projections.is_empty() || descendants =>
             {
@@ -995,6 +1387,7 @@ impl Checker {
             _ => return Vec::new(),
         };
         let Some(pending) = self.pending_callable_arguments.get(site) else {
+            environments.incomplete += 1;
             return Vec::new();
         };
         let callees = match &pending.callee {
@@ -1017,6 +1410,7 @@ impl Checker {
                     &self.callable_return_candidates
                 };
                 let Some(returns) = outputs.get(&owner) else {
+                    environments.incomplete += 1;
                     return Vec::new();
                 };
                 let arguments = self.task_call_arguments(&owner, site, pending, actuals);

@@ -12,7 +12,7 @@ actor Worker {
     #[on(crash)]
     fn crashed(info: CrashInfo) -> CrashAction {
         assert(values[0][0] == "CHANGED");
-        assert(info.code != 0);
+        assert(info.kind == CrashKind.Fault);
         println(values[0][0]);
         CrashAction.Restart
     }

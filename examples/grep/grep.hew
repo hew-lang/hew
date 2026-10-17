@@ -84,11 +84,11 @@ fn parse_args() -> Result<Config, string> {
                 i = i + 1;
                 continue;
             }
-            let flag_chars = arg.slice(1, arg.len());
+            let flag_chars = arg[1..arg.len()];
             let fc_len = flag_chars.len();
             var fi = 0;
             while fi < fc_len {
-                let ch = flag_chars.slice(fi, fi + 1);
+                let ch = flag_chars[fi .. fi + 1];
                 if ch == "i" {
                     flag_i = true;
                 } else if ch == "n" {
@@ -123,7 +123,7 @@ fn parse_args() -> Result<Config, string> {
 // Process a block of text (already loaded as a string) against the compiled
 // Pattern.  Returns the number of matching lines emitted (or counted).
 fn grep_content(content: string, pat: regex.Pattern, cfg: Config, label: string, show_label: bool) -> i64 { // "file:" prefix, or "" for unlabelled output
-    let lines = string.lines(content);
+    let lines = (content).lines();
     let nlines = lines.len();
     var match_count: i64 = 0;
     var lineno: i64 = 1;

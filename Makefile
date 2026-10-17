@@ -667,6 +667,13 @@ sandbox-vm-deps:
 		echo "hew-sandbox-vm dependencies are fresh; skipping install"; \
 	fi
 
+.PHONY: unicode-tables unicode-tables-check
+unicode-tables: ## Generate: export native Unicode character operations for the sandbox VM
+	cargo run -p hew-runtime --example unicode_tables -- hew-sandbox-vm/src/interpreter/unicode-data.ts
+
+unicode-tables-check: ## Check: verify sandbox Unicode tables match the native runtime
+	cargo run -p hew-runtime --example unicode_tables -- --check hew-sandbox-vm/src/interpreter/unicode-data.ts
+
 sandbox-vm-test: sandbox-vm-deps
 	npm --prefix hew-sandbox-vm test
 
@@ -689,6 +696,8 @@ playground-check: playground-manifest-check sandbox-vm-deps ## Build: test and b
 
 # Focused curated playground WASI runtime preflight.
 playground-wasi-check: wasm-runtime hew-native
+	$(TEST_RUN_ENV) cargo test -p hew-cli --test wasi_run_e2e checked_tasks_select_and_scope_cleanup_run_under_wasi -- --exact
+	$(TEST_RUN_ENV) cargo test -p hew-cli --test wasi_run_e2e actor_periodic_timer_reaches_quiescence_on_native_and_wasi -- --exact
 	$(TEST_RUN_ENV) cargo test -p hew-cli --test wasi_run_e2e curated_playground_examples_run_under_wasi -- --exact
 	$(TEST_RUN_ENV) cargo test -p hew-cli --test wasi_run_e2e supervisor_stays_on_the_unsupported_diagnostic_path_under_wasi -- --exact
 
@@ -1137,6 +1146,7 @@ test-extern-bytes-safety: core-safety-build ## Test: instrument C and Hew extern
 test-host-client: hew-native ## Test: execute C11 and C++17 clients calling compiled Hew
 	python3 tests/host/run.py --hew-bin "$(abspath $(DEBUG_HEW))" --hew-lib "$(abspath $(LIBHEW))" \
 		--out-dir "$(abspath $(DEBUG_DIR))/host-client" $(HOST_CLIENT_ARGS)
+	HEW_BIN="$(DEBUG_HEW)" cargo test -p hew-cli --test host_export_e2e
 
 # Build the compiler and runtime together so the selected compiler resolves the
 # sanitizer archive from its own Cargo profile directory. The safety runner also
@@ -1175,6 +1185,15 @@ test-pkg-import: hew-native
 # stdout under an isolated HOME.
 test-package-install: hew-native ## Test: prove installed packages import and execute
 	HEW_BIN="$(DEBUG_DIR)/hew" bash tests/package-install/run.sh
+
+.PHONY: test-native-prebuilt-sqlite
+test-native-prebuilt-sqlite: hew-native ## Test: install signed SQLite without Cargo
+	@test -n "$(HEW_ECOSYSTEM_SOURCE)" || { echo "set HEW_ECOSYSTEM_SOURCE to the ecosystem checkout"; exit 2; }
+	HEW_BIN="$(DEBUG_DIR)/hew" HEW_ECOSYSTEM_SOURCE="$(HEW_ECOSYSTEM_SOURCE)" cargo test -p hew-pkg --test test_registry_wire_install native_prebuilt_sqlite_without_cargo -- --ignored --nocapture
+
+.PHONY: test-trim-paths
+test-trim-paths: hew-native ## Test: compare package paths and objects across checkout roots
+	HEW_BIN="$(DEBUG_HEW)" cargo test -p hew-cli --test native_manifest_e2e trimmed_package_paths_are_stable_across_roots -- --nocapture
 
 # Repeated-compile determinism over the LL-oracle corpus: the same input
 # compiled several times must produce the same exit status, the same

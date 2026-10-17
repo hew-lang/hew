@@ -11,9 +11,9 @@ pub enum UserEnum {
 
 pub fn fetch(n: i64) -> Result<UserRecord, UserEnum> {
     if n >= 0 {
-        return .Ok(UserRecord { name: "user" + string.from_int(n), id: n });
+        return .Ok(UserRecord { name: "user" + f"{n}", id: n });
     }
-    .Err(UserEnum.Missing("missing" + string.from_int(n)))
+    .Err(UserEnum.Missing("missing" + f"{n}"))
 }
 
 pub fn relay(n: i64) -> Result<UserRecord, UserEnum> {

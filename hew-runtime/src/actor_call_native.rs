@@ -6,7 +6,6 @@ use crate::coro_sleep::{
     hew_coro_sleep_free, hew_coro_sleep_status, hew_coro_sleep_until_new, HewCoroSleep,
 };
 use crate::internal::types::AskError;
-#[cfg(not(target_arch = "wasm32"))]
 use crate::lifetime::live_actors::ActorIncarnation;
 use crate::lifetime::local_handles::HewLocalPidId;
 use crate::mailbox::native::{
@@ -43,7 +42,6 @@ pub struct HewActorCall {
     expected_size: usize,
     reject: bool,
     state: CallState,
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) target: Option<ActorIncarnation>,
     cleanup_started: bool,
     cleanup: Option<Box<ReleaseDriver>>,
@@ -70,7 +68,6 @@ impl HewActorCall {
         }
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn has_deadline(&self) -> bool {
         !self.timer.is_null()
     }
@@ -163,6 +160,7 @@ impl Drop for HewActorCall {
 /// monotonic expiry, or -1 for no request deadline.
 ///
 /// # Safety
+/// `caller` points to a live stamp copied before this function returns.
 /// `payload` is null or an owned malloc wrapper with matching size/destructor.
 /// The reply descriptor and retained waker obey their native contracts.
 #[no_mangle]
@@ -183,6 +181,7 @@ pub unsafe extern "C" fn hew_actor_call_new(
     policy: i32,
     payload_release: Option<HewValueReleaseStart>,
     reply_release: Option<HewValueReleaseStart>,
+    caller: *const crate::actor_caller::HewCallerStamp,
 ) -> *mut HewActorCall {
     // SAFETY: forwards the owned request and captures its local sender.
     unsafe {
@@ -199,7 +198,9 @@ pub unsafe extern "C" fn hew_actor_call_new(
             policy,
             payload_release,
             reply_release,
-            crate::actor_caller::local_sender(),
+            *caller,
+            #[cfg(not(target_arch = "wasm32"))]
+            None,
         )
     }
 }
@@ -222,6 +223,9 @@ pub(crate) unsafe fn actor_call_new(
     payload_release: Option<HewValueReleaseStart>,
     reply_release: Option<HewValueReleaseStart>,
     caller: crate::actor_caller::HewCallerStamp,
+    #[cfg(not(target_arch = "wasm32"))] remote_admission: Option<
+        crate::hew_node::service::RemoteAdmission,
+    >,
 ) -> *mut HewActorCall {
     let mut rejected_payload = ptr::null_mut();
     let envelope = if payload.is_null() {
@@ -259,6 +263,8 @@ pub(crate) unsafe fn actor_call_new(
             policy,
             reply_release,
             caller,
+            #[cfg(not(target_arch = "wasm32"))]
+            remote_admission,
         );
         (*operation).rejected_payload = rejected_payload;
         operation
@@ -268,6 +274,7 @@ pub(crate) unsafe fn actor_call_new(
 /// Start the same operation using a sealed request, preserving its identity.
 ///
 /// # Safety
+/// `caller` points to a live stamp copied before this function returns.
 /// `envelope` is null or uniquely owns the checked target's request protocol.
 /// The reply descriptor and retained waker obey their native contracts.
 #[no_mangle]
@@ -285,6 +292,7 @@ pub unsafe extern "C" fn hew_actor_call_resume(
     deadline_ns: i64,
     policy: i32,
     reply_release: Option<HewValueReleaseStart>,
+    caller: *const crate::actor_caller::HewCallerStamp,
 ) -> *mut HewActorCall {
     // SAFETY: forwards the owned request and captures its local sender.
     unsafe {
@@ -298,7 +306,9 @@ pub unsafe extern "C" fn hew_actor_call_resume(
             deadline_ns,
             policy,
             reply_release,
-            crate::actor_caller::local_sender(),
+            *caller,
+            #[cfg(not(target_arch = "wasm32"))]
+            None,
         )
     }
 }
@@ -318,6 +328,9 @@ pub(crate) unsafe fn actor_call_resume(
     policy: i32,
     reply_release: Option<HewValueReleaseStart>,
     caller: crate::actor_caller::HewCallerStamp,
+    #[cfg(not(target_arch = "wasm32"))] remote_admission: Option<
+        crate::hew_node::service::RemoteAdmission,
+    >,
 ) -> *mut HewActorCall {
     // SAFETY: registration precedes any request publication.
     let channel = unsafe { hew_reply_channel_new_native(waker, drop_reply, reply_release) };
@@ -332,6 +345,8 @@ pub(crate) unsafe fn actor_call_resume(
     let admission = unsafe {
         crate::reply_channel::enable_native_withdrawal(channel);
         crate::reply_channel::set_native_request_deadline(channel, deadline);
+        #[cfg(not(target_arch = "wasm32"))]
+        crate::reply_channel::set_native_request_admission(channel, remote_admission);
         ask_wait_resume(token, message, envelope, channel.cast(), waker, caller)
     };
     let mut operation = Box::new(HewActorCall {
@@ -341,7 +356,6 @@ pub(crate) unsafe fn actor_call_resume(
         expected_size: reply_size,
         reject: policy != 0,
         state: CallState::Admitting,
-        #[cfg(not(target_arch = "wasm32"))]
         target: crate::actor_native::wait_graph::resolve_target(token),
         cleanup_started: false,
         cleanup: None,
@@ -523,7 +537,6 @@ mod tests {
                     expected_size: size_of::<*const AtomicUsize>(),
                     reject: false,
                     state: CallState::Waiting,
-                    #[cfg(not(target_arch = "wasm32"))]
                     target: None,
                     cleanup_started: false,
                     cleanup: None,
@@ -601,7 +614,6 @@ mod tests {
                 expected_size: size_of::<*const AtomicUsize>(),
                 reject: false,
                 state: CallState::Waiting,
-                #[cfg(not(target_arch = "wasm32"))]
                 target: None,
                 cleanup_started: false,
                 cleanup: None,

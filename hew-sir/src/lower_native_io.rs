@@ -11,11 +11,24 @@ impl Builder<'_, '_> {
         operation: AsyncIoOp,
         args: &[&HirExpr],
     ) -> Result<Option<crate::ValueId>, String> {
+        self.lower_borrowed_native_suspend(
+            expression,
+            SuspendKind::NativeIo { operation },
+            operation.contract(),
+            args,
+        )
+    }
+
+    pub(super) fn lower_borrowed_native_suspend(
+        &mut self,
+        expression: &HirExpr,
+        kind: SuspendKind,
+        contract: hew_types::runtime_call::RuntimeSemanticContract,
+        args: &[&HirExpr],
+    ) -> Result<Option<crate::ValueId>, String> {
         let result_ty = self.ty(&expression.ty);
         let argument_types = args.iter().map(|arg| self.ty(&arg.ty)).collect::<Vec<_>>();
-        operation
-            .contract()
-            .instantiate(&self.service.module.defs, &argument_types, &result_ty)?;
+        contract.instantiate(&self.service.module.defs, &argument_types, &result_ty)?;
         self.service.require_type_facts(&result_ty)?;
         let before: std::collections::HashSet<_> = self.owned_live.keys().copied().collect();
         let mut loans = Vec::new();
@@ -41,7 +54,7 @@ impl Builder<'_, '_> {
         let cancel = self.new_block(Vec::new());
         let unwind = self.new_block(Vec::new());
         self.set_terminator(SemTerminator::Suspend {
-            kind: SuspendKind::NativeIo { operation },
+            kind,
             inputs,
             result: CallResult::Value(ValueDef {
                 id: raw,

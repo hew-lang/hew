@@ -500,25 +500,6 @@ pub mod profiler {
     /// No-op: profiler feature is disabled.
     pub fn maybe_start() {}
     /// No-op: profiler feature is disabled.
-    ///
-    /// On non-wasm targets the parameters match the real function signature so
-    /// call sites in `hew_node.rs` compile without casts.  On wasm32 the typed
-    /// modules are absent, so raw pointers are used instead.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn maybe_start_with_context(
-        _cluster: *mut crate::cluster::HewCluster,
-        _connmgr: *mut crate::connection::HewConnMgr,
-        _routing: *mut crate::routing::HewRoutingTable,
-    ) {
-    }
-    #[cfg(target_arch = "wasm32")]
-    pub fn maybe_start_with_context(
-        _cluster: *mut std::ffi::c_void,
-        _connmgr: *mut std::ffi::c_void,
-        _routing: *mut std::ffi::c_void,
-    ) {
-    }
-    /// No-op: profiler feature is disabled.
     pub fn maybe_write_on_exit() {}
     /// No-op: profiler feature is disabled.
     pub fn shutdown() {}
@@ -632,6 +613,8 @@ pub mod crash;
 pub mod deque;
 pub mod fault;
 pub mod host_api;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod host_value;
 pub mod mailbox;
 /// Mailbox envelope payload classification and cross-node send guards.
 pub mod mailbox_envelope;
@@ -702,8 +685,8 @@ pub mod blocking_pool;
 /// The single-thread process driver: always on wasm32, selected natively by
 /// `HEW_DETERMINISTIC` for deterministic runs.
 pub mod driver;
-#[cfg(not(target_arch = "wasm32"))]
 pub mod task_scope;
+pub mod timer_actor;
 pub mod timer_periodic;
 pub mod wake;
 // timer_wheel compiles on every target: native uses it with the background

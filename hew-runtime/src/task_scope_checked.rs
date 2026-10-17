@@ -292,7 +292,11 @@ pub unsafe extern "C" fn hew_checked_scope_deadline(scope: *mut HewTaskScope, du
 }
 
 enum CheckedTaskInvocation {
-    Callable(HewCallableValue),
+    Callable {
+        value: HewCallableValue,
+        arguments: *const *mut c_void,
+        consuming: bool,
+    },
     Race(Vec<*mut HewTask>),
 }
 
@@ -354,7 +358,48 @@ pub unsafe extern "C" fn hew_checked_task_spawn(
         let owner = ptr::read(callable);
         (*callable).environment = ptr::null_mut();
         (*callable).descriptor = ptr::null();
-        spawn_invocation(scope, CheckedTaskInvocation::Callable(owner), layout)
+        spawn_invocation(
+            scope,
+            CheckedTaskInvocation::Callable {
+                value: owner,
+                arguments: ptr::null(),
+                consuming: true,
+            },
+            layout,
+        )
+    }
+}
+
+/// Start a scoped invocation borrowing its parent's typed argument slots.
+///
+/// # Safety
+/// The compiler keeps callable borrows and argument storage live until the
+/// task's completed drain. Shared inputs are Sync; exclusive or transferred
+/// inputs and the result are Send. A consuming callable transfers ownership.
+#[no_mangle]
+pub unsafe extern "C" fn hew_checked_task_invoke(
+    scope: *mut HewTaskScope,
+    callable: *mut HewCallableValue,
+    arguments: *const *mut c_void,
+    consuming: i32,
+    layout: *const HewValueLayout,
+) -> *mut HewTask {
+    // SAFETY: generated code supplies the exact descriptor and scoped slots.
+    unsafe {
+        let value = ptr::read(callable);
+        if consuming != 0 {
+            (*callable).environment = ptr::null_mut();
+            (*callable).descriptor = ptr::null();
+        }
+        spawn_invocation(
+            scope,
+            CheckedTaskInvocation::Callable {
+                value,
+                arguments,
+                consuming: consuming != 0,
+            },
+            layout,
+        )
     }
 }
 
@@ -779,6 +824,6 @@ pub unsafe extern "C" fn hew_checked_scope_close(scope: *mut HewTaskScope) {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 #[path = "task_scope_checked_tests.rs"]
 mod tests;

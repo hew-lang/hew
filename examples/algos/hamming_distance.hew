@@ -2,7 +2,7 @@
 fn hamming(a: string, b: string) -> i32 {
     var dist: i32 = 0;
     for i in 0..a.len() {
-        if a.char_at(i) != b.char_at(i) {
+        if a.get(i) != b.get(i) {
             dist = dist + 1;
         }
     }

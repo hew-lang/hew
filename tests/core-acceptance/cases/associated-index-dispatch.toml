@@ -1,0 +1,10 @@
+[[case]]
+id = "associated-index-dispatch"
+intent = "Projected fields and trait indexing preserve checked arguments, output and callable origins through generic, dynamic and named dispatch."
+source = "cases/associated-index-dispatch.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "indexed\n"
+exit = 0

@@ -255,6 +255,10 @@ impl LowerCtx {
             (Some(BuiltinType::Option), Some("std.option"))
                 | (Some(BuiltinType::Result), Some("std.result"))
                 | (Some(BuiltinType::VecIter), Some("std.iter"))
+                | (
+                    Some(BuiltinType::Stream | BuiltinType::Sink),
+                    Some("std.stream")
+                )
         );
         // Encoding values retain a compiler representation, but their methods
         // are ordinary source bodies in the checked declaration's own module.

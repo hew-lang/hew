@@ -366,6 +366,60 @@ impl LowerCtx {
     }
 
     /// HIR retains semantic method identity and exact types, never an element ABI.
+    pub(super) fn lower_string_range_call(
+        &mut self,
+        container: HirExpr,
+        bounds: (Option<&Spanned<Expr>>, Option<&Spanned<Expr>>),
+        inclusive: bool,
+        optional: bool,
+        result_ty: &ResolvedTy,
+        span: &Span,
+    ) -> HirExprKind {
+        let (start, end) = bounds;
+        let start = match start {
+            Some(value) => self.lower_expr(value, IntentKind::Read),
+            None => self.make_expr(
+                HirExprKind::Literal(HirLiteral::Integer(0)),
+                ResolvedTy::I64,
+                IntentKind::Read,
+                span.clone(),
+            ),
+        };
+        let open_end = end.is_none();
+        let end = match end {
+            Some(value) => self.lower_expr(value, IntentKind::Read),
+            None => self.make_expr(
+                HirExprKind::Literal(HirLiteral::Integer(0)),
+                ResolvedTy::I64,
+                IntentKind::Read,
+                span.clone(),
+            ),
+        };
+        let inclusive = self.make_expr(
+            HirExprKind::Literal(HirLiteral::Bool(inclusive)),
+            ResolvedTy::Bool,
+            IntentKind::Read,
+            span.clone(),
+        );
+        let open_end = self.make_expr(
+            HirExprKind::Literal(HirLiteral::Bool(open_end)),
+            ResolvedTy::Bool,
+            IntentKind::Read,
+            span.clone(),
+        );
+        let family = if optional {
+            hew_types::RuntimeCallFamily::StringGetRange
+        } else {
+            hew_types::RuntimeCallFamily::StringSliceRange
+        };
+        self.collection_call_kind(
+            family,
+            vec![container, start, end, inclusive, open_end],
+            result_ty,
+            span,
+        )
+    }
+
     pub(super) fn collection_call_kind(
         &mut self,
         family: hew_types::RuntimeCallFamily,

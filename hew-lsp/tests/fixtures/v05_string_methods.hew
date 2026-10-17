@@ -1,15 +1,16 @@
 fn string_methods_probe(text: string) -> i64 {
-    let sliced: string = text.slice(0, 1);
+    let sliced: string = text[0..1];
     let replaced: string = text.replace("a", "b");
     let found: Option<i64> = text.find("a");
     let parts: Vec<string> = text.split(",");
     let line_parts: Vec<string> = text.lines();
     let repeated: string = text.repeat(2);
-    let ch: Option<char> = text.char_at(0);
-    let chars: Vec<char> = text.chars();
-    let digit: bool = text.is_digit();
-    let alpha: bool = text.is_alpha();
-    let alnum: bool = text.is_alphanumeric();
+    let ch: Option<char> = text.get(0);
+    let chars = text.iter();
+    let scalar = ch ?? '\0';
+    let digit: bool = scalar.is_digit();
+    let alpha: bool = scalar.is_letter();
+    let alnum: bool = scalar.is_alphanumeric();
     let cloned: string = text.clone();
     (found ?? -1) + ((ch ?? '\0') as i64)
 }

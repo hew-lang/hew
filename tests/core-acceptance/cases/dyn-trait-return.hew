@@ -27,9 +27,9 @@ impl Labeled for Parcel {
 
 fn make_labeled(seed: string, kind: i64) -> dyn Labeled {
     if kind == 0 {
-        Person { label: string.repeat(seed, 64) }
+        Person { label: (seed).repeat(64) }
     } else {
-        Parcel { label: string.repeat(seed, 96), route: string.repeat(seed, 17) }
+        Parcel { label: (seed).repeat(96), route: (seed).repeat(17) }
     }
 }
 

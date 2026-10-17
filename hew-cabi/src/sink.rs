@@ -5,6 +5,7 @@
 //! opaque handles compatible with the runtime's C ABI.
 
 use std::io::Write;
+use std::sync::{Mutex, MutexGuard};
 
 // ── Stream/sink error channel (single owner: hew-runtime) ─────────────────────
 //
@@ -143,6 +144,12 @@ impl TrySendResult {
 }
 
 trait SinkOps: Send {
+    fn retire(&mut self) -> bool {
+        true
+    }
+    fn take_owners(&mut self) -> Option<SinkOwners> {
+        None
+    }
     fn write_item(&mut self, data: &[u8]);
     fn try_write_item(&mut self, _data: &[u8]) -> TrySendResult {
         set_last_error("this sink does not support nonblocking writes".into());
@@ -153,6 +160,38 @@ trait SinkOps: Send {
     }
     fn flush(&mut self);
     fn close(&mut self);
+}
+
+/// Exact value slots pinned until the owning runtime cursor finishes them.
+#[derive(Debug)]
+pub struct SinkOwners {
+    pub values: Vec<(*mut core::ffi::c_void, crate::value::HewValueLayout)>,
+    pub storage: *mut core::ffi::c_void,
+    pub free: unsafe fn(*mut core::ffi::c_void),
+}
+
+struct OwnedSink<T> {
+    callbacks: CallbackSink<T>,
+    owners: fn(&mut T) -> Option<SinkOwners>,
+    retire: fn(&mut T) -> bool,
+}
+
+impl<T: Send> SinkOps for OwnedSink<T> {
+    fn retire(&mut self) -> bool {
+        (self.retire)(&mut self.callbacks.backing)
+    }
+    fn take_owners(&mut self) -> Option<SinkOwners> {
+        (self.owners)(&mut self.callbacks.backing)
+    }
+    fn write_item(&mut self, data: &[u8]) {
+        self.callbacks.write_item(data);
+    }
+    fn flush(&mut self) {
+        self.callbacks.flush();
+    }
+    fn close(&mut self) {
+        self.callbacks.close();
+    }
 }
 
 struct CallbackSink<T> {
@@ -270,7 +309,89 @@ impl<T: Send> SinkOps for NonblockingSink<T> {
 
 /// Opaque writable sink handle.
 pub struct HewSink {
+    state: Mutex<SinkState>,
+}
+
+/// Backing retained while an admitted finish waits for native readiness.
+pub struct PendingFinish {
+    sink: *const HewSink,
     inner: Option<Box<dyn SinkOps>>,
+    adapter: *const core::ffi::c_void,
+    close: bool,
+    connection: Option<i32>,
+    #[cfg(windows)]
+    pipe_handle: Option<usize>,
+}
+
+impl std::fmt::Debug for PendingFinish {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PendingFinish")
+            .field("sink", &self.sink)
+            .field("pending", &self.inner.is_some())
+            .finish_non_exhaustive()
+    }
+}
+
+// SAFETY: construction requires the endpoint loan to survive producer quiescence.
+unsafe impl Send for PendingFinish {}
+
+impl PendingFinish {
+    /// Retained TCP identity for the existing reactor finish operation.
+    #[must_use]
+    pub fn native_connection(&self) -> Option<i32> {
+        self.connection
+    }
+
+    /// Transfer the accepted remainder to its native finish operation.
+    pub fn take_pending(&mut self) -> Vec<u8> {
+        self.inner
+            .as_mut()
+            .map_or_else(Vec::new, |inner| inner.take_pending())
+    }
+
+    /// Retained pipe identity for native cancellation.
+    #[cfg(windows)]
+    #[must_use]
+    pub fn native_pipe_handle(&self) -> Option<usize> {
+        self.pipe_handle
+    }
+    /// Whether retirement selected the final backing close.
+    #[must_use]
+    pub fn needs_close(&self) -> bool {
+        self.close
+    }
+    /// The adapter remains pinned by this pending backing.
+    #[must_use]
+    pub fn adapter(&self) -> *const core::ffi::c_void {
+        self.adapter
+    }
+
+    /// Complete the retired backing outside its endpoint lock.
+    pub fn finish(mut self) {
+        if let Some(mut inner) = self.inner.take() {
+            if self.close {
+                inner.close();
+            }
+            if !self.adapter.is_null() {
+                // SAFETY: the construction loan retains the endpoint through completion.
+                unsafe { (*self.sink).state().inner = Some(inner) };
+            }
+        }
+    }
+}
+
+impl Drop for PendingFinish {
+    fn drop(&mut self) {
+        if self.inner.is_some() {
+            std::process::abort();
+        }
+    }
+}
+
+struct SinkState {
+    inner: Option<Box<dyn SinkOps>>,
+    finished: bool,
+    runtime_adapter: *const core::ffi::c_void,
     /// Opaque borrow of the suspending channel core (`ChannelCore`) when this
     /// sink is the write half of an in-memory pipe (NEW-7). Null for every
     /// other sink kind. The runtime sets this so a suspending write can
@@ -284,6 +405,23 @@ pub struct HewSink {
     native_pipe_handle: Option<usize>,
 }
 
+// SAFETY: SinkOps is Send; opaque identities only borrow that owned backing.
+unsafe impl Send for SinkState {}
+
+impl SinkState {
+    fn empty() -> Self {
+        Self {
+            inner: None,
+            finished: true,
+            runtime_adapter: core::ptr::null(),
+            channel_core: core::ptr::null(),
+            native_connection: None,
+            #[cfg(windows)]
+            native_pipe_handle: None,
+        }
+    }
+}
+
 impl std::fmt::Debug for HewSink {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("HewSink").finish_non_exhaustive()
@@ -291,6 +429,58 @@ impl std::fmt::Debug for HewSink {
 }
 
 impl HewSink {
+    fn new(state: SinkState) -> Self {
+        Self {
+            state: Mutex::new(state),
+        }
+    }
+
+    fn state(&self) -> MutexGuard<'_, SinkState> {
+        self.state.lock().unwrap_or_else(|_| std::process::abort())
+    }
+
+    fn state_mut(&mut self) -> &mut SinkState {
+        self.state
+            .get_mut()
+            .unwrap_or_else(|_| std::process::abort())
+    }
+
+    /// Borrow an adapter identity pinned by this endpoint's backing.
+    #[must_use]
+    pub fn runtime_adapter(&self) -> *const core::ffi::c_void {
+        let state = self.state();
+        state.runtime_adapter
+    }
+
+    /// Transfer hidden owners after the endpoint's I/O has drained.
+    pub fn take_owners(&mut self) -> Option<SinkOwners> {
+        let state = self.state_mut();
+        state.runtime_adapter = core::ptr::null();
+        state.inner.as_mut().and_then(|inner| inner.take_owners())
+    }
+
+    /// Install and borrow one shared backing without moving this endpoint.
+    ///
+    /// # Safety
+    /// `install` must return an endpoint retaining its non-null adapter identity.
+    /// Neither callback may re-enter this endpoint or execute authored code.
+    pub unsafe fn with_shared<R>(
+        &self,
+        install: impl FnOnce(Self) -> Self,
+        borrow: impl FnOnce(*const core::ffi::c_void, bool) -> R,
+    ) -> R {
+        let mut state = self.state();
+        if state.runtime_adapter.is_null() {
+            let original = Self::new(std::mem::replace(&mut *state, SinkState::empty()));
+            let mut replacement = install(original);
+            *state = std::mem::replace(replacement.state_mut(), SinkState::empty());
+            if state.runtime_adapter.is_null() {
+                std::process::abort();
+            }
+        }
+        borrow(state.runtime_adapter, state.finished)
+    }
+
     /// Borrow the pipe backing's identity through its exclusive native I/O loan.
     ///
     /// # Safety
@@ -298,31 +488,37 @@ impl HewSink {
     /// exclusively until its producer is quiescent.
     #[cfg(windows)]
     pub unsafe fn set_native_pipe_handle(&mut self, handle: usize) {
-        self.native_pipe_handle = Some(handle);
+        let state = self.state_mut();
+        state.native_pipe_handle = Some(handle);
     }
 
     /// Borrow the pipe identity while retaining the sink's backing loan.
     #[cfg(windows)]
     #[must_use]
     pub fn native_pipe_handle(&self) -> Option<usize> {
-        self.native_pipe_handle
+        let state = self.state();
+        state.native_pipe_handle
     }
 
     /// Associate the TCP backing's live transport handle with native I/O.
     /// The backing remains the sole resource owner.
     pub fn set_native_connection(&mut self, connection: i32) {
-        self.native_connection = Some(connection);
+        let state = self.state_mut();
+        state.native_connection = Some(connection);
     }
 
     /// Borrow the TCP backing's transport identity until this sink closes.
     #[must_use]
     pub fn native_connection(&self) -> Option<i32> {
-        self.native_connection
+        let state = self.state();
+        state.native_connection
     }
 
     /// Transfer buffered bytes to the sink's exclusive native write operation.
     pub fn take_pending(&mut self) -> Vec<u8> {
-        self.inner
+        let state = self.state_mut();
+        state
+            .inner
             .as_mut()
             .map_or_else(Vec::new, |inner| inner.take_pending())
     }
@@ -330,30 +526,33 @@ impl HewSink {
     /// Attach an opaque suspending-channel-core borrow (NEW-7). Called by the
     /// runtime pipe constructor after building the channel sink backing.
     pub fn set_channel_core(&mut self, core: *const std::ffi::c_void) {
-        self.channel_core = core;
+        let state = self.state_mut();
+        state.channel_core = core;
     }
 
     /// The opaque suspending-channel-core borrow, or null when this sink is not
     /// the write half of an in-memory pipe.
     #[must_use]
     pub fn channel_core_ptr(&self) -> *const std::ffi::c_void {
-        self.channel_core
+        let state = self.state();
+        state.channel_core
     }
 
-    /// Whether this sink has published EOF and released its backing.
-    ///
-    /// The one closed-sink authority: [`HewSink::close`] takes `inner` exactly
-    /// once, and [`HewSink::try_write_item`] reports `Closed` from the same
-    /// state. Every send surface answers `SendError.Closed` from this predicate
-    /// rather than from a backing-specific remnant.
+    /// Whether this endpoint has published its end of the stream.
+    /// Shared owners remain retained until the endpoint's release cursor drains.
     #[must_use]
     pub fn is_closed(&self) -> bool {
-        self.inner.is_none()
+        let state = self.state();
+        state.finished
     }
 
     /// Write one item (exact bytes). Blocks if the backing buffer is full.
     pub fn write_item(&mut self, data: &[u8]) {
-        let Some(inner) = self.inner.as_mut() else {
+        let state = self.state_mut();
+        if state.finished {
+            return;
+        }
+        let Some(inner) = state.inner.as_mut() else {
             return;
         };
         inner.write_item(data);
@@ -364,7 +563,11 @@ impl HewSink {
     /// Returns whether the item was accepted, the buffer was full, or the sink
     /// was closed, or a write failed. Unsupported backings report failure.
     pub fn try_write_item(&mut self, data: &[u8]) -> TrySendResult {
-        let Some(inner) = self.inner.as_mut() else {
+        let state = self.state_mut();
+        if state.finished {
+            return TrySendResult::Closed;
+        }
+        let Some(inner) = state.inner.as_mut() else {
             return TrySendResult::Closed;
         };
         inner.try_write_item(data)
@@ -372,30 +575,97 @@ impl HewSink {
 
     /// Flush any buffered writes (file sinks).
     pub fn flush(&mut self) {
-        let Some(inner) = self.inner.as_mut() else {
+        let state = self.state_mut();
+        if state.finished {
+            return;
+        }
+        let Some(inner) = state.inner.as_mut() else {
             return;
         };
         inner.flush();
     }
 
+    /// Retire this producer, draining its backing outside the endpoint lock.
+    pub fn finish(&self) {
+        // SAFETY: this synchronous borrow retains the endpoint through completion.
+        if let Some(pending) = unsafe { self.begin_finish() } {
+            pending.finish();
+        }
+    }
+
+    /// Retire admission and transfer the backing to its native finish operation.
+    ///
+    /// # Safety
+    /// The endpoint must survive until the returned backing is finished. The
+    /// caller must drain that finish even when its invocation is cancelled.
+    pub unsafe fn begin_finish(&self) -> Option<PendingFinish> {
+        let mut pending = {
+            let mut state = self.state();
+            if state.finished {
+                return None;
+            }
+            state.finished = true;
+            state.channel_core = std::ptr::null();
+            PendingFinish {
+                sink: self,
+                inner: Some(state.inner.take()?),
+                adapter: state.runtime_adapter,
+                close: true,
+                connection: state.native_connection.take(),
+                #[cfg(windows)]
+                pipe_handle: state.native_pipe_handle.take(),
+            }
+        };
+        pending.close = pending.inner.as_mut().is_some_and(|inner| inner.retire());
+        Some(pending)
+    }
+
     /// Signal EOF to the reader and release the backing resource.
     pub fn close(&mut self) {
-        // Drop the suspending-channel-core borrow BEFORE releasing the backing:
-        // closing dethrones this sink's `Arc<ChannelCore>` clone, so the raw
-        // borrow could dangle once the peer (stream) half is also dropped.
-        // Nulling it forces a later suspending write onto the closed-sink
-        // (fail-closed) path instead of dereferencing a possibly-freed core.
-        self.channel_core = std::ptr::null();
-        self.native_connection = None;
-        #[cfg(windows)]
-        {
-            self.native_pipe_handle = None;
-        }
-        let Some(mut inner) = self.inner.take() else {
-            return;
-        };
-        inner.close();
+        self.finish();
     }
+}
+
+/// Create an endpoint whose backing retains compiler-described value owners.
+/// The runtime consumes those owners after native I/O quiescence.
+///
+/// # Safety
+/// `context` must identify the runtime adapter pinned by `backing` until its
+/// owners are transferred. Callbacks must implement that adapter's contract.
+/// `retire` publishes producer retirement and selects the final close; it must
+/// neither wait nor execute authored code.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the owned endpoint carries its identity and complete lifecycle callbacks"
+)]
+pub unsafe fn into_owned_sink_ptr<T: Send + 'static>(
+    backing: T,
+    context: *const core::ffi::c_void,
+    finished: bool,
+    write_item: fn(&mut T, &[u8]),
+    flush: fn(&mut T),
+    retire: fn(&mut T) -> bool,
+    close: fn(&mut T),
+    owners: fn(&mut T) -> Option<SinkOwners>,
+) -> *mut HewSink {
+    Box::into_raw(Box::new(HewSink::new(SinkState {
+        inner: Some(Box::new(OwnedSink {
+            retire,
+            callbacks: CallbackSink {
+                backing,
+                write_item,
+                flush,
+                close,
+            },
+            owners,
+        })),
+        finished,
+        runtime_adapter: context,
+        channel_core: core::ptr::null(),
+        native_connection: None,
+        #[cfg(windows)]
+        native_pipe_handle: None,
+    })))
 }
 
 impl Drop for HewSink {
@@ -411,7 +681,7 @@ pub fn into_sink_ptr<T: Send + 'static>(
     flush: fn(&mut T),
     close: fn(&mut T),
 ) -> *mut HewSink {
-    Box::into_raw(Box::new(HewSink {
+    Box::into_raw(Box::new(HewSink::new(SinkState {
         // ALLOCATOR-PAIRING: GlobalAlloc
         inner: Some(Box::new(CallbackSink {
             backing,
@@ -419,11 +689,13 @@ pub fn into_sink_ptr<T: Send + 'static>(
             flush,
             close,
         })),
+        finished: false,
+        runtime_adapter: core::ptr::null(),
         channel_core: std::ptr::null(),
         native_connection: None,
         #[cfg(windows)]
         native_pipe_handle: None,
-    }))
+    })))
 }
 
 /// Create a sink that retains an accepted item's unwritten bytes in order.
@@ -434,7 +706,7 @@ pub fn into_nonblocking_sink_ptr<T: Send + 'static>(
     flush: fn(&mut T),
     close: fn(&mut T),
 ) -> *mut HewSink {
-    Box::into_raw(Box::new(HewSink {
+    Box::into_raw(Box::new(HewSink::new(SinkState {
         inner: Some(Box::new(NonblockingSink {
             backing,
             write,
@@ -444,11 +716,13 @@ pub fn into_nonblocking_sink_ptr<T: Send + 'static>(
             pending: Vec::new(),
             offset: 0,
         })),
+        finished: false,
+        runtime_adapter: core::ptr::null(),
         channel_core: std::ptr::null(),
         native_connection: None,
         #[cfg(windows)]
         native_pipe_handle: None,
-    }))
+    })))
 }
 
 fn write_via_write<W: Write>(backing: &mut W, data: &[u8]) {
@@ -476,7 +750,7 @@ fn close_via_write<W: Write>(backing: &mut W) {
 
 /// Create a heap-allocated [`HewSink`] from a [`Write`] implementation.
 pub fn into_write_sink_ptr(backing: impl Write + Send + 'static) -> *mut HewSink {
-    Box::into_raw(Box::new(HewSink {
+    Box::into_raw(Box::new(HewSink::new(SinkState {
         // ALLOCATOR-PAIRING: GlobalAlloc
         inner: Some(Box::new(CallbackSink {
             backing,
@@ -484,11 +758,13 @@ pub fn into_write_sink_ptr(backing: impl Write + Send + 'static) -> *mut HewSink
             flush: flush_via_write::<_>,
             close: close_via_write::<_>,
         })),
+        finished: false,
+        runtime_adapter: core::ptr::null(),
         channel_core: std::ptr::null(),
         native_connection: None,
         #[cfg(windows)]
         native_pipe_handle: None,
-    }))
+    })))
 }
 
 // ── Channel-backed sink ───────────────────────────────────────────────────────
@@ -542,14 +818,16 @@ impl SinkOps for ChannelSinkBacking {
 /// observes EOF.
 #[must_use]
 pub fn into_channel_sink_ptr(tx: std::sync::mpsc::SyncSender<Vec<u8>>) -> *mut HewSink {
-    Box::into_raw(Box::new(HewSink {
+    Box::into_raw(Box::new(HewSink::new(SinkState {
         // ALLOCATOR-PAIRING: GlobalAlloc
         inner: Some(Box::new(ChannelSinkBacking { tx })),
+        finished: false,
+        runtime_adapter: core::ptr::null(),
         channel_core: std::ptr::null(),
         native_connection: None,
         #[cfg(windows)]
         native_pipe_handle: None,
-    }))
+    })))
 }
 
 /// Standalone definitions of hew-runtime's stream-error C ABI, for hew-cabi's

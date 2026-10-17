@@ -6,10 +6,10 @@ type Pair {
 }
 
 fn main() -> i64 {
-    var p = Pair { keep: string.repeat("k", 32), churn: string.repeat("a", 32) };
+    var p = Pair { keep: ("k").repeat(32), churn: ("a").repeat(32) };
     var i: i64 = 0;
     while i < 50 {
-        p = Pair { ..p, churn: string.repeat("b", 32) };
+        p = Pair { ..p, churn: ("b").repeat(32) };
         i = i + 1;
     }
     p.keep.len()

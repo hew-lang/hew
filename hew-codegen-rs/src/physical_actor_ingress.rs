@@ -164,6 +164,8 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
             .llvm_ctx("initialize ingress discard cursor")?;
         parameters.push(ptr.into());
         arguments.push(discarded.into());
+        parameters.push(ptr.into());
+        arguments.push(sender_stamp(self.ctx, &self.llvm, &builder, None)?.into());
         let submit =
             get_or_declare_external(&self.llvm, symbol, i32_ty.fn_type(&parameters, false))?;
         let status = call_value(&builder, submit, &arguments, "ingress.status")?.into_int_value();

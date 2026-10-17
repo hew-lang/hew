@@ -1188,6 +1188,7 @@ pub enum HirVarSelfMethodTarget {
     StaticTrait {
         /// Type-parameter name that carries the bound (e.g. "T").
         receiver_type_param: hew_types::ParamHead,
+        trait_args: Vec<ResolvedTy>,
     },
 }
 
@@ -1398,14 +1399,18 @@ pub enum HirExprKind {
     /// The expression type is the full `Result<T.Reply, ActorError>`; `reply_ty`
     /// carries the decoded Ok payload type for MIR/codegen reply sizing.
     RemoteActorAsk {
+        member: hew_types::actor_protocol::RemoteActorMember,
+        service: bool,
+        args: Vec<HirExpr>,
+        evaluation_order: Vec<usize>,
         receiver: Box<HirExpr>,
-        msg: Box<HirExpr>,
         timeout_ms: Box<HirExpr>,
         reply_ty: ResolvedTy,
     },
     /// Cross-node one-way submission on `RemotePid<T>::send(msg)`. The
     /// expression type is `Result<(), SendError>`.
     RemoteActorSend {
+        member: hew_types::actor_protocol::RemoteActorMember,
         receiver: Box<HirExpr>,
         msg: Box<HirExpr>,
     },
@@ -2448,7 +2453,7 @@ pub enum HirSelectArmKind {
     /// `pat from <actor-expr>.<method>(<args>) => body`. The arm
     /// dispatches an ask to `actor.method(args)` and waits for the
     /// reply; the binding receives its complete checked `Result`.
-    ActorAsk {
+    Call {
         /// The normalized checked call preserves exact protocol identity,
         /// argument order, admission policy, deadline and complete result.
         call: Box<HirExpr>,

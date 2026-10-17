@@ -17,12 +17,28 @@
           "ops": [],
           "params": [],
           "term": {
-            "edge": {
+            "cancel": {
               "args": [],
-              "to": 1
+              "to": 2
             },
-            "op": "goto",
-            "span": null
+            "detail": {
+              "budget": 4000
+            },
+            "error_shape": null,
+            "inputs": [],
+            "kind": "Safepoint",
+            "op": "suspend",
+            "request_shapes": null,
+            "result": null,
+            "result_shape": null,
+            "resumes": [
+              {
+                "args": [],
+                "to": 1
+              }
+            ],
+            "span": null,
+            "unwind": null
           }
         },
         {
@@ -44,7 +60,7 @@
             "assertion": null,
             "cleanup": {
               "args": [],
-              "to": 3
+              "to": 6
             },
             "message": {
               "decision": "borrow",
@@ -62,7 +78,11 @@
           "ops": [],
           "params": [],
           "term": {
-            "op": "resume_unwind",
+            "edge": {
+              "args": [],
+              "to": 4
+            },
+            "op": "goto",
             "span": null
           }
         },
@@ -71,32 +91,18 @@
           "ops": [],
           "params": [],
           "term": {
-            "edge": {
-              "args": [],
-              "to": 5
-            },
-            "op": "goto",
-            "span": {
-              "end": 22,
-              "start": 22
-            }
+            "op": "resume_unwind",
+            "span": null
           }
         },
         {
           "id": 4,
-          "ops": [
-            {
-              "dst": null,
-              "op": "destroy_value",
-              "span": null,
-              "value": 0
-            }
-          ],
+          "ops": [],
           "params": [],
           "term": {
             "edge": {
               "args": [],
-              "to": 2
+              "to": 5
             },
             "op": "goto",
             "span": null
@@ -109,7 +115,7 @@
           "term": {
             "edge": {
               "args": [],
-              "to": 6
+              "to": 3
             },
             "op": "goto",
             "span": null
@@ -122,7 +128,56 @@
           "term": {
             "edge": {
               "args": [],
-              "to": 4
+              "to": 8
+            },
+            "op": "goto",
+            "span": {
+              "end": 22,
+              "start": 22
+            }
+          }
+        },
+        {
+          "id": 7,
+          "ops": [
+            {
+              "dst": null,
+              "op": "destroy_value",
+              "span": null,
+              "value": 0
+            }
+          ],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 3
+            },
+            "op": "goto",
+            "span": null
+          }
+        },
+        {
+          "id": 8,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 9
+            },
+            "op": "goto",
+            "span": null
+          }
+        },
+        {
+          "id": 9,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 7
             },
             "op": "goto",
             "span": null
@@ -147,7 +202,9 @@
   ],
   "structural_render": [],
   "supervisors": [],
-  "suspend_kinds": [],
+  "suspend_kinds": [
+    "Safepoint"
+  ],
   "value_capabilities": [],
   "variants": [],
   "vtables": []

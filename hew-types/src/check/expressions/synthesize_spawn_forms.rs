@@ -24,18 +24,6 @@ use hew_parser::ast::FieldLabel;
 use std::collections::VecDeque;
 
 impl Checker {
-    pub(in crate::check) fn report_invalid_actor_send(&mut self, ty: &Ty, span: &Span) {
-        self.report_error_with_suggestions(
-            TypeErrorKind::InvalidSend,
-            span,
-            format!(
-                "cannot send `{}` to actor: type is not Send",
-                ty.user_facing()
-            ),
-            vec!["keep the resource inside one owning actor and send that actor a message instead — see the language guide, 'Own a resource with an actor'".to_string()],
-        );
-    }
-
     /// A resource destructor owns its receiver and may transfer one field to
     /// the external release operation. Close-body cleanup retains every field
     /// it does not move out. This exception is deliberately narrower than an
@@ -664,8 +652,6 @@ impl Checker {
         span: &Span,
         expected: Option<&Ty>,
     ) -> Ty {
-        // WASM-TODO(suspending-select): compile the readiness waitset for wasm32.
-        self.reject_wasm_feature(span, WasmUnsupportedFeature::Select);
         if arms.is_empty() && timeout.is_none() {
             self.report_error(
                 TypeErrorKind::InvalidOperation,
@@ -676,7 +662,7 @@ impl Checker {
             );
             return Ty::Error;
         }
-        let prepared_depth = self.prepared_select_tasks.len();
+        let prepared_depth = self.prepared_select_inputs.len();
         // Only the BODIES of a select are alternatives. Every arm's source is
         // prepared before dispatch chooses a winner — all the asks are issued,
         // all the receivers polled — so the sources run on one execution, in
@@ -691,11 +677,12 @@ impl Checker {
             if matches!(source, Some(super::CheckedSelectSource::TaskAwait { .. })) {
                 if let Some((root, path)) = self.expr_place(&arm.source.0) {
                     if let Some(binding) = self.env.lookup_ref(root) {
-                        self.prepared_select_tasks
-                            .push(super::types::PreparedSelectTask {
+                        self.prepared_select_inputs
+                            .push(super::types::PreparedSelectInput {
                                 binding: binding.id,
                                 path: path.clone(),
                                 span: arm.source.1.clone(),
+                                access: super::types::PreparedSelectAccess::Task,
                             });
                     }
                     // A timer win leaves a whole-task arm's task running; the
@@ -716,7 +703,7 @@ impl Checker {
         if let Some(tc) = timeout {
             self.check_against(&tc.duration.0, &tc.duration.1, &Ty::Duration);
         }
-        self.prepared_select_tasks.truncate(prepared_depth);
+        self.prepared_select_inputs.truncate(prepared_depth);
 
         let resolved_expected = expected.map(|ty| self.subst.resolve(ty));
         let mut result_ty: Option<Ty> = match &resolved_expected {

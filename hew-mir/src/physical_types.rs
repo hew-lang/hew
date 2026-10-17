@@ -435,6 +435,7 @@ pub struct PhysicalVtableId(pub u32);
 /// One dispatchable slot of a realized trait-object table.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PhysicalVtableSlot {
+    pub receiver: hew_sir::SemParamPassing,
     pub slot: u32,
     /// Every table implementing this method uses the same completion ABI.
     pub is_resumable: bool,
@@ -658,6 +659,40 @@ pub enum PhysicalSetOp {
 impl PhysicalSetOp {}
 
 #[derive(Debug, Clone, PartialEq)]
+pub enum PhysicalInvocationCallee {
+    Direct(CallableId),
+    Mutable {
+        target: CallableId,
+        receiver: ArgumentTransfer,
+        update: hew_types::ReceiverUpdate,
+        recipe: PhysicalValueRecipe,
+    },
+    Dyn {
+        receiver: ArgumentTransfer,
+        slot: u32,
+        method: hew_types::DefId,
+        is_resumable: bool,
+        signature: PhysicalCallSignature,
+    },
+    Indirect {
+        receiver: ArgumentTransfer,
+        specialization: Option<hew_sir::CallableSpecializationId>,
+    },
+}
+
+impl PhysicalInvocationCallee {
+    #[must_use]
+    pub fn receiver(&self) -> Option<ArgumentTransfer> {
+        match self {
+            Self::Direct(_) => None,
+            Self::Indirect { receiver, .. }
+            | Self::Mutable { receiver, .. }
+            | Self::Dyn { receiver, .. } => Some(*receiver),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub enum PhysicalOp {
     /// One bounded element pipe. Unconsumed elements are released through
     /// the element recipe by whichever half closes last.
@@ -685,6 +720,13 @@ pub enum PhysicalOp {
     TaskRace {
         scope: hew_sir::TaskScopeId,
         members: Vec<StorageId>,
+        dest: StorageId,
+        output: Option<PhysicalValueRecipe>,
+    },
+    TaskInvoke {
+        scope: hew_sir::TaskScopeId,
+        callee: PhysicalInvocationCallee,
+        args: Vec<ArgumentTransfer>,
         dest: StorageId,
         output: Option<PhysicalValueRecipe>,
     },
@@ -884,6 +926,7 @@ pub enum ArgumentTransfer {
 pub struct PhysicalArguments {
     transfers: Vec<ArgumentTransfer>,
     carriers: Vec<ParamCarrier>,
+    value_witnesses: Vec<PhysicalValueRecipe>,
 }
 
 impl PhysicalArguments {
@@ -899,12 +942,23 @@ impl PhysicalArguments {
         Ok(Self {
             transfers,
             carriers,
+            value_witnesses: Vec::new(),
         })
     }
 
     #[must_use]
     pub fn carriers(&self) -> &[ParamCarrier] {
         &self.carriers
+    }
+
+    pub(crate) fn with_value_witnesses(mut self, recipes: Vec<PhysicalValueRecipe>) -> Self {
+        self.value_witnesses = recipes;
+        self
+    }
+
+    #[must_use]
+    pub fn value_witnesses(&self) -> &[PhysicalValueRecipe] {
+        &self.value_witnesses
     }
 
     #[cfg(test)]
@@ -1051,6 +1105,7 @@ pub enum PhysicalTerminator {
     StreamSend {
         park: bool,
         sink: ArgumentTransfer,
+        receiver: PhysicalValueRecipe,
         value: ArgumentTransfer,
         element: PhysicalValueRecipe,
         normal: PhysicalEdge,
@@ -1079,7 +1134,7 @@ pub enum PhysicalTerminator {
         actor: ActorId,
         message: u32,
         target: StorageId,
-        payload: StorageId,
+        payload: Vec<StorageId>,
         timeout: StorageId,
         result: StorageId,
         normal: PhysicalEdge,
@@ -1128,6 +1183,15 @@ pub enum PhysicalTerminator {
         function: hew_sir::OffloadId,
         args: Vec<ArgumentTransfer>,
         result: Option<StorageId>,
+        normal: PhysicalEdge,
+        cancel: PhysicalEdge,
+        unwind: PhysicalEdge,
+    },
+    ServiceAcquire {
+        actor: ActorId,
+        export: bool,
+        args: Vec<ArgumentTransfer>,
+        result: StorageId,
         normal: PhysicalEdge,
         cancel: PhysicalEdge,
         unwind: PhysicalEdge,

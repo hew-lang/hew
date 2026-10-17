@@ -28,7 +28,7 @@ fn serve(consume listener: net.Listener, requests: i64) {
                 .None => "",
             };
             reads = reads + 1;
-            if string.is_empty(chunk) {
+            if (chunk).is_empty() {
                 done = true;
             } else {
                 raw = raw + chunk;
@@ -76,7 +76,7 @@ fn fetch(addr: string, host: string, path: string) {
             .None => "",
         };
         reads = reads + 1;
-        if string.is_empty(chunk) {
+        if (chunk).is_empty() {
             done = true;
         } else {
             raw = raw + chunk;

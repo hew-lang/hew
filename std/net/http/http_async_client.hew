@@ -32,7 +32,7 @@
 //!                 .None => "",
 //!             };   // suspends the worker
 //!             reads = reads + 1;
-//!             if string.is_empty(chunk) {
+//!             if (chunk).is_empty() {
 //!                 done = true;
 //!             } else {
 //!                 raw = raw + chunk;
@@ -135,7 +135,7 @@ pub fn build_get(host: string, path: string) -> string {
 /// an empty string is returned — the caller writes nothing and the request is
 /// never sent with an attacker-controlled header.
 pub fn build_request(method: string, host: string, path: string, body: string, content_type: string) -> string {
-    let req_path = if string.is_empty(path) {
+    let req_path = if (path).is_empty() {
         "/"
     } else {
         path
@@ -156,8 +156,8 @@ pub fn build_request(method: string, host: string, path: string, body: string, c
     var req = f"{method} {req_path} HTTP/1.1" + nl;
     req = req + f"Host: {host}" + nl;
     req = req + "Connection: close" + nl;
-    if !string.is_empty(body) {
-        let ct = if string.is_empty(content_type) {
+    if !(body).is_empty() {
+        let ct = if (content_type).is_empty() {
             "application/octet-stream"
         } else {
             content_type
@@ -192,12 +192,12 @@ pub fn host_of(url_str: string) -> string {
     let (authority, _) = split_authority_path(after_scheme);
     if authority.starts_with("[") {
         match authority.find("]") {
-            .Some(end) => authority.slice(0, end + 1),
+            .Some(end) => authority[0 .. end + 1],
             .None => authority,
         }
     } else {
         match authority.find(":") {
-            .Some(colon) => authority.slice(0, colon),
+            .Some(colon) => authority[0..colon],
             .None => authority,
         }
     }
@@ -219,8 +219,8 @@ fn split_authority_path(after_scheme: string) -> (string, string) {
     };
     match end {
         .Some(i) => {
-            let authority = after_scheme.slice(0, i);
-            let suffix = after_scheme.slice(i, after_scheme.len());
+            let authority = after_scheme[0..i];
+            let suffix = after_scheme[i..after_scheme.len()];
             if suffix.starts_with("?") {
                 (authority, "/" + suffix)
             } else {
@@ -243,7 +243,7 @@ pub fn default_port(scheme: string) -> i64 {
 /// The scheme of a URL (`http` / `https`), or `"http"` when none is present.
 fn scheme_of(url_str: string) -> string {
     match url_str.find("://") {
-        .Some(mark) => url_str.slice(0, mark).to_lower(),
+        .Some(mark) => url_str[0..mark].to_lower(),
         .None => "http",
     }
 }
@@ -251,7 +251,7 @@ fn scheme_of(url_str: string) -> string {
 /// Strip a `scheme://` prefix, leaving `authority[/path]`.
 fn strip_scheme(url_str: string) -> string {
     match url_str.find("://") {
-        .Some(mark) => url_str.slice(mark + 3, url_str.len()),
+        .Some(mark) => url_str[mark + 3 .. url_str.len()],
         .None => url_str,
     }
 }
@@ -262,7 +262,7 @@ fn authority_with_port(authority: string, scheme: string) -> string {
     if authority.starts_with("[") {
         match authority.find("]") {
             .Some(end) => {
-                if end + 1 < authority.len() && authority.slice(end + 1, end + 2) == ":" {
+                if end + 1 < authority.len() && authority[end + 1 .. end + 2] == ":" {
                     authority
                 } else {
                     f"{authority}:{default_port(scheme)}"
@@ -293,7 +293,7 @@ pub fn response_over_limit(raw: string) -> bool {
         .Some(i) => i,
         .None => return raw.len() > CLIENT_MAX_HEADER_BYTES,
     };
-    let head = raw.slice(0, sep);
+    let head = raw[0..sep];
     if head.len() > CLIENT_MAX_HEADER_BYTES {
         return true;
     }
@@ -308,7 +308,7 @@ pub fn response_over_limit(raw: string) -> bool {
 /// is missing the CRLF-CRLF header terminator (SF2), or has a status line that is
 /// not a valid `HTTP/1.x` version + 3-digit `100`-`599` status (SF2).
 pub fn parse_response(raw: string) -> AsyncResponse {
-    if string.is_empty(raw) {
+    if (raw).is_empty() {
         return AsyncResponse { code: -1, body_text: "", header_section: "" };
     }
     if response_over_limit(raw) {
@@ -319,9 +319,9 @@ pub fn parse_response(raw: string) -> AsyncResponse {
         // SF2 — no header terminator: the response is not fully framed.
         .None => return AsyncResponse { code: -1, body_text: "", header_section: "" },
     };
-    let head = raw.slice(0, sep);
-    let body = raw.slice(sep + 4, raw.len());
-    let head_lines = string.split(head, "\r\n");
+    let head = raw[0..sep];
+    let body = raw[sep + 4 .. raw.len()];
+    let head_lines = (head).split("\r\n");
     let status_line = if head_lines.len() > 0 {
         head_lines[0]
     } else {
@@ -340,10 +340,10 @@ pub fn parse_response(raw: string) -> AsyncResponse {
 /// `100`-`599` range — so `BOGUS 200`, `HTTP/9 200`, a 2- or 4-digit code, or an
 /// out-of-range status is NOT accepted as a success response.
 fn parse_status_code(status_line: string) -> i64 {
-    if string.is_empty(status_line) {
+    if (status_line).is_empty() {
         return -1;
     }
-    let parts = string.split(status_line, " ");
+    let parts = (status_line).split(" ");
     if parts.len() < 2 {
         return -1;
     }
@@ -374,11 +374,11 @@ fn is_http_version(version: string) -> bool {
     if version.len() != 8 {
         return false;
     }
-    if !string.starts_with(version, "HTTP/1.") {
+    if !(version).starts_with("HTTP/1.") {
         return false;
     }
     // len == 8 was checked above, so char_at(7) is always Some.
-    let minor = match version.char_at(7) {
+    let minor = match version.get(7) {
         .Some(c) => c as i64,
         .None => return false,
     };
@@ -389,18 +389,18 @@ fn is_http_version(version: string) -> bool {
 /// re-joined with CRLF for [`find_response_header`].
 fn header_section_of(head: string) -> string {
     match head.find("\r\n") {
-        .Some(first) => head.slice(first + 2, head.len()),
+        .Some(first) => head[first + 2 .. head.len()],
         .None => "",
     }
 }
 
 /// Case-insensitive header lookup over a CRLF-separated header section.
 fn find_response_header(header_section: string, name: string) -> string {
-    if string.is_empty(header_section) {
+    if (header_section).is_empty() {
         return "";
     }
     let target = name.to_lower();
-    let lines = string.split(header_section, "\r\n");
+    let lines = (header_section).split("\r\n");
     let n = lines.len();
     var found = "";
     for i in 0..n {
@@ -409,9 +409,9 @@ fn find_response_header(header_section: string, name: string) -> string {
         // the old `colon > 0` guard did.
         match line.find(":") {
             .Some(colon) if colon > 0 => {
-                let key = string.trim(line.slice(0, colon)).to_lower();
+                let key = (line[0..colon]).trim().to_lower();
                 if key == target {
-                    found = string.trim(line.slice(colon + 1, line.len()));
+                    found = (line[colon + 1 .. line.len()]).trim();
                 }
             }
             _ => {}
@@ -430,7 +430,7 @@ fn find_response_header(header_section: string, name: string) -> string {
 /// and the oversized body bypassing the cap. A non-numeric value reads to close.
 fn declared_content_length(header_section: string) -> i64 {
     let value = find_response_header(header_section, "Content-Length");
-    if string.is_empty(value) {
+    if (value).is_empty() {
         return 0;
     }
     if !string.is_numeric(value) {
@@ -451,7 +451,7 @@ fn contains_control_char(s: string) -> bool {
     for i in 0..n {
         // In-bounds loop: char_at(i) is always Some; the unreachable None
         // fails CLOSED (treat as a control character -> reject).
-        let b = match s.char_at(i) {
+        let b = match s.get(i) {
             .Some(c) => c as i64,
             .None => return true,
         };

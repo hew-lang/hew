@@ -2,7 +2,7 @@
 //! Description: selfhost_lexer_v2.hew - Enhanced Hew lexer using string methods
 
 // selfhost_lexer_v2.hew - Enhanced Hew lexer using string methods
-// Uses: s.len(), s.char_at(), == operator, while, break, continue, var
+// Uses: s.len(), s.get(), == operator, while, break, continue, var
 
 // Token type constants
 // 0 = EOF, 1 = Identifier, 2 = Integer, 3 = string
@@ -287,7 +287,7 @@ fn lex(source: string) -> i32 {
     var token_count: i32 = 0;
     let len = source.len();
     while pos < len {
-        let ch = (source.char_at(pos) ?? '\0') as i32;
+        let ch = (source.get(pos) ?? '\0') as i32;
         // Skip whitespace
         if is_whitespace(ch) == 1 {
             pos = pos + 1;
@@ -296,12 +296,12 @@ fn lex(source: string) -> i32 {
         // Skip line comments: //
         if ch == 47 {
             if pos + 1 < len {
-                let ch2 = (source.char_at(pos + 1) ?? '\0') as i32;
+                let ch2 = (source.get(pos + 1) ?? '\0') as i32;
                 if ch2 == 47 {
                     // consume until newline
                     pos = pos + 2;
                     while pos < len {
-                        let cc = (source.char_at(pos) ?? '\0') as i32;
+                        let cc = (source.get(pos) ?? '\0') as i32;
                         if cc == 10 {
                             break;
                         }
@@ -315,7 +315,7 @@ fn lex(source: string) -> i32 {
         if is_alpha(ch) == 1 {
             var word = "";
             while pos < len {
-                let c = (source.char_at(pos) ?? '\0') as i32;
+                let c = (source.get(pos) ?? '\0') as i32;
                 if is_alnum(c) == 1 {
                     // Build the word character by character
                     // Convert char code to single-char string via concat trick
@@ -465,7 +465,7 @@ fn lex(source: string) -> i32 {
         if is_digit(ch) == 1 {
             var num_str = "";
             while pos < len {
-                let c = (source.char_at(pos) ?? '\0') as i32;
+                let c = (source.get(pos) ?? '\0') as i32;
                 if is_digit(c) == 1 {
                     var ds = "";
                     if c == 48 {
@@ -506,7 +506,7 @@ fn lex(source: string) -> i32 {
         if ch == 34 {
             pos = pos + 1;
             while pos < len {
-                let c = (source.char_at(pos) ?? '\0') as i32;
+                let c = (source.get(pos) ?? '\0') as i32;
                 if c == 34 {
                     pos = pos + 1;
                     break;
@@ -521,7 +521,7 @@ fn lex(source: string) -> i32 {
         }
         // Two-character operators: check next char
         if pos + 1 < len {
-            let ch2 = (source.char_at(pos + 1) ?? '\0') as i32;
+            let ch2 = (source.get(pos + 1) ?? '\0') as i32;
             // -> arrow
             if ch == 45 {
                 if ch2 == 62 {
@@ -762,14 +762,14 @@ fn test_string_builtins() -> i32 {
     if "fn".len() == 2 {
         passed = passed + 1;
     }
-    // s.char_at()
-    if ("abc".char_at(0) ?? '\0') as i32 == 97 {
+    // s.get()
+    if ("abc".get(0) ?? '\0') as i32 == 97 {
         passed = passed + 1;
     }
-    if ("abc".char_at(1) ?? '\0') as i32 == 98 {
+    if ("abc".get(1) ?? '\0') as i32 == 98 {
         passed = passed + 1;
     }
-    if ("abc".char_at(2) ?? '\0') as i32 == 99 {
+    if ("abc".get(2) ?? '\0') as i32 == 99 {
         passed = passed + 1;
     }
     // string == operator
@@ -894,7 +894,7 @@ fn test_lex_simple() -> i32 {
 
 fn main() {
     println("=== Hew Self-Hosting Lexer v2 ===");
-    println("Uses: s.len(), s.char_at(), == operator, + operator");
+    println("Uses: s.len(), s.get(), == operator, + operator");
     println("");
 
     // Test 1: Character classification (13 tests)

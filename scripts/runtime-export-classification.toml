@@ -134,6 +134,9 @@ public-host-stdlib = [
 
 # Compiler-private native TLS request submission and result transfer.
 non-declarable-stdlib = [
+  "hew_peer_session_close",
+  "hew_service_close",
+  "hew_service_export_close",
   "hew_async_tls_connect",
   "hew_async_tls_read",
   "hew_async_tls_take_connect",
@@ -171,7 +174,6 @@ stable = [
   "hew_actor_schedule_periodic",
   "hew_actor_self",
   "hew_actor_self_pid",
-  "hew_actor_self_token",
   "hew_actor_self_stop",
   "hew_actor_send",
   "hew_actor_send_by_id",
@@ -1220,6 +1222,9 @@ stable-stdlib = [
 # non-trivial actor programs. NOT user-callable via `extern "rt"` (the checker
 # enforces this). JIT hosts must expose these in the same symbol map as `stable`.
 non-declarable = [
+  "hew_node_peer_new",
+  "hew_service_acquire_new",
+  "hew_service_call_new",
   "hew_call_caller",
   "hew_call_refusal_log",
   "hew_coverage_hit",
@@ -1271,6 +1276,7 @@ non-declarable = [
   "hew_ser_variant",
   "hew_ser_variant_end",
   "hew_actor_ask_submit_native",
+  "hew_actor_abort_construction",
   "hew_actor_ask_wait_free",
   "hew_actor_ask_wait_new",
   "hew_actor_ask_wait_poll",
@@ -1285,20 +1291,25 @@ non-declarable = [
   "hew_actor_call_take",
   "hew_actor_coro_set_fault",
   "hew_actor_coro_state_new",
+  "hew_actor_construct_native",
   "hew_actor_dispatch_set_fault",
   "hew_actor_payload_alloc",
   "hew_actor_payload_free",
   "hew_actor_payload_try_alloc",
+  "hew_actor_publish_native",
   "hew_actor_reply_native",
   "hew_actor_send_wait_free",
   "hew_actor_send_wait_new",
   "hew_actor_send_wait_poll",
-  "hew_actor_spawn_native",
+  "hew_actor_self_token",
   "hew_actor_stop_native",
   "hew_actor_submit_native",
   "hew_actor_submit_native_terminal",
   "hew_actor_terminate",
   "hew_actor_terminate_native",
+  "hew_actor_timer_cancel",
+  "hew_actor_timer_new",
+  "hew_actor_timer_release",
   "hew_actor_wait_edge_fault",
   "hew_actor_wait_edge_free",
   "hew_actor_wait_edge_new",
@@ -1354,6 +1365,7 @@ non-declarable = [
   "hew_checked_task_select_fault",
   "hew_checked_task_select_set_context",
   "hew_checked_task_spawn",
+  "hew_checked_task_invoke",
   "hew_checked_task_wait_cancel",
   "hew_checked_task_wait_free",
   "hew_checked_task_wait_new",
@@ -1371,6 +1383,7 @@ non-declarable = [
   "hew_coro_state_init_child",
   "hew_coro_state_cleanup_child",
   "hew_coro_state_set_cleanup_fault",
+  "hew_coro_state_sender",
   "hew_fault_code",
   "hew_vec_release_begin",
   "hew_array_release_begin",
@@ -1427,6 +1440,7 @@ non-declarable = [
   "hew_hashset_probe_insert_take",
   "hew_hashset_probe_remove",
   "hew_native_runtime_finish",
+  "hew_local_sender",
   "hew_process_exit_byte",
   "hew_reply_channel_new_native",
   "hew_reply_channel_poll_native",
@@ -1583,6 +1597,7 @@ non-declarable = [
   # incarnation. It is the whole lowering of a `supervisor` declaration; user
   # code has no way to name it or the child table it reads.
   "hew_supervisor_native_child",
+  "hew_supervisor_native_pool_count",
   "hew_supervisor_native_restart_wait_free",
   "hew_supervisor_native_restart_wait_new",
   "hew_supervisor_native_restart_wait_poll",
@@ -1912,9 +1927,32 @@ non-declarable = [
   "hew_trace_reset",
   # Compiler-private consumed-string normalization; absent from hew_host.h.
   "hew_host_text_from_owned",
+  # Generated opaque-value wrappers own initialization, transfer and release.
+  "hew_host_value_new",
+  "hew_host_value_storage",
+  "hew_host_value_forget",
+  "hew_host_value_release",
 ]
 
 [ownership]
+
+# Timer methods borrow or release the cancellation handle. The actor registry
+# owns the pending request independently of that handle.
+[[ownership.contracts]]
+symbol = "hew_actor_timer_cancel"
+result = "none"
+params = ["borrow"]
+resource-param-types = ["std.builtins.Timer"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_actor_timer_release"
+result = "none"
+params = ["consume"]
+resource-param-types = ["std.builtins.Timer"]
+release-symbol = ""
+discharge-depth = "none"
 
 # Allocation returns zeroed storage with no initialized captures. Raw cleanup
 # uses the exact descriptor layout; initialized callable cleanup wraps the
@@ -7494,5 +7532,57 @@ symbol = "hew_dir_write_close"
 result = "none"
 params = ["consume"]
 resource-param-types = ["std.fs.WriteDir"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_peer_session_close"
+result = "none"
+params = ["consume"]
+resource-param-types = ["std.net.PeerSession"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_service_close"
+result = "none"
+params = ["consume"]
+resource-param-types = ["std.net.Service"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_service_export_close"
+result = "none"
+params = ["consume"]
+resource-param-types = ["std.net.Export"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_host_value_new"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_host_value_forget"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_host_value_storage"
+result = "borrowed"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_host_value_forget"
+result = "none"
+params = ["consume"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_host_value_release"
+result = "none"
+params = ["consume", "borrow"]
 release-symbol = ""
 discharge-depth = "none"

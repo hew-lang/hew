@@ -149,14 +149,10 @@ impl Checker {
             );
 
             let lifecycle_names: &[&str] = match owner {
-                "std.failure" => &["CrashNotification", "CrashKind"],
-                "std.link_monitor" => &[
-                    "MonitorId",
-                    "DownTarget",
-                    "DownReason",
-                    "DownNotification",
-                    "MonitorRef",
-                ],
+                "std.failure" => &["CrashNotification", "CrashKind", "DownTarget"],
+                "std.link_monitor" => {
+                    &["MonitorId", "DownReason", "DownNotification", "MonitorRef"]
+                }
                 _ => unreachable!("matched canonical lifecycle owner"),
             };
             for source_name in lifecycle_names {
@@ -246,14 +242,14 @@ impl Checker {
             |ident| ident.to_string(),
         );
         let lifecycle_names: &[&str] = match owner {
-            "std.failure" => &["CrashInfo", "CrashAction", "CrashNotification", "CrashKind"],
-            "std.link_monitor" => &[
-                "MonitorId",
+            "std.failure" => &[
+                "CrashInfo",
+                "CrashAction",
+                "CrashNotification",
+                "CrashKind",
                 "DownTarget",
-                "DownReason",
-                "DownNotification",
-                "MonitorRef",
             ],
+            "std.link_monitor" => &["MonitorId", "DownReason", "DownNotification", "MonitorRef"],
             _ => unreachable!("matched canonical lifecycle owner"),
         };
         for source_name in lifecycle_names {

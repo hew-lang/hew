@@ -73,10 +73,45 @@ mod platform {
     const ALT_STACK_BYTES: usize = 64 * 1024;
     const FATAL_MESSAGE: &[u8] = b"hew: fatal synchronous hardware fault\n";
 
+    #[derive(Debug)]
+    struct AlternateStack(Box<[u8]>);
+
+    fn current_stack() -> libc::stack_t {
+        let mut stack = MaybeUninit::<libc::stack_t>::uninit();
+        // SAFETY: a null first argument queries this thread's registration.
+        if unsafe { libc::sigaltstack(ptr::null(), stack.as_mut_ptr()) } != 0 {
+            std::process::abort();
+        }
+        // SAFETY: the successful query initialized the complete stack_t.
+        unsafe { stack.assume_init() }
+    }
+
+    impl Drop for AlternateStack {
+        fn drop(&mut self) {
+            let registered = current_stack();
+            if registered.ss_flags & libc::SS_DISABLE != 0
+                || registered.ss_sp != self.0.as_mut_ptr().cast()
+            {
+                return;
+            }
+            let disabled = libc::stack_t {
+                ss_sp: ptr::null_mut(),
+                ss_flags: libc::SS_DISABLE,
+                ss_size: self.0.len(),
+            };
+            // SAFETY: this thread installed and still owns the registered memory.
+            unsafe {
+                if libc::sigaltstack(&raw const disabled, ptr::null_mut()) != 0 {
+                    std::process::abort();
+                }
+            }
+        }
+    }
+
     thread_local! {
         /// Owns the memory registered with `sigaltstack` for this worker's
         /// lifetime. The handler never touches this Rust container.
-        static ALT_STACK: RefCell<Option<Box<[u8]>>> = const { RefCell::new(None) };
+        static ALT_STACK: RefCell<Option<AlternateStack>> = const { RefCell::new(None) };
     }
 
     unsafe extern "C" fn fatal_signal_handler(
@@ -129,6 +164,9 @@ mod platform {
             if slot.borrow().is_some() {
                 return;
             }
+            if current_stack().ss_flags & libc::SS_DISABLE == 0 {
+                return;
+            }
             let mut memory = vec![0_u8; ALT_STACK_BYTES].into_boxed_slice();
             let stack = libc::stack_t {
                 ss_sp: memory.as_mut_ptr().cast(),
@@ -139,7 +177,7 @@ mod platform {
             if unsafe { libc::sigaltstack(&raw const stack, ptr::null_mut()) } != 0 {
                 std::process::abort();
             }
-            *slot.borrow_mut() = Some(memory);
+            *slot.borrow_mut() = Some(AlternateStack(memory));
         });
     }
 

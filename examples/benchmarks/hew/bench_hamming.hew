@@ -2,7 +2,7 @@ fn hamming_distance(a: string, b: string) -> i64 {
     let n = a.len();
     var dist = 0;
     for i in 0..n {
-        if a.char_at(i) != b.char_at(i) {
+        if a.get(i) != b.get(i) {
             dist = dist + 1;
         }
     }

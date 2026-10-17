@@ -35,6 +35,8 @@ processing latency. Sort and scroll to find hot spots or stuck actors.
 
 Actor group hierarchy and supervisor trees. Shows restart counts and the
 parent-child relationships that define failure handling.
+Select a role to inspect its current actor incarnation and mailbox counters.
+Press Enter to focus that actor's events. These are read-only actions.
 
 ### 4. Crashes — failure log
 
@@ -49,6 +51,8 @@ restart decision, and the surrounding context.
 
 Multi-node view for clustered deployments: per-node connection state,
 message flow across nodes, and distributed actor placement.
+The node metrics panel shows authenticated peers, routes, gossip, pending asks,
+membership states and registered names from the runtime's observe registry.
 
 ### 6. Messages — message flow
 

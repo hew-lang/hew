@@ -545,7 +545,23 @@
           },
           "tcp_accept_count": { "$ref": "#/components/schemas/UInt64Decimal" },
           "tcp_connect_count": { "$ref": "#/components/schemas/UInt64Decimal" },
-          "tcp_error_count": { "$ref": "#/components/schemas/UInt64Decimal" }
+          "tcp_error_count": { "$ref": "#/components/schemas/UInt64Decimal" },
+          "runtime_series": {
+            "type": ["array", "null"],
+            "items": { "$ref": "#/components/schemas/RuntimeSeries" },
+            "description": "Current unlabelled runtime series from the canonical std.observe catalogue. Values are exact; gauges are always available and hot counters require HEW_OBSERVE."
+          }
+        }
+      },
+      "RuntimeSeries": {
+        "type": "object",
+        "x-hew-model": true,
+        "additionalProperties": true,
+        "required": ["name", "kind", "value"],
+        "properties": {
+          "name": { "type": "string" },
+          "kind": { "type": "string", "x-known-values": ["counter", "gauge"] },
+          "value": { "$ref": "#/components/schemas/UInt64Decimal" }
         }
       },
       "Memory": {
@@ -628,7 +644,52 @@
             "x-clock": "duration"
           },
           "mbox_depth": { "$ref": "#/components/schemas/Int64Decimal" },
-          "mbox_hwm": { "$ref": "#/components/schemas/Int64Decimal" }
+          "mbox_hwm": { "$ref": "#/components/schemas/Int64Decimal" },
+          "origin": {
+            "anyOf": [
+              { "$ref": "#/components/schemas/ActorOrigin" },
+              { "type": "null" }
+            ]
+          },
+          "mailbox": {
+            "anyOf": [
+              { "$ref": "#/components/schemas/MailboxStats" },
+              { "type": "null" }
+            ]
+          }
+        }
+      },
+      "ActorOrigin": {
+        "type": "object",
+        "x-hew-model": true,
+        "additionalProperties": true,
+        "required": ["producer_instance_id", "identity"],
+        "properties": {
+          "producer_instance_id": {
+            "$ref": "#/components/schemas/Hex128Lower"
+          },
+          "identity": { "$ref": "#/components/schemas/ActorIdentity" }
+        }
+      },
+      "MailboxStats": {
+        "type": "object",
+        "x-hew-model": true,
+        "additionalProperties": true,
+        "required": [
+          "capacity",
+          "policy",
+          "dropped_new",
+          "dropped_old",
+          "coalesced",
+          "dropped_on_stop"
+        ],
+        "properties": {
+          "capacity": { "$ref": "#/components/schemas/Int64Decimal" },
+          "policy": { "type": "string" },
+          "dropped_new": { "$ref": "#/components/schemas/UInt64Decimal" },
+          "dropped_old": { "$ref": "#/components/schemas/UInt64Decimal" },
+          "coalesced": { "$ref": "#/components/schemas/UInt64Decimal" },
+          "dropped_on_stop": { "$ref": "#/components/schemas/UInt64Decimal" }
         }
       },
       "HistoryEntry": {
@@ -1066,6 +1127,13 @@
               "unknown"
             ],
             "x-hew-actionable-values": [
+              "supervisor_restart",
+              "supervisor_escalate",
+              "supervisor_circuit_open",
+              "supervisor_circuit_half_open",
+              "supervisor_circuit_close",
+              "supervisor_max_restarts",
+              "supervisor_backoff",
               "actor.delivery_refused",
               "actor.rc_sweep",
               "send",
@@ -1224,6 +1292,56 @@
           }
         }
       },
+      "SupervisorDetails": {
+        "type": "object",
+        "x-hew-model": true,
+        "additionalProperties": true,
+        "required": [
+          "producer_instance_id",
+          "kind",
+          "actor",
+          "owner",
+          "role",
+          "strategy",
+          "restarts",
+          "pool_members"
+        ],
+        "properties": {
+          "producer_instance_id": {
+            "$ref": "#/components/schemas/Hex128Lower"
+          },
+          "kind": {
+            "type": "string",
+            "x-known-values": ["supervisor", "actor", "pool"]
+          },
+          "actor": {
+            "anyOf": [
+              { "$ref": "#/components/schemas/ActorIdentity" },
+              { "type": "null" }
+            ]
+          },
+          "owner": {
+            "anyOf": [
+              { "$ref": "#/components/schemas/ActorIdentity" },
+              { "type": "null" }
+            ]
+          },
+          "role": { "type": ["string", "null"] },
+          "strategy": { "type": "string" },
+          "restarts": {
+            "anyOf": [
+              { "$ref": "#/components/schemas/UInt64Decimal" },
+              { "type": "null" }
+            ]
+          },
+          "pool_members": {
+            "anyOf": [
+              { "$ref": "#/components/schemas/UInt64Decimal" },
+              { "type": "null" }
+            ]
+          }
+        }
+      },
       "SupervisorRow": {
         "type": "object",
         "x-hew-model": true,
@@ -1232,6 +1350,13 @@
         "properties": {
           "depth": { "$ref": "#/components/schemas/UInt16" },
           "label": { "type": "string" },
+          "details": {
+            "description": "Exact current identities and declaration-owned role details. Absent on older producers; labels are presentation only. Restart totals follow the existing lifetime child crash statistics.",
+            "anyOf": [
+              { "$ref": "#/components/schemas/SupervisorDetails" },
+              { "type": "null" }
+            ]
+          },
           "state": {
             "type": "string",
             "x-known-values": [

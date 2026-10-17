@@ -837,6 +837,19 @@ impl LowerCtx {
         site: SiteId,
         intent: IntentKind,
     ) -> Result<(HirExprKind, ResolvedTy), Box<HirExpr>> {
+        if let Expr::FieldAccess { object, field } = &function.0 {
+            let key = self.mk_key(&span);
+            if self.method_call_rewrites.get(&key).is_some_and(|rewrite| {
+                matches!(
+                    rewrite,
+                    MethodCallRewrite::RewriteToFunction { .. }
+                        | MethodCallRewrite::RemoteActorAsk { .. }
+                )
+            }) {
+                return Ok(self.lower_method_call(object, field.0.name.as_str(), args, span, site));
+            }
+        }
+
         let lowered = {
             let rewrite_key = self.mk_key(&span);
             // `handle(msg)` on a lambda actor is a completion call, not a

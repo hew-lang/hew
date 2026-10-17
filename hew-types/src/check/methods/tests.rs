@@ -63,8 +63,8 @@ mod tests {
             let subtrait_id = checker.lookup_declaration(subtrait).expect("subtrait");
             let expected_id = checker.lookup_declaration(expected).expect("supertrait");
             assert_eq!(
-                checker.trait_supers(subtrait_id),
-                &[expected_id],
+                checker.trait_supers(subtrait_id).collect::<Vec<_>>(),
+                vec![expected_id],
                 "`{subtrait}` edges"
             );
             for method in &checker.trait_info(expected_id).expect("trait").methods {

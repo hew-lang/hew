@@ -167,6 +167,7 @@ pub fn lower_physical_module(
                 &structural,
                 certificate,
                 &resumable_methods,
+                resumable.contains(&function.callable),
             )?;
             if let Some(attribution) = attribution {
                 debug.functions.insert(function.callable, attribution);
@@ -211,6 +212,7 @@ pub fn lower_physical_module(
                         Some(required_layout(&target, &slot.signature.return_ty)?.clone())
                     };
                     Ok(PhysicalVtableSlot {
+                        receiver: slot.receiver,
                         slot: slot.slot,
                         is_resumable: resumable_methods.contains(&slot.method),
                         method: slot.method,
@@ -1015,6 +1017,7 @@ pub(crate) fn required_layout<'a>(
 pub(crate) struct FunctionLowerer<'a> {
     pub(crate) module: &'a SemModule,
     pub(crate) resumable_methods: &'a BTreeSet<hew_types::DefId>,
+    pub(crate) is_resumable: bool,
     pub(crate) target: &'a PhysicalTarget,
     pub(crate) function: &'a SemFunction,
     pub(crate) glue_ids: &'a PhysicalGlueIds,
@@ -1030,6 +1033,7 @@ pub(crate) struct FunctionLowerer<'a> {
 
 #[allow(
     clippy::too_many_lines,
+    clippy::too_many_arguments,
     reason = "one lowering pass allocates every verified SIR value, place, and variant-arm payload before lowering CFG bodies"
 )]
 pub(crate) fn lower_function(
@@ -1040,10 +1044,12 @@ pub(crate) fn lower_function(
     structural: &std::cell::RefCell<structural::StructuralGlue>,
     certificate: &hew_sir::CheckedFunction,
     resumable_methods: &BTreeSet<hew_types::DefId>,
+    is_resumable: bool,
 ) -> Result<(PhysicalFunction, Option<PhysicalDebugFunction>), PhysicalError> {
     let mut lowerer = FunctionLowerer {
         module,
         resumable_methods,
+        is_resumable,
         target,
         function,
         glue_ids,
@@ -1290,7 +1296,7 @@ pub(crate) fn lower_function(
                 // last op, the position codegen reaches it at.
                 sites.insert((block.id, index_key(ops.len())), offset);
             }
-            let terminator = lowerer.lower_terminator(&block.terminator)?;
+            let terminator = lowerer.lower_terminator(block)?;
             Ok(PhysicalBlock {
                 id: block.id,
                 arguments,

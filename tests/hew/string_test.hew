@@ -21,7 +21,7 @@ fn assert_int_result_eq(actual: Result<i64, string.NumberError>, expected: i64) 
 
 fn assert_int_result_string_eq(actual: Result<i64, string.NumberError>, expected: string) {
     match actual {
-        .Ok(value) => assert(string.from_int(value) == expected),
+        .Ok(value) => assert(f"{value}" == expected),
         .Err(error) => {
             panic(f"{error}");
             assert("" == expected);
@@ -61,32 +61,32 @@ fn assert_float_result_err(actual: Result<f64, string.NumberError>, expected: st
 
 #[test]
 fn test_from_int_formats_positive_and_negative_values() {
-    assert(string.from_int(42) == "42");
-    assert(string.from_int(-7) == "-7");
+    assert(f"{42}" == "42");
+    assert(f"{-7}" == "-7");
 }
 
 #[test]
 fn test_from_float_formats_decimal_values() {
-    assert(string.from_float(3.5) == "3.5");
-    assert(string.from_float(-0.25) == "-0.25");
+    assert(f"{3.5}" == "3.5");
+    assert(f"{-0.25}" == "-0.25");
 }
 
 #[test]
 fn test_from_bool_formats_boolean_values() {
-    assert(string.from_bool(true) == "true");
-    assert(string.from_bool(false) == "false");
+    assert(f"{true}" == "true");
+    assert(f"{false}" == "false");
 }
 
 #[test]
 fn test_from_char_formats_single_character_strings() {
-    assert(string.from_char(65) == "A");
-    assert(string.from_char(10) == "\n");
+    assert(f"{(65).try_to_char().expect("valid Unicode scalar")}" == "A");
+    assert(f"{(10).try_to_char().expect("valid Unicode scalar")}" == "\n");
 }
 
 #[test]
 #[should_panic]
 fn test_from_char_rejects_i64_max_instead_of_narrowing() {
-    string.from_char(9223372036854775807);
+    f"{(9223372036854775807).try_to_char().expect("valid Unicode scalar")}";
 }
 
 #[test]
@@ -158,8 +158,8 @@ fn test_to_float_accepts_decimal_and_scientific_literals() {
 
 #[test]
 fn test_try_to_float_round_trips_from_float_output() {
-    let positive = string.from_float(3.5);
-    let negative = string.from_float(-0.25);
+    let positive = f"{3.5}";
+    let negative = f"{-0.25}";
     assert_float_result_eq(string.to_float(positive), 3.5);
     assert_float_result_eq(string.to_float(negative), -0.25);
 }
@@ -216,7 +216,7 @@ fn test_split_splits_and_keeps_trailing_empty_segment() {
     expected.push("a");
     expected.push("b");
     expected.push("");
-    assert_string_vec_eq(string.split("a,b,", ","), expected);
+    assert_string_vec_eq(("a,b,").split(","), expected);
 }
 
 #[test]
@@ -227,7 +227,7 @@ fn test_split_empty_separator_returns_codepoints() {
     expected.push("a");
     expected.push("b");
     expected.push("c");
-    assert_string_vec_eq(string.split("abc", ""), expected);
+    assert_string_vec_eq(("abc").split(""), expected);
 }
 
 #[test]
@@ -236,7 +236,7 @@ fn test_lines_splits_lf_and_preserves_trailing_empty_line() {
     expected.push("alpha");
     expected.push("beta");
     expected.push("");
-    assert_string_vec_eq(string.lines("alpha\nbeta\n"), expected);
+    assert_string_vec_eq(("alpha\nbeta\n").lines(), expected);
 }
 
 #[test]
@@ -244,23 +244,23 @@ fn test_lines_normalizes_crlf_sequences() {
     var expected: Vec<string> = Vec.new();
     expected.push("alpha");
     expected.push("beta");
-    assert_string_vec_eq(string.lines("alpha\r\nbeta"), expected);
+    assert_string_vec_eq(("alpha\r\nbeta").lines(), expected);
 }
 
 #[test]
 fn test_lines_returns_single_empty_line_for_empty_input() {
     var expected: Vec<string> = Vec.new();
     expected.push("");
-    assert_string_vec_eq(string.lines(""), expected);
+    assert_string_vec_eq(("").lines(), expected);
 }
 
 #[test]
 fn test_join_handles_empty_and_single_element_inputs() {
     let empty: Vec<string> = Vec.new();
-    assert(string.join(empty, ",") == "");
+    assert((empty).join(",") == "");
     var single: Vec<string> = Vec.new();
     single.push("solo");
-    assert(string.join(single, ",") == "solo");
+    assert((single).join(",") == "solo");
 }
 
 #[test]
@@ -269,7 +269,7 @@ fn test_join_inserts_separator_between_elements() {
     parts.push("red");
     parts.push("green");
     parts.push("blue");
-    assert(string.join(parts, "|") == "red|green|blue");
+    assert((parts).join("|") == "red|green|blue");
 }
 
 // ── is_ascii boundary tests (regression lock for #2082 / PR #2081 fix) ──────
@@ -279,19 +279,19 @@ fn test_is_ascii_accepts_del_127_and_below() {
     assert(string.is_ascii(""));
     assert(string.is_ascii("hello"));
     // NUL (0) is within the ASCII range.
-    assert(string.is_ascii(string.from_char(0)));
+    assert(string.is_ascii(f"{(0).try_to_char().expect("valid Unicode scalar")}"));
     // Tilde (126) is the last printable ASCII character.
-    assert(string.is_ascii(string.from_char(126)));
+    assert(string.is_ascii(f"{(126).try_to_char().expect("valid Unicode scalar")}"));
     // DEL (127) is the last 7-bit ASCII codepoint; must be accepted.
     // Before PR #2081 the condition was `ch > 126`, which wrongly rejected
     // DEL.  This assertion locks that fix in place.
-    assert(string.is_ascii(string.from_char(127)));
+    assert(string.is_ascii(f"{(127).try_to_char().expect("valid Unicode scalar")}"));
 }
 
 #[test]
 fn test_is_ascii_rejects_128_and_above() {
     // 128 (0x80) is the first codepoint outside the 7-bit ASCII range.
-    assert(!string.is_ascii(string.from_char(128)));
+    assert(!string.is_ascii(f"{(128).try_to_char().expect("valid Unicode scalar")}"));
     // A string containing a non-ASCII multibyte sequence is also rejected.
     assert(!string.is_ascii("héllo"));
 }
@@ -302,13 +302,13 @@ fn test_from_char_emits_full_utf8_for_two_byte_codepoint() {
     // U+00E9 (é) is a two-byte UTF-8 sequence: 0xC3 0xA9.
     // Before the A195 fix, only the first byte was encoded, producing a
     // one-byte garbage string rather than "é".
-    assert(string.from_char(233) == "é");
+    assert(f"{(233).try_to_char().expect("valid Unicode scalar")}" == "é");
 }
 
 #[test]
 fn test_from_char_emits_full_utf8_for_four_byte_codepoint() {
     // U+1F600 (😀) encodes as four UTF-8 bytes: 0xF0 0x9F 0x98 0x80.
-    assert(string.from_char(128512) == "😀");
+    assert(f"{(128512).try_to_char().expect("valid Unicode scalar")}" == "😀");
 }
 
 // ── split empty-separator multi-byte exact values ─────────────────────────────
@@ -322,7 +322,7 @@ fn test_split_empty_separator_returns_multibyte_codepoints_as_individual_element
     expected.push("a");
     expected.push("f");
     expected.push("é");
-    assert_string_vec_eq(string.split("café", ""), expected);
+    assert_string_vec_eq(("café").split(""), expected);
 }
 
 // ── split non-empty separator exact element values ────────────────────────────
@@ -334,5 +334,5 @@ fn test_split_returns_exact_element_values_for_nonempty_separator() {
     expected.push("red");
     expected.push("green");
     expected.push("blue");
-    assert_string_vec_eq(string.split("red,green,blue", ","), expected);
+    assert_string_vec_eq(("red,green,blue").split(","), expected);
 }

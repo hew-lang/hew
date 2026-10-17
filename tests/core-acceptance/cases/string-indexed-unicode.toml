@@ -1,0 +1,11 @@
+[[case]]
+id = "string-indexed-unicode"
+intent = "Unicode scalar length, indexing and slicing agree across index strides, embedded NUL and an actor round trip."
+source = "cases/string-indexed-unicode.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "222:407\n222:407\nindexed Unicode preserved\n"
+stderr = ""
+exit = 0

@@ -276,8 +276,14 @@ fn node_read_and_sweep_paths_treat_missing_runtime_as_empty_state() {
     );
 
     with_current_node_read(|current| assert_eq!(*current, 0));
-    assert!(!complete_remote_reply(std::ptr::null(), 0, 1, &[1, 2, 3]));
-    assert!(!fail_remote_reply(std::ptr::null(), 0, 1, &[]));
+    assert!(!complete_remote_reply(
+        std::ptr::null(),
+        0,
+        0,
+        1,
+        &[1, 2, 3]
+    ));
+    assert!(!fail_remote_reply(std::ptr::null(), 0, 0, 1, &[]));
     fail_remote_replies_for_connection(std::ptr::null(), 0);
     // SAFETY: with no runtime there are no known-node registries to sweep.
     unsafe { unregister_actor_names(crate::pid::hew_pid_make(1, 1)) };

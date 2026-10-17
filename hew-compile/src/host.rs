@@ -4,7 +4,7 @@ use crate::{Session, SessionError, SessionOutput};
 use hew_parser::ast::Ident;
 
 impl Session {
-    /// Compile exactly one public monomorphic function and its dependencies.
+    /// Compile selected public monomorphic functions and their dependencies.
     ///
     /// This selects a source declaration, not a linker symbol. The native host
     /// boundary subsequently checks the physical signature and supported calls.
@@ -16,44 +16,49 @@ impl Session {
         &self,
         program: &hew_parser::ast::Program,
         tco: &hew_types::TypeCheckOutput,
-        name: &str,
-    ) -> Result<SessionOutput, SessionError> {
+        names: &[&str],
+    ) -> Result<(SessionOutput, Vec<hew_types::DefId>), SessionError> {
         let unsupported = |message: String| SessionError::Unsupported {
             callable: None,
             message,
             span: None,
         };
-        let (ordinal, span) = program
-            .items
+        let declarations = names
             .iter()
-            .enumerate()
-            .find_map(|(ordinal, (item, span))| match item {
-                hew_parser::ast::Item::Function(function)
-                    if function.name == Ident::new(name)
-                        && function.visibility.is_pub()
-                        && function.type_params.as_ref().is_none_or(Vec::is_empty) =>
-                {
-                    Some((ordinal, span))
-                }
-                _ => None,
-            })
-            .ok_or_else(|| {
-                unsupported(format!(
+            .map(|name| {
+                let (ordinal, span) = program
+                    .items
+                    .iter()
+                    .enumerate()
+                    .find_map(|(ordinal, (item, span))| match item {
+                        hew_parser::ast::Item::Function(function)
+                            if function.name == Ident::new(name)
+                                && function.visibility.is_pub()
+                                && function.type_params.as_ref().is_none_or(Vec::is_empty) =>
+                        {
+                            Some((ordinal, span))
+                        }
+                        _ => None,
+                    })
+                    .ok_or_else(|| {
+                        unsupported(format!(
                     "C export `{name}` must select a public monomorphic root-source function"
                 ))
-            })?;
-        let occurrence = hew_types::DeclarationOccurrence::new_with_synthetic_ordinal(
-            tco.defs.root_module(),
-            span,
-            ordinal,
-            hew_types::DeclarationKind::Function,
-            0,
-        );
-        let declaration = tco.defs.declaration(occurrence).ok_or_else(|| {
-            unsupported(format!(
-                "C export `{name}` has no checked declaration identity"
-            ))
-        })?;
+                    })?;
+                let occurrence = hew_types::DeclarationOccurrence::new_with_synthetic_ordinal(
+                    tco.defs.root_module(),
+                    span,
+                    ordinal,
+                    hew_types::DeclarationKind::Function,
+                    0,
+                );
+                tco.defs.declaration(occurrence).ok_or_else(|| {
+                    unsupported(format!(
+                        "C export `{name}` has no checked declaration identity"
+                    ))
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         let lowered =
             hew_hir::lower_program(program, tco, &hew_hir::ResolutionCtx, self.target.hir_arch);
         if !lowered.diagnostics.is_empty() {
@@ -64,6 +69,7 @@ impl Session {
                 "C export input must be a library without a process entry".into(),
             ));
         }
-        self.lower_hir_module(&lowered.module, tco, std::slice::from_ref(&declaration))
+        let output = self.lower_hir_module(&lowered.module, tco, &declarations)?;
+        Ok((output, declarations))
     }
 }

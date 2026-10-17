@@ -235,6 +235,23 @@ fn typecheck_link_monitor_import_edge(
 // ── Accept fixtures ──────────────────────────────────────────────────
 
 #[test]
+fn notification_target_has_one_source_owner() {
+    let canonical = typecheck_with_resolved_std(
+        r"import std.failure.{DownTarget as Target};
+        fn main() { let _target = Target.Local(7); }",
+    );
+    assert!(canonical.errors.is_empty(), "{:?}", canonical.errors);
+    let old_owner = typecheck_with_resolved_std(
+        r"import std.link_monitor.{DownTarget as Target};
+        fn main() { let _target = Target.Local(7); }",
+    );
+    assert!(
+        !old_owner.errors.is_empty(),
+        "the old module must not re-export the target type"
+    );
+}
+
+#[test]
 fn named_imported_exit_payload_is_source_authoritative_and_consumes_import() {
     let output = typecheck_with_resolved_std(
         r"
@@ -243,7 +260,7 @@ fn named_imported_exit_payload_is_source_authoritative_and_consumes_import() {
         actor Watcher {
             #[on(link)]
             fn on_peer_exit(note: CrashNotification) {
-                let _id = note.actor_id;
+                let _id = note.target;
             }
         }
 
@@ -269,7 +286,7 @@ fn aliased_imported_exit_payload_keeps_canonical_lifecycle_identity() {
         actor Watcher {
             #[on(link)]
             fn on_peer_exit(note: ExitNote) {
-                let _id = note.actor_id;
+                let _id = note.target;
             }
         }
 
@@ -289,7 +306,7 @@ fn whole_module_aliases_keep_canonical_exit_and_down_hook_identity() {
         actor Watcher {
             #[on(link)]
             fn on_peer_exit(note: f.CrashNotification) {
-                let _id = note.actor_id;
+                let _id = note.target;
             }
 
             #[on(down)]
@@ -300,7 +317,7 @@ fn whole_module_aliases_keep_canonical_exit_and_down_hook_identity() {
 
         fn main() {
             let _kind = f.CrashKind.Fault;
-            let _target = lm.DownTarget.Local(7);
+            let _target = f.DownTarget.Local(7);
             let _reason = lm.DownReason.Stopped;
         }
         ",
@@ -568,7 +585,7 @@ fn source_owned_exit_payload_rejects_plain_and_missing_imports() {
         import std.failure;
         actor Watcher {
             #[on(link)]
-            fn on_peer_exit(note: failure.CrashNotification) { let _id = note.actor_id; }
+            fn on_peer_exit(note: failure.CrashNotification) { let _id = note.target; }
         }
         fn main() {}
         ",
@@ -644,7 +661,8 @@ fn sibling_loading_failure_does_not_authorize_root_qualified_exit_payload() {
 fn named_imported_down_payload_and_nested_types_consume_import() {
     let output = typecheck_with_resolved_std(
         r"
-        import std.link_monitor.{DownNotification, DownReason, DownTarget};
+        import std.failure.{DownTarget};
+        import std.link_monitor.{DownNotification, DownReason};
 
         actor Watcher {
             #[on(down)]
@@ -788,6 +806,15 @@ fn transitive_std_failure_defs_do_not_authorize_qualified_constructors_or_varian
             r"
         import app.helper;
         fn main() {
+            let _target = failure.DownTarget.Remote;
+        }
+        ",
+            "undefined variable `failure`",
+        ),
+        (
+            r"
+        import app.helper;
+        fn main() {
             let _note = failure.CrashNotification.Forged {
                 actor_id: 1,
             };
@@ -830,15 +857,6 @@ fn transitive_std_link_monitor_defs_do_not_authorize_qualified_constructors_or_v
         }
         ",
             "undefined type `link_monitor.DownNotification.Forged`",
-        ),
-        (
-            r"
-        import app.helper;
-        fn main() {
-            let _target = link_monitor.DownTarget.Remote;
-        }
-        ",
-            "undefined variable `link_monitor`",
         ),
         (
             r"
@@ -1524,7 +1542,7 @@ fn main() {}
 // ── M-7-R: `#[on(link)]` linked-actor exit hook ──────────────────────
 //
 // The exit hook fires when an actor THIS actor is linked to crashes/exits,
-// delivering a typed `CrashNotification { actor_id, kind }`. Signature:
+// delivering a typed `CrashNotification { target, kind }`. Signature:
 // `fn on_exit(note: CrashNotification)` (returns `()`).
 
 #[test]
@@ -1534,7 +1552,7 @@ fn accept_on_exit_hook_canonical_shape() {
         actor Watcher {
             #[on(link)]
             fn on_peer_exit(note: CrashNotification) {
-                let _id = note.actor_id;
+                let _id = note.target;
             }
         }
 

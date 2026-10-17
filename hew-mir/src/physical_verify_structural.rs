@@ -1104,8 +1104,7 @@ pub(crate) fn aggregate_projection_field<'a>(
 ) -> Result<&'a PhysicalValueRecipe, PhysicalError> {
     let aggregate = storage(function, aggregate)?;
     let recipe = aggregate_glue(module, glue)?;
-    let source_own_matches = aggregate.own == recipe.own
-        || (recipe.own == OwnKind::Owned && aggregate.own == OwnKind::Guaranteed);
+    let source_own_matches = aggregate.own == recipe.own || aggregate.own == OwnKind::Guaranteed;
     if aggregate.ty != recipe.ty || !source_own_matches {
         return Err(PhysicalError::new(
             "physical aggregate projection source disagrees with its glue recipe",
@@ -1149,13 +1148,7 @@ pub(crate) fn verify_borrow_dependency(
     source: StorageId,
 ) -> Result<(), PhysicalError> {
     let destination = storage(function, dest)?;
-    if destination.own != OwnKind::Guaranteed
-        || destination.borrow_parent != Some(source)
-        || !matches!(
-            storage(function, source)?.own,
-            OwnKind::Owned | OwnKind::Guaranteed
-        )
-    {
+    if destination.own != OwnKind::Guaranteed || destination.borrow_parent != Some(source) {
         return Err(PhysicalError::new(
             "physical borrow disagrees with its SIR loan dependency",
         ));
@@ -1173,9 +1166,9 @@ pub(crate) fn verify_aggregate_project_borrow(
 ) -> Result<(), PhysicalError> {
     let destination = storage(function, dest)?;
     let expected = aggregate_projection_field(module, function, aggregate, field, glue)?;
-    if destination.ty != expected.ty || expected.own != OwnKind::Owned {
+    if destination.ty != expected.ty || destination.own != OwnKind::Guaranteed {
         return Err(PhysicalError::new(
-            "physical borrowed projection disagrees with its owning field recipe",
+            "physical borrowed projection disagrees with its typed field recipe",
         ));
     }
     verify_borrow_dependency(function, dest, aggregate)

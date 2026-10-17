@@ -27,6 +27,7 @@ pub(crate) struct SendClaim {
     pub(crate) publication_token: u64,
     publication_removed: Arc<std::sync::atomic::AtomicBool>,
     channel: Arc<ChannelProtection>,
+    gossip_out: Arc<std::sync::atomic::AtomicU64>,
 }
 
 // SAFETY: the claim's lifecycle lease pins its transport connection until drop.
@@ -35,6 +36,21 @@ pub(crate) struct SendClaim {
 unsafe impl Send for SendClaim {}
 
 impl SendClaim {
+    pub(crate) fn connection_id(&self) -> c_int {
+        self.conn_id
+    }
+
+    pub(crate) fn peer_session(&self) -> crate::envelope::NodeSessionIdentity {
+        crate::envelope::NodeSessionIdentity {
+            node_id: self.identity,
+            session_incarnation: self.session_incarnation,
+        }
+    }
+
+    pub(crate) fn publication_removed(&self) -> Arc<std::sync::atomic::AtomicBool> {
+        Arc::clone(&self.publication_removed)
+    }
+
     /// Transfer this lease to the existing pool. The caller never waits on the
     /// channel's send lock or on a peer accepting the frame.
     pub(crate) fn submit(
@@ -87,12 +103,24 @@ impl SendClaim {
         if self.publication_removed.load(Ordering::Acquire) {
             return Err(ChannelError::Faulted);
         }
+        let mut gossip = false;
         // SAFETY: the manager owns the transport. The claim's lifecycle lease
         // prevents this exact connection slot from being removed or reused.
         let result = unsafe {
             self.channel
-                .send_prepared(self.transport, self.conn_id, prepare)
+                .send_prepared(self.transport, self.conn_id, || {
+                    let frame = prepare()?;
+                    if crate::observe::observe_hot_tier_enabled() {
+                        gossip = matches!(crate::envelope::decode_wire_frame(frame.as_ref()),
+                            Ok(crate::envelope::WireFrame::Control(control))
+                            if matches!(control.ctrl_kind, crate::envelope::CTRL_SWIM | crate::envelope::CTRL_REGISTRY_GOSSIP));
+                    }
+                    Some(frame)
+                })
         };
+        if result.is_ok() && gossip {
+            self.gossip_out.fetch_add(1, Ordering::Relaxed);
+        }
         if let Err(error) = result {
             set_last_error(format!("connection send on conn {}: {error}", self.conn_id));
         }
@@ -125,6 +153,7 @@ pub(crate) fn claim_send(
                 publication_token: connection.publication_token,
                 publication_removed: Arc::clone(&connection.publication_removed),
                 channel: Arc::clone(&connection.channel),
+                gossip_out: Arc::clone(&manager.gossip_out),
             },
             connection.publication_token,
             connection.credential.clone(),
@@ -146,6 +175,16 @@ pub(crate) fn claim_send(
     (published && !claim.publication_removed.load(Ordering::Acquire)).then_some(claim)
 }
 
+pub(crate) fn claim_send_by_identity(
+    manager: &HewConnMgr,
+    peer: NodeId,
+    publication: Option<u64>,
+) -> Option<SendClaim> {
+    let connection = manager.claims.0.lock_or_recover().get(&peer)?.conn_id;
+    let claim = claim_send(manager, connection, publication)?;
+    (claim.identity == peer).then_some(claim)
+}
+
 pub(crate) fn claim_send_to_location(
     manager: &HewConnMgr,
     conn_id: c_int,
@@ -160,8 +199,9 @@ pub(crate) fn claim_send_to_route(
     manager: &HewConnMgr,
     conn_id: c_int,
     route_slot: u16,
+    publication: Option<u64>,
 ) -> Option<SendClaim> {
-    let claim = claim_send(manager, conn_id, None)?;
+    let claim = claim_send(manager, conn_id, publication)?;
     (route_slot != 0 && claim.route_slot == route_slot).then_some(claim)
 }
 

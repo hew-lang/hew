@@ -28,7 +28,7 @@ use crate::node_identity::{Location, NodeId};
 /// Current wire protocol version.
 ///
 /// Frames carrying any other version value MUST be rejected by the decoder.
-pub const WIRE_VERSION: u8 = 4;
+pub const WIRE_VERSION: u8 = 5;
 
 /// Discriminant for a control frame (`frame_type` field value 0).
 pub const FRAME_TYPE_CONTROL: u8 = 0;
@@ -108,6 +108,13 @@ pub const CTRL_MONITOR_SETUP_RESULT: u64 = 9;
 /// has also completed, so the caller never observes a half-established link.
 pub const CTRL_LINK_SETUP_RESULT: u64 = 10;
 
+/// An explicit service offer from the authenticated issuer.
+pub const CTRL_SERVICE_OFFER: u64 = 11;
+/// Acknowledgement of recipient service-offer admission.
+pub const CTRL_SERVICE_OFFER_RESULT: u64 = 12;
+pub const MAX_SERVICE_HANDLERS: usize = 256;
+pub const MAX_SERVICE_OFFER_BYTES: usize = 65_536;
+
 /// Maximum accepted cross-node link control payload size, in bytes.
 ///
 /// A link request payload is a fixed small CBOR map of bounded integers (two
@@ -179,6 +186,7 @@ pub struct ControlFrame {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EnvelopeMessage {
     Handler(String),
+    Service { handler: String, grant_id: u64 },
     Reply,
     Rejected,
     Withdraw,
@@ -188,6 +196,10 @@ impl EnvelopeMessage {
     fn to_value(&self) -> Value {
         match self {
             Self::Handler(identity) => Value::Text(identity.clone()),
+            Self::Service { handler, grant_id } => Value::Map(vec![
+                (Value::Integer(1.into()), Value::Text(handler.clone())),
+                (Value::Integer(2.into()), Value::Integer((*grant_id).into())),
+            ]),
             Self::Reply => Value::Integer(0.into()),
             Self::Rejected => Value::Integer(1.into()),
             Self::Withdraw => Value::Integer(2.into()),
@@ -200,6 +212,18 @@ impl EnvelopeMessage {
                 if !identity.is_empty() && identity.len() <= 4096 && !identity.contains('\0') =>
             {
                 Ok(Self::Handler(identity.clone()))
+            }
+            Value::Map(_) => {
+                let map = collect_map(value)?;
+                ensure_exact_keys(&map, &[1, 2])?;
+                let handler = value_to_text(required(&map, 1)?, 1)?;
+                let grant_id = value_to_u64(required(&map, 2)?, 2)?;
+                if grant_id == 0 || !valid_handler_identity(&handler) {
+                    return Err(DecodeError::MalformedFrame {
+                        reason: "invalid service request",
+                    });
+                }
+                Ok(Self::Service { handler, grant_id })
             }
             Value::Integer(status) if *status == Integer::from(0) => Ok(Self::Reply),
             Value::Integer(status) if *status == Integer::from(1) => Ok(Self::Rejected),
@@ -265,6 +289,16 @@ pub enum WireFrame {
     Control(ControlFrame),
     /// Actor-to-actor message frame.
     Envelope(EnvelopeFrame),
+}
+
+/// The granted actor and its exact compiler-selected handler interface.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServiceOfferPayload {
+    pub request_id: u64,
+    pub grant_id: u64,
+    pub target: Location,
+    pub recipient: NodeSessionIdentity,
+    pub handlers: Vec<String>,
 }
 
 /// Bounded registry-gossip control payload.
@@ -828,7 +862,11 @@ impl EnvelopeFrame {
             return Err("request budget exceeds the supported range");
         }
         if self.budget_ns.is_some()
-            && (self.request_id == 0 || !matches!(self.message, EnvelopeMessage::Handler(_)))
+            && (self.request_id == 0
+                || !matches!(
+                    self.message,
+                    EnvelopeMessage::Handler(_) | EnvelopeMessage::Service { .. }
+                ))
         {
             return Err("only asks may carry a request budget");
         }
@@ -840,6 +878,17 @@ impl EnvelopeFrame {
                     || identity.contains('\0')
                 {
                     return Err("request requires a target and bounded declaration identity");
+                }
+            }
+            EnvelopeMessage::Service { handler, grant_id } => {
+                if self.target.is_none()
+                    || self.request_id == 0
+                    || *grant_id == 0
+                    || !valid_handler_identity(handler)
+                {
+                    return Err(
+                        "service request requires a target, request id and active grant identity",
+                    );
                 }
             }
             EnvelopeMessage::Withdraw => {
@@ -942,6 +991,111 @@ pub(crate) unsafe fn encode_envelope_frame_from_raw_parts(
         request_id,
         budget_ns,
     })
+}
+
+fn valid_handler_identity(identity: &str) -> bool {
+    !identity.is_empty() && identity.len() <= 4096 && !identity.contains('\0')
+}
+
+fn valid_service_offer(offer: &ServiceOfferPayload) -> bool {
+    offer.request_id != 0
+        && offer.grant_id != 0
+        && offer.recipient.session_incarnation != 0
+        && !offer.handlers.is_empty()
+        && offer.handlers.len() <= MAX_SERVICE_HANDLERS
+        && offer
+            .handlers
+            .iter()
+            .all(|handler| valid_handler_identity(handler))
+        && offer.handlers.windows(2).all(|pair| pair[0] < pair[1])
+}
+
+/// Encode one bounded, canonical authenticated service offer.
+///
+/// # Errors
+/// Refuses invalid grants, unordered interfaces and oversized offers.
+pub fn encode_service_offer_payload(offer: &ServiceOfferPayload) -> Result<Vec<u8>, EncodeError> {
+    if !valid_service_offer(offer) {
+        return Err(EncodeError::InvalidEnvelope {
+            reason: "invalid service offer",
+        });
+    }
+    let value = Value::Map(vec![
+        (
+            Value::Integer(1.into()),
+            Value::Integer(offer.grant_id.into()),
+        ),
+        (Value::Integer(2.into()), location_to_value(offer.target)),
+        (
+            Value::Integer(3.into()),
+            node_session_to_value(offer.recipient),
+        ),
+        (
+            Value::Integer(4.into()),
+            Value::Array(offer.handlers.iter().cloned().map(Value::Text).collect()),
+        ),
+        (
+            Value::Integer(5.into()),
+            Value::Integer(offer.request_id.into()),
+        ),
+    ]);
+    let mut bytes = Vec::new();
+    ciborium::ser::into_writer(&value, &mut bytes)?;
+    if bytes.len() > MAX_SERVICE_OFFER_BYTES {
+        return Err(EncodeError::InvalidEnvelope {
+            reason: "service offer exceeds its size limit",
+        });
+    }
+    Ok(bytes)
+}
+
+/// Decode an exact service offer without trailing bytes or duplicate handlers.
+///
+/// # Errors
+/// Refuses malformed, oversized or noncanonical grant/interface data.
+pub fn decode_service_offer_payload(bytes: &[u8]) -> Result<ServiceOfferPayload, DecodeError> {
+    if bytes.len() > MAX_SERVICE_OFFER_BYTES {
+        return Err(DecodeError::MalformedFrame {
+            reason: "service offer exceeds its size limit",
+        });
+    }
+    let mut cursor = std::io::Cursor::new(bytes);
+    let value: Value = ciborium::de::from_reader(&mut cursor)?;
+    if cursor.position() != bytes.len() as u64 {
+        return Err(DecodeError::MalformedFrame {
+            reason: "service offer has trailing bytes",
+        });
+    }
+    let map = collect_map(&value)?;
+    ensure_exact_keys(&map, &[1, 2, 3, 4, 5])?;
+    let Value::Array(handlers) = required(&map, 4)? else {
+        return Err(DecodeError::MalformedField {
+            key: 4,
+            expected: "a bounded handler interface",
+        });
+    };
+    if handlers.len() > MAX_SERVICE_HANDLERS {
+        return Err(DecodeError::MalformedField {
+            key: 4,
+            expected: "a bounded handler interface",
+        });
+    }
+    let offer = ServiceOfferPayload {
+        request_id: value_to_u64(required(&map, 5)?, 5)?,
+        grant_id: value_to_u64(required(&map, 1)?, 1)?,
+        target: value_to_location(required(&map, 2)?, 2)?,
+        recipient: value_to_node_session(required(&map, 3)?, 3)?,
+        handlers: handlers
+            .iter()
+            .map(|handler| value_to_text(handler, 4))
+            .collect::<Result<_, _>>()?,
+    };
+    if !valid_service_offer(&offer) {
+        return Err(DecodeError::MalformedFrame {
+            reason: "invalid service offer",
+        });
+    }
+    Ok(offer)
 }
 
 /// Encode a bounded registry-gossip control payload.

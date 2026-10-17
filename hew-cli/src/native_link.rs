@@ -38,6 +38,7 @@ pub struct InputPackage {
 /// Every non-std source a program reads and the packages that own them.
 #[derive(Debug, Default)]
 pub struct ProgramInputs {
+    lockfile: Option<PathBuf>,
     /// Hew sources: the entry file first, then each imported module's files.
     pub sources: Vec<PathBuf>,
     /// Owning packages, each once, in first-reached order.
@@ -61,10 +62,15 @@ impl ProgramInputs {
         let mut walk = Walk {
             std_dirs,
             seen_sources: BTreeSet::new(),
-            owners: BTreeMap::new(),
+            owners: PackageOwners::default(),
             inputs: Self::default(),
         };
         walk.add_source(entry)?;
+        walk.inputs.lockfile = walk
+            .inputs
+            .packages
+            .first()
+            .map(|package| package.root.join(LOCK_FILE));
         // Shared imports retain one immutable body per module, so the walk is
         // bounded by that body's identity. Recursing per import edge instead
         // expands a module once per path that reaches it, and a diamond import
@@ -130,7 +136,7 @@ struct Walk {
     std_dirs: Vec<PathBuf>,
     seen_sources: BTreeSet<PathBuf>,
     /// Owning package root of each directory already probed.
-    owners: BTreeMap<PathBuf, Option<PathBuf>>,
+    owners: PackageOwners,
     inputs: ProgramInputs,
 }
 
@@ -148,7 +154,7 @@ impl Walk {
         let Some(dir) = canonical.parent() else {
             return Ok(());
         };
-        let Some(root) = self.owner(dir) else {
+        let Some(root) = self.owners.owner(dir) else {
             return Ok(());
         };
         let root = plain(root);
@@ -166,10 +172,15 @@ impl Walk {
         self.inputs.packages.push(InputPackage { root, native });
         Ok(())
     }
+}
 
+#[derive(Debug, Default)]
+pub(crate) struct PackageOwners(BTreeMap<PathBuf, Option<PathBuf>>);
+
+impl PackageOwners {
     /// The nearest directory at or above `dir` holding `hew.toml`.
-    fn owner(&mut self, dir: &Path) -> Option<PathBuf> {
-        if let Some(owner) = self.owners.get(dir) {
+    pub(crate) fn owner(&mut self, dir: &Path) -> Option<PathBuf> {
+        if let Some(owner) = self.0.get(dir) {
             return owner.clone();
         }
         let owner = if dir.join(MANIFEST_FILE).is_file() {
@@ -177,7 +188,7 @@ impl Walk {
         } else {
             dir.parent().and_then(|parent| self.owner(parent))
         };
-        self.owners.insert(dir.to_path_buf(), owner.clone());
+        self.0.insert(dir.to_path_buf(), owner.clone());
         owner
     }
 }
@@ -201,6 +212,7 @@ fn plain(path: PathBuf) -> PathBuf {
 /// The native link inputs of a program, in link-line order.
 #[derive(Debug, Default)]
 pub struct NativeLink {
+    builds: Vec<hew_pkg::native::NativeBuild>,
     /// Package archives and objects.
     inputs: Vec<String>,
     /// Library search paths, system libraries and the C++ runtime.
@@ -238,7 +250,8 @@ pub fn link(
     if packages.peek().is_none() {
         return Ok(out);
     }
-    let toolchain = crate::link::native_toolchain(target, debug, opt_level)?;
+    let mut toolchain = crate::link::native_toolchain(target, debug, opt_level)?;
+    toolchain.lockfile.clone_from(&inputs.lockfile);
     let mut compiles_cxx = false;
     for (root, manifest) in packages {
         let Some(build) = hew_pkg::native::build(root, manifest, &toolchain)? else {
@@ -256,9 +269,10 @@ pub fn link(
         }
         // Kept verbatim: pkg-config pairs tokens (`-framework Cocoa`), so
         // dropping a repeated one would split a pair.
-        out.link_args.extend(build.link_args);
+        out.link_args.extend(build.link_args.iter().cloned());
         compiles_cxx |= build.compiles_cxx;
-        out.dependencies.extend(build.dependencies);
+        out.dependencies.extend(build.dependencies.iter().cloned());
+        out.builds.push(build);
     }
     if compiles_cxx {
         out.link_args.extend(

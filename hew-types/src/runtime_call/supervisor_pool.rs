@@ -2,8 +2,8 @@
 //!
 //! A pool's members are identical children addressed by index. The view names
 //! the owning supervisor and the first of the pool's consecutive slots; the
-//! member count is a declaration fact the caller supplies, so an accessor is
-//! arithmetic and a bounds test with no runtime lookup of its own.
+//! constructed member count travels in that view, so access is arithmetic
+//! and a bounds test with no repeated evaluation of the count expression.
 
 use crate::runtime_call::{
     runtime_semantic_contract, RuntimeArgumentContract, RuntimeArgumentEffect,
@@ -14,6 +14,8 @@ use strum::EnumIter;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, EnumIter, Serialize, Deserialize)]
 pub enum SupervisorPoolOp {
+    /// The evaluated construction-time member count.
+    Len,
     /// `pool[i]` — the member's role, trapping outside the declared members
     /// exactly as `Vec[i]` does.
     #[default]
@@ -25,6 +27,7 @@ pub enum SupervisorPoolOp {
 impl SupervisorPoolOp {
     pub(super) const fn symbol(self) -> &'static str {
         match self {
+            Self::Len => "supervisor.pool.len",
             Self::Member => "supervisor.pool.member",
             Self::Get => "supervisor.pool.get",
         }
@@ -39,19 +42,20 @@ impl SupervisorPoolOp {
             ty: RuntimeValueKind::I64,
             effect: RuntimeArgumentEffect::Copy,
         };
-        const COUNT: RuntimeArgumentContract = RuntimeArgumentContract {
-            ty: RuntimeValueKind::I64,
-            effect: RuntimeArgumentEffect::Copy,
-        };
         const BOUNDS: &[RuntimeLogicalFailure] = &[RuntimeLogicalFailure::IndexOutOfBounds];
         match self {
+            Self::Len => runtime_semantic_contract(
+                &[VIEW],
+                RuntimeResultEffect::BitCopy(RuntimeValueKind::I64),
+                &[],
+            ),
             Self::Member => runtime_semantic_contract(
-                &[VIEW, INDEX, COUNT],
+                &[VIEW, INDEX],
                 RuntimeResultEffect::IndependentValue(RuntimeValueKind::PoolMember),
                 BOUNDS,
             ),
             Self::Get => runtime_semantic_contract(
-                &[VIEW, INDEX, COUNT],
+                &[VIEW, INDEX],
                 RuntimeResultEffect::IndependentValue(RuntimeValueKind::Applied(
                     crate::BuiltinType::Option,
                     &[RuntimeValueKind::PoolMember],

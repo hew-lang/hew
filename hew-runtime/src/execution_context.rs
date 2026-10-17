@@ -19,11 +19,7 @@ pub use crate::arena::ActorArena as HewArena;
 use crate::tracing::HewTraceContext;
 
 pub use crate::cancel_token::HewCancellationToken as HewCancelToken;
-#[cfg(not(target_arch = "wasm32"))]
 pub use crate::task_scope::HewTaskScope;
-
-#[cfg(target_arch = "wasm32")]
-pub type HewTaskScope = c_void;
 
 pub const EXECUTION_CONTEXT_NOT_INSTALLED: &str = "execution context not installed";
 pub const EXECUTION_CONTEXT_NOT_INSTALLED_AT_SPAWN: &str =

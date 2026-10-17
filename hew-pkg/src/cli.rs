@@ -64,6 +64,11 @@ pub enum PkgCommand {
         #[arg(long)]
         dry_run: bool,
     },
+    /// Build or publish release-qualified native package archives
+    Native {
+        #[command(subcommand)]
+        action: NativeAction,
+    },
     /// List packages in the local registry
     List,
     /// Search packages in the registry
@@ -221,12 +226,42 @@ pub enum NamespaceAction {
     },
 }
 
+#[derive(Debug, Subcommand)]
+pub enum NativeAction {
+    /// Build the package's Rust static library for publication
+    Build {
+        /// Native target triple (defaults to the compiler host)
+        #[arg(long)]
+        target: Option<String>,
+        /// Destination .tar.zst archive
+        #[arg(long)]
+        output: PathBuf,
+    },
+    /// Publish an archive beside its already published source package
+    Publish {
+        archive: PathBuf,
+        #[arg(long, short = 'r')]
+        registry: Option<String>,
+    },
+}
+
 /// Execute a package-manager subcommand dispatched from the `hew` CLI.
-pub fn dispatch(cmd: &PkgCommand, check_generation: impl Fn(&Path) -> Result<(), String>) {
+/// `native_target` is the canonical target selected by the compiler driver.
+pub fn dispatch(
+    cmd: &PkgCommand,
+    native_target: &str,
+    check_generation: impl Fn(&Path) -> Result<(), String>,
+) {
     let cfg = load_config_or_exit();
     let registry = registry::Registry::with_root(config::registry_path(&cfg));
 
     match cmd {
+        PkgCommand::Native { action } => {
+            if let Err(error) = cmd_native(action, native_target, &check_generation) {
+                eprintln!("hew native: {error}");
+                std::process::exit(1);
+            }
+        }
         PkgCommand::Add {
             package,
             version,
@@ -238,7 +273,14 @@ pub fn dispatch(cmd: &PkgCommand, check_generation: impl Fn(&Path) -> Result<(),
             locked,
             registry: reg,
             offline,
-        } => cmd_install(*locked, *offline, &registry, reg.as_deref(), &cfg),
+        } => cmd_install(
+            *locked,
+            *offline,
+            &registry,
+            reg.as_deref(),
+            &cfg,
+            native_target,
+        ),
         PkgCommand::Publish {
             registry: reg,
             local,
@@ -310,6 +352,51 @@ pub fn dispatch(cmd: &PkgCommand, check_generation: impl Fn(&Path) -> Result<(),
             IndexAction::List { package } => cmd_index_list(package),
         },
     }
+}
+
+fn cmd_native(
+    action: &NativeAction,
+    target: &str,
+    check_generation: &impl Fn(&Path) -> Result<(), String>,
+) -> Result<(), String> {
+    let root = std::env::current_dir().map_err(|error| error.to_string())?;
+    match action {
+        NativeAction::Build { output, .. } => {
+            check_generation(&root)?;
+            crate::native_prebuilt::NativeIdentity::current(target).route()?;
+            let archive = crate::native_prebuilt::build(&root, target)?;
+            if let Some(parent) = output.parent().filter(|path| !path.as_os_str().is_empty()) {
+                std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+            }
+            crate::atomic_fs::write_atomic(output, &archive.data, 0o644)
+                .map_err(|error| error.to_string())?;
+            println!("Native archive: {}", output.display());
+            println!("Checksum: {}", archive.checksum);
+        }
+        NativeAction::Publish { archive, registry } => {
+            let bytes = std::fs::read(archive).map_err(|error| error.to_string())?;
+            let descriptor = crate::native_prebuilt::inspect(&bytes, &root.join("target"))?;
+            let keypair = signing::load_keypair(&signing::default_key_dir())
+                .map_err(|error| error.to_string())?;
+            let token =
+                resolve_registry_token(&credentials::credentials_path(), registry.as_deref())
+                    .map_err(|error| error.to_string())?;
+            let client = make_client(registry.as_deref()).with_token(token);
+            let checksum = crate::native_prebuilt::publish(
+                &client,
+                &bytes,
+                &descriptor,
+                &keypair,
+                &root.join("target"),
+            )?;
+            println!(
+                "Published native {}@{} for {}",
+                descriptor.name, descriptor.version, descriptor.identity.target
+            );
+            println!("Checksum: {checksum}");
+        }
+    }
+    Ok(())
 }
 
 /// Validate the manifest of the package rooted at `root`, resolving every
@@ -695,6 +782,7 @@ fn cmd_install(
     registry: &registry::Registry,
     registry_name: Option<&str>,
     cfg: &config::PkgConfig,
+    native_target: &str,
 ) {
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let manifest_path = cwd.join("hew.toml");
@@ -712,6 +800,9 @@ fn cmd_install(
     let registry_sources = registry_sources_or_exit(cfg, registry_name);
 
     let lock_path = cwd.join(crate::project::LOCK_FILE);
+    let previous_lockfile = lockfile::read_lockfile(&lock_path)
+        .ok()
+        .filter(|lockfile| lockfile::validate_lockfile(lockfile).is_ok());
 
     let (locked_lockfile, pinned_locked_registry) = if locked {
         // --locked: read existing lock and validate against manifest.
@@ -941,12 +1032,58 @@ fn cmd_install(
             ),
         };
 
+        let mut native = previous_lockfile
+            .as_ref()
+            .and_then(|lockfile| {
+                lockfile.packages.iter().find(|entry| {
+                    entry.name == *name
+                        && entry.version == *version
+                        && entry.registry == locked_registry
+                        && entry.checksum == pkg_checksum
+                        && entry.source == source
+                })
+            })
+            .map(|entry| entry.native.clone())
+            .unwrap_or_default();
+        if source == "registry" && !offline {
+            let manifest =
+                manifest::parse_manifest(&target.join("hew.toml")).unwrap_or_else(|error| {
+                    eprintln!("hew install: {error}");
+                    std::process::exit(1);
+                });
+            if manifest
+                .native
+                .as_ref()
+                .and_then(manifest::NativeLib::rust_crate)
+                .is_some()
+            {
+                let artifact = crate::native_prebuilt::install(&target, &manifest, native_target)
+                    .unwrap_or_else(|error| {
+                        eprintln!("hew install: {error}");
+                        std::process::exit(1);
+                    });
+                let identity = crate::native_prebuilt::NativeIdentity::current(native_target);
+                let selected = artifact
+                    .as_ref()
+                    .map(crate::native_prebuilt::PrebuiltArtifact::lock_pin);
+                let previous = native.iter().find(|pin| pin.identity == identity);
+                if locked && previous != selected.as_ref() {
+                    eprintln!("hew install: native artifact does not match hew.lock; run without --locked to update it");
+                    std::process::exit(1);
+                }
+                native.retain(|pin| pin.identity != identity);
+                native.extend(selected);
+                native.sort_by_key(|pin| pin.identity.route().expect("validated native identity"));
+            }
+        }
+
         lock_packages.push(lockfile::LockedPackage {
             name: name.clone(),
             requirement: package.direct_requirement.clone(),
             version: version.clone(),
             checksum: pkg_checksum.clone(),
             signature: None,
+            native,
             source: source.to_string(),
             registry: locked_registry,
             path: locked_path,
@@ -1604,7 +1741,7 @@ fn verify_supplied_package_signatures(
 }
 
 /// Verify the publisher's checksum signature using the registered public key.
-fn verify_package_signature(
+pub(crate) fn verify_package_signature(
     api_client: &client::RegistryClient,
     checksum: &str,
     signature: &str,
@@ -1644,11 +1781,25 @@ fn verify_registry_signature(
     published_at: &str,
     registry_sig: &str,
 ) -> Result<(), String> {
+    let canonical =
+        format!("registry:v1:{name}@{version}:{checksum}:{publisher_sig}:{published_at}");
+    verify_registry_message(api_client, &canonical, registry_sig, None)
+}
+
+pub(crate) fn verify_registry_message(
+    api_client: &client::RegistryClient,
+    canonical: &str,
+    registry_sig: &str,
+    key_fingerprint: Option<&str>,
+) -> Result<(), String> {
     use base64::Engine as _;
 
     let key_resp = api_client
         .get_registry_key()
         .map_err(|e| format!("could not fetch registry key: {e}"))?;
+    if key_fingerprint.is_some_and(|fingerprint| fingerprint != key_resp.key_id) {
+        return Err("registry signing key fingerprint mismatch".to_string());
+    }
     let pub_bytes = base64::engine::general_purpose::STANDARD
         .decode(&key_resp.public_key)
         .map_err(|e| format!("invalid registry public key encoding: {e}"))?;
@@ -1656,9 +1807,6 @@ fn verify_registry_signature(
     let pub_arr: [u8; 32] = pub_bytes
         .try_into()
         .map_err(|_| "registry public key is not 32 bytes".to_string())?;
-
-    let canonical =
-        format!("registry:v1:{name}@{version}:{checksum}:{publisher_sig}:{published_at}");
 
     signing::verify(canonical.as_bytes(), registry_sig, &pub_arr)
         .map_err(|e| format!("registry signature invalid: {e}"))
@@ -3484,6 +3632,7 @@ mod tests {
                     version: "1.0.0".to_string(),
                     checksum: Some(checksum::compute_dir_checksum(&generation_a).unwrap()),
                     signature: None,
+                    native: Vec::new(),
                     source: "registry".to_string(),
                     registry: Some(registry_id.clone()),
                     path: None,
@@ -3494,6 +3643,7 @@ mod tests {
                     version: "1.0.0".to_string(),
                     checksum: Some(checksum::compute_dir_checksum(&bar).unwrap()),
                     signature: None,
+                    native: Vec::new(),
                     source: "registry".to_string(),
                     registry: Some(registry_id.clone()),
                     path: None,
@@ -3606,6 +3756,7 @@ mod tests {
                 version: "1.0.0".to_string(),
                 checksum: Some(checksum),
                 signature: None,
+                native: Vec::new(),
                 source: "registry".to_string(),
                 registry: Some(registry_id.clone()),
                 path: None,
@@ -3869,6 +4020,7 @@ mod tests {
                 version: "1.0.0".to_string(),
                 checksum: Some(checksum),
                 signature: None,
+                native: Vec::new(),
                 source: "registry".to_string(),
                 registry: Some(second.to_string()),
                 path: None,

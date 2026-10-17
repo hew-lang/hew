@@ -16,7 +16,7 @@ fn snapshot(k: i64) -> Result<Snap, Fail> {
     if k % 4 == 3 {
         return .Err(Fail.Missing(k));
     }
-    .Ok(Snap { label: "snap-" + string.from_int(k), n: k, terminal: k % 7 == 6 })
+    .Ok(Snap { label: "snap-" + f"{k}", n: k, terminal: k % 7 == 6 })
 }
 
 fn empty_snap() -> Snap {

@@ -666,6 +666,24 @@ impl Parser<'_> {
                 self.error(format!("invalid binary operator token: {op_tok:?}"));
                 return None;
             };
+            if matches!(op, BinaryOp::Range | BinaryOp::RangeInclusive)
+                && matches!(self.peek(), Some(Token::RightParen | Token::Comma))
+            {
+                if op == BinaryOp::RangeInclusive {
+                    self.error("an inclusive range requires an end".to_string());
+                    return None;
+                }
+                let end = self.peek_span().start;
+                lhs = (
+                    Expr::Range {
+                        start: Some(Box::new(lhs)),
+                        end: None,
+                        inclusive: false,
+                    },
+                    start..end,
+                );
+                continue;
+            }
             let rhs = self.parse_expr_bp(rbp)?;
             let end = self.peek_span().start;
 
@@ -693,6 +711,24 @@ impl Parser<'_> {
         let start = self.peek_span().start;
 
         let expr = match self.peek()? {
+            Token::DotDot | Token::DotDotEqual => {
+                let inclusive = self.peek() == Some(&Token::DotDotEqual);
+                self.advance();
+                let end = if matches!(self.peek(), Some(Token::RightParen | Token::Comma)) {
+                    if inclusive {
+                        self.error("an inclusive range requires an end".to_string());
+                        return None;
+                    }
+                    None
+                } else {
+                    Some(Box::new(self.parse_expr_bp(4)?))
+                };
+                Expr::Range {
+                    start: None,
+                    end,
+                    inclusive,
+                }
+            }
             Token::Dot if self.peek_at(self.pos + 1).is_some_and(Self::is_ident_token) => {
                 self.advance();
                 Expr::ContextVariant(ContextVariantExpr {

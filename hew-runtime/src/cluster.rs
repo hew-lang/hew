@@ -426,6 +426,16 @@ pub(crate) struct GuardedDeliveryProbe {
     pub(crate) release: Mutex<std::sync::mpsc::Receiver<()>>,
 }
 
+impl HewCluster {
+    pub(crate) fn member_count(&self, state: i32) -> u64 {
+        self.members
+            .lock_or_recover()
+            .iter()
+            .filter(|member| member.state == state)
+            .count() as u64
+    }
+}
+
 /// Maximum number of gossip events to retain.
 const MAX_GOSSIP_EVENTS: usize = 64;
 

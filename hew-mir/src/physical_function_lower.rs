@@ -381,6 +381,78 @@ impl FunctionLowerer<'_> {
                         .transpose()?,
                 })
             }
+            SemOpKind::TaskInvoke {
+                scope,
+                callee,
+                args,
+                signature,
+                ..
+            } => {
+                let dest = self.one_result(operation)?;
+                let ResolvedTy::Task(output) = &self.storage[dest.0 as usize].ty else {
+                    return Err(PhysicalError::new("prepared call has no exact task output"));
+                };
+                one(PhysicalOp::TaskInvoke {
+                    scope: *scope,
+                    callee: match callee {
+                        hew_sir::InvocationCallee::Direct(target) => {
+                            super::PhysicalInvocationCallee::Direct(*target)
+                        }
+                        hew_sir::InvocationCallee::Mutable {
+                            target,
+                            receiver,
+                            update,
+                        } => super::PhysicalInvocationCallee::Mutable {
+                            target: *target,
+                            receiver: self
+                                .argument_transfer(receiver.operand.value, receiver.decision)?,
+                            update: *update,
+                            recipe: physical_value_recipe(
+                                self.module,
+                                self.glue_ids,
+                                &self.storage[self.value(receiver.operand.value)?.0 as usize].ty,
+                            )?,
+                        },
+                        hew_sir::InvocationCallee::Dyn {
+                            receiver,
+                            slot,
+                            method,
+                        } => super::PhysicalInvocationCallee::Dyn {
+                            receiver: self
+                                .argument_transfer(receiver.operand.value, receiver.decision)?,
+                            slot: *slot,
+                            method: *method,
+                            is_resumable: self.resumable_methods.contains(method),
+                            signature: super::PhysicalCallSignature {
+                                failure_domain: signature.failure_domain,
+                                params: self.call_params(signature)?,
+                                return_ty: signature.return_ty.clone(),
+                                return_layout: (!matches!(
+                                    signature.return_ty,
+                                    ResolvedTy::Unit | ResolvedTy::Never
+                                ))
+                                .then(|| {
+                                    required_layout(self.target, &signature.return_ty).cloned()
+                                })
+                                .transpose()?,
+                            },
+                        },
+                        hew_sir::InvocationCallee::Indirect {
+                            receiver,
+                            specialization,
+                        } => super::PhysicalInvocationCallee::Indirect {
+                            receiver: self
+                                .argument_transfer(receiver.operand.value, receiver.decision)?,
+                            specialization: *specialization,
+                        },
+                    },
+                    args: self.argument_transfers(args)?,
+                    dest,
+                    output: (output.as_ref() != &ResolvedTy::Never)
+                        .then(|| physical_value_recipe(self.module, self.glue_ids, output))
+                        .transpose()?,
+                })
+            }
             SemOpKind::TaskSpawn { scope, callable } => {
                 let dest = self.one_result(operation)?;
                 let ResolvedTy::Task(output) = &self.storage[dest.0 as usize].ty else {
@@ -607,9 +679,9 @@ impl FunctionLowerer<'_> {
     )]
     pub(crate) fn lower_terminator(
         &self,
-        terminator: &SemTerminator,
+        block: &hew_sir::SemBlock,
     ) -> Result<PhysicalTerminator, PhysicalError> {
-        match terminator {
+        match &block.terminator {
             SemTerminator::EnterDefer { defer, park, body } => Ok(PhysicalTerminator::EnterDefer {
                 defer: *defer,
                 park: *park,
@@ -800,7 +872,7 @@ impl FunctionLowerer<'_> {
                 ..
             } => Ok(PhysicalTerminator::RuntimeCall {
                 action: self.runtime_action(*family, args, result)?,
-                args: self.physical_arguments(args, runtime_param_carrier)?,
+                args: self.runtime_arguments(*family, args)?,
                 result: match result {
                     CallResult::Unit | CallResult::Never => None,
                     CallResult::Value(value) => Some(self.value(value.id)?),
@@ -932,6 +1004,22 @@ impl FunctionLowerer<'_> {
                 unwind: self.lower_edge(unwind)?,
             }),
             SemTerminator::Suspend {
+                kind: hew_sir::SuspendKind::ServiceAcquire { actor, export },
+                inputs,
+                result: CallResult::Value(result),
+                resumes,
+                cancel,
+                unwind,
+            } => Ok(PhysicalTerminator::ServiceAcquire {
+                actor: *actor,
+                export: *export,
+                args: self.argument_transfers(inputs)?,
+                result: self.value(result.id)?,
+                normal: self.lower_edge(&resumes[0])?,
+                cancel: self.lower_edge(cancel)?,
+                unwind: self.lower_edge(unwind)?,
+            }),
+            SemTerminator::Suspend {
                 kind: hew_sir::SuspendKind::NativeIo { operation },
                 inputs,
                 result: CallResult::Value(result),
@@ -946,6 +1034,11 @@ impl FunctionLowerer<'_> {
                 cancel: self.lower_edge(cancel)?,
                 unwind: self.lower_edge(unwind)?,
             }),
+            SemTerminator::Safepoint { resume, .. }
+                if block.id == self.function.entry && !self.is_resumable =>
+            {
+                Ok(PhysicalTerminator::Goto(self.lower_edge(resume)?))
+            }
             SemTerminator::Safepoint { resume, cancel } => Ok(PhysicalTerminator::Safepoint {
                 normal: self.lower_edge(resume)?,
                 cancel: cancel
@@ -1045,8 +1138,11 @@ impl FunctionLowerer<'_> {
                 actor: *actor,
                 message: *message,
                 target: self.value(inputs[0].operand.value)?,
-                payload: self.value(inputs[1].operand.value)?,
-                timeout: self.value(inputs[2].operand.value)?,
+                payload: inputs[1..inputs.len() - 1]
+                    .iter()
+                    .map(|input| self.value(input.operand.value))
+                    .collect::<Result<_, _>>()?,
+                timeout: self.value(inputs.last().expect("remote timeout").operand.value)?,
                 result: self.value(result.id)?,
                 normal: self.lower_edge(&resumes[0])?,
                 cancel: self.lower_edge(cancel)?,
@@ -1107,6 +1203,11 @@ impl FunctionLowerer<'_> {
                 Ok(PhysicalTerminator::StreamSend {
                     park: *park,
                     sink: transfers[0],
+                    receiver: physical_value_recipe(
+                        self.module,
+                        self.glue_ids,
+                        &self.storage[self.value(inputs[0].operand.value)?.0 as usize].ty,
+                    )?,
                     value: transfers[1],
                     element: physical_value_recipe(self.module, self.glue_ids, element)?,
                     normal: self.lower_edge(normal)?,
@@ -1205,6 +1306,34 @@ impl FunctionLowerer<'_> {
         args.iter()
             .map(|argument| self.argument_transfer(argument.operand.value, argument.decision))
             .collect()
+    }
+
+    fn runtime_arguments(
+        &self,
+        family: RuntimeCallFamily,
+        args: &[hew_sir::BoundaryOperand],
+    ) -> Result<PhysicalArguments, PhysicalError> {
+        let arguments = self.physical_arguments(args, runtime_param_carrier)?;
+        if !matches!(
+            family,
+            RuntimeCallFamily::StreamFromGenerator
+                | RuntimeCallFamily::SinkFromEncoder
+                | RuntimeCallFamily::SinkClone
+        ) {
+            return Ok(arguments);
+        }
+        let recipes = args
+            .iter()
+            .map(|argument| {
+                let source = self.value(argument.operand.value)?;
+                physical_value_recipe(
+                    self.module,
+                    self.glue_ids,
+                    &self.storage[source.0 as usize].ty,
+                )
+            })
+            .collect::<Result<Vec<_>, PhysicalError>>()?;
+        Ok(arguments.with_value_witnesses(recipes))
     }
 
     pub(crate) fn physical_arguments(

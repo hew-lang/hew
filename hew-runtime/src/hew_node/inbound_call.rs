@@ -165,6 +165,7 @@ pub(super) struct PendingCall {
     request_id: u64,
     publication: u64,
     deadline: crate::request_deadline::RequestDeadline,
+    admission: Option<super::service::RemoteAdmission>,
     manager: SendConnMgr,
     shutdown: Arc<AtomicBool>,
     _guard: InboundAskGuard,
@@ -192,6 +193,7 @@ impl PendingCall {
         guard: InboundAskGuard,
         publication: u64,
         deadline: crate::request_deadline::RequestDeadline,
+        admission: super::service::RemoteAdmission,
     ) -> Self {
         Self {
             token,
@@ -204,6 +206,7 @@ impl PendingCall {
             request_id,
             publication,
             deadline,
+            admission: Some(admission),
             manager,
             shutdown,
             _guard: guard,
@@ -223,6 +226,9 @@ impl PendingCall {
                 self.caller,
                 waker,
                 self.deadline,
+                self.admission
+                    .take()
+                    .expect("unpublished authenticated request"),
             );
         }
         // SAFETY: the mutex gives this poll exclusive access to the operation.
@@ -236,6 +242,7 @@ impl PendingCall {
             Ok(reply) => send_reply_envelope(
                 self.source_node,
                 self.request_id,
+                self.publication,
                 &reply,
                 self.manager.0,
                 self.shutdown.as_ref(),
@@ -243,6 +250,7 @@ impl PendingCall {
             Err(reason) => send_rejection_reply(
                 self.source_node,
                 self.request_id,
+                self.publication,
                 reason,
                 self.manager.0,
                 self.shutdown.as_ref(),

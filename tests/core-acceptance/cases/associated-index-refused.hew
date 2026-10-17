@@ -1,0 +1,13 @@
+fn wrong_key<T: Index<string, Output = i64>>(table: T) -> i64 {
+    table[true]
+}
+
+fn replace<T: Index<string, Output = i64>>(var table: T) {
+    table["value"] = 1;
+}
+
+fn replace_dynamic(var table: dyn Index<string, Output = i64>) {
+    table["value"] = 1;
+}
+
+fn main() {}

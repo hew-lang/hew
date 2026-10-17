@@ -83,7 +83,7 @@ libc.workspace = true
 tracing.workspace = true
 sha2.workspace = true
 zeroize = { version = "1.9.0", features = ["zeroize_derive"] }
-# Unicode general categories (Unicode 18). Pinned exactly: `hew_unicode_is_punct`
+# Unicode general categories (Unicode 18). Pinned exactly: `hew_char_is_punctuation`
 # is proven against every scalar and the P* population is version-sensitive, so
 # a minor bump would silently move the answer.
 finl_unicode = { version = "=1.5.0", default-features = false, features = [

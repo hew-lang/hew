@@ -15,6 +15,7 @@
 mod native {
     use std::collections::HashMap;
     use std::ffi::{c_char, c_void};
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::RwLock;
 
     use crate::runtime::{rt_current, rt_current_opt};
@@ -42,6 +43,7 @@ mod native {
     /// cleanup) shard maps.
     pub(crate) struct ShardedRegistry {
         shards: [RwLock<RegistryShard>; N_SHARDS],
+        conflicts: AtomicU64,
     }
 
     fn registry_opt() -> Option<&'static ShardedRegistry> {
@@ -53,6 +55,7 @@ mod native {
         pub(crate) fn new() -> Self {
             Self {
                 shards: std::array::from_fn(|_| RwLock::new(RegistryShard(HashMap::new()))),
+                conflicts: AtomicU64::new(0),
             }
         }
 
@@ -99,10 +102,27 @@ mod native {
         let shard = rt_current().registry.shard_for(&key);
         let mut reg = shard.write_or_recover();
         if reg.0.contains_key(&key) {
+            if crate::observe::observe_hot_tier_enabled() {
+                rt_current()
+                    .registry
+                    .conflicts
+                    .fetch_add(1, Ordering::Relaxed);
+            }
             return -1;
         }
         reg.0.insert(key, actor);
         0
+    }
+
+    pub(crate) fn metrics_snapshot() -> (u64, u64) {
+        registry_opt().map_or((0, 0), |registry| {
+            let names = registry
+                .shards
+                .iter()
+                .map(|shard| shard.read_or_recover().0.len() as u64)
+                .sum();
+            (names, registry.conflicts.load(Ordering::Relaxed))
+        })
     }
 
     /// Look up an actor by name.

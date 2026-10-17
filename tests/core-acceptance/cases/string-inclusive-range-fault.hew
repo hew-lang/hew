@@ -1,0 +1,9 @@
+fn main() {
+    var text = "Aé\0🦀".repeat(40);
+    let snapshot = text;
+    text.push('雪');
+    let retained = [snapshot, text];
+    let invalid = text[..=9223372036854775807];
+    println(invalid);
+    println(retained.len());
+}

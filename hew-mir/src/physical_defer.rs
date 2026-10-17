@@ -157,6 +157,12 @@ pub(super) fn edges(term: &PhysicalTerminator) -> Vec<&PhysicalEdge> {
             unwind,
             ..
         }
+        | PhysicalTerminator::ServiceAcquire {
+            normal,
+            cancel,
+            unwind,
+            ..
+        }
         | PhysicalTerminator::Offload {
             normal,
             cancel,
@@ -421,6 +427,7 @@ pub(super) fn verify_regions(
             match &block.terminator {
                 PhysicalTerminator::CheckedBinary { result, .. }
                 | PhysicalTerminator::NativeIo { result, .. }
+                | PhysicalTerminator::ServiceAcquire { result, .. }
                 | PhysicalTerminator::WireCodec { result, .. }
                 | PhysicalTerminator::ValueCall { result, .. } => {
                     region.values.insert(*result);

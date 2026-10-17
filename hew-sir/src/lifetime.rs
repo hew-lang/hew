@@ -458,6 +458,8 @@ struct Flow<'a> {
     values: Vec<ValueId>,
     guaranteed: BTreeSet<ValueId>,
     local_borrows: BTreeSet<ValueId>,
+    /// Prepared invocation loans retain their typed exclusive access until drain.
+    exclusive_borrows: BTreeSet<ValueId>,
     parents: BTreeMap<ValueId, PlaceBase>,
     // Derived lookup index over the same canonical dependency graph.
     dependents: BTreeMap<PlaceBase, Vec<PlaceBase>>,
@@ -532,7 +534,18 @@ impl<'a> Flow<'a> {
         }
         let mut parents = BTreeMap::new();
         let mut local_borrows = BTreeSet::new();
+        let mut exclusive_borrows = BTreeSet::new();
         for op in function.blocks.iter().flat_map(|block| &block.ops) {
+            if let SemOpKind::TaskInvoke { callee, args, .. } = &op.kind {
+                exclusive_borrows.extend(
+                    callee
+                        .receiver()
+                        .into_iter()
+                        .chain(args)
+                        .filter(|arg| arg.decision == BoundaryDecision::BorrowMut)
+                        .map(|arg| arg.operand.value),
+                );
+            }
             if let Some(parent) = op.kind.borrow_parent() {
                 for result in &op.results {
                     parents.insert(result.id, parent);
@@ -717,6 +730,7 @@ impl<'a> Flow<'a> {
             values,
             guaranteed,
             local_borrows,
+            exclusive_borrows,
             parents,
             dependents,
             local_indices,
@@ -754,6 +768,7 @@ impl<'a> Flow<'a> {
         state: &mut State,
         emit: &mut impl FnMut(Violation),
     ) {
+        self.require_no_exclusive_borrow(block, PlaceBase::Value(value), Some(value), state, emit);
         if consume && self.guaranteed.contains(&value) {
             emit(Violation {
                 linear_obligation: false,
@@ -886,6 +901,41 @@ impl<'a> Flow<'a> {
                     PlaceBase::Place(_) => None,
                 },
                 reason: "value cannot be consumed or ended while a dependent borrow is live",
+            });
+        }
+    }
+
+    fn require_no_exclusive_borrow(
+        &self,
+        block: BlockId,
+        base: PlaceBase,
+        value: Option<ValueId>,
+        state: &State,
+        emit: &mut impl FnMut(Violation),
+    ) {
+        if self.exclusive_borrows.is_empty() {
+            return;
+        }
+        let mut root = base;
+        let mut seen = BTreeSet::new();
+        while seen.insert(root) {
+            let Some(parent) = self.dependency_parent(root) else {
+                break;
+            };
+            root = parent;
+        }
+        if self.any_live_dependent(root, state, |borrow| {
+            self.exclusive_borrows.contains(&borrow)
+                && !value.is_some_and(|value| {
+                    value == borrow || self.depends_on(value, PlaceBase::Value(borrow))
+                })
+        }) {
+            emit(Violation {
+                linear_obligation: false,
+                place: None,
+                block,
+                value,
+                reason: "access aliases a live exclusive prepared-call loan",
             });
         }
     }
@@ -1420,6 +1470,10 @@ impl<'a> Flow<'a> {
         }
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "apply cleanup, loan and value transitions for one ordered operation stream"
+    )]
     fn operations(
         &self,
         id: BlockId,
@@ -1494,8 +1548,38 @@ impl<'a> Flow<'a> {
                 continue;
             }
             self.projected_operation(id, &op.kind, state, emit);
+            if let SemOpKind::TaskInvoke { callee, args, .. } = &op.kind {
+                for argument in callee.receiver().into_iter().chain(args) {
+                    if matches!(
+                        argument.decision,
+                        BoundaryDecision::Borrow | BoundaryDecision::BorrowMut
+                    ) && !self.local_borrows.contains(&argument.operand.value)
+                    {
+                        emit(Violation {
+                            linear_obligation: false,
+                            place: None,
+                            block: id,
+                            value: Some(argument.operand.value),
+                            reason: "prepared input requires a retained local loan",
+                        });
+                    }
+                    if argument.decision == BoundaryDecision::BorrowMut {
+                        self.require_exclusive(id, argument.operand.value, state, emit);
+                    }
+                }
+            }
             let consumes = operation_consumes_operands(&op.kind);
-            op.visit_operands(|_, operand| {
+            op.visit_operands(|slot, operand| {
+                let consumes = if let SemOpKind::TaskInvoke { callee, args, .. } = &op.kind {
+                    let boundary = if slot.0 == 0 {
+                        callee.receiver().expect("visited receiver")
+                    } else {
+                        &args[slot.0 as usize - 1]
+                    };
+                    boundary.decision == BoundaryDecision::Move
+                } else {
+                    consumes
+                };
                 if !matches!(
                     op.kind,
                     SemOpKind::DestroyValue { .. } | SemOpKind::LoadBorrow { .. }
@@ -1831,6 +1915,7 @@ impl<'a> Flow<'a> {
             | SemOpKind::StoreInit { place, .. } => (*place, true),
             _ => return,
         };
+        self.require_no_exclusive_borrow(block, PlaceBase::Place(place), None, state, emit);
         if let Some(projection) = self.projections.projection(place) {
             if changes {
                 self.require_no_live_borrows(block, PlaceBase::Place(place), state, emit);
@@ -2096,6 +2181,7 @@ impl<'a> Flow<'a> {
                         | SemTerminator::Suspend {
                             kind: crate::SuspendKind::Select { .. }
                                 | crate::SuspendKind::NativeIo { .. }
+                                | crate::SuspendKind::ServiceAcquire { .. }
                                 // An ask reads its target to address the actor
                                 // and retains nothing past the reply.
                                 | crate::SuspendKind::Ask { .. }

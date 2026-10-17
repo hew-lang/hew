@@ -328,6 +328,17 @@ impl LowerCtx {
                     self.lower_expr(args[0].expr(), IntentKind::Read),
                     Vec::new(),
                 ),
+                (ActorDeliveryCall::TimerView { after, overdue, .. }, Expr::Call { args, .. }) => {
+                    // Preserve the written timing order; the operation carries
+                    // the positions that determine the view's canonical fields.
+                    let timing = args
+                        .iter()
+                        .enumerate()
+                        .filter(|(index, _)| *index == *after || Some(*index) == *overdue)
+                        .map(|(_, arg)| self.lower_expr(arg.expr(), IntentKind::Read))
+                        .collect();
+                    (self.lower_expr(args[0].expr(), IntentKind::Read), timing)
+                }
                 // `view(actor)` derives its admission from the destination's
                 // declaration; `view(actor, on_full: ..)` overrides it. The
                 // checker resolved both to one policy, so only the target
@@ -1198,6 +1209,23 @@ impl LowerCtx {
                 (HirExprKind::Block(hir_block), ty)
             }
             Expr::Index { object, index } => {
+                if self.method_call_rewrites.contains_key(&self.mk_key(&span)) {
+                    let (kind, ty) = self.lower_method_call(
+                        object,
+                        "at",
+                        &[hew_parser::ast::CallArg::Positional((**index).clone())],
+                        span.clone(),
+                        site,
+                    );
+                    return HirExpr {
+                        node: self.ids.node(),
+                        site,
+                        ty,
+                        intent,
+                        kind,
+                        span,
+                    };
+                }
                 // The checker records the element/result type at the whole
                 // index expression's span. LESSONS: `checker-authority` P0 —
                 // we never re-derive the element type from the container;
@@ -1238,6 +1266,17 @@ impl LowerCtx {
                     inclusive,
                 } = &index.0
                 {
+                    if container.ty == ResolvedTy::String {
+                        let kind = self.lower_string_range_call(
+                            container,
+                            (start.as_deref(), end.as_deref()),
+                            *inclusive,
+                            false,
+                            &result_ty,
+                            &span,
+                        );
+                        return self.make_expr(kind, result_ty, intent, span);
+                    }
                     // C-3 range-slice: result type is Vec<T> (checker-authoritative).
                     let lowered_start = start
                         .as_ref()
@@ -1313,52 +1352,6 @@ impl LowerCtx {
                     // also falls through to the plain `Index` node, which the
                     // MIR `assign` arm recognises and lowers to
                     // `hew_hashmap_insert_layout`.
-
-                    if let ResolvedTy::Named { head, .. } = &container.ty {
-                        let name = head.registry_key();
-                        let builtin = head.builtin();
-                        let callee_name = format!("{name}::at");
-                        if !matches!(builtin, Some(BuiltinType::Vec | BuiltinType::HashMap))
-                            && self.fn_registry.contains_key(&callee_name)
-                        {
-                            let target = self.registered_symbol_target(&callee_name);
-                            let callee_ty = ResolvedTy::Function {
-                                capabilities: hew_types::CallableCapabilities::FUNCTION_ITEM,
-                                params: vec![container.ty.clone(), index_expr.ty.clone()],
-                                ret: Box::new(result_ty.clone()),
-                            };
-                            let resolved = self
-                                .fn_registry
-                                .get(&callee_name)
-                                .map_or(ResolvedRef::Unresolved, |entry| {
-                                    ResolvedRef::Item(entry.id)
-                                });
-                            let callee = HirExpr {
-                                node: self.ids.node(),
-                                site: self.ids.site(),
-                                ty: callee_ty,
-                                intent: IntentKind::Read,
-                                kind: HirExprKind::BindingRef {
-                                    name: callee_name,
-                                    resolved,
-                                },
-                                span: span.clone(),
-                            };
-                            return HirExpr {
-                                node: self.ids.node(),
-                                site,
-                                ty: result_ty.clone(),
-                                intent,
-                                kind: HirExprKind::Call {
-                                    target,
-                                    callee: Box::new(callee),
-                                    args: vec![container, index_expr],
-                                    evaluation_order: Vec::new(),
-                                },
-                                span: span.clone(),
-                            };
-                        }
-                    }
 
                     // C-2 single-element Vec indexing: result type is element type T.
                     // D432: the checker records the reads whose element has no

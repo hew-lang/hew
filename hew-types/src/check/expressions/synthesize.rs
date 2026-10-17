@@ -96,7 +96,6 @@ impl Checker {
         reason = "expression check covers all AST variants"
     )]
     pub(in crate::check) fn synthesize_inner(&mut self, expr: &Expr, span: &Span) -> Ty {
-        self.reject_if_wasm_incompatible_expr(expr, span);
         let ty = match expr {
             Expr::MacroInvocation { name, args } => {
                 self.check_macro_invocation(name.name.as_str(), args, span)
@@ -886,11 +885,21 @@ impl Checker {
                     actual: actual_resolved.user_facing().to_string(),
                 },
                 span,
-                format!(
-                    "cannot cast `{}` to `{}`",
-                    actual_resolved.user_facing(),
-                    target_resolved.user_facing()
-                ),
+                if actual_resolved.is_integer() && target_resolved == Ty::Char {
+                    "integer-to-char conversion is fallible; use `.try_to_char()`".to_string()
+                } else if actual_resolved == Ty::Char && target_resolved.is_integer() {
+                    format!(
+                        "char does not fit every `{}` value; use `.as_u32().try_to_{}()`",
+                        target_resolved.user_facing(),
+                        target_resolved.user_facing()
+                    )
+                } else {
+                    format!(
+                        "cannot cast `{}` to `{}`",
+                        actual_resolved.user_facing(),
+                        target_resolved.user_facing()
+                    )
+                },
             );
         }
 
@@ -1626,6 +1635,15 @@ impl Checker {
         ctx: IndexContext,
     ) -> Ty {
         let obj_ty = self.synthesize(&object.0, &object.1);
+        if ctx == IndexContext::AssignTarget && self.subst.resolve(&obj_ty) == Ty::String {
+            self.report_error(
+                TypeErrorKind::StringIndexAssign,
+                span,
+                "strings do not support indexed assignment; build a new string or use push"
+                    .to_string(),
+            );
+            return Ty::Error;
+        }
 
         // C-3 range-slice (`xs[a..b]`, `xs[a..=b]`, `xs[..b]`, `xs[a..]`,
         // `xs[..]`): when the index is a range expression, the result type
@@ -1714,27 +1732,46 @@ impl Checker {
             );
             return Ty::child_ref(child_ty.clone());
         }
-        if let Ty::TraitObject { traits } = &resolved_obj {
-            for bound in traits {
-                if bound.trait_name != "Index" {
-                    continue;
-                }
-                self.check_against(&index.0, &index.1, &Ty::I32);
-                if let Some((_, output_ty)) = bound
-                    .assoc_bindings
+        if let Some(index_trait) = self.lang_trait(crate::LangItem::Index) {
+            if let Ty::TraitObject { traits } = &resolved_obj {
+                if traits
                     .iter()
-                    .find(|(name, _)| name == "Output")
+                    .filter_map(|bound| bound.trait_id)
+                    .any(|trait_id| self.bound_provides(trait_id, index_trait))
                 {
-                    self.record_dyn_index_method_call(traits, bound, span);
-                    return output_ty.clone();
+                    if ctx == IndexContext::AssignTarget {
+                        self.report_trait_index_assignment(span);
+                        return Ty::Error;
+                    }
+                    let Some(signature) = self.record_dyn_index_method_call(traits, span) else {
+                        return Ty::Error;
+                    };
+                    self.check_against(&index.0, &index.1, &signature.params[0]);
+                    if matches!(signature.return_type, Ty::AssocType { .. }) {
+                        self.report_error(
+                            TypeErrorKind::InvalidOperation,
+                            span,
+                            "`[]` over `dyn Index` requires an `Output` associated-type binding"
+                                .into(),
+                        );
+                        return Ty::Error;
+                    }
+                    return signature.return_type;
                 }
-                self.report_error(
-                    TypeErrorKind::InvalidOperation,
-                    span,
-                    "`[]` over `dyn Index` requires an `Output` associated-type binding"
-                        .to_string(),
-                );
-                return Ty::Error;
+            }
+            if let Some(result) = self.check_bound_receiver_method(
+                object,
+                &resolved_obj,
+                "at",
+                &[CallArg::Positional(index.clone())],
+                span,
+                Some(index_trait),
+            ) {
+                if ctx == IndexContext::AssignTarget {
+                    self.report_trait_index_assignment(span);
+                    return Ty::Error;
+                }
+                return result;
             }
         }
 
@@ -1856,10 +1893,19 @@ impl Checker {
                 }
             }
             // W3 collections-sugar S2: `s[i]` over `string` returns a `char`
-            // at codepoint offset, O(n), panic on OOB. Index is i64. The
+            // at a scalar offset in O(1), fault on OOB. Index is i64. The
             // checker is authoritative; MIR will route to `hew_string_index`.
             Ty::String => {
-                self.check_against(&index.0, &index.1, &Ty::I64);
+                let actual = self.synthesize(&index.0, &index.1);
+                let resolved = self.subst.resolve(&actual);
+                if Self::is_narrower_signed_int(&resolved) {
+                    self.numeric_operand_coercions.insert(
+                        SpanKey::in_module(&index.1, self.current_module_idx),
+                        Ty::I64,
+                    );
+                } else {
+                    self.check_against(&index.0, &index.1, &Ty::I64);
+                }
                 Ty::Char
             }
             // W3 collections-sugar S2: `b[i]` over `bytes` returns a `u8`
@@ -1882,34 +1928,15 @@ impl Checker {
                     .lang_trait(crate::LangItem::Index)
                     .filter(|index_trait| self.type_satisfies_trait(&resolved_obj, *index_trait))
                 {
-                    let expected_key = self
-                        .lookup_named_method_sig(name, args, "at")
-                        .and_then(|sig| sig.params.first().cloned())
-                        .unwrap_or(Ty::I32);
-                    self.check_against(&index.0, &index.1, &expected_key);
-                    let output = self.project_assoc_types(&Ty::AssocType {
-                        base: Box::new(resolved_obj.clone()),
-                        trait_name: self.defs.path(index_trait).into(),
-                        assoc_name: "Output".into(),
-                    });
-                    if matches!(output, Ty::AssocType { .. }) {
-                        self.report_error(
-                            TypeErrorKind::AssocTypeProjectionFailed {
-                                type_name: resolved_obj.user_facing().to_string(),
-                                trait_name: "Index".to_string(),
-                                assoc_name: "Output".to_string(),
-                            },
-                            span,
-                            format!(
-                                "could not project associated type `<{} as Index>.Output` \
-                                 while checking `[]`; ensure the impl defines \
-                                 `type Output = ...`",
-                                resolved_obj.user_facing()
-                            ),
-                        );
+                    if ctx == IndexContext::AssignTarget {
+                        self.report_trait_index_assignment(span);
                         return Ty::Error;
                     }
-                    return output;
+                    if let Some(result) =
+                        self.check_named_index(&resolved_obj, index, index_trait, span)
+                    {
+                        return result;
+                    }
                 }
 
                 self.check_against(&index.0, &index.1, &Ty::I64);
@@ -1971,6 +1998,14 @@ impl Checker {
                 Ty::Error
             }
         }
+    }
+
+    fn report_trait_index_assignment(&mut self, span: &Span) {
+        self.report_error(
+            TypeErrorKind::InvalidOperation,
+            span,
+            "`Index.at` returns a value and does not support indexed assignment".into(),
+        );
     }
 
     /// Type-check an arithmetic operation where at least one operand is `duration` or `instant`.
@@ -2044,6 +2079,16 @@ impl Checker {
         self.expr_type_source_modules
             .insert(key.clone(), self.current_module.clone());
         self.expr_types.insert(key, ty.clone());
+        if matches!(
+            ty,
+            Ty::Named { .. } | Ty::Tuple(_) | Ty::Array(..) | Ty::Closure { .. }
+        ) {
+            self.record_generic_requirement(
+                super::super::types::GenericRequirementKind::ResourceClose,
+                ty,
+                span,
+            );
+        }
     }
 
     pub(in crate::check) fn record_integer_literal_type(

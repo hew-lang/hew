@@ -1,0 +1,9 @@
+import std.net;
+actor Invalid {
+    receive fn accept(peer: net.PeerSession) {}
+}
+fn main() {
+    let target = spawn Invalid;
+    let peer = Node.peer("00").expect("peer");
+    let export = peer.export(target);
+}

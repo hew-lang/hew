@@ -12,10 +12,10 @@ actor Worker {
 
     #[on(crash)]
     fn on_crash(info: CrashInfo) -> CrashAction {
-        // Both fields of the record the runtime hands the hook: the trap code
-        // and the owned message, cloned from the borrowed C string the runtime
-        // owns. The message names the trap kind that ended the incarnation.
-        println(info.code);
+        println(match info.kind {
+            CrashKind.Fault => "Fault",
+            _ => panic("unexpected crash kind"),
+        });
         println(info.message);
         CrashAction.Restart
     }

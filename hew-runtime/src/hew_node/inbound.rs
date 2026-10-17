@@ -151,6 +151,7 @@ pub(super) unsafe extern "C" fn node_inbound_router(
     conn_mgr: *mut connection::HewConnMgr,
     peer: crate::node_identity::HewNodeId,
     publication: u64,
+    grant: u64,
     deadline_ns: i64,
 ) {
     // SAFETY: the reader supplies a NUL-terminated UTF-8 declaration for this call.
@@ -180,6 +181,7 @@ pub(super) unsafe extern "C" fn node_inbound_router(
             shutdown,
             caller,
             publication,
+            grant,
             crate::request_deadline::RequestDeadline::from_raw(deadline_ns),
         );
     } else {
@@ -187,7 +189,17 @@ pub(super) unsafe extern "C" fn node_inbound_router(
         // address space before delivering it to the local mailbox.
         let _remote_trace_source = crate::tracing::enter_remote_trace_source();
         // SAFETY: data is valid for `size` bytes (reader_loop contract).
-        unsafe { deliver_inbound_send(target_actor_id, identity, data, size, caller) };
+        unsafe {
+            deliver_inbound_send(
+                target_actor_id,
+                identity,
+                data,
+                size,
+                caller,
+                &*conn_mgr,
+                publication,
+            );
+        };
     }
 }
 
@@ -209,7 +221,30 @@ unsafe fn deliver_inbound_send(
     data: *mut u8,
     size: usize,
     caller: crate::actor_caller::HewCallerStamp,
+    manager: &connection::HewConnMgr,
+    publication: u64,
 ) {
+    let Some(target) =
+        crate::lifetime::live_actors::with_actor_send_by_id(target_actor_id, |actor| {
+            // SAFETY: the send pin holds this exact incarnation live.
+            unsafe { crate::lifetime::live_actors::ActorIncarnation::of(actor) }
+        })
+    else {
+        return;
+    };
+    if super::service::RemoteAdmission::new(
+        manager,
+        target,
+        caller.identity.into(),
+        publication,
+        0,
+        identity,
+    )
+    .is_err()
+    {
+        set_last_error("cross-node send refused remote actor authority");
+        return;
+    }
     let Some(msg_type) = crate::lifetime::live_actors::dispatch_ptr_by_id(target_actor_id)
         .and_then(|dispatch| crate::xnode_serial::local_message(dispatch, identity))
     else {
@@ -264,6 +299,7 @@ pub(super) fn handle_inbound_ask(
     shutdown_started: Arc<AtomicBool>,
     caller: crate::actor_caller::HewCallerStamp,
     publication: u64,
+    grant: u64,
     deadline: crate::request_deadline::RequestDeadline,
 ) {
     // Hold a router before it acquires the manager's publication barrier.
@@ -300,6 +336,7 @@ pub(super) fn handle_inbound_ask(
         send_rejection_reply(
             source_node_id,
             request_id,
+            publication,
             reason,
             conn_mgr.0,
             shutdown_started.as_ref(),
@@ -314,20 +351,30 @@ pub(super) fn handle_inbound_ask(
     // `ActorError.Dead`, matching the local ask route, D526), never a decode
     // problem. Only once a live actor's dispatch is resolved does a missing
     // codec registration for `msg_type` become a genuine DecodeFailure.
-    let target = crate::lifetime::live_actors::with_actor_send_by_id(target_actor_id, |actor| {
-        // SAFETY: the send pin keeps the complete actor incarnation live.
-        unsafe {
-            Some((
-                crate::lifetime::live_actors::ActorIncarnation::of(actor),
-                (*actor).local_pid_id,
-                (*actor).dispatch? as *const c_void,
-            ))
-        }
-    })
-    .flatten();
+    let target = inbound_target(target_actor_id);
     let Some((target, token, dispatch)) = target else {
-        reject(AskError::ActorStopped);
+        reject(if grant == 0 {
+            AskError::ActorStopped
+        } else {
+            AskError::StaleRef
+        });
         return;
+    };
+    // SAFETY: the admission guard pins this manager until the request retires.
+    let admission = super::service::RemoteAdmission::new(
+        unsafe { &*conn_mgr.0 },
+        target,
+        caller.identity.into(),
+        publication,
+        grant,
+        identity,
+    );
+    let admission = match admission {
+        Ok(admission) => admission,
+        Err(reason) => {
+            reject(reason);
+            return;
+        }
     };
     let Some(msg_type) = crate::xnode_serial::local_message(dispatch, identity) else {
         reject(AskError::DecodeFailure);
@@ -359,6 +406,7 @@ pub(super) fn handle_inbound_ask(
         guard,
         publication,
         deadline,
+        admission,
     );
     if let Err(reason) = pending.admit(target, call, gate.as_ref()) {
         if reason != AskError::LocalShutdown {
@@ -377,6 +425,7 @@ pub(super) fn handle_inbound_ask(
 pub(super) fn send_rejection_reply(
     target_node_id: u16,
     request_id: u64,
+    publication: u64,
     reason: AskError,
     conn_mgr: *mut connection::HewConnMgr,
     shutdown_started: &AtomicBool,
@@ -400,9 +449,9 @@ pub(super) fn send_rejection_reply(
             return;
         }
         // SAFETY: the current-node guard pins this manager for the reply.
-        let Some(send_claim) =
-            (unsafe { connection::claim_send_to_route(&*conn_mgr, conn_id, target_node_id) })
-        else {
+        let Some(send_claim) = (unsafe {
+            connection::claim_send_to_route(&*conn_mgr, conn_id, target_node_id, Some(publication))
+        }) else {
             return;
         };
 
@@ -439,6 +488,7 @@ pub(super) fn send_rejection_reply(
 pub(super) fn send_reply_envelope(
     target_node_id: u16,
     request_id: u64,
+    publication: u64,
     reply_data: &[u8],
     conn_mgr: *mut connection::HewConnMgr,
     shutdown_started: &AtomicBool,
@@ -474,9 +524,9 @@ pub(super) fn send_reply_envelope(
             return;
         }
         // SAFETY: the current-node guard pins this manager for the reply.
-        let Some(send_claim) =
-            (unsafe { connection::claim_send_to_route(&*conn_mgr, conn_id, target_node_id) })
-        else {
+        let Some(send_claim) = (unsafe {
+            connection::claim_send_to_route(&*conn_mgr, conn_id, target_node_id, Some(publication))
+        }) else {
             return;
         };
 
@@ -552,4 +602,24 @@ pub(super) fn stop_node_accept_thread(node: &mut HewNode) {
     if let Some(handle) = handle {
         crate::util::report_join_panic("hew node accept thread", handle.join());
     }
+}
+
+fn inbound_target(
+    actor_id: u64,
+) -> Option<(
+    crate::lifetime::live_actors::ActorIncarnation,
+    crate::lifetime::local_handles::HewLocalPidId,
+    *const c_void,
+)> {
+    crate::lifetime::live_actors::with_actor_send_by_id(actor_id, |actor| {
+        // SAFETY: the send pin keeps the complete actor incarnation live.
+        unsafe {
+            Some((
+                crate::lifetime::live_actors::ActorIncarnation::of(actor),
+                (*actor).local_pid_id,
+                (*actor).dispatch? as *const c_void,
+            ))
+        }
+    })
+    .flatten()
 }

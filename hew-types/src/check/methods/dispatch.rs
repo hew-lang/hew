@@ -128,7 +128,18 @@ impl Checker {
         args: &[CallArg],
         span: &Span,
     ) -> Ty {
-        let result = self.check_method_call_inner(receiver, method, args, span);
+        self.check_method_call_with_type_args(receiver, method, None, args, span)
+    }
+
+    pub(in crate::check) fn check_method_call_with_type_args(
+        &mut self,
+        receiver: &Spanned<Expr>,
+        method: &str,
+        explicit_type_args: Option<&[Spanned<TypeExpr>]>,
+        args: &[CallArg],
+        span: &Span,
+    ) -> Ty {
+        let result = self.check_method_call_inner(receiver, method, explicit_type_args, args, span);
         let result = self.finish_actor_receive_call(receiver, span, result);
         let key = SpanKey::in_module(span, self.current_module_idx);
         self.check_method_callable_place(receiver, method, span);
@@ -231,6 +242,7 @@ impl Checker {
         &mut self,
         receiver: &Spanned<Expr>,
         method: &str,
+        explicit_type_args: Option<&[Spanned<TypeExpr>]>,
         args: &[CallArg],
         span: &Span,
     ) -> Ty {
@@ -896,6 +908,35 @@ impl Checker {
                 );
                 Ty::Error
             }
+            (Ty::Char, _) => {
+                if let Some(result) = self.dispatch_monomorphic_extern_symbol_method(
+                    "char",
+                    &[],
+                    method,
+                    args,
+                    span,
+                    &Ty::Char,
+                ) {
+                    return result;
+                }
+                self.check_primitive_receiver_method_fallback(&Ty::Char, "char", method, args, span)
+            }
+            (resolved, "try_to_char") if resolved.is_integer() => {
+                let resolved = resolved.materialize_literal_defaults();
+                let name =
+                    Self::dispatch_primitive_pattern_name(&resolved).expect("integer receiver");
+                if let Some(result) = self.dispatch_monomorphic_extern_symbol_method(
+                    name,
+                    &[],
+                    method,
+                    args,
+                    span,
+                    &resolved,
+                ) {
+                    return result;
+                }
+                self.check_primitive_receiver_method_fallback(&resolved, name, method, args, span)
+            }
             // Exact fallible numeric conversion: `.try_to_<W>() -> Option<W>`.
             (resolved, method) if resolved.is_numeric() && method.starts_with("try_to_") => {
                 let suffix = &method["try_to_".len()..];
@@ -1488,6 +1529,73 @@ impl Checker {
                 );
                 Ty::Error
             }
+            (
+                Ty::Named {
+                    head,
+                    args: service_args,
+                },
+                _,
+            ) if head.nominal() == Some(crate::KnownDecl::Service.nominal())
+                && !matches!(method, "close" | "release") =>
+            {
+                self.reject_wasm_feature(span, WasmUnsupportedFeature::Distributed);
+                let [Ty::Named {
+                    head: actor_head @ crate::TypeHead::Actor(_),
+                    args: actor_args,
+                }] = service_args.as_slice()
+                else {
+                    self.report_error(
+                        TypeErrorKind::InvalidOperation,
+                        span,
+                        "a service call names a concrete actor interface".into(),
+                    );
+                    return Ty::Error;
+                };
+                let Some(handler) =
+                    self.actor_member(*actor_head, method, crate::DeclarationKind::ActorReceive)
+                else {
+                    self.report_error(
+                        TypeErrorKind::UndefinedMethod,
+                        span,
+                        format!(
+                            "no service handler `{method}` on `{}`",
+                            service_args[0].user_facing()
+                        ),
+                    );
+                    return Ty::Error;
+                };
+                let actor_name = actor_head.registry_key().to_owned();
+                let Some(sig) = self.lookup_named_method_sig(&actor_name, actor_args, method)
+                else {
+                    return Ty::Error;
+                };
+                let applied = self.apply_instantiated_call_signature_with_assoc(
+                    &sig,
+                    None,
+                    args,
+                    span,
+                    SignatureArgApplication::FunctionLike {
+                        param_names: &sig.param_names,
+                        arity_context: format!("service handler `{method}`"),
+                    },
+                    true,
+                    Some(GenericCallee::Method {
+                        type_name: &actor_name,
+                        method,
+                        owner_type_args: actor_args,
+                    }),
+                );
+                self.enforce_actor_method_send_args(args);
+                let result = self.completion_call_type(handler, &applied.return_type);
+                self.method_call_rewrites.insert(
+                    SpanKey::in_module(span, self.current_module_idx),
+                    MethodCallRewrite::RemoteActorAsk {
+                        member: crate::actor_protocol::RemoteActorMember::Declared(handler),
+                        service: true,
+                    },
+                );
+                result
+            }
             // RemotePid<T> methods — dispatch to RemotePid's own impl methods.
             //
             // RemotePid does NOT fall through to actor receive-fn dispatch; it is
@@ -1541,9 +1649,14 @@ impl Checker {
                             self.method_call_rewrites.insert(
                                 SpanKey::in_module(span, self.current_module_idx),
                                 if method == "ask" {
-                                    MethodCallRewrite::RemoteActorAsk
+                                    MethodCallRewrite::RemoteActorAsk {
+                                        member: crate::actor_protocol::RemoteActorMember::ActorMsg,
+                                        service: false,
+                                    }
                                 } else {
-                                    MethodCallRewrite::RemoteActorSend
+                                    MethodCallRewrite::RemoteActorSend {
+                                        member: crate::actor_protocol::RemoteActorMember::ActorMsg,
+                                    }
                                 },
                             );
                         }
@@ -1640,7 +1753,9 @@ impl Checker {
                     ..
                 },
                 _,
-            ) => self.check_stream_method(type_args, method, args, span),
+            ) if lookup_builtin_method_sig(&resolved, method).is_some() => {
+                self.check_stream_method(type_args, method, args, span)
+            }
             // Sink<T> methods
             (
                 Ty::Named {
@@ -1649,7 +1764,7 @@ impl Checker {
                     ..
                 },
                 _,
-            ) => {
+            ) if lookup_builtin_method_sig(&resolved, method).is_some() => {
                 let inner = Self::stream_element_type(type_args);
                 // Pipe sends use the same owned-element witness as receives.
                 // Admission waits until inference has resolved the element.
@@ -1869,7 +1984,7 @@ impl Checker {
                         .flatten();
                     let applied_sig = self.apply_instantiated_call_signature_with_assoc(
                         &sig,
-                        None,
+                        explicit_type_args,
                         args,
                         span,
                         SignatureArgApplication::FunctionLike {
@@ -2286,165 +2401,15 @@ impl Checker {
                 // 2. Collect all hits, deduplicate by declaring_trait
                 // 3. 0 hits → UndefinedMethod, >1 distinct declaring traits → AmbiguousTraitMethod,
                 //    1 → record StaticTraitDispatch rewrite
-                let bounds_for_type_param = match &resolved {
-                    Ty::Named {
-                        head: crate::TypeHead::Param(parameter),
-                        ..
-                    } => Some(self.active_bounds_of(parameter.id))
-                        .filter(|bounds| !bounds.is_empty()),
-                    _ => None,
-                };
-                if let (
-                    Ty::Named {
-                        head: crate::TypeHead::Param(receiver_parameter),
-                        ..
-                    },
-                    Some(bounds),
-                ) = (&resolved, bounds_for_type_param)
-                {
-                    // Expand all bounds into (bound_trait, declaring_trait, sig) tuples.
-                    // For each bound, also walk its supertrait DAG to collect every
-                    // trait that DIRECTLY declares the method — this catches the
-                    // supertrait-redeclaration case (plan §4 V14) where a bound
-                    // `T: B` with `trait B: A` and both A and B declaring the same
-                    // method reaches two distinct declaring traits.
-                    let mut hits: Vec<(crate::DefId, FnSig)> = Vec::new();
-                    for bound in &bounds {
-                        let declaring =
-                            self.collect_all_declaring_traits_for_method(bound.trait_id, method);
-                        for declaring_trait in declaring {
-                            // Resolve the sig from the declaring trait directly.
-                            if let Some((_, sig)) =
-                                self.lookup_trait_method_with_origin(declaring_trait, method)
-                            {
-                                hits.push((declaring_trait, sig));
-                            }
-                        }
-                    }
-                    // Deduplicate by declaring_trait — same origin via multiple bounds is NOT ambiguous.
-                    hits.sort_by_key(|hit| hit.0);
-                    hits.dedup_by_key(|hit| hit.0);
-
-                    if hits.len() == 1 {
-                        let (declaring_id, mut trait_sig) = hits.into_iter().next().unwrap();
-                        let declaring_trait = self.defs.path(declaring_id).to_string();
-                        // Replace `Self` references with the type parameter type.
-                        let self_ty = self.normalize_for_use(&receiver_ty);
-                        let self_parameter = crate::ParamHead::receiver(declaring_id);
-                        for param_ty in &mut trait_sig.params {
-                            *param_ty = param_ty.substitute_type_param(self_parameter, &self_ty);
-                        }
-                        trait_sig.return_type = trait_sig
-                            .return_type
-                            .substitute_type_param(self_parameter, &self_ty);
-                        if self.refuse_associated_dot_call(
-                            &trait_sig,
-                            &declaring_trait,
-                            method,
-                            args,
-                            span,
-                        ) {
-                            return Ty::Error;
-                        }
-                        if trait_sig.requires_mutable_receiver {
-                            self.check_mutable_method_receiver(
-                                receiver,
-                                &format!("trait method `{declaring_trait}.{method}` (statically dispatched on type parameter `{name}`)"),
-                                span,
-                            );
-                        }
-                        let applied_sig = self.apply_instantiated_call_signature_with_assoc(
-                            &trait_sig,
-                            None,
-                            args,
-                            span,
-                            SignatureArgApplication::FunctionLike {
-                                param_names: &trait_sig.param_names,
-                                arity_context: format!("method `{method}`"),
-                            },
-                            true,
-                            Some(GenericCallee::Method {
-                                type_name: &declaring_trait,
-                                method,
-                                owner_type_args: &[],
-                            }),
-                        );
-                        if declaring_trait == "std.builtins.Pid" && method == "send" {
-                            // TODO(A640): replace this fail-closed branch with
-                            // a first-class `P::Msg: Serializable` projection
-                            // bound once the checker can express that shape on
-                            // pid-polymorphic call sites. If the projection is
-                            // already concretely bound (for example
-                            // `P: Pid<Msg = Ping>`), the regular Serializable
-                            // gate below proves it and the call may proceed.
-                            if !self.enforce_pid_polymorphic_send_serializable_args(args, name) {
-                                return Ty::Error;
-                            }
-                            self.enforce_actor_method_send_args(args);
-                        }
-                        self.record_method_call_receiver_kind(
-                            span,
-                            MethodCallReceiverKind::NamedTypeInstance {
-                                type_name: name.to_string(),
-                            },
-                        );
-                        if trait_sig.consumes_receiver {
-                            self.method_call_consumes_receiver
-                                .insert(SpanKey::in_module(span, self.current_module_idx));
-                            let resolved_ty = self.subst.resolve(&receiver_ty);
-                            self.mark_expr_moved_if_non_copy(
-                                &receiver.0,
-                                &receiver.1,
-                                &resolved_ty,
-                            );
-                        }
-                        // Record the StaticTraitDispatch rewrite for HIR consumption.
-                        let target = self
-                            .trait_method_ids_of(declaring_id, method)
-                            .map_or_else(
-                                || CallTarget::Unsupported {
-                                    reason: format!(
-                                        "trait method `{declaring_trait}.{method}` has no registered declaration identity"
-                                    ),
-                                },
-                                |(declaring_trait, method)| CallTarget::StaticTraitMethod {
-                                    declaring_trait,
-                                    method,
-                                },
-                            );
-                        self.record_method_call_rewrite(
-                            span,
-                            MethodCallRewrite::StaticTraitDispatch {
-                                target,
-                                receiver_type_param: *receiver_parameter,
-                                requires_mutable_receiver: trait_sig.requires_mutable_receiver,
-                                consumes_receiver: trait_sig.consumes_receiver,
-                                returns_receiver_identity: trait_sig.returns_receiver_identity,
-                            },
-                        );
-                        return self.project_assoc_types(&applied_sig.return_type);
-                    } else if hits.len() > 1 {
-                        // Multiple distinct declaring traits → ambiguous.
-                        for arg in args {
-                            let (expr, sp) = arg.expr();
-                            self.synthesize(expr, sp);
-                        }
-                        let mut declaring_traits: Vec<&str> =
-                            hits.iter().map(|hit| self.defs.path(hit.0)).collect();
-                        declaring_traits.sort_unstable();
-                        self.report_error(
-                            TypeErrorKind::AmbiguousTraitMethod,
-                            span,
-                            format!(
-                                "ambiguous trait method `{method}` on `{}`: method is declared by \
-                                 multiple traits ({}); qualify the call to disambiguate",
-                                resolved.user_facing(),
-                                declaring_traits.join(", ")
-                            ),
-                        );
-                        return Ty::Error;
-                    }
-                    // hits.is_empty() → fall through to UndefinedMethod below.
+                if let Some(result) = self.check_bound_receiver_method(
+                    receiver,
+                    &receiver_ty,
+                    method,
+                    args,
+                    span,
+                    None,
+                ) {
+                    return result;
                 }
                 // Fn-typed field call: `w.cb(args)` where `cb` is a record
                 // field of function type dispatches as a field-load +
@@ -2454,6 +2419,14 @@ impl Checker {
                 // (`checker-codegen-pattern-contract`). A field that exists
                 // but is NOT fn-typed falls through to `UndefinedMethod`.
                 if let Some(ret_ty) = self.try_record_fn_field_call(&resolved, method, args, span) {
+                    if explicit_type_args.is_some() {
+                        self.report_error(
+                            TypeErrorKind::InvalidOperation,
+                            span,
+                            "explicit type arguments require a function declaration, not a value field".to_owned(),
+                        );
+                        return Ty::Error;
+                    }
                     return ret_ty;
                 }
                 // `clone` on a user-defined named type: intercept before
@@ -2941,6 +2914,9 @@ impl Checker {
         let mut hits: Vec<BinderMethod> = Vec::new();
         for bound in self.active_bounds_of(param.id) {
             for declaring in self.collect_all_declaring_traits_for_method(bound.trait_id, method) {
+                if declaring != bound.trait_id {
+                    continue;
+                }
                 if let Some((_, _, bounds)) =
                     hits.iter_mut().find(|(known, _, _)| *known == declaring)
                 {
@@ -3141,7 +3117,7 @@ impl Checker {
     /// leave the trait's parameters as holes the call's arguments fill, and
     /// the filled holes choose the bound. Returns the applied signature and
     /// the index of the chosen bound, or `None` once the choice is reported.
-    fn apply_call_over_bounds(
+    pub(super) fn apply_call_over_bounds(
         &mut self,
         self_ty: Ty,
         (subject, noun): (&str, &str),

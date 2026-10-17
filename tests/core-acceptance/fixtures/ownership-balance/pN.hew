@@ -1,7 +1,7 @@
 import std.string;
 
 fn owner(number: i64) -> string {
-    "owner-" + string.from_int(number)
+    "owner-" + f"{number}"
 }
 
 fn has_owner(number: i64) -> i64 {

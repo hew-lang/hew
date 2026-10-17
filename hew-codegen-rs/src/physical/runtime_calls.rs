@@ -138,6 +138,13 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             _ => {}
         }
         match action.family {
+            RuntimeCallFamily::SupervisorPool(hew_types::runtime_call::SupervisorPoolOp::Len) => {
+                return self.emit_supervisor_pool_len(
+                    &transfers.iter().map(argument_source).collect::<Vec<_>>(),
+                    required_result()?,
+                    normal,
+                );
+            }
             RuntimeCallFamily::SupervisorPool(_) => {
                 let option = match action.carrier {
                     PhysicalRuntimeCarrier::Variant(id) => Some(id),
@@ -207,13 +214,6 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     result,
                 )?;
             }
-            RuntimeCallFamily::SinkClone => {
-                self.emit_direct_runtime_call(
-                    hew_types::RuntimeCallFamily::SinkClone,
-                    arguments,
-                    result,
-                )?;
-            }
 
             RuntimeCallFamily::StreamForward => {
                 self.emit_direct_runtime_call(
@@ -235,6 +235,11 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     arguments,
                     result,
                 )?;
+            }
+            family @ (RuntimeCallFamily::StreamFromGenerator
+            | RuntimeCallFamily::SinkFromEncoder
+            | RuntimeCallFamily::SinkClone) => {
+                self.emit_stream_codec_make(family, transfers, required_result()?)?;
             }
             RuntimeCallFamily::ActorCallFree => {
                 self.emit_direct_runtime_call(
@@ -500,7 +505,9 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     .llvm_ctx("finish node lookup failure result")?;
                 self.builder.position_at_end(complete);
             }
-            family @ (RuntimeCallFamily::NodeStart | RuntimeCallFamily::NodeConnect) => {
+            family @ (RuntimeCallFamily::NodeStart
+            | RuntimeCallFamily::NodeConnect
+            | RuntimeCallFamily::Service(hew_types::runtime_call::ServiceOp::Peer)) => {
                 let PhysicalRuntimeCarrier::NodeResult {
                     result: result_glue,
                     error: error_glue,
@@ -511,7 +518,17 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     ));
                 };
                 let status_ty = self.ctx.i32_type();
+                let peer_storage = matches!(family, RuntimeCallFamily::Service(_))
+                    .then(|| self.value_emitter().entry_scratch(ptr.into(), "node.peer"))
+                    .transpose()?;
                 let function = match family {
+                    hew_types::RuntimeCallFamily::Service(
+                        hew_types::runtime_call::ServiceOp::Peer,
+                    ) => get_or_declare_external(
+                        self.llvm,
+                        "hew_node_peer_new",
+                        status_ty.fn_type(&[ptr.into(), ptr.into()], false),
+                    )?,
                     hew_types::RuntimeCallFamily::NodeStart => get_or_declare_external(
                         self.llvm,
                         "hew_node_api_start_config",
@@ -534,6 +551,12 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     }
                 };
                 let arguments = match family {
+                    hew_types::RuntimeCallFamily::Service(
+                        hew_types::runtime_call::ServiceOp::Peer,
+                    ) => vec![
+                        self.load(source(0)?, "node.peer.credential")?.into(),
+                        peer_storage.expect("peer slot").into(),
+                    ],
                     hew_types::RuntimeCallFamily::NodeStart => {
                         vec![self.slots[source(0)?.0 as usize].into()]
                     }
@@ -566,7 +589,13 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 self.write_variant_value(
                     destination,
                     0,
-                    &[llvm_type(self.ctx, &unit_layout.repr)?.const_zero()],
+                    &[if let Some(peer) = peer_storage {
+                        self.builder
+                            .build_load(ptr, peer, "node.peer.handle")
+                            .llvm_ctx("load acquired peer")?
+                    } else {
+                        llvm_type(self.ctx, &unit_layout.repr)?.const_zero()
+                    }],
                     result_glue,
                 )?;
                 self.builder
@@ -658,22 +687,110 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     error_len,
                 )?;
             }
-            RuntimeCallFamily::StringFind
-            | RuntimeCallFamily::StringCharAt
-            | RuntimeCallFamily::StringCharAtUtf8 => {
+            RuntimeCallFamily::StringGetRange | RuntimeCallFamily::StringSliceRange => {
+                let function_type = ptr.fn_type(
+                    &[
+                        ptr.into(),
+                        self.ctx.i64_type().into(),
+                        self.ctx.i64_type().into(),
+                        self.ctx.bool_type().into(),
+                        self.ctx.bool_type().into(),
+                    ],
+                    false,
+                );
+                let function =
+                    get_or_declare_external(self.llvm, action.family.c_symbol(), function_type)?;
+                let mut arguments = Vec::new();
+                for index in 0..5 {
+                    let value = self.load(source(index)?, "string.range.argument")?;
+                    arguments.push(value.into());
+                }
+                let value = self
+                    .runtime_call_value(function, &arguments, "string.range.value")?
+                    .into_pointer_value();
+                let found = self
+                    .builder
+                    .build_is_not_null(value, "string.range.found")
+                    .llvm_ctx("check optional string range")?;
+                if action.family == RuntimeCallFamily::StringSliceRange {
+                    let failure = failure.ok_or_else(|| {
+                        CodegenError::FailClosed(
+                            "string range lacks its cleanup failure edge".into(),
+                        )
+                    })?;
+                    let valid = self
+                        .ctx
+                        .append_basic_block(self.value, "string.range.valid");
+                    let invalid = self
+                        .ctx
+                        .append_basic_block(self.value, "string.range.invalid");
+                    self.builder
+                        .build_conditional_branch(found, valid, invalid)
+                        .llvm_ctx("check string range bounds")?;
+                    self.builder.position_at_end(invalid);
+                    self.emit_edge(failure)?;
+                    self.builder.position_at_end(valid);
+                    self.store(required_result()?, value.into())?;
+                    return self.emit_result_edge(result, normal);
+                }
+                let option = variant_carrier(action)?;
+                let present = self
+                    .ctx
+                    .append_basic_block(self.value, "string.range.present");
+                let absent = self
+                    .ctx
+                    .append_basic_block(self.value, "string.range.absent");
+                let complete = self
+                    .ctx
+                    .append_basic_block(self.value, "string.range.complete");
+                let destination = self.slots[required_result()?.0 as usize];
+                self.builder
+                    .build_conditional_branch(found, present, absent)
+                    .llvm_ctx("select string range result")?;
+                self.builder.position_at_end(present);
+                self.write_variant_value(destination, 0, &[value.into()], option)?;
+                self.builder
+                    .build_unconditional_branch(complete)
+                    .llvm_ctx("finish present string range")?;
+                self.builder.position_at_end(absent);
+                self.write_variant_value(destination, 1, &[], option)?;
+                self.builder
+                    .build_unconditional_branch(complete)
+                    .llvm_ctx("finish absent string range")?;
+                self.builder.position_at_end(complete);
+            }
+            RuntimeCallFamily::CharFromI64
+            | RuntimeCallFamily::CharFromU64
+            | RuntimeCallFamily::CharToDigit
+            | RuntimeCallFamily::StringFind
+            | RuntimeCallFamily::StringGet
+            | RuntimeCallFamily::StringFindFrom => {
                 let option = variant_carrier(action)?;
                 let (symbol, function_type) = match action.family {
-                    RuntimeCallFamily::StringCharAt => (
-                        "hew_string_char_at",
+                    RuntimeCallFamily::CharFromI64 | RuntimeCallFamily::CharFromU64 => (
+                        action.family.c_symbol(),
+                        self.ctx
+                            .i32_type()
+                            .fn_type(&[self.ctx.i64_type().into()], false),
+                    ),
+                    RuntimeCallFamily::CharToDigit => (
+                        action.family.c_symbol(),
+                        self.ctx.i64_type().fn_type(
+                            &[self.ctx.i32_type().into(), self.ctx.i64_type().into()],
+                            false,
+                        ),
+                    ),
+                    RuntimeCallFamily::StringGet => (
+                        "hew_string_get",
                         self.ctx
                             .i32_type()
                             .fn_type(&[ptr.into(), self.ctx.i64_type().into()], false),
                     ),
-                    RuntimeCallFamily::StringCharAtUtf8 => (
-                        "hew_string_char_at_utf8",
+                    RuntimeCallFamily::StringFindFrom => (
+                        "hew_string_find_from",
                         self.ctx
-                            .i32_type()
-                            .fn_type(&[ptr.into(), self.ctx.i64_type().into()], false),
+                            .i64_type()
+                            .fn_type(&[ptr.into(), ptr.into(), self.ctx.i64_type().into()], false),
                     ),
                     _ => (
                         "hew_string_find",
@@ -683,15 +800,18 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     ),
                 };
                 let function = get_or_declare_external(self.llvm, symbol, function_type)?;
+                let mut arguments = vec![self.load(source(0)?, "optional.source")?.into()];
+                if !matches!(
+                    action.family,
+                    RuntimeCallFamily::CharFromI64 | RuntimeCallFamily::CharFromU64
+                ) {
+                    arguments.push(self.load(source(1)?, "optional.argument")?.into());
+                }
+                if action.family == RuntimeCallFamily::StringFindFrom {
+                    arguments.push(self.load(source(2)?, "find.start")?.into());
+                }
                 let index = self
-                    .runtime_call_value(
-                        function,
-                        &[
-                            self.load(source(0)?, "find.text")?.into(),
-                            self.load(source(1)?, "find.needle")?.into(),
-                        ],
-                        "find.index",
-                    )?
+                    .runtime_call_value(function, &arguments, "find.index")?
                     .into_int_value();
                 let found = self
                     .builder
@@ -710,15 +830,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     .build_conditional_branch(found, present, absent)
                     .llvm_ctx("select string find result")?;
                 self.builder.position_at_end(present);
-                // `codepoint_at_utf8` declares an `Option<i64>` payload over an
-                // `i32` scalar return, so the found codepoint widens first.
-                let payload = if action.family == RuntimeCallFamily::StringCharAtUtf8 {
-                    self.builder
-                        .build_int_s_extend(index, self.ctx.i64_type(), "find.codepoint")
-                        .llvm_ctx("widen codepoint to its declared payload")?
-                } else {
-                    index
-                };
+                let payload = index;
                 self.write_variant_value(destination, 0, &[payload.into()], option)?;
                 self.builder
                     .build_unconditional_branch(complete)
@@ -1860,9 +1972,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 CodegenError::FailClosed("caller identity lacks its variant shape".into())
             })?;
         let word = self.ctx.i64_type();
-        let stamp_ty = self
-            .ctx
-            .struct_type(&[word.into(), word.into(), word.into()], false);
+        let stamp_ty = super::actor::caller_stamp_type(self.ctx);
         let stamp = self
             .value_emitter()
             .entry_scratch(stamp_ty.into(), "caller.stamp")?;

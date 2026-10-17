@@ -197,8 +197,14 @@ fn spawn_bounded_test_actor(
     let mut fault = ptr::null_mut();
     // SAFETY: the state is a fresh one-byte allocation the spawn consumes,
     // and the callbacks live for the process.
+    let (_construction_ready, construction_waker) = crate::wake::blocking::Readiness::new();
+    // SAFETY: the test retains this descriptor throughout synchronous construction.
+    let construction = unsafe {
+        crate::coro_state::hew_coro_state_new(construction_waker.descriptor(), ptr::null_mut())
+    };
+    // SAFETY: the callbacks and initialized state obey the native construction ABI.
     let token = unsafe {
-        crate::actor::hew_actor_spawn_native(
+        crate::actor::hew_actor_construct_native(
             crate::mem::buf_alloc(1),
             1,
             dispatch,
@@ -208,8 +214,6 @@ fn spawn_bounded_test_actor(
             capacity,
             crate::internal::types::HewOverflowPolicy::DropNew as i32,
             0,
-            ptr::null(),
-            0,
             None,
             None,
             &raw mut fault,
@@ -217,9 +221,23 @@ fn spawn_bounded_test_actor(
             0,
             None,
             ptr::null_mut(),
-            ptr::null_mut(),
+            construction,
         )
     };
+    // SAFETY: test state is initialized and construction has no suspended borrower.
+    unsafe {
+        assert_eq!(
+            crate::actor::hew_actor_publish_native(
+                token,
+                ptr::null(),
+                0,
+                construction,
+                &raw mut fault
+            ),
+            0
+        );
+        crate::coro_state::hew_coro_state_free(construction);
+    }
     assert!(fault.is_null(), "test actor spawn faulted");
     crate::lifetime::local_handles::resolve_current_actor(token)
         .and_then(crate::lifetime::live_actors::get_actor_ptr_by_id)
@@ -1089,7 +1107,8 @@ fn remote_call_for_test(
     let (readiness, waker) = crate::wake::blocking::Readiness::new();
     // SAFETY: the waker descriptor is live for the call.
     let timer = unsafe { crate::coro_sleep::hew_coro_sleep_new(i64::MAX, waker.descriptor()) };
-    let (id, pending) = reply_table().register_with_waker(key, Some(waker), PendingReplyKind::Ask);
+    let (id, pending) =
+        reply_table().register_with_waker(key, Some(waker), PendingReplyKind::Ask(0));
     let call = Box::into_raw(Box::new(HewRemoteCall {
         route: RemoteCallRoute::Wire(pending, test_location(1, 1), 0),
         timer,

@@ -745,6 +745,7 @@ pub fn read_u64(name: &str) -> Option<u64> {
     let coroutines = coroutine_snapshot();
     let hooks = runtime_hook_snapshot();
     match name {
+        "observe.hot_enabled" => Some(u64::from(observe_hot_tier_enabled())),
         "heap.live_bytes" => Some(heap_live_bytes()),
         "heap.allocated_total" => Some(hot.heap_allocated_total),
         "heap.freed_total" => Some(hot.heap_freed_total),
@@ -766,6 +767,12 @@ pub fn read_u64(name: &str) -> Option<u64> {
         }
         "actors.crashes_total" => Some(hooks.actors_crashes_total),
         "actors.restarts_total" => Some(hooks.actors_restarts_total),
+        #[cfg(all(feature = "profiler", not(target_arch = "wasm32")))]
+        "mailbox.depth" => Some(crate::profiler::actor_registry::mailbox_aggregate().sum_depth),
+        #[cfg(all(feature = "profiler", not(target_arch = "wasm32")))]
+        "mailbox.depth_max" => Some(crate::profiler::actor_registry::mailbox_aggregate().max_depth),
+        #[cfg(all(feature = "profiler", not(target_arch = "wasm32")))]
+        "mailbox.depth_p99" => Some(crate::profiler::actor_registry::mailbox_aggregate().p99_depth),
         "coroutines.live" => Some(coroutines.live),
         "coroutines.suspended" => Some(coroutines.suspended),
         "coroutines.resumes_total" => Some(coroutines.resumes_total),
@@ -778,12 +785,21 @@ pub fn read_u64(name: &str) -> Option<u64> {
         "pool.threads" => Some(hooks.pool_threads),
         "pool.saturations_total" => Some(hooks.pool_saturations_total),
         "arena.resets_total" => Some(hooks.arena_resets_total),
-        _ => crate::metrics::read_u64(name),
+        #[cfg(not(target_arch = "wasm32"))]
+        "registry.conflicts_total" => Some(crate::registry::metrics_snapshot().1),
+        _ => {
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Some(value) = crate::hew_node::observe_metric(name) {
+                return Some(value);
+            }
+            crate::metrics::read_u64(name)
+        }
     }
 }
 
 fn observe_series() -> &'static [(&'static str, &'static str)] {
     &[
+        ("observe.hot_enabled", "gauge"),
         ("heap.live_bytes", "gauge"),
         ("heap.allocated_total", "counter"),
         ("heap.freed_total", "counter"),
@@ -803,6 +819,9 @@ fn observe_series() -> &'static [(&'static str, &'static str)] {
         ("actors.attributed_turn_duration_ns_total", "counter"),
         ("actors.crashes_total", "counter"),
         ("actors.restarts_total", "counter"),
+        ("mailbox.depth", "gauge"),
+        ("mailbox.depth_max", "gauge"),
+        ("mailbox.depth_p99", "gauge"),
         ("coroutines.live", "gauge"),
         ("coroutines.suspended", "gauge"),
         ("coroutines.resumes_total", "counter"),
@@ -815,7 +834,32 @@ fn observe_series() -> &'static [(&'static str, &'static str)] {
         ("pool.threads", "gauge"),
         ("pool.saturations_total", "counter"),
         ("arena.resets_total", "counter"),
+        ("node.peers", "gauge"),
+        ("node.routes", "gauge"),
+        ("node.gossip_in_total", "counter"),
+        ("node.gossip_out_total", "counter"),
+        ("node.pending_asks", "gauge"),
+        ("swim.alive", "gauge"),
+        ("swim.suspect", "gauge"),
+        ("swim.dead", "gauge"),
+        ("swim.quarantined", "gauge"),
+        ("registry.names", "gauge"),
+        ("registry.conflicts_total", "counter"),
     ]
+}
+
+#[cfg(all(feature = "profiler", not(target_arch = "wasm32")))]
+pub(crate) fn runtime_series_snapshot() -> Vec<hew_observe_protocol::RuntimeSeries> {
+    observe_series()
+        .iter()
+        .filter_map(|(name, kind)| {
+            read_u64(name).map(|value| hew_observe_protocol::RuntimeSeries {
+                name: (*name).to_owned(),
+                kind: (*kind).to_owned(),
+                value,
+            })
+        })
+        .collect()
 }
 
 /// Rendered Prometheus series names of the per-handler attributed-turn series
@@ -845,6 +889,13 @@ const SUPERVISOR_RESTART_SERIES_NAMES: [&str; 1] = ["supervisor_restarts_by_chil
 
 /// Canonical (dotted) name of the supervisor restart series, for `series_text`.
 const SUPERVISOR_RESTART_SERIES_CANONICAL: [&str; 1] = ["supervisor.restarts_by_child_total"];
+
+const MAILBOX_LOSS_SERIES: [&str; 4] = [
+    "mailbox.dropped_new_total",
+    "mailbox.dropped_old_total",
+    "mailbox.coalesced_total",
+    "mailbox.dropped_on_stop_total",
+];
 
 /// Rendered Prometheus series names of the user-metric registry self-metrics
 /// the scrape emits from [`push_user_metric_self_series`]. Already in rendered
@@ -892,6 +943,11 @@ fn reserved_rendered_names() -> impl Iterator<Item = String> {
             SUPERVISOR_RESTART_SERIES_NAMES
                 .iter()
                 .map(|s| (*s).to_string()),
+        )
+        .chain(
+            MAILBOX_LOSS_SERIES
+                .iter()
+                .map(|name| render_prometheus_name(name)),
         )
         .chain(SELF_METRIC_NAMES.iter().map(|s| (*s).to_string()))
 }
@@ -1095,6 +1151,40 @@ fn push_user_metric_self_series(out: &mut String) {
     }
 }
 
+fn push_mailbox_loss_series(out: &mut String) {
+    #[cfg(all(feature = "profiler", not(target_arch = "wasm32")))]
+    {
+        use std::fmt::Write as _;
+
+        let actors = crate::profiler::actor_registry::snapshot_all();
+        for (index, name) in MAILBOX_LOSS_SERIES.iter().enumerate() {
+            let name = render_prometheus_name(name);
+            let _ = writeln!(out, "# TYPE {name} counter");
+            for actor in &actors {
+                let (Some(identity), Some(mailbox)) = (&actor.identity, &actor.mailbox) else {
+                    continue;
+                };
+                let Some(serial) = identity.spawn_serial else {
+                    continue;
+                };
+                let values = [
+                    mailbox.dropped_new,
+                    mailbox.dropped_old,
+                    mailbox.coalesced,
+                    mailbox.dropped_on_stop,
+                ];
+                let _ = writeln!(
+                    out,
+                    "{name}{{actor=\"{}\",spawn_serial=\"{serial}\"}} {}",
+                    identity.actor_id, values[index]
+                );
+            }
+        }
+    }
+    #[cfg(not(all(feature = "profiler", not(target_arch = "wasm32"))))]
+    let _ = out;
+}
+
 #[must_use]
 pub fn scrape_text() -> String {
     let mut out = String::new();
@@ -1114,6 +1204,7 @@ pub fn scrape_text() -> String {
     }
     push_attributed_turn_series(&mut out);
     push_restarts_by_child_series(&mut out);
+    push_mailbox_loss_series(&mut out);
     push_user_metric_series(&mut out);
     out
 }
@@ -1130,6 +1221,10 @@ pub fn series_text() -> String {
         out.push('\n');
     }
     for name in SUPERVISOR_RESTART_SERIES_CANONICAL {
+        out.push_str(name);
+        out.push('\n');
+    }
+    for name in MAILBOX_LOSS_SERIES {
         out.push_str(name);
         out.push('\n');
     }

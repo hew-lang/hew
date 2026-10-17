@@ -19,9 +19,7 @@ use std::time::{Duration, Instant};
 use crate::actor::{self, HewActor, HewActorOpts};
 use crate::clock::hew_now_ms;
 use crate::exit_status::{FaultRecord, FaultRuling, RoleKey};
-use crate::internal::types::{
-    HewActorState, HewDispatchFn, HewLifecycleFn, HewOnCrashFn, HewSysDispatchFn,
-};
+use crate::internal::types::{HewActorState, HewDispatchFn, HewLifecycleFn, HewSysDispatchFn};
 use crate::mailbox;
 use crate::mailbox_header::HewSysMsg;
 use crate::pool::{HewActorPool, PoolStrategy};
@@ -31,6 +29,18 @@ use crate::timer_wheel::{
     hew_timer_wheel_remove, hew_timer_wheel_schedule_handle, HewTimerEntry, HewTimerWheel,
 };
 use crate::util::{CondvarExt, MutexExt};
+
+#[cfg(feature = "profiler")]
+/// # Safety
+/// The supervisor must remain registered under the roots lock until this returns.
+pub(crate) unsafe fn pin_registered_supervisor(
+    supervisor: *mut HewSupervisor,
+) -> Option<crate::lifetime::local_handles::SupervisorPin> {
+    // SAFETY: the caller retains the roots lock until the canonical pin is acquired.
+    let supervisor_ref = unsafe { supervisor.as_ref() }?;
+    let pin = crate::lifetime::local_handles::pin_current_supervisor(supervisor_ref.local_pid_id)?;
+    (pin.supervisor() == supervisor).then_some(pin)
+}
 
 #[cfg(feature = "profiler")]
 fn supervisor_strategy_name(strategy: c_int) -> &'static str {
@@ -81,49 +91,45 @@ fn child_name(name: *const c_char, fallback: &str) -> String {
 }
 
 #[cfg(feature = "profiler")]
-fn append_tree_row(json: &mut String, first: &mut bool, depth: u16, label: &str, state: &str) {
-    use std::fmt::Write as _;
-
-    if !*first {
-        json.push(',');
-    }
-    *first = false;
-    let _ = write!(json, r#"{{"depth":{depth},"label":"#);
-    crate::util::push_json_string(json, label);
-    let _ = write!(json, r#","state":"{state}"}}"#);
-}
-
-#[cfg(feature = "profiler")]
 fn append_supervisor_rows(
-    json: &mut String,
-    first: &mut bool,
+    rows: &mut Vec<hew_observe_protocol::SupervisorRow>,
     sup: *mut HewSupervisor,
     depth: u16,
 ) {
+    use hew_observe_protocol::{SupervisorDetails, SupervisorRow};
+
     if sup.is_null() {
         return;
     }
 
     // SAFETY: copy non-roster scalars from the live allocation.
     let (self_actor, strategy) = unsafe { ((*sup).self_actor, (*sup).strategy) };
-    let self_actor_id = if self_actor.is_null() {
-        0
-    } else {
-        // SAFETY: self_actor belongs to the live supervisor.
-        unsafe { (*self_actor).id }
-    };
-    let label = format!(
-        "⊞ supervisor:{self_actor_id} [{}]",
-        supervisor_strategy_name(strategy)
-    );
-    append_tree_row(json, first, depth, &label, "Supervisor");
+    // SAFETY: the supervisor pin retains its self actor.
+    let owner = unsafe { self_actor.as_ref() }.map(crate::profiler::actor_registry::actor_identity);
+    let self_actor_id = owner.as_ref().map_or(0, |actor| actor.actor_id);
+    let strategy = supervisor_strategy_name(strategy);
+    let label = format!("⊞ supervisor:{self_actor_id} [{strategy}]");
+    rows.push(SupervisorRow {
+        depth,
+        label,
+        state: "Supervisor".to_owned(),
+        details: Some(SupervisorDetails {
+            producer_instance_id: crate::tracing::producer_instance_id(),
+            kind: "supervisor".to_owned(),
+            actor: owner.clone(),
+            owner: None,
+            role: None,
+            strategy: strategy.to_owned(),
+            restarts: None,
+            pool_members: None,
+        }),
+    });
 
     // Snapshot display data and exact nested pins under this node's roster,
     // then release it before recursive descent. No code ever holds two roster
     // mutexes, so parent/child traversal cannot invert another lifecycle path.
     let (child_rows, nested, pool_rows) = {
-        // SAFETY: top-level supervisor pointers remain valid while registered;
-        // nested calls carry a stable pin acquired by their parent snapshot.
+        // SAFETY: the caller retains the exact root or nested supervisor pin.
         let roster = unsafe { &(*sup).roster }.lock_or_recover();
         let child_rows = roster
             .children
@@ -139,10 +145,24 @@ fn append_supervisor_rows(
                     // SAFETY: crash stats pointer belongs to the child spec.
                     unsafe { (*spec.circuit_breaker.crash_stats).total_crashes }
                 };
-                (
-                    format!("  {name} (restarts: {restarts})"),
-                    actor_state_name(*child),
-                )
+                // SAFETY: the roster retains this child until the guard is released.
+                let identity =
+                    unsafe { child.as_ref() }.map(crate::profiler::actor_registry::actor_identity);
+                SupervisorRow {
+                    depth: depth + 1,
+                    label: format!("  {name} (restarts: {restarts})"),
+                    state: actor_state_name(*child).to_owned(),
+                    details: Some(SupervisorDetails {
+                        producer_instance_id: crate::tracing::producer_instance_id(),
+                        kind: "actor".to_owned(),
+                        actor: identity,
+                        owner: owner.clone(),
+                        role: (!spec.name.is_null()).then_some(name),
+                        strategy: strategy.to_owned(),
+                        restarts: Some(u64::from(restarts)),
+                        pool_members: None,
+                    }),
+                }
             })
             .collect::<Vec<_>>();
         let nested = roster
@@ -165,34 +185,44 @@ fn append_supervisor_rows(
                 // SAFETY: the pool is Box-owned and cannot be removed while
                 // this roster guard is held.
                 let member_count = unsafe { crate::pool::hew_pool_size(*pool) };
-                format!("  {name} (members: {member_count})")
+                SupervisorRow {
+                    depth: depth + 1,
+                    label: format!("  {name} (members: {member_count})"),
+                    state: "Pool".to_owned(),
+                    details: Some(SupervisorDetails {
+                        producer_instance_id: crate::tracing::producer_instance_id(),
+                        kind: "pool".to_owned(),
+                        actor: None,
+                        owner: owner.clone(),
+                        role: (!spec.name.is_null()).then_some(name),
+                        strategy: strategy.to_owned(),
+                        restarts: None,
+                        pool_members: Some(member_count as u64),
+                    }),
+                }
             })
             .collect::<Vec<_>>();
         (child_rows, nested, pool_rows)
     };
 
-    for (label, state) in child_rows {
-        append_tree_row(json, first, depth + 1, &label, state);
-    }
+    rows.extend(child_rows);
     for (child_sup, _pin) in nested {
-        append_supervisor_rows(json, first, child_sup, depth + 1);
+        append_supervisor_rows(rows, child_sup, depth + 1);
     }
-    for label in pool_rows {
-        append_tree_row(json, first, depth + 1, &label, "Pool");
-    }
+    rows.extend(pool_rows);
 }
 
 #[cfg(feature = "profiler")]
 #[must_use]
+/// # Panics
+/// Panics if the snapshot violates the protocol schema.
 pub fn snapshot_tree_json() -> String {
     let roots = crate::shutdown::registered_supervisors_snapshot();
-    let mut json = String::from("[");
-    let mut first = true;
+    let mut rows = Vec::new();
     for root in roots {
-        append_supervisor_rows(&mut json, &mut first, root, 0);
+        append_supervisor_rows(&mut rows, root.supervisor(), 0);
     }
-    json.push(']');
-    json
+    serde_json::to_string(&rows).expect("supervisor snapshot is JSON serializable")
 }
 
 /// Append `(supervisor_label, child_label, restarts)` rows for one supervisor
@@ -268,18 +298,14 @@ fn append_restart_rows(rows: &mut Vec<(String, String, u64)>, sup: *mut HewSuper
 ///
 /// Backs the `supervisor.restarts_by_child_total` observe series
 /// ([`crate::observe::scrape_text`]); mirrors [`snapshot_tree_json`]'s walk,
-/// but reads through the non-panicking
-/// [`crate::shutdown::registered_supervisors_snapshot_opt`] rather than
-/// [`crate::shutdown::registered_supervisors_snapshot`] — a scrape may run
-/// before `hew_sched_init` installs a runtime or after teardown drops it,
-/// where there is legitimately no supervisor tree yet, not a caller bug.
+/// including an empty tree before runtime installation or after teardown.
 #[cfg(feature = "profiler")]
 #[must_use]
 pub fn restarts_by_child_snapshot() -> Vec<(String, String, u64)> {
-    let roots = crate::shutdown::registered_supervisors_snapshot_opt();
+    let roots = crate::shutdown::registered_supervisors_snapshot();
     let mut rows = Vec::new();
     for root in roots {
-        append_restart_rows(&mut rows, root);
+        append_restart_rows(&mut rows, root.supervisor());
     }
     rows
 }
@@ -499,15 +525,9 @@ pub(crate) unsafe fn actor_stop_budget(actor: &HewActor) -> i64 {
 
 // ── CrashAction return tags (M-4) ─────────────────────────────────────────
 //
-// The `HewOnCrashFn` ABI returns the hook's `CrashAction` decision as a 2-byte
-// `#[repr(C)] HewCrashActionAbi { tag: u8, payload_pad: [u8;1] }` struct BY VALUE
-// (mirroring the codegen `%CrashAction = { i8, [1 x i8] }`); the supervisor reads
-// field 0 (the `tag`) via `tag_i32()` and decodes it against these constants, in
-// `std/failure.hew::CrashAction` declaration order. The supervisor HONOURS this
-// return: Kill spends the role and Escalate transfers the failure to its parent.
-// Restart continues through the child's static policy, budget and circuit
-// breaker; it cannot override a temporary policy. A tag outside `0..=2` also
-// follows that ordinary policy path.
+// The child's drained native hook returns a tag in `std.failure.CrashAction`
+// declaration order. GiveUp spends the role; Escalate transfers the failure;
+// Restart applies the ordinary child policy, budget and circuit breaker.
 pub const CRASH_ACTION_RESTART: i32 = 0;
 pub const CRASH_ACTION_ESCALATE: i32 = 1;
 pub const CRASH_ACTION_KILL: i32 = 2;
@@ -750,23 +770,17 @@ pub struct HewChildSpec {
     /// Non-zero when the child actor participates in an actor-ref cycle.
     /// Future consumer: cycle-detection / Machine Lane B cycle handling.
     pub cycle_capable: c_int,
-    /// Optional crash handler invoked before the restart policy is applied.
-    /// Called with the execution context, trap-kind code, and actor state
-    /// pointer when the child exits with `HewActorState::Crashed`.
-    /// `None` / null means no handler. Not read by the runtime in this change;
-    /// the invocation path is added in a follow-on change.
-    pub on_crash: Option<HewOnCrashFn>,
     /// Optional lifecycle wrapper that runs the child actor's `init()` /
     /// `#[on(start)]` hooks. `None` / null when the actor declares neither.
     ///
-    /// Read during `hew_supervisor_add_child_spec` (exactly as `on_crash` is)
+    /// Read during `hew_supervisor_add_child_spec`
     /// and copied into the internal spec so it fires on the INITIAL supervised
     /// spawn — the spawn happens inside `add_child_spec`, before any post-hoc
     /// setter runs, so the literal field (not the setter) is the load-bearing
     /// carrier for the initial fire. `restart_child_from_spec` then calls it on
     /// every spawn (initial and restart) from the one firing site.
     ///
-    /// Read during `hew_supervisor_add_child_spec` (exactly as `on_crash` is)
+    /// Read during `hew_supervisor_add_child_spec`
     /// and copied into the internal spec so it fires on the INITIAL supervised
     /// spawn — the spawn happens inside `add_child_spec`, before any post-hoc
     /// setter runs, so the literal field (not the setter) is the load-bearing
@@ -788,7 +802,7 @@ pub struct HewChildSpec {
     /// (audit C1). `init_state`/`init_state_size` are left NULL/0 when this is
     /// `Some` (the template deep-copy in `add_child_spec` is skipped).
     ///
-    /// Carried IN the spec literal (like `on_crash`/`lifecycle_fn`) so the
+    /// Carried IN the spec literal (like `lifecycle_fn`) so the
     /// INITIAL supervised spawn — which happens inside `add_child_spec` before
     /// any post-hoc setter runs — uses the thunk. The mirror precedent is
     /// `SupervisorChildSpec.init_fn` for child *supervisors*.
@@ -839,8 +853,7 @@ pub struct HewChildSpec {
 /// `error_code` slot at the moment of the trap. It is meaningful only when
 /// `exit_state == HewActorState::Crashed`; for normal stops it is `0`.
 /// Routing this through the event payload lets the supervisor record the real
-/// trap code in crash-stats and forward it to a registered `on_crash` handler
-/// instead of falling back to the historical SIGSEGV placeholder (`11`).
+/// trap code in crash statistics after the child's retained hook has drained.
 ///
 /// `child_index` is `u32`: a negative index is unrepresentable. It formerly
 /// carried `-1` to retag the whole record as a child-SUPERVISOR escalation,
@@ -1571,10 +1584,6 @@ struct InternalChildSpec {
     /// Copied from `HewChildSpec::cycle_capable` and forwarded into
     /// `HewActorOpts` for every restart.
     cycle_capable: c_int,
-    /// Crash handler copied from `HewChildSpec::on_crash`. Invoked from
-    /// `apply_restart` before the restart policy is consulted when the child
-    /// exits with `HewActorState::Crashed`. `None` means no handler.
-    on_crash: Option<HewOnCrashFn>,
     /// Codegen-emitted lifecycle wrapper that runs the child actor's `init()` /
     /// `#[on(start)]` hooks. Copied from `HewChildSpec::lifecycle_fn` at spec
     /// registration (so the INITIAL supervised spawn fires it inside
@@ -1736,7 +1745,6 @@ impl Default for InternalChildSpec {
             circuit_breaker: CircuitBreakerState::default(),
             arena_cap_bytes: 0,
             cycle_capable: 0,
-            on_crash: None,
             lifecycle_fn: None,
             init_fn: None,
             config: ptr::null_mut(),

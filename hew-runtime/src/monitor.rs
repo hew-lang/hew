@@ -112,8 +112,9 @@ pub(crate) struct MonitorDown {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct LinkDown {
     pub local_actor_id: u64,
-    pub remote_target_serial: u64,
+    pub target: Location,
     pub reason: i32,
+    pub crash_kind: i32,
     pub policy_tag: u8,
 }
 
@@ -298,6 +299,7 @@ impl MonitorState {
         monitor_id: u64,
         target: Location,
         reason: i32,
+        crash_kind: i32,
     ) -> Option<LinkDown> {
         let mut observations = self
             .observations
@@ -315,8 +317,9 @@ impl MonitorState {
                 observations.remove(&monitor_id);
                 Some(LinkDown {
                     local_actor_id,
-                    remote_target_serial: target.slot(),
+                    target,
                     reason,
+                    crash_kind,
                     policy_tag,
                 })
             }
@@ -342,12 +345,13 @@ impl MonitorState {
         for down in self.take_monitor_downs_matching(|_| true) {
             self.enqueue_shutdown(down);
         }
-        for down in self.take_link_downs_matching(|_| true, MONITOR_REASON_LOST) {
+        for down in self.take_link_downs_matching(|_| true) {
             crate::link::deliver_cross_node_link_exit(
                 down.local_actor_id,
-                down.remote_target_serial,
+                down.target,
                 down.reason,
                 down.policy_tag,
+                down.crash_kind,
             );
         }
     }
@@ -379,31 +383,21 @@ impl MonitorState {
             .collect()
     }
 
-    pub(crate) fn take_link_downs_for_node(
-        &self,
-        remote_node: NodeId,
-        reason: i32,
-    ) -> Vec<LinkDown> {
-        self.take_link_downs_matching(|target| target.node() == remote_node, reason)
+    pub(crate) fn take_link_downs_for_node(&self, remote_node: NodeId) -> Vec<LinkDown> {
+        self.take_link_downs_matching(|target| target.node() == remote_node)
     }
 
     pub(crate) fn take_link_downs_for_session(
         &self,
         remote_node: NodeId,
         session_incarnation: u32,
-        reason: i32,
     ) -> Vec<LinkDown> {
-        self.take_link_downs_matching(
-            |target| target.node() == remote_node && target.incarnation() == session_incarnation,
-            reason,
-        )
+        self.take_link_downs_matching(|target| {
+            target.node() == remote_node && target.incarnation() == session_incarnation
+        })
     }
 
-    fn take_link_downs_matching(
-        &self,
-        matches: impl Fn(Location) -> bool,
-        reason: i32,
-    ) -> Vec<LinkDown> {
+    fn take_link_downs_matching(&self, matches: impl Fn(Location) -> bool) -> Vec<LinkDown> {
         let mut observations = self
             .observations
             .lock()
@@ -421,8 +415,9 @@ impl MonitorState {
                     monitor_id,
                     LinkDown {
                         local_actor_id,
-                        remote_target_serial: target.slot(),
-                        reason,
+                        target,
+                        reason: MONITOR_REASON_LOST,
+                        crash_kind: crate::internal::types::CrashKind::PartitionDetected.tag(),
                         policy_tag,
                     },
                 )),
@@ -720,17 +715,46 @@ const DOWN_REASON_CRASHED: u32 = 2;
 const DOWN_REASON_MONITOR_LOST: u32 = 3;
 const DOWN_REASON_LOCAL_SHUTDOWN: u32 = 4;
 
+/// Shared physical target payload for monitor and link notifications.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HewNotificationTarget {
+    pub kind: u32,
+    pub session_incarnation: u32,
+    pub node_hi: u64,
+    pub node_lo: u64,
+    pub slot: u64,
+}
+
+impl HewNotificationTarget {
+    pub(crate) fn local(actor_id: u64) -> Self {
+        Self {
+            kind: DOWN_TARGET_LOCAL,
+            session_incarnation: 0,
+            node_hi: 0,
+            node_lo: 0,
+            slot: crate::pid::hew_pid_serial(actor_id),
+        }
+    }
+
+    pub(crate) fn remote(target: Location) -> Self {
+        Self {
+            kind: DOWN_TARGET_REMOTE,
+            session_incarnation: target.incarnation(),
+            node_hi: target.node().hi(),
+            node_lo: target.node().lo(),
+            slot: target.slot(),
+        }
+    }
+}
+
 /// Fixed actor-mailbox DOWN payload.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HewDownMessage {
     pub monitor_id: u64,
-    pub target_kind: u32,
+    pub target: HewNotificationTarget,
     pub reason_kind: u32,
-    pub node_hi: u64,
-    pub node_lo: u64,
-    pub slot: u64,
-    pub session_incarnation: u32,
     pub crash_kind: u32,
 }
 
@@ -748,12 +772,8 @@ impl HewDownMessage {
         };
         Self {
             monitor_id,
-            target_kind: DOWN_TARGET_LOCAL,
+            target: HewNotificationTarget::local(actor_id),
             reason_kind,
-            node_hi: 0,
-            node_lo: 0,
-            slot: crate::pid::hew_pid_serial(actor_id),
-            session_incarnation: 0,
             crash_kind: if reason_kind == DOWN_REASON_CRASHED {
                 crash_kind
             } else {
@@ -779,12 +799,8 @@ impl HewDownMessage {
         };
         Self {
             monitor_id,
-            target_kind: DOWN_TARGET_REMOTE,
+            target: HewNotificationTarget::remote(target),
             reason_kind,
-            node_hi: target.node().hi(),
-            node_lo: target.node().lo(),
-            slot: target.slot(),
-            session_incarnation: target.incarnation(),
             crash_kind: if reason_kind == DOWN_REASON_CRASHED {
                 crash_kind
             } else {
@@ -796,12 +812,8 @@ impl HewDownMessage {
     pub(crate) fn remote_lost(monitor_id: u64, target: Location) -> Self {
         Self {
             monitor_id,
-            target_kind: DOWN_TARGET_REMOTE,
+            target: HewNotificationTarget::remote(target),
             reason_kind: DOWN_REASON_MONITOR_LOST,
-            node_hi: target.node().hi(),
-            node_lo: target.node().lo(),
-            slot: target.slot(),
-            session_incarnation: target.incarnation(),
             crash_kind: 0,
         }
     }
@@ -815,14 +827,11 @@ impl HewDownMessage {
 }
 
 const _: () = {
+    assert!(std::mem::size_of::<HewNotificationTarget>() == 32);
     assert!(std::mem::size_of::<HewDownMessage>() == 48);
     assert!(std::mem::offset_of!(HewDownMessage, monitor_id) == 0);
-    assert!(std::mem::offset_of!(HewDownMessage, target_kind) == 8);
-    assert!(std::mem::offset_of!(HewDownMessage, reason_kind) == 12);
-    assert!(std::mem::offset_of!(HewDownMessage, node_hi) == 16);
-    assert!(std::mem::offset_of!(HewDownMessage, node_lo) == 24);
-    assert!(std::mem::offset_of!(HewDownMessage, slot) == 32);
-    assert!(std::mem::offset_of!(HewDownMessage, session_incarnation) == 40);
+    assert!(std::mem::offset_of!(HewDownMessage, target) == 8);
+    assert!(std::mem::offset_of!(HewDownMessage, reason_kind) == 40);
     assert!(std::mem::offset_of!(HewDownMessage, crash_kind) == 44);
 };
 
@@ -1627,8 +1636,8 @@ mod tests {
                 let down = &*((*node).data.cast::<HewDownMessage>());
                 assert_eq!((*node).msg_type, HewSysMsg::Down.as_i32());
                 assert_eq!(down.monitor_id, id);
-                assert_eq!(down.target_kind, DOWN_TARGET_LOCAL);
-                assert_eq!(down.slot, crate::pid::hew_pid_serial(target_id));
+                assert_eq!(down.target.kind, DOWN_TARGET_LOCAL);
+                assert_eq!(down.target.slot, crate::pid::hew_pid_serial(target_id));
                 assert_eq!(down.reason_kind, DOWN_REASON_CRASHED);
                 assert_eq!(down.crash_kind, crash_kind);
                 mailbox::hew_msg_node_free(node);
@@ -2088,8 +2097,8 @@ mod tests {
             assert_eq!((*node).msg_type, HewSysMsg::Down.as_i32());
             let payload = &*((*node).data.cast::<HewDownMessage>());
             assert_eq!(payload.monitor_id, ref_id);
-            assert_eq!(payload.target_kind, DOWN_TARGET_LOCAL);
-            assert_eq!(payload.slot, crate::pid::hew_pid_serial(target_id));
+            assert_eq!(payload.target.kind, DOWN_TARGET_LOCAL);
+            assert_eq!(payload.target.slot, crate::pid::hew_pid_serial(target_id));
             assert_eq!(payload.reason_kind, DOWN_REASON_CRASHED);
             mailbox::hew_msg_node_free(node);
 
@@ -2466,15 +2475,75 @@ mod tests {
             .expect("link observation id");
 
         let down = state
-            .deliver_link_down_to_ref(link_id, target, HewActorState::Crashed as i32)
+            .deliver_link_down_to_ref(link_id, target, HewActorState::Crashed as i32, 1)
             .expect("link terminal claim");
         assert_eq!(down.local_actor_id, 24);
-        assert_eq!(down.remote_target_serial, target.slot());
+        assert_eq!(down.target, target);
+        assert_eq!(down.crash_kind, 1);
         assert_eq!(down.policy_tag, 3);
         assert_eq!(
-            state.deliver_link_down_to_ref(link_id, target, HewActorState::Crashed as i32),
+            state.deliver_link_down_to_ref(link_id, target, HewActorState::Crashed as i32, 1),
             None
         );
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn remote_link_wire_notice_preserves_target_and_class_once() {
+        let _guard = crate::runtime_test_guard();
+        // SAFETY: this test owns an empty actor without scheduler workers.
+        unsafe {
+            let watcher =
+                crate::actor::hew_actor_spawn(std::ptr::null_mut(), 0, Some(noop_dispatch));
+            assert!(!watcher.is_null());
+            (*watcher)
+                .actor_state
+                .store(HewActorState::Runnable as i32, Ordering::Release);
+            let target = remote_location(9, 73, 6);
+            let id = monitor_state()
+                .register_link_watcher(target, (*watcher).id, 3)
+                .unwrap();
+            let payload = crate::envelope::MonitorDownPayload {
+                ref_id: id,
+                target,
+                reason: HewActorState::Crashed as i32,
+                end_reason: crate::internal::types::ActorEndReason::Crashed as u8,
+                crash_kind: crate::internal::types::CrashKind::HeapExceeded.tag(),
+            };
+            let bytes = crate::envelope::encode_monitor_down_payload(&payload).unwrap();
+            let decoded = crate::envelope::decode_monitor_down_payload(&bytes).unwrap();
+            let mailbox = (*watcher).mailbox.cast::<mailbox::HewMailbox>();
+            crate::hew_node::handle_inbound_link_down(
+                id,
+                remote_location(9, 73, 5),
+                decoded.reason,
+                decoded.crash_kind,
+            );
+            assert!(mailbox::hew_mailbox_try_recv_sys(mailbox).is_null());
+            for _ in 0..2 {
+                crate::hew_node::handle_inbound_link_down(
+                    decoded.ref_id,
+                    decoded.target,
+                    decoded.reason,
+                    decoded.crash_kind,
+                );
+            }
+            let node = mailbox::hew_mailbox_try_recv_sys(mailbox);
+            assert!(!node.is_null());
+            assert_eq!((*node).msg_type, HewSysMsg::Exit.as_i32());
+            let exit = &*((*node).data.cast::<crate::link::ExitMessage>());
+            assert_eq!(exit.target, HewNotificationTarget::remote(target));
+            assert_eq!(
+                exit.crash_kind,
+                crate::internal::types::CrashKind::HeapExceeded.tag()
+            );
+            mailbox::hew_msg_node_free(node);
+            assert!(mailbox::hew_mailbox_try_recv_sys(mailbox).is_null());
+            (*watcher)
+                .actor_state
+                .store(HewActorState::Idle as i32, Ordering::Release);
+            assert_eq!(crate::actor::hew_actor_free(watcher), 0);
+        }
     }
 
     #[test]

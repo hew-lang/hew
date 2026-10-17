@@ -741,7 +741,14 @@ impl NodeVisitor for EffectVisitor<'_> {
                     Expr::FieldAccess { field, .. } => format!("{}(...)", field.0),
                     _ => "call".to_string(),
                 };
-                if let Some(target) = self.output.direct_call_targets.get(&key) {
+                if self
+                    .output
+                    .suspension_effects
+                    .construct_calls
+                    .contains(&key)
+                {
+                    // A checked constructor has no executable callee.
+                } else if let Some(target) = self.output.direct_call_targets.get(&key) {
                     self.target(target, span, &call);
                 } else {
                     self.refuse(span, format!("`{call}` has no checked direct target"));
@@ -749,6 +756,12 @@ impl NodeVisitor for EffectVisitor<'_> {
             }
             Expr::MethodCall { method, .. } => {
                 self.method(&key, span, &format!("{}(...)", method.0));
+            }
+            Expr::Index { .. }
+                if self.output.method_call_rewrites.contains_key(&key)
+                    || self.output.dyn_trait_method_calls.contains_key(&key) =>
+            {
+                self.method(&key, span, "Index.at(...)");
             }
             Expr::Clone(_) => self.method(&key, span, "clone"),
             Expr::Spawn { .. }
@@ -819,18 +832,35 @@ fn pure_runtime(family: RuntimeCallFamily) -> bool {
             | R::HashMapNew
             | R::HashMapNewWithLayout
             | R::MathIntrinsic(_)
-            | R::StringCharAt
-            | R::StringCharAtUtf8
-            | R::StringCharCount
+            | R::CharIsDigit
+            | R::CharIsLetter
+            | R::CharIsAlphanumeric
+            | R::CharIsWhitespace
+            | R::CharIsUpper
+            | R::CharIsLower
+            | R::CharIsPunctuation
+            | R::CharIsControl
+            | R::CharIsAscii
+            | R::CharToUpper
+            | R::CharToLower
+            | R::CharToTitle
+            | R::CharLenUtf8
+            | R::CharToDigit
+            | R::CharFromI64
+            | R::CharFromU64
+            | R::StringGet
+            | R::StringGetRange
+            | R::StringSliceRange
+            | R::StringAppend
+            | R::StringPush
+            | R::StringClear
+            | R::StringFindFrom
             | R::StringByteLen
             | R::StringConcat
             | R::StringEquals
             | R::StringStartsWith
             | R::StringEndsWith
             | R::StringIsEmpty
-            | R::StringIsDigit
-            | R::StringIsAlpha
-            | R::StringIsAlphanumeric
             | R::StringFind
             | R::StringIndex
             | R::StringLen

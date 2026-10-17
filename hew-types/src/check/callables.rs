@@ -624,6 +624,16 @@ impl Checker {
     }
 
     fn capture_is_cloneable(&self, ty: &Ty) -> bool {
+        // An actor handle's copy proof does not depend on its state arguments.
+        if matches!(
+            ty,
+            Ty::Named {
+                head: crate::TypeHead::Actor(_),
+                ..
+            }
+        ) {
+            return self.registry.implements_marker(ty, MarkerTrait::Copy);
+        }
         let Ok(resolved) = ResolvedTy::from_ty(ty) else {
             return false;
         };
@@ -833,30 +843,58 @@ impl Checker {
         span: &Span,
         kind: TypeErrorKind,
     ) -> bool {
+        self.reject_prepared_input_access(root, path, span, kind, false)
+    }
+
+    pub(super) fn reject_prepared_input_access(
+        &mut self,
+        root: impl crate::env::LexicalName,
+        path: &[String],
+        span: &Span,
+        kind: TypeErrorKind,
+        read: bool,
+    ) -> bool {
         let root = root.lexical_key();
         let Some(binding) = self.env.lookup_ref(root) else {
             return false;
         };
         let origin = self
-            .prepared_select_tasks
+            .prepared_select_inputs
             .iter()
             .find(|loan| {
                 loan.binding == binding.id
                     && (path.starts_with(&loan.path) || loan.path.starts_with(path))
+                    && (!read || loan.access == super::types::PreparedSelectAccess::Exclusive)
             })
-            .map(|loan| loan.span.clone());
-        let Some(origin) = origin else {
+            .map(|loan| (loan.span.clone(), loan.access));
+        let Some((origin, access)) = origin else {
             return false;
         };
         self.report_error_with_note(
             kind,
             span,
-            format!(
-                "cannot change prepared task `{}` while other selection sources are evaluated",
-                Self::render_place(root, path)
-            ),
+            if access == super::types::PreparedSelectAccess::Task {
+                format!(
+                    "cannot change prepared task `{}` while other selection sources are evaluated",
+                    Self::render_place(root, path)
+                )
+            } else {
+                format!(
+                    "cannot access `{}` while a prepared call holds an {} loan",
+                    Self::render_place(root, path),
+                    if access == super::types::PreparedSelectAccess::Exclusive {
+                        "exclusive"
+                    } else {
+                        "input"
+                    }
+                )
+            },
             &origin,
-            "selection borrows this task until its winning branch is chosen".into(),
+            if access == super::types::PreparedSelectAccess::Task {
+                "selection borrows this task until its winning branch is chosen".into()
+            } else {
+                "the prepared call retains this loan until cancellation and cleanup finish".into()
+            },
         );
         true
     }

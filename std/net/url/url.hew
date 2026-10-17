@@ -202,7 +202,7 @@ fn encode_impl(s: string) -> string {
     for i in 0..data.len() {
         let b = data[i];
         if is_unreserved_byte(b) {
-            out = out + string.from_char(b as i64);
+            out = out + f"{(b as i64).try_to_char().expect("valid Unicode scalar")}";
         } else {
             out = out + percent_encode_byte(b);
         }
@@ -273,16 +273,16 @@ pub fn decode_query(params: string) -> Vec<(string, string)> {
 
 fn decode_query_impl(params: string) -> Vec<(string, string)> {
     var decoded: Vec<(string, string)> = Vec.new();
-    if string.is_empty(params) {
+    if (params).is_empty() {
         return decoded;
     }
-    let entries = string.split(params, "&");
+    let entries = (params).split("&");
     for i in 0..entries.len() {
         let entry = entries[i];
         match entry.find("=") {
             .Some(eq) => {
-                let key = entry.slice(0, eq);
-                let value = entry.slice(eq + 1, entry.len());
+                let key = entry[0..eq];
+                let value = entry[eq + 1 .. entry.len()];
                 decoded.push((decode_form_component(key), decode_form_component(value)));
             }
             .None => {}
@@ -339,19 +339,19 @@ pub fn encode_query(params: string) -> string {
 
 fn encode_query_impl(params: string) -> string {
     var encoded: Vec<string> = Vec.new();
-    let lines = string.lines(params);
+    let lines = (params).lines();
     for i in 0..lines.len() {
         let line = lines[i];
         match line.find("=") {
             .Some(eq) => {
-                let key = line.slice(0, eq);
-                let value = line.slice(eq + 1, line.len());
+                let key = line[0..eq];
+                let value = line[eq + 1 .. line.len()];
                 encoded.push(encode(key) + "=" + encode(value));
             }
             .None => {}
         }
     }
-    string.join(encoded, "&")
+    (encoded).join("&")
 }
 
 /// RFC 3986 unreserved bytes: `A-Z a-z 0-9 - . _ ~`.
@@ -364,7 +364,7 @@ fn percent_encode_byte(b: u8) -> string {
     let hex = "0123456789ABCDEF";
     let hi = (b / 16) as i64;
     let lo = (b % 16) as i64;
-    "%" + hex.slice(hi, hi + 1) + hex.slice(lo, lo + 1)
+    "%" + hex[hi .. hi + 1] + hex[lo .. lo + 1]
 }
 
 fn hex_nibble(b: u8) -> i32 { // INTERNAL-ABI: nibble values 0-15 and sentinel -1; internal URL percent-decoder helper

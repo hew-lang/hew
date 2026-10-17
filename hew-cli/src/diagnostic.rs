@@ -54,7 +54,16 @@ fn diag_println(s: &str) {
 
 /// Emit a plain diagnostic line through the capture-aware sink.
 pub(crate) fn emit_plain_diagnostic_line(s: &str) {
-    diag_println(s);
+    diag_println(&hew_compile::source_path_policy().display_text(s));
+}
+
+pub(crate) fn display_filename(filename: &str) -> String {
+    if filename.starts_with('<') && filename.ends_with('>') {
+        return filename.to_string();
+    }
+    hew_compile::display_source_path(std::path::Path::new(filename))
+        .display()
+        .to_string()
 }
 
 const ROOT_SOURCE_CONTEXT_UNAVAILABLE: &str =
@@ -371,6 +380,8 @@ fn render_diagnostic_impl(
     suggestions: &[String],
     code: Option<&str>,
 ) {
+    let filename = display_filename(filename);
+    let message = hew_compile::source_path_policy().display_text(message);
     let palette = diagnostic_palette();
     let (line, col) = offset_to_line_col(source, span.start);
     let level = code.map_or_else(|| "error".to_string(), |code| format!("error[{code}]"));
@@ -392,8 +403,8 @@ fn render_diagnostic_impl(
             "{bold}{note_filename}:{note_line}:{note_col}:{reset} {cyan}note{reset}{bold}: {message}{reset}",
             bold = palette.bold,
             cyan = palette.cyan,
-            message = note.message,
-            note_filename = note.filename,
+            message = hew_compile::source_path_policy().display_text(note.message),
+            note_filename = display_filename(note.filename),
             reset = palette.reset,
         ));
         render_source_underline(note.source, note.span, note_line, &palette);
@@ -420,6 +431,8 @@ pub fn render_warning(
     notes: &[DiagnosticNote<'_>],
     suggestions: &[String],
 ) {
+    let filename = display_filename(filename);
+    let message = hew_compile::source_path_policy().display_text(message);
     let palette = diagnostic_palette();
     let (line, col) = offset_to_line_col(source, span.start);
 
@@ -438,8 +451,8 @@ pub fn render_warning(
             "{bold}{note_filename}:{note_line}:{note_col}:{reset} {cyan}note{reset}{bold}: {message}{reset}",
             bold = palette.bold,
             cyan = palette.cyan,
-            message = note.message,
-            note_filename = note.filename,
+            message = hew_compile::source_path_policy().display_text(note.message),
+            note_filename = display_filename(note.filename),
             reset = palette.reset,
         ));
         render_source_underline(note.source, note.span, note_line, &palette);
@@ -467,6 +480,7 @@ pub fn render_warning(
 /// `hew run`. The diagnostic code (`HEW-PERF-001`) and the `file:line:col`
 /// prefix are stable UX surface; the trailing message text is best-effort.
 pub fn print_stack_hints(source: &str, filename: &str, hints: &[hew_types::check::StackHint]) {
+    let filename = display_filename(filename);
     let palette = diagnostic_palette();
     for hint in hints {
         let (line, col) = offset_to_line_col(source, hint.span_key.start);

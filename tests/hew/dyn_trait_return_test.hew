@@ -31,17 +31,17 @@ impl Parcel {
 
 fn make_labeled(seed: string, kind: i64) -> dyn Labeled {
     if kind == 0 {
-        Person { label: string.repeat(seed, 64) }
+        Person { label: (seed).repeat(64) }
     } else {
-        Parcel { label: string.repeat(seed, 96), route: string.repeat(seed, 17) }
+        Parcel { label: (seed).repeat(96), route: (seed).repeat(17) }
     }
 }
 
 fn match_labeled(seed: string, kind: i64) -> dyn Labeled {
     match kind {
-        0 => Person { label: string.repeat(seed, 48) },
-        1 => Parcel { label: string.repeat(seed, 80), route: string.repeat(seed, 13) },
-        _ => Person { label: string.repeat(seed, 32) },
+        0 => Person { label: (seed).repeat(48) },
+        1 => Parcel { label: (seed).repeat(80), route: (seed).repeat(13) },
+        _ => Person { label: (seed).repeat(32) },
     }
 }
 

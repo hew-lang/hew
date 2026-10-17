@@ -19,6 +19,11 @@ curl -fsSL https://hew.sh/install | bash
 
 Pre-built binaries for Linux (x86_64, ARM64), macOS (x86_64, ARM64), FreeBSD 15.1 or newer (x86_64), and Windows (x86_64) — plus `.deb`, `.rpm`, and Arch packages — are published on the [Releases](https://github.com/hew-lang/hew/releases) page. See the [Getting Started Guide](https://hew.sh/docs/getting-started/) for installation options, editor setup, and troubleshooting.
 
+The current release is [Hew v0.6.1](https://github.com/hew-lang/hew/releases/tag/v0.6.1).
+Read its [upgrade notes](docs/releases/v0.6.1.md) and
+[versioned language specification](https://github.com/hew-lang/hew/blob/v0.6.1/docs/specs/HEW-SPEC-2026.md).
+Changes on `main` after that release are [unreleased](docs/releases/UNRELEASED.md).
+
 ## Quick Start
 
 ```bash
@@ -281,7 +286,7 @@ source.hew → Lexer → Parser → Type Checker → HIR → MIR → LLVM IR/obj
 - **hew-pkg/** — Package-manager library behind the `hew` subcommands (init, add, install, publish, search)
 - **hew-lsp/** — Language server (tower-lsp)
 - **hew-observe/** — Runtime observability TUI (`hew-observe`)
-- **hew-wasm/** — Analysis-only diagnostics frontend compiled to WASM (lexer/parser/type-checker for in-browser editor tooling); the full browser execution runtime is a v0.6.0 deliverable
+- **hew-wasm/** — Analysis frontend compiled to WASM for in-browser diagnostics; browser execution uses the shared compiler and **hew-sandbox-vm/** runtime
 
 ### Standard Library & Build Support
 

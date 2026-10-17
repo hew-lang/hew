@@ -11,6 +11,11 @@ can launch `hew-lsp` directly or use `hew lsp`, which launches the sibling
 `hew-lsp` binary. See the [LSP editor setup guide](../docs/dev/lsp-editor-setup.md)
 for discovery and configuration details.
 
+The [Hew v0.6.1 SDK](https://github.com/hew-lang/hew/releases/tag/v0.6.1)
+includes both binaries and the matching standard library. Use that installation
+for released-language diagnostics; syntax highlighting alone does not check
+whether a compiler supports a construct.
+
 From a source checkout:
 
 ```sh

@@ -3,7 +3,7 @@
 //! Runs on a dedicated OS thread (not a Hew actor) so it remains
 //! responsive even when the scheduler is overloaded.
 
-use crate::util::{json_array, push_json_string, MutexExt};
+use crate::util::MutexExt;
 use std::convert::Infallible;
 use std::fmt::Write as _;
 use std::sync::mpsc::SyncSender;
@@ -40,24 +40,11 @@ const DASHBOARD_JS: &str = include_str!("dashboard/dashboard.js");
 
 /// Shared context passed to the profiler HTTP server thread.
 ///
-/// Carries references to the metrics ring buffer and pointers to the
-/// distributed runtime subsystems so the profiler can expose cluster,
-/// connection, routing, and trace data over HTTP.
+/// Owns the metrics ring. Distributed state is borrowed only under the node guard.
 #[derive(Debug)]
 pub struct ProfilerContext {
     pub ring: Arc<Mutex<MetricsRing>>,
-    pub cluster: *mut crate::cluster::HewCluster,
-    pub connmgr: *mut crate::connection::HewConnMgr,
-    pub routing: *mut crate::routing::HewRoutingTable,
 }
-
-// SAFETY: The raw pointers reference heap-allocated structs that outlive
-// the profiler thread. The pointed-to types use internal synchronization
-// (Mutex / RwLock / atomics) for concurrent access.
-unsafe impl Send for ProfilerContext {}
-// SAFETY: All access through the pointers goes via functions that use
-// internal locking; no unsynchronized mutation is performed.
-unsafe impl Sync for ProfilerContext {}
 
 // ── Server ───────────────────────────────────────────────���──────────────
 
@@ -245,9 +232,9 @@ fn handle_request(
         "/api/memory" => serve_memory(),
         "/api/actors" => serve_actors(),
         "/api/metrics/history" => serve_history(&ctx.ring),
-        "/api/cluster/members" => serve_cluster_members(ctx),
-        "/api/connections" => serve_connections(ctx),
-        "/api/routing/table" => serve_routing_table(ctx),
+        "/api/cluster/members" => serve_cluster_members(),
+        "/api/connections" => serve_connections(),
+        "/api/routing/table" => serve_routing_table(),
         "/api/traces" => serve_traces(req.uri().query()),
         "/api/supervisors" => serve_supervisors(),
         "/api/crashes" => serve_crashes(),
@@ -315,27 +302,28 @@ fn serve_observe_scrape() -> Response<Full<Bytes>> {
 }
 
 fn current_metrics_json(snap: &crate::profiler::metrics::MetricsSnapshot) -> String {
-    format!(
-        r#"{{"timestamp_secs":"{}","tasks_spawned":"{}","tasks_completed":"{}","steals":"{}","messages_sent":"{}","messages_received":"{}","active_workers":"{}","alloc_count":"{}","dealloc_count":"{}","bytes_allocated":"{}","bytes_freed":"{}","bytes_live":"{}","peak_bytes_live":"{}","tcp_bytes_read":"{}","tcp_bytes_written":"{}","tcp_accept_count":"{}","tcp_connect_count":"{}","tcp_error_count":"{}"}}"#,
-        snap.timestamp_secs,
-        snap.tasks_spawned,
-        snap.tasks_completed,
-        snap.steals,
-        snap.messages_sent,
-        snap.messages_received,
-        snap.active_workers,
-        snap.alloc_count,
-        snap.dealloc_count,
-        snap.bytes_allocated,
-        snap.bytes_freed,
-        snap.bytes_live,
-        snap.peak_bytes_live,
-        snap.tcp_bytes_read,
-        snap.tcp_bytes_written,
-        snap.tcp_accept_count,
-        snap.tcp_connect_count,
-        snap.tcp_error_count,
-    )
+    let metrics = hew_observe_protocol::Metrics {
+        timestamp_secs: snap.timestamp_secs,
+        tasks_spawned: snap.tasks_spawned,
+        tasks_completed: snap.tasks_completed,
+        steals: snap.steals,
+        messages_sent: snap.messages_sent,
+        messages_received: snap.messages_received,
+        active_workers: snap.active_workers,
+        alloc_count: snap.alloc_count,
+        dealloc_count: snap.dealloc_count,
+        bytes_allocated: snap.bytes_allocated,
+        bytes_freed: snap.bytes_freed,
+        bytes_live: snap.bytes_live,
+        peak_bytes_live: snap.peak_bytes_live,
+        tcp_bytes_read: snap.tcp_bytes_read,
+        tcp_bytes_written: snap.tcp_bytes_written,
+        tcp_accept_count: snap.tcp_accept_count,
+        tcp_connect_count: snap.tcp_connect_count,
+        tcp_error_count: snap.tcp_error_count,
+        runtime_series: Some(crate::observe::runtime_series_snapshot()),
+    };
+    serde_json::to_string(&metrics).expect("metrics snapshot is JSON serializable")
 }
 
 /// `GET /api/memory` — current allocator stats.
@@ -421,17 +409,28 @@ fn serve_flat_profile() -> Response<Full<Bytes>> {
 /// string fields so that RFC 8259 escaping (including `\b`, `\f`, and other
 /// U+0000–U+001F control characters) is handled by the canonical helper.
 fn actors_json(actors: &[crate::profiler::actor_registry::ActorSnapshot]) -> String {
-    json_array(actors, |json, a| {
-        let _ = write!(json, r#"{{"id":"{}","pid":"{}","actor_type":"#, a.id, a.pid);
-        push_json_string(json, &a.actor_type);
-        let _ = write!(json, r#","state":"#);
-        push_json_string(json, a.state);
-        let _ = write!(
-            json,
-            r#","msgs":"{}","time_ns":"{}","mbox_depth":"{}","mbox_hwm":"{}"}}"#,
-            a.messages_processed, a.processing_time_ns, a.mailbox_depth, a.mailbox_hwm,
-        );
-    })
+    let actors: Vec<_> = actors
+        .iter()
+        .map(|actor| hew_observe_protocol::ActorInfo {
+            id: actor.id,
+            pid: actor.pid,
+            actor_type: actor.actor_type.clone(),
+            state: actor.state.to_owned(),
+            msgs: actor.messages_processed,
+            time_ns: actor.processing_time_ns,
+            mbox_depth: actor.mailbox_depth,
+            mbox_hwm: actor.mailbox_hwm,
+            origin: actor
+                .identity
+                .clone()
+                .map(|identity| hew_observe_protocol::ActorOrigin {
+                    producer_instance_id: crate::tracing::producer_instance_id(),
+                    identity,
+                }),
+            mailbox: actor.mailbox.clone(),
+        })
+        .collect();
+    serde_json::to_string(&actors).expect("actor snapshot is JSON serializable")
 }
 
 /// `GET /api/actors` — per-actor stats and mailbox depths.
@@ -443,40 +442,36 @@ fn serve_actors() -> Response<Full<Bytes>> {
 // ── Distributed runtime endpoints ───────────────────────────────────────
 
 /// `GET /api/cluster/members` — cluster membership snapshot.
-fn serve_cluster_members(ctx: &ProfilerContext) -> Response<Full<Bytes>> {
-    if ctx.cluster.is_null() {
-        return json_response("[]");
-    }
-    // SAFETY: pointer is non-null and points to a valid HewCluster that
-    // outlives the profiler thread. Internal access is mutex-protected.
-    let cluster = unsafe { &*ctx.cluster };
-    let json = crate::cluster::snapshot_members_json(cluster);
+fn serve_cluster_members() -> Response<Full<Bytes>> {
+    let json = crate::hew_node::with_current_node_snapshot(|node| {
+        // SAFETY: the current-node guard retains all node subsystems.
+        node.and_then(|node| unsafe { node.cluster.as_ref() })
+            .map_or_else(|| "[]".to_owned(), crate::cluster::snapshot_members_json)
+    });
     json_response(&json)
 }
 
 /// `GET /api/connections` — connection snapshot.
-fn serve_connections(ctx: &ProfilerContext) -> Response<Full<Bytes>> {
-    if ctx.connmgr.is_null() {
-        return json_response("[]");
-    }
-    // SAFETY: pointer is non-null and points to a valid HewConnMgr that
-    // outlives the profiler thread. Internal access is mutex-protected.
-    let mgr = unsafe { &*ctx.connmgr };
-    let json = crate::connection::snapshot_connections_json(mgr);
+fn serve_connections() -> Response<Full<Bytes>> {
+    let json = crate::hew_node::with_current_node_snapshot(|node| {
+        // SAFETY: the current-node guard retains all node subsystems.
+        node.and_then(|node| unsafe { node.conn_mgr.as_ref() })
+            .map_or_else(
+                || "[]".to_owned(),
+                crate::connection::snapshot_connections_json,
+            )
+    });
     json_response(&json)
 }
 
 /// `GET /api/routing/table` — routing table snapshot.
-fn serve_routing_table(ctx: &ProfilerContext) -> Response<Full<Bytes>> {
-    if ctx.routing.is_null() {
-        return json_response(
-            r#"{"local_node_id":"unconfigured","local_route_slot":0,"session_incarnation":0,"routes":[]}"#,
-        );
-    }
-    // SAFETY: pointer is non-null and points to a valid HewRoutingTable
-    // that outlives the profiler thread. Internal access is RwLock-protected.
-    let table = unsafe { &*ctx.routing };
-    let json = crate::routing::snapshot_routing_json(table);
+fn serve_routing_table() -> Response<Full<Bytes>> {
+    let json = crate::hew_node::with_current_node_snapshot(|node| {
+        // SAFETY: the current-node guard retains all node subsystems.
+        node.and_then(|node| unsafe { node.routing_table.as_ref() }).map_or_else(
+            || r#"{"local_node_id":"unconfigured","local_route_slot":0,"session_incarnation":0,"routes":[]}"#.to_owned(),
+            crate::routing::snapshot_routing_json)
+    });
     json_response(&json)
 }
 
@@ -795,6 +790,8 @@ mod tests {
             processing_time_ns: 0,
             mailbox_depth: 0,
             mailbox_hwm: 0,
+            identity: None,
+            mailbox: None,
         }
     }
 

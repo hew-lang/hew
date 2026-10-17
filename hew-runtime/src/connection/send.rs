@@ -27,6 +27,7 @@ pub(crate) struct SendClaim {
     pub(crate) publication_token: u64,
     publication_removed: Arc<std::sync::atomic::AtomicBool>,
     channel: Arc<ChannelProtection>,
+    gossip_out: Arc<std::sync::atomic::AtomicU64>,
 }
 
 // SAFETY: the claim's lifecycle lease pins its transport connection until drop.
@@ -102,12 +103,24 @@ impl SendClaim {
         if self.publication_removed.load(Ordering::Acquire) {
             return Err(ChannelError::Faulted);
         }
+        let mut gossip = false;
         // SAFETY: the manager owns the transport. The claim's lifecycle lease
         // prevents this exact connection slot from being removed or reused.
         let result = unsafe {
             self.channel
-                .send_prepared(self.transport, self.conn_id, prepare)
+                .send_prepared(self.transport, self.conn_id, || {
+                    let frame = prepare()?;
+                    if crate::observe::observe_hot_tier_enabled() {
+                        gossip = matches!(crate::envelope::decode_wire_frame(frame.as_ref()),
+                            Ok(crate::envelope::WireFrame::Control(control))
+                            if matches!(control.ctrl_kind, crate::envelope::CTRL_SWIM | crate::envelope::CTRL_REGISTRY_GOSSIP));
+                    }
+                    Some(frame)
+                })
         };
+        if result.is_ok() && gossip {
+            self.gossip_out.fetch_add(1, Ordering::Relaxed);
+        }
         if let Err(error) = result {
             set_last_error(format!("connection send on conn {}: {error}", self.conn_id));
         }
@@ -140,6 +153,7 @@ pub(crate) fn claim_send(
                 publication_token: connection.publication_token,
                 publication_removed: Arc::clone(&connection.publication_removed),
                 channel: Arc::clone(&connection.channel),
+                gossip_out: Arc::clone(&manager.gossip_out),
             },
             connection.publication_token,
             connection.credential.clone(),

@@ -304,6 +304,73 @@ fn with_current_node_read<R>(f: impl FnOnce(&usize) -> R) -> R {
     }
 }
 
+pub(crate) fn with_current_node_snapshot<R>(f: impl FnOnce(Option<&HewNode>) -> R) -> R {
+    with_current_node_read(|pointer| {
+        // SAFETY: the current-node read guard excludes stop/free until the callback returns.
+        f(unsafe { (*pointer as *const HewNode).as_ref() })
+    })
+}
+
+pub(crate) fn observe_metric(name: &str) -> Option<u64> {
+    with_current_node_read(|pointer| {
+        // SAFETY: the current-node read guard excludes stop/free for this snapshot.
+        let node = unsafe { (*pointer as *const HewNode).as_ref() };
+        let value = match name {
+            "node.pending_asks" => crate::runtime::rt_current_opt().map_or(0, |rt| {
+                rt.node
+                    .reply_table
+                    .pending
+                    .lock_or_recover()
+                    .values()
+                    .filter(|pending| matches!(pending.kind, PendingReplyKind::Ask(_)))
+                    .count() as u64
+            }),
+            "swim.quarantined" => crate::runtime::rt_current_opt().map_or(0, |rt| {
+                rt.node
+                    .quarantine
+                    .access(|quarantine| quarantine.len() as u64)
+            }),
+            "registry.names" => node.map_or_else(
+                || crate::registry::metrics_snapshot().0,
+                |node| {
+                    // SAFETY: the node owns its registry until the current-node guard releases.
+                    unsafe { node.registry.as_ref() }.map_or(0, |registry| {
+                        registry.remote_names.lock_or_recover().len() as u64
+                    })
+                },
+            ),
+            "node.routes" => node.map_or(0, |node| {
+                // SAFETY: the node owns its routing table under this guard.
+                unsafe { node.routing_table.as_ref() }
+                    .map_or(0, crate::routing::HewRoutingTable::route_count)
+            }),
+            "node.peers" | "node.gossip_in_total" | "node.gossip_out_total" => {
+                let (peers, received, sent) = node.map_or((0, 0, 0), |node| {
+                    // SAFETY: the node owns its connection manager under this guard.
+                    unsafe { node.conn_mgr.as_ref() }
+                        .map_or((0, 0, 0), crate::connection::HewConnMgr::observe_counts)
+                });
+                match name {
+                    "node.peers" => peers,
+                    "node.gossip_in_total" => received,
+                    _ => sent,
+                }
+            }
+            "swim.alive" | "swim.suspect" | "swim.dead" => node.map_or(0, |node| {
+                let state = match name {
+                    "swim.alive" => crate::cluster::MEMBER_ALIVE,
+                    "swim.suspect" => crate::cluster::MEMBER_SUSPECT,
+                    _ => crate::cluster::MEMBER_DEAD,
+                };
+                // SAFETY: the node owns its cluster under this guard.
+                unsafe { node.cluster.as_ref() }.map_or(0, |cluster| cluster.member_count(state))
+            }),
+            _ => return None,
+        };
+        Some(value)
+    })
+}
+
 /// Run `f` with write access to the current runtime's active-node slot.
 fn with_current_node<R>(f: impl FnOnce(&mut usize) -> R) -> R {
     crate::runtime::rt_current().node.current.access(f)
@@ -1597,9 +1664,6 @@ pub unsafe extern "C" fn hew_node_start(node: *mut HewNode) -> c_int {
         }
     });
 
-    // Start the profiler with distributed runtime context if HEW_PPROF is set.
-    crate::profiler::maybe_start_with_context(node.cluster, node.conn_mgr, node.routing_table);
-
     // Drive the SWIM failure detector: a periodic ticker that calls
     // hew_cluster_tick every protocol period, issuing PING/PING_REQ probes and
     // escalating ALIVE→SUSPECT→DEAD. Without it, failure detection is inert.
@@ -1685,9 +1749,6 @@ pub unsafe extern "C" fn hew_node_stop(node: *mut HewNode) -> c_int {
         // reactor's ticker-joined-before-free ordering).
         // SAFETY: node pointer is used only as the driver registry key.
         unsafe { crate::swim_driver::stop_swim_driver(ptr::from_mut(node)) };
-
-        // Shutdown profiler threads before freeing node resources they might access.
-        crate::profiler::shutdown();
 
         // Remove this node's published names from the local registry before the
         // cluster state is torn down. Remote nodes drop cached names when the

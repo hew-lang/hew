@@ -29,7 +29,6 @@ use std::cell::UnsafeCell;
 use std::collections::VecDeque;
 use std::ffi::c_void;
 use std::ptr;
-#[cfg(not(target_arch = "wasm32"))]
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::{AtomicI64, AtomicPtr, AtomicUsize, Ordering};
 use std::sync::{Condvar, Mutex};
@@ -914,6 +913,7 @@ unsafe fn detach_queued_terminal_locked(mailbox: &HewMailbox) -> DetachedTermina
         let mut queue = mailbox.slow_path.lock_or_recover();
         while let Some(node) = queue.user_queue.pop_front() {
             let previous = mailbox.count.fetch_sub(1, Ordering::Release);
+            mailbox.record_loss(3);
             debug_assert!(previous > 0, "slow user queue count underflow");
             MESSAGES_RECEIVED.fetch_add(1, Ordering::Relaxed);
             detached.notify_not_full = true;
@@ -928,6 +928,7 @@ unsafe fn detach_queued_terminal_locked(mailbox: &HewMailbox) -> DetachedTermina
                 break;
             }
             let previous = mailbox.count.fetch_sub(1, Ordering::AcqRel);
+            mailbox.record_loss(3);
             debug_assert!(previous > 0, "fast user queue count underflow");
             MESSAGES_RECEIVED.fetch_add(1, Ordering::Relaxed);
             detached.notify_not_full = true;
@@ -1531,12 +1532,40 @@ pub struct HewMailbox {
     not_full: Condvar,
     /// High-water mark: maximum `count` value observed.
     pub(crate) high_water_mark: AtomicI64,
+    losses: [AtomicU64; 4],
     /// Whether this mailbox uses the slow (mutex) path for user messages.
     use_slow_path: bool,
 }
 
 const ADMISSION_CLOSED: usize = 1 << (usize::BITS - 1);
 const ADMISSION_COUNT: usize = ADMISSION_CLOSED - 1;
+
+impl HewMailbox {
+    fn record_loss(&self, policy: usize) {
+        if crate::observe::observe_hot_tier_enabled() {
+            self.losses[policy].fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    #[cfg(all(feature = "profiler", not(target_arch = "wasm32")))]
+    pub(crate) fn stats(&self) -> hew_observe_protocol::MailboxStats {
+        hew_observe_protocol::MailboxStats {
+            capacity: self.capacity,
+            policy: match self.overflow {
+                HewOverflowPolicy::Block => "block",
+                HewOverflowPolicy::DropNew => "drop_new",
+                HewOverflowPolicy::DropOld => "drop_old",
+                HewOverflowPolicy::Coalesce => "coalesce",
+                HewOverflowPolicy::Fail => "fail",
+            }
+            .to_owned(),
+            dropped_new: self.losses[0].load(Ordering::Relaxed),
+            dropped_old: self.losses[1].load(Ordering::Relaxed),
+            coalesced: self.losses[2].load(Ordering::Relaxed),
+            dropped_on_stop: self.losses[3].load(Ordering::Relaxed),
+        }
+    }
+}
 
 struct AdmissionGuard<'a>(&'a HewMailbox);
 
@@ -1693,6 +1722,7 @@ pub unsafe extern "C" fn hew_mailbox_new() -> *mut HewMailbox {
         block_wait: Mutex::new(()),
         not_full: Condvar::new(),
         high_water_mark: AtomicI64::new(0),
+        losses: std::array::from_fn(|_| AtomicU64::new(0)),
         use_slow_path: false,
     }))
 }
@@ -1736,6 +1766,7 @@ pub unsafe extern "C" fn hew_mailbox_new_bounded(capacity: i32) -> *mut HewMailb
         block_wait: Mutex::new(()),
         not_full: Condvar::new(),
         high_water_mark: AtomicI64::new(0),
+        losses: std::array::from_fn(|_| AtomicU64::new(0)),
         use_slow_path: needs_slow_path(policy),
     }))
 }
@@ -1788,6 +1819,7 @@ pub unsafe extern "C" fn hew_mailbox_new_with_policy(
         block_wait: Mutex::new(()),
         not_full: Condvar::new(),
         high_water_mark: AtomicI64::new(0),
+        losses: std::array::from_fn(|_| AtomicU64::new(0)),
         use_slow_path: needs_slow_path(policy),
     }))
 }
@@ -1849,6 +1881,7 @@ unsafe fn consume_dropped_incoming(
     data: *const c_void,
     data_size: usize,
 ) {
+    mb.record_loss(0);
     if let Some(drop_fn) = mb.message_drop_fn {
         // SAFETY: send_with_overflow's caller guarantees the payload bytes are
         // valid for the duration of the call. DropNew reports success, so the
@@ -2267,6 +2300,7 @@ unsafe fn coalesce_native_request(
                 ) != 0
         }
     })?;
+    mb.record_loss(2);
     // SAFETY: the queue lock grants exclusive access to this node.
     Some(unsafe {
         (*queued).caller = caller;
@@ -2320,6 +2354,7 @@ fn evict_oldest_one_way(mb: &HewMailbox, queue: &mut SlowPathQueue) -> Option<*m
     })?;
     let old = queue.user_queue.remove(index)?;
     mb.count.fetch_sub(1, Ordering::Release);
+    mb.record_loss(1);
     Some(old)
 }
 
@@ -2393,6 +2428,7 @@ unsafe fn admit_native_request(
                 match declared_admission(declared) {
                     DeclaredAdmission::DiscardIncoming => {
                         drop(queue);
+                        mb.record_loss(0);
                         // SAFETY: the unpublished envelope is this producer's;
                         // the declared policy discards it.
                         unsafe { hew_msg_envelope_release(envelope) };
@@ -2447,6 +2483,7 @@ unsafe fn admit_native_request(
         // `drop_new` is the one declared policy the fast path carries
         // (`needs_slow_path`), and it discards this submission itself.
         if mb.overflow == HewOverflowPolicy::DropNew && !obligated {
+            mb.record_loss(0);
             // SAFETY: the unpublished envelope is this producer's.
             unsafe { hew_msg_envelope_release(envelope) };
             (*node).envelope = ptr::null_mut();

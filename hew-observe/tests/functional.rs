@@ -159,18 +159,44 @@ fn profiler_endpoint_captures_fixture_observability_data() {
 #[ignore = "run by `make observe-functional-test` with built compiler artifacts"]
 fn restarts_by_child_counts_each_child_separately() {
     let fixture = build_restarts_fixture_binary();
+    let first_key = fixture.dir.path().join("first.key");
+    let second_key = fixture.dir.path().join("second.key");
+    let first_identity = mint_observe_identity(&fixture.binary, &first_key);
+    let second_identity = mint_observe_identity(&fixture.binary, &second_key);
+    let first_node_port = reserve_local_port();
+    let second_node_port = reserve_local_port();
     let port = reserve_local_port();
     let base_url = format!("http://127.0.0.1:{port}");
     let child = ChildGuard::new(
         Command::new(&fixture.binary)
             .env("HEW_PPROF", format!("127.0.0.1:{port}"))
             .env("HEW_OBSERVE", "hot")
+            .env("HEW_WORKERS", "1")
+            .env("HEW_OBSERVE_KEY", &first_key)
+            .env("HEW_OBSERVE_PEER", &second_identity)
+            .env("HEW_OBSERVE_BIND", format!("127.0.0.1:{first_node_port}"))
+            .env(
+                "HEW_OBSERVE_CONNECT",
+                format!("1@127.0.0.1:{second_node_port}"),
+            )
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
             .unwrap_or_else(|error| {
                 panic!("failed to start {}: {error}", fixture.binary.display())
             }),
+    );
+    let _peer = ChildGuard::new(
+        Command::new(&fixture.binary)
+            .env("HEW_WORKERS", "1")
+            .env("HEW_OBSERVE", "hot")
+            .env("HEW_OBSERVE_KEY", &second_key)
+            .env("HEW_OBSERVE_PEER", &first_identity)
+            .env("HEW_OBSERVE_BIND", format!("127.0.0.1:{second_node_port}"))
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("start authenticated observe peer"),
     );
 
     let client = reqwest::blocking::Client::builder()
@@ -188,9 +214,17 @@ fn restarts_by_child_counts_each_child_separately() {
                 let b = restart_count(&text, "b");
                 scrape = text;
                 if a == Some(1) && b == Some(3) {
-                    return;
+                    match validate_supervisor_drill_down(&client, &base_url) {
+                        Ok(()) => {
+                            wait_for_node_shutdown(&client, &base_url);
+                            wait_for_supervisor_stop(&client, &base_url);
+                            return;
+                        }
+                        Err(error) => last_error = error,
+                    }
+                } else {
+                    last_error = format!("observed restarts a={a:?} b={b:?}");
                 }
-                last_error = format!("observed restarts a={a:?} b={b:?}");
             }
             Err(error) => last_error = error,
         }
@@ -201,6 +235,155 @@ fn restarts_by_child_counts_each_child_separately() {
          last scrape:\n{scrape}\n{}",
         child.output_after_kill()
     );
+}
+
+fn mint_observe_identity(binary: &Path, key: &Path) -> String {
+    let output = Command::new(binary)
+        .env("HEW_OBSERVE_KEY", key)
+        .env("HEW_OBSERVE_MINT", "1")
+        .output()
+        .expect("mint node identity");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout)
+        .expect("identity UTF-8")
+        .lines()
+        .find_map(|line| line.strip_prefix("IDENTITY ").map(str::to_owned))
+        .expect("minted identity")
+}
+
+fn wait_for_node_shutdown(client: &reqwest::blocking::Client, base_url: &str) {
+    let deadline = Instant::now() + Duration::from_secs(12);
+    while Instant::now() < deadline {
+        if let Ok(metrics) = fetch_json::<Metrics>(client, base_url, "/api/metrics") {
+            if metrics.runtime_series.as_ref().is_some_and(|series| {
+                ["node.peers", "node.routes", "swim.alive"]
+                    .iter()
+                    .all(|name| {
+                        series
+                            .iter()
+                            .any(|metric| metric.name == *name && metric.value == 0)
+                    })
+            }) {
+                let tree: Vec<SupervisorRow> = fetch_json(client, base_url, "/api/supervisors")
+                    .expect("Observe remains live after Node.shutdown");
+                let routing: RoutingSnapshot = fetch_json(client, base_url, "/api/routing/table")
+                    .expect("routing snapshot remains live after shutdown");
+                assert!(!tree.is_empty(), "supervisor roots remain observable");
+                assert!(routing.routes.is_empty(), "retired node routes disappear");
+                return;
+            }
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    panic!("Observe did not expose orderly node shutdown");
+}
+
+fn wait_for_supervisor_stop(client: &reqwest::blocking::Client, base_url: &str) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < deadline {
+        let tree: Vec<SupervisorRow> = fetch_json(client, base_url, "/api/supervisors")
+            .expect("supervisor snapshots remain valid during stop");
+        if tree.is_empty() {
+            let actors: Vec<ActorInfo> = fetch_json(client, base_url, "/api/actors")
+                .expect("Observe remains live after supervisor stop");
+            assert!(
+                actors.iter().any(|actor| actor.actor_type == "Lossy"),
+                "the retained mailbox incarnation remains observable"
+            );
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    panic!("stopped supervisor remained in the live tree");
+}
+
+fn validate_supervisor_drill_down(
+    client: &reqwest::blocking::Client,
+    base_url: &str,
+) -> Result<(), String> {
+    let rows: Vec<SupervisorRow> = fetch_json(client, base_url, "/api/supervisors")?;
+    let actors: Vec<ActorInfo> = fetch_json(client, base_url, "/api/actors")?;
+    let traces: TraceBatch = fetch_json(client, base_url, "/api/traces")?;
+    for (role, restarts) in [("a", 1), ("b", 3)] {
+        let details = rows
+            .iter()
+            .filter_map(|row| row.details.as_ref())
+            .find(|details| details.role.as_deref() == Some(role))
+            .ok_or_else(|| format!("missing structured role {role}"))?;
+        if details.restarts != Some(restarts)
+            || details.producer_instance_id != traces.producer_instance_id
+        {
+            return Err(format!("incorrect role details: {details:?}"));
+        }
+        let actor = details
+            .actor
+            .as_ref()
+            .ok_or("missing current role incarnation")?;
+        if !actors.iter().any(|candidate| {
+            candidate.origin.as_ref().is_some_and(|origin| {
+                origin.producer_instance_id == details.producer_instance_id
+                    && origin.identity.actor_id == actor.actor_id
+                    && origin.identity.spawn_serial == actor.spawn_serial
+                    && origin.identity.spawn_serial.is_some()
+            })
+        }) {
+            return Err(format!("role {role} does not identify its current actor"));
+        }
+        let owner = details
+            .owner
+            .as_ref()
+            .ok_or("missing supervisor identity")?;
+        if !traces.events.iter().any(|event| {
+            event.event_type == "supervisor_restart"
+                && event
+                    .subject
+                    .as_ref()
+                    .and_then(|subject| subject.actor.as_ref())
+                    .is_some_and(|actor| {
+                        actor.actor_id == owner.actor_id
+                            && actor.spawn_serial == owner.spawn_serial
+                            && actor.spawn_serial.is_some()
+                    })
+        }) {
+            return Err(format!(
+                "missing alias-proof supervisor decision for {role}"
+            ));
+        }
+    }
+    let mailbox = actors
+        .iter()
+        .find(|actor| actor.actor_type == "Lossy")
+        .and_then(|actor| actor.mailbox.as_ref())
+        .ok_or("missing mailbox details")?;
+    if mailbox.dropped_new != 1
+        || mailbox.dropped_on_stop != 1
+        || mailbox.dropped_old != 0
+        || mailbox.coalesced != 0
+    {
+        return Err(format!("incorrect committed mailbox losses: {mailbox:?}"));
+    }
+    let metrics: Metrics = fetch_json(client, base_url, "/api/metrics")?;
+    let series = metrics.runtime_series.ok_or("missing runtime series")?;
+    for name in [
+        "node.peers",
+        "node.routes",
+        "node.gossip_in_total",
+        "node.gossip_out_total",
+        "swim.alive",
+        "registry.names",
+    ] {
+        if !series
+            .iter()
+            .any(|metric| metric.name == name && metric.value > 0)
+        {
+            return Err(format!("missing useful node metric {name}: {series:?}"));
+        }
+    }
+    Ok(())
 }
 
 #[test]
@@ -227,6 +410,10 @@ fn build_fixture_binary() -> BuiltFixture {
     let hew = hew_binary_path();
     let output = Command::new(&hew)
         .args(["build"])
+        .args([
+            "--opt-level",
+            &std::env::var("HEW_OBSERVE_TEST_OPT_LEVEL").unwrap_or_else(|_| "0".to_owned()),
+        ])
         .arg(&fixture)
         .args(["-o"])
         .arg(&binary)
@@ -259,6 +446,10 @@ fn build_restarts_fixture_binary() -> BuiltFixture {
     let hew = hew_binary_path();
     let output = Command::new(&hew)
         .args(["build"])
+        .args([
+            "--opt-level",
+            &std::env::var("HEW_OBSERVE_TEST_OPT_LEVEL").unwrap_or_else(|_| "0".to_owned()),
+        ])
         .arg(&fixture)
         .args(["-o"])
         .arg(&binary)

@@ -297,6 +297,8 @@ pub struct HewConnMgr {
     reader_lifecycle: Arc<ReaderLifecycle>,
     /// Monotonic token generator for connection-lifecycle publications.
     next_publication_token: AtomicU64,
+    gossip_in: AtomicU64,
+    gossip_out: Arc<AtomicU64>,
     /// The node ID advertised in the handshake for this manager's node.
     /// Stored explicitly so multi-node tests (two nodes in one process) get the
     /// correct ID in their outgoing handshake even when `LOCAL_NODE_ID` refers
@@ -335,6 +337,32 @@ pub struct HewConnMgr {
     /// Fast-path mirror of `pending_registry_flush.len()` so the per-frame
     /// reader check is one atomic load when nothing is parked.
     pending_registry_flush_count: AtomicUsize,
+}
+
+impl HewConnMgr {
+    pub(crate) fn observe_counts(&self) -> (u64, u64, u64) {
+        let peers = self
+            .claims
+            .0
+            .lock_or_recover()
+            .values()
+            .filter(|claim| {
+                claim.state == crate::peer_binding::ClaimState::Published
+                    && claim.credential.is_some()
+            })
+            .count() as u64;
+        (
+            peers,
+            self.gossip_in.load(Ordering::Relaxed),
+            self.gossip_out.load(Ordering::Relaxed),
+        )
+    }
+
+    fn record_gossip_received(&self) {
+        if crate::observe::observe_hot_tier_enabled() {
+            self.gossip_in.fetch_add(1, Ordering::Relaxed);
+        }
+    }
 }
 
 /// A parked registry-gossip flush awaiting retry (see

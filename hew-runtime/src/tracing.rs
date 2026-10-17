@@ -423,6 +423,11 @@ static TRACE_EVENTS: LazyLock<PoisonSafe<TraceStore>> =
 /// pretending that the runtime process restarted.
 static PRODUCER_INSTANCE_ID: LazyLock<TraceStreamId> = LazyLock::new(new_stream_id);
 
+#[cfg(all(feature = "profiler", not(target_arch = "wasm32")))]
+pub(crate) fn producer_instance_id() -> String {
+    PRODUCER_INSTANCE_ID.to_string()
+}
+
 #[derive(Debug, Clone, Copy)]
 struct InternalCursor {
     stream_id: TraceStreamId,
@@ -916,14 +921,23 @@ fn record_event_for_generation(generation: u64, event: HewTraceEvent) {
     };
     let subject_id = subject_kind.map(|_| event.actor_id);
     let subject_actor_id = (subject_kind == Some("actor")).then_some(event.actor_id);
+    #[cfg(all(feature = "profiler", not(target_arch = "wasm32")))]
+    let identity =
+        subject_actor_id.and_then(crate::profiler::actor_registry::capture_actor_identity);
+    #[cfg(all(feature = "profiler", not(target_arch = "wasm32")))]
+    let (spawn_serial, dispatch) = identity.map_or((None, 0), |(identity, dispatch)| {
+        (identity.spawn_serial, dispatch)
+    });
+    #[cfg(any(not(feature = "profiler"), target_arch = "wasm32"))]
+    let (spawn_serial, dispatch) = (None, 0);
     record_event_with_attribution(
         generation,
         event,
         subject_kind,
         subject_id,
         subject_actor_id,
-        None,
-        0,
+        spawn_serial,
+        dispatch,
         None,
         None,
         None,

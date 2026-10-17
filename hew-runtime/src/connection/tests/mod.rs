@@ -319,6 +319,8 @@ fn snapshot_connections_json_emits_expected_array() {
         reverse_link_workers: PoisonSafe::new(Vec::new()),
         reader_lifecycle: Arc::new(ReaderLifecycle::default()),
         next_publication_token: AtomicU64::new(1),
+        gossip_in: AtomicU64::new(0),
+        gossip_out: Arc::new(AtomicU64::new(0)),
         local_node_id: 0,
         local_identity: None,
         local_session_incarnation: None,

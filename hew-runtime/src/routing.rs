@@ -59,6 +59,12 @@ pub struct HewRoutingTable {
     add_route_probe: Mutex<Option<Arc<RouteAddProbe>>>,
 }
 
+impl HewRoutingTable {
+    pub(crate) fn route_count(&self) -> u64 {
+        self.state.read_or_recover().by_node.len() as u64
+    }
+}
+
 /// Test-only handshake before a route-registration attempt.
 #[cfg(test)]
 #[derive(Debug)]

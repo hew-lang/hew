@@ -31,6 +31,18 @@ use crate::timer_wheel::{
 use crate::util::{CondvarExt, MutexExt};
 
 #[cfg(feature = "profiler")]
+/// # Safety
+/// The supervisor must remain registered under the roots lock until this returns.
+pub(crate) unsafe fn pin_registered_supervisor(
+    supervisor: *mut HewSupervisor,
+) -> Option<crate::lifetime::local_handles::SupervisorPin> {
+    // SAFETY: the caller retains the roots lock until the canonical pin is acquired.
+    let supervisor_ref = unsafe { supervisor.as_ref() }?;
+    let pin = crate::lifetime::local_handles::pin_current_supervisor(supervisor_ref.local_pid_id)?;
+    (pin.supervisor() == supervisor).then_some(pin)
+}
+
+#[cfg(feature = "profiler")]
 fn supervisor_strategy_name(strategy: c_int) -> &'static str {
     match strategy {
         STRATEGY_ONE_FOR_ONE => "one_for_one",
@@ -79,49 +91,45 @@ fn child_name(name: *const c_char, fallback: &str) -> String {
 }
 
 #[cfg(feature = "profiler")]
-fn append_tree_row(json: &mut String, first: &mut bool, depth: u16, label: &str, state: &str) {
-    use std::fmt::Write as _;
-
-    if !*first {
-        json.push(',');
-    }
-    *first = false;
-    let _ = write!(json, r#"{{"depth":{depth},"label":"#);
-    crate::util::push_json_string(json, label);
-    let _ = write!(json, r#","state":"{state}"}}"#);
-}
-
-#[cfg(feature = "profiler")]
 fn append_supervisor_rows(
-    json: &mut String,
-    first: &mut bool,
+    rows: &mut Vec<hew_observe_protocol::SupervisorRow>,
     sup: *mut HewSupervisor,
     depth: u16,
 ) {
+    use hew_observe_protocol::{SupervisorDetails, SupervisorRow};
+
     if sup.is_null() {
         return;
     }
 
     // SAFETY: copy non-roster scalars from the live allocation.
     let (self_actor, strategy) = unsafe { ((*sup).self_actor, (*sup).strategy) };
-    let self_actor_id = if self_actor.is_null() {
-        0
-    } else {
-        // SAFETY: self_actor belongs to the live supervisor.
-        unsafe { (*self_actor).id }
-    };
-    let label = format!(
-        "⊞ supervisor:{self_actor_id} [{}]",
-        supervisor_strategy_name(strategy)
-    );
-    append_tree_row(json, first, depth, &label, "Supervisor");
+    // SAFETY: the supervisor pin retains its self actor.
+    let owner = unsafe { self_actor.as_ref() }.map(crate::profiler::actor_registry::actor_identity);
+    let self_actor_id = owner.as_ref().map_or(0, |actor| actor.actor_id);
+    let strategy = supervisor_strategy_name(strategy);
+    let label = format!("⊞ supervisor:{self_actor_id} [{strategy}]");
+    rows.push(SupervisorRow {
+        depth,
+        label,
+        state: "Supervisor".to_owned(),
+        details: Some(SupervisorDetails {
+            producer_instance_id: crate::tracing::producer_instance_id(),
+            kind: "supervisor".to_owned(),
+            actor: owner.clone(),
+            owner: None,
+            role: None,
+            strategy: strategy.to_owned(),
+            restarts: None,
+            pool_members: None,
+        }),
+    });
 
     // Snapshot display data and exact nested pins under this node's roster,
     // then release it before recursive descent. No code ever holds two roster
     // mutexes, so parent/child traversal cannot invert another lifecycle path.
     let (child_rows, nested, pool_rows) = {
-        // SAFETY: top-level supervisor pointers remain valid while registered;
-        // nested calls carry a stable pin acquired by their parent snapshot.
+        // SAFETY: the caller retains the exact root or nested supervisor pin.
         let roster = unsafe { &(*sup).roster }.lock_or_recover();
         let child_rows = roster
             .children
@@ -137,10 +145,24 @@ fn append_supervisor_rows(
                     // SAFETY: crash stats pointer belongs to the child spec.
                     unsafe { (*spec.circuit_breaker.crash_stats).total_crashes }
                 };
-                (
-                    format!("  {name} (restarts: {restarts})"),
-                    actor_state_name(*child),
-                )
+                // SAFETY: the roster retains this child until the guard is released.
+                let identity =
+                    unsafe { child.as_ref() }.map(crate::profiler::actor_registry::actor_identity);
+                SupervisorRow {
+                    depth: depth + 1,
+                    label: format!("  {name} (restarts: {restarts})"),
+                    state: actor_state_name(*child).to_owned(),
+                    details: Some(SupervisorDetails {
+                        producer_instance_id: crate::tracing::producer_instance_id(),
+                        kind: "actor".to_owned(),
+                        actor: identity,
+                        owner: owner.clone(),
+                        role: (!spec.name.is_null()).then_some(name),
+                        strategy: strategy.to_owned(),
+                        restarts: Some(u64::from(restarts)),
+                        pool_members: None,
+                    }),
+                }
             })
             .collect::<Vec<_>>();
         let nested = roster
@@ -163,34 +185,44 @@ fn append_supervisor_rows(
                 // SAFETY: the pool is Box-owned and cannot be removed while
                 // this roster guard is held.
                 let member_count = unsafe { crate::pool::hew_pool_size(*pool) };
-                format!("  {name} (members: {member_count})")
+                SupervisorRow {
+                    depth: depth + 1,
+                    label: format!("  {name} (members: {member_count})"),
+                    state: "Pool".to_owned(),
+                    details: Some(SupervisorDetails {
+                        producer_instance_id: crate::tracing::producer_instance_id(),
+                        kind: "pool".to_owned(),
+                        actor: None,
+                        owner: owner.clone(),
+                        role: (!spec.name.is_null()).then_some(name),
+                        strategy: strategy.to_owned(),
+                        restarts: None,
+                        pool_members: Some(member_count as u64),
+                    }),
+                }
             })
             .collect::<Vec<_>>();
         (child_rows, nested, pool_rows)
     };
 
-    for (label, state) in child_rows {
-        append_tree_row(json, first, depth + 1, &label, state);
-    }
+    rows.extend(child_rows);
     for (child_sup, _pin) in nested {
-        append_supervisor_rows(json, first, child_sup, depth + 1);
+        append_supervisor_rows(rows, child_sup, depth + 1);
     }
-    for label in pool_rows {
-        append_tree_row(json, first, depth + 1, &label, "Pool");
-    }
+    rows.extend(pool_rows);
 }
 
 #[cfg(feature = "profiler")]
 #[must_use]
+/// # Panics
+/// Panics if the snapshot violates the protocol schema.
 pub fn snapshot_tree_json() -> String {
     let roots = crate::shutdown::registered_supervisors_snapshot();
-    let mut json = String::from("[");
-    let mut first = true;
+    let mut rows = Vec::new();
     for root in roots {
-        append_supervisor_rows(&mut json, &mut first, root, 0);
+        append_supervisor_rows(&mut rows, root.supervisor(), 0);
     }
-    json.push(']');
-    json
+    serde_json::to_string(&rows).expect("supervisor snapshot is JSON serializable")
 }
 
 /// Append `(supervisor_label, child_label, restarts)` rows for one supervisor
@@ -266,18 +298,14 @@ fn append_restart_rows(rows: &mut Vec<(String, String, u64)>, sup: *mut HewSuper
 ///
 /// Backs the `supervisor.restarts_by_child_total` observe series
 /// ([`crate::observe::scrape_text`]); mirrors [`snapshot_tree_json`]'s walk,
-/// but reads through the non-panicking
-/// [`crate::shutdown::registered_supervisors_snapshot_opt`] rather than
-/// [`crate::shutdown::registered_supervisors_snapshot`] — a scrape may run
-/// before `hew_sched_init` installs a runtime or after teardown drops it,
-/// where there is legitimately no supervisor tree yet, not a caller bug.
+/// including an empty tree before runtime installation or after teardown.
 #[cfg(feature = "profiler")]
 #[must_use]
 pub fn restarts_by_child_snapshot() -> Vec<(String, String, u64)> {
-    let roots = crate::shutdown::registered_supervisors_snapshot_opt();
+    let roots = crate::shutdown::registered_supervisors_snapshot();
     let mut rows = Vec::new();
     for root in roots {
-        append_restart_rows(&mut rows, root);
+        append_restart_rows(&mut rows, root.supervisor());
     }
     rows
 }

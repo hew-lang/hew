@@ -183,15 +183,33 @@ pub fn register_handler_name(
 ///       ABI revision.
 /// REAL: Embed the dispatch pointer (or a stable type ID) directly in
 ///       `HewTraceEvent` when the C ABI is versioned.
+#[must_use]
 pub fn lookup_dispatch_for_actor_id(actor_id: u64) -> Option<usize> {
+    capture_actor_identity(actor_id).and_then(|(_, dispatch)| (dispatch != 0).then_some(dispatch))
+}
+
+pub(crate) fn actor_identity(actor: &HewActor) -> hew_observe_protocol::ActorIdentity {
+    hew_observe_protocol::ActorIdentity {
+        actor_id: actor.id,
+        spawn_serial: Some(actor.spawn_serial),
+        actor_type: lookup_registered_dispatch_type_by_ptr_owned(
+            actor.dispatch.map_or(0, |dispatch| dispatch as usize),
+        ),
+    }
+}
+
+pub(crate) fn capture_actor_identity(
+    actor_id: u64,
+) -> Option<(hew_observe_protocol::ActorIdentity, usize)> {
     REGISTRY.access(|guard| {
         let map = guard.as_ref()?;
         let ptr = map.get(&actor_id)?.as_ptr();
-        // SAFETY: The actor pointer is valid while it is registered.  We take only
-        // the dispatch fn value (a function pointer cast to usize) without
-        // dereferencing any managed data.
-        let dispatch = unsafe { (*ptr).dispatch };
-        dispatch.map(|f| f as usize)
+        // SAFETY: unregister precedes destruction and takes this same registry lock.
+        let actor = unsafe { &*ptr };
+        Some((
+            actor_identity(actor),
+            actor.dispatch.map_or(0, |dispatch| dispatch as usize),
+        ))
     })
 }
 
@@ -277,6 +295,8 @@ pub struct ActorSnapshot {
     pub mailbox_depth: i64,
     /// Mailbox high-water mark.
     pub mailbox_hwm: i64,
+    pub identity: Option<hew_observe_protocol::ActorIdentity>,
+    pub mailbox: Option<hew_observe_protocol::MailboxStats>,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -344,6 +364,9 @@ pub fn snapshot_all() -> Vec<ActorSnapshot> {
                 processing_time_ns: a.prof_processing_time_ns.load(Ordering::Relaxed),
                 mailbox_depth: depth,
                 mailbox_hwm: hwm,
+                identity: Some(actor_identity(a)),
+                // SAFETY: the registered actor retains its mailbox under this registry lock.
+                mailbox: unsafe { a.mailbox.cast::<HewMailbox>().as_ref() }.map(HewMailbox::stats),
             });
         }
 

@@ -210,6 +210,7 @@ fn handle_registry_gossip(
         set_last_error("registry gossip rejected a Location not owned by the authenticated peer");
         return;
     }
+    mgr_ref.record_gossip_received();
     // SAFETY: cluster pointer is owned by the live node/manager and remains
     // valid while the reader thread is running.
     unsafe {

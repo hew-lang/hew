@@ -6,6 +6,7 @@
     clippy::wildcard_imports,
     reason = "chunk files share the parent module's import header"
 )]
+use super::super::admissibility::StructuralTypeWalk;
 use super::super::branch_join::BranchArmExit;
 use super::super::coerce::{cast_is_valid, common_integer_type, common_numeric_type};
 #[allow(
@@ -97,17 +98,28 @@ impl Checker {
             };
             parent = self.subst.resolve(&selected?);
         }
-        owner.filter(|_| self.carries_resource_handle(&parent, &mut HashSet::new()))
+        owner.filter(|_| self.carries_resource_handle(&parent))
     }
 
     /// Whether a value of `ty` holds a marker-free `#[opaque]` handle that is
     /// not itself owned by a nested `#[resource]`.
-    pub(super) fn carries_resource_handle(
-        &self,
-        ty: &Ty,
-        visiting: &mut HashSet<crate::TypeHead>,
-    ) -> bool {
-        match ty {
+    pub(super) fn carries_resource_handle(&self, ty: &Ty) -> bool {
+        self.carries_resource_handle_on_graph(ty, &mut StructuralTypeWalk::default())
+    }
+
+    fn carries_resource_handle_on_graph(&self, ty: &Ty, walk: &mut StructuralTypeWalk) -> bool {
+        if !walk.explored.insert(ty.clone()) {
+            return false;
+        }
+        if walk.growing(ty) {
+            if let Ty::Named { args, .. } = ty {
+                return args
+                    .iter()
+                    .any(|arg| self.carries_resource_handle_on_graph(arg, walk));
+            }
+        }
+        walk.active.push(ty.clone());
+        let found = (|| match ty {
             Ty::Named { head, args } => {
                 if head
                     .nominal()
@@ -130,33 +142,34 @@ impl Checker {
                 {
                     return true;
                 }
-                if args
-                    .iter()
-                    .any(|arg| self.carries_resource_handle(&self.subst.resolve(arg), visiting))
-                {
+                if args.iter().any(|arg| {
+                    self.carries_resource_handle_on_graph(&self.subst.resolve(arg), walk)
+                }) {
                     return true;
                 }
                 let Some(members) = self.registry.member_types(*head) else {
                     return false;
                 };
-                if !visiting.insert(*head) {
-                    return false;
-                }
-                let carries = members
-                    .to_vec()
-                    .iter()
-                    .any(|member| self.carries_resource_handle(member, visiting));
-                visiting.remove(head);
+                let parameters = self
+                    .head_type_def(*head)
+                    .map(|definition| definition.type_params.as_slice())
+                    .unwrap_or_default();
+                let carries = members.iter().any(|member| {
+                    let member = Self::instantiate_type_def_member(member, parameters, args);
+                    self.carries_resource_handle_on_graph(&member, walk)
+                });
                 carries
             }
             Ty::Tuple(elements) => elements
                 .iter()
-                .any(|element| self.carries_resource_handle(element, visiting)),
+                .any(|element| self.carries_resource_handle_on_graph(element, walk)),
             Ty::Array(element, _) | Ty::Slice(element) => {
-                self.carries_resource_handle(element, visiting)
+                self.carries_resource_handle_on_graph(element, walk)
             }
             _ => false,
-        }
+        })();
+        walk.active.pop();
+        found
     }
 
     /// Mark an identifier binding moved, unconditionally.
@@ -707,65 +720,75 @@ impl Checker {
     /// the named-member edge left exactly that hole open while the tuple edge
     /// was closed.
     pub(super) fn ty_contains_affine_actor_transfer(&self, ty: &Ty) -> bool {
-        let mut visiting = std::collections::HashSet::new();
-        self.ty_contains_affine_actor_transfer_guarded(ty, &mut visiting)
+        self.ty_contains_affine_actor_transfer_on_graph(ty, &mut StructuralTypeWalk::default())
     }
 
-    /// Recursion body for [`Self::ty_contains_affine_actor_transfer`].
-    ///
-    /// `visiting` makes the walk total over recursive type graphs
-    /// (`type Node { next: Vec<Node> }`). Re-entering a name already on the
-    /// stack contributes no NEW ownership edge, so it answers `false` — the
-    /// neutral element of the `any(...)` disjunction — and the result is
-    /// decided by the non-recursive members. This mirrors the recursion guard
-    /// marker derivation already uses (`implements_marker_guarded`).
-    pub(super) fn ty_contains_affine_actor_transfer_guarded(
+    fn ty_contains_affine_actor_transfer_on_graph(
         &self,
         ty: &Ty,
-        visiting: &mut std::collections::HashSet<crate::TypeHead>,
+        walk: &mut StructuralTypeWalk,
     ) -> bool {
-        match ty {
-            Ty::CancellationToken => true,
-            Ty::Named { head, args, .. } => {
-                let builtin = head.builtin();
-                if builtin.is_some_and(BuiltinType::transfers_ownership_across_actor_boundary)
-                    || head
-                        .nominal()
-                        .is_some_and(|id| self.registry.is_resource(id))
-                    || head.nominal().is_some_and(|id| self.registry.is_linear(id))
-                {
-                    return true;
-                }
-                if args
-                    .iter()
-                    .any(|arg| self.ty_contains_affine_actor_transfer_guarded(arg, visiting))
-                {
-                    return true;
-                }
-                // A builtin carries no user member set to descend into, and its
-                // ownership verdict is already decided above.
-                if builtin.is_some() || !visiting.insert(*head) {
-                    return false;
-                }
-                let members: Vec<Ty> = self
-                    .registry
-                    .member_types(*head)
-                    .map(<[Ty]>::to_vec)
-                    .unwrap_or_default();
-                let carries = members
-                    .iter()
-                    .any(|member| self.ty_contains_affine_actor_transfer_guarded(member, visiting));
-                visiting.remove(head);
-                carries
-            }
-            Ty::Tuple(elements) => elements
-                .iter()
-                .any(|element| self.ty_contains_affine_actor_transfer_guarded(element, visiting)),
-            Ty::Array(element, _) | Ty::Slice(element) => {
-                self.ty_contains_affine_actor_transfer_guarded(element, visiting)
-            }
-            _ => false,
+        if !walk.explored.insert(ty.clone()) {
+            return false;
         }
+        if walk.growing(ty) {
+            if let Ty::Named { args, .. } = ty {
+                return args
+                    .iter()
+                    .any(|arg| self.ty_contains_affine_actor_transfer_on_graph(arg, walk));
+            }
+        }
+        walk.active.push(ty.clone());
+        let found = (|| {
+            match ty {
+                Ty::CancellationToken => true,
+                Ty::Named { head, args, .. } => {
+                    let builtin = head.builtin();
+                    if builtin.is_some_and(BuiltinType::transfers_ownership_across_actor_boundary)
+                        || head
+                            .nominal()
+                            .is_some_and(|id| self.registry.is_resource(id))
+                        || head.nominal().is_some_and(|id| self.registry.is_linear(id))
+                    {
+                        return true;
+                    }
+                    if args
+                        .iter()
+                        .any(|arg| self.ty_contains_affine_actor_transfer_on_graph(arg, walk))
+                    {
+                        return true;
+                    }
+                    // A builtin carries no user member set to descend into, and its
+                    // ownership verdict is already decided above.
+                    if builtin.is_some() {
+                        return false;
+                    }
+                    let members: Vec<Ty> = self
+                        .registry
+                        .member_types(*head)
+                        .map(<[Ty]>::to_vec)
+                        .unwrap_or_default();
+                    let parameters = self
+                        .head_type_def(*head)
+                        .map(|definition| definition.type_params.as_slice())
+                        .unwrap_or_default();
+                    let carries = members.iter().any(|member| {
+                        let member = Self::instantiate_type_def_member(member, parameters, args);
+                        self.ty_contains_affine_actor_transfer_on_graph(&member, walk)
+                    });
+                    carries
+                }
+                Ty::Tuple(elements) => elements
+                    .iter()
+                    .any(|element| self.ty_contains_affine_actor_transfer_on_graph(element, walk)),
+                Ty::Array(element, _) | Ty::Slice(element) => {
+                    self.ty_contains_affine_actor_transfer_on_graph(element, walk)
+                }
+                _ => false,
+            }
+        })();
+        walk.active.pop();
+        found
     }
 
     pub(in crate::check) fn enforce_actor_boundary_send(

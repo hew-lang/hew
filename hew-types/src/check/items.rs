@@ -1950,6 +1950,7 @@ impl Checker {
     /// the checked body's type: a `!` body never reaches its back edge.
     pub(super) fn exit_loop_checked(&mut self, body_ty: &Ty) {
         let exit = self.env.exit_loop(!Self::arm_skips_join(body_ty));
+        self.record_join_cleanup_effects(&exit.cleanup);
         self.loop_value_candidates.extend(exit.value_candidates);
         self.report_deferred_init_conflicts(&exit.deferred_init_conflicts);
         self.report_loop_carried_moves(&exit.carried_moves);
@@ -2625,8 +2626,7 @@ impl Checker {
     /// ... is not a registered record layout` message that names an internal
     /// wire detail instead of the offending parameter. See #2511.
     fn reject_opaque_message_payload(&mut self, ty: &Ty, param_span: &Span, handler: &str) {
-        let mut visiting = std::collections::HashSet::new();
-        let Some(opaque_name) = self.ty_message_payload_contains_opaque(ty, &mut visiting) else {
+        let Some(opaque_name) = self.ty_message_payload_contains_opaque(ty) else {
             return;
         };
         self.report_error(

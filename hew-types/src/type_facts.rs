@@ -136,6 +136,30 @@ pub enum ValueMethodPlan {
     },
 }
 
+type CapabilityResult = Result<Option<ValueMethodPlan>, ClassError>;
+
+#[derive(Default)]
+struct CapabilityWalk {
+    states: HashMap<(ResolvedTy, ValueCapability), CapabilityState>,
+}
+
+enum CapabilityState {
+    Visiting,
+    Complete(CapabilityResult),
+}
+
+type DisplayResult = Result<Option<(crate::DefId, Vec<ResolvedTy>)>, ClassError>;
+
+#[derive(Default)]
+struct DisplayWalk {
+    states: HashMap<(ResolvedTy, ResolvedTy), DisplayState>,
+}
+
+enum DisplayState {
+    Visiting,
+    Complete(DisplayResult),
+}
+
 /// A checker-selected implementation bound to its concrete type and capability.
 ///
 /// Only [`TypeFactService::capability_plan`] creates selections. Consumers can
@@ -796,7 +820,7 @@ impl TypeFactService {
     ) -> Result<Option<ValueMethodSelection>, ClassError> {
         let mut calls = Vec::new();
         Ok(self
-            .select_capability_inner(ty, capability, &mut HashSet::new(), &mut calls)?
+            .select_capability_inner(ty, capability, &mut CapabilityWalk::default(), &mut calls)?
             .map(|plan| ValueMethodSelection {
                 ty: ty.clone(),
                 capability,
@@ -814,6 +838,7 @@ impl TypeFactService {
         method: crate::DefId,
         receiver: &ResolvedTy,
     ) -> Result<Vec<ResolvedTy>, ClassError> {
+        let mut display = DisplayWalk::default();
         self.context
             .method_binders
             .get(&method)
@@ -830,7 +855,7 @@ impl TypeFactService {
                         Ok(self.is_serializable(ty, &|_, _| false))
                     }
                     _ => self
-                        .select_display_method(ty, ty, &mut HashSet::new())
+                        .select_display_method(ty, ty, &mut display)
                         .map(|selected| selected.is_some()),
                 },
             )
@@ -846,7 +871,7 @@ impl TypeFactService {
         value: &ResolvedTy,
         source: &ResolvedTy,
     ) -> Result<Option<(crate::DefId, Vec<ResolvedTy>)>, ClassError> {
-        self.select_display_method(value, source, &mut HashSet::new())
+        self.select_display_method(value, source, &mut DisplayWalk::default())
     }
 
     /// Select a Display implementation whose bounds the live checker admitted.
@@ -881,6 +906,7 @@ impl TypeFactService {
         source: &ResolvedTy,
     ) -> Result<Vec<(crate::DefId, Vec<ResolvedTy>)>, String> {
         let mut calls = Vec::new();
+        let mut display = DisplayWalk::default();
         let mut pending = vec![source.clone()];
         let mut seen = HashSet::new();
         while let Some(source) = pending.pop() {
@@ -888,7 +914,7 @@ impl TypeFactService {
                 continue;
             }
             if let Some(call) = self
-                .display_method_for_type(&source, &source)
+                .select_display_method(&source, &source, &mut display)
                 .map_err(|error| error.to_string())?
             {
                 calls.push(call);
@@ -942,15 +968,29 @@ impl TypeFactService {
         &self,
         ty: &ResolvedTy,
         source: &ResolvedTy,
-        visiting: &mut HashSet<ResolvedTy>,
-    ) -> Result<Option<(crate::DefId, Vec<ResolvedTy>)>, ClassError> {
-        require_concrete_capability_type(ty)?;
-        if !visiting.insert(ty.clone()) {
-            return Ok(None);
+        walk: &mut DisplayWalk,
+    ) -> DisplayResult {
+        let key = (ty.clone(), source.clone());
+        match walk.states.get(&key) {
+            Some(DisplayState::Complete(result)) => return result.clone(),
+            Some(DisplayState::Visiting) => return Ok(None),
+            None => {}
         }
-        let method = self.selected_display_method(source);
-        let Some(method) = method else {
-            visiting.remove(ty);
+        walk.states.insert(key.clone(), DisplayState::Visiting);
+        let result = self.select_display_method_uncached(ty, source, walk);
+        walk.states
+            .insert(key, DisplayState::Complete(result.clone()));
+        result
+    }
+
+    fn select_display_method_uncached(
+        &self,
+        ty: &ResolvedTy,
+        source: &ResolvedTy,
+        walk: &mut DisplayWalk,
+    ) -> DisplayResult {
+        require_concrete_capability_type(ty)?;
+        let Some(method) = self.selected_display_method(source) else {
             return Ok(None);
         };
         let binders = self.context.method_binders.get(&method).ok_or_else(|| {
@@ -966,11 +1006,10 @@ impl TypeFactService {
             &mut |ty, bound| match bound {
                 ImplMethodObligation::Serializable => Ok(self.is_serializable(ty, &|_, _| false)),
                 _ => self
-                    .select_display_method(ty, ty, visiting)
+                    .select_display_method(ty, ty, walk)
                     .map(|selected| selected.is_some()),
             },
         );
-        visiting.remove(ty);
         match args {
             Ok(args) => Ok(Some((method, args))),
             Err(ClassError::UnknownDeclaration { .. }) => Ok(None),
@@ -1054,14 +1093,40 @@ impl TypeFactService {
         ty: &ResolvedTy,
         capability: ValueCapability,
     ) -> Result<Option<ValueMethodPlan>, ClassError> {
-        self.select_capability_inner(ty, capability, &mut HashSet::new(), &mut Vec::new())
+        self.select_capability_inner(
+            ty,
+            capability,
+            &mut CapabilityWalk::default(),
+            &mut Vec::new(),
+        )
     }
 
     fn select_capability_inner(
         &self,
         ty: &ResolvedTy,
         capability: ValueCapability,
-        visiting: &mut HashSet<(ResolvedTy, ValueCapability)>,
+        walk: &mut CapabilityWalk,
+        calls: &mut Vec<(crate::DefId, Vec<ResolvedTy>)>,
+    ) -> CapabilityResult {
+        let key = (ty.clone(), capability);
+        match walk.states.get(&key) {
+            Some(CapabilityState::Complete(result)) => return result.clone(),
+            // Recursive structural operations have no admitted implementation.
+            Some(CapabilityState::Visiting) => return Ok(None),
+            None => {}
+        }
+        walk.states.insert(key.clone(), CapabilityState::Visiting);
+        let result = self.select_capability_uncached(ty, capability, walk, calls);
+        walk.states
+            .insert(key, CapabilityState::Complete(result.clone()));
+        result
+    }
+
+    fn select_capability_uncached(
+        &self,
+        ty: &ResolvedTy,
+        capability: ValueCapability,
+        walk: &mut CapabilityWalk,
         calls: &mut Vec<(crate::DefId, Vec<ResolvedTy>)>,
     ) -> Result<Option<ValueMethodPlan>, ClassError> {
         crate::value_class::classify_ty(ty, &ClassContext::new(&self.context))?;
@@ -1120,31 +1185,23 @@ impl TypeFactService {
         if !crate::check::declaration_walk_terminates(ty, self.context.types()) {
             return Ok(None);
         }
-        let key = (ty.clone(), capability);
-        if !visiting.insert(key.clone()) {
-            // Recursive structural operations are outside the admitted surface.
-            // Canonical member identities may expose a cycle hidden by an
-            // import presentation in the source declaration walk.
-            return Ok(None);
-        }
         let derived = match capability {
-            ValueCapability::Hash => self.derived_hash(ty, visiting, calls),
-            ValueCapability::Eq => self.derived_eq(ty, visiting, calls),
-            ordering => self.derived_ordering(ty, ordering, visiting, calls),
+            ValueCapability::Hash => self.derived_hash(ty, walk, calls),
+            ValueCapability::Eq => self.derived_eq(ty, walk, calls),
+            ordering => self.derived_ordering(ty, ordering, walk, calls),
         };
-        visiting.remove(&key);
         derived.map(|allowed| allowed.then_some(ValueMethodPlan::Derived))
     }
 
     fn derived_eq(
         &self,
         ty: &ResolvedTy,
-        visiting: &mut HashSet<(ResolvedTy, ValueCapability)>,
+        walk: &mut CapabilityWalk,
         calls: &mut Vec<(crate::DefId, Vec<ResolvedTy>)>,
     ) -> Result<bool, ClassError> {
         match self.derived_eq_members(ty)? {
             Some(members) => {
-                self.members_have_capability(&members, ValueCapability::Eq, visiting, calls)
+                self.members_have_capability(&members, ValueCapability::Eq, walk, calls)
             }
             None => Ok(false),
         }
@@ -1299,13 +1356,13 @@ impl TypeFactService {
         &self,
         members: &[ResolvedTy],
         capability: ValueCapability,
-        visiting: &mut HashSet<(ResolvedTy, ValueCapability)>,
+        walk: &mut CapabilityWalk,
         calls: &mut Vec<(crate::DefId, Vec<ResolvedTy>)>,
     ) -> Result<bool, ClassError> {
         for member in members {
             for capability in capability.component_capabilities() {
                 if self
-                    .select_capability_inner(member, *capability, visiting, calls)?
+                    .select_capability_inner(member, *capability, walk, calls)?
                     .is_none()
                 {
                     return Ok(false);
@@ -1406,12 +1463,12 @@ impl TypeFactService {
     fn derived_hash(
         &self,
         ty: &ResolvedTy,
-        visiting: &mut HashSet<(ResolvedTy, ValueCapability)>,
+        walk: &mut CapabilityWalk,
         calls: &mut Vec<(crate::DefId, Vec<ResolvedTy>)>,
     ) -> Result<bool, ClassError> {
         match ty {
             ResolvedTy::Tuple(members) => {
-                self.members_have_capability(members, ValueCapability::Hash, visiting, calls)
+                self.members_have_capability(members, ValueCapability::Hash, walk, calls)
             }
             ResolvedTy::Named {
                 head: crate::TypeHead::Builtin(builtin),
@@ -1427,7 +1484,7 @@ impl TypeFactService {
                             name: ty.user_facing().to_string(),
                         });
                     }
-                    self.members_have_capability(args, ValueCapability::Hash, visiting, calls)
+                    self.members_have_capability(args, ValueCapability::Hash, walk, calls)
                 }
                 _ => Ok(false),
             },
@@ -1468,7 +1525,7 @@ impl TypeFactService {
                 self.members_have_capability(
                     &self.declared_capability_members(ty)?,
                     ValueCapability::Hash,
-                    visiting,
+                    walk,
                     calls,
                 )
             }
@@ -1497,13 +1554,13 @@ impl TypeFactService {
         &self,
         ty: &ResolvedTy,
         capability: ValueCapability,
-        visiting: &mut HashSet<(ResolvedTy, ValueCapability)>,
+        walk: &mut CapabilityWalk,
         calls: &mut Vec<(crate::DefId, Vec<ResolvedTy>)>,
     ) -> Result<bool, ClassError> {
         debug_assert!(capability.is_ordering());
         match ty {
             ResolvedTy::Tuple(members) => {
-                self.members_have_capability(members, capability, visiting, calls)
+                self.members_have_capability(members, capability, walk, calls)
             }
             ResolvedTy::Named {
                 head:
@@ -1521,7 +1578,7 @@ impl TypeFactService {
                         name: ty.user_facing().to_string(),
                     });
                 }
-                self.members_have_capability(args, capability, visiting, calls)
+                self.members_have_capability(args, capability, walk, calls)
             }
             ResolvedTy::Named { head, .. } => {
                 let Some(definition) = self.context.types().of(*head) else {
@@ -1540,7 +1597,7 @@ impl TypeFactService {
                 self.members_have_capability(
                     &self.declared_capability_members(ty)?,
                     capability,
-                    visiting,
+                    walk,
                     calls,
                 )
             }
@@ -1816,6 +1873,43 @@ mod tests {
             None
         );
         assert_eq!(selected_impl_method(&methods, &concrete, other_slot), None);
+    }
+
+    #[test]
+    fn shared_display_bounds_preserve_arguments_and_refusal() {
+        let parsed = hew_parser::parse(
+            r#"type Leaf {}
+impl Display for Leaf { fn fmt(self) -> string { "leaf" } }
+type Missing {}
+type Wrapper<T> { value: T; }
+impl<T: Display> Display for Wrapper<T> { fn fmt(self) -> string { "wrapper" } }
+fn main() {}"#,
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let mut checker = crate::Checker::new(crate::module_registry::ModuleRegistry::new(vec![]));
+        let output = checker.check_program(&parsed.program);
+        assert!(output.errors.is_empty(), "{:?}", output.errors);
+        let mut service = TypeFactService::new(output.type_fact_context, output.type_facts);
+        // Repeated obligations model a shared proof edge without duplicating the owned type tree.
+        for binders in service.context.method_binders.values_mut() {
+            binders.obligations.extend(binders.obligations.clone());
+        }
+        let wrap = |leaf: ResolvedTy| {
+            (0..28).fold(leaf, |ty, _| {
+                ResolvedTy::named_path(service.defs(), "Wrapper", vec![ty])
+            })
+        };
+        let ty = wrap(ResolvedTy::named_path(service.defs(), "Leaf", vec![]));
+        let (_, args) = service.display_method_for_type(&ty, &ty).unwrap().unwrap();
+        let ResolvedTy::Named { args: expected, .. } = &ty else {
+            panic!("nominal receiver");
+        };
+        assert_eq!(&args, expected);
+        let missing = wrap(ResolvedTy::named_path(service.defs(), "Missing", vec![]));
+        assert_eq!(
+            service.display_method_for_type(&missing, &missing),
+            Ok(None)
+        );
     }
 
     /// Declarations the §1.1 Aggregate rule needs for the cases below.

@@ -768,3 +768,32 @@ fn same(a: Key<i64>, b: Key<i64>) -> bool {
         })
     );
 }
+
+#[test]
+fn shared_capability_members_preserve_selected_generic_method_evidence() {
+    let mut service = facts(
+        r"type Key<T> { value: T; }
+impl<T> Hash for Key<T> { fn hash(self) -> i64 { 1 } }
+type Pair { first: Key<i64>; again: Key<i64>; other: Key<string>; }
+fn main() {}",
+    );
+    let pair = ResolvedTy::named_path(service.defs(), "Pair", vec![]);
+    let selection = service
+        .capability_plan(&pair, hew_types::ValueCapability::Hash)
+        .unwrap()
+        .unwrap();
+    assert_eq!(selection.plan(), &hew_types::ValueMethodPlan::Derived);
+    let calls = selection.calls();
+    assert_eq!(
+        calls.len(),
+        2,
+        "shared members select each method instance once"
+    );
+    assert_eq!(calls[0].0, calls[1].0);
+    let arguments: std::collections::BTreeSet<_> =
+        calls.iter().map(|(_, args)| args.clone()).collect();
+    assert_eq!(
+        arguments,
+        std::collections::BTreeSet::from([vec![ResolvedTy::I64], vec![ResolvedTy::String]])
+    );
+}

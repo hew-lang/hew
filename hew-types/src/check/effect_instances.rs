@@ -1,59 +1,14 @@
 //! Discharge written callable effects in the constructing generic instance.
 
 use super::{
-    CallTarget, Checker, EffectBody, EffectGraph, HashMap, HashSet, Invocation, SpanKey,
-    SuspensionObligation, Ty,
+    CallTarget, Checker, EffectBody, EffectGraph, HashMap, HashSet, Invocation, SpanKey, Ty,
 };
 
 type Actuals = HashMap<crate::ParamHead, Ty>;
-type Instance = (EffectBody, Vec<(crate::ParamHead, Ty)>);
 type Boundary = (Actuals, Option<(SpanKey, Option<String>)>);
 
-fn instance(body: &EffectBody, actuals: &Actuals) -> Instance {
-    let mut arguments: Vec<_> = actuals
-        .iter()
-        .map(|(parameter, ty)| (*parameter, ty.clone()))
-        .collect();
-    arguments.sort_by_key(|(parameter, _)| parameter.id);
-    (body.clone(), arguments)
-}
-
 impl Checker {
-    pub(super) fn suspension_obligation_instances(
-        &self,
-        obligation: &SuspensionObligation,
-        graph: &EffectGraph,
-        bodies: &HashMap<EffectBody, bool>,
-    ) -> Vec<(SpanKey, Option<String>)> {
-        let contexts = obligation.owner.as_ref().map_or_else(
-            || vec![(Actuals::new(), None)],
-            |owner| self.effect_construction_contexts(owner, graph, &mut HashSet::new()),
-        );
-        contexts
-            .into_iter()
-            .filter_map(|(actuals, boundary)| {
-                let (key, source) = boundary
-                    .unwrap_or_else(|| (obligation.key.clone(), obligation.source_module.clone()));
-                (self.instantiated_body_suspends(
-                    &obligation.body,
-                    &actuals,
-                    graph,
-                    bodies,
-                    &mut HashSet::new(),
-                ) || (obligation.once
-                    && self.instantiated_releases_suspend(
-                        self.effect_once_release_targets(&obligation.body, graph, &actuals),
-                        &actuals,
-                        graph,
-                        bodies,
-                        &mut HashSet::new(),
-                    )))
-                .then_some((key, source))
-            })
-            .collect()
-    }
-
-    fn effect_construction_contexts(
+    pub(super) fn effect_construction_contexts(
         &self,
         body: &EffectBody,
         graph: &EffectGraph,
@@ -109,7 +64,7 @@ impl Checker {
         contexts
     }
 
-    fn instantiated_effect_target(
+    pub(super) fn instantiated_effect_target(
         &self,
         key: &SpanKey,
         call: &Invocation,
@@ -187,103 +142,5 @@ impl Checker {
             }
             _ => None,
         }
-    }
-
-    fn instantiated_body_suspends(
-        &self,
-        body: &EffectBody,
-        actuals: &Actuals,
-        graph: &EffectGraph,
-        bodies: &HashMap<EffectBody, bool>,
-        visiting: &mut HashSet<Instance>,
-    ) -> bool {
-        let identity = instance(body, actuals);
-        if !visiting.insert(identity.clone()) {
-            return false;
-        }
-        let result = graph.bodies.get(body).copied().unwrap_or(true)
-            || graph
-                .calls
-                .iter()
-                .filter(|(_, call)| call.owner.as_ref() == Some(body))
-                .any(|(key, call)| {
-                    if let Some((target, applied)) =
-                        self.instantiated_effect_target(key, call, actuals)
-                    {
-                        return self.instantiated_body_suspends(
-                            &EffectBody::Declaration(target),
-                            &applied,
-                            graph,
-                            bodies,
-                            visiting,
-                        );
-                    }
-                    if matches!(
-                        self.call_target(key),
-                        Some(CallTarget::IndirectFunctionValue)
-                    ) {
-                        if let Some(Ty::Closure {
-                            identity,
-                            capabilities,
-                            ..
-                        }) = call.callee.as_ref().map(|ty| {
-                            self.subst
-                                .resolve(ty)
-                                .substitute_type_params_parallel(actuals)
-                                .callable_body()
-                                .clone()
-                        }) {
-                            return self.instantiated_body_suspends(
-                                &identity, actuals, graph, bodies, visiting,
-                            ) || (capabilities.call == crate::CallableCallMode::Once
-                                && self.instantiated_releases_suspend(
-                                    self.effect_once_release_targets(&identity, graph, actuals),
-                                    actuals,
-                                    graph,
-                                    bodies,
-                                    visiting,
-                                ));
-                        }
-                    }
-                    self.invocation_suspends(key, call, graph, bodies)
-                })
-            || graph
-                .releases
-                .iter()
-                .filter(|effect| &effect.owner == body)
-                .any(|effect| {
-                    self.instantiated_releases_suspend(
-                        self.effect_release_targets(effect, actuals),
-                        actuals,
-                        graph,
-                        bodies,
-                        visiting,
-                    )
-                });
-        visiting.remove(&identity);
-        result
-    }
-    fn instantiated_releases_suspend(
-        &self,
-        targets: Vec<super::super::cleanup_effects::CleanupTarget>,
-        actuals: &Actuals,
-        graph: &EffectGraph,
-        bodies: &HashMap<EffectBody, bool>,
-        visiting: &mut HashSet<Instance>,
-    ) -> bool {
-        targets.into_iter().any(|target| match target {
-            super::super::cleanup_effects::CleanupTarget::Body {
-                body, type_args, ..
-            } => {
-                let mut applied = actuals.clone();
-                if let EffectBody::Declaration(declaration) = &body {
-                    if let Some(signature) = self.fn_sigs.get(declaration) {
-                        applied.extend(signature.type_params.iter().copied().zip(type_args));
-                    }
-                }
-                self.instantiated_body_suspends(&body, &applied, graph, bodies, visiting)
-            }
-            _ => true,
-        })
     }
 }

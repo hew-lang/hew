@@ -117,6 +117,9 @@ write_consumer() {
 name = "consumer"
 version = "0.1.0"
 edition = "2026"
+description = "package-install e2e consumer"
+authors = ["Hew Contributors"]
+license = "MIT OR Apache-2.0"
 
 [dependencies]
 "${package}" = "${version}"
@@ -189,6 +192,23 @@ test -f "${consumer}/.hew/packages/acme/adder/adder.hew" ||
 run_in "${consumer}" check-adder "${HEW}" check main.hew
 assert_output "${consumer}" "42" "run-adder"
 echo "PASS package-install minimal consumer"
+
+run_in "${consumer}" publish-dependent "${HEW}" publish --dry-run
+assert_contains "${TMP}/logs/publish-dependent.log" "Would publish consumer@0.1.0"
+printf 'owned input\n' >"${consumer}/.hew/owned.txt"
+cat >"${consumer}/main.hew" <<'EOF_SOURCE'
+import acme.adder;
+fn main() {
+    println(adder.answer());
+    print(include_str!(".hew/owned.txt"));
+}
+EOF_SOURCE
+if (cd "${consumer}" && "${HEW}" publish --dry-run) >"${TMP}/logs/publish-excluded-input.log" 2>&1; then
+    fail "publishing an excluded owned input unexpectedly succeeded"
+fi
+assert_contains "${TMP}/logs/publish-excluded-input.log" "E_PUBLISH_MISSING_INPUT"
+assert_contains "${TMP}/logs/publish-excluded-input.log" "owned.txt"
+echo "PASS package-install dependent publication preserves owned-input refusal"
 
 missing_consumer="${TMP}/missing-consumer"
 write_consumer "${missing_consumer}" "acme.missing" "0.1.0"

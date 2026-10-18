@@ -158,16 +158,36 @@ fn assert_tool_commands(command: impl Fn() -> Command) {
     assert!(String::from_utf8_lossy(&observer.stderr).contains("requires a terminal"));
 }
 
+fn copy_std_tree(source: &Path, destination: &Path) {
+    std::fs::create_dir_all(destination).expect("create installed std directory");
+    for entry in std::fs::read_dir(source).expect("read std directory") {
+        let entry = entry.expect("read std entry");
+        let target = destination.join(entry.file_name());
+        if entry.file_type().expect("std entry type").is_dir() {
+            copy_std_tree(&entry.path(), &target);
+        } else {
+            std::fs::copy(entry.path(), target).expect("install std file");
+        }
+    }
+}
+
 #[test]
 fn installed_hew_serves_tools_without_siblings() {
     let installation = tempfile::tempdir().expect("isolated installation");
-    let binary = installation
-        .path()
-        .join(format!("hew{}", std::env::consts::EXE_SUFFIX));
-    std::fs::copy(hew_binary(), &binary).expect("install only hew");
+    let bin_dir = installation.path().join("bin");
+    std::fs::create_dir_all(&bin_dir).expect("create installed bin directory");
+    let binary = bin_dir.join(format!("hew{}", std::env::consts::EXE_SUFFIX));
+    std::fs::copy(hew_binary(), &binary).expect("install hew");
+    copy_std_tree(
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("../std"),
+        &installation.path().join("share/hew/std"),
+    );
     let command = || {
         let mut command = Command::new(&binary);
-        command.env("PATH", "").current_dir(installation.path());
+        command
+            .env("PATH", "")
+            .env_remove("HEW_STD")
+            .current_dir(installation.path());
         command
     };
     assert_tool_commands(command);

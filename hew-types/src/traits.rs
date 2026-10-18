@@ -423,7 +423,7 @@ impl TraitRegistry {
     /// Marker traits are derived automatically based on the structure of the type:
     /// - Primitives implement most marker traits
     /// - Composite types implement a trait if all their components do
-    /// - `ChildRef`/`ActorHandle`/`RemotePid` are always `Send` and `Frozen`
+    /// - `ActorHandle`/`RemotePid` are always `Send` and `Frozen`
     /// - Negative impls can override automatic derivation
     #[must_use]
     pub fn implements_marker(&self, ty: &Ty, marker: MarkerTrait) -> bool {
@@ -582,7 +582,7 @@ impl TraitRegistry {
             // Local actor references are immutable identities, not resources:
             // Send + Sync + Frozen + Copy + Clone + Debug.
             Ty::Named {
-                head: crate::TypeHead::Builtin(BuiltinType::ChildRef) | crate::TypeHead::Actor(_),
+                head: crate::TypeHead::Actor(_),
                 ..
             } => matches!(
                 marker,
@@ -1034,19 +1034,6 @@ mod tests {
         assert!(registry.is_send(&Ty::String));
     }
 
-    #[test]
-    fn child_ref_is_a_copyable_local_actor_reference() {
-        let registry = TraitRegistry::new();
-        let child_ref = Ty::child_ref(Ty::named_for_test("Worker", vec![]));
-        for marker in [
-            MarkerTrait::Send,
-            MarkerTrait::Frozen,
-            MarkerTrait::Copy,
-            MarkerTrait::Clone,
-        ] {
-            assert!(registry.implements_marker(&child_ref, marker));
-        }
-    }
     #[test]
     fn test_tuple_send_if_all_elements_send() {
         let registry = TraitRegistry::new();

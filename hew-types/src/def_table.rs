@@ -592,7 +592,6 @@ pub(crate) enum BuiltinAnchor {
     Generator,
     Vec,
     HashMap,
-    ChildRef,
     RemotePid,
     Stream,
     Sink,
@@ -606,7 +605,7 @@ pub(crate) enum BuiltinAnchor {
 }
 
 impl BuiltinAnchor {
-    const ALL: [Self; 30] = [
+    const ALL: [Self; 29] = [
         Self::I8,
         Self::I16,
         Self::I32,
@@ -626,7 +625,6 @@ impl BuiltinAnchor {
         Self::Generator,
         Self::Vec,
         Self::HashMap,
-        Self::ChildRef,
         Self::RemotePid,
         Self::Stream,
         Self::Sink,
@@ -662,7 +660,6 @@ impl BuiltinAnchor {
             Self::Generator => "Generator",
             Self::Vec => "Vec",
             Self::HashMap => "HashMap",
-            Self::ChildRef => "ChildRef",
             Self::RemotePid => "RemotePid",
             Self::Stream => "Stream",
             Self::Sink => "Sink",

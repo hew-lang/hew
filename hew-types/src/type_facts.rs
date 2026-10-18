@@ -2299,7 +2299,7 @@ fn main() {}"#,
             );
             let expected: Option<(ValueClass, CloneKind)> = match info.kind {
                 BuiltinType::SupervisorPool
-                | BuiltinType::ChildRef
+
                 | BuiltinType::NodeId
                 | BuiltinType::Location
                 | BuiltinType::RemotePid

@@ -1730,7 +1730,7 @@ impl Checker {
                     kind: crate::check::types::PoolAccessorKind::Index,
                 },
             );
-            return Ty::child_ref(child_ty.clone());
+            return child_ty.clone();
         }
         if let Some(index_trait) = self.lang_trait(crate::LangItem::Index) {
             if let Ty::TraitObject { traits } = &resolved_obj {

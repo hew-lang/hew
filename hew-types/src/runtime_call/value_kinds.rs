@@ -136,7 +136,7 @@ pub enum RuntimeValueKind {
     ArrayElement,
     /// The exact `SupervisorPool<S, T>` receiver.
     PoolView,
-    /// One member's role, `ChildRef<T>`, from that pool receiver.
+    /// One member's role, `T`, from that pool receiver.
     PoolMember,
     /// One type argument from the signature's canonical collection receiver.
     TypeArgument(usize),
@@ -369,10 +369,7 @@ impl RuntimeValueKind {
                 supervisor_pool_member_type(view)?;
                 view.clone()
             }
-            Self::PoolMember => ResolvedTy::named_builtin(
-                BuiltinType::ChildRef,
-                vec![supervisor_pool_member_type(receiver?)?.clone()],
-            ),
+            Self::PoolMember => supervisor_pool_member_type(receiver?)?.clone(),
             Self::Applied(builtin, arguments) => ResolvedTy::named_builtin(
                 builtin,
                 arguments

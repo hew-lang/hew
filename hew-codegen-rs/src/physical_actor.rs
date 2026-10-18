@@ -1660,78 +1660,19 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                     "actor lifecycle requires one borrowed handle".into(),
                 ));
             };
-            let role = matches!(
-                target,
-                hew_mir::physical::LifecycleTarget::ActorRole(_)
-                    | hew_mir::physical::LifecycleTarget::SupervisorRole(_)
-            );
             if matches!(operation, ActorOperation::AwaitStopped(_)) {
-                self.emit_actor_await_stopped(
-                    *source,
-                    role.then_some(matches!(
-                        target,
-                        hew_mir::physical::LifecycleTarget::SupervisorRole(_)
-                    )),
-                    unwind,
-                )?;
+                self.emit_actor_await_stopped(*source, unwind)?;
             } else if matches!(operation, ActorOperation::AwaitRestarted(_)) {
-                self.emit_actor_await_restarted(
-                    *source,
-                    matches!(
-                        target,
-                        hew_mir::physical::LifecycleTarget::SupervisorRole(_)
-                    ),
-                    unwind,
-                )?;
-            } else if matches!(
-                target,
-                hew_mir::physical::LifecycleTarget::SupervisorRole(_)
-            ) {
-                let role = self.load(*source, "lifecycle.role")?.into_struct_value();
-                let owner = self
-                    .builder
-                    .build_extract_value(role, 0, "lifecycle.role.owner")
-                    .llvm_ctx("read nested role owner")?;
-                let slot = self
-                    .builder
-                    .build_extract_value(role, 1, "lifecycle.role.slot")
-                    .llvm_ctx("read nested role slot")?;
-                let request = get_or_declare_external(
-                    self.llvm,
-                    "hew_supervisor_native_role_request",
-                    self.ctx.void_type().fn_type(
-                        &[
-                            owner.get_type().into(),
-                            slot.get_type().into(),
-                            self.ctx.i32_type().into(),
-                        ],
-                        false,
-                    ),
-                )?;
-                let terminate = self.ctx.i32_type().const_int(
-                    u64::from(matches!(operation, ActorOperation::Terminate(_))),
-                    false,
-                );
-                self.builder
-                    .build_call(request, &[owner.into(), slot.into(), terminate.into()], "")
-                    .llvm_ctx("request nested supervisor transition")?;
+                self.emit_actor_await_restarted(*source, unwind)?;
             } else {
-                let value = self.load(*source, "lifecycle.handle")?;
-                let value = if role {
-                    self.resolve_role_handle(value.into_struct_value())?
-                } else {
-                    value.into_int_value()
-                };
+                let value = self.load(*source, "lifecycle.handle")?.into_int_value();
                 let symbol = match (&operation, target) {
-                    (
-                        ActorOperation::Stop(_),
-                        hew_mir::physical::LifecycleTarget::Actor(_)
-                        | hew_mir::physical::LifecycleTarget::ActorRole(_),
-                    ) => "hew_actor_stop_native",
+                    (ActorOperation::Stop(_), hew_mir::physical::LifecycleTarget::Actor(_)) => {
+                        "hew_actor_stop_native"
+                    }
                     (
                         ActorOperation::Terminate(_),
-                        hew_mir::physical::LifecycleTarget::Actor(_)
-                        | hew_mir::physical::LifecycleTarget::ActorRole(_),
+                        hew_mir::physical::LifecycleTarget::Actor(_),
                     ) => "hew_actor_terminate_native",
                     (
                         ActorOperation::Stop(_),
@@ -2461,7 +2402,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         self.builder
             .build_call(abort, &[token.into(), construction.into()], "")
             .llvm_ctx("return construction to terminal cleanup")?;
-        self.emit_actor_wait(result, None, None, true)?;
+        self.emit_actor_wait(result, None, true)?;
         self.builder
             .build_unconditional_branch(complete)
             .llvm_ctx("finish construction rollback")?;
@@ -2811,13 +2752,6 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .builder
             .build_extract_value(object, 0, "submission.target")
             .llvm_ctx("read message target")?;
-        // A role addresses its actor through the supervisor: resolve the
-        // current incarnation here, at the send.
-        let role = args[0]
-            .is_builtin(hew_types::BuiltinType::ChildRef)
-            .then(|| self.resolve_role(target.into_struct_value()))
-            .transpose()?;
-        let target = role.map_or(target, |(handle, _)| handle.into());
         let member = self
             .builder
             .build_extract_value(object, 1, "submission.member")
@@ -2833,61 +2767,6 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         let size = target_data.get_abi_size(&wrapper_ty);
         let ptr = self.ctx.ptr_type(AddressSpace::default());
         let submitted = self.ctx.append_basic_block(self.value, "submission.result");
-        // A role with no live occupant never allocates a wrapper: the message
-        // stays with the sender and the refusal names why, spent or restarting.
-        let vacant = role
-            .map(|(_, tag)| {
-                let live = self
-                    .ctx
-                    .append_basic_block(self.value, "submission.role.live");
-                let vacant = self
-                    .ctx
-                    .append_basic_block(self.value, "submission.role.vacant");
-                let occupied = self
-                    .builder
-                    .build_int_compare(
-                        IntPredicate::EQ,
-                        tag,
-                        self.ctx.i32_type().const_zero(),
-                        "submission.role.occupied",
-                    )
-                    .llvm_ctx("classify the role's occupant")?;
-                self.builder
-                    .build_conditional_branch(occupied, live, vacant)
-                    .llvm_ctx("send only to an occupied role")?;
-                self.builder.position_at_end(vacant);
-                let spent = self
-                    .builder
-                    .build_int_compare(
-                        IntPredicate::EQ,
-                        tag,
-                        self.ctx.i32_type().const_int(2, false),
-                        "submission.role.spent",
-                    )
-                    .llvm_ctx("separate a spent role from a restarting one")?;
-                let status = self
-                    .builder
-                    .build_select(
-                        spent,
-                        self.ctx.i32_type().const_int(
-                            hew_runtime::internal::types::AskError::ActorStopped as u64,
-                            false,
-                        ),
-                        self.ctx.i32_type().const_int(
-                            hew_runtime::internal::types::AskError::ActorStopped as u64,
-                            false,
-                        ),
-                        "submission.role.status",
-                    )
-                    .llvm_ctx("report why the role took no message")?
-                    .into_int_value();
-                self.builder
-                    .build_unconditional_branch(submitted)
-                    .llvm_ctx("return the vacant role refusal")?;
-                self.builder.position_at_end(live);
-                CodegenResult::Ok((status, vacant))
-            })
-            .transpose()?;
         let allocate = get_or_declare_external(
             self.llvm,
             "hew_actor_payload_try_alloc",
@@ -2988,9 +2867,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             ),
             (&status, admission_block),
         ]);
-        if let Some((status, block)) = vacant {
-            outcome.add_incoming(&[(&status, block)]);
-        }
+
         let refusal = self
             .builder
             .build_phi(self.ctx.bool_type(), "submission.refusal")
@@ -3007,10 +2884,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             (&self.ctx.bool_type().const_zero(), oom),
             (&discarded, admission_block),
         ]);
-        if let Some((_, block)) = vacant {
-            refusal.add_incoming(&[(&self.ctx.bool_type().const_int(1, false), block)]);
-            dropped.add_incoming(&[(&self.ctx.bool_type().const_zero(), block)]);
-        }
+
         self.write_actor_delivery_result(
             outcome.as_basic_value().into_int_value(),
             refusal.as_basic_value().into_int_value(),

@@ -1547,7 +1547,6 @@ fn is_initial_call_value(ty: &ResolvedTy) -> bool {
         || collection_type_arguments(ty).is_some()
         || ty.is_builtin(hew_types::BuiltinType::ActorHandle)
         || ty.is_builtin(hew_types::BuiltinType::ActorFn)
-        || ty.is_builtin(hew_types::BuiltinType::ChildRef)
         // A pool view is the same fixed-width pair a role is: the owning
         // supervisor and a slot.
         || ty.is_builtin(hew_types::BuiltinType::SupervisorPool)

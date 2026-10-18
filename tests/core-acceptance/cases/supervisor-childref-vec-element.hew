@@ -1,4 +1,4 @@
-// A supervised role is a fixed-width value, so a `Vec<ChildRef<A>>` stores
+// A supervised role is a fixed-width value, so a `Vec<A>` stores
 // and returns it like any other bit-copyable element.
 actor Worker {
     let value: i64 = 7;
@@ -16,7 +16,7 @@ supervisor Pool {
     child second: Worker { value: 11 };
 }
 
-fn total(children: Vec<ChildRef<Worker>>) -> i64 {
+fn total(children: Vec<Worker>) -> i64 {
     var sum = 0;
     for child in children {
         let answer = match child.work() {
@@ -30,7 +30,7 @@ fn total(children: Vec<ChildRef<Worker>>) -> i64 {
 
 fn main() {
     let pool = spawn Pool;
-    var children: Vec<ChildRef<Worker>> = Vec.new();
+    var children: Vec<Worker> = Vec.new();
     children.push(pool.first);
     children.push(pool.second);
     children.push(pool.first);

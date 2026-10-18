@@ -109,7 +109,7 @@ fn main() {
     let _ = w2.crash_test();
     sleep(200ms);
 
-    // ChildRef re-resolves worker 2's current incarnation after restart.
+    // The role re-resolves worker 2's current incarnation after restart.
     println("--- Post-crash fan-out ---");
     let (p_result, q_result, r_result, s_result) = await fork (w0.compute(5), w1.compute(5), w2.compute(5), w3.compute(5));
     let p = match p_result {

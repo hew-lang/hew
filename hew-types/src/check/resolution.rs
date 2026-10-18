@@ -80,7 +80,6 @@ impl Checker {
         let candidate = match name {
             "std.builtins.VecIter" => Some(BuiltinType::VecIter),
             "std.builtins.HashMapIter" => Some(BuiltinType::HashMapIter),
-            "std.builtins.ChildRef" => Some(BuiltinType::ChildRef),
             "std.builtins.RemotePid" => Some(BuiltinType::RemotePid),
             _ => crate::lookup_builtin_type(name),
         }?;

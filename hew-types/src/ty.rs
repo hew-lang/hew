@@ -34,7 +34,6 @@ fn builtin_named_type_from_builtin(builtin: Option<BuiltinType>) -> Option<Built
             | BuiltinType::Task
             | BuiltinType::ActorCall
             | BuiltinType::SupervisorPool
-            | BuiltinType::ChildRef
             | BuiltinType::Generator
             | BuiltinType::Range
             | BuiltinType::Rc
@@ -1369,12 +1368,6 @@ impl Ty {
         Self::builtin_named(BuiltinType::Result, vec![ok, err])
     }
 
-    /// Construct `ChildRef<inner>` — a stable supervised actor role.
-    #[must_use]
-    pub fn child_ref(inner: Ty) -> Ty {
-        Self::builtin_named(BuiltinType::ChildRef, vec![inner])
-    }
-
     /// Construct the handle type of actor `name` with its own type arguments.
     ///
     /// An actor is the type of its handle (D489): `spawn Orders { ... }` has type
@@ -1600,19 +1593,6 @@ impl Ty {
         }
     }
 
-    /// If this is `ChildRef<T>`, return `Some(&T)`.
-    #[must_use]
-    pub fn as_child_ref(&self) -> Option<&Ty> {
-        match self {
-            Ty::Named {
-                head: crate::TypeHead::Builtin(BuiltinType::ChildRef),
-                args,
-                ..
-            } if args.len() == 1 => Some(&args[0]),
-            _ => None,
-        }
-    }
-
     /// If this is a declared actor's handle type, return it.
     ///
     /// The handle IS the actor type, so the returned `Ty` carries the actor's
@@ -1630,8 +1610,7 @@ impl Ty {
     }
 
     /// The bare nominal carrier of an actor handle: the same name and type
-    /// arguments with no handle discriminator. A `ChildRef<A>` and a supervisor
-    /// child template name their actor this way.
+    /// arguments with no handle discriminator.
     #[must_use]
     pub fn actor_handle_nominal(&self) -> Option<Ty> {
         let (actor, args) = self.actor_handle_identity()?;
@@ -1666,14 +1645,13 @@ impl Ty {
         }
     }
 
-    /// If this names a local actor — a declared actor's handle, or a
-    /// `ChildRef<T>` role reference — return the actor's nominal carrier.
+    /// If this names an actor reference, return its nominal carrier.
     ///
     /// `RemotePid<T>` is intentionally excluded: it is a distinct type that
     /// does not participate in the local supervisor graph.
     #[must_use]
     pub fn as_local_actor_ref(&self) -> Option<&Ty> {
-        self.as_child_ref().or_else(|| self.as_actor_handle())
+        self.as_actor_handle()
     }
 
     /// Whether this type addresses a local actor for a lifecycle boundary.

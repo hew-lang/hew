@@ -270,8 +270,8 @@ supervisor Pool {
 fn inspect(sup: Pool) {
     let workers: SupervisorPool<Pool, Worker> = sup.workers;
     let count: i64 = workers.len();
-    let first: ChildRef<Worker> = workers[0];
-    let maybe: Option<ChildRef<Worker>> = workers.get(1);
+    let first: Worker = workers[0];
+    let maybe: Option<Worker> = workers.get(1);
     let _ = count;
     let _ = first;
     let _ = maybe;

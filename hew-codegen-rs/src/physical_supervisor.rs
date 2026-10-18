@@ -9,7 +9,7 @@
 //! incarnation is always reconstructed from the declaration and the config and
 //! never from a captured state template.
 //!
-//! A `ChildRef` is the role `(supervisor handle, slot)`, not an address: every
+//! A supervised reference is a canonical runtime role token: every
 //! use re-resolves the current incarnation through the supervisor.
 
 use super::*;
@@ -563,6 +563,19 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .slot(child as usize)
             .ok_or_else(|| CodegenError::FailClosed("declared child has no runtime slot".into()))?;
         let token = self.load_supervisor_owner(*source)?;
+        if !is_pool {
+            let nested = matches!(
+                supervisor.children[child as usize].role,
+                hew_sir::SemSupervisedRole::Supervisor(_)
+            );
+            let role = self.mint_actor_role(
+                token,
+                self.ctx.i32_type().const_int(u64::from(slot), false).into(),
+                nested,
+            )?;
+            self.store(result, role)?;
+            return Ok(self.ctx.i32_type().const_zero());
+        }
         let role = self.slots[result.0 as usize];
         let mut fields = vec![token.get_type(), self.ctx.i32_type().into()];
         if is_pool {
@@ -715,19 +728,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .builder
             .build_int_add(base, offset, "pool.slot")
             .llvm_ctx("address the pool member's slot")?;
-        let role_ty = self.ctx.struct_type(
-            &[token.get_type().into(), self.ctx.i32_type().into()],
-            false,
-        );
-        let role = self
-            .builder
-            .build_insert_value(role_ty.get_undef(), token, 0, "pool.role.supervisor")
-            .llvm_ctx("record the member's supervisor")?;
-        let role = self
-            .builder
-            .build_insert_value(role, slot, 1, "pool.role.slot")
-            .llvm_ctx("record the member's slot")?;
-        let role: BasicValueEnum<'ctx> = role.into_struct_value().into();
+        let role = self.mint_actor_role(token, slot.into(), false)?;
         if let Some(option) = option {
             self.write_variant_value(self.slots[result.0 as usize], 0, &[role], option)?;
         } else {
@@ -736,120 +737,53 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         self.emit_result_edge(Some(result), normal)
     }
 
-    /// A nested projection retains its complete owner path instead of resolving
-    /// the enclosing supervisor to an incarnation during field access.
-    fn load_supervisor_owner(&self, source: StorageId) -> CodegenResult<BasicValueEnum<'ctx>> {
-        let owner = self.load(source, "role.supervisor")?;
-        if self
-            .storage(source)?
-            .ty
-            .is_builtin(hew_types::BuiltinType::ChildRef)
-        {
-            let owner = owner.into_struct_value();
-            let handle = self
-                .builder
-                .build_extract_value(owner, 0, "role.owner")
-                .llvm_ctx("read the enclosing supervisor role")?;
-            let slot = self
-                .builder
-                .build_extract_value(owner, 1, "role.owner.slot")
-                .llvm_ctx("read the enclosing supervisor slot")?;
-            let compose = get_or_declare_external(
-                self.llvm,
-                "hew_supervisor_native_role_owner",
-                handle
-                    .into_int_value()
-                    .get_type()
-                    .fn_type(&[handle.get_type().into(), slot.get_type().into()], false),
-            )?;
-            self.builder
-                .build_call(compose, &[handle.into(), slot.into()], "role.path")
-                .llvm_ctx("retain the enclosing supervisor role path")?
-                .try_as_basic_value()
-                .basic()
-                .ok_or_else(|| CodegenError::FailClosed("role composition returned void".into()))
-        } else {
-            Ok(owner)
-        }
+    fn mint_actor_role(
+        &self,
+        owner: BasicValueEnum<'ctx>,
+        slot: BasicValueEnum<'ctx>,
+        nested: bool,
+    ) -> CodegenResult<BasicValueEnum<'ctx>> {
+        let mint = get_or_declare_external(
+            self.llvm,
+            "hew_supervisor_native_role_owner",
+            owner.into_int_value().get_type().fn_type(
+                &[
+                    owner.get_type().into(),
+                    self.ctx.i32_type().into(),
+                    self.ctx.bool_type().into(),
+                ],
+                false,
+            ),
+        )?;
+        self.builder
+            .build_call(
+                mint,
+                &[
+                    owner.into(),
+                    slot.into(),
+                    self.ctx
+                        .bool_type()
+                        .const_int(u64::from(nested), false)
+                        .into(),
+                ],
+                "role.token",
+            )
+            .llvm_ctx("mint the stable role token")?
+            .try_as_basic_value()
+            .basic()
+            .ok_or_else(|| CodegenError::FailClosed("role token returned void".into()))
     }
 
-    /// Load a message target. A role re-resolves to its current incarnation
-    /// here, at the use: a restart is never addressed through a stale handle,
-    /// and a spent role loads the invalid handle every boundary reports as
-    /// closed rather than guessing it is alive.
+    fn load_supervisor_owner(&self, source: StorageId) -> CodegenResult<BasicValueEnum<'ctx>> {
+        self.load(source, "role.supervisor")
+    }
+
     pub(super) fn load_actor_target(
         &self,
         id: StorageId,
         name: &str,
     ) -> CodegenResult<IntValue<'ctx>> {
-        let value = self.load(id, name)?;
-        if self
-            .storage(id)?
-            .ty
-            .is_builtin(hew_types::BuiltinType::ChildRef)
-        {
-            return self.resolve_role_handle(value.into_struct_value());
-        }
-        Ok(value.into_int_value())
-    }
-
-    /// Resolve a role to its current incarnation. The tag says what the role
-    /// holds — `0` live, `1` restarting, `2` spent — because liveness is
-    /// reported here, never guessed from a null handle.
-    pub(super) fn resolve_role(
-        &self,
-        role: inkwell::values::StructValue<'ctx>,
-    ) -> CodegenResult<(IntValue<'ctx>, IntValue<'ctx>)> {
-        let target = TargetData::create(&self.module.target.data_layout);
-        let word = self.ctx.ptr_sized_int_type(&target, None);
-        let ptr = self.ctx.ptr_type(AddressSpace::default());
-        let handle = self
-            .builder
-            .build_extract_value(role, 0, "role.supervisor")
-            .llvm_ctx("read the role's supervisor")?;
-        let slot = self
-            .builder
-            .build_extract_value(role, 1, "role.slot")
-            .llvm_ctx("read the role's slot")?;
-        let tag = self
-            .builder
-            .build_alloca(self.ctx.i32_type(), "role.tag")
-            .llvm_ctx("allocate the role's occupancy")?;
-        let resolve = get_or_declare_external(
-            self.llvm,
-            "hew_supervisor_native_child",
-            word.fn_type(
-                &[word.into(), self.ctx.i32_type().into(), ptr.into()],
-                false,
-            ),
-        )?;
-        let current = self
-            .builder
-            .build_call(
-                resolve,
-                &[handle.into(), slot.into(), tag.into()],
-                "role.current",
-            )
-            .llvm_ctx("resolve the role's current incarnation")?
-            .try_as_basic_value()
-            .basic()
-            .ok_or_else(|| CodegenError::FailClosed("role resolution returned void".into()))?
-            .into_int_value();
-        let tag = self
-            .builder
-            .build_load(self.ctx.i32_type(), tag, "role.occupancy")
-            .llvm_ctx("read the role's occupancy")?
-            .into_int_value();
-        Ok((current, tag))
-    }
-
-    /// The current incarnation's handle alone, for a boundary whose own
-    /// refusal already reports an absent destination.
-    pub(super) fn resolve_role_handle(
-        &self,
-        role: inkwell::values::StructValue<'ctx>,
-    ) -> CodegenResult<IntValue<'ctx>> {
-        Ok(self.resolve_role(role)?.0)
+        Ok(self.load(id, name)?.into_int_value())
     }
 }
 

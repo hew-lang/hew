@@ -36,7 +36,7 @@ supervisor Timers {
     child ticker: Ticker;
 }
 
-fn wait_for_ticks(ticker: ChildRef<Ticker>) {
+fn wait_for_ticks(ticker: Ticker) {
     for i in 0 .. 500 {
         if ticker.count().expect("live timer") > 0 {
             return;

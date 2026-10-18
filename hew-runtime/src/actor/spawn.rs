@@ -994,21 +994,8 @@ pub(crate) unsafe fn try_submit_native_envelope(
             std::ptr::null_mut(),
             false,
             caller,
+            None,
         )
-    }
-}
-
-/// Register native capacity readiness while the exact destination is pinned.
-pub(crate) fn register_native_capacity(
-    token: crate::lifetime::local_handles::HewLocalPidId,
-    waker: &std::sync::Arc<crate::wake::OwnedWaker>,
-) {
-    if let Some(actor_id) = crate::lifetime::local_handles::resolve_current_actor(token) {
-        live_actors::with_actor_send_by_id(actor_id, |actor| {
-            // SAFETY: the send guard pins the actor and its mailbox during registration.
-            let mailbox = unsafe { &*(*actor).mailbox.cast::<HewMailbox>() };
-            mailbox.native_capacity.register(waker);
-        });
     }
 }
 
@@ -1023,9 +1010,14 @@ pub(crate) unsafe fn try_submit_native_request(
     reply: *mut c_void,
     obligated: bool,
     caller: crate::actor_caller::HewCallerStamp,
+    capacity: Option<&std::sync::Arc<crate::wake::OwnedWaker>>,
 ) -> crate::mailbox::SendOutcome {
     // SAFETY: forwards the uniquely owned request and its optional reply.
-    unsafe { submit_native_request(token, message, envelope, reply, obligated, false, caller) }
+    unsafe {
+        submit_native_request(
+            token, message, envelope, reply, obligated, false, caller, capacity,
+        )
+    }
 }
 
 pub(crate) unsafe fn submit_native_terminal(
@@ -1043,6 +1035,7 @@ pub(crate) unsafe fn submit_native_terminal(
             true,
             true,
             crate::actor_caller::local_sender(),
+            None,
         )
     }
 }
@@ -1055,6 +1048,7 @@ unsafe fn submit_native_request(
     obligated: bool,
     terminal: bool,
     caller: crate::actor_caller::HewCallerStamp,
+    capacity: Option<&std::sync::Arc<crate::wake::OwnedWaker>>,
 ) -> crate::mailbox::SendOutcome {
     // Attachment termination is completion of work already admitted by its
     // owner. Ordinary root/external sends must finish publication before drain.
@@ -1068,12 +1062,15 @@ unsafe fn submit_native_request(
             Err(()) => return mailbox::SendOutcome::ShuttingDown,
         }
     };
-    let Some(actor_id) = crate::lifetime::local_handles::resolve_current_actor(token) else {
-        return mailbox::SendOutcome::Closed;
-    };
-    live_actors::with_actor_send_by_id(actor_id, |actor| {
+    crate::lifetime::local_handles::with_current_actor(token, |actor| {
         // SAFETY: this guard pins the exact actor incarnation and its mailbox.
         let a = unsafe { &*actor };
+        if let Some(waker) = capacity {
+            // SAFETY: this same pin covers registration and the admission check.
+            unsafe { &*a.mailbox.cast::<HewMailbox>() }
+                .native_capacity
+                .register(waker);
+        }
         if actor_send_is_terminal(a) {
             return mailbox::SendOutcome::Closed;
         }

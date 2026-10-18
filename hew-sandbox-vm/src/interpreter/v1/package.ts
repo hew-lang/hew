@@ -624,7 +624,6 @@ export type ActorOperation =
       op: "supervisor_child" | "supervisor_pool_view";
       supervisor: number;
       child: number;
-      owner_is_role: boolean;
     };
 
 export interface ActorShape {

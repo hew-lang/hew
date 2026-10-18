@@ -1369,11 +1369,8 @@ mod mailbox_transfer_gate {
 
     #[test]
     fn non_owning_actor_references_are_not_transfers() {
-        // ChildRef, the actor handle, and the raw runtime word free nothing.
-        for (name, kind) in [
-            ("ChildRef", BuiltinType::ChildRef),
-            ("Worker", BuiltinType::ActorHandle),
-        ] {
+        // The actor handle and the raw runtime word have no payload transfer.
+        for (name, kind) in [("Worker", BuiltinType::ActorHandle)] {
             assert!(!transfers(&builtin_handle(name, kind)));
         }
         assert!(!transfers(&builtin_handle(

@@ -21,15 +21,6 @@
 // Calls to receive handlers wait for completion, including void handlers.
 // Use `mailbox(target, on_full: ...)` for submission and
 // `policy(target, on_full: ...)` to choose completion-call admission.
-/// A stable reference to a supervised actor role.
-///
-/// Unlike an actor handle, a `ChildRef<T>` never snapshots an actor
-/// allocation. Each operation resolves the role's current incarnation through
-/// its owning supervisor and returns an error while the child is unavailable
-/// or stopped.
-pub type ChildRef<T> {
-}
-
 /// Stable key-derived node identity.
 pub type NodeId {
 }
@@ -462,13 +453,6 @@ pub trait ActorMsg {
     type Msg;
 
     type Reply;
-}
-
-impl<T: ActorMsg> ChildRef<T> {
-    /// Send a message to the currently live actor in this supervised role.
-    fn send(self, msg: T.Msg) -> Result<(), SendError> {
-        .Err(SendError.Closed)
-    }
 }
 
 impl<T> RemotePid<T> {

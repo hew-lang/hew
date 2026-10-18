@@ -4,9 +4,14 @@ actor Worker {
     receive fn crash() { panic("restart identity"); }
 }
 
+supervisor Inner {
+    child worker: Worker;
+}
+
 supervisor Group {
     child first: Worker;
     child second: Worker;
+    child inner: Inner;
 }
 
 fn same(left: Worker, right: Worker) -> bool {
@@ -23,7 +28,10 @@ fn main() {
     assert(compare(alias, first));
     let group = spawn Group;
     let other = spawn Group;
-    let role = group.first;
+    let role: Worker = group.first;
+    let nested: Inner = group.inner;
+    assert(nested is group.inner);
+    let nested_occupant = nested.worker.instance().expect("nested occupant");
     assert(role is group.first);
     assert(!(role is group.second));
     assert(!(role is other.first));
@@ -36,6 +44,13 @@ fn main() {
     let replacement = role.instance().expect("replacement occupant");
     assert(!(occupant is replacement));
     assert(!(role is replacement));
+    assert(nested_occupant is nested.worker.instance().expect("actor restart leaves nested role alone"));
+    stop(nested);
+    restarted(nested);
+    assert(nested is group.inner);
+    assert(replacement is role.instance().expect("nested restart leaves actor role alone"));
+    assert(!(nested_occupant is nested.worker.instance().expect("nested replacement")));
+    restarted(first); // Direct incarnations have no role replacement to settle.
     stop(first);
     stopped(first);
     stop(second);

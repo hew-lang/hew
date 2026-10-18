@@ -1254,7 +1254,7 @@ pub fn collection_value_dependencies(
             })?;
         // A bit-copyable component carries no ownership obligation, so there
         // is nothing to describe. This covers the fixed-width compiler
-        // carriers (`ChildRef<A>`, `NodeId`) whose source fields are not
+        // carriers (`NodeId`, `Location`) whose source fields are not
         // constructible and so have no aggregate shape.
         if fact.class == hew_types::ValueClass::BitCopy {
             continue;

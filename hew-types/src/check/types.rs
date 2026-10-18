@@ -1347,7 +1347,7 @@ pub struct PoolAccessor {
 pub enum PoolAccessorKind {
     /// `sup.pool[i]` — trapping member access (`Vec[i]` OOB parity).
     Index,
-    /// `sup.pool.get(i)` — `Option<ChildRef<T>>` member access (`None` on OOB).
+    /// `sup.pool.get(i)` — `Option<T>` member access (`None` on OOB).
     Get,
     /// `sup.pool.len()` — `i64` member count.
     Len,

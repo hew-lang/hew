@@ -79,7 +79,7 @@ impl RuntimeCallFamily {
                 contract: Some(op.contract()),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
-                // Only `get` builds an `Option<ChildRef<T>>` descriptor; the
+                // Only `get` builds an `Option<T>` descriptor; the
                 // trapping and awaiting forms hand back the member itself.
                 physical: match op {
                     SupervisorPoolOp::Get => RuntimePhysicalForm::VariantResult,

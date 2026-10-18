@@ -1,6 +1,6 @@
 [[case]]
 id = "supervisor_childref_value_flow_states"
-intent = "ChildRef carries supervised-role identity through ordinary values."
+intent = "An actor handle carries supervised-role identity through ordinary values."
 source = "../vertical-slice/accept/supervisor_childref_value_flow_states.hew"
 suites = ["acceptance", "safety"]
 timeout_seconds = 60

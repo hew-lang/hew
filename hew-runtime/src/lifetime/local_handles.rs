@@ -113,7 +113,7 @@ struct LocalHandleState {
     #[cfg(not(target_arch = "wasm32"))]
     supervisor_roles: HashMap<HewLocalPidId, SupervisorRole>,
     #[cfg(not(target_arch = "wasm32"))]
-    supervisor_role_tokens: HashMap<(HewLocalPidId, u32), HewLocalPidId>,
+    supervisor_role_tokens: HashMap<(HewLocalPidId, u32, SupervisorRoleKind), HewLocalPidId>,
     #[cfg(not(target_arch = "wasm32"))]
     imports: HashMap<HewLocalPidId, ImportedActorBinding>,
 }
@@ -124,10 +124,19 @@ struct ImportedActorBinding {
     service: Arc<crate::hew_node::service_api::ImportedService>,
 }
 
-/// An internal owner path used by `ChildRef`, never an incarnation `LocalPid`.
+/// The disjoint declared child rosters share one canonical role-token table.
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum SupervisorRoleKind {
+    Actor,
+    Supervisor,
+}
+
+/// A stable declared role, independent of its current occupant.
 #[cfg(not(target_arch = "wasm32"))]
 #[derive(Clone, Copy)]
 struct SupervisorRole {
+    kind: SupervisorRoleKind,
     root: HewLocalPidId,
     owner: HewLocalPidId,
     slot: u32,
@@ -874,6 +883,9 @@ impl LocalHandles {
             let mut current = token;
             let mut path = Vec::new();
             while let Some(role) = state.supervisor_roles.get(&current) {
+                if role.kind != SupervisorRoleKind::Supervisor {
+                    return (HewLocalPidId::INVALID, Vec::new());
+                }
                 path.push(role.slot);
                 current = role.owner;
             }
@@ -912,6 +924,7 @@ impl LocalHandles {
         runtime_id: RuntimeId,
         owner: HewLocalPidId,
         slot: u32,
+        kind: SupervisorRoleKind,
     ) -> Option<HewLocalPidId> {
         self.state.access(|state| {
             let root = state
@@ -922,14 +935,22 @@ impl LocalHandles {
             if control.runtime_id() != runtime_id || !state.routes.contains_key(&root) {
                 return None;
             }
-            if let Some(token) = state.supervisor_role_tokens.get(&(owner, slot)) {
+            if let Some(token) = state.supervisor_role_tokens.get(&(owner, slot, kind)) {
                 return Some(*token);
             }
             let token = allocate()?;
+            state.supervisor_roles.insert(
+                token,
+                SupervisorRole {
+                    root,
+                    owner,
+                    slot,
+                    kind,
+                },
+            );
             state
-                .supervisor_roles
-                .insert(token, SupervisorRole { root, owner, slot });
-            state.supervisor_role_tokens.insert((owner, slot), token);
+                .supervisor_role_tokens
+                .insert((owner, slot, kind), token);
             Some(token)
         })
     }
@@ -939,12 +960,11 @@ impl LocalHandles {
         &self,
         runtime_id: RuntimeId,
         token: HewLocalPidId,
-    ) -> Option<(HewLocalPidId, u32)> {
+    ) -> Option<(HewLocalPidId, u32, SupervisorRoleKind)> {
         self.state.access(|state| {
             let role = state.supervisor_roles.get(&token)?;
             let control = state.controls.get(&role.root)?;
-            (control.runtime_id() == runtime_id && state.routes.contains_key(&role.root))
-                .then_some((role.owner, role.slot))
+            (control.runtime_id() == runtime_id).then_some((role.owner, role.slot, role.kind))
         })
     }
 
@@ -1319,18 +1339,24 @@ pub(crate) fn pin_current_supervisor(token: HewLocalPidId) -> Option<SupervisorP
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn current_supervisor_role_owner(owner: HewLocalPidId, slot: u32) -> HewLocalPidId {
+pub(crate) fn current_supervisor_role_owner(
+    owner: HewLocalPidId,
+    slot: u32,
+    kind: SupervisorRoleKind,
+) -> HewLocalPidId {
     let Some(runtime) = crate::runtime::rt_current_opt() else {
         return HewLocalPidId::INVALID;
     };
     runtime
         .local_handles
-        .supervisor_role_owner(runtime.runtime_id(), owner, slot)
+        .supervisor_role_owner(runtime.runtime_id(), owner, slot, kind)
         .unwrap_or(HewLocalPidId::INVALID)
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn current_actor_role_owner_slot(token: HewLocalPidId) -> Option<(HewLocalPidId, u32)> {
+pub(crate) fn current_actor_role_owner_slot(
+    token: HewLocalPidId,
+) -> Option<(HewLocalPidId, u32, SupervisorRoleKind)> {
     let runtime = crate::runtime::rt_current_opt()?;
     runtime
         .local_handles
@@ -1376,6 +1402,9 @@ pub(crate) fn current_supervisor_role_wait_owner(owner: HewLocalPidId) -> Option
         let mut current = owner;
         let mut path = Vec::new();
         while let Some(role) = state.supervisor_roles.get(&current) {
+            if role.kind != SupervisorRoleKind::Supervisor {
+                return (HewLocalPidId::INVALID, Vec::new());
+            }
             path.push(role.slot);
             current = role.owner;
         }
@@ -1435,6 +1464,24 @@ pub(crate) fn resolve_current_actor(token: HewLocalPidId) -> Option<u64> {
     #[cfg(target_arch = "wasm32")]
     let runtime_id = RuntimeId::DEFAULT;
     current_handles()?.resolve_actor(runtime_id, token)
+}
+
+/// Pin the actor selected by a direct handle or a stable supervised role.
+/// Role resolution preserves the full incarnation serial across the pin seam.
+pub(crate) fn with_current_actor<R>(
+    token: HewLocalPidId,
+    f: impl FnOnce(*mut crate::actor::HewActor) -> R,
+) -> Option<R> {
+    if let Some(id) = resolve_current_actor(token) {
+        return crate::lifetime::live_actors::with_actor_send_by_id(id, f);
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some((id, serial)) = crate::supervisor::current_actor_role_identity(token) {
+        return crate::lifetime::live_actors::with_actor_send_by_identity(id, serial, |pin| {
+            f(pin.as_ptr())
+        });
+    }
+    None
 }
 
 /// Resolve an observation target even after its allocation has been reclaimed.

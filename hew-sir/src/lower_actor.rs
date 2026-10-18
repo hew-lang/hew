@@ -146,9 +146,7 @@ impl InstanceService<'_> {
         }
         .ok_or("local actor handle lacks its exact declaration")?
         .clone();
-        // A `ChildRef<A>` role and the actor's own handle address one actor, so
-        // the descriptor is keyed by the handle. An anonymous actor's handle is
-        // already its own spelling and has no separate role.
+        // All references share the actor's own descriptor identity.
         let lambda_handle = source.lambda_handle_ty.clone().map(|ty| *ty);
         let handle_ty = if let Some(handle) = lambda_handle {
             handle
@@ -923,23 +921,13 @@ impl Builder<'_, '_> {
                     return Err("actor lifecycle boundary has unexpected arguments".into());
                 }
                 let target_ty = self.ty(&receiver.ty);
-                let role = target_ty.is_builtin(hew_types::BuiltinType::ChildRef);
-                let target =
-                    if super::supervisor::declaration(self.service.module, &target_ty).is_some() {
-                        let supervisor = self.service.require_supervisor(&target_ty)?;
-                        if role {
-                            crate::LifecycleTarget::SupervisorRole(supervisor)
-                        } else {
-                            crate::LifecycleTarget::Supervisor(supervisor)
-                        }
-                    } else {
-                        let actor = self.service.require_actor(&target_ty)?;
-                        if role {
-                            crate::LifecycleTarget::ActorRole(actor)
-                        } else {
-                            crate::LifecycleTarget::Actor(actor)
-                        }
-                    };
+                let target = if super::supervisor::declaration(self.service.module, &target_ty)
+                    .is_some()
+                {
+                    crate::LifecycleTarget::Supervisor(self.service.require_supervisor(&target_ty)?)
+                } else {
+                    crate::LifecycleTarget::Actor(self.service.require_actor(&target_ty)?)
+                };
                 let boundary = match operation {
                     hew_types::actor_delivery::ActorDeliveryCall::Stop => {
                         crate::ActorOperation::Stop(target)
@@ -950,7 +938,7 @@ impl Builder<'_, '_> {
                     hew_types::actor_delivery::ActorDeliveryCall::AwaitStopped => {
                         crate::ActorOperation::AwaitStopped(target)
                     }
-                    hew_types::actor_delivery::ActorDeliveryCall::AwaitRestarted if role => {
+                    hew_types::actor_delivery::ActorDeliveryCall::AwaitRestarted => {
                         crate::ActorOperation::AwaitRestarted(target)
                     }
                     _ => return Err("restart wait requires a supervised role".into()),

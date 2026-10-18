@@ -264,7 +264,6 @@ pub fn builtin_named_type(name: &str) -> Option<BuiltinNamedType> {
             | BuiltinType::Task
             | BuiltinType::ActorCall
             | BuiltinType::SupervisorPool
-            | BuiltinType::ChildRef
             | BuiltinType::Generator
             | BuiltinType::Range
             | BuiltinType::Rc

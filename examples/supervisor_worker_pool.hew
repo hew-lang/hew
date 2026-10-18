@@ -57,7 +57,7 @@ fn main() {
     let sup = spawn WorkerPool;
     sleep(30ms);
 
-    // Get stable child references (typed as ChildRef<Worker> by the compiler).
+    // Get stable child references (typed as Worker by the compiler).
     // Each reference resolves the child's current incarnation on every send.
     let w1 = sup.w1;
     let w2 = sup.w2;
@@ -77,7 +77,7 @@ fn main() {
 
     // Workers 1 and 3 are unaffected.
     // Worker 2 has been restarted with fresh state (processed=0). The existing
-    // ChildRef remains valid and resolves the replacement incarnation.
+    // The role remains valid and resolves the replacement incarnation.
     println("--- after restart, all workers operational ---");
     let _ = w1.process(102);
     let _ = w2.process(202);

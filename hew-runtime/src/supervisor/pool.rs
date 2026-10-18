@@ -336,7 +336,7 @@ pub unsafe extern "C" fn hew_supervisor_pool_child_get(
 /// Resolve a static-pool member index to its stable child slot descriptor.
 ///
 /// This lookup deliberately ignores the current child incarnation and slot
-/// liveness. A valid pool position remains a valid `ChildRef<T>` while its
+/// liveness. A valid pool position remains a valid role while its
 /// member is restarting or permanently stopped; the later role send/ask is the
 /// sole liveness authority and fails closed there. Dynamic PID-set pools have
 /// no stable supervisor child slot and are rejected.
@@ -741,8 +741,18 @@ pub unsafe extern "C" fn hew_supervisor_native_child(
 pub extern "C" fn hew_supervisor_native_role_owner(
     owner: crate::lifetime::local_handles::HewLocalPidId,
     slot: u32,
+    nested: bool,
 ) -> crate::lifetime::local_handles::HewLocalPidId {
-    crate::lifetime::local_handles::current_supervisor_role_owner(owner, slot)
+    use crate::lifetime::local_handles::SupervisorRoleKind;
+    crate::lifetime::local_handles::current_supervisor_role_owner(
+        owner,
+        slot,
+        if nested {
+            SupervisorRoleKind::Supervisor
+        } else {
+            SupervisorRoleKind::Actor
+        },
+    )
 }
 
 /// Freeze exact child completions before closing the owner's direct route.

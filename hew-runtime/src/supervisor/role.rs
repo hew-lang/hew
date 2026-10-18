@@ -182,7 +182,10 @@ fn role_resolve_current_child_id(
 pub(crate) fn current_actor_role_identity(
     token: crate::lifetime::local_handles::HewLocalPidId,
 ) -> Option<(u64, u64)> {
-    let (owner, slot) = crate::lifetime::local_handles::current_actor_role_owner_slot(token)?;
+    let (owner, slot, kind) = crate::lifetime::local_handles::current_actor_role_owner_slot(token)?;
+    if kind != crate::lifetime::local_handles::SupervisorRoleKind::Actor {
+        return None;
+    }
     role_resolve_current_child_id(owner, slot, false).ok()
 }
 
@@ -739,6 +742,39 @@ pub unsafe extern "C" fn hew_supervisor_native_restart_wait_new(
         nested: role_kind == ROLE_KIND_SUPERVISOR,
         _waker: waker,
     }))
+}
+
+/// Wait for the stable role carried by an ordinary actor handle.
+/// Direct handles have no replacement and complete immediately.
+/// # Safety
+/// `waker` obeys the retained native wake contract.
+#[cfg(not(target_arch = "wasm32"))]
+#[no_mangle]
+pub unsafe extern "C" fn hew_actor_restart_wait_new(
+    token: crate::lifetime::local_handles::HewLocalPidId,
+    waker: *const crate::wake::HewWaker,
+) -> *mut HewNativeRestartWait {
+    use crate::lifetime::local_handles::{
+        current_actor_role_owner_slot, HewLocalPidId, SupervisorRoleKind,
+    };
+    let (owner, slot, kind) = current_actor_role_owner_slot(token).unwrap_or((
+        HewLocalPidId::INVALID,
+        0,
+        SupervisorRoleKind::Actor,
+    ));
+    // SAFETY: the caller retains the forwarded descriptor through registration.
+    unsafe {
+        hew_supervisor_native_restart_wait_new(
+            owner,
+            slot,
+            if kind == SupervisorRoleKind::Supervisor {
+                ROLE_KIND_SUPERVISOR
+            } else {
+                ROLE_KIND_ACTOR
+            },
+            waker,
+        )
+    }
 }
 
 /// Return 0 while the selected role is transient, or 1 when it has a live

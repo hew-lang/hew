@@ -11,7 +11,7 @@ supervisor App {
 }
 
 actor Observer {
-    receive fn watch(role: ChildRef<Worker>) {
+    receive fn watch(role: Worker) {
         let _ = role.fail();
         println("waiting");
         restarted(role);

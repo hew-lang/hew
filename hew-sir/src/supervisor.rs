@@ -2,8 +2,7 @@
 //! supervisor owns.
 //!
 //! A supervisor is a nominal with no value members; values name its incarnation
-//! through `S`'s own actor-handle type or its declared role through
-//! `ChildRef<S>`. Every child
+//! through its own type `S`, including a stable declared role. Every child
 //! is reconstructed from its declaration and the
 //! supervisor's config on each incarnation through a verified spawn callable,
 //! so restart never preserves mutable state.
@@ -130,12 +129,12 @@ impl SemSupervisor {
             SemSupervisedRole::Actor(id) => actors
                 .get(id.0 as usize)
                 .filter(|actor| actor.id == id)
-                .map(crate::SemActor::child_ref_ty)
+                .map(|actor| actor.handle_ty.clone())
                 .ok_or_else(|| "supervised actor role has no descriptor".into()),
             SemSupervisedRole::Supervisor(id) => supervisors
                 .get(id.0 as usize)
                 .filter(|supervisor| supervisor.id == id)
-                .map(Self::child_ref_ty)
+                .map(|supervisor| supervisor.handle_ty.clone())
                 .ok_or_else(|| "nested supervisor role has no descriptor".into()),
         }
     }
@@ -157,28 +156,12 @@ impl SemSupervisor {
         {
             return Err("a pool view names no pool declaration".into());
         }
-        let ResolvedTy::Named {
-            args: member_args, ..
-        } = self.child_handle_ty(child, actors, supervisors)?
-        else {
-            return Err("pool member role lacks its member type".into());
-        };
-        let [member] = member_args.as_slice() else {
-            return Err("pool member role requires one member type".into());
-        };
-        let view = vec![self.handle_ty.clone(), member.clone()];
+        let member = self.child_handle_ty(child, actors, supervisors)?;
+        let view = vec![self.handle_ty.clone(), member];
         Ok(ResolvedTy::named_builtin(
             hew_types::BuiltinType::SupervisorPool,
             view,
         ))
-    }
-
-    #[must_use]
-    pub fn child_ref_ty(&self) -> ResolvedTy {
-        ResolvedTy::named_builtin(
-            hew_types::BuiltinType::ChildRef,
-            vec![self.handle_ty.clone()],
-        )
     }
 
     pub(crate) fn validate(&self, module: &SemModule) -> Result<(), String> {

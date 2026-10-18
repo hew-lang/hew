@@ -1088,9 +1088,7 @@ else needs `impl Display for {rendered}`)"
         // or `<actor handle> is Vec<int>`) — only reported when both sides are
         // independently identity-capable; otherwise the value-type rejection
         // above carries the diagnostic.
-        let actor_and_role = lhs_resolved.as_child_ref() == Some(rhs_resolved)
-            || rhs_resolved.as_child_ref() == Some(lhs_resolved);
-        if lhs_ok && rhs_ok && lhs_resolved != rhs_resolved && !actor_and_role {
+        if lhs_ok && rhs_ok && lhs_resolved != rhs_resolved {
             diagnostics.push((
                 TypeErrorKind::Mismatch {
                     expected: lhs_resolved.user_facing().to_string(),

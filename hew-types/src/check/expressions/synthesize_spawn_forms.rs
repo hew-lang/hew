@@ -366,7 +366,7 @@ impl Checker {
                                     child_ty,
                                 );
                             }
-                            return Ty::child_ref(child_ty);
+                            return child_ty;
                         }
                         let names = children
                             .statics

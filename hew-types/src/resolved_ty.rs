@@ -508,7 +508,6 @@ impl ResolvedTy {
                     BuiltinType::Generator => BuiltinAnchor::Generator,
                     BuiltinType::Vec => BuiltinAnchor::Vec,
                     BuiltinType::HashMap => BuiltinAnchor::HashMap,
-                    BuiltinType::ChildRef => BuiltinAnchor::ChildRef,
                     BuiltinType::RemotePid => BuiltinAnchor::RemotePid,
                     BuiltinType::NodeId => BuiltinAnchor::NodeId,
                     BuiltinType::Location => BuiltinAnchor::Location,

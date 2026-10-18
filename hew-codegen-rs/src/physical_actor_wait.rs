@@ -7,7 +7,6 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
     pub(super) fn emit_actor_await_restarted(
         &self,
         source: StorageId,
-        nested: bool,
         unwind: Option<&PhysicalEdge>,
     ) -> CodegenResult<()> {
         let frame = self.frame.as_ref().ok_or_else(|| {
@@ -25,40 +24,16 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             &[frame.state.into()],
             "restart.wait.waker",
         )?;
-        let role = self.load(source, "restart.role")?.into_struct_value();
-        let owner = self
-            .builder
-            .build_extract_value(role, 0, "restart.owner")
-            .llvm_ctx("read the role owner")?;
-        let slot = self
-            .builder
-            .build_extract_value(role, 1, "restart.slot")
-            .llvm_ctx("read the role slot")?;
+        let token = self.load(source, "restart.role")?;
         let new = get_or_declare_external(
             self.llvm,
-            "hew_supervisor_native_restart_wait_new",
-            ptr.fn_type(
-                &[
-                    owner.get_type().into(),
-                    slot.get_type().into(),
-                    self.ctx.i32_type().into(),
-                    ptr.into(),
-                ],
-                false,
-            ),
+            "hew_actor_restart_wait_new",
+            ptr.fn_type(&[token.get_type().into(), ptr.into()], false),
         )?;
         let wait = call_value(
             &self.builder,
             new,
-            &[
-                owner.into(),
-                slot.into(),
-                self.ctx
-                    .i32_type()
-                    .const_int(u64::from(nested), false)
-                    .into(),
-                waker.into(),
-            ],
+            &[token.into(), waker.into()],
             "restart.wait",
         )?
         .into_pointer_value();
@@ -214,16 +189,14 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
     pub(super) fn emit_actor_await_stopped(
         &self,
         source: StorageId,
-        role_wait: Option<bool>,
         unwind: Option<&PhysicalEdge>,
     ) -> CodegenResult<()> {
-        self.emit_actor_wait(source, role_wait, unwind, false)
+        self.emit_actor_wait(source, unwind, false)
     }
 
     pub(super) fn emit_actor_wait(
         &self,
         source: StorageId,
-        role_wait: Option<bool>,
         unwind: Option<&PhysicalEdge>,
         mandatory_cleanup: bool,
     ) -> CodegenResult<()> {
@@ -243,57 +216,15 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             "actor.wait.waker",
         )?;
         let target = self.load(source, "actor.wait.target")?;
-        let (target, slot) = if role_wait.is_some() {
-            let role = target.into_struct_value();
-            let owner = self
-                .builder
-                .build_extract_value(role, 0, "wait.role.owner")
-                .llvm_ctx("read the observed role owner")?;
-            let slot = self
-                .builder
-                .build_extract_value(role, 1, "wait.role.slot")
-                .llvm_ctx("read the observed role slot")?;
-            (owner, Some(slot))
-        } else {
-            (target, None)
-        };
         let cycle = self
             .ctx
             .append_basic_block(self.value, "actor.wait.cycle.fault");
-        let (new, arguments) = if let (Some(nested), Some(slot)) = (role_wait, slot) {
-            let new = get_or_declare_external(
-                self.llvm,
-                "hew_supervisor_native_role_wait_new",
-                ptr.fn_type(
-                    &[
-                        target.get_type().into(),
-                        self.ctx.i32_type().into(),
-                        ptr.into(),
-                        self.ctx.i32_type().into(),
-                    ],
-                    false,
-                ),
-            )?;
-            (
-                new,
-                vec![
-                    target.into(),
-                    slot.into(),
-                    waker.into(),
-                    self.ctx
-                        .i32_type()
-                        .const_int(u64::from(nested), false)
-                        .into(),
-                ],
-            )
-        } else {
-            let new = get_or_declare_external(
-                self.llvm,
-                "hew_actor_wait_new",
-                ptr.fn_type(&[target.get_type().into(), ptr.into()], false),
-            )?;
-            (new, vec![target.into(), waker.into()])
-        };
+        let new = get_or_declare_external(
+            self.llvm,
+            "hew_actor_wait_new",
+            ptr.fn_type(&[target.get_type().into(), ptr.into()], false),
+        )?;
+        let arguments = [target.into(), waker.into()];
         let wait = call_value(&self.builder, new, &arguments, "actor.wait")?.into_pointer_value();
         let edge_new = get_or_declare_external(
             self.llvm,

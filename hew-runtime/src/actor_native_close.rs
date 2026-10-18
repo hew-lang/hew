@@ -297,6 +297,18 @@ pub unsafe extern "C" fn hew_actor_wait_new(
     token: local_handles::HewLocalPidId,
     waker: *const HewWaker,
 ) -> *mut HewNativeActorWait {
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some((owner, slot, kind)) = local_handles::current_actor_role_owner_slot(token) {
+        // SAFETY: the caller retains the descriptor during role resolution.
+        return unsafe {
+            crate::supervisor::hew_supervisor_native_role_wait_new(
+                owner,
+                slot,
+                waker,
+                i32::from(kind == local_handles::SupervisorRoleKind::Supervisor),
+            )
+        };
+    }
     let target = local_handles::resolve_current_actor(token).and_then(|id| {
         live_actors::with_actor_send_by_id(id, |actor| {
             // SAFETY: the send guard pins this exact actor during registration.
@@ -664,11 +676,39 @@ mod tests {
             (child, parent)
         };
         let (_, wake) = crate::wake::blocking::Readiness::new();
-        let role = local_handles::current_supervisor_role_owner(parent, 0);
+        let role = local_handles::current_supervisor_role_owner(
+            parent,
+            0,
+            local_handles::SupervisorRoleKind::Supervisor,
+        );
         assert_eq!(
             role,
-            local_handles::current_supervisor_role_owner(parent, 0)
+            local_handles::current_supervisor_role_owner(
+                parent,
+                0,
+                local_handles::SupervisorRoleKind::Supervisor
+            )
         );
+        let actor_role = local_handles::current_supervisor_role_owner(
+            parent,
+            0,
+            local_handles::SupervisorRoleKind::Actor,
+        );
+        assert_ne!(actor_role, role);
+        assert_eq!(
+            local_handles::hew_actor_handle_identical(actor_role, role),
+            0
+        );
+        assert_eq!(
+            actor_role,
+            local_handles::current_supervisor_role_owner(
+                parent,
+                0,
+                local_handles::SupervisorRoleKind::Actor
+            )
+        );
+        assert!(local_handles::pin_current_supervisor(actor_role).is_none());
+        assert!(crate::supervisor::current_actor_role_identity(role).is_none());
         assert!(local_handles::pin_current_supervisor(role).is_some());
         // SAFETY: the wake descriptor stays live and this test owns the observer.
         let observer = unsafe { hew_actor_wait_new(parent, wake.descriptor()) };

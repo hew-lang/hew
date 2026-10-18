@@ -81,7 +81,7 @@ impl Checker {
             let child_type = self.canonical_supervisor_child_type(&c.actor_type);
             let entry = (
                 c.name.to_string(),
-                self.named_ty_for_key(&child_type, type_args),
+                Ty::actor_handle_of(&self.named_ty_for_key(&child_type, type_args)),
             );
             if c.is_pool {
                 pools.push(entry);

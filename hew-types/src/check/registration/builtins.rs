@@ -794,10 +794,7 @@ impl Checker {
             // canonical key is the actor's own nominal, never a builtin
             // presentation name.
             if builtin.is_collection()
-                || matches!(
-                    builtin,
-                    BuiltinType::Generator | BuiltinType::ChildRef | BuiltinType::RemotePid
-                )
+                || matches!(builtin, BuiltinType::Generator | BuiltinType::RemotePid)
             {
                 return Some(builtin.canonical_name().to_string());
             }
@@ -818,18 +815,13 @@ impl Checker {
                 .filter(|builtin| {
                     matches!(
                         builtin,
-                        BuiltinType::VecIter
-                            | BuiltinType::HashMapIter
-                            | BuiltinType::ChildRef
-                            | BuiltinType::RemotePid
+                        BuiltinType::VecIter | BuiltinType::HashMapIter | BuiltinType::RemotePid
                     )
                 })
                 .map(|builtin| match builtin {
                     BuiltinType::VecIter => "std.builtins.VecIter".to_string(),
                     BuiltinType::HashMapIter => "std.builtins.HashMapIter".to_string(),
-                    BuiltinType::ChildRef | BuiltinType::RemotePid => {
-                        builtin.canonical_name().to_string()
-                    }
+                    BuiltinType::RemotePid => builtin.canonical_name().to_string(),
                     _ => unreachable!("filter admits only compiler carrier builtins"),
                 })
         })

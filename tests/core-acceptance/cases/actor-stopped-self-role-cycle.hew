@@ -1,5 +1,5 @@
 actor Worker {
-    receive fn wait_on(role: ChildRef<Worker>) {
+    receive fn wait_on(role: Worker) {
         println("entered");
         stopped(role);
         println("unexpected return");

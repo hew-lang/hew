@@ -2181,11 +2181,7 @@ impl Checker {
                     );
                     return Ty::Error;
                 }
-                let valid = if func_name == "restarted" {
-                    resolved.as_child_ref().is_some()
-                } else {
-                    resolved.addresses_local_actor()
-                };
+                let valid = resolved.addresses_local_actor();
                 if valid {
                     let operation = match func_name.as_str() {
                         "stop" => crate::actor_delivery::ActorDeliveryCall::Stop,
@@ -2296,16 +2292,14 @@ impl Checker {
                                     .into_iter()
                                     .zip(sup_args.iter().cloned())
                                     .collect();
-                                return Ty::child_ref(
-                                    child_type.substitute_type_params_parallel(&substitution),
-                                );
+                                return child_type.substitute_type_params_parallel(&substitution);
                             }
                         }
                         // Non-constant index: fresh type var
-                        return Ty::child_ref(Ty::Var(TypeVar::fresh()));
+                        return Ty::Var(TypeVar::fresh());
                     }
                 }
-                return Ty::child_ref(Ty::Var(TypeVar::fresh()));
+                return Ty::Var(TypeVar::fresh());
             }
             _ => {}
         }

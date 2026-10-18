@@ -309,11 +309,6 @@ impl Builder<'_, '_> {
                 }
             }
             HirExprKind::IdentityCompare { left, right } => {
-                if self.ty(&left.ty) != self.ty(&right.ty) {
-                    self.lower_read_operand(left, "identity left operand")?;
-                    self.lower_read_operand(right, "identity right operand")?;
-                    return self.emit(expr, SemOpKind::ConstBool(false));
-                }
                 let target = self.ty(&left.ty);
                 if matches!(
                     target,

@@ -796,6 +796,12 @@ pub extern "C" fn hew_local_pid_supervisor_stop(
 /// Request a graceful supervisor stop without waiting for whole-tree release.
 #[no_mangle]
 pub extern "C" fn hew_supervisor_stop_native(token: crate::lifetime::local_handles::HewLocalPidId) {
+    if let Some((owner, slot, crate::lifetime::local_handles::SupervisorRoleKind::Supervisor)) =
+        crate::lifetime::local_handles::current_actor_role_owner_slot(token)
+    {
+        hew_supervisor_native_role_request(owner, slot, 0);
+        return;
+    }
     let _ = stop_local_supervisor(token, true);
 }
 
@@ -804,6 +810,12 @@ pub extern "C" fn hew_supervisor_stop_native(token: crate::lifetime::local_handl
 pub extern "C" fn hew_supervisor_terminate_native(
     token: crate::lifetime::local_handles::HewLocalPidId,
 ) {
+    if let Some((owner, slot, crate::lifetime::local_handles::SupervisorRoleKind::Supervisor)) =
+        crate::lifetime::local_handles::current_actor_role_owner_slot(token)
+    {
+        hew_supervisor_native_role_request(owner, slot, 1);
+        return;
+    }
     if let Some(control) =
         crate::lifetime::local_handles::pin_current_supervisor(token).map(|pin| pin.control())
     {

@@ -619,7 +619,7 @@ impl Checker {
                         let (expr, sp) = arg.expr();
                         self.check_against(expr, sp, &Ty::I64);
                     }
-                    Ty::option(Ty::child_ref(child_ty.clone()))
+                    Ty::option(child_ty.clone())
                 }
                 crate::check::types::PoolAccessorKind::Index => {
                     unreachable!("index access does not enter method checking")
@@ -1338,15 +1338,9 @@ impl Checker {
             // Local actor-reference methods first check the concrete reference
             // type's own impl, then fall through to actor receive-fn dispatch.
             //
-            // `ChildRef<T>` and an actor handle are distinct value representations;
-            // their own methods are registered under their respective nominal
-            // owners. Named receive handlers share the local dispatch path.
+            // Named receive handlers share one actor dispatch path.
             (resolved, _) if resolved.as_local_actor_ref().is_some() => {
-                let actor_ref_builtin = if resolved.as_child_ref().is_some() {
-                    crate::BuiltinType::ChildRef
-                } else {
-                    crate::BuiltinType::ActorHandle
-                };
+                let actor_ref_builtin = crate::BuiltinType::ActorHandle;
                 // A user handler named `send` is actor dispatch; otherwise
                 // `send` resolves through the reference type's own method.
                 let has_user_send_handler = method == "send"

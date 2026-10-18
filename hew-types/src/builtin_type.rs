@@ -34,10 +34,6 @@ pub enum BuiltinType {
     /// `SupervisorPool<S, T>` — compiler-produced view of pool `T` owned by
     /// supervisor `S`. Runtime representation is `{ actor handle, i64 pool_key }`.
     SupervisorPool,
-    /// `ChildRef<T>` — a stable reference to a declared actor or supervisor role.
-    /// It carries an opaque owner identity and static child slot; nested owners
-    /// preserve the complete role path across supervisor replacement.
-    ChildRef,
     /// The handle of a declared actor: `Ty::Named { name: "Orders", args, builtin:
     /// Some(ActorHandle) }` is the type written `Orders` in source. An actor is
     /// the type of its handle (D489), so the actor's own name and type arguments
@@ -212,7 +208,6 @@ builtin_types! {
     Stream => "Stream",
     Sink => "Sink",
     SupervisorPool => "SupervisorPool",
-    ChildRef => "ChildRef",
     ActorHandle => "ActorHandle",
     NodeId => "NodeId",
     Location => "Location",
@@ -297,8 +292,7 @@ impl BuiltinType {
     pub const fn is_affine_clone_terminal(self) -> bool {
         matches!(
             self,
-            Self::ChildRef
-                | Self::ActorHandle
+            Self::ActorHandle
                 | Self::RemotePid
                 | Self::ActorFn
                 | Self::HewActor
@@ -389,7 +383,6 @@ impl BuiltinType {
             // registers none. They flip at P5 with the legacy carrier (§9).
             | Self::ActorHandle => BuiltinTypeMarker::Resource,
             Self::SupervisorPool
-            | Self::ChildRef
             | Self::NodeId
             | Self::Location
             | Self::RemotePid
@@ -470,7 +463,7 @@ impl BuiltinType {
     #[must_use]
     pub const fn handle_family(self) -> Option<BuiltinHandleFamily> {
         match self {
-            Self::ChildRef | Self::ActorHandle | Self::RemotePid | Self::ActorFn => {
+            Self::ActorHandle | Self::RemotePid | Self::ActorFn => {
                 Some(BuiltinHandleFamily::ActorPid)
             }
             Self::HewActor | Self::BoxedActor => Some(BuiltinHandleFamily::ActorRuntime),
@@ -496,7 +489,6 @@ impl BuiltinType {
             | Self::Stream
             | Self::Sink
             | Self::RemotePid
-            | Self::ChildRef
             | Self::ActorState
             | Self::MachineState => 1,
             Self::Result
@@ -538,7 +530,7 @@ impl BuiltinType {
     #[must_use]
     pub const fn roles(self) -> &'static [BuiltinTypeRole] {
         match self {
-            Self::ChildRef | Self::ActorFn => &[BuiltinTypeRole::ActorDispatchLocal],
+            Self::ActorFn => &[BuiltinTypeRole::ActorDispatchLocal],
             Self::ActorHandle => &[
                 BuiltinTypeRole::ActorDispatchLocal,
                 BuiltinTypeRole::SupervisorHandle,

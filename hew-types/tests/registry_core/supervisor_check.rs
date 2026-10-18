@@ -81,7 +81,7 @@ fn main() {}
 
 /// `restarted(sup.child)` on a static supervised child type-checks cleanly:
 /// the operand is a static child accessor, so the call is well-formed and the
-/// stable handle keeps the child's `ChildRef<ChildType>` type.
+/// role keeps the child's own actor type.
 #[test]
 fn restarted_on_static_child_accepted() {
     let output = typecheck(
@@ -98,7 +98,8 @@ supervisor App {
 
 fn main() {
     let sup = spawn App;
-    let _w: ChildRef<Worker> = restarted(sup.w);
+    let worker: Worker = sup.w;
+    restarted(worker);
 }
 ",
     );
@@ -165,7 +166,8 @@ supervisor Pool {
 
 fn main() {
     let sup = spawn Pool;
-    let _w: ChildRef<Worker> = restarted(sup.worker[0]);
+    let worker: Worker = sup.worker[0];
+    restarted(worker);
 }
 ",
     );

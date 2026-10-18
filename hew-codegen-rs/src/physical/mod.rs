@@ -765,12 +765,6 @@ fn primitive_repr(
                 integer_layout(ctx, target, 32)?,
             ])
         }
-        // A supervised role addresses its actor through the supervisor that
-        // owns it: the supervisor's handle and the declared slot.
-        role if role.is_builtin(hew_types::BuiltinType::ChildRef) => PhysicalRepr::Struct(vec![
-            integer_layout(ctx, target, pointer_bits)?,
-            integer_layout(ctx, target, 32)?,
-        ]),
         // A pool view addresses its members the same way a role addresses one
         // child: the owning supervisor and the first of the pool's consecutive
         // slots, with the immutable extent evaluated at construction.

@@ -206,43 +206,17 @@ impl SemModule {
 
 /// The actor declaration and type arguments a local reference names.
 ///
-/// An actor is the type of its handle, so a handle carries its own identity; a
-/// `ChildRef<A>` names the same actor through its role parameter.
+/// Direct, supervised and imported references share the actor type.
 pub(crate) fn local_actor_instance(
     ty: &ResolvedTy,
 ) -> Option<hew_types::resolved_ty::NominalInstance> {
-    if let Some(instance) = ty.actor_handle_instance() {
-        return Some(instance);
-    }
-    let ResolvedTy::Named {
-        head: hew_types::TypeHead::Builtin(hew_types::BuiltinType::ChildRef),
-        args,
-        ..
-    } = ty
-    else {
-        return None;
-    };
-    let [actor_ty] = args.as_slice() else {
-        return None;
-    };
-    actor_ty.actor_handle_instance()
+    ty.actor_handle_instance()
 }
 
 impl SemActor {
-    /// The stable supervised role for this actor: re-resolved through its
-    /// supervisor on every use, never a cached address.
-    #[must_use]
-    pub fn child_ref_ty(&self) -> ResolvedTy {
-        ResolvedTy::named_builtin(
-            hew_types::BuiltinType::ChildRef,
-            vec![self.handle_ty.clone()],
-        )
-    }
-
     /// Whether this actor's handle is an anonymous actor's `actor(M) -> R`.
     ///
-    /// A lambda actor is spawned from an expression, never supervised as a
-    /// named role, so it has no `ChildRef` spelling.
+    /// A lambda actor is spawned from an expression rather than a declaration.
     #[must_use]
     pub fn is_lambda(&self) -> bool {
         matches!(
@@ -257,7 +231,7 @@ impl SemActor {
     /// A message may address this actor through its handle or its role.
     #[must_use]
     pub fn admits_target(&self, ty: &ResolvedTy) -> bool {
-        *ty == self.handle_ty || (!self.is_lambda() && *ty == self.child_ref_ty())
+        *ty == self.handle_ty
     }
 
     /// Every private body entered with this actor's exclusive state seat.
@@ -904,9 +878,7 @@ impl RemoteObservationKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LifecycleTarget {
     Actor(ActorId),
-    ActorRole(ActorId),
     Supervisor(crate::SupervisorId),
-    SupervisorRole(crate::SupervisorId),
 }
 
 impl LifecycleTarget {
@@ -916,27 +888,19 @@ impl LifecycleTarget {
         supervisors: &[crate::SemSupervisor],
     ) -> Result<ResolvedTy, String> {
         match self {
-            Self::Actor(id) | Self::ActorRole(id) => {
+            Self::Actor(id) => {
                 let actor = actors
                     .get(id.0 as usize)
                     .filter(|actor| actor.id == id)
                     .ok_or("unknown lifecycle actor identity")?;
-                Ok(if matches!(self, Self::ActorRole(_)) {
-                    actor.child_ref_ty()
-                } else {
-                    actor.handle_ty.clone()
-                })
+                Ok(actor.handle_ty.clone())
             }
-            Self::Supervisor(id) | Self::SupervisorRole(id) => {
+            Self::Supervisor(id) => {
                 let supervisor = supervisors
                     .get(id.0 as usize)
                     .filter(|supervisor| supervisor.id == id)
                     .ok_or("unknown lifecycle supervisor identity")?;
-                Ok(if matches!(self, Self::SupervisorRole(_)) {
-                    supervisor.child_ref_ty()
-                } else {
-                    supervisor.handle_ty.clone()
-                })
+                Ok(supervisor.handle_ty.clone())
             }
         }
     }
@@ -1008,7 +972,6 @@ pub enum ActorOperation {
     SupervisorChild {
         supervisor: crate::SupervisorId,
         child: u32,
-        owner_is_role: bool,
     },
     /// Produce a `pool` child's view: the owning supervisor and the first of
     /// the pool's consecutive member slots. The member count is a declaration
@@ -1016,7 +979,6 @@ pub enum ActorOperation {
     SupervisorPoolView {
         supervisor: crate::SupervisorId,
         child: u32,
-        owner_is_role: bool,
     },
 }
 
@@ -1070,28 +1032,12 @@ impl ActorOperation {
                 }
                 consume(arguments, supervisor.handle_ty.clone())
             }
-            Self::SupervisorChild {
-                child,
-                owner_is_role,
-                ..
-            } => consume(
-                vec![if *owner_is_role {
-                    supervisor.child_ref_ty()
-                } else {
-                    supervisor.handle_ty.clone()
-                }],
+            Self::SupervisorChild { child, .. } => consume(
+                vec![supervisor.handle_ty.clone()],
                 supervisor.child_handle_ty(*child as usize, actors, supervisors)?,
             ),
-            Self::SupervisorPoolView {
-                child,
-                owner_is_role,
-                ..
-            } => consume(
-                vec![if *owner_is_role {
-                    supervisor.child_ref_ty()
-                } else {
-                    supervisor.handle_ty.clone()
-                }],
+            Self::SupervisorPoolView { child, .. } => consume(
+                vec![supervisor.handle_ty.clone()],
                 supervisor.pool_view_ty(*child as usize, actors, supervisors)?,
             ),
             _ => consume(vec![supervisor.handle_ty.clone()], ResolvedTy::Unit),
@@ -1165,14 +1111,6 @@ impl ActorOperation {
         | Self::AwaitStopped(target)
         | Self::AwaitRestarted(target) = self
         {
-            if matches!(self, Self::AwaitRestarted(_))
-                && !matches!(
-                    target,
-                    LifecycleTarget::ActorRole(_) | LifecycleTarget::SupervisorRole(_)
-                )
-            {
-                return Err("restart wait requires a supervised role".into());
-            }
             return Ok(crate::SemSignature {
                 failure_domain: hew_types::CallableFailureDomain::HewFault,
                 params: vec![crate::SemAbiParam {

@@ -66,7 +66,6 @@ pub unsafe extern "C" fn hew_actor_send_wait_new(
     }
     // SAFETY: the unpublished envelope's fields still belong to its source.
     unsafe { (*envelope).release_start = payload_release };
-    crate::actor::register_native_capacity(token, &waker);
     Box::into_raw(Box::new(HewNativeSend {
         // SAFETY: the caller retains its explicit stamp through this constructor.
         caller: unsafe { *caller },
@@ -189,6 +188,7 @@ pub(crate) unsafe fn poll_request_admission(
             wait.channel,
             wait.obligated,
             wait.caller,
+            Some(&wait._waker),
         )
     };
     if matches!(
@@ -314,7 +314,6 @@ pub(crate) unsafe fn request_wait_resume(
         crate::reply_channel::hew_reply_channel_retain(channel.cast());
         Arc::new(OwnedWaker::retain(&*waker))
     };
-    crate::actor::register_native_capacity(token, &waker);
     Box::into_raw(Box::new(HewNativeAsk {
         caller,
         obligated,
@@ -347,6 +346,7 @@ pub unsafe extern "C" fn hew_actor_send_wait_poll(wait: *mut HewNativeSend) -> i
             std::ptr::null_mut(),
             wait.obligated,
             wait.caller,
+            Some(&wait._waker),
         )
     };
     let status = match crate::actor_native::submission_status(outcome) {

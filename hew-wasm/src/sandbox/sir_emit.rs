@@ -2193,11 +2193,10 @@ fn actor_operation(operation: &hew_sir::ActorOperation) -> serde_json::Value {
                 _ => unreachable!(),
             };
             match target {
-                hew_sir::LifecycleTarget::Actor(id) | hew_sir::LifecycleTarget::ActorRole(id) => {
+                hew_sir::LifecycleTarget::Actor(id) => {
                     serde_json::json!({ "op": op, "actor": id.0 })
                 }
-                hew_sir::LifecycleTarget::Supervisor(id)
-                | hew_sir::LifecycleTarget::SupervisorRole(id) => {
+                hew_sir::LifecycleTarget::Supervisor(id) => {
                     serde_json::json!({ "op": op, "supervisor": id.0 })
                 }
             }
@@ -2244,25 +2243,15 @@ fn actor_operation(operation: &hew_sir::ActorOperation) -> serde_json::Value {
         Op::SupervisorSpawn(supervisor) => {
             serde_json::json!({ "op": "supervisor_spawn", "supervisor": supervisor.0 })
         }
-        Op::SupervisorChild {
-            supervisor,
-            child,
-            owner_is_role,
-        } => serde_json::json!({
+        Op::SupervisorChild { supervisor, child } => serde_json::json!({
             "op": "supervisor_child",
             "supervisor": supervisor.0,
             "child": child,
-            "owner_is_role": owner_is_role,
         }),
-        Op::SupervisorPoolView {
-            supervisor,
-            child,
-            owner_is_role,
-        } => serde_json::json!({
+        Op::SupervisorPoolView { supervisor, child } => serde_json::json!({
             "op": "supervisor_pool_view",
             "supervisor": supervisor.0,
             "child": child,
-            "owner_is_role": owner_is_role,
         }),
     }
 }

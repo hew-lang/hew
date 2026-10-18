@@ -97,17 +97,6 @@ impl InstanceService<'_> {
         ty: &ResolvedTy,
         chain: &[ResolvedTy],
     ) -> Result<SupervisorId, String> {
-        if let ResolvedTy::Named {
-            head: hew_types::TypeHead::Builtin(hew_types::BuiltinType::ChildRef),
-            args,
-            ..
-        } = ty
-        {
-            let [handle] = args.as_slice() else {
-                return Err("a supervised role names one supervisor type".into());
-            };
-            return self.require_supervisor_intercepted(&handle.clone(), chain);
-        }
         if let Some(supervisor) = self
             .supervisors
             .iter()
@@ -394,14 +383,7 @@ impl Builder<'_, '_> {
             .position(|child| child.name == slot.child_name)
             .ok_or("supervisor child lookup names no declared child")?;
         let child = u32::try_from(child).map_err(|_| "supervisor child count exceeds u32")?;
-        let owner_is_role = self
-            .ty(&object.ty)
-            .is_builtin(hew_types::BuiltinType::ChildRef);
-        let operation = ActorOperation::SupervisorChild {
-            supervisor,
-            child,
-            owner_is_role,
-        };
+        let operation = ActorOperation::SupervisorChild { supervisor, child };
         let signature = self.actor_signature(&operation)?;
         if signature.return_ty != self.ty(&expression.ty) {
             return Err("supervisor child lookup differs from its checked handle".into());
@@ -431,14 +413,7 @@ impl Builder<'_, '_> {
             .position(|child| child.name == slot.child_name)
             .ok_or("supervisor pool lookup names no declared child")?;
         let child = u32::try_from(child).map_err(|_| "supervisor child count exceeds u32")?;
-        let owner_is_role = self
-            .ty(&object.ty)
-            .is_builtin(hew_types::BuiltinType::ChildRef);
-        let operation = ActorOperation::SupervisorPoolView {
-            supervisor,
-            child,
-            owner_is_role,
-        };
+        let operation = ActorOperation::SupervisorPoolView { supervisor, child };
         let signature = self.actor_signature(&operation)?;
         if signature.return_ty != self.ty(&expression.ty) {
             return Err("supervisor pool lookup differs from its checked view".into());

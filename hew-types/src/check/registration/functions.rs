@@ -561,6 +561,32 @@ impl Checker {
                                 let registered = self
                                     .trait_method_ids_of(trait_id, m.name.name.as_str())
                                     .and_then(|(_, method)| self.fn_sigs.get(&method).cloned());
+                                let method_parameters =
+                                    registered.as_ref().map_or_else(Vec::new, |signature| {
+                                        signature.type_params.clone()
+                                    });
+                                let mut default_bounds = self.collect_type_param_bounds(
+                                    id.type_params.as_ref(),
+                                    id.where_clause.as_ref(),
+                                    &mut Vec::new(),
+                                );
+                                if let Some(signature) = &registered {
+                                    default_bounds.extend(&signature.bounds);
+                                }
+                                let obligations = self.value_bound_obligations(&default_bounds);
+                                let impl_parameters = self.source_parameter_heads(
+                                    id.type_params.as_deref().unwrap_or_default(),
+                                    span,
+                                );
+                                let default_binders = crate::type_facts::ImplMethodBinders {
+                                    receiver: self.normalize_for_use(&target),
+                                    impl_params: impl_parameters,
+                                    method_params: method_parameters,
+                                    obligations,
+                                    checked_receivers: HashSet::new(),
+                                    implemented_trait: Some(trait_ref.clone()),
+                                };
+                                let type_parameters = default_binders.source_parameters();
                                 let (params, return_type) = if let Some(sig) = registered {
                                     // Qualified trait signatures registered outside an impl
                                     // scope can still include a concrete receiver
@@ -604,14 +630,6 @@ impl Checker {
                                         }),
                                     )
                                 };
-                                let sig = FnSig {
-                                    param_names: param_names.clone(),
-                                    params: params.clone(),
-                                    return_type: return_type.clone(),
-                                    consumes_receiver,
-                                    returns_receiver_identity,
-                                    ..FnSig::default()
-                                };
                                 // The materialized default belongs to the impl's
                                 // receiver identity: a declaration, a builtin or
                                 // a primitive's anchor row.
@@ -631,13 +649,48 @@ impl Checker {
                                     } else {
                                         None
                                     };
+                                let sig = FnSig {
+                                    impl_method: default_body.map(|declaration| {
+                                        super::types::ImplMethodProvenance {
+                                            declaration,
+                                            trait_method: self.trait_method_ids_of(
+                                                trait_id,
+                                                m.name.name.as_str(),
+                                            ),
+                                            receiver: self.lookup_declaration(
+                                                &self
+                                                    .canonical_nominal_name(type_name)
+                                                    .unwrap_or_else(|| {
+                                                        self.trait_impl_type_identity(type_name)
+                                                    }),
+                                            ),
+                                            receiver_args: Self::impl_target_args(&target),
+                                            receiver_parameters: default_binders
+                                                .impl_params
+                                                .clone(),
+                                            name: m.name.to_string(),
+                                            is_inherent: false,
+                                            span: span.clone(),
+                                        }
+                                    }),
+                                    type_params: type_parameters,
+                                    bounds: default_bounds,
+                                    param_names,
+                                    params,
+                                    return_type,
+                                    consumes_receiver,
+                                    returns_receiver_identity,
+                                    ..FnSig::default()
+                                };
                                 match default_body {
                                     Some(declaration) => {
-                                        self.insert_fn_sig(&method_key, declaration, sig);
+                                        self.insert_fn_sig(&method_key, declaration, sig.clone());
                                     }
-                                    None => self.insert_fn_sig_at(&method_key, sig),
+                                    None => self.insert_fn_sig_at(&method_key, sig.clone()),
                                 }
                                 if let Some(declaration) = default_body {
+                                    self.impl_method_binders
+                                        .insert(declaration, default_binders);
                                     if let Some((declaring_trait, _)) =
                                         self.trait_method_ids_of(trait_id, m.name.name.as_str())
                                     {
@@ -666,14 +719,6 @@ impl Checker {
                                     );
                                     self.publish_impl_method_declaration_id(&keys, declaration);
                                 }
-                                let sig = FnSig {
-                                    param_names,
-                                    params,
-                                    return_type,
-                                    consumes_receiver,
-                                    returns_receiver_identity,
-                                    ..FnSig::default()
-                                };
                                 // A primitive receiver dispatches through the
                                 // receiver-kind table, defaults included.
                                 if let Some(canonical) = primitive_key.clone() {
@@ -1392,6 +1437,13 @@ impl Checker {
             &mut Vec::new(),
         );
         bounds.extend(&method_bounds);
+        self.value_bound_obligations(&bounds)
+    }
+
+    fn value_bound_obligations(
+        &self,
+        bounds: &ParamBounds,
+    ) -> Vec<(crate::TypeParamId, crate::type_facts::ImplMethodObligation)> {
         bounds
             .iter()
             .map(|(param, bound)| {

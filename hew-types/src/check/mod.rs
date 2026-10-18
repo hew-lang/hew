@@ -743,6 +743,19 @@ impl Checker {
             );
         }
         let (fact_context, facts) = service.into_parts();
+        let fact_context = fact_context.with_method_trait_applications(
+            self.impl_method_binders
+                .iter()
+                .filter_map(|(method, binders)| {
+                    binders.implemented_trait.as_ref().map(|bound| {
+                        (
+                            *method,
+                            self.applied_trait_closure(bound, Some(&binders.receiver)),
+                        )
+                    })
+                })
+                .collect(),
+        );
         (fact_context, facts, refusals.into_values().collect())
     }
 

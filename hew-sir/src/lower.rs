@@ -625,22 +625,6 @@ pub(crate) fn evaluation_sequence(evaluation_order: &[usize], len: usize) -> Vec
     }
 }
 
-fn declared_type_parameter(
-    ty: &ResolvedTy,
-    declared: &[hew_types::ParamHead],
-) -> Option<hew_types::ParamHead> {
-    let parameter = match ty {
-        ResolvedTy::TypeParam { name } => *name,
-        ResolvedTy::Named {
-            head: hew_types::TypeHead::Param(parameter),
-            args,
-            ..
-        } if args.is_empty() => *parameter,
-        _ => return None,
-    };
-    declared.contains(&parameter).then_some(parameter)
-}
-
 /// Resolve one concrete record through the canonical checker type service.
 fn concrete_record_fields(
     module: &HirModule,

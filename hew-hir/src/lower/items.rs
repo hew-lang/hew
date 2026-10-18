@@ -854,14 +854,37 @@ impl LowerCtx {
             self.source_declaration(&span, hew_types::DeclarationKind::Function, 0)?
         };
 
-        let mut type_parameters = impl_type_params.to_vec();
-        type_parameters.extend(
-            self.declaration_type_parameters
-                .get(&declaration)
-                .into_iter()
-                .flat_map(|(_, _, parameters)| parameters.iter())
-                .copied(),
-        );
+        let mut type_parameters = if matches!(
+            self.defs.kind(declaration),
+            hew_types::DeclarationKind::ImplMethod | hew_types::DeclarationKind::DefaultImplMethod
+        ) {
+            let Some(parameters) = self
+                .display_facts
+                .context()
+                .impl_method_type_parameters(declaration)
+            else {
+                self.diagnostics.push(HirDiagnostic::new(
+                    HirDiagnosticKind::CheckerBoundaryViolation {
+                        name: self.defs.path(declaration).to_string(),
+                        reason: "implementation body has no checked binder schema".to_string(),
+                    },
+                    span,
+                    "cannot lower an implementation body without its checked type parameters",
+                ));
+                return None;
+            };
+            parameters
+        } else {
+            let mut parameters = impl_type_params.to_vec();
+            parameters.extend(
+                self.declaration_type_parameters
+                    .get(&declaration)
+                    .into_iter()
+                    .flat_map(|(_, _, parameters)| parameters.iter())
+                    .copied(),
+            );
+            parameters
+        };
         self.push_scope();
         // Track this function's declared type parameters for the duration of
         // its body so lowering can recognise abstract-`T` operands (the

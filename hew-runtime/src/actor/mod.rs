@@ -1282,29 +1282,8 @@ pub struct HewActor {
     /// `state` at 16 — are unaffected (verified by `abi_offset_parity`).
     pub send_pin_count: AtomicU32,
 
-    /// The `receive gen fn` stream-producer pump's own `Sink<T>*` while its
-    /// activation is alive. Registered by
-    /// [`hew_actor_gen_sink_register`] in the pump's prologue, cleared by
-    /// [`hew_actor_gen_sink_complete`] on a clean (generator-exhausted) exit.
-    /// A terminal actor teardown that reaches this actor while the slot is
-    /// still non-null — a crash mid-pump (`hew_actor_trap`), or a stop/free
-    /// while the pump is parked on backpressure (`hew_actor_free_inner`'s
-    /// parked-activation reclaim) — fault-closes the registered sink instead
-    /// of leaving the consumer to hang on a silent EOF.
-    ///
-    /// At most one gen-sink is live per actor at a time: the actor model
-    /// runs one pump to completion or park before a second `receive gen fn`
-    /// call can start a new activation on the same actor (no concurrent
-    /// pump interleaving — out of scope per the receive-gen-fn plan), so a
-    /// single slot, not a registry, is the correct shape.
-    ///
-    /// **ABI note**: appended at the very end of `HewActor`, after
-    /// `send_pin_count`, so no previously-mirrored offset moves.
-    pub gen_sink: AtomicPtr<c_void>,
-
-    /// Stable process-local identity exposed to Hew values after the atomic
-    /// compiler cutover. Appended at the tail so the codegen-mirrored `id` and
-    /// `state` offsets and every established prefix offset remain unchanged.
+    /// Stable process-local identity exposed to Hew values. Runtime-internal;
+    /// codegen mirrors only the earlier `id` and `state` fields.
     pub local_pid_id: crate::lifetime::local_handles::HewLocalPidId,
 
     /// Full, un-masked spawn serial — the aliasing-proof incarnation

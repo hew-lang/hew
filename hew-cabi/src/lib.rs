@@ -5,7 +5,7 @@
 //!
 //! - String conversion helpers (`malloc_cstring`, `str_to_malloc`, `cstr_to_str`)
 //! - `HewValueLayout` and semantic value copy/drop callbacks
-//! - `HewVec` type definition and byte-conversion helpers
+//! - `HewVec` type definitions and runtime ABI declarations
 //! - `HewSink` construction helpers for custom sink implementations
 //!
 //! Native package authors depend on this crate; it gets compiled into each

@@ -1494,7 +1494,6 @@ fn make_stop_test_actor_with_id(
             runtime_id: crate::runtime_id::RuntimeId::DEFAULT,
             runtime: ptr::null(),
             send_pin_count: AtomicU32::new(0),
-            gen_sink: AtomicPtr::new(ptr::null_mut()),
             local_pid_id: crate::lifetime::local_handles::HewLocalPidId::INVALID,
             spawn_serial: id,
             sys_dispatch: None,
@@ -7453,16 +7452,3 @@ fn spawn_at_the_last_representable_serial_still_succeeds() {
     // SAFETY: actor is a valid pointer from hew_actor_spawn.
     assert_eq!(unsafe { hew_actor_free(actor) }, 0);
 }
-
-// ── gen_sink CAS-race double-free regression (PR #2401 finding) ──────
-//
-// `hew_actor_gen_sink_complete` (the pump's clean-exit release) and
-// `fault_close_registered_gen_sink` (the crash/teardown release) both
-// race on the same `AtomicPtr` slot when a terminal teardown fires
-// concurrently with the pump's own generator-exhausted exit. Before the
-// fix, `hew_actor_gen_sink_complete` discarded its CAS result and
-// unconditionally called `hew_sink_close(sink)` even when it LOST the
-// race — double-freeing the same `Box<HewSink>` the fault path had
-// already closed. These tests deterministically force each ordering
-// (no real thread race needed) by calling the two release paths
-// back-to-back on a single actor + sink pair.

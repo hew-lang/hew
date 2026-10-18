@@ -721,7 +721,6 @@ impl RuntimeCallFamily {
             | F::StreamPairStream
             | F::SinkClone
             | F::SinkClose
-            | F::SinkPeerClosed
             | F::ActorRequestRelease
             | F::ActorCallFree
             | F::ActorRequestTake

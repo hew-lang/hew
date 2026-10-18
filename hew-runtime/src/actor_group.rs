@@ -444,7 +444,6 @@ mod tests {
             runtime_id: crate::runtime_id::RuntimeId::DEFAULT,
             runtime: ptr::null(),
             send_pin_count: std::sync::atomic::AtomicU32::new(0),
-            gen_sink: AtomicPtr::new(ptr::null_mut()),
             local_pid_id: crate::lifetime::local_handles::HewLocalPidId::INVALID,
             spawn_serial: id,
             sys_dispatch: None,
@@ -588,10 +587,6 @@ mod tests {
     /// from the main thread and then calling `is_actor_live` (which acquires
     /// `LIVE_ACTORS`) from another thread during the send does not deadlock.
     #[test]
-    #[expect(
-        clippy::too_many_lines,
-        reason = "complete actor fixture and concurrent mailbox regression"
-    )]
     fn send_by_id_block_mailbox_full_does_not_deadlock() {
         let _rt = crate::runtime_test_guard();
 
@@ -639,7 +634,6 @@ mod tests {
             runtime_id: crate::runtime_id::RuntimeId::DEFAULT,
             runtime: ptr::null(),
             send_pin_count: std::sync::atomic::AtomicU32::new(0),
-            gen_sink: AtomicPtr::new(ptr::null_mut()),
             local_pid_id: crate::lifetime::local_handles::HewLocalPidId::INVALID,
             spawn_serial: actor_id,
             sys_dispatch: None,

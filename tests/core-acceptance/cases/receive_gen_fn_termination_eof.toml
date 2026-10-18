@@ -1,0 +1,10 @@
+[[case]]
+id = "receive_gen_fn_termination_eof"
+intent = "Terminating a supervisor cancels its active stream producer and releases the sink: the consumer drains accepted values in order and reaches EOF without relying on a fixed queue capacity."
+source = "../vertical-slice/accept/receive_gen_fn_termination_eof.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "started\neof\n"
+exit = 0

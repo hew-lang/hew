@@ -3083,17 +3083,26 @@ mod tests {
     }
 
     #[test]
-    fn remote_actor_send_and_ask_require_real_time() {
-        let declaration = "#[wire]\ntype Ping {\n    n: i64 @1;\n}\n\nactor Worker {\n    receive fn ping(msg: Ping) -> i64 {\n        0\n    }\n}\n\nimpl ActorMsg for Worker {\n    type Msg = Ping;\n    type Reply = i64;\n}\n";
-        for call in ["pid.send(Ping { n: 0 })", "pid.ask(Ping { n: 0 }, 1000)"] {
-            let source =
-                format!("{declaration}fn main() {{ let pid = Node.lookup<Worker>(\"worker\").expect(\"lookup\"); let _ = {call}; }}");
+    fn authenticated_actor_acquisition_requires_real_time() {
+        let declaration =
+            "import std.net;\nactor Worker { #[wire] receive fn ping() -> i64 { 21 } }\n";
+        for (setup, call) in [
+            ("", "Node.peer(\"credential\")"),
+            (
+                "let peer = Node.peer(\"credential\").expect(\"peer\");",
+                "peer.receive_service<Worker>()",
+            ),
+        ] {
+            let source = format!("{declaration}fn main() {{ {setup} let _ = {call}; }}");
             let failure = check_source(&source, HostAdmission::ProcessEntry).unwrap_err();
             assert!(
                 failure.contains("E_DETERMINISTIC_HOST_OPERATION"),
                 "{failure}"
             );
-            assert!(failure.contains("pid."), "{failure}");
+            assert!(
+                failure.contains(call),
+                "the acquisition itself must be refused: {failure}"
+            );
         }
     }
 

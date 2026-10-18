@@ -5,5 +5,5 @@ actor Invalid {
 fn main() {
     let target = spawn Invalid;
     let peer = Node.peer("00").expect("peer");
-    let export = peer.export(target);
+    let _export = peer.export(target);
 }

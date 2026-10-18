@@ -1334,7 +1334,7 @@ fn main() {}
     }
 
     /// Regression for PR #920: the `"link" | "unlink" | "monitor" | "demonitor"
-    /// | "link_remote"` bare-name arm in `reject_if_wasm_incompatible_call`
+    /// bare-name arm in `reject_if_wasm_incompatible_call`
     /// fired on raw name alone, so an ordinary user function bare-named
     /// `link`/`monitor` (unrelated signature, no actor handle involved) hard-
     /// failed a WASM build with the `LinkMonitor` diagnostic pointed at the

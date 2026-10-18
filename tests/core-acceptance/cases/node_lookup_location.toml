@@ -1,6 +1,6 @@
 [[case]]
 id = "node_lookup_location"
-intent = "The fixture runs to completion and exits 0."
+intent = "Lookup returns stable Location metadata for a registered actor and NotFound for an absent name."
 source = "../vertical-slice/accept/node_lookup_location.hew"
 suites = ["acceptance"]
 timeout_seconds = 30

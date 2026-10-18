@@ -1,5 +1,3 @@
-import std.bench;
-
 actor PayloadSink {
     var payload: bytes = bytes.new();
     var label: string = "";
@@ -26,15 +24,6 @@ fn submit_handoff(sink: PayloadSink) {
     let body = "payload-transfer".to_bytes();
     let text = "shared".to_upper();
     inbox.store(body, text).expect("handoff admitted");
-}
-
-#[bench]
-fn retained_actor_handoff(b: bench.Bencher) {
-    let sink = spawn PayloadSink;
-    b.iter(|| submit_handoff(sink));
-    assert(sink.count().expect("completed handoffs") > 0);
-    stop(sink);
-    stopped(sink);
 }
 
 fn main() {

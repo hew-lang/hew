@@ -1351,7 +1351,7 @@ fn monitor_watcher_node_death_prunes_target_table() {
 
 /// Cross-node link headline: a `CrashLinked` cross-node link crashes the LOCAL linked
 /// actor when the remote actor cleanly exits. The client spawns a linker that
-/// `link_remote(kv, CrashLinked)`s the remote actor, then tells the remote to
+/// links the imported actor with `PartitionPolicy.CrashLinked`, then tells it to
 /// stop. The cross-node link-down lands in the linker's MAILBOX as a
 /// `HewSysMsg::Exit` and crashes it (terminal Crashed == 5) — NOT a monitor recv
 /// slot. The fixture polls the linker's terminal state (probe ledger) and

@@ -17,9 +17,8 @@
 //! - the caller binding is consumed at the send site — any later use
 //!   (`close()`, a second send) is refused with `UseAfterConsume`, the
 //!   double-close / racing-owner guard;
-//! - cross-node transfer is statically unreachable: `RemotePid` exposes
-//!   no receive-fn dispatch, and tell/ask payloads are
-//!   Serializable-enforced (pipe handles are not Serializable).
+//! - authenticated export refuses handle-bearing wire protocols: pipe handles
+//!   have no Serializable representation and must be supplied locally.
 
 mod support;
 

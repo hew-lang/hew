@@ -12,10 +12,3 @@ code = "OpaqueMessagePayload"
 line = 3
 column = 29
 message = "opaque type `std.net.PeerSession` cannot be used as a receive-fn parameter; actor message payloads must be CBOR-serializable, and opaque handles have no serializable layout. Open or construct the handle locally inside the handler instead [E_OPAQUE_MESSAGE_PAYLOAD]"
-
-[[case.expected.diagnostics]]
-severity = "error"
-code = "BoundsNotSatisfied"
-line = 8
-column = 18
-message = "E_NOT_SERIALIZABLE: service handler `Invalid.accept` reaches `std.net.PeerSession`, a resource, linear or opaque type"

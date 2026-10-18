@@ -1,19 +1,16 @@
-// Accept: a record message with an explicit wire schema crosses a
-// RemotePid<T>::send boundary.
+// A tagged record protocol is admitted by authenticated actor export.
+import std.net;
+
 #[wire]
 type Ping {
     n: i64 @1;
 }
 
 actor Worker {
+    #[wire]
     receive fn ping(msg: Ping) {}
 }
 
-impl ActorMsg for Worker {
-    type Msg = Ping;
-    type Reply = ();
-}
-
-fn send_remote(pid: RemotePid<Worker>) -> Result<(), SendError> {
-    pid.send(Ping { n: 42 })
+fn export_worker(peer: net.PeerSession, worker: Worker) {
+    let _offer = peer.export(worker);
 }

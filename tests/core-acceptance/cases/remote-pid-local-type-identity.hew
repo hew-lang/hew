@@ -1,5 +1,3 @@
-import std.os;
-
 #[wire]
 type Pair {
     first: string @1;
@@ -18,22 +16,6 @@ actor Store {
     receive fn identity() -> Store {
         self
     }
-}
-
-impl ActorMsg for Store {
-    type Msg = Pair;
-    type Reply = string;
-}
-
-actor Other {
-    receive fn handle(value: string) -> string {
-        value
-    }
-}
-
-impl ActorMsg for Other {
-    type Msg = string;
-    type Reply = string;
 }
 
 supervisor Service {
@@ -55,11 +37,6 @@ actor Echo<T> {
     }
 }
 
-impl<T: Send> ActorMsg for Echo<T> {
-    type Msg = T;
-    type Reply = T;
-}
-
 actor Tagged<T> {
     var marker: T;
     var calls: i64 = 0;
@@ -69,25 +46,10 @@ actor Tagged<T> {
     }
 }
 
-impl<T: Send> ActorMsg for Tagged<T> {
-    type Msg = string;
-    type Reply = i64;
-}
-
 actor Specialized<T> {
     receive fn handle(value: T) -> T {
         value
     }
-}
-
-impl ActorMsg for Specialized<string> {
-    type Msg = string;
-    type Reply = string;
-}
-
-impl<T: Send> ActorMsg for Specialized<Vec<T>> {
-    type Msg = Vec<T>;
-    type Reply = Vec<T>;
 }
 
 fn pair() -> Pair {
@@ -95,37 +57,19 @@ fn pair() -> Pair {
 }
 
 fn main() {
-    Node.start(NodeConfig { bind: "127.0.0.1:0", transport: NodeTransport.Tcp, key: f"{os.temp_dir()}/hew-local-type-identity-{os.pid()}.key", peers: Vec.new(), seeds: Vec.new() }).expect("start node");
     let store = spawn Store;
-    assert(Node.register("store", store) == 0);
-    let wrong: RemotePid<Other> = Node.lookup("store").expect("lookup name");
-    // Both actors' first handler has the same local index, but an incompatible
-    // owned payload. Refusal must happen before either handler sees the value.
-    for index in 0..16 {
-        match wrong.ask(f"wrong ask {index}", 1000) {
-            .Err(_) => {}
-            .Ok(_) => panic("wrong actor ask reached a handler"),
-        }
-        match wrong.send(f"wrong send {index}") {
-            .Err(_) => {}
-            .Ok(_) => panic("wrong actor send was accepted"),
-        }
-    }
-    assert(store.count().expect("count") == 0);
-    let right: RemotePid<Store> = Node.lookup("store").expect("lookup store");
-    assert(right.ask(pair(), 1000).expect("correct ask") == "FIRSTSECOND");
-    right.send(pair()).expect("correct send");
-    assert(right.ask(pair(), 1000).expect("completion") == "FIRSTSECOND");
+    assert(store.count().expect("initial count") == 0);
+    assert(store.handle(pair()).expect("owned reply") == "FIRSTSECOND");
+    assert(store.handle(pair()).expect("second owned reply") == "FIRSTSECOND");
+    assert(store.handle(pair()).expect("completion") == "FIRSTSECOND");
     assert(store.count().expect("count") == 3);
 
     // Stateful supervisor interception forwards the same concrete actor state.
     let service = spawn Service;
     let supervised_handle = service.store.identity().expect("supervised handle");
-    assert(Node.register("supervised", supervised_handle) == 0);
-    let supervised: RemotePid<Store> = Node.lookup("supervised").expect("lookup supervised");
-    assert(supervised.ask(pair(), 1000).expect("intercepted reply") == "FIRSTSECOND");
-    supervised.send(pair()).expect("intercepted send");
-    assert(supervised.ask(pair(), 1000).expect("intercepted completion") == "FIRSTSECOND");
+    assert(supervised_handle.handle(pair()).expect("intercepted reply") == "FIRSTSECOND");
+    assert(supervised_handle.handle(pair()).expect("second intercepted reply") == "FIRSTSECOND");
+    assert(supervised_handle.handle(pair()).expect("intercepted completion") == "FIRSTSECOND");
     assert(supervised_handle.count().expect("supervised count") == 3);
     // A local-only specialization needs no wire schema or codec.
     let local = spawn Echo<LocalOnly>;
@@ -134,43 +78,21 @@ fn main() {
     stop(local);
     stopped(local);
     let echo = spawn Echo<string>;
-    assert(Node.register("echo", echo) == 0);
-    let wrong_echo: RemotePid<Echo<Pair>> = Node.lookup("echo").expect("lookup echo");
-    match wrong_echo.ask(pair(), 1000) {
-        .Err(_) => {}
-        .Ok(_) => panic("wrong generic payload reached a handler"),
-    }
-    match wrong_echo.send(pair()) {
-        .Err(_) => {}
-        .Ok(_) => panic("wrong generic payload was accepted"),
-    }
-    let right_echo: RemotePid<Echo<string>> = Node.lookup("echo").expect("lookup echo");
-    assert(right_echo.ask("echo".to_upper(), 1000).expect("generic reply") == "ECHO");
+    assert(echo.handle("echo".to_upper()).expect("generic reply") == "ECHO");
 
-    // Distinct actor substitutions remain distinct even with identical messages.
+    // Each actor keeps its own concrete state and handler payload types.
     let tagged = spawn Tagged<string> { marker: "marker".to_upper() };
-    assert(Node.register("tagged", tagged) == 0);
-    let wrong_tagged: RemotePid<Tagged<Pair>> = Node.lookup("tagged").expect("lookup tagged");
-    match wrong_tagged.ask("wrong".to_upper(), 1000) {
-        .Err(_) => {}
-        .Ok(_) => panic("wrong generic actor reached a handler"),
-    }
-    match wrong_tagged.send("wrong".to_upper()) {
-        .Err(_) => {}
-        .Ok(_) => panic("wrong generic actor was accepted"),
-    }
-    let right_tagged: RemotePid<Tagged<string>> = Node.lookup("tagged").expect("lookup tagged");
-    assert(right_tagged.ask("first".to_upper(), 1000).expect("generic state reply") == 1);
-    right_tagged.send("second".to_upper()).expect("generic state send");
-    assert(right_tagged.ask("third".to_upper(), 1000).expect("generic state completion") == 3);
+    assert(tagged.handle("first".to_upper()).expect("generic state reply") == 1);
+    assert(tagged.handle("second".to_upper()).expect("second generic state reply") == 2);
+    assert(tagged.handle("third".to_upper()).expect("generic state completion") == 3);
+    let other_tagged = spawn Tagged<Pair> { marker: pair() };
+    assert(other_tagged.handle("independent").expect("other specialization") == 1);
+    stop(other_tagged);
+    stopped(other_tagged);
     let specialized = spawn Specialized<string>;
-    Node.register("specialized", specialized);
-    let remote_specialized: RemotePid<Specialized<string>> = Node.lookup("specialized").expect("specialized lookup");
-    assert(remote_specialized.ask("specialized".to_upper(), 1000).expect("specialized reply") == "SPECIALIZED");
+    assert(specialized.handle("specialized".to_upper()).expect("specialized reply") == "SPECIALIZED");
     let nested = spawn Specialized<Vec<string>>;
-    Node.register("nested", nested);
-    let remote_nested: RemotePid<Specialized<Vec<string>>> = Node.lookup("nested").expect("nested lookup");
-    let values = remote_nested.ask(["nested".to_upper()], 1000).expect("nested reply");
+    let values = nested.handle(["nested".to_upper()]).expect("nested reply");
     assert(values.get(0).expect("nested value") == "NESTED");
     let unmatched = spawn Specialized<i64>;
     assert(unmatched.handle(42).expect("unmatched local reply") == 42);
@@ -188,6 +110,5 @@ fn main() {
     stopped(service);
     stop(store);
     stopped(store);
-    Node.shutdown();
-    println("local remote pid type identity");
+    println("ordinary actor type identity");
 }

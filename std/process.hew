@@ -85,6 +85,7 @@ pub type CaptureLimits {
 impl Command {
     /// Run without a shell and capture stdout and stderr within `limits`.
     ///
+    /// Captures a snapshot without changing this command's configuration.
     /// Stdout and stderr are piped regardless of their command settings. Stdin
     /// may be inherited or null; `Piped` is refused because this operation does
     /// not expose a writer. Use `start` for interactive input.
@@ -92,9 +93,10 @@ impl Command {
     /// A nonzero exit is ordinary `CommandOutput.status` data. Exceeding either
     /// limit returns a structured error without partial output, after killing
     /// and reaping a child that is still running. Cancellation does the same.
-    /// The byte budget bounds retained raw output, not operating-system pipe
-    /// buffers, the current read chunk or allocation/UTF-8 conversion overhead.
-    fn output(var self, limits: CaptureLimits) -> CommandOutput fails ProcessError {
+    /// The byte budget bounds retained raw output. Operating-system pipes,
+    /// backend read buffers, the current chunk, allocation capacity and UTF-8
+    /// conversion have separate memory costs.
+    fn output(self, limits: CaptureLimits) -> CommandOutput fails ProcessError {
         if limits.timeout <= 0ns {
             return error ProcessError.InvalidArguments("process output: timeout must be positive");
         }
@@ -104,10 +106,11 @@ impl Command {
         if let Stdio.Piped = self.stdin {
             return error ProcessError.InvalidArguments("process output: piped stdin requires process.start");
         }
-        self.stdout = Stdio.Piped;
-        self.stderr = Stdio.Piped;
+        var specification = self;
+        specification.stdout = Stdio.Piped;
+        specification.stderr = Stdio.Piped;
         scope within limits.timeout {
-            let child = start(self)?;
+            let child = start(specification)?;
             drain_output(child, .Some(limits.max_output_bytes))?
         } handle failure {
             match failure {

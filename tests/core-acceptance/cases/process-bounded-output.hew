@@ -1,6 +1,9 @@
 import std.process;
+
 import std.os;
+
 import std.io;
+
 import std.fs;
 
 fn alive(pid: string) -> bool {
@@ -30,7 +33,7 @@ fn command(program: string, args: Vec<string>) -> process.Command {
 
 fn invalid(command: process.Command, limits: process.CaptureLimits) {
     match command.output(limits) {
-        .Err(.InvalidArguments(_)) => {},
+        .Err(.InvalidArguments(_)) => {}
         _ => panic("invalid capture configuration accepted"),
     }
 }
@@ -63,7 +66,11 @@ fn main() -> i32 {
     }
     let executable = args[0];
     let limits = process.CaptureLimits { timeout: 5s, max_output_bytes: 6 };
-    let exact = command(executable, ["exact"]).output(limits).expect("exact byte budget");
+    var specification = command(executable, ["exact"]);
+    specification.stdout = process.Stdio.Null;
+    let unchanged = specification;
+    let exact = unchanged.output(limits).expect("exact byte budget");
+    assert(unchanged.stdout == process.Stdio.Null && unchanged.stderr == process.Stdio.Inherit);
     assert(exact.status == process.ExitStatus.Exited(7));
     assert(exact.stdout == "é\0" && exact.stderr == "雪");
     let empty = command(executable, ["empty"]).output(process.CaptureLimits { timeout: 5s, max_output_bytes: 0 }).expect("zero byte output");
@@ -74,7 +81,6 @@ fn main() -> i32 {
         _ => panic("combined raw byte budget was not enforced"),
     }
     println("raw bytes counted across both pipes; exit status retained");
-
     let marker = f"{os.temp_dir()}/hew-process-bounded-{os.pid()}";
     for mode in ["both", "stderr"] {
         match command(executable, [mode, marker]).output(process.CaptureLimits { timeout: 5s, max_output_bytes: 4096 }) {
@@ -84,7 +90,6 @@ fn main() -> i32 {
         reaped(marker);
     }
     println("output floods bounded and reaped with either pipe silent");
-
     let timeout = 500ms;
     match command(executable, ["silent", marker]).output(process.CaptureLimits { timeout, max_output_bytes: 4096 }) {
         .Err(.TimedOut(limit)) => assert(limit == timeout),
@@ -92,7 +97,6 @@ fn main() -> i32 {
     }
     reaped(marker);
     println("runtime limit returned after child cleanup");
-
     let cancelled = scope within 500ms {
         let _ = command(executable, ["silent", marker]).output(process.CaptureLimits { timeout: 10s, max_output_bytes: 4096 });
         false
@@ -105,7 +109,6 @@ fn main() -> i32 {
     assert(cancelled);
     reaped(marker);
     println("outer cancellation reaped the bounded command");
-
     let never_launch = command(executable, ["silent", marker]);
     invalid(never_launch, process.CaptureLimits { timeout: 0ns, max_output_bytes: 4096 });
     invalid(never_launch, process.CaptureLimits { timeout: duration.from_nanos(-1), max_output_bytes: 4096 });

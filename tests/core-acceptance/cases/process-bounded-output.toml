@@ -1,6 +1,6 @@
 [[case]]
 id = "process-bounded-output"
-intent = "Bounded command output counts combined raw bytes before append, retains nonzero exit status, refuses invalid limits before launch, and kills/reaps children on flood, timeout and outer cancellation."
+intent = "Bounded command output preserves command configuration, counts combined raw bytes before append, retains nonzero exit status, refuses invalid limits before launch, and kills/reaps children on flood, timeout and outer cancellation."
 source = "cases/process-bounded-output.hew"
 suites = ["acceptance", "safety"]
 timeout_seconds = 30

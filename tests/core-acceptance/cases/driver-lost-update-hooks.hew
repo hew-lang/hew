@@ -1,0 +1,37 @@
+// Non-suspending constructor hooks run within the spawn operation. They must
+// not introduce scheduler choices before the two deposit tasks become ready.
+actor Account {
+    var balance: i64 = 0;
+    init() {}
+    #[on(start)]
+    fn started() {}
+    receive fn balance() -> i64 {
+        balance
+    }
+    receive fn set(amount: i64) {
+        balance = amount;
+    }
+}
+
+fn deposit(account: Account, amount: i64) fails ActorError {
+    let current = account.balance()?;
+    account.set(current + amount)?;
+}
+
+fn read(account: Account) -> i64 {
+    match account.balance() {
+        .Ok(v) => v,
+        .Err(_) => -1,
+    }
+}
+
+fn main() {
+    let account = spawn Account { balance: 0 };
+    scope {
+        let first = fork deposit(account, 10);
+        let second = fork deposit(account, 20);
+        let _ = await first;
+        let _ = await second;
+    };
+    println(read(account));
+}

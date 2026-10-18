@@ -1029,6 +1029,8 @@ fn seeded_driver_covers_serialized_and_lost_deposits() {
     for (name, seed) in [
         ("driver-lost-update-random-1", 1),
         ("driver-lost-update-random-13", 13),
+        ("driver-lost-update-hooks-random-1", 1),
+        ("driver-lost-update-hooks-random-13", 13),
     ] {
         let options =
             serde_json::json!({"schedulerPolicy": "chaos", "replay": {"seed": seed}}).to_string();

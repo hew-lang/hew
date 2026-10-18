@@ -1,6 +1,6 @@
-//! Checker-to-HIR type-flow pins for synthetic hash-collection for-in projections.
+//! Checker-to-HIR type flow for hash-collection iteration.
 //!
-//! The projection call (`HashSet::to_vec`, `HashMap::keys`/`values`) deliberately
+//! The `HashSet::to_vec` projection deliberately
 //! has a synthetic zero-width span because its result type must not overwrite the
 //! real iterable expression's type. The receiver is still the original place,
 //! however, and must keep the original place span. Giving the receiver the
@@ -162,58 +162,42 @@ fn assert_hashmap_into_iter_field(output: &hew_hir::LowerOutput) {
             _ => None,
         })
         .expect("map_into_iter_field must bind its cursor");
-    let HirExprKind::StructInit {
-        name, fields, base, ..
+    let HirExprKind::Call {
+        target: hew_types::CallTarget::ImplMethod(_),
+        args,
+        ..
     } = &init.kind
     else {
-        panic!("HashMap field into_iter must build HashMapIter, got {init:#?}");
+        panic!("HashMap field into_iter must call its declared impl, got {init:#?}");
     };
-    assert_eq!(name, "HashMapIter");
-    assert!(base.is_none());
     assert_eq!(
-        fields
-            .iter()
-            .map(|(name, _)| name.as_str())
-            .collect::<Vec<_>>(),
-        ["ks", "vs", "idx"]
+        init.ty,
+        ResolvedTy::named_builtin(
+            hew_types::BuiltinType::HashMapIter,
+            vec![ResolvedTy::I64, ResolvedTy::I64],
+        )
     );
-    for (field_name, projection) in fields.iter().take(2) {
-        let expected_method = match field_name.as_str() {
-            "ks" => hew_types::runtime_call::MapValueOp::Keys,
-            "vs" => hew_types::runtime_call::MapValueOp::Values,
-            _ => unreachable!("the first two HashMapIter fields are ks/vs"),
-        };
-        let HirExprKind::Call {
-            target: hew_types::CallTarget::Runtime(hew_types::RuntimeCallFamily::Map(operation)),
-            args,
-            ..
-        } = &projection.kind
-        else {
-            panic!("HashMapIter.{field_name} must be a semantic projection: {projection:#?}");
-        };
-        assert_eq!(*operation, expected_method);
-        let [receiver] = args.as_slice() else {
-            panic!("Map projection must carry exactly its receiver: {args:#?}");
-        };
-        assert!(matches!(
-            receiver.ty,
-            ResolvedTy::Named {
-                head: hew_types::TypeHead::Builtin(hew_types::BuiltinType::HashMap),
-                ..
-            }
-        ));
-        assert!(
-            matches!(
-                receiver.kind,
-                HirExprKind::FieldAccess { ref field, .. } if field == "m"
-            ),
-            "HashMap projection receiver must remain the original field place: {receiver:#?}"
-        );
-    }
+    let [receiver] = args.as_slice() else {
+        panic!("Map iteration must evaluate exactly one receiver: {args:#?}");
+    };
+    assert_eq!(
+        receiver.ty,
+        ResolvedTy::named_builtin(
+            hew_types::BuiltinType::HashMap,
+            vec![ResolvedTy::I64, ResolvedTy::I64],
+        )
+    );
+    assert!(
+        matches!(
+            receiver.kind,
+            HirExprKind::FieldAccess { ref field, .. } if field == "m"
+        ),
+        "Map iteration receiver must remain the original field place: {receiver:#?}"
+    );
 }
 
 #[test]
-fn hashset_for_in_preserves_receiver_and_projection_types_across_place_shapes() {
+fn hash_collection_iteration_preserves_receiver_types_across_place_shapes() {
     let output = lower(
         r"type SetBox {
     s: HashSet<i64>;

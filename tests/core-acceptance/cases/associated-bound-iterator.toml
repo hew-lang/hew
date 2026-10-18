@@ -3,6 +3,7 @@ id = "associated-bound-iterator"
 intent = "Generic associated bounds expose cursor methods and preserve tuple item equality for built-in and authored collections."
 source = "cases/associated-bound-iterator.hew"
 suites = ["acceptance"]
+timeout_seconds = 15
 
 [case.expected]
 stdout = ""

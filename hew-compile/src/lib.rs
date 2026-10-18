@@ -8975,10 +8975,10 @@ mod source_analysis_batch_tests {
         let options = test_options();
         let mut batch = SourceAnalysisBatch::new(options.clone());
         let sources = [
-            "import greeting; fn first() -> i32 { greeting.greet() } fn main() {}",
-            "import greeting.{ greet as hello }; fn second() -> i32 { hello() } fn main() {}",
-            "import greeting.{ greet }; fn third() -> i32 { greet() } fn main() {}",
-            "import greeting.{ greet as invoke_greeting }; fn fourth<T>(value: T) -> T { value } fn main() { let result = fourth(invoke_greeting()); }",
+            "import greeting; fn consumer_whole_import() -> i32 { greeting.greet() } fn main() {}",
+            "import greeting.{ greet as hello }; fn consumer_aliased_import() -> i32 { hello() } fn main() {}",
+            "import greeting.{ greet }; fn consumer_named_import() -> i32 { greet() } fn main() {}",
+            "import greeting.{ greet as invoke_greeting }; fn consumer_generic_root<T>(value: T) -> T { value } fn main() { let result = consumer_generic_root(invoke_greeting()); }",
         ];
         for (index, source) in sources.iter().enumerate() {
             let label = dir.path().join(format!("consumer_{index}.hew"));
@@ -9058,14 +9058,14 @@ mod source_analysis_batch_tests {
         let mut batch = SourceAnalysisBatch::new(options.clone());
         let first_label = first.path().join("consumer.hew");
         assert_equivalent(
-            "import greeting; fn first() -> i32 { greeting.greet() }",
+            "import greeting; fn integer_consumer() -> i32 { greeting.greet() }",
             first_label.to_str().unwrap(),
             &options,
             &mut batch,
         );
         let second_label = second.path().join("consumer.hew");
         assert_equivalent(
-            "import greeting; fn second() -> string { greeting.greet() }",
+            "import greeting; fn string_consumer() -> string { greeting.greet() }",
             second_label.to_str().unwrap(),
             &options,
             &mut batch,
@@ -9076,7 +9076,7 @@ mod source_analysis_batch_tests {
         );
         let mut proposed = SourceAnalysisBatch::new(options.clone());
         assert_equivalent(
-            "import greeting; fn first() -> string { greeting.greet() }",
+            "import greeting; fn integer_consumer() -> string { greeting.greet() }",
             first_label.to_str().unwrap(),
             &options,
             &mut proposed,
@@ -9084,7 +9084,7 @@ mod source_analysis_batch_tests {
         // The old immutable snapshot is still valid and independently usable.
         let original_options = test_options();
         assert_equivalent(
-            "import greeting; fn first() -> i32 { greeting.greet() }",
+            "import greeting; fn integer_consumer() -> i32 { greeting.greet() }",
             first_label.to_str().unwrap(),
             &original_options,
             &mut batch,

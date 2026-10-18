@@ -1702,7 +1702,7 @@ fn main() {
 }
 ```
 
-`spawn Greeter { ... }` has type `Greeter`: the actor is the type of its handle, so the annotation above is optional and every field, parameter, return, collection element and record field that holds an actor is written with the actor's own name. There is no separate pid type to write. Handlers may take multiple arguments.
+`spawn Greeter { ... }` has type `Greeter`: the actor is the type of its handle, so the annotation above is optional and every field, parameter, return, collection element and record field that holds an actor is written with the actor's own name. No separate handle wrapper is needed. Handlers may take multiple arguments.
 
 `fork g.greet()` is the forked call: keep the task and `await` it later, or leave it unawaited as a bare statement (`fork g.greet();`) and it joins at the enclosing scope's exit like every fork, which is how a one-shot send is written. Binding the task and dropping it (`let _ = fork g.greet();`) cancels it instead. A discarded `Result` from a waiting call is still `E_RESULT_DROPPED`.
 
@@ -1825,12 +1825,12 @@ that result remains an ordinary value. Other waiting operations are calls:
 
 | You want                          | You write                            |
 | --------------------------------- | ------------------------------------ |
-| a reply from an actor             | `pid.method(args)`                   |
-| that reply concurrently           | `let t = fork pid.method(args);` then `await t` |
-| an actor to stop, and to wait     | `stop(pid); stopped(pid);`           |
-| an actor to stop, without waiting | `stop(pid)`                          |
-| to wait for a stop someone else asked for | `stopped(pid)`               |
-| each item of another actor's stream | `for x in pid.stream()`            |
+| a reply from an actor             | `actor.method(args)`                 |
+| that reply concurrently           | `let t = fork actor.method(args);` then `await t` |
+| an actor to stop, and to wait     | `stop(actor); stopped(actor);`       |
+| an actor to stop, without waiting | `stop(actor)`                        |
+| to wait for a stop someone else asked for | `stopped(actor)`             |
+| each item of another actor's stream | `for x in actor.stream()`          |
 
 Do not put `await` on an actor call, actor handle or generator operation.
 Use it on the task created by `fork`.
@@ -2103,7 +2103,7 @@ actor Counter {
 }
 ```
 
-An actor method has no mailbox slot, so it is unreachable from outside the actor — `Counter.next()` from `main` is `E_ACTOR_METHOD_OUTSIDE`. Send the actor a message instead; only a `receive fn` is reachable through a pid.
+An actor method has no mailbox slot, so it is unreachable from outside the actor — `Counter.next()` from `main` is `E_ACTOR_METHOD_OUTSIDE`. Call the actor through one of its `receive fn` handlers instead; those handlers are reachable through a handle of the actor's own type.
 
 ### Actor-to-actor messaging
 
@@ -2161,7 +2161,7 @@ fn main() {
 ```
 
 Calling the handle is the completion call: it waits for the handler and yields
-`Result<R, ActorError>`, exactly as a call on a named actor's pid does. A
+`Result<R, ActorError>`, exactly as a call on a named actor does. A
 multi-parameter lambda is called with one argument per parameter.
 
 An `actor(Msg) -> Reply` handle is an ordinary value. Store it in a record field or a
@@ -4948,64 +4948,56 @@ An operation's ordinary `Err` stays a value to handle at the call. Explicit
 An unrecovered fault prints its typed diagnostic and exits 1; an explicit
 non-zero program exit status is preserved.
 
-### Remote ask suspension — a remote `.ask` from an actor handler
+### Authenticated remote actor calls
+
+An actor's ordinary type is used for local and imported handles. Mark each
+portable receive handler with `#[wire]`; its named arguments and result cross
+the node using Hew's checked wire codec:
 
 ```hew
+import std.net;
+
 actor Echo {
-    receive fn handle(req: i64) -> i64 {
-        req
+    #[wire]
+    receive fn handle(value: i64) -> i64 {
+        value
     }
 }
 
-impl ActorMsg for Echo {
-    type Msg = i64;
-    type Reply = i64;
+fn offer_echo(peer: net.PeerSession, echo: Echo, keep_alive: Stream<i64>) {
+    let export = peer.export(echo).expect("service offer accepted");
+    let _ = keep_alive.recv();
+    export.close();
 }
 
-actor Client {
-    receive fn go(unused: i64) {
-        let found: Result<RemotePid<Echo>, LookupError> = Node.lookup("echo");
-        match found {
-            .Ok(peer) => {
-                let reply = peer.ask(7, 1000);
-                match reply {
-                    .Ok(n) => println(f"answer={n}"),
-                    .Err(_) => println("ask failed"),
-                }
-            }
-            .Err(_) => println("lookup failed"),
-        }
+fn use_echo(peer: net.PeerSession) {
+    let echo: Echo = peer.receive_service<Echo>().expect("receive Echo service");
+    match echo.handle(7) {
+        .Ok(answer) => println(f"answer={answer}"),
+        .Err(_) => println("call failed"),
     }
 }
 ```
 
-An actor handle names an actor wherever it lives; a lookup through the node registry
-returns one for a peer. From an actor handler, `peer.ask(msg, timeout_ms)`
-lowers to the cross-node suspending remote-ask path and returns
-`Result<T.Reply, ActorError>` on resume; match `Ok`/`Err` instead of assuming a
-reply. A same-node lookup returns a handle to the local actor: its send, ask,
-link and monitor reach that actor directly, with the results a peer would give,
-and a handle from an earlier node session is stale.
+The issuer keeps the returned `net.Export<Echo>` alive while the recipient
+needs admission. Closing or dropping it revokes future calls through that
+grant. The recipient receives an ordinary `Echo` handle and calls
+`echo.handle(7)` like a local actor; completion calls wait for the handler and
+return `Result`.
 
-The explicit ask timeout can shorten an inherited request budget. Setup,
-encoding and queue time consume it. Nodes exchange a remaining duration and
-use their own monotonic clocks; they never compare absolute timestamps.
-A timeout or partition leaves the remote effect uncertain. Use idempotency
-keys, reconciliation or explicit job/status messages when the caller needs
-to determine whether work happened; retry is an application decision.
+`Node.lookup(name)` returns `Result<Location, LookupError>` for discovery. A
+`Location` describes identity but cannot authorize an actor call. Obtain call
+authority from an authenticated `Node.peer(credential)` session and an explicit
+service offer. Only `#[wire]` handlers are exported, and an imported service
+cannot be exported onward.
 
-A remote call addresses the one receive fn whose parameter is the actor's
-`ActorMsg.Msg` and whose result is its `ActorMsg.Reply`. Both cross the node
-as bytes, so each is a scalar, a collection of such values, or a `#[wire]`
-type with tagged fields. A plain record is refused at the call with a
-suggestion to declare its wire schema.
+Setup, encoding and queue time consume the current request budget. A lost
+connection or acknowledgement can leave remote admission uncertain. Use an
+idempotency key, reconciliation or an explicit status call when the caller
+needs to determine whether an operation happened; retry remains an application
+decision.
 
-> A local handle uses the actor's own type (HEW-SPEC-2026 §2.1.1). A handle
-> obtained from a node lookup uses `RemotePid<A>` because remote handles have a
-> distinct runtime representation. The example above therefore writes
-> `RemotePid<Echo>`.
-
-Full example:
+Full paired example:
 [`examples/distributed/kv_client.hew`](../examples/distributed/kv_client.hew)
 and [`examples/distributed/kv_server.hew`](../examples/distributed/kv_server.hew).
 
@@ -5087,28 +5079,24 @@ authenticated key, not the numeric prefix, determines the server's `NodeId`.
 
 Each successful start also advances a durable non-zero session incarnation in
 the key's journal. A same-key restart therefore has the same `NodeId` and a
-higher session. A remote handle carries the complete `Location`:
+higher session. A `Location` carries the complete identity:
 
 ```text
 { node: NodeId, slot: u64, incarnation: u32 }
 ```
 
-The value is an allocation-free 32-byte inline handle. It has no reference
-count, does not keep the actor alive, and cannot be constructed from raw
-integers. A PID captured before a same-key restart fails with `StaleRef`, even
-if the replacement process reuses the same actor slot.
+The value is an allocation-free 32-byte inline identity record. It has no
+reference count, does not keep the actor alive, and cannot be constructed from
+raw integers. A location from before a same-key restart is stale even if the
+replacement process reuses the same actor slot.
 
 Registry names are discovery aliases. Repointing a name affects future
-`Node.lookup` calls but does not rewrite or revoke a previously issued
-handle.
-
-The registry knows what it holds. `Node.register(name, pid)` returns
-`Result<(), RegisterError>` and records the actor's declaration identity beside
-its location; `Node.lookup<A>(name)` compares that record against `A` and
-answers `Err(LookupError.TypeMismatch)` when they disagree, so the type
-argument on a lookup is checked rather than trusted. `Node.register` is the one
-registration verb: it registers locally whether or not a node has started, and
-publishes cluster-wide once one has.
+`Node.lookup` results; a `Location` cannot grant call authority or revoke an
+existing service grant. `Node.lookup(name)` returns
+`Result<Location, LookupError>`. `Node.register(name, actor)` publishes the
+actor's location locally and, once a node has started, cluster-wide. Local
+`whereis<A>(name)` checks the actor type; cluster-wide lookup returns discovery
+metadata without claiming a call interface.
 
 Remote monitors deliver one typed notification through `#[on(down)]`:
 

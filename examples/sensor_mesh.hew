@@ -8,29 +8,17 @@
 //   Monitor  — aggregates readings, detects anomalies
 //   Logger   — writes events to a log
 //
-// In a distributed deployment each would run on its own node. The Node API —
-// start(config)/shutdown/register/lookup/connect, where `config` is a
-// NodeConfig record carrying transport, key, trust, peers, and seeds —
-// typechecks and lowers today; this single-process demo keeps them off.
+// This single-process demo keeps all actors together. A distributed deployment
+// can export the #[wire] handlers over authenticated peer sessions and pass
+// each recipient an ordinary Logger or Monitor handle. Node.lookup discovers
+// a Location only; it does not provide actor-call authority.
 actor Logger {
 
     // Simulate temperature with variation
 
-    // ── In distributed mode, each of these would be on a different node:
-    // Node.start("0.0.0.0:9000");  // logger node
-
-    // Node.register("logger", logger);
-
-    // Node.start("0.0.0.0:9001");  // monitor node
-    // let logger = Node.lookup("logger");
-
-    // Node.register("monitor", monitor);
-
-    // Node.start("0.0.0.0:9002");  // sensor node
-    // let monitor = Node.lookup("monitor");
-
     // Simulate 6 ticks
     var count: i32;
+    #[wire]
     receive fn log_event(source: string, msg: string) {
         count = count + 1;
         println(f"[log #{count}] {source}: {msg}");
@@ -41,6 +29,7 @@ actor Monitor {
     var readings: Vec<i32>;
     let logger: Logger;
     let threshold: i32;
+    #[wire]
     receive fn reading(sensor_id: string, temp: i32) {
         readings.push(temp);
         if temp > threshold {
@@ -61,6 +50,7 @@ actor Sensor {
     let sensor_id: string;
     let monitor: Monitor;
     let base_temp: i32;
+    #[wire]
     receive fn tick(cycle: i32) {
         let temp = base_temp + cycle % 5 - 2;
         let _ = monitor.reading(sensor_id, temp);

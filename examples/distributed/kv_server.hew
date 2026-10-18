@@ -1,95 +1,83 @@
-// examples/distributed/kv_server.hew — KV-store server node
+// examples/distributed/kv_server.hew — authenticated KV service issuer
 //
-// Hosts a KeyValue actor and exposes it via the Node registry over TCP.
-// A client connects and exercises put/get round-trips.
-//
-// Run:
-//   hew run examples/distributed/kv_server.hew
-//
-// Then in another terminal:
-//   hew run examples/distributed/kv_client.hew
-//
-// Or via the harness:
-//   .tmp/run-node-e2e.sh
+// Run both peers once without arguments to create their node keys and print
+// their public credentials. Then exchange the credentials and run:
+//   hew run examples/distributed/kv_server.hew <client-credential> [port]
+//   hew run examples/distributed/kv_client.hew <server-credential> [host] [port]
+// Keep the key files between runs. Start the client while this server listens.
+import std.net;
 import std.os;
-
-// A value that crosses a node declares its wire schema: field tags on
-// records, declaration order on enum variants.
-#[wire]
-type KvPut {
-    key: string @1;
-    val: string @2;
-}
-
-#[wire]
-enum KvReq {
-    Put(KvPut) @0;
-    GetKey(string) @1;
-}
-
-#[wire]
-enum KvResp {
-    Ack @0;
-    Value(string) @1;
-}
 
 actor KeyValue {
     var store: HashMap<string, string>;
-    receive fn handle(req: KvReq) -> KvResp {
-        match req {
-            KvReq.Put(kv) => {
-                store.insert(kv.key, kv.val);
-                KvResp.Ack
-            }
-            KvReq.GetKey(k) => {
-                match store.get(k) {
-                    .Some(v) => KvResp.Value(v),
-                    .None => KvResp.Value(""),
+
+    #[wire]
+    receive fn put(key: string, value: string) -> string {
+        store.insert(key, value);
+        "stored"
+    }
+
+    #[wire]
+    receive fn get(key: string) -> string {
+        match store.get(key) {
+            .Some(value) => value,
+            .None => "",
+        }
+    }
+
+}
+
+fn authenticated_peer(credential: string) -> net.PeerSession {
+    for attempt in 0..2400 {
+        match Node.peer(credential) {
+            .Ok(peer) => return peer,
+            .Err(_) => {
+                if attempt == 2399 {
+                    panic("authenticated KV client session did not arrive");
                 }
+                sleep(50ms);
             }
         }
     }
-    receive fn count() -> i64 {
-        store.len()
-    }
-}
-
-impl ActorMsg for KeyValue {
-    type Msg = KvReq;
-    type Reply = KvResp;
+    panic("authenticated KV client session did not arrive");
 }
 
 fn main() {
-    var port: string = "9100";
-    let arguments = os.args();
-    if arguments.len() > 1 {
-        if let .Some(value) = arguments.get(1) {
-            port = value;
-        }
+    let args = os.args();
+    let client_credential = match args.get(1) {
+        .Some(value) => value,
+        .None => "--identity",
+    };
+    let port = match args.get(2) {
+        .Some(value) => value,
+        .None => "9100",
+    };
+    var bind = "127.0.0.1:0";
+    if client_credential != "--identity" {
+        bind = f"127.0.0.1:{port}";
     }
-    let addr = f"0.0.0.0:{port}";
-    println(f"[kv-server] starting on {addr}");
-    let config = NodeConfig { bind: addr, transport: NodeTransport.Tcp, key: "kv-server.key", peers: [], seeds: [] };
-    match Node.start(config) {
-        .Ok(_) => {}
-        .Err(_) => panic("node start failed"),
+    var config = NodeConfig { bind: bind, transport: NodeTransport.Tcp, key: "kv-server.key", peers: [], seeds: [] };
+    if client_credential != "--identity" {
+        config.peers = [client_credential];
     }
-    println("[kv-server] node started");
-    let s: HashMap<string, string> = HashMap.new();
-    let kv = spawn KeyValue { store: s };
-    Node.register("kv", kv);
-    println("[kv-server] 'kv' actor registered; waiting for client...");
+    Node.start(config).expect("KV server node starts");
+    println(f"[kv-server] public credential: {Node.identity_key()}");
+    if client_credential == "--identity" {
+        Node.shutdown();
+        return;
+    }
 
-    // Wait for client to connect and run assertions.
-    // Budget: ~90 s cold-compile for the client (under load) + 0.5 s connect sleep
-    // + 2.5 s for the ask/tell round-trips + 5 s headroom = 98 s.  Use 120 s to be
-    // safe; the harness kills the server after the client exits anyway.
-    sleep(2m);
-    let n = kv.count();
-    match n {
-        .Ok(cnt) => println(f"[kv-server] entries stored: {cnt}"),
-        .Err(_) => println("[kv-server] count ask failed"),
-    }
+    let empty: HashMap<string, string> = HashMap.new();
+    let store = spawn KeyValue { store: empty };
+    // A registry name would provide discovery metadata only. This example
+    // supplies call authority directly through the authenticated service grant.
+    let peer = authenticated_peer(client_credential);
+    let export = peer.export(store).expect("client accepts KeyValue service");
+    println("[kv-server] KeyValue service offered to authenticated client");
+
+    // Keep the export alive while the client performs its round trips.
+    sleep(30s);
+    export.close();
     Node.shutdown();
     println("[kv-server] shutdown complete");
 }

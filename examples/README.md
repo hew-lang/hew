@@ -140,7 +140,7 @@ The learning paths here are mostly language-focused. When you want shipped libra
 
 - **services/** -- Distributed service patterns that showcase Hew's actor model ([README](services/README.md)):
   - Circuit breaker, rate limiter, worker pool, pub/sub broker, health monitor, distributed counter
-- **quic_mesh/** -- Two-node QUIC/TLS mesh demo with separate `server.hew` and `client.hew`
+- **quic_mesh/** -- Two-node QUIC/TLS demo that exports a `Counter` service over an authenticated peer session; run each side once to create keys, exchange credentials, then pass the peer credential on launch
 - **quic_service/** -- Minimal QUIC client/server round-trip using only the public `std.net.quic` API
 - **Root-level network/distributed demos** -- `distributed_hello`, `sensor_mesh`, `http_server`, `static_server`, `mqtt_broker`, `chat_*`, `curl_client`, `actor_net_reader`, `network_file_reader`, and `http_json_demo` (HTTP fetch + JSON parse pipeline; requires internet access)
 

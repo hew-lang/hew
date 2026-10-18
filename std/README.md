@@ -156,7 +156,7 @@ Every shipped module under `std/` should appear here.
 | [`fs`](fs.hew)              | `std.fs`         | File system operations and atomic writes              |
 | [`path`](path.hew)          | `std.path`       | File path and glob utilities                          |
 | [`os`](os.hew)              | `std.os`         | Operating system interfaces                           |
-| [`process`](process.hew)    | `std.process`    | Commands, child processes and piped stdio             |
+| [`process`](process.hew)    | `std.process`    | Commands, bounded output capture and piped stdio      |
 
 ### Collections, iteration, and concurrency
 

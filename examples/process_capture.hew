@@ -1,0 +1,39 @@
+// Capture a command's output with one runtime and byte budget.
+import std.process;
+
+import std.os;
+
+import std.io;
+
+fn main() -> i32 {
+    let args = os.args();
+    if args.len() > 1 {
+        io.write("ready\n");
+        io.write_err("warning\n");
+        return 7;
+    }
+    // This example runs itself as the worker so it is portable and self-contained.
+    var command = process.command(args[0], ["worker"]);
+    command.stdin = process.Stdio.Null;
+    let limits = process.CaptureLimits { timeout: 5s, max_output_bytes: 1024 };
+    match command.output(limits) {
+        .Ok(output) => {
+            println(f"status: {output.status}");
+            println(f"stdout: {output.stdout.trim()}");
+            println(f"stderr: {output.stderr.trim()}");
+            0
+        }
+        .Err(.TimedOut(timeout)) => {
+            println(f"worker timed out after {timeout.millis()} ms");
+            1
+        }
+        .Err(.OutputLimitExceeded(limit)) => {
+            println(f"worker exceeded {limit} output bytes");
+            1
+        }
+        .Err(error) => {
+            println(f"could not run worker: {error}");
+            1
+        }
+    }
+}

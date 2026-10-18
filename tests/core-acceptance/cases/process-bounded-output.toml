@@ -1,0 +1,14 @@
+[[case]]
+id = "process-bounded-output"
+intent = "Bounded command output counts combined raw bytes before append, retains nonzero exit status, refuses invalid limits before launch, and kills/reaps children on flood, timeout and outer cancellation."
+source = "cases/process-bounded-output.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "1"
+
+[case.expected]
+stdout = "raw bytes counted across both pipes; exit status retained\noutput floods bounded and reaped with either pipe silent\nruntime limit returned after child cleanup\nouter cancellation reaped the bounded command\ninvalid limits and untaken stdin refused before launch\n"
+stderr = ""
+exit = 0

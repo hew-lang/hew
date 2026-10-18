@@ -56,6 +56,10 @@ In an application package, set `[package] main` when the entry is not
 resolve the rest. The explicit `main.hew` paths in these fixture collections
 remain useful for selecting among several examples in one directory.
 
+[`process_capture.hew`](process_capture.hew) runs a worker with a runtime limit
+and a shared stdout/stderr byte budget, preserving its exit status and handling
+structured capture failures.
+
 ## Expected Output Files
 
 Many examples — especially those under `ux/` and `progressive/` — ship with a sibling `.expected` file containing the exact stdout the program should produce. These files are used by the automated test suite, and you can use them locally to verify your build is correct:

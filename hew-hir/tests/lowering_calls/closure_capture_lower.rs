@@ -406,7 +406,7 @@ fn generic_function_values_register_concrete_targets_and_site_arguments() {
             .module
             .call_site_type_args
             .values()
-            .any(|args| args == &[ty.clone()]));
+            .any(|args| args == std::slice::from_ref(&ty)));
     }
     let main = output
         .module

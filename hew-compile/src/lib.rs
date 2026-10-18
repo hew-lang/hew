@@ -6672,19 +6672,12 @@ fn main() {
         );
         let symbols = hew_hir::dispatch::build_direct_call_symbol_index(&hir.module.items);
         let ids = [
-            tco.defs
-                .lookup_path("left.render.render_value")
-                .expect("declared"),
-            tco.defs
-                .lookup_path("right.render.render_value")
-                .expect("declared"),
-            tco.defs
-                .lookup_path("left.render.default_value")
-                .expect("declared"),
-            tco.defs
-                .lookup_path("right.render.default_value")
-                .expect("declared"),
-        ];
+            "left.render.render_value",
+            "right.render.render_value",
+            "left.render.default_value",
+            "right.render.default_value",
+        ]
+        .map(|path| tco.defs.lookup_path(path).expect("declared"));
         let projected: Vec<_> = ids
             .iter()
             .map(|id| {

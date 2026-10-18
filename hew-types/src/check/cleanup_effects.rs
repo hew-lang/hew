@@ -477,10 +477,38 @@ fn cleanup_targets(
 ) -> Vec<CleanupTarget> {
     let root = value.ty.substitute_type_params_parallel(substitutions);
     let mut effects = Vec::new();
-    let mut pending = vec![(root.clone(), Vec::<String>::new(), value.own_close)];
+    let mut pending = vec![(
+        root.clone(),
+        Vec::<String>::new(),
+        value.own_close,
+        Vec::<Ty>::new(),
+    )];
     let mut seen = HashSet::new();
 
-    while let Some((ty, path, own_close)) = pending.pop() {
+    while let Some((ty, path, own_close, mut inline_ancestors)) = pending.pop() {
+        // An inline containment cycle has no realizable value. Leave its layout
+        // diagnostic to HIR instead of growing symbolic field projections while
+        // checking cleanup effects. Heap boundaries start a new inline chain.
+        if inline_ancestors.contains(&ty) {
+            continue;
+        }
+        let inline = match ty.callable_body() {
+            Ty::Tuple(_) => true,
+            Ty::Named { head, .. } => match head.builtin() {
+                Some(BuiltinType::Option | BuiltinType::Result) => true,
+                None => head
+                    .nominal()
+                    .and_then(|id| model.definition(id))
+                    .is_some_and(|definition| !definition.is_indirect),
+                _ => false,
+            },
+            _ => false,
+        };
+        if inline {
+            inline_ancestors.push(ty.clone());
+        } else {
+            inline_ancestors.clear();
+        }
         let candidates = || cleanup_candidates(&root, &value.candidates, &path, model);
         if value.absent.iter().any(|absent| path.starts_with(absent)) {
             continue;
@@ -523,7 +551,7 @@ fn cleanup_targets(
         let mut child = |label: String, ty: Ty| {
             let mut child_path = path.clone();
             child_path.push(label);
-            pending.push((ty, child_path, false));
+            pending.push((ty, child_path, false, inline_ancestors.clone()));
         };
         match ty.callable_body() {
             Ty::Closure { captures, .. } => {

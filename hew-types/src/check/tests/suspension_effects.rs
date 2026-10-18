@@ -1318,3 +1318,25 @@ fn the_trait_object_layout_publishes_closure_slots_and_effects() {
     );
     assert_eq!(layout.slot_of(layout.slots[1].method), Some(1));
 }
+
+#[test]
+fn inline_recursive_cleanup_preserves_the_source_diagnostic() {
+    let source = r"
+type Grow<T> {
+    tag: i64;
+    sub: Grow<Grow<i64>>;
+}
+fn main() {
+    let value: Grow<i64> = Grow { tag: 1, sub: missing };
+}
+";
+    let output = check_source(source);
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|error| error.message.contains("undefined variable `missing`")),
+        "{:?}",
+        output.errors
+    );
+}

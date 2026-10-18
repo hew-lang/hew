@@ -190,6 +190,7 @@ Every shipped module under `std/` should appear here.
 | [`net`](net/net.hew)                                  | `std.net`                        | TCP listeners and connections                                              |
 | [`dns`](net/dns/dns.hew)                              | `std.net.dns`                    | DNS hostname resolution                                                    |
 | [`http`](net/http/http.hew)                           | `std.net.http`                   | HTTP server and request/response handling                                  |
+| [`router`](net/http/router/router.hew)                | `std.net.http.router`            | Typed method/path routing and fallible path-parameter extraction           |
 | [`http_async_client`](net/http/http_async_client.hew) | `std.net.http.http_async_client` | Suspending HTTP/1.1 client codec for actor handlers                        |
 | [`http_async_server`](net/http/http_async_server.hew) | `std.net.http.http_async_server` | Suspending HTTP/1.1 server codec for actor handlers                        |
 | [`http_client`](net/http/http_client.hew)             | `std.net.http.http_client`       | Outbound HTTP request helpers (`request`, `request_string`, `get`, `post`) |

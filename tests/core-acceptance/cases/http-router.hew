@@ -1,0 +1,103 @@
+import std.net.http.router;
+
+import std.net.url;
+
+enum Endpoint {
+    User;
+    NewUser;
+    SaveUser;
+    Fallback;
+}
+
+fn check(condition: bool, reason: string) {
+    if !condition {
+        panic(reason);
+    }
+}
+
+fn main() {
+    var routes: router.Router<Endpoint> = router.new();
+    routes.add("GET", "/users/{id}", .User).expect("user route");
+    routes.add("POST", "/users/new", .NewUser).expect("static resource");
+    routes.add("POST", "/users/{user_id}", .SaveUser).expect("second method");
+    routes.add("GET", "/{section}/new", .Fallback).expect("overlapping path");
+    let user = routes.resolve("GET", "/users/42?view=full").expect("user match");
+    check(match user.value {
+        .User => true,
+        _ => false,
+    }, "typed route value");
+    check(user.param_i64("id").expect("integer id") == 42, "integer extraction");
+    check(user.param("missing").is_err(), "missing parameter remains an error");
+    check(routes.resolve("GET", "/users/not-a-number").expect("text parameter").param_i64("id").is_err(), "invalid integer");
+    check(routes.resolve("GET", "/users/9223372036854775808").expect("large parameter").param_i64("id").is_err(), "integer overflow");
+    match routes.resolve("GET", "/users/new") {
+        .Err(.MethodNotAllowed(methods)) => check(methods.len() == 1 && methods[0] == "POST", "static path wins before method"),
+        _ => panic("expected static resource wrong-method error"),
+    }
+    check(match routes.resolve("POST", "/users/new").expect("static match").value {
+        .NewUser => true,
+        _ => false,
+    }, "literal beats parameter");
+    let saved = routes.resolve("POST", "/users/7").expect("method-specific match");
+    check(saved.param_i64("user_id").expect("method-specific parameter name") == 7, "method owns its parameter names");
+    match routes.resolve("DELETE", "/users/7") {
+        .Err(.MethodNotAllowed(methods)) => check(methods.join(", ") == "GET, POST", "all matching methods"),
+        _ => panic("expected wrong-method error"),
+    }
+    check(match routes.resolve("GET", "/missing") {
+        .Err(.NotFound) => true,
+        _ => false,
+    }, "missing route is distinct");
+    check(routes.resolve("HEAD", "/users/7").is_err(), "HEAD requires an explicit route");
+    check(routes.resolve("GET", "/users/").is_err(), "empty parameter does not match");
+    check(routes.resolve("GET", "/users/7/").is_err(), "trailing slash is distinct");
+    check(routes.add("GET", "/users/{renamed}", .Fallback).is_err(), "renaming cannot create duplicate route");
+    check(routes.add("GET", "/{id}/{id}", .Fallback).is_err(), "duplicate parameter name");
+    check(routes.add("GET", "/prefix-{id}", .Fallback).is_err(), "partial segment parameter");
+    check(routes.add("BAD METHOD", "/bad", .Fallback).is_err(), "invalid method");
+    check(routes.add("GET", "/bad%", .Fallback).is_err(), "invalid literal encoding");
+    check(routes.resolve("GET", "/users/42").expect("failed addition preserves table").param_i64("id").expect("original name") == 42, "failed additions are atomic");
+    var text: router.Router<string> = router.new();
+    text.add("GET", "/text/{value}", "owned route value").expect("text route");
+    let slash = text.resolve("GET", "/text/a%2Fb%5Cc").expect("encoded separators are component content");
+    check(slash.param("value").expect("separator capture") == "a/b\\c", "decode after raw slash splitting");
+    check(text.resolve("GET", "/text/a/b").is_err(), "raw slash changes structure");
+    check(text.resolve("GET", "/text/%252F").expect("escaped percent").param("value").expect("single decode") == "%2F", "decode exactly once");
+    check(text.resolve("GET", "/text/a+b").expect("path plus").param("value").expect("plus capture") == "a+b", "plus is literal in paths");
+    check(text.resolve("GET", "/text/caf%C3%A9%F0%9F%99%82").expect("Unicode").param("value").expect("Unicode capture") == "café🙂", "UTF-8 decoding");
+    check(text.resolve("GET", "/text/true").expect("true").param_bool("value").expect("bool") && !text.resolve("GET", "/text/false").expect("false").param_bool("value").expect("bool"), "boolean extraction");
+    check(text.resolve("GET", "/text/TRUE").expect("text").param_bool("value").is_err(), "invalid boolean");
+    text.add("GET", "/caf%C3%A9", "literal").expect("encoded literal");
+    check(text.resolve("GET", "/café").expect("decoded literal match").value == "literal", "literal and parameter decoding agree");
+    check(slash.value == "owned route value", "match value survives later table changes");
+    check(text.resolve("GET", "/text/..").expect("literal dot segment").param("value").expect("dot capture") == "..", "routing does not normalize dot segments");
+    var precedence: router.Router<string> = router.new();
+    precedence.add("GET", "/{group}/new/long", "later literals").expect("fallback route");
+    precedence.add("GET", "/users/{id}/{tail}", "first literal").expect("specific first segment");
+    check(precedence.resolve("GET", "/users/new/long").expect("overlapping complete paths").value == "first literal", "specificity is lexicographic, not a literal count");
+    precedence.add("GET", "/", "root").expect("root route");
+    precedence.add("GET", "/empty//end/", "empty segments").expect("literal empty segments");
+    check(precedence.resolve("GET", "/").expect("root match").value == "root", "root path");
+    check(precedence.resolve("GET", "/empty//end/").expect("empty segments preserved").value == "empty segments", "no slash normalization");
+    check(precedence.resolve("GET", "/empty/end/").is_err(), "repeated slash remains significant");
+    for malformed in ["relative", "/text/%", "/text/%2", "/text/%GG", "/text/%FF", "/text/%E2%82", "/text/%00", "/text/%0A", "/text/a b", "/text/a#fragment"] {
+        match text.resolve("GET", malformed) {
+            .Err(.InvalidPath(_)) => {}
+            .Err(.InvalidEncoding(_)) => {}
+            _ => panic(f"malformed path accepted: {malformed}"),
+        }
+    }
+    check(url.decode("%252F").expect("URL single decode") == "%2F", "shared decode authority");
+    match url.decode("é%2Z") {
+        .Err(.MalformedEscape(offset)) => check(offset == 2, "input byte offset"),
+        _ => panic("expected malformed escape"),
+    }
+    match url.decode("ok%FF") {
+        .Err(.InvalidUtf8(error)) => check(error.valid_up_to == 2, "decoded UTF-8 byte offset"),
+        _ => panic("expected UTF-8 error"),
+    }
+    let query = url.decode_query("value=a+b&escaped=a%2Bb").expect("form decoding");
+    check(query[0].1 == "a b" && query[1].1 == "a+b", "form plus policy");
+    check(url.decode_query("ok=yes&bad=%2Z").is_err(), "query fails without partial output");
+    println("http routing ok");
+}

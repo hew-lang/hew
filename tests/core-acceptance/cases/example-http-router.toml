@@ -1,0 +1,10 @@
+[[case]]
+id = "example-http-router"
+intent = "The complete typed dispatch example handles a valid integer ID, invalid ID, missing route and wrong method with its Allow metadata."
+source = "../../examples/http_router.hew"
+suites = ["acceptance"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "200: users\n200: user 42\n400: path parameter `id`: invalid number literal: `nope`\n404: not found\n405: method not allowed\nAllow: GET\n"
+exit = 0

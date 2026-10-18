@@ -1,0 +1,54 @@
+// Transport-independent dispatch: a server passes request.method() and
+// request.path(), then writes the status, body and optional Allow header.
+import std.net.http.router;
+
+enum Endpoint {
+    ListUsers;
+    GetUser;
+}
+
+type Reply {
+    status: i64;
+    body: string;
+    allow: Vec<string>;
+}
+
+fn reply(status: i64, body: string) -> Reply {
+    Reply { status: status, body: body, allow: Vec.new() }
+}
+
+fn dispatch(routes: router.Router<Endpoint>, method: string, target: string) -> Reply {
+    let matched = routes.resolve(method, target) handle error {
+        return match error {
+            .NotFound => reply(404, "not found"),
+            .MethodNotAllowed(methods) => Reply { status: 405, body: "method not allowed", allow: methods },
+            .InvalidPath(_) => reply(400, "invalid path"),
+            .InvalidEncoding(_) => reply(400, "invalid path encoding"),
+        };
+    };
+    match matched.value {
+        .ListUsers => reply(200, "users"),
+        .GetUser => {
+            let id = matched.param_i64("id") handle error {
+                return reply(400, f"{error}");
+            };
+            if id <= 0 {
+                return reply(400, "user id must be positive");
+            }
+            reply(200, f"user {id}")
+        }
+    }
+}
+
+fn main() {
+    var routes: router.Router<Endpoint> = router.new();
+    routes.add("GET", "/users", .ListUsers).expect("list route is valid");
+    routes.add("GET", "/users/{id}", .GetUser).expect("user route is valid");
+    for request in [("GET", "/users"), ("GET", "/users/42?view=full"), ("GET", "/users/nope"), ("GET", "/missing"), ("POST", "/users/42")] {
+        let response = dispatch(routes, request.0, request.1);
+        println(f"{response.status}: {response.body}");
+        if !response.allow.is_empty() {
+            println("Allow: " + response.allow.join(", "));
+        }
+    }
+}

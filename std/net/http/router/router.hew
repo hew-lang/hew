@@ -1,0 +1,352 @@
+//! Method and path routing over ordinary Hew values.
+//!
+//! Register a typed route value, then resolve `request.method()` and
+//! `request.path()`. The router owns no requests, connections or handlers.
+//! Patterns use whole-segment parameters, such as `/users/{id}`. Among complete
+//! path matches, the first differing segment prefers a literal to a parameter,
+//! independently of registration order. Method selection follows path selection.
+
+import std.net.url;
+
+import std.string;
+
+/// A route that cannot be registered. Failed additions leave the table intact.
+pub enum RouteConfigError {
+    InvalidMethod(string);
+    InvalidPattern(string);
+    DuplicateRoute(string, string);
+}
+
+impl Display for RouteConfigError {
+    fn fmt(self) -> string {
+        match self {
+            .InvalidMethod(method) => f"invalid HTTP method: `{method}`",
+            .InvalidPattern(reason) => f"invalid route pattern: {reason}",
+            .DuplicateRoute(method, pattern) => f"duplicate route: {method} {pattern}",
+        }
+    }
+}
+
+impl Error for RouteConfigError {}
+
+/// Request routing failure. A wrong method carries the available methods in
+/// registration order, suitable for an HTTP `Allow` header.
+pub enum RouteError {
+    InvalidPath(string);
+    InvalidEncoding(url.DecodeError);
+    NotFound;
+    MethodNotAllowed(Vec<string>);
+}
+
+impl Display for RouteError {
+    fn fmt(self) -> string {
+        match self {
+            .InvalidPath(reason) => f"invalid request path: {reason}",
+            .InvalidEncoding(error) => f"invalid request path encoding: {error}",
+            .NotFound => "route not found",
+            .MethodNotAllowed(methods) => "method not allowed; expected " + methods.join(", "),
+        }
+    }
+}
+
+impl Error for RouteError {}
+
+/// An absent named parameter or a value that cannot be read as the asked type.
+pub enum ExtractError {
+    Missing(string);
+    Number(string, string.NumberError);
+    Boolean(string, string);
+}
+
+impl Display for ExtractError {
+    fn fmt(self) -> string {
+        match self {
+            .Missing(name) => f"missing path parameter `{name}`",
+            .Number(name, error) => f"path parameter `{name}`: {error}",
+            .Boolean(name, value) => f"path parameter `{name}`: expected true or false, got `{value}`",
+        }
+    }
+}
+
+impl Error for ExtractError {}
+
+enum Segment {
+    Literal(string);
+    Parameter(string);
+}
+
+type Route<T> {
+    method: string;
+    segments: Vec<Segment>;
+    value: T;
+}
+
+/// A route table. `T` is commonly an application enum identifying a handler.
+/// Lookup copies the selected value using ordinary Hew value semantics.
+pub type Router<T> {
+    routes: Vec<Route<T>>;
+}
+
+/// The selected route value and its once-decoded path parameters.
+pub type RouteMatch<T> {
+    value: T;
+    parameters: Vec<(string, string)>;
+}
+
+/// Create an empty table; the binding supplies its route value type.
+pub fn new<T>() -> Router<T> {
+    Router { routes: Vec.new() }
+}
+
+impl<T: Clone> Router<T> {
+    /// Register a method and pattern. Methods are case-sensitive HTTP tokens.
+    /// Parameter names are unique ASCII identifiers; parameters match one
+    /// non-empty segment. Renaming parameters does not make a duplicate route
+    /// distinct. Literal segments use the same percent encoding as requests.
+    fn add(var self, method: string, pattern: string, value: T) fails RouteConfigError {
+        if !valid_method(method) {
+            return error .InvalidMethod(method);
+        }
+        let segments = pattern_segments(pattern)?;
+        for i in 0..self.routes.len() {
+            let route = self.routes[i];
+            if route.method == method && same_shape(route.segments, segments) {
+                return error .DuplicateRoute(method, pattern);
+            }
+        }
+        self.routes.push(Route { method: method, segments: segments, value: value });
+    }
+
+    /// Resolve an origin-form target such as `/users/42?view=full`.
+    /// The query is excluded; fragments and control characters are rejected.
+    /// Split on raw `/`, then decode each component exactly once. Encoded `/`
+    /// and `\` are content within one segment, never new separators. No case,
+    /// dot-segment, repeated-slash or trailing-slash normalization is performed.
+    /// `HEAD` and `OPTIONS` require explicit registrations like other methods.
+    fn resolve(self, method: string, target: string) -> RouteMatch<T> fails RouteError {
+        let path = request_segments(target)?;
+        var best: Option<i64> = .None;
+        for i in 0..self.routes.len() {
+            let candidate = self.routes[i];
+            if path_matches(candidate.segments, path) {
+                let replace = match best {
+                    .None => true,
+                    .Some(index) => more_specific(candidate.segments, self.routes[index].segments),
+                };
+                if replace {
+                    best = .Some(i);
+                }
+            }
+        }
+        let index = match best {
+            .Some(index) => index,
+            .None => return error .NotFound,
+        };
+        let selected = self.routes[index];
+        var allowed: Vec<string> = Vec.new();
+        for i in 0..self.routes.len() {
+            let route = self.routes[i];
+            if same_shape(route.segments, selected.segments) {
+                if route.method == method {
+                    var parameters: Vec<(string, string)> = Vec.new();
+                    for j in 0..route.segments.len() {
+                        match route.segments[j] {
+                            .Parameter(name) => parameters.push((name, path[j])),
+                            .Literal(_) => {}
+                        }
+                    }
+                    return RouteMatch { value: route.value, parameters: parameters };
+                }
+                allowed.push(route.method);
+            }
+        }
+        return error .MethodNotAllowed(allowed);
+    }
+}
+
+impl<T> RouteMatch<T> {
+    /// Read one already-decoded parameter. Pass it directly to an application
+    /// parser for other types; decoding it again would change its meaning.
+    fn param(self, name: string) -> string fails ExtractError {
+        for i in 0..self.parameters.len() {
+            let pair = self.parameters[i];
+            if pair.0 == name {
+                return pair.1;
+            }
+        }
+        return error .Missing(name);
+    }
+
+    /// Read a signed decimal integer, rejecting invalid text and overflow.
+    fn param_i64(self, name: string) -> i64 fails ExtractError {
+        let text = self.param(name)?;
+        match string.to_int(text) {
+            .Ok(value) => value,
+            .Err(error) => return error .Number(name, error),
+        }
+    }
+
+    /// Read exactly `true` or `false`, case-sensitively.
+    fn param_bool(self, name: string) -> bool fails ExtractError {
+        let text = self.param(name)?;
+        match text {
+            "true" => true,
+            "false" => false,
+            _ => return error .Boolean(name, text),
+        }
+    }
+}
+
+fn pattern_segments(pattern: string) -> Vec<Segment> fails RouteConfigError {
+    if !pattern.starts_with("/") || pattern.contains("?") || pattern.contains("#") || pattern.contains(" ") || has_control(pattern) {
+        return error .InvalidPattern("expected an absolute path without a query or fragment");
+    }
+    let raw = pattern.split("/");
+    var segments: Vec<Segment> = Vec.new();
+    var names: Vec<string> = Vec.new();
+    for i in 0..raw.len() {
+        let part = raw[i];
+        if part.starts_with("{") && part.ends_with("}") {
+            let name = part[1 .. part.len() - 1];
+            if !valid_name(name) || names.contains(name) {
+                return error .InvalidPattern("parameter names must be unique ASCII identifiers");
+            }
+            names.push(name);
+            segments.push(.Parameter(name));
+        } else {
+            if part.contains("{") || part.contains("}") {
+                return error .InvalidPattern("parameters must occupy a whole segment");
+            }
+            let literal = url.decode(part) handle error {
+                return error .InvalidPattern(f"{error}");
+            };
+            if has_control(literal) {
+                return error .InvalidPattern("control character in literal segment");
+            }
+            segments.push(.Literal(literal));
+        }
+    }
+    segments
+}
+
+fn request_segments(target: string) -> Vec<string> fails RouteError {
+    if !target.starts_with("/") || target.contains("#") {
+        return error .InvalidPath("expected an absolute path without a fragment");
+    }
+    let path = match target.find("?") {
+        .Some(index) => target[0..index],
+        .None => target,
+    };
+    let raw = path.split("/");
+    var segments: Vec<string> = Vec.new();
+    for i in 0..raw.len() {
+        let part = raw[i];
+        if part.contains(" ") || has_control(part) {
+            return error .InvalidPath("unescaped whitespace or control character");
+        }
+        let decoded = url.decode(part) handle error {
+            return error .InvalidEncoding(error);
+        };
+        if has_control(decoded) {
+            return error .InvalidPath("decoded control character");
+        }
+        segments.push(decoded);
+    }
+    segments
+}
+
+fn path_matches(pattern: Vec<Segment>, path: Vec<string>) -> bool {
+    if pattern.len() != path.len() {
+        return false;
+    }
+    for i in 0..pattern.len() {
+        match pattern[i] {
+            .Literal(text) => if text != path[i] {
+                return false;
+            }
+            .Parameter(_) => if path[i].is_empty() {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+fn same_shape(left: Vec<Segment>, right: Vec<Segment>) -> bool {
+    if left.len() != right.len() {
+        return false;
+    }
+    for i in 0..left.len() {
+        match left[i] {
+            .Literal(text) => match right[i] {
+                .Literal(other) => if text != other {
+                    return false;
+                }
+                .Parameter(_) => return false,
+            }
+            .Parameter(_) => match right[i] {
+                .Literal(_) => return false,
+                .Parameter(_) => {}
+            }
+        }
+    }
+    true
+}
+
+fn more_specific(left: Vec<Segment>, right: Vec<Segment>) -> bool {
+    for i in 0..left.len() {
+        match left[i] {
+            .Literal(_) => match right[i] {
+                .Parameter(_) => return true,
+                .Literal(_) => {}
+            }
+            .Parameter(_) => match right[i] {
+                .Literal(_) => return false,
+                .Parameter(_) => {}
+            }
+        }
+    }
+    false
+}
+
+fn valid_name(name: string) -> bool {
+    let data = name.to_bytes();
+    if data.is_empty() {
+        return false;
+    }
+    for i in 0..data.len() {
+        let b = data[i];
+        let letter = b >= 65 && b <= 90 || b >= 97 && b <= 122 || b == 95;
+        if !letter && !(i > 0 && b >= 48 && b <= 57) {
+            return false;
+        }
+    }
+    true
+}
+
+fn valid_method(method: string) -> bool {
+    if method.is_empty() {
+        return false;
+    }
+    let data = method.to_bytes();
+    for i in 0..data.len() {
+        let b = data[i];
+        let alpha_numeric = b >= 65 && b <= 90 || b >= 97 && b <= 122 || b >= 48 && b <= 57;
+        let punctuation = "!#$%&'*+-.^_`|~";
+        let character = f"{(b as i64).try_to_char().expect("byte is a valid scalar")}";
+        if !alpha_numeric && !punctuation.contains(character) {
+            return false;
+        }
+    }
+    true
+}
+
+fn has_control(text: string) -> bool {
+    let data = text.to_bytes();
+    for i in 0..data.len() {
+        if data[i] < 32 || data[i] == 127 {
+            return true;
+        }
+    }
+    false
+}

@@ -1095,6 +1095,13 @@ fn observed_machine_feeds_snapshot_lag_and_detach() {
 }
 
 #[test]
+fn http_routing_and_strict_url_decoding_use_shared_source_oracles() {
+    for name in ["http-router", "example-http-router"] {
+        assert_native_manifest(name, hew_compile::SourceSet::in_memory());
+    }
+}
+
+#[test]
 fn shared_native_manifests_execute_with_matching_results() {
     for name in [
         "machine-deep-handshake",

@@ -1222,7 +1222,6 @@ stable-stdlib = [
 non-declarable = [
   "hew_node_peer_new",
   "hew_service_acquire_new",
-  "hew_service_call_new",
   "hew_call_caller",
   "hew_call_refusal_log",
   "hew_coverage_hit",

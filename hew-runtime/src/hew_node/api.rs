@@ -954,7 +954,7 @@ pub unsafe extern "C" fn hew_node_api_lookup_location_string(
 #[no_mangle]
 pub unsafe extern "C" fn hew_node_api_set_transport(name: *const c_char) -> c_int {
     // SAFETY: caller guarantees name is a valid C string (or null).
-    let Some(s) = (unsafe { crate::util::cstr_to_str(&name, "hew_node_set_transport") }) else {
+    let Some(s) = (unsafe { crate::util::cstr_to_str(&name, "hew_node_api_set_transport") }) else {
         return -1;
     };
     let normalized = match normalize_transport_name(s) {

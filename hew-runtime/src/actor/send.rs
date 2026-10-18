@@ -74,7 +74,7 @@ pub unsafe extern "C" fn hew_actor_send_wire(
 ///
 /// `dispatch` is the TARGET actor TYPE's dispatch function pointer
 /// (`__hew_actor_dispatch_<Actor>`), supplied by codegen at the remote-send
-/// site (it knows the target type statically from `RemotePid<T>`). It keys the
+/// site (it knows the target's ordinary actor type statically). It keys the
 /// cross-node serialize codec `(dispatch, msg_type)` so a colliding `msg_type`
 /// on another actor type cannot select the wrong serializer for the value being
 /// shipped. It is unused on the LOCAL send path (the local mailbox copies the

@@ -298,7 +298,6 @@
       "None"
     ],
     "concurrency": [
-      "RemotePid",
       "Stream",
       "Sink",
       "Task",

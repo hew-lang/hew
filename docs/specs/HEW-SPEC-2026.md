@@ -419,9 +419,6 @@ policy do not change these result types (§6).
 The following are gaps in the current native cutover, not alternative
 language contracts:
 
-- A handle obtained from a node lookup is still written `RemotePid<A>`. A
-  remote handle has its own runtime representation, so unifying it under the
-  actor's own type waits on the location-aware delivery path.
 - There is no abandon or unjoin primitive. `fork orders.log(line)` without a
   later `await` is the one-shot send, and it still joins at the enclosing
   scope's exit like every fork. Whether Hew needs a true fire-and-forget send
@@ -5692,9 +5689,10 @@ Distributed delegation requires an authenticated narrowed service reference,
 not a serialized native handle, path or forgeable identifier. Its contract must
 bind issuer, recipient, incarnation and rights, and define whether and how
 rights may be delegated onward or discovered through a registry. Ordinary
-`Node.lookup` and a `RemotePid` location are not authorization. The current
-confinement slice refuses distributed ambient acquisition and remote calls;
-it does not yet implement that service-reference protocol.
+`Node.lookup` returns a `Location`, which provides discovery rather than
+authorization. Authenticated service grants provide ordinary actor handles
+with narrowed rights. The current confinement slice refuses distributed
+ambient acquisition and remote calls.
 
 ### 4.8 Interaction with Actor Messages
 

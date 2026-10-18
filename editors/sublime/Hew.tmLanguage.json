@@ -362,7 +362,7 @@
         {
           "comment": "Concurrency types",
           "name": "storage.type.concurrency.hew",
-          "match": "\\b(Generator|RemotePid|Scope|Sink|Stream|Task)\\b"
+          "match": "\\b(Generator|Scope|Sink|Stream|Task)\\b"
         },
         {
           "comment": "Built-in trait names",

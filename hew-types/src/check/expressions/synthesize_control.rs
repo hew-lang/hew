@@ -2273,16 +2273,6 @@ impl Checker {
         }
     }
 
-    /// Stable rendering of a substitution, for the visited-set key.
-    pub(super) fn render_substitution(substitution: &HashMap<crate::ParamHead, Ty>) -> String {
-        let mut pairs: Vec<String> = substitution
-            .iter()
-            .map(|(param, ty)| format!("{param}={}", ty.user_facing()))
-            .collect();
-        pairs.sort();
-        pairs.join(", ")
-    }
-
     pub(in crate::check) fn selected_eq_available(service: &mut TypeFactService, ty: &Ty) -> bool {
         ResolvedTy::from_ty(ty).ok().is_some_and(|resolved| {
             service

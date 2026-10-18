@@ -2450,10 +2450,10 @@ pub(super) enum GenericRequirementKind {
 ///
 #[derive(Debug, Clone)]
 pub(super) struct GenericFnInstantiationSite {
-    pub(super) caller: Option<String>,
+    pub(super) caller: Option<crate::DefId>,
     pub(super) caller_type_params: Vec<crate::ParamHead>,
-    pub(super) callee: String,
-    /// Partial, name-keyed binding of the callee's type parameters, captured in
+    pub(super) callee: crate::DefId,
+    /// Partial, binder-keyed binding of the callee's type parameters, captured in
     /// the CALLER's terms: inside a generic caller the values may still name the
     /// caller's own parameters, which is what lets
     /// [`Checker::finalize_generic_requirements`] walk generic → generic call
@@ -2486,26 +2486,26 @@ pub(super) enum GenericCallee<'a> {
     },
 }
 
-/// One generic → generic call edge, carrying a partial, NAME-keyed
+/// One generic → generic call edge, carrying a partial, binder-keyed
 /// substitution in the enclosing generic function's own terms.
 ///
-/// Name-keyed rather than positional: an impl method's `fn_sigs` type-parameter
+/// Binder-keyed rather than positional: an impl method's `fn_sigs` type-parameter
 /// list interleaves method-level and impl-level parameters (the impl's are
 /// appended after the method's during registration), and the two are pinned by
-/// different sources at the call site. Zipping by name lets each source
+/// different sources at the call site. Binding by identity lets each source
 /// contribute what it knows without any positional assumption, and a parameter
 /// no source pinned simply stays abstract — which the walk then treats as
 /// undischarged rather than silently mis-binding.
 #[derive(Debug, Clone)]
 pub(super) struct GenericCallEdge {
-    pub(super) callee: String,
+    pub(super) callee: crate::DefId,
     pub(super) substitution: HashMap<crate::ParamHead, Ty>,
 }
 
 /// One instantiation queued for type-requirement discharge.
 #[derive(Debug, Clone)]
 pub(super) struct PendingInstantiation {
-    pub(super) callee: String,
+    pub(super) callee: crate::DefId,
     pub(super) substitution: HashMap<crate::ParamHead, Ty>,
     /// Span and module of the CONCRETE application the diagnostic points at —
     /// carried unchanged along every edge so a nested obligation still reports
@@ -2513,9 +2513,9 @@ pub(super) struct PendingInstantiation {
     pub(super) report_span: Span,
     pub(super) report_module: Option<String>,
     pub(super) depth: u32,
-    /// Callee keys from the concrete root to here, so a chain that outruns the
+    /// Callee declarations from the concrete root to here, so a chain that outruns the
     /// hop budget can be named in the diagnostic instead of vanishing.
-    pub(super) chain: Vec<String>,
+    pub(super) chain: Vec<crate::DefId>,
 }
 
 impl PendingLoweringFact {
@@ -3419,7 +3419,7 @@ pub struct Checker {
     pub(super) shadowed_method_type_param_reports: HashSet<(String, usize, usize, String)>,
     /// Type demands grouped by owning function; None covers expressions
     /// outside a function. Resolved once concretely or through generic calls.
-    pub(super) generic_requirements: HashMap<Option<String>, Vec<GenericRequirement>>,
+    pub(super) generic_requirements: HashMap<Option<crate::DefId>, Vec<GenericRequirement>>,
     /// Every generic function call site observed while checking bodies, in
     /// source order. Consumed alongside `generic_requirements`.
     pub(super) generic_fn_instantiation_sites: Vec<GenericFnInstantiationSite>,

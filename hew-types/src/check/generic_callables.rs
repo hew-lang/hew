@@ -44,7 +44,7 @@ impl Checker {
                 .collect();
             self.record_generic_instantiation_site(
                 self.current_function.clone(),
-                owner,
+                self.fn_sig_keys[&owner],
                 substitution,
                 span,
             );
@@ -191,7 +191,7 @@ impl Checker {
             .collect();
         self.record_generic_instantiation_site(
             Some(destination),
-            implementation,
+            self.fn_sig_keys[&implementation],
             substitution,
             span,
         );

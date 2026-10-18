@@ -23,16 +23,20 @@ use crate::BuiltinType;
 use std::collections::VecDeque;
 
 impl Checker {
-    fn generic_body_parameters(&self, key: &str) -> Vec<crate::ParamHead> {
+    fn generic_body_parameters(&self, declaration: crate::DefId) -> Vec<crate::ParamHead> {
         let mut parameters = self
-            .fn_sig(key)
+            .fn_sigs
+            .get(&declaration)
             .map_or_else(Vec::new, |sig| sig.type_params.clone());
-        if let Some(actor) = self
-            .fn_sig_keys
-            .get(key)
-            .and_then(|id| self.defs.owner(*id))
-            .filter(|id| self.defs.kind(*id) == crate::DeclarationKind::Actor)
-            .and_then(|id| self.type_defs.get(&crate::NominalId::of_declaration(id)))
+        let actor = if self.defs.kind(declaration) == crate::DeclarationKind::Actor {
+            Some(declaration)
+        } else {
+            self.defs
+                .owner(declaration)
+                .filter(|id| self.defs.kind(*id) == crate::DeclarationKind::Actor)
+        };
+        if let Some(actor) =
+            actor.and_then(|id| self.type_defs.get(&crate::NominalId::of_declaration(id)))
         {
             for parameter in &actor.type_params {
                 if !parameters.contains(parameter) {
@@ -265,12 +269,12 @@ impl Checker {
         ty: &Ty,
         span: &Span,
     ) {
-        let mut owner = self.current_function.clone();
-        if owner.as_ref().is_some_and(|key| {
-            self.fn_sig_keys
-                .get(key)
-                .is_some_and(|id| self.defs.kind(*id) == crate::DeclarationKind::Closure)
-        }) {
+        let mut owner = self
+            .current_function
+            .as_ref()
+            .and_then(|key| self.fn_sig_keys.get(key))
+            .copied();
+        if owner.is_some_and(|id| self.defs.kind(id) == crate::DeclarationKind::Closure) {
             let mentioned_owners = self.generic_obligation_owners(&[ty]);
             if mentioned_owners.len() > 1 && kind == GenericRequirementKind::Eq {
                 if let Ok(resolved) = ResolvedTy::from_ty(ty) {
@@ -285,13 +289,11 @@ impl Checker {
             }
             if let [declaration] = mentioned_owners.as_slice() {
                 if self.fn_sigs.contains_key(declaration) {
-                    owner = Some(self.defs.path(*declaration).to_string());
+                    owner = Some(*declaration);
                 }
             }
         }
-        let params = owner
-            .as_ref()
-            .map_or_else(Vec::new, |key| self.generic_body_parameters(key));
+        let params = owner.map_or_else(Vec::new, |id| self.generic_body_parameters(id));
         let requirements = self.generic_requirements.entry(owner).or_default();
         if requirements.iter().any(|existing| {
             existing.kind == kind
@@ -402,9 +404,14 @@ impl Checker {
         {
             return;
         }
+        // Builtin signatures have no source body in this obligation graph.
+        // Their bounds and call type arguments were handled above.
+        let Some(&declaration) = self.fn_sig_keys.get(&callee_key) else {
+            return;
+        };
         self.record_generic_instantiation_site(
             self.current_function.clone(),
-            callee_key,
+            declaration,
             substitution,
             span,
         );
@@ -413,30 +420,28 @@ impl Checker {
     pub(in crate::check) fn record_generic_instantiation_site(
         &mut self,
         enclosing: Option<String>,
-        callee: String,
+        callee: crate::DefId,
         substitution: HashMap<crate::ParamHead, Ty>,
         span: &Span,
     ) {
-        let enclosing = if enclosing.as_ref().is_some_and(|key| {
-            self.fn_sig_keys
-                .get(key)
-                .is_some_and(|id| self.defs.kind(*id) == crate::DeclarationKind::Closure)
-        }) {
-            match self
-                .generic_obligation_owners(&substitution.values().collect::<Vec<_>>())
-                .as_slice()
-            {
-                [owner] if self.fn_sigs.contains_key(owner) => {
-                    Some(self.defs.path(*owner).to_string())
-                }
-                _ => enclosing,
-            }
-        } else {
-            enclosing
-        };
-        let enclosing_params = enclosing
+        let enclosing = enclosing
             .as_ref()
-            .map_or_else(Vec::new, |name| self.generic_body_parameters(name));
+            .and_then(|key| self.fn_sig_keys.get(key))
+            .copied();
+        let enclosing =
+            if enclosing.is_some_and(|id| self.defs.kind(id) == crate::DeclarationKind::Closure) {
+                match self
+                    .generic_obligation_owners(&substitution.values().collect::<Vec<_>>())
+                    .as_slice()
+                {
+                    [owner] if self.fn_sigs.contains_key(owner) => Some(*owner),
+                    _ => enclosing,
+                }
+            } else {
+                enclosing
+            };
+        let enclosing_params =
+            enclosing.map_or_else(Vec::new, |id| self.generic_body_parameters(id));
         self.generic_fn_instantiation_sites
             .push(GenericFnInstantiationSite {
                 caller: enclosing,
@@ -459,10 +464,10 @@ impl Checker {
         sites: Vec<GenericFnInstantiationSite>,
     ) -> (
         Vec<PendingInstantiation>,
-        HashMap<String, Vec<GenericCallEdge>>,
+        HashMap<crate::DefId, Vec<GenericCallEdge>>,
     ) {
         let mut roots: Vec<PendingInstantiation> = Vec::new();
-        let mut edges: HashMap<String, Vec<GenericCallEdge>> = HashMap::new();
+        let mut edges: HashMap<crate::DefId, Vec<GenericCallEdge>> = HashMap::new();
         for site in sites {
             let substitution: HashMap<crate::ParamHead, Ty> = site
                 .substitution
@@ -487,7 +492,7 @@ impl Checker {
                 continue;
             }
             roots.push(PendingInstantiation {
-                chain: vec![site.callee.clone()],
+                chain: vec![site.callee],
                 callee: site.callee,
                 substitution,
                 report_span: site.span,
@@ -505,10 +510,10 @@ impl Checker {
                 .filter(|(_, callback)| self.defs.owner(*callback) == Some(nominal.declaration()))
             {
                 edges
-                    .entry(actor.name.clone())
+                    .entry(nominal.declaration())
                     .or_default()
                     .push(GenericCallEdge {
-                        callee: self.defs.path(callback).to_string(),
+                        callee: callback,
                         substitution: actor
                             .type_params
                             .iter()
@@ -528,16 +533,14 @@ impl Checker {
         concrete: &Ty,
         pending: &PendingInstantiation,
     ) -> crate::error::TypeError {
-        let callee = self
-            .fn_sig_keys
-            .get(&pending.callee)
-            .filter(|id| {
-                matches!(
-                    self.defs.kind(**id),
-                    crate::DeclarationKind::Closure | crate::DeclarationKind::CallableType
-                )
-            })
-            .map_or(pending.callee.as_str(), |_| "generic callable");
+        let callee = if matches!(
+            self.defs.kind(pending.callee),
+            crate::DeclarationKind::Closure | crate::DeclarationKind::CallableType
+        ) {
+            std::borrow::Cow::Borrowed("generic callable")
+        } else {
+            self.defs.callable_diagnostic_path(pending.callee)
+        };
         let mut err = crate::error::TypeError::new(
             TypeErrorKind::InvalidOperation,
             pending.report_span.clone(),
@@ -563,10 +566,16 @@ impl Checker {
     /// codegen — the very thing this pass exists to prevent — so the budget
     /// refuses the program and names the chain that hit it.
     pub(super) fn generic_structural_eq_depth_error(
+        &self,
         pending: &PendingInstantiation,
         budget: u32,
     ) -> crate::error::TypeError {
-        let chain = pending.chain.join(" → ");
+        let chain = pending
+            .chain
+            .iter()
+            .map(|id| self.defs.callable_diagnostic_path(*id))
+            .collect::<Vec<_>>()
+            .join(" → ");
         let mut err = crate::error::TypeError::new(
             TypeErrorKind::InvalidOperation,
             pending.report_span.clone(),
@@ -590,7 +599,7 @@ impl Checker {
 
     pub(super) fn check_concrete_generic_requirements(
         &mut self,
-        requirements: &HashMap<Option<String>, Vec<GenericRequirement>>,
+        requirements: &HashMap<Option<crate::DefId>, Vec<GenericRequirement>>,
         service: &mut TypeFactService,
         resource_roots: &mut Vec<PendingInstantiation>,
     ) -> Vec<crate::error::TypeError> {
@@ -695,9 +704,9 @@ impl Checker {
             if signature.type_params.is_empty() {
                 continue;
             }
-            let callee = self.defs.path(method).to_string();
+            let callee = method;
             let mut chain = pending.map_or_else(Vec::new, |site| site.chain.clone());
-            chain.push(callee.clone());
+            chain.push(callee);
             instances.push(PendingInstantiation {
                 callee,
                 substitution: signature.type_params.into_iter().zip(arguments).collect(),
@@ -752,7 +761,12 @@ impl Checker {
             return;
         }
         let (roots, edges) = self.partition_generic_instantiation_sites(sites);
-        let mut seen: HashSet<(String, String, usize, Option<String>)> = HashSet::new();
+        let mut seen: HashSet<(
+            crate::DefId,
+            BTreeMap<crate::ParamHead, Ty>,
+            usize,
+            Option<String>,
+        )> = HashSet::new();
         let mut work: VecDeque<PendingInstantiation> = roots.into();
         work.extend(resource_roots);
 
@@ -761,23 +775,26 @@ impl Checker {
             // (callee, args, offset) triple for genuinely different sites; the
             // module completes the identity.
             if !seen.insert((
-                pending.callee.clone(),
-                Self::render_substitution(&pending.substitution),
+                pending.callee,
+                pending
+                    .substitution
+                    .iter()
+                    .map(|(parameter, ty)| (*parameter, ty.clone()))
+                    .collect(),
                 pending.report_span.start,
                 pending.report_module.clone(),
             )) {
                 continue;
             }
             if pending.depth > MAX_INSTANTIATION_DEPTH {
-                new_errors.push(Self::generic_structural_eq_depth_error(
-                    &pending,
-                    MAX_INSTANTIATION_DEPTH,
-                ));
+                new_errors.push(
+                    self.generic_structural_eq_depth_error(&pending, MAX_INSTANTIATION_DEPTH),
+                );
                 continue;
             }
 
             for requirement in requirements
-                .get(&Some(pending.callee.clone()))
+                .get(&Some(pending.callee))
                 .into_iter()
                 .flatten()
             {
@@ -815,9 +832,9 @@ impl Checker {
 
             for edge in edges.get(&pending.callee).into_iter().flatten() {
                 let mut chain = pending.chain.clone();
-                chain.push(edge.callee.clone());
+                chain.push(edge.callee);
                 work.push_back(PendingInstantiation {
-                    callee: edge.callee.clone(),
+                    callee: edge.callee,
                     substitution: edge
                         .substitution
                         .iter()

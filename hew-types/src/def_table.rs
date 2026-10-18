@@ -1055,6 +1055,18 @@ impl DefTable {
         &self.row(id).path
     }
 
+    /// Render a callable as written by its caller, without an impl's internal
+    /// linkage discriminator. The selected declaration still owns its identity.
+    #[must_use]
+    pub fn callable_diagnostic_path(&self, id: DefId) -> std::borrow::Cow<'_, str> {
+        if let (DeclarationKind::ImplMethod | DeclarationKind::DefaultImplMethod, Some(receiver)) =
+            (self.kind(id), self.owner(id))
+        {
+            return format!("{}::{}", self.path(receiver), self.name(id)).into();
+        }
+        self.path(id).into()
+    }
+
     /// Render portable declaration ownership using module and member facts.
     #[must_use]
     pub fn dotted_declaration_path(&self, id: DefId) -> String {

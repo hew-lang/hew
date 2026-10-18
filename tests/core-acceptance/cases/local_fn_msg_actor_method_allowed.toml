@@ -9,13 +9,13 @@ kind = "check"
 [[case.expected.diagnostics]]
 severity = "warning"
 code = "dead_code"
-line = 6
+line = 4
 column = 1
 message = "function `inc` is never called"
 
 [[case.expected.diagnostics]]
 severity = "warning"
 code = "dead_code"
-line = 14
+line = 12
 column = 1
 message = "function `send_local` is never called"

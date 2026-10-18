@@ -6,17 +6,22 @@
 //! Generators must use the declared output path's spelling, including case:
 //! missing directories cannot be canonicalized to discover filesystem aliases.
 
+#[cfg(not(target_arch = "wasm32"))]
 use std::io;
+#[cfg(not(target_arch = "wasm32"))]
 use std::path::{Component, Path, PathBuf};
+#[cfg(not(target_arch = "wasm32"))]
 use std::sync::OnceLock;
 
 /// Filesystem authority required by an operation.
+#[cfg(not(target_arch = "wasm32"))]
 #[derive(Clone, Copy)]
 pub(crate) enum Access {
     Read,
     Write,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Record {
@@ -26,6 +31,7 @@ struct Record {
     staging: PathBuf,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 struct Policy {
     read_files: Vec<PathBuf>,
     read_roots: Vec<PathBuf>,
@@ -34,12 +40,14 @@ struct Policy {
     staging: PathBuf,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn denied(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::PermissionDenied, message.into())
 }
 
 // Resolve existing components, including symlinks, before interpreting `..`.
 // Missing leaves are retained so creation receives the same containment check.
+#[cfg(not(target_arch = "wasm32"))]
 fn resolve(path: &Path, depth: usize) -> io::Result<PathBuf> {
     if depth > 40 {
         return Err(denied("generator path contains too many symbolic links"));
@@ -78,6 +86,7 @@ fn resolve(path: &Path, depth: usize) -> io::Result<PathBuf> {
     Ok(resolved)
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl Policy {
     fn new(record: Record) -> io::Result<Self> {
         if !record.output.is_absolute() || !record.staging.is_absolute() {
@@ -169,8 +178,10 @@ impl Policy {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 static POLICY: OnceLock<Result<Option<Policy>, String>> = OnceLock::new();
 
+#[cfg(not(target_arch = "wasm32"))]
 fn policy() -> &'static Result<Option<Policy>, String> {
     POLICY.get_or_init(|| {
         let Some(value) = std::env::var_os("HEW_GENERATE_POLICY") else {
@@ -191,9 +202,20 @@ fn policy() -> &'static Result<Option<Policy>, String> {
 /// Invalid records retain deterministic mode and deny every filesystem request.
 #[must_use]
 pub fn enabled() -> bool {
-    !matches!(policy(), Ok(None))
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        !matches!(policy(), Ok(None))
+    }
+    // WASI has no host filesystem entry points, but clocks, random values and
+    // arguments still honour the driver's deterministic generator mode.
+    #[cfg(target_arch = "wasm32")]
+    {
+        static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        *ENABLED.get_or_init(|| std::env::var_os("HEW_GENERATE_POLICY").is_some())
+    }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn checked_path(path: &Path, access: Access) -> io::Result<PathBuf> {
     match policy() {
         Ok(Some(policy)) => policy.check(path, access),
@@ -202,6 +224,7 @@ pub(crate) fn checked_path(path: &Path, access: Access) -> io::Result<PathBuf> {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn directory_names(path: &Path, names: &mut Vec<String>) -> io::Result<()> {
     match policy() {
         Ok(Some(policy)) => policy.directory_names(path, names),
@@ -210,7 +233,7 @@ pub(crate) fn directory_names(path: &Path, names: &mut Vec<String>) -> io::Resul
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
 

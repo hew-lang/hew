@@ -98,6 +98,7 @@ impl RequestState {
         self
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn terminal(&self) -> bool {
         self.dispatch.load(Ordering::Acquire) != 1
     }

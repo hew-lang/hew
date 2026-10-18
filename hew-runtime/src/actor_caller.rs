@@ -28,6 +28,7 @@ impl HewCallerStamp {
         }
     }
 
+    #[cfg(any(test, not(target_arch = "wasm32")))]
     pub(crate) const fn peer(identity: HewNodeId) -> Self {
         Self { kind: 3, identity }
     }

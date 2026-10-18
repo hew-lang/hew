@@ -40,9 +40,11 @@ unsafe impl Send for SharedSender {}
 unsafe impl Sync for SharedSender {}
 
 impl SharedSender {
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn underlying(&self) -> *mut HewSink {
         self.sink
     }
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn idle(&self) -> bool {
         !self.busy.load(Ordering::Acquire)
     }
@@ -330,6 +332,7 @@ type Endpoint = Option<Arc<SharedSender>>;
 
 /// # Safety
 /// A retained endpoint or pending finish pins this exact adapter allocation.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) unsafe fn retain_adapter(context: *const c_void) -> Arc<SharedSender> {
     let context = context.cast::<SharedSender>();
     // SAFETY: the backing retains one Arc while this reference is acquired.

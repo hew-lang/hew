@@ -459,14 +459,17 @@ thread_local! {
 /// Scoped marker for a local mailbox submission originating from a remote
 /// transport frame. It carries no fabricated remote identity; it only prevents
 /// the producer from mislabelling the missing source as an external local send.
+#[cfg(any(test, not(target_arch = "wasm32")))]
 pub(crate) struct RemoteTraceSourceGuard;
 
+#[cfg(any(test, not(target_arch = "wasm32")))]
 impl Drop for RemoteTraceSourceGuard {
     fn drop(&mut self) {
         REMOTE_SOURCE_DEPTH.with(|depth| depth.set(depth.get().saturating_sub(1)));
     }
 }
 
+#[cfg(any(test, not(target_arch = "wasm32")))]
 pub(crate) fn enter_remote_trace_source() -> RemoteTraceSourceGuard {
     REMOTE_SOURCE_DEPTH.with(|depth| depth.set(depth.get().saturating_add(1)));
     RemoteTraceSourceGuard

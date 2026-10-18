@@ -31,6 +31,7 @@ enum CallState {
     Admitting,
     Waiting,
     Ready(RequestOutcome),
+    #[cfg(not(target_arch = "wasm32"))]
     RemoteReady,
     Taken,
 }
@@ -138,6 +139,7 @@ impl HewActorCall {
         }
         match self.state {
             CallState::Ready(outcome) => return outcome.code(),
+            #[cfg(not(target_arch = "wasm32"))]
             CallState::RemoteReady => return 0,
             CallState::Taken => return -2,
             CallState::Admitting => {
@@ -239,6 +241,7 @@ impl HewActorCall {
     }
 
     /// Move the queued request's timer to its inbound publication owner.
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn take_queued(&mut self) -> (Arc<RequestState>, *mut HewCoroSleep) {
         assert!(matches!(self.state, CallState::Taken));
         let local = self.local();
@@ -248,6 +251,7 @@ impl HewActorCall {
         )
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn unaccepted(&self) -> bool {
         matches!(self.state, CallState::Ready(RequestOutcome::Refused(_)))
     }
@@ -259,8 +263,12 @@ impl HewActorCall {
         let outcome = match self.state {
             CallState::Ready(outcome) => {
                 if let RequestOutcome::Completed(0) = outcome {
-                    let CallRoute::Local(local) = &self.route else {
-                        unreachable!("a local ready reply has a local route");
+                    let local = match &self.route {
+                        CallRoute::Local(local) => local,
+                        #[cfg(not(target_arch = "wasm32"))]
+                        CallRoute::Imported { .. } => {
+                            unreachable!("a local ready reply has a local route")
+                        }
                     };
                     // SAFETY: readiness leaves the exact reply owned by this call.
                     let taken = unsafe {

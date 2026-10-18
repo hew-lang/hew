@@ -5,11 +5,11 @@ use std::{
 
 use hew_parser::ast::{BinaryOp, Span, UnaryOp};
 use hew_types::RcIntrinsicOp;
+use hew_types::TryConversionKind;
 use hew_types::{
     ChildSlot, DefId, ExecutionContextReader, ImplId, MethodTargetFamily, PoolAccessor, ResolvedTy,
     Ty, TyPattern, VariantMatch,
 };
-use hew_types::{TryConversionKind, VecElementToken};
 
 use crate::ids::{BindingId, HirNodeId, ItemId, ResolvedRef, ScopeId, SiteId};
 use crate::monomorph::{EnumLayout, MonomorphizedFn, RecordLayout};
@@ -101,15 +101,6 @@ pub struct HirModule {
     /// Empty when no generic-fn call sites exist (a fully monomorphic
     /// program).
     pub call_site_type_args: HashMap<SiteId, Vec<ResolvedTy>>,
-    /// Per-concrete-element `Vec<T>` runtime-ABI verdict table, copied from
-    /// [`hew_types::TypeCheckOutput::vec_generic_element_abi`]. MIR consults it
-    /// when re-resolving an element-typed `Vec<T>` method (`push`/`get`/`set`/
-    /// `pop`) whose element is a type parameter: the dispatch registry left a
-    /// `hew_vec_*_FAMILY` placeholder, and per monomorphisation MIR substitutes
-    /// the concrete element, looks up its [`VecElementToken`] here, and maps
-    /// `(method, token)` to the concrete runtime symbol. An element absent from
-    /// the table fails closed at MIR (#1929 Stage 1).
-    pub vec_generic_element_abi: HashMap<Ty, VecElementToken>,
     /// Distinct record-type instantiations observed at user struct-init
     /// sites against a generic `pub type` / `record`. Populated from the
     /// checker's `record_init_type_args` side-table during HIR lowering.

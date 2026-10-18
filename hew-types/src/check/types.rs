@@ -775,22 +775,6 @@ pub struct TypeCheckOutput {
     pub call_type_args: HashMap<SpanKey, Vec<Ty>>,
     /// Concrete invocation views selected when quantified values meet monomorphic types.
     pub callable_value_specializations: HashMap<SpanKey, Vec<ResolvedTy>>,
-    /// Per-concrete-element `Vec<T>` runtime-ABI verdict for the
-    /// monomorphisation re-resolution of element-typed methods under a type
-    /// parameter (#1929 Stage 1).
-    ///
-    /// Populated at the checker output boundary by classifying every concrete
-    /// type that appears as a generic call / record-init type-argument through
-    /// the same authority that backs the constructor path
-    /// ([`crate::vec_authority::classify_element`] + the `Copy` marker for the
-    /// layout class). A `Vec<T>` `push`/`get`/`set`/`pop` whose element
-    /// is a declared type parameter keeps the `hew_vec_*_FAMILY` placeholder
-    /// through HIR; MIR substitutes the concrete element per instantiation,
-    /// looks it up here, and resolves the concrete symbol through
-    /// [`crate::vec_authority::resolve_runtime_symbol`]. An element ABSENT from this
-    /// map (non-`Copy`/owned layout, tuples, closures, unresolved nominals)
-    /// fails closed at MIR — never a silent accept.
-    pub vec_generic_element_abi: HashMap<Ty, crate::vec_authority::VecElementToken>,
     /// Inferred or explicit type arguments for record / enum-struct-variant
     /// initialiser sites on user-defined generic types.  Keyed by the
     /// initialiser expression's span.

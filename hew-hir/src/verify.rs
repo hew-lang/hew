@@ -1350,7 +1350,6 @@ mod tests {
             type_classes: TypeClassTable::default(),
             monomorphisations: Vec::new(),
             call_site_type_args: HashMap::new(),
-            vec_generic_element_abi: HashMap::new(),
             record_layouts: Vec::new(),
             enum_layouts: Vec::new(),
             supervisor_child_slots: HashMap::new(),

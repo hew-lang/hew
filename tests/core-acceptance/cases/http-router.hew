@@ -20,6 +20,11 @@ fn main() {
     check(empty.join(",") == "", "empty string-vector join");
     check(["雪"].join("/") == "雪", "single string-vector join");
     check(["", "café", "🙂"].join("雪") == "雪café雪🙂", "Unicode string-vector join");
+    check("雪🙂".split("").join(":") == "雪:🙂", "empty delimiter splits scalars");
+    check("".split("").len() == 0, "empty scalar split");
+    let segments = "/a//".split("/");
+    check(segments.len() == 4 && segments[0] == "" && segments[3] == "", "split preserves empty segments");
+    check("雪🙂雪".split("雪").join("/") == "/🙂/", "Unicode delimiter split");
     var routes: router.Router<Endpoint> = router.new();
     routes.add("GET", "/users/{id}", .User).expect("user route");
     routes.add("POST", "/users/new", .NewUser).expect("static resource");

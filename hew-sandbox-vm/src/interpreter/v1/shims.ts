@@ -288,6 +288,12 @@ const UNIT_FAMILY_SHIMS: Record<string, RuntimeShim | undefined> = {
     return str("");
   },
   StringIsEmpty: (_host, args) => bool(indexed(args, 0).scalarLength === 0),
+  StringSplit: (_host, args) => {
+    const value = indexed(args, 0).value;
+    const separator = indexed(args, 1).value;
+    const parts = separator === "" ? Array.from(value) : value.split(separator);
+    return { kind: "vector", elementType: "string", items: parts.map(str) };
+  },
   StringReplace: (_host, args) =>
     str(text(args, 0).split(text(args, 1)).join(text(args, 2))),
   StringRepeat: (_host, args) =>

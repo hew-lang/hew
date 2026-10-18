@@ -33,8 +33,7 @@ pub use lower::{
     ResolutionCtx, TargetArch,
 };
 pub use mono::{
-    mangle_instantiation, sanitize_for_symbol, ActorMonoKey, ConstValue as MonoConstValue,
-    FunctionMonoKey, MonoKind, SymbolClass,
+    mangle_instantiation, sanitize_for_symbol, ConstValue as MonoConstValue, SymbolClass,
 };
 pub use monomorph::{
     compiler_record_layout_key, layout_key_for_named, mangle, mangle_layout_key,

@@ -192,16 +192,16 @@ impl CommandMatch {
         }
         values
     }
-    fn record(var self, argument: Argument, value: Value) -> Result<(), ParseError> {
+    fn record(var self, argument: Argument, value: Value) fails ParseError {
         if !argument.multiple {
             for entry in self.entries {
                 if entry.name == argument.name {
-                    return .Err(.RepeatedOption(argument.name));
+                    return error .RepeatedOption(argument.name);
                 }
             }
         }
         self.entries.push(MatchedValue { name: argument.name, value: value });
-        .Ok(())
+        ()
     }
 }
 
@@ -258,7 +258,7 @@ impl Command {
     /// Accepts `--name=value`, `--name value`, `-abc` flag clusters and attached
     /// short values such as `-j4`. Scalar options reject duplication across
     /// aliases. A dash-prefixed text value must be attached (`--name=-text`).
-    pub fn parse(self, args: Vec<string>) -> Result<Outcome, ParseError> {
+    pub fn parse(self, args: Vec<string>) -> Outcome fails ParseError {
         self.validate()?;
         var current = self;
         var path = self.name;
@@ -269,7 +269,7 @@ impl Command {
         while index < args.len() {
             let token = args[index];
             if options && (token == "--help" || token == "-h") {
-                return .Ok(.Help(current.help_at(path)));
+                return .Help(current.help_at(path));
             }
             if options && token == "--" {
                 options = false;
@@ -280,15 +280,15 @@ impl Command {
                     .None => token[2..token.len()],
                 };
                 if name == "help" {
-                    return .Err(.UnexpectedValue(name));
+                    return error .UnexpectedValue(name);
                 }
                 let argument = match current.find_argument(name, false) {
                     .Some(argument) => argument,
-                    .None => return .Err(.UnknownOption(token)),
+                    .None => return error .UnknownOption(token),
                 };
                 if let .Flag = argument.kind {
                     if equal.is_some() {
-                        return .Err(.UnexpectedValue(name));
+                        return error .UnexpectedValue(name);
                     }
                     matched.flags.push(name);
                 } else {
@@ -305,15 +305,15 @@ impl Command {
                 var position = 1;
                 while position < token.len() {
                     if token.to_bytes()[position] > 127 {
-                        return .Err(.UnknownOption(token));
+                        return error .UnknownOption(token);
                     }
                     let name = token[position .. position + 1];
                     if name == "h" {
-                        return .Ok(.Help(current.help_at(path)));
+                        return .Help(current.help_at(path));
                     }
                     let argument = match current.find_argument(name, true) {
                         .Some(argument) => argument,
-                        .None => return .Err(.UnknownOption(token)),
+                        .None => return error .UnknownOption(token),
                     };
                     position = position + 1;
                     if let .Flag = argument.kind {
@@ -336,7 +336,7 @@ impl Command {
             } else if options && !current.commands.is_empty() {
                 let child = match current.find_command(token) {
                     .Some(command) => command,
-                    .None => return .Err(.UnknownCommand(path, token)),
+                    .None => return error .UnknownCommand(path, token),
                 };
                 levels.push(matched);
                 current = child;
@@ -345,15 +345,15 @@ impl Command {
             } else if current.tail.is_some() {
                 matched.positionals.push(token);
             } else {
-                return .Err(.UnexpectedArgument(token));
+                return error .UnexpectedArgument(token);
             }
             index = index + 1;
         }
         if !current.commands.is_empty() {
-            return .Err(.MissingCommand(path));
+            return error .MissingCommand(path);
         }
         levels.push(matched);
-        .Ok(.Parsed(Matches { commands: levels }))
+        .Parsed(Matches { commands: levels })
     }
     fn find_argument(self, name: string, short: bool) -> Option<Argument> {
         for argument in self.arguments {
@@ -375,48 +375,48 @@ impl Command {
         }
         .None
     }
-    fn validate(self) -> Result<(), ParseError> {
+    fn validate(self) fails ParseError {
         if !valid_name(self.name) {
-            return .Err(.InvalidDefinition(f"invalid command name `{self.name}`"));
+            return error .InvalidDefinition(f"invalid command name `{self.name}`");
         }
         var names: Vec<string> = ["help"];
         var shorts: Vec<string> = ["h"];
         for argument in self.arguments {
             if !valid_name(argument.name) || contains(names, argument.name) {
-                return .Err(.InvalidDefinition(f"invalid or repeated option `--{argument.name}`"));
+                return error .InvalidDefinition(f"invalid or repeated option `--{argument.name}`");
             }
             names.push(argument.name);
             if let .Some(short) = argument.short {
                 if short.len() != 1 || !valid_name(short) || contains(shorts, short) {
-                    return .Err(.InvalidDefinition(f"invalid or repeated short option `-{short}`"));
+                    return error .InvalidDefinition(f"invalid or repeated short option `-{short}`");
                 }
                 shorts.push(short);
             }
             if let .Choice(_, choices) = argument.kind {
                 if choices.is_empty() {
-                    return .Err(.InvalidDefinition(f"option `--{argument.name}` has no choices"));
+                    return error .InvalidDefinition(f"option `--{argument.name}` has no choices");
                 }
             }
             if let .Some(label) = value_label(argument.kind) {
                 if label.is_empty() {
-                    return .Err(.InvalidDefinition(f"option `--{argument.name}` needs a help placeholder"));
+                    return error .InvalidDefinition(f"option `--{argument.name}` needs a help placeholder");
                 }
             }
         }
         var commands: Vec<string> = Vec.new();
         for command in self.commands {
             if contains(commands, command.name) {
-                return .Err(.InvalidDefinition(f"repeated command `{command.name}`"));
+                return error .InvalidDefinition(f"repeated command `{command.name}`");
             }
             commands.push(command.name);
             command.validate()?;
         }
         if let .Some(tail) = self.tail {
             if tail.is_empty() || !self.commands.is_empty() {
-                return .Err(.InvalidDefinition("a positional tail needs a placeholder and a command without children"));
+                return error .InvalidDefinition("a positional tail needs a placeholder and a command without children");
             }
         }
-        .Ok(())
+        ()
     }
     fn help_at(self, path: string) -> string {
         var text = f"Usage: {path} [OPTIONS]";
@@ -489,35 +489,39 @@ fn valid_name(name: string) -> bool {
     true
 }
 
-fn next_value(argument: Argument, args: Vec<string>, index: i64) -> Result<string, ParseError> {
+fn next_value(argument: Argument, args: Vec<string>, index: i64) -> string fails ParseError {
     let raw = match args.get(index) {
         .Some(value) => value,
-        .None => return .Err(.MissingValue(argument.name)),
+        .None => return error .MissingValue(argument.name),
     };
     if raw.starts_with("-") && raw != "-" {
         if let .Integer(_) = argument.kind {
             if string.to_int(raw).is_ok() {
-                return .Ok(raw);
+                return raw;
             }
         }
-        return .Err(.MissingValue(argument.name));
+        return error .MissingValue(argument.name);
     }
-    .Ok(raw)
+    raw
 }
 
-fn checked_value(argument: Argument, raw: string) -> Result<Value, ParseError> {
+fn checked_value(argument: Argument, raw: string) -> Value fails ParseError {
     match argument.kind {
-        .Flag => .Err(.UnexpectedValue(argument.name)),
-        .Text(_) => .Ok(.Text(raw)),
+        .Flag => {
+            return error .UnexpectedValue(argument.name);
+        }
+        .Text(_) => .Text(raw),
         .Integer(_) => match string.to_int(raw) {
-            .Ok(value) => .Ok(.Integer(value)),
-            .Err(_) => .Err(.InvalidValue(argument.name, raw, "an integer")),
+            .Ok(value) => .Integer(value),
+            .Err(_) => {
+                return error .InvalidValue(argument.name, raw, "an integer");
+            }
         }
         .Choice(_, choices) => {
             if contains(choices, raw) {
-                return .Ok(.Text(raw));
+                return .Text(raw);
             }
-            .Err(.InvalidValue(argument.name, raw, f"one of {choice_names(choices)}"))
+            return error .InvalidValue(argument.name, raw, f"one of {choice_names(choices)}");
         }
     }
 }

@@ -414,6 +414,7 @@ class ExecutorV1 {
     this.scheduler = new FrameScheduler(trace, policy);
     this.ids = new DeterministicIds(trace.replay.seed);
     this.host = {
+      argv: [...(options.argv ?? ["main.hew"])],
       pipes: this.pipes,
       generatorStream: (value) => {
         const id = this.ids.channel();

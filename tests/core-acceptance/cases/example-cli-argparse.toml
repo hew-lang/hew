@@ -1,0 +1,23 @@
+[[case]]
+id = "example-cli-argparse"
+intent = "The published CLI example reads actual process arguments, preserves parent flags, repeated options and a literal positional tail, and prints its selected configuration."
+source = "../../examples/cli_argparse.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+argv = [
+  "--verbose",
+  "serve",
+  "--port=8080",
+  "-Ipublic",
+  "--include=assets",
+  "--",
+  "index.html",
+  "-draft",
+  "",
+  "雪",
+]
+
+[case.expected]
+stdout = "port: 8080\nmode: safe\nverbose progress enabled\ninclude: public\ninclude: assets\nfile: index.html\nfile: -draft\nfile: \nfile: 雪\n"
+stderr = ""
+exit = 0

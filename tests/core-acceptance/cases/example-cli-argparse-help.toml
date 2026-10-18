@@ -1,0 +1,12 @@
+[[case]]
+id = "example-cli-argparse-help"
+intent = "The published CLI example renders subcommand help from its declarations and exits successfully."
+source = "../../examples/cli_argparse.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+argv = ["serve", "--help"]
+
+[case.expected]
+stdout = "Usage: cli_argparse serve [OPTIONS] [FILE...]\n\nChoose files and configure a server\n\nOptions:\n  -h, --help  Show this help\n  -p, --port <PORT>  Port number (default: 8080)\n  --mode <MODE>  Serving mode (choices: safe, fast)\n  -I, --include <PATH>...  Include a directory\n"
+stderr = ""
+exit = 0

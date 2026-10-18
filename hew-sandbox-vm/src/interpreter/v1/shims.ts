@@ -40,6 +40,8 @@ export class ShimFault extends Error {
 /// What a shim may reach for. The executor owns faults and traces; a shim
 /// never touches the frame stack or the value environment.
 export interface ShimHost {
+  /// A snapshot of the supplied process arguments, including argv[0].
+  readonly argv: readonly string[];
   pipes?: Pipes;
   newPipe?(capacity: number): VmValue;
   closePipe?(value: VmValue): void;
@@ -906,6 +908,10 @@ function bigMax(left: bigint, right: bigint): bigint {
 // ── externs ─────────────────────────────────────────────────────────────────
 
 const EXTERN_SHIMS: Record<string, RuntimeShim | undefined> = {
+  hew_args_count: (host) => int(BigInt(host.argv.length)),
+  // A native null managed string is canonical empty. Each result owns fresh
+  // string storage; releasing it cannot change the host's supplied arguments.
+  hew_args_get: (host, args) => str(host.argv[index(args, 0)] ?? ""),
   hew_actor_timer_cancel: (_host, args) => {
     const timer = arg(args, 0);
     if (timer.kind !== "timer" || timer.closed)

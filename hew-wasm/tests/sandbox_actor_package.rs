@@ -1238,12 +1238,41 @@ fn assert_native_manifest_options(
         .expect("shared native manifest");
     let manifest: toml::Value = toml::from_str(&manifest).expect("valid manifest");
     let case = &manifest["case"][0];
-    let source = std::fs::read_to_string(root.join(case["source"].as_str().unwrap()))
-        .expect("shared native source");
-    let trace = execute_options(&source, "ok", options, inputs);
+    let source_path = root.join(case["source"].as_str().unwrap());
+    let source = std::fs::read_to_string(&source_path).expect("shared native source");
+    let mut options: serde_json::Value = serde_json::from_str(options).expect("VM options");
+    if let Some(arguments) = case.get("argv").and_then(toml::Value::as_array) {
+        let mut argv = vec![source_path
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned()];
+        argv.extend(arguments.iter().map(|value| {
+            value
+                .as_str()
+                .expect("manifest argument string")
+                .to_string()
+        }));
+        options["argv"] = serde_json::json!(argv);
+    }
+    let trace = execute_options(&source, "ok", &options.to_string(), inputs);
     assert_eq!(
         stdout(&trace),
         case["expected"]["stdout"].as_str().unwrap(),
+        "{name}"
+    );
+    let stderr: String = trace["final_state"]["stderr"]
+        .as_array()
+        .expect("VM stderr")
+        .iter()
+        .map(|value| value.as_str().unwrap())
+        .collect();
+    assert_eq!(
+        stderr,
+        case["expected"]
+            .get("stderr")
+            .and_then(toml::Value::as_str)
+            .unwrap_or(""),
         "{name}"
     );
     assert_eq!(
@@ -1252,6 +1281,58 @@ fn assert_native_manifest_options(
         "{name}"
     );
     trace
+}
+
+#[test]
+fn cli_parser_and_examples_share_native_source_arguments_and_output() {
+    for case in [
+        "cli-commands",
+        "example-cli-argparse",
+        "example-cli-argparse-error",
+        "example-cli-argparse-help",
+    ] {
+        assert_native_manifest(case, hew_compile::SourceSet::in_memory());
+    }
+}
+
+#[test]
+fn cli_arguments_have_owned_strings_and_a_stable_default() {
+    let trace = execute(
+        r#"
+import std.os;
+fn main() {
+    var arguments = os.args();
+    let retained = arguments;
+    assert(arguments.len() == 1);
+    arguments.set(0, "changed");
+    assert(os.args()[0] == "main.hew");
+    println(retained[0]);
+}
+"#,
+    );
+    assert_eq!(stdout(&trace), "main.hew\n");
+}
+
+#[test]
+fn cli_argument_admission_keeps_native_environment_operations_refused() {
+    let trace = execute_expected(
+        r#"
+import std.os;
+fn main() {
+    println("must not execute");
+    let _ = os.env("HOME");
+}
+"#,
+        "sandbox_rejected",
+    );
+    assert!(stdout(&trace).is_empty());
+    assert!(trace["final_state"]["sandbox_rejections"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|refusal| refusal["capability"]
+            .as_str()
+            .is_some_and(|symbol| symbol.starts_with("hew_env_"))));
 }
 
 #[test]

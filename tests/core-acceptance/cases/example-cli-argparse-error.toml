@@ -1,0 +1,12 @@
+[[case]]
+id = "example-cli-argparse-error"
+intent = "The published CLI example rejects an invalid typed option, prints a usable diagnostic and exits unsuccessfully."
+source = "../../examples/cli_argparse.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+argv = ["serve", "--port=invalid"]
+
+[case.expected]
+stdout = "invalid value `invalid` for `--port`: expected an integer\nUse --help, or serve --help, for usage.\n"
+stderr = ""
+exit = 2

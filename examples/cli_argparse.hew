@@ -24,7 +24,7 @@ fn application() -> cli.Command {
     app
 }
 
-fn main() {
+fn main() -> i32 {
     let app = application();
     let argv = os.args();
     var arguments: Vec<string> = Vec.new();
@@ -33,20 +33,23 @@ fn main() {
     }
     if arguments.is_empty() {
         print(app.help());
-        return;
+        return 0;
     }
     match app.parse(arguments) {
-        .Ok(.Help(text)) => print(text),
+        .Ok(.Help(text)) => {
+            print(text);
+            0
+        }
         .Ok(.Parsed(matches)) => {
             let selected = matches.selected();
             if selected.name == "version" {
                 println("cli example 1.0");
-                return;
+                return 0;
             }
             let port = selected.integer("port") ?? 8080;
             if port < 1 || port > 65535 {
                 println("port must be between 1 and 65535");
-                exit(2);
+                return 2;
             }
             println(f"port: {port}");
             let mode = selected.value("mode") ?? "safe";
@@ -60,11 +63,12 @@ fn main() {
             for file in selected.positionals {
                 println(f"file: {file}");
             }
+            0
         }
         .Err(error) => {
             println(f"{error}");
             println("Use --help, or serve --help, for usage.");
-            exit(2);
+            2
         }
     }
 }

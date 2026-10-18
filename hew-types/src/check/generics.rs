@@ -279,7 +279,7 @@ impl Checker {
         };
         if type_def.kind == TypeDefKind::Actor {
             self.record_generic_instantiation_site(
-                self.current_function.clone(),
+                self.current_function.clone().as_deref(),
                 self.type_def_key(type_name)
                     .expect("registered generic actor")
                     .declaration(),

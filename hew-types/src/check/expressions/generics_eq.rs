@@ -24,6 +24,30 @@ use std::collections::VecDeque;
 
 type GenericInstantiation = (crate::DefId, BTreeMap<crate::ParamHead, Ty>);
 
+impl PendingInstantiation {
+    fn follow_call(&self, edge: &GenericCallEdge) -> Self {
+        let mut chain = self.chain.clone();
+        chain.push(edge.callee);
+        Self {
+            callee: edge.callee,
+            substitution: edge
+                .substitution
+                .iter()
+                .map(|(param, ty)| {
+                    (
+                        *param,
+                        ty.substitute_type_params_parallel(&self.substitution),
+                    )
+                })
+                .collect(),
+            report_span: self.report_span.clone(),
+            report_module: self.report_module.clone(),
+            depth: self.depth + 1,
+            chain,
+        }
+    }
+}
+
 impl Checker {
     fn generic_body_parameters(&self, declaration: crate::DefId) -> Vec<crate::ParamHead> {
         let mut parameters = self
@@ -412,7 +436,7 @@ impl Checker {
             return;
         };
         self.record_generic_instantiation_site(
-            self.current_function.clone(),
+            self.current_function.clone().as_deref(),
             declaration,
             substitution,
             span,
@@ -421,15 +445,12 @@ impl Checker {
 
     pub(in crate::check) fn record_generic_instantiation_site(
         &mut self,
-        enclosing: Option<String>,
+        enclosing: Option<&str>,
         callee: crate::DefId,
         substitution: HashMap<crate::ParamHead, Ty>,
         span: &Span,
     ) {
-        let enclosing = enclosing
-            .as_ref()
-            .and_then(|key| self.fn_sig_keys.get(key))
-            .copied();
+        let enclosing = enclosing.and_then(|key| self.fn_sig_keys.get(key)).copied();
         let enclosing =
             if enclosing.is_some_and(|id| self.defs.kind(id) == crate::DeclarationKind::Closure) {
                 match self
@@ -928,27 +949,13 @@ impl Checker {
                 work.extend(self.resource_close_pending(requirement, &concrete, Some(&pending)));
             }
 
-            for edge in edges.get(&pending.callee).into_iter().flatten() {
-                let mut chain = pending.chain.clone();
-                chain.push(edge.callee);
-                work.push_back(PendingInstantiation {
-                    callee: edge.callee,
-                    substitution: edge
-                        .substitution
-                        .iter()
-                        .map(|(param, ty)| {
-                            (
-                                *param,
-                                ty.substitute_type_params_parallel(&pending.substitution),
-                            )
-                        })
-                        .collect(),
-                    report_span: pending.report_span.clone(),
-                    report_module: pending.report_module.clone(),
-                    depth: pending.depth + 1,
-                    chain,
-                });
-            }
+            work.extend(
+                edges
+                    .get(&pending.callee)
+                    .into_iter()
+                    .flatten()
+                    .map(|edge| pending.follow_call(edge)),
+            );
         }
 
         self.errors.extend(new_errors);

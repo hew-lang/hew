@@ -43,7 +43,7 @@ impl Checker {
                 )
                 .collect();
             self.record_generic_instantiation_site(
-                self.current_function.clone(),
+                self.current_function.clone().as_deref(),
                 self.fn_sig_keys[&owner],
                 substitution,
                 span,
@@ -190,7 +190,7 @@ impl Checker {
             .map(|(source, target)| (source.parameter, Ty::param(target.parameter)))
             .collect();
         self.record_generic_instantiation_site(
-            Some(destination),
+            Some(&destination),
             self.fn_sig_keys[&implementation],
             substitution,
             span,

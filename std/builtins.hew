@@ -304,7 +304,7 @@ impl Display for SendError {
 
 impl Error for SendError {}
 
-/// Error returned when `Node.lookup<T>(name)` cannot resolve `name`.
+/// Error returned when `Node.lookup(name)` cannot resolve a discovery location.
 ///
 /// Returned as `Err(LookupError.NotFound)` when no actor is registered
 /// under `name` on the current node (or any peer with a gossiped name).

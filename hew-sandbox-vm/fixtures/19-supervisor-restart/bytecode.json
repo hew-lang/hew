@@ -1007,6 +1007,12 @@
           "id": 39,
           "ops": [
             {
+              "dst": null,
+              "op": "destroy_value",
+              "span": null,
+              "value": 15
+            },
+            {
               "dst": 16,
               "op": "const.unit",
               "own": "none",
@@ -1122,7 +1128,14 @@
         },
         {
           "id": 44,
-          "ops": [],
+          "ops": [
+            {
+              "dst": null,
+              "op": "destroy_value",
+              "span": null,
+              "value": 17
+            }
+          ],
           "params": [],
           "term": {
             "edge": {
@@ -1166,7 +1179,7 @@
           "term": {
             "edge": {
               "args": [],
-              "to": 41
+              "to": 16
             },
             "op": "goto",
             "span": null
@@ -1201,18 +1214,6 @@
         {
           "id": 49,
           "ops": [
-            {
-              "dst": null,
-              "op": "destroy_value",
-              "span": null,
-              "value": 17
-            },
-            {
-              "dst": null,
-              "op": "destroy_value",
-              "span": null,
-              "value": 15
-            },
             {
               "dst": null,
               "op": "end_lifetime",

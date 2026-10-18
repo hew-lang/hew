@@ -434,3 +434,24 @@ fn verifier_refuses_a_notification_hook_with_a_scalar_payload() {
         );
     }
 }
+
+#[test]
+fn lifecycle_target_temporaries_end_before_scope_recovery_joins() {
+    lower_source(
+        r"actor Worker { receive fn ping() {} }
+fn main() {
+    let worker = spawn Worker;
+    scope {
+        stop(worker);
+        stopped(worker);
+    } handle failure {
+        match failure {
+            .Fault { message } => println(message),
+            .Deadline { message } => println(message),
+        }
+    };
+    stopped(worker);
+}
+",
+    );
+}

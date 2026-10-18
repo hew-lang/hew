@@ -782,7 +782,7 @@ impl Builder<'_, '_> {
     }
 
     pub(super) fn lower_actor_ask(&mut self, expression: &HirExpr) -> Result<ValueId, String> {
-        let mut retained = self.owned_live.clone();
+        let retained = self.owned_live.clone();
         let value = match self.prepare_actor_request(expression)? {
             ActorRequestPreparation::Diverged(value) => Ok(value),
             ActorRequestPreparation::Ready {
@@ -798,13 +798,26 @@ impl Builder<'_, '_> {
                 inputs,
             ),
         }?;
+        self.destroy_actor_temporaries(retained, Some(value))?;
+        Ok(value)
+    }
+
+    fn destroy_actor_temporaries(
+        &mut self,
+        mut retained: std::collections::BTreeMap<ValueId, ResolvedTy>,
+        result: Option<ValueId>,
+    ) -> Result<(), String> {
         if self.is_open() {
-            if let Some(ty) = self.owned_live.get(&value) {
-                retained.insert(value, ty.clone());
+            if let Some(value) = result {
+                if let Some(ty) = self.owned_live.get(&value) {
+                    retained.insert(value, ty.clone());
+                }
             }
+            // Borrowing the target does not transfer a copied handle. Its
+            // temporary owner ends here, before normal and recovery paths join.
             self.destroy_live_since(&retained)?;
         }
-        Ok(value)
+        Ok(())
     }
 
     pub(super) fn lower_actor_select_start(
@@ -1086,6 +1099,10 @@ impl Builder<'_, '_> {
         }
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "actor boundary keeps source evaluation and ownership transfers together"
+    )]
     pub(super) fn lower_actor_boundary(
         &mut self,
         expression: &HirExpr,
@@ -1098,6 +1115,7 @@ impl Builder<'_, '_> {
                 return self.lower_actor_construction(expression, args);
             }
         }
+        let retained = self.owned_live.clone();
         let (operation, sources, argument_order) = self.actor_arguments(expression)?;
         let signature = self.actor_signature(&operation)?;
         let mut values = Vec::new();
@@ -1193,7 +1211,9 @@ impl Builder<'_, '_> {
             let count = self.lower_supervisor_pool_count(expression, count, &args)?;
             args.push(count);
         }
-        self.emit_actor_call(operation, signature, args)
+        let result = self.emit_actor_call(operation, signature, args)?;
+        self.destroy_actor_temporaries(retained, result)?;
+        Ok(result)
     }
 
     /// Materialize defaults/init/start as one ordinary checked initializer.

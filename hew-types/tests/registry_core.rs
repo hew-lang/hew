@@ -21,8 +21,6 @@ mod descriptor_authority;
 mod dotted_type_member_dispatch;
 #[path = "registry_core/extern_symbol_runtime_descriptor_boundary.rs"]
 mod extern_symbol_runtime_descriptor_boundary;
-#[path = "registry_core/iterator_lazy_wrappers.rs"]
-mod iterator_lazy_wrappers;
 #[path = "registry_core/link_monitor_sigs.rs"]
 mod link_monitor_sigs;
 #[path = "registry_core/m3_surface_pid_trait.rs"]

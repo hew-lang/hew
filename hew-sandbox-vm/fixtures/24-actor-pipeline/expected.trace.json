@@ -25,89 +25,39 @@
       "type": "state.snapshot"
     },
     {
-      "budget_remaining": 999,
-      "id": "actor:root",
-      "id_kind": "actor",
-      "message": "actor.scheduler-step",
-      "phase": "run",
-      "seq": 3,
-      "span": null,
-      "step_count": 1,
-      "type": "step.committed"
-    },
-    {
-      "phase": "replay",
-      "replay_input": {
-        "data": {
-          "actor_id": "actor:root",
-          "family": "actor.scheduler-step",
-          "ready_id": 1
-        },
-        "kind": "user_event"
-      },
-      "seq": 4,
-      "span": null,
-      "type": "replay.input"
-    },
-    {
       "id": "actor:a2",
       "id_kind": "actor",
       "parent_id": "actor:root",
       "phase": "run",
-      "seq": 5,
+      "seq": 3,
       "span": null,
       "type": "runtime.id_allocated"
     },
     {
       "message": "actor.spawn",
       "phase": "run",
-      "seq": 6,
+      "seq": 4,
       "span": null,
       "text": "{\"actor_id\":\"actor:a2\"}",
       "type": "state.snapshot"
     },
     {
-      "budget_remaining": 998,
-      "id": "actor:root",
-      "id_kind": "actor",
-      "message": "actor.scheduler-step",
-      "phase": "run",
-      "seq": 7,
-      "span": null,
-      "step_count": 2,
-      "type": "step.committed"
-    },
-    {
-      "phase": "replay",
-      "replay_input": {
-        "data": {
-          "actor_id": "actor:root",
-          "family": "actor.scheduler-step",
-          "ready_id": 2
-        },
-        "kind": "user_event"
-      },
-      "seq": 8,
-      "span": null,
-      "type": "replay.input"
-    },
-    {
       "message": "actor.ask",
       "phase": "run",
-      "seq": 9,
+      "seq": 5,
       "span": null,
       "text": "{\"actor_id\":\"actor:a2\",\"handler\":\"process\"}",
       "type": "state.snapshot"
     },
     {
-      "budget_remaining": 996,
+      "budget_remaining": 981,
       "id": "actor:a2",
       "id_kind": "actor",
       "message": "actor.scheduler-step",
       "phase": "run",
-      "seq": 10,
+      "seq": 6,
       "span": null,
-      "step_count": 4,
+      "step_count": 19,
       "type": "step.committed"
     },
     {
@@ -116,7 +66,48 @@
         "data": {
           "actor_id": "actor:a2",
           "family": "actor.scheduler-step",
-          "ready_id": 3
+          "ready_id": 1
+        },
+        "kind": "user_event"
+      },
+      "seq": 7,
+      "span": null,
+      "type": "replay.input"
+    },
+    {
+      "message": "actor.receive",
+      "phase": "run",
+      "seq": 8,
+      "span": null,
+      "text": "{\"actor_id\":\"actor:a2\",\"handler\":\"process\"}",
+      "type": "state.snapshot"
+    },
+    {
+      "message": "actor.ask",
+      "phase": "run",
+      "seq": 9,
+      "span": null,
+      "text": "{\"actor_id\":\"actor:a1\",\"handler\":\"collect\"}",
+      "type": "state.snapshot"
+    },
+    {
+      "budget_remaining": 974,
+      "id": "actor:a1",
+      "id_kind": "actor",
+      "message": "actor.scheduler-step",
+      "phase": "run",
+      "seq": 10,
+      "span": null,
+      "step_count": 26,
+      "type": "step.committed"
+    },
+    {
+      "phase": "replay",
+      "replay_input": {
+        "data": {
+          "actor_id": "actor:a1",
+          "family": "actor.scheduler-step",
+          "ready_id": 2
         },
         "kind": "user_event"
       },
@@ -129,53 +120,12 @@
       "phase": "run",
       "seq": 12,
       "span": null,
-      "text": "{\"actor_id\":\"actor:a2\",\"handler\":\"process\"}",
+      "text": "{\"actor_id\":\"actor:a1\",\"handler\":\"collect\"}",
       "type": "state.snapshot"
     },
     {
-      "message": "actor.ask",
       "phase": "run",
       "seq": 13,
-      "span": null,
-      "text": "{\"actor_id\":\"actor:a1\",\"handler\":\"collect\"}",
-      "type": "state.snapshot"
-    },
-    {
-      "budget_remaining": 993,
-      "id": "actor:a1",
-      "id_kind": "actor",
-      "message": "actor.scheduler-step",
-      "phase": "run",
-      "seq": 14,
-      "span": null,
-      "step_count": 7,
-      "type": "step.committed"
-    },
-    {
-      "phase": "replay",
-      "replay_input": {
-        "data": {
-          "actor_id": "actor:a1",
-          "family": "actor.scheduler-step",
-          "ready_id": 4
-        },
-        "kind": "user_event"
-      },
-      "seq": 15,
-      "span": null,
-      "type": "replay.input"
-    },
-    {
-      "message": "actor.receive",
-      "phase": "run",
-      "seq": 16,
-      "span": null,
-      "text": "{\"actor_id\":\"actor:a1\",\"handler\":\"collect\"}",
-      "type": "state.snapshot"
-    },
-    {
-      "phase": "run",
-      "seq": 17,
       "span": null,
       "text": "42\n",
       "type": "io.stdout"
@@ -183,20 +133,20 @@
     {
       "message": "actor.reply",
       "phase": "run",
-      "seq": 18,
+      "seq": 14,
       "span": null,
       "text": "{\"actor_id\":\"actor:a1\",\"value\":null}",
       "type": "state.snapshot"
     },
     {
-      "budget_remaining": 990,
+      "budget_remaining": 970,
       "id": "actor:a2",
       "id_kind": "actor",
       "message": "actor.scheduler-step",
       "phase": "run",
-      "seq": 19,
+      "seq": 15,
       "span": null,
-      "step_count": 10,
+      "step_count": 30,
       "type": "step.committed"
     },
     {
@@ -205,31 +155,31 @@
         "data": {
           "actor_id": "actor:a2",
           "family": "actor.scheduler-step",
-          "ready_id": 5
+          "ready_id": 3
         },
         "kind": "user_event"
       },
-      "seq": 20,
+      "seq": 16,
       "span": null,
       "type": "replay.input"
     },
     {
       "message": "actor.reply",
       "phase": "run",
-      "seq": 21,
+      "seq": 17,
       "span": null,
       "text": "{\"actor_id\":\"actor:a2\",\"value\":null}",
       "type": "state.snapshot"
     },
     {
-      "budget_remaining": 987,
+      "budget_remaining": 965,
       "id": "actor:root",
       "id_kind": "actor",
       "message": "actor.scheduler-step",
       "phase": "run",
-      "seq": 22,
+      "seq": 18,
       "span": null,
-      "step_count": 13,
+      "step_count": 35,
       "type": "step.committed"
     },
     {
@@ -238,18 +188,18 @@
         "data": {
           "actor_id": "actor:root",
           "family": "actor.scheduler-step",
-          "ready_id": 6
+          "ready_id": 4
         },
         "kind": "user_event"
       },
-      "seq": 23,
+      "seq": 19,
       "span": null,
       "type": "replay.input"
     },
     {
       "message": "actor.stop",
       "phase": "run",
-      "seq": 24,
+      "seq": 20,
       "span": null,
       "text": "{\"actor_id\":\"actor:a1\"}",
       "type": "state.snapshot"
@@ -257,7 +207,7 @@
     {
       "message": "actor.stop",
       "phase": "run",
-      "seq": 25,
+      "seq": 21,
       "span": null,
       "text": "{\"actor_id\":\"actor:a2\"}",
       "type": "state.snapshot"
@@ -265,13 +215,13 @@
     {
       "message": "ok",
       "phase": "run",
-      "seq": 26,
+      "seq": 22,
       "span": null,
       "type": "trace.ended"
     }
   ],
   "final_state": {
-    "budget_remaining": 984,
+    "budget_remaining": 959,
     "diagnostics": [],
     "exit_code": 0,
     "globals": [],
@@ -293,7 +243,7 @@
     "stdout": [
       "42\n"
     ],
-    "step_count": 16,
+    "step_count": 41,
     "virtual_clock": {
       "current_ms": 0,
       "epoch_ms": 0,
@@ -301,13 +251,13 @@
     }
   },
   "fixture_id": "actor-pipeline",
-  "hew_version": "0.6.0-rc5",
+  "hew_version": "0.6.1",
   "profile": "sandbox.sandbox-vm-export.v0",
   "replay": {
     "inputs": [
       {
         "data": {
-          "actor_id": "actor:root",
+          "actor_id": "actor:a2",
           "family": "actor.scheduler-step",
           "ready_id": 1
         },
@@ -315,7 +265,7 @@
       },
       {
         "data": {
-          "actor_id": "actor:root",
+          "actor_id": "actor:a1",
           "family": "actor.scheduler-step",
           "ready_id": 2
         },
@@ -331,25 +281,9 @@
       },
       {
         "data": {
-          "actor_id": "actor:a1",
-          "family": "actor.scheduler-step",
-          "ready_id": 4
-        },
-        "kind": "user_event"
-      },
-      {
-        "data": {
-          "actor_id": "actor:a2",
-          "family": "actor.scheduler-step",
-          "ready_id": 5
-        },
-        "kind": "user_event"
-      },
-      {
-        "data": {
           "actor_id": "actor:root",
           "family": "actor.scheduler-step",
-          "ready_id": 6
+          "ready_id": 4
         },
         "kind": "user_event"
       }

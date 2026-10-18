@@ -30,7 +30,7 @@
     }
   ],
   "final_state": {
-    "budget_remaining": 987,
+    "budget_remaining": 986,
     "diagnostics": [],
     "exit_code": 0,
     "globals": [],
@@ -51,7 +51,7 @@
       "9007199254740994\n",
       "matched\n"
     ],
-    "step_count": 13,
+    "step_count": 14,
     "virtual_clock": {
       "current_ms": 0,
       "epoch_ms": 0,
@@ -59,7 +59,7 @@
     }
   },
   "fixture_id": "i64-bigint",
-  "hew_version": "0.6.0-rc5",
+  "hew_version": "0.6.1",
   "profile": "sandbox.sandbox-vm-export.v0",
   "replay": {
     "inputs": [],

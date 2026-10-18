@@ -18,14 +18,14 @@
       "type": "replay.input"
     },
     {
-      "budget_remaining": 998,
+      "budget_remaining": 994,
       "id": "actor:root",
       "id_kind": "actor",
       "message": "actor.scheduler-step",
       "phase": "run",
       "seq": 2,
       "span": null,
-      "step_count": 2,
+      "step_count": 6,
       "type": "step.committed"
     },
     {
@@ -58,7 +58,7 @@
     }
   ],
   "final_state": {
-    "budget_remaining": 936,
+    "budget_remaining": 939,
     "diagnostics": [],
     "exit_code": 0,
     "globals": [],
@@ -78,7 +78,7 @@
     "stdout": [
       "hello Ada\n"
     ],
-    "step_count": 64,
+    "step_count": 61,
     "virtual_clock": {
       "current_ms": 0,
       "epoch_ms": 0,
@@ -86,7 +86,7 @@
     }
   },
   "fixture_id": "replay-stdin",
-  "hew_version": "0.6.0-rc5",
+  "hew_version": "0.6.1",
   "profile": "sandbox.sandbox-vm-export.v0",
   "replay": {
     "inputs": [

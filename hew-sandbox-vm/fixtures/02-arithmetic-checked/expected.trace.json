@@ -23,7 +23,7 @@
     }
   ],
   "final_state": {
-    "budget_remaining": 994,
+    "budget_remaining": 993,
     "diagnostics": [],
     "exit_code": 0,
     "globals": [],
@@ -43,7 +43,7 @@
     "stdout": [
       "42\n"
     ],
-    "step_count": 6,
+    "step_count": 7,
     "virtual_clock": {
       "current_ms": 0,
       "epoch_ms": 0,
@@ -51,7 +51,7 @@
     }
   },
   "fixture_id": "arithmetic-checked",
-  "hew_version": "0.6.0-rc5",
+  "hew_version": "0.6.1",
   "profile": "sandbox.sandbox-vm-export.v0",
   "replay": {
     "inputs": [],

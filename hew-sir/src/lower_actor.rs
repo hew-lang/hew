@@ -782,7 +782,8 @@ impl Builder<'_, '_> {
     }
 
     pub(super) fn lower_actor_ask(&mut self, expression: &HirExpr) -> Result<ValueId, String> {
-        match self.prepare_actor_request(expression)? {
+        let mut retained = self.owned_live.clone();
+        let value = match self.prepare_actor_request(expression)? {
             ActorRequestPreparation::Diverged(value) => Ok(value),
             ActorRequestPreparation::Ready {
                 protocol,
@@ -796,7 +797,14 @@ impl Builder<'_, '_> {
                 false,
                 inputs,
             ),
+        }?;
+        if self.is_open() {
+            if let Some(ty) = self.owned_live.get(&value) {
+                retained.insert(value, ty.clone());
+            }
+            self.destroy_live_since(&retained)?;
         }
+        Ok(value)
     }
 
     pub(super) fn lower_actor_select_start(

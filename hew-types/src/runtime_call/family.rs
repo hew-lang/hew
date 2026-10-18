@@ -292,11 +292,6 @@ pub enum RuntimeCallFamily {
     RegexHandle,
     RegexMatch,
 
-    // Remote `RemotePid<T>` send and ask are not runtime families: the
-    // checker records `MethodCallRewrite::RemoteActorSend` / `RemoteActorAsk`,
-    // HIR lowers them to `HirExprKind::RemoteActorSend` / `RemoteActorAsk`,
-    // and SIR addresses the actor's checked remote member.
-
     // --- Reply channel surface (select{} actor-ask arm) ---------------------
     ReplyChannelCancel,
     ReplyChannelFree,

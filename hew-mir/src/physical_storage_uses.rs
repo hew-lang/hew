@@ -172,16 +172,6 @@ pub(super) fn terminator_storage(term: &PhysicalTerminator, used: &mut BTreeSet<
             used.extend(args.iter().map(source));
             used.insert(*result);
         }
-        PhysicalTerminator::RemoteAsk {
-            target,
-            payload,
-            timeout,
-            result,
-            ..
-        } => {
-            used.extend([*target, *timeout, *result]);
-            used.extend(payload);
-        }
         PhysicalTerminator::TaskSelect {
             sources,
             timeout,

@@ -1132,19 +1132,6 @@ pub enum PhysicalTerminator {
         cancel: PhysicalEdge,
         unwind: PhysicalEdge,
     },
-    /// A `RemotePid` ask: borrowed pid, moved message and copied millisecond
-    /// timeout. The message is encoded and released before the caller parks.
-    RemoteAsk {
-        actor: ActorId,
-        message: u32,
-        target: StorageId,
-        payload: Vec<StorageId>,
-        timeout: StorageId,
-        result: StorageId,
-        normal: PhysicalEdge,
-        cancel: PhysicalEdge,
-        unwind: PhysicalEdge,
-    },
     TaskSelect {
         order: hew_sir::TaskSelectionOrder,
         sources: Vec<PhysicalSelectSource>,

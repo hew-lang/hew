@@ -425,6 +425,12 @@ pub(super) fn semantic_callables(checked: &hew_sir::CheckedModule<'_>) -> BTreeS
                 | hew_sir::SemTerminator::ActorCall {
                     operation:
                         hew_sir::ActorOperation::AwaitStopped(_)
+                        | hew_sir::ActorOperation::LocalObservation {
+                            kind:
+                                hew_sir::LocalObservationKind::Link
+                                | hew_sir::LocalObservationKind::Monitor,
+                            ..
+                        }
                         | hew_sir::ActorOperation::AwaitRestarted(_)
                         | hew_sir::ActorOperation::StreamStart { .. }
                         | hew_sir::ActorOperation::CallStart(_),
@@ -640,11 +646,16 @@ pub(super) fn verify_callables(module: &PhysicalModule) -> Result<(), PhysicalEr
                 | PhysicalTerminator::StreamSend { .. }
                 | PhysicalTerminator::TaskAwait { .. }
                 | PhysicalTerminator::ActorAsk { .. }
-                | PhysicalTerminator::RemoteAsk { .. }
                 | PhysicalTerminator::TaskScopeJoin { .. }
                 | PhysicalTerminator::ActorCall {
                     operation:
                         hew_sir::ActorOperation::AwaitStopped(_)
+                        | hew_sir::ActorOperation::LocalObservation {
+                            kind:
+                                hew_sir::LocalObservationKind::Link
+                                | hew_sir::LocalObservationKind::Monitor,
+                            ..
+                        }
                         | hew_sir::ActorOperation::AwaitRestarted(_)
                         | hew_sir::ActorOperation::StreamStart { .. }
                         | hew_sir::ActorOperation::CallStart(_),

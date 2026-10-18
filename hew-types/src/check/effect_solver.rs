@@ -985,10 +985,7 @@ impl<'a> EffectSolver<'a> {
                     MethodCallRewrite::RecordFnFieldCall { .. }
                     | MethodCallRewrite::BuiltinVecHigherOrder { .. },
                 ) => self.callee_dependencies(key, invocation, application, result),
-                Some(
-                    MethodCallRewrite::RemoteActorAsk { .. }
-                    | MethodCallRewrite::GeneratorNext { .. },
-                ) => result.suspends(&invocation.name),
+                Some(MethodCallRewrite::GeneratorNext { .. }) => result.suspends(&invocation.name),
                 Some(_) => {}
                 None => {
                     if !matches!(

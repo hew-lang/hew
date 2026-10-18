@@ -408,23 +408,6 @@ pub(super) fn scan_expr_for_call_shape(
                 scan_expr_for_call_shape(a, callable, diagnostics);
             }
         }
-        HirExprKind::RemoteActorAsk {
-            receiver,
-            args,
-            timeout_ms,
-            ..
-        } => {
-            scan_expr_for_call_shape(receiver, callable, diagnostics);
-            for argument in args {
-                scan_expr_for_call_shape(argument, callable, diagnostics);
-            }
-            scan_expr_for_call_shape(timeout_ms, callable, diagnostics);
-        }
-
-        HirExprKind::RemoteActorSend { receiver, msg, .. } => {
-            scan_expr_for_call_shape(receiver, callable, diagnostics);
-            scan_expr_for_call_shape(msg, callable, diagnostics);
-        }
         HirExprKind::Block(b) => scan_block_for_call_shape(b, callable, diagnostics),
         HirExprKind::If {
             condition,

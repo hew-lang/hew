@@ -18,10 +18,10 @@ impl LowerCtx {
         let [_, ResolvedTy::Named { head, args, .. }] = args.as_slice() else {
             return None;
         };
-        if *head != hew_types::KnownDecl::SendFailure.head() {
+        if *head != hew_types::KnownDecl::ActorError.head() {
             return None;
         }
-        let [message] = args.as_slice() else {
+        let [_, message] = args.as_slice() else {
             return None;
         };
         Some(message.clone())

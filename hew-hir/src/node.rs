@@ -1385,26 +1385,6 @@ pub enum HirExprKind {
         /// evaluates them; empty when that is parameter order.
         evaluation_order: Vec<usize>,
     },
-    /// Cross-node request/reply dispatch on `RemotePid<T>::ask(msg, timeout_ms)`.
-    ///
-    /// The expression type is the full `Result<T.Reply, ActorError>`; `reply_ty`
-    /// carries the decoded Ok payload type for MIR/codegen reply sizing.
-    RemoteActorAsk {
-        member: hew_types::actor_protocol::RemoteActorMember,
-        service: bool,
-        args: Vec<HirExpr>,
-        evaluation_order: Vec<usize>,
-        receiver: Box<HirExpr>,
-        timeout_ms: Box<HirExpr>,
-        reply_ty: ResolvedTy,
-    },
-    /// Cross-node one-way submission on `RemotePid<T>::send(msg)`. The
-    /// expression type is `Result<(), SendError>`.
-    RemoteActorSend {
-        member: hew_types::actor_protocol::RemoteActorMember,
-        receiver: Box<HirExpr>,
-        msg: Box<HirExpr>,
-    },
     /// Bare `self` inside an actor `receive fn` — the actor's own handle.
     ///
     /// A zero-payload leaf: `Self`, the actor's own type, recorded by the

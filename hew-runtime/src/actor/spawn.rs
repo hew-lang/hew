@@ -1040,6 +1040,10 @@ pub(crate) unsafe fn submit_native_terminal(
     }
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the admission boundary carries the checked request and its wake contract"
+)]
 unsafe fn submit_native_request(
     token: crate::lifetime::local_handles::HewLocalPidId,
     message: i32,

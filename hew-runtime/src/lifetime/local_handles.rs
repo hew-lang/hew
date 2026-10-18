@@ -79,6 +79,10 @@ pub(crate) enum Route {
         runtime_id: RuntimeId,
         control_id: HewLocalPidId,
     },
+    /// Scalar provenance remains after the allocation is reclaimed, so a
+    /// stopped supervisor's declared roles retain distinct identities.
+    #[cfg(not(target_arch = "wasm32"))]
+    RetiredSupervisor { runtime_id: RuntimeId },
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -931,9 +935,15 @@ impl LocalHandles {
                 .supervisor_roles
                 .get(&owner)
                 .map_or(owner, |role| role.root);
-            let control = state.controls.get(&root)?;
-            if control.runtime_id() != runtime_id || !state.routes.contains_key(&root) {
-                return None;
+            match state.routes.get(&root)? {
+                Route::Supervisor {
+                    runtime_id: owner_runtime,
+                    ..
+                }
+                | Route::RetiredSupervisor {
+                    runtime_id: owner_runtime,
+                } if *owner_runtime == runtime_id => {}
+                _ => return None,
             }
             if let Some(token) = state.supervisor_role_tokens.get(&(owner, slot, kind)) {
                 return Some(*token);
@@ -942,10 +952,10 @@ impl LocalHandles {
             state.supervisor_roles.insert(
                 token,
                 SupervisorRole {
+                    kind,
                     root,
                     owner,
                     slot,
-                    kind,
                 },
             );
             state
@@ -963,8 +973,16 @@ impl LocalHandles {
     ) -> Option<(HewLocalPidId, u32, SupervisorRoleKind)> {
         self.state.access(|state| {
             let role = state.supervisor_roles.get(&token)?;
-            let control = state.controls.get(&role.root)?;
-            (control.runtime_id() == runtime_id).then_some((role.owner, role.slot, role.kind))
+            match state.routes.get(&role.root)? {
+                Route::Supervisor {
+                    runtime_id: owner_runtime,
+                    ..
+                }
+                | Route::RetiredSupervisor {
+                    runtime_id: owner_runtime,
+                } if *owner_runtime == runtime_id => Some((role.owner, role.slot, role.kind)),
+                _ => None,
+            }
         })
     }
 
@@ -989,7 +1007,12 @@ impl LocalHandles {
                     if *runtime_id == control.runtime_id()
                         && *control_id == control.direct_id()
             ) {
-                state.routes.remove(&control.direct_id());
+                state.routes.insert(
+                    control.direct_id(),
+                    Route::RetiredSupervisor {
+                        runtime_id: control.runtime_id(),
+                    },
+                );
             }
             if state.supervisor_tokens.get(&control.supervisor_addr) == Some(&control.direct_id()) {
                 state.supervisor_tokens.remove(&control.supervisor_addr);
@@ -1006,12 +1029,8 @@ impl LocalHandles {
                 .is_some_and(|stored| std::ptr::eq(stored.as_ref(), control));
             if matches {
                 state.controls.remove(&control.direct_id());
-                state
-                    .supervisor_roles
-                    .retain(|_, role| role.root != control.direct_id());
-                state
-                    .supervisor_role_tokens
-                    .retain(|_, token| state.supervisor_roles.contains_key(token));
+                // Canonical role keys retain scalar identity until this runtime
+                // ends. They own no supervisor allocation or completion state.
             }
         });
     }
@@ -1038,7 +1057,13 @@ impl LocalHandles {
                 .values()
                 .filter(|route| matches!(route, Route::Supervisor { .. }))
                 .count()
-                + state.supervisor_roles.len();
+                + state
+                    .supervisor_roles
+                    .values()
+                    .filter(|role| {
+                        matches!(state.routes.get(&role.root), Some(Route::Supervisor { .. }))
+                    })
+                    .count();
             (routes, state.controls.len())
         })
     }

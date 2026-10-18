@@ -495,23 +495,6 @@ fn walk_expr(
         HirExprKind::AwaitTask { operand: child, .. } => {
             walk_expr(child, subst, residual_domain, disc);
         }
-        HirExprKind::RemoteActorAsk {
-            receiver,
-            args,
-            timeout_ms,
-            ..
-        } => {
-            walk_expr(receiver, subst, residual_domain, disc);
-            for argument in args {
-                walk_expr(argument, subst, residual_domain, disc);
-            }
-            walk_expr(timeout_ms, subst, residual_domain, disc);
-        }
-
-        HirExprKind::RemoteActorSend { receiver, msg, .. } => {
-            walk_expr(receiver, subst, residual_domain, disc);
-            walk_expr(msg, subst, residual_domain, disc);
-        }
         HirExprKind::Binary { left, right, .. } | HirExprKind::IdentityCompare { left, right } => {
             walk_expr(left, subst, residual_domain, disc);
             walk_expr(right, subst, residual_domain, disc);

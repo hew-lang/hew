@@ -111,12 +111,6 @@ pub enum RemoteActorInterface {
     Service,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RemoteActorMember {
-    ActorMsg,
-    Declared(crate::DefId),
-}
-
 /// The receiver arguments of a checked `ActorMsg` implementation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ActorRemoteReceiver {

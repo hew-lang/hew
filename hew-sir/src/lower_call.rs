@@ -1786,35 +1786,6 @@ impl Builder<'_, '_> {
             }
             _ => None,
         };
-        let remote = match family {
-            hew_types::RuntimeCallFamily::LinkRemote => Some(crate::RemoteObservationKind::Link),
-            hew_types::RuntimeCallFamily::NodeMonitor => {
-                Some(crate::RemoteObservationKind::Monitor)
-            }
-            _ => None,
-        };
-        if let Some(kind) = remote {
-            let operation = crate::ActorOperation::RemoteObservation {
-                kind,
-                params: args.iter().map(|arg| self.ty(&arg.ty)).collect(),
-                result: self.ty(&expr.ty),
-            };
-            let signature = self.actor_signature(&operation)?;
-            self.service.require_type_facts(&signature.return_ty)?;
-            let mut values = vec![None; args.len()];
-            for &index in &order {
-                let value = self.lower_expr(args[index])?;
-                if !self.is_open() {
-                    return Ok(Some(value));
-                }
-                values[index] = Some(value);
-            }
-            return self.emit_actor_call(
-                operation,
-                signature,
-                values.into_iter().flatten().collect(),
-            );
-        }
         if let Some(kind) = observation {
             let [target] = args else {
                 return Err("local observation takes one target".into());
@@ -1826,7 +1797,9 @@ impl Builder<'_, '_> {
             };
             let signature = self.actor_signature(&operation)?;
             self.service.require_type_facts(&signature.return_ty)?;
-            let value = self.lower_expr(target)?;
+            let value = self
+                .lower_read_operand(target, "actor observation target")?
+                .value;
             return self.emit_actor_call(operation, signature, vec![value]);
         }
 

@@ -93,25 +93,6 @@ impl Checker {
             vec![Ty::Var(TypeVar::fresh())],
             Ty::result(Ty::monitor_ref(), Ty::link_error()),
         );
-        // Cross-node link: `link_remote(RemotePid<T>, PartitionPolicy)`
-        // links a local actor to a remote actor so the remote's death fires the
-        // per-link `PartitionPolicy` (`CrashLinked` crashes the local actor). The
-        // immediate return is `Result<(), LinkError>` (registration success — the
-        // EXIT arrives async). The `PartitionPolicy` enum is declared in
-        // `std/link_monitor.hew`; the call-site checker validates the precise arg
-        // type. The local `link(<actor handle>)` form keeps its 1-arg shape; a
-        // `link(RemotePid)` is rejected with a "use link_remote" diagnostic
-        // (`calls.rs`), so the cross-node link is never a silent type mismatch.
-        let link_remote_t = TypeVar::fresh();
-        self.register_builtin_fn(
-            "link_remote",
-            vec![
-                Ty::remote_pid(Ty::Var(link_remote_t)),
-                crate::actor_delivery::nominal(crate::KnownDecl::PartitionPolicy, Vec::new()),
-            ],
-            Ty::result(Ty::Unit, Ty::link_error()),
-        );
-
         // Supervisor child access
         self.register_builtin_fn(
             "supervisor_child",
@@ -223,19 +204,12 @@ impl Checker {
             vec![Ty::String, Ty::Var(TypeVar::fresh())],
             Ty::I32,
         );
-        // `Node::lookup<T>(name: String) -> Result<RemotePid<T>, LookupError>`.
-        // The runtime extern returns a packed `u64` pid (0 == not found); the
-        // codegen branch lowers this into a `Result` construction inline.
-        self.register_builtin_fn_with_bounds(
+        // Discovery returns identity metadata, never callable actor authority.
+        self.register_builtin_fn(
             "Node::lookup",
-            vec!["T".to_string()],
-            None,
             vec![Ty::String],
-            &Ty::result(
-                Ty::remote_pid(Ty::Named {
-                    head: crate::TypeHead::Unresolved(Symbol::intern("T")),
-                    args: vec![],
-                }),
+            Ty::result(
+                Ty::builtin_named(BuiltinType::Location, Vec::new()),
                 crate::builtin_enums::monomorphic_builtin_enum_ty("LookupError")
                     .expect("generated builtin enum catalog must contain LookupError"),
             ),

@@ -2184,8 +2184,7 @@ impl<'a> Flow<'a> {
                                 | crate::SuspendKind::ServiceAcquire { .. }
                                 // An ask reads its target to address the actor
                                 // and retains nothing past the reply.
-                                | crate::SuspendKind::Ask { .. }
-                                | crate::SuspendKind::RemoteAsk { .. },
+                                | crate::SuspendKind::Ask { .. },
                             ..
                         }
                 ) && matches!(

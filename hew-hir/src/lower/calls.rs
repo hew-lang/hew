@@ -840,11 +840,7 @@ impl LowerCtx {
         if let Expr::FieldAccess { object, field } = &function.0 {
             let key = self.mk_key(&span);
             if self.method_call_rewrites.get(&key).is_some_and(|rewrite| {
-                matches!(
-                    rewrite,
-                    MethodCallRewrite::RewriteToFunction { .. }
-                        | MethodCallRewrite::RemoteActorAsk { .. }
-                )
+                matches!(rewrite, MethodCallRewrite::RewriteToFunction { .. })
             }) {
                 return Ok(self.lower_method_call(object, field.0.name.as_str(), args, span, site));
             }

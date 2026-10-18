@@ -260,21 +260,6 @@ const SYNTHETIC_RESULT_ITEM: ItemId = ItemId(u32::MAX - 2);
 /// path as `Option` / `Result` so `Err(LookupError::NotFound)` match arms
 /// resolve via `machine_ctor_registry`.
 const SYNTHETIC_LOOKUP_ERROR_ITEM: ItemId = ItemId(u32::MAX - 1000);
-/// The status codes a send folds into `SendError`: `named` pairs one runtime
-/// status with its error; every other nonzero status is `otherwise`.
-#[derive(Clone, Copy)]
-struct SendStatusCodes {
-    named: (i128, &'static str),
-    otherwise: &'static str,
-}
-
-/// A node reports `HEW_ERR_STALE_REF` for a superseded pid; every other
-/// failure leaves the peer unreachable.
-const REMOTE_SEND_STATUS: SendStatusCodes = SendStatusCodes {
-    named: (-16, "StaleRef"),
-    otherwise: "Partition",
-};
-
 /// `SendError` is also declared in `std/builtins.hew` and likewise invisible
 /// to the user-enum walk. Surface it so `match e { SendError::Full
 /// => ... }` arms inside `Result<(), SendError>` matches resolve via

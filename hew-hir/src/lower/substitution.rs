@@ -357,23 +357,6 @@ pub(super) fn collect_call_sites_in_expr(
         HirExprKind::AwaitTask { operand: child, .. } => {
             collect_call_sites_in_expr(child, out, trait_out);
         }
-        HirExprKind::RemoteActorAsk {
-            receiver,
-            args,
-            timeout_ms,
-            ..
-        } => {
-            collect_call_sites_in_expr(receiver, out, trait_out);
-            for argument in args {
-                collect_call_sites_in_expr(argument, out, trait_out);
-            }
-            collect_call_sites_in_expr(timeout_ms, out, trait_out);
-        }
-
-        HirExprKind::RemoteActorSend { receiver, msg, .. } => {
-            collect_call_sites_in_expr(receiver, out, trait_out);
-            collect_call_sites_in_expr(msg, out, trait_out);
-        }
         HirExprKind::CallTraitMethodStatic {
             receiver,
             trait_args,

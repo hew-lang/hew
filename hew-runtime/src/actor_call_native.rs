@@ -119,6 +119,7 @@ impl HewActorCall {
     /// Expiry prevents fresh admission; an already published reply retains its
     /// terminal outcome even when the caller resumes after the deadline.
     unsafe fn poll(&mut self) -> i32 {
+        use crate::mailbox::SendOutcome;
         #[cfg(not(target_arch = "wasm32"))]
         if let CallRoute::Imported { operation, .. } = &self.route {
             return match self.state {
@@ -149,7 +150,6 @@ impl HewActorCall {
                     .map_or(Err(AskError::SendFailed), |admission| unsafe {
                         poll_request_admission(admission)
                     });
-                use crate::mailbox::SendOutcome;
                 let discarded = match result {
                     Ok(SendOutcome::Failed) => match self.kind {
                         RequestKind::CallWait | RequestKind::SendWait => {
@@ -191,6 +191,7 @@ impl HewActorCall {
         // SAFETY: this operation owns the only receiving reference and knows
         // the exact reply size. Readiness does not take any payload.
         let channel = self.local().channel;
+        // SAFETY: this operation owns the live channel with its checked reply size.
         let status = unsafe { hew_reply_channel_status_native(channel, self.expected_size) };
         if status != -1 {
             self.state = CallState::Ready(RequestOutcome::Completed(status));
@@ -498,6 +499,7 @@ pub unsafe extern "C" fn hew_actor_call_resume(
 
 #[allow(
     clippy::too_many_arguments,
+    clippy::too_many_lines,
     reason = "the checked request and reply carry one complete admission contract"
 )]
 pub(crate) unsafe fn actor_call_resume(
@@ -555,8 +557,8 @@ pub(crate) unsafe fn actor_call_resume(
     }
     #[cfg(target_arch = "wasm32")]
     let _ = dispatch;
-    // SAFETY: registration precedes any request publication.
     let channel = if kind.completion_policy().is_some() {
+        // SAFETY: registration precedes any request publication.
         unsafe { hew_reply_channel_new_native(waker, drop_reply, reply_release) }
     } else {
         ptr::null_mut()
@@ -653,11 +655,11 @@ pub unsafe extern "C" fn hew_actor_submit_new(
     dispatch: *const c_void,
     owns_target: bool,
 ) -> *mut HewActorCall {
-    let kind = match RequestKind::from_wire(kind) {
-        Some(
-            kind @ (RequestKind::SendWait | RequestKind::SendReject | RequestKind::SendDropNewest),
-        ) => kind,
-        _ => std::process::abort(),
+    let Some(
+        kind @ (RequestKind::SendWait | RequestKind::SendReject | RequestKind::SendDropNewest),
+    ) = RequestKind::from_wire(kind)
+    else {
+        std::process::abort();
     };
     // SAFETY: sealing only allocates the envelope; the fields still belong to
     // the caller on failure and the shallow wrapper then has no ownership.
@@ -690,6 +692,8 @@ pub unsafe extern "C" fn hew_actor_submit_new(
 
 /// Take admission evidence. Only definite refusal returns ownership to the
 /// original source message; uncertainty remains consumed by this operation.
+/// # Panics
+/// Panics if a refused request has lost its owned envelope.
 /// # Safety
 /// The call is ready and unique; both outputs are writable boolean slots.
 #[no_mangle]

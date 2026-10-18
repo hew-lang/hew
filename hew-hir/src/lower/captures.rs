@@ -138,23 +138,6 @@ pub(super) fn collect_captures_walk(
                 collect_captures_walk(operand, param_ids, seen, captures, self_id);
             }
         }
-        HirExprKind::RemoteActorAsk {
-            receiver,
-            args,
-            timeout_ms,
-            ..
-        } => {
-            collect_captures_walk(receiver, param_ids, seen, captures, self_id);
-            for argument in args {
-                collect_captures_walk(argument, param_ids, seen, captures, self_id);
-            }
-            collect_captures_walk(timeout_ms, param_ids, seen, captures, self_id);
-        }
-
-        HirExprKind::RemoteActorSend { receiver, msg, .. } => {
-            collect_captures_walk(receiver, param_ids, seen, captures, self_id);
-            collect_captures_walk(msg, param_ids, seen, captures, self_id);
-        }
         HirExprKind::Block(block)
         | HirExprKind::Scope { body: block, .. }
         | HirExprKind::ForkBlock { body: block, .. }
@@ -401,23 +384,6 @@ pub(super) fn collect_general_closure_captures_walk(
             for operand in receiver.receiver().into_iter().chain(args) {
                 collect_general_closure_captures_walk(operand, outer_bindings, seen, captures);
             }
-        }
-        HirExprKind::RemoteActorAsk {
-            receiver,
-            args,
-            timeout_ms,
-            ..
-        } => {
-            collect_general_closure_captures_walk(receiver, outer_bindings, seen, captures);
-            for argument in args {
-                collect_general_closure_captures_walk(argument, outer_bindings, seen, captures);
-            }
-            collect_general_closure_captures_walk(timeout_ms, outer_bindings, seen, captures);
-        }
-
-        HirExprKind::RemoteActorSend { receiver, msg, .. } => {
-            collect_general_closure_captures_walk(receiver, outer_bindings, seen, captures);
-            collect_general_closure_captures_walk(msg, outer_bindings, seen, captures);
         }
         HirExprKind::Block(block)
         | HirExprKind::Scope { body: block, .. }

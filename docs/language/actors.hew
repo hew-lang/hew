@@ -30,11 +30,12 @@
 //! refuses value-returning handlers. `policy(target, on_full: .Wait)` or the `.Reject` policy
 //! controls admission for completion calls; a bare handle waits for room.
 //!
-//! Current completion errors are `ActorError<E>`. The decided request-recovery
-//! contract adds an inferred request parameter and `Rejected(SendFailure<Req>)`.
-//! Typed `retry()` and `to(target)` recovery is pending; this build's reason-only
-//! rejection does not return a consumed request. Do not treat uncertain completion
-//! as permission to retry.
+//! Completion errors are `ActorError<E, Req>`. A rejecting completion view or
+//! mailbox submission returns `Rejected(SendFailure<Req>)` only when the request
+//! was definitely not admitted. Its message supports `retry()` and `to(target)`.
+//! Other errors can leave remote admission or completion uncertain and do not
+//! return a request to retry. Remote mailbox success acknowledges destination
+//! admission, not handler completion.
 //!
 //! A `fails` handler returns `Failed(E)` to a completion caller. When submitted
 //! through a mailbox view, its error faults the actor with its Display text.
@@ -43,3 +44,10 @@
 //! cleanup. `terminate(actor)` requests cancellation. Inside an
 //! actor, `self` is its handle and `self.field` accesses state. An actor's
 //! handle has that actor's type `T`.
+//!
+//! Supervised children and admitted remote actors also have the actor's own type.
+//! A supervised reference follows its stable role through restarts. `is` compares
+//! role identity for roles and exact incarnation identity for direct or imported
+//! references; a role differs from its current occupant. `restarted(actor)` waits
+//! only for an already pending role replacement to settle, returning immediately
+//! for direct and imported references without asserting liveness.

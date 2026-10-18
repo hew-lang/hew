@@ -6034,43 +6034,6 @@ fn verify_terminator_shape(
                                 && matches!(result, crate::CallResult::Value(value) if value.ty == signature.return_ty)
                         })
                 }
-                crate::SuspendKind::RemoteAsk { actor, message } => callable_context
-                    .and_then(|context| context.actors.get(actor.0 as usize))
-                    .filter(|descriptor| descriptor.id == *actor)
-                    .and_then(|descriptor| {
-                        let target = types.get(&inputs.first()?.operand.value)?;
-                        let crate::CallResult::Value(value) = result else {
-                            return None;
-                        };
-                        descriptor
-                            .remote_signature(
-                                variants.defs,
-                                *message,
-                                target,
-                                value.ty.clone(),
-                                true,
-                            )
-                            .ok()
-                    })
-                    .is_some_and(|signature| {
-                        // The pid is read to address the peer, the message
-                        // transfers into its encoding and the timeout is a copy.
-                        resumes.len() == 1
-                            && inputs.len() == signature.params.len()
-                            && inputs.iter().zip(&signature.params).enumerate().all(
-                                |(index, (input, parameter))| {
-                                    let decision = if index == 0 {
-                                        crate::BoundaryDecision::Borrow
-                                    } else if index + 1 == inputs.len() {
-                                        crate::BoundaryDecision::Copy
-                                    } else {
-                                        crate::BoundaryDecision::Move
-                                    };
-                                    input.decision == decision
-                                        && types.get(&input.operand.value) == Some(&parameter.ty)
-                                },
-                            )
-                    }),
                 crate::SuspendKind::ServiceAcquire { actor, export } => {
                     let operation = if *export {
                         hew_types::runtime_call::ServiceOp::Export
@@ -6082,13 +6045,17 @@ fn verify_terminator_shape(
                         resumes.len() == 1
                             && descriptor.id == *actor
                             && !descriptor.handlers.is_empty()
-                            && descriptor.handlers.iter().all(|handler| handler.codec.is_some())
+                            && descriptor.handlers.iter().any(|handler| handler.codec.is_some())
                             && inputs.iter().all(|input| input.decision == crate::BoundaryDecision::Borrow)
                             && matches!(result, crate::CallResult::Value(value)
                                 if argument_types.is_some_and(|arguments| {
                                     operation.row().contract.expect("service contract").matches_signature(variants.defs, &arguments, &value.ty)
                                         && matches!(&value.ty, ResolvedTy::Named { args, .. }
-                                            if matches!(args.first(), Some(ResolvedTy::Named { args, .. }) if args.as_slice() == [descriptor.handle_ty.clone()]))
+                                            if if *export {
+                                                matches!(args.first(), Some(ResolvedTy::Named { args, .. }) if args.as_slice() == [descriptor.handle_ty.clone()])
+                                            } else {
+                                                args.first() == Some(&descriptor.handle_ty)
+                                            })
                                         && (!*export || arguments.get(1) == Some(&descriptor.handle_ty))
                                 }) && OwnKind::of_ty(&value.ty, variants.facts) == Ok(value.own))
                     })

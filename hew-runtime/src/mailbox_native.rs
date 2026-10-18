@@ -13,7 +13,7 @@ pub struct HewNativeSend {
     token: crate::lifetime::local_handles::HewLocalPidId,
     message: i32,
     envelope: *mut super::HewMsgEnvelope,
-    _waker: Arc<OwnedWaker>,
+    waker: Arc<OwnedWaker>,
 }
 
 impl Drop for HewNativeSend {
@@ -73,7 +73,7 @@ pub unsafe extern "C" fn hew_actor_send_wait_new(
         token,
         message,
         envelope,
-        _waker: waker,
+        waker: waker,
     }))
 }
 
@@ -89,7 +89,7 @@ pub struct HewNativeAsk {
     message: i32,
     envelope: *mut super::HewMsgEnvelope,
     channel: *mut std::ffi::c_void,
-    _waker: Arc<OwnedWaker>,
+    waker: Arc<OwnedWaker>,
 }
 
 impl Drop for HewNativeAsk {
@@ -188,7 +188,7 @@ pub(crate) unsafe fn poll_request_admission(
             wait.channel,
             wait.obligated,
             wait.caller,
-            Some(&wait._waker),
+            Some(&wait.waker),
         )
     };
     if matches!(
@@ -321,7 +321,7 @@ pub(crate) unsafe fn request_wait_resume(
         message,
         envelope,
         channel,
-        _waker: waker,
+        waker: waker,
     }))
 }
 
@@ -346,7 +346,7 @@ pub unsafe extern "C" fn hew_actor_send_wait_poll(wait: *mut HewNativeSend) -> i
             std::ptr::null_mut(),
             wait.obligated,
             wait.caller,
-            Some(&wait._waker),
+            Some(&wait.waker),
         )
     };
     let status = match crate::actor_native::submission_status(outcome) {

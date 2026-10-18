@@ -5,19 +5,6 @@ use super::*;
 impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
     pub(super) fn emit_terminator(&self, block: &PhysicalBlock) -> CodegenResult<()> {
         match &block.terminator {
-            PhysicalTerminator::RemoteAsk {
-                actor,
-                message,
-                target,
-                payload,
-                timeout,
-                result,
-                normal,
-                cancel,
-                unwind,
-            } => self.emit_remote_ask(
-                *actor, *message, *target, payload, *timeout, *result, normal, cancel, unwind,
-            ),
             PhysicalTerminator::ActorAsk {
                 actor,
                 message,

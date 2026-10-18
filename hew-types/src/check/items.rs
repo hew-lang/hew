@@ -2495,18 +2495,26 @@ impl Checker {
     pub(super) fn validate_every_attribute(&mut self, rf: &ReceiveFnDecl) {
         let every_attrs: Vec<_> = rf.attributes.iter().filter(|a| a.name == "every").collect();
 
-        if every_attrs.is_empty() {
-            // Check for unknown attributes on receive fns.
-            for attr in &rf.attributes {
+        for attr in &rf.attributes {
+            let message = if attr.name == "wire" && !attr.args.is_empty() {
+                Some("#[wire] on a receive fn takes no arguments".to_string())
+            } else if !matches!(attr.name.as_str(), "wire" | "every") {
+                Some(format!(
+                    "unknown attribute `#[{}]` on receive fn `{}`",
+                    attr.name, rf.name
+                ))
+            } else {
+                None
+            };
+            if let Some(message) = message {
                 self.errors.push(TypeError::new(
                     TypeErrorKind::InvalidOperation,
                     attr.span.clone(),
-                    format!(
-                        "unknown attribute `#[{}]` on receive fn `{}`",
-                        attr.name, rf.name
-                    ),
+                    message,
                 ));
             }
+        }
+        if every_attrs.is_empty() {
             return;
         }
 

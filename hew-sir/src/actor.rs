@@ -338,66 +338,6 @@ impl SemActor {
         })
     }
 
-    /// A `RemotePid` send or ask to the checker-selected remote member: the
-    /// borrowed pid, the moved message and, for an ask, its millisecond
-    /// timeout. An ask returns its checked `Result`; a send answers with the
-    /// node's submission status. The request crosses the wire as bytes, so
-    /// no call is sealed.
-    ///
-    /// # Errors
-    /// Refuses a member without codecs, another actor's pid or another result.
-    pub fn remote_signature(
-        &self,
-        defs: &hew_types::DefTable,
-        message: u32,
-        target: &ResolvedTy,
-        result_ty: ResolvedTy,
-        ask: bool,
-    ) -> Result<crate::SemSignature, String> {
-        let handler = self
-            .handlers
-            .iter()
-            .find(|handler| handler.message_id == message && handler.codec.is_some())
-            .ok_or("remote call has no portable receive member")?;
-        let addressed = matches!(target, ResolvedTy::Named { head, args, .. }
-            if *head == hew_types::TypeHead::Builtin(hew_types::BuiltinType::RemotePid)
-                && args.as_slice() == std::slice::from_ref(&self.handle_ty));
-        if !addressed {
-            return Err("remote call target differs from its exact actor interface".into());
-        }
-        let param = |ty: &ResolvedTy, passing| crate::SemAbiParam {
-            ty: ty.clone(),
-            passing,
-            caller_visible_projection: false,
-        };
-        let mut signature = if ask {
-            self.ask_signature(defs, message, &self.handle_ty, result_ty, false)?
-        } else {
-            if result_ty != ResolvedTy::I32 {
-                return Err("remote send answers with its i32 submission status".into());
-            }
-            let mut params = vec![param(target, crate::SemParamPassing::Borrow)];
-            params.extend(
-                handler
-                    .params
-                    .iter()
-                    .map(|ty| param(ty, crate::SemParamPassing::Consume)),
-            );
-            crate::SemSignature {
-                failure_domain: hew_types::CallableFailureDomain::HewFault,
-                params,
-                return_ty: result_ty,
-            }
-        };
-        signature.params[0].ty = target.clone();
-        if ask {
-            signature
-                .params
-                .push(param(&ResolvedTy::U64, crate::SemParamPassing::ReadOnly));
-        }
-        Ok(signature)
-    }
-
     /// Check the handle spelling this descriptor answers to.
     fn validate_handle(&self) -> Result<(), String> {
         // A named actor is addressed by its own type. An anonymous actor has no
@@ -811,64 +751,9 @@ impl LocalObservationKind {
             failure_domain: hew_types::CallableFailureDomain::HewFault,
             params: vec![crate::SemAbiParam {
                 ty: target.clone(),
-                passing: crate::SemParamPassing::Consume,
+                passing: crate::SemParamPassing::Borrow,
                 caller_visible_projection: false,
             }],
-            return_ty: result.clone(),
-        })
-    }
-}
-
-/// A cross-node link or monitor addressed by a borrowed `RemotePid`. The
-/// node reports failures in the result's error vocabulary.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RemoteObservationKind {
-    /// `link_remote(pid, policy) -> Result<(), LinkError>`.
-    Link,
-    /// `monitor(pid) -> Result<MonitorRef, LinkError>`.
-    Monitor,
-}
-
-impl RemoteObservationKind {
-    fn signature(
-        self,
-        params: &[ResolvedTy],
-        result: &ResolvedTy,
-    ) -> Result<crate::SemSignature, String> {
-        let valid = match (self, params) {
-            (Self::Link, [target, _]) | (Self::Monitor, [target]) => {
-                target.is_builtin(hew_types::BuiltinType::RemotePid)
-                    && result_parts(result).is_some_and(|[ok, error]| match self {
-                        Self::Link => {
-                            *ok == ResolvedTy::Unit
-                                && error.is_builtin(hew_types::BuiltinType::LinkError)
-                        }
-                        Self::Monitor => {
-                            ok.is_builtin(hew_types::BuiltinType::MonitorRef)
-                                && error.is_builtin(hew_types::BuiltinType::LinkError)
-                        }
-                    })
-            }
-            _ => false,
-        };
-        if !valid {
-            return Err("remote observation changes its checked signature".into());
-        }
-        Ok(crate::SemSignature {
-            failure_domain: hew_types::CallableFailureDomain::HewFault,
-            params: params
-                .iter()
-                .enumerate()
-                .map(|(index, ty)| crate::SemAbiParam {
-                    ty: ty.clone(),
-                    passing: if index == 0 {
-                        crate::SemParamPassing::Borrow
-                    } else {
-                        crate::SemParamPassing::Consume
-                    },
-                    caller_visible_projection: false,
-                })
-                .collect(),
             return_ty: result.clone(),
         })
     }
@@ -950,18 +835,6 @@ pub enum ActorOperation {
         policy: hew_types::actor_delivery::SendPolicy,
         message_ty: ResolvedTy,
         result_ty: ResolvedTy,
-    },
-    RemoteObservation {
-        kind: RemoteObservationKind,
-        params: Vec<ResolvedTy>,
-        result: ResolvedTy,
-    },
-    /// Encode one message for the actor's remote member and submit it to the
-    /// peer addressed by a borrowed `RemotePid`.
-    RemoteSend {
-        actor: ActorId,
-        message: u32,
-        target: ResolvedTy,
     },
     /// Construct the supervisor from its config, spawn every declared child
     /// through its spawn callable and start supervising. The result is the
@@ -1152,14 +1025,6 @@ impl ActorOperation {
         {
             return kind.signature(target, result);
         }
-        if let Self::RemoteObservation {
-            kind,
-            params,
-            result,
-        } = self
-        {
-            return kind.signature(params, result);
-        }
         let consume = |types: Vec<ResolvedTy>, return_ty| crate::SemSignature {
             failure_domain: hew_types::CallableFailureDomain::HewFault,
             params: types
@@ -1175,7 +1040,6 @@ impl ActorOperation {
         let id = match self {
             Self::Identity { .. }
             | Self::LocalObservation { .. }
-            | Self::RemoteObservation { .. }
             | Self::CallStart(_)
             | Self::CallTake(_)
             | Self::Stop(_)
@@ -1189,17 +1053,6 @@ impl ActorOperation {
             | Self::StreamStart { actor: id, .. }
             | Self::Submit { actor: id, .. }
             | Self::TimerSchedule { actor: id, .. } => *id,
-            Self::RemoteSend {
-                actor,
-                message,
-                target,
-            } => {
-                let actor = actors
-                    .get(actor.0 as usize)
-                    .filter(|candidate| candidate.id == *actor)
-                    .ok_or("unknown remote actor identity")?;
-                return actor.remote_signature(defs, *message, target, ResolvedTy::I32, false);
-            }
             Self::SupervisorSpawn(_)
             | Self::SupervisorChild { .. }
             | Self::SupervisorPoolView { .. } => {
@@ -1213,14 +1066,12 @@ impl ActorOperation {
         let (mut types, return_ty) = match self {
             Self::Identity { .. }
             | Self::LocalObservation { .. }
-            | Self::RemoteObservation { .. }
             | Self::CallStart(_)
             | Self::CallTake(_)
             | Self::Stop(_)
             | Self::Terminate(_)
             | Self::AwaitStopped(_)
-            | Self::AwaitRestarted(_)
-            | Self::RemoteSend { .. } => {
+            | Self::AwaitRestarted(_) => {
                 unreachable!("special boundary returned above")
             }
             Self::StreamStart {

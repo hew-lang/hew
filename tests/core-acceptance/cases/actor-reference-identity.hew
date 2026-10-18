@@ -1,7 +1,6 @@
 actor Worker {
     receive fn ping() {}
-    receive fn instance() -> Worker { this }
-    receive fn crash() { panic("restart identity"); }
+    receive fn instance() -> Worker { self }
 }
 
 supervisor Inner {
@@ -38,7 +37,8 @@ fn main() {
     let occupant = role.instance().expect("current occupant");
     assert(!(role is occupant));
     assert(!(occupant is role));
-    let _ = role.crash();
+    stop(role);
+    stopped(occupant);
     restarted(role);
     assert(role is group.first);
     let replacement = role.instance().expect("replacement occupant");
@@ -57,6 +57,9 @@ fn main() {
     stopped(second);
     stop(group);
     stopped(group);
+    assert(role is group.first);
+    assert(!(group.first is group.second));
+    assert(nested is group.inner);
     stop(other);
     stopped(other);
     println("identity preserved");

@@ -124,8 +124,10 @@ actor body is `Self` which is that actor, and a supervisor is addressed by its
 own name the same way. There is no separate handle type to write and no second
 surface handle for a remote actor: location is a runtime fact. An anonymous
 actor's handle mirrors an `fn` type and is written `actor(M) -> R`.
-`ChildRef<A>` stays distinct because it names a supervised *role* rather than
-an incarnation, and re-resolves on every call (§5.6).
+A supervised reference also has type `A`; its runtime identity names a stable
+role and re-resolves on every use (§5.6). Direct and imported references name an
+exact incarnation. `is` compares the carried identity, so a role differs from
+its occupant and remains equal to its aliases across replacement.
 
 **Completion calls.** A call on a `receive fn` through an actor handle waits
 for the handler to finish, exactly as a call on a function does.
@@ -380,7 +382,7 @@ let _ = counter.increment(10);
 **Message payloads (normative):**
 
 A `receive fn` parameter is a **value** (snapshotted on send, §3.4.4), a **pid
-handle** (`Pid`, `ChildRef` — copied, both sides address the
+handle** (`A` — copied, both sides address the
 one actor), or an **opaque or resource handle** on a local send. A handle
 payload is a move: the send consumes it and the sender's binding is dead
 afterwards (`E_USE_AFTER_SEND`, §3.9.6). Such a handle may also be an actor's
@@ -1609,7 +1611,7 @@ value closes.
 | ordinary data | scalars, strings, bytes, cloneable records/enums and collections | an independent logical value | snapshot when sendable | automatic recursive release |
 | affine composite | an aggregate containing a non-copyable owner, or `dyn Trait` without a clone contract | transfers ownership | requires a valid transfer contract | automatic release of owned members |
 | linear value | a type marked `#[linear]` | transfers ownership | transfers ownership when sendable | must be explicitly consumed |
-| pid handle | `Pid`, `ChildRef` | names the same actor or role | copies the identity | use `stop` to request actor termination |
+| actor reference | the actor's own type | names the same actor or role | copies the identity | use `stop` to request actor termination |
 | counted handle | `Rc`, `Weak`, `actor(M) -> R` | retains the same identity | subject to handle-specific sendability rules | releases a reference |
 | opaque/resource handle | pipe halves, sockets, user `#[resource]` types | transfers ownership | local transfer where admitted; no wire serialization | declared consuming close |
 | callable | closure | copies independent state or transfers affine captures, according to its capabilities | subject to callable boundary restrictions | releases captures |
@@ -3739,7 +3741,7 @@ or ask site.
 
 A generic supervisor's child specs name the instantiated actor, so a restarted
 child has the same instantiation and `workers.worker` has type
-`ChildRef<Worker<Job>>`. Construction arguments can infer the supervisor's type
+`Worker<Job>`. Construction arguments can infer the supervisor's type
 arguments and the type arguments of its children. Each instance retains its own
 typed configuration and restart budget:
 
@@ -6303,7 +6305,7 @@ source API is implemented; see HEW-FUTURE.md for additional supervision policy.
 
 A child declaration can name another supervisor. Dotted access such as
 `root.sub` addresses that supervisor, and `root.sub.worker` addresses the
-leaf's stable `ChildRef<Worker>`. Each role resolves the currently supervised
+leaf's stable `Worker`. Each role resolves the currently supervised
 incarnation rather than preserving a stale child address.
 
 The shape is:
@@ -6351,10 +6353,10 @@ fn main() {
     sleep(50ms);
 
     // Access children by declared name
-    let w = pool.worker1;              // ChildRef<Worker>
+    let w = pool.worker1;              // Worker
     let _ = w.tick();
 
-    let w2 = pool.worker2;             // ChildRef<Worker>
+    let w2 = pool.worker2;             // Worker
     let _ = w2.tick();
 
     stop(pool);               // Request graceful shutdown
@@ -6364,18 +6366,18 @@ fn main() {
 
 - `spawn SupervisorName { ... }` — starts a supervisor with its declared children
 - `sup.child_name` — named actor-child access via field syntax. The compiler
-  resolves the child name to a static slot and returns `ChildRef<Actor>`, which
+  resolves the child name to a static slot and returns `Actor`, which
   re-resolves the current incarnation on every ask or tell. The child name must
   match one of the `child` declarations in the supervisor definition.
 - `sup.pool_name` — a `pool` child's members, addressed by index. The members
   are fungible: identical children in consecutive slots, each restarting on its
   own. `len()` is the declared `count:`; `[i]` yields the member's
-  `ChildRef<Actor>` and traps out of range, matching `Vec[i]`; `get(i)` yields
-  `Option<ChildRef<Actor>>` instead. A negative index and one at or past the
+  `Actor` and traps out of range, matching `Vec[i]`; `get(i)` yields
+  `Option<Actor>` instead. A negative index and one at or past the
   count are both out of range.
 - `restarted(sup.child_name)` / `restarted(sup.pool_name[i])` — resume
-  once that one slot is Live again after a crash, or is permanently gone, with
-  the same `ChildRef<Actor>`. A whole pool names many slots and has no single
+  once that one slot is live again after a crash, or is permanently gone,
+  returning `()`. The retained `Actor` keeps its role identity. A whole pool names many slots and has no single
   restart signal, so it is not an operand. The form resumes when the role holds
   a live incarnation with no crash still awaiting a supervisor's ruling, or when
   the role is permanently gone; a role with nothing pending resumes at once. A
@@ -6383,14 +6385,16 @@ fn main() {
   — is pending by then, so `let _ = child.fail(); restarted(sup.child);` waits
   for the ruling. A crash from a one-way mailbox submission that has not been
   processed when `restarted` is entered is not yet pending and is not waited
-  for.
+  for. Direct-incarnation and imported references have no local role replacement
+  to settle and return immediately; this does not establish their liveness or
+  remote readiness.
 - `stop(sup)` — requests a graceful stop of every child in reverse declaration order.
 - `terminate(sup)` — requests cancellation of every child in that order.
 - `stopped(sup)` — waits for the whole tree's terminal cleanup.
 
 **Terminal destinations (normative).**
 
-A `ChildRef` names a supervised role and resolves its current incarnation for
+A supervised actor reference names a stable role and resolves its current incarnation for
 each call or submission. Once the role is permanently unavailable, such as
 when its restart budget is spent, a completion call reports `ActorError.Dead`.
 A mailbox submission reports a `SendFailure` with a lifecycle reason. Neither

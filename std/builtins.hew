@@ -109,19 +109,6 @@ impl NodeConfig {
     }
 }
 
-/// An actor pid on a remote node carrying its complete actor location.
-///
-/// Produced by authenticated peer discovery.
-/// Does NOT coerce implicitly to a local actor handle — a remote actor is a
-/// distinct class with its own physical representation.
-///
-/// The remote call contract uses the same completion calls and
-/// mailbox submission views as local actors, with typed transport failures.
-/// Remote calls require an authenticated native node and compatible wire types.
-/// The browser sandbox does not provide distributed node transport.
-pub type RemotePid<T> {
-}
-
 /// An immutable one-way view for void receive handlers. Construct one with `mailbox(target, on_full: ...)`.
 /// A receive call through the view submits under that policy and returns as
 /// soon as admission or a policy-selected discard is resolved. The policy
@@ -445,33 +432,6 @@ impl Display for LinkError {
 
 impl Error for LinkError {}
 
-/// Message contract for actor types addressed through `RemotePid<A>`.
-///
-/// An actor binds `Msg` to the envelope type accepted by `.send` / `.ask` and
-/// `Reply` to the response type returned by `.ask`.
-pub trait ActorMsg {
-    type Msg;
-
-    type Reply;
-}
-
-impl<T> RemotePid<T> {
-    /// Return the complete carried actor location.
-    #[extern_symbol(hew_remote_pid_location)]
-    fn location(self) -> Location {}
-    /// Return the stable node identity.
-    #[extern_symbol(hew_remote_pid_node_id)]
-    fn node_id(self) -> NodeId {}
-    /// Return the actor's node-local slot.
-    #[extern_symbol(hew_remote_pid_slot)]
-    fn slot(self) -> u64 {}
-    /// Return the node-session incarnation.
-    #[extern_symbol(hew_remote_pid_incarnation)]
-    fn incarnation(self) -> u32 {}
-    #[extern_symbol(hew_remote_pid_display)]
-    fn display(self) -> string {}
-}
-
 impl Location {
     /// Return the stable node identity.
     #[extern_symbol(hew_location_node_id)]
@@ -500,28 +460,6 @@ impl Display for NodeId {
 impl Display for Location {
     fn fmt(self) -> string {
         self.display()
-    }
-}
-
-impl<T> Display for RemotePid<T> {
-    fn fmt(self) -> string {
-        self.display()
-    }
-}
-
-impl<T: ActorMsg> RemotePid<T> {
-    /// Send a message to this remote actor's `ActorMsg` member. The message
-    /// needs a `#[wire]` schema. The checker lowers every native call site
-    /// to a remote submission, so this body only seeds its signature.
-    fn send(self, msg: T.Msg) -> Result<(), SendError> {
-        .Err(SendError.Partition)
-    }
-    /// Ask this remote actor for a reply, failing with `ActorError` if the
-    /// caller-supplied timeout elapses or routing/reply delivery fails. A
-    /// remote call carries no sealed message, so it never reports `Rejected`.
-    /// The message and reply need `#[wire]` schemas.
-    fn ask(self, msg: T.Msg, timeout_ms: u64) -> Result<T.Reply, ActorError<Never, Never>> {
-        .Err(ActorError.NodeNotRunning)
     }
 }
 

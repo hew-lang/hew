@@ -6,7 +6,6 @@ use hew_mir::physical::{
     ActorId, ActorIngressAdapter, ActorOperation, SemActor, SemActorField, SemActorHandler,
     SemCoalesceFallback, SemFailureDisplay,
 };
-use hew_runtime::actor_native::HewSubmitStatus;
 use inkwell::types::StructType;
 
 #[path = "physical_actor_ask.rs"]
@@ -1595,17 +1594,15 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                     "identity.equal",
                 )
                 .llvm_ctx("compare actor identity")?;
+            let equal = self
+                .builder
+                .build_int_z_extend(equal, self.ctx.i8_type(), "identity.value")
+                .llvm_ctx("store the actor identity boolean")?;
             self.store(result, equal.into())?;
             return self.emit_result_edge(Some(result), normal);
         }
         if let ActorOperation::LocalObservation { kind, .. } = &operation {
             return self.emit_local_observation(*kind, transfers, result, normal, unwind);
-        }
-        if let ActorOperation::RemoteSend { actor, message, .. } = &operation {
-            return self.emit_remote_send(*actor, *message, transfers, result, normal);
-        }
-        if let ActorOperation::RemoteObservation { kind, params, .. } = &operation {
-            return self.emit_remote_observation(*kind, params, transfers, result, normal);
         }
         match &operation {
             ActorOperation::CallStart(protocol) => {
@@ -1704,14 +1701,12 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         let id = match &operation {
             ActorOperation::Identity { .. }
             | ActorOperation::LocalObservation { .. }
-            | ActorOperation::RemoteObservation { .. }
             | ActorOperation::CallStart(_)
             | ActorOperation::CallTake(_)
             | ActorOperation::Stop(_)
             | ActorOperation::Terminate(_)
             | ActorOperation::AwaitStopped(_)
-            | ActorOperation::AwaitRestarted(_)
-            | ActorOperation::RemoteSend { .. } => {
+            | ActorOperation::AwaitRestarted(_) => {
                 unreachable!("special boundary returned above")
             }
             ActorOperation::Spawn(id)
@@ -1749,14 +1744,12 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         let status = match operation {
             ActorOperation::Identity { .. }
             | ActorOperation::LocalObservation { .. }
-            | ActorOperation::RemoteObservation { .. }
             | ActorOperation::CallStart(_)
             | ActorOperation::CallTake(_)
             | ActorOperation::Stop(_)
             | ActorOperation::Terminate(_)
             | ActorOperation::AwaitStopped(_)
-            | ActorOperation::AwaitRestarted(_)
-            | ActorOperation::RemoteSend { .. } => {
+            | ActorOperation::AwaitRestarted(_) => {
                 unreachable!("special boundary returned above")
             }
             ActorOperation::Spawn(_) => self.emit_actor_spawn(actor, &sources, result)?,
@@ -1851,7 +1844,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         unwind: Option<&PhysicalEdge>,
     ) -> CodegenResult<()> {
         use hew_mir::physical::LocalObservationKind;
-        let [ArgumentTransfer::Move(target)] = transfers else {
+        let [ArgumentTransfer::Borrow(target)] = transfers else {
             return Err(CodegenError::FailClosed(
                 "local observation lacks its value target".into(),
             ));
@@ -1876,35 +1869,33 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         } else {
             ptr.const_null()
         };
-        let (symbol, return_type) = match kind {
-            LocalObservationKind::Link => ("hew_native_actor_link", Some(self.ctx.i32_type())),
-            LocalObservationKind::Monitor => {
-                ("hew_native_actor_monitor", Some(self.ctx.i32_type()))
-            }
-            LocalObservationKind::Unlink => ("hew_native_actor_unlink", None),
-            LocalObservationKind::Demonitor => ("hew_actor_demonitor", None),
-        };
-        let mut types = vec![target_value.get_type().into()];
-        let mut args = vec![target_value.into()];
-        if kind == LocalObservationKind::Monitor {
-            types.push(ptr.into());
-            args.push(id.into());
-        }
-        let function_type = return_type.map_or_else(
-            || self.ctx.void_type().fn_type(&types, false),
-            |ty| ty.fn_type(&types, false),
-        );
-        let function = get_or_declare_external(self.llvm, symbol, function_type)?;
-        if return_type.is_none() {
+        if matches!(
+            kind,
+            LocalObservationKind::Unlink | LocalObservationKind::Demonitor
+        ) {
+            let symbol = if kind == LocalObservationKind::Unlink {
+                "hew_native_actor_unlink"
+            } else {
+                "hew_actor_demonitor"
+            };
+            let function = get_or_declare_external(
+                self.llvm,
+                symbol,
+                self.ctx
+                    .void_type()
+                    .fn_type(&[target_value.get_type().into()], false),
+            )?;
             self.builder
-                .build_call(function, &args, "")
-                .llvm_ctx("remove local observation")?;
-            self.clear_owned(*target)?;
+                .build_call(function, &[target_value.into()], "")
+                .llvm_ctx("remove actor observation")?;
             return self.emit_result_edge(None, normal);
         }
-        let status =
-            call_value(&self.builder, function, &args, "observation.status")?.into_int_value();
-        self.clear_owned(*target)?;
+        let status = self.emit_actor_observation_wait(
+            target_value,
+            kind == LocalObservationKind::Link,
+            id,
+            unwind,
+        )?;
         let typed = self.ctx.append_basic_block(self.value, "observation.typed");
         let fault = self.ctx.append_basic_block(self.value, "observation.fault");
         let failed = self
@@ -2846,7 +2837,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             unwind,
             policy,
             dispatch.as_global_value().as_pointer_value(),
-            role.is_none(),
+            true,
         )?;
         let admission_block = self.builder.get_insert_block().unwrap();
         self.builder

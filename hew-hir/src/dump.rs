@@ -548,27 +548,6 @@ fn dump_expr(defs: &hew_types::DefTable, out: &mut String, expr: &HirExpr, inden
                 dump_expr(defs, out, arg, indent + 4);
             }
         }
-        HirExprKind::RemoteActorAsk {
-            receiver,
-            args,
-            timeout_ms,
-            reply_ty,
-            ..
-        } => {
-            writeln!(out, "{pad}  remote-actor-ask -> {}", reply_ty.user_facing())
-                .expect("write to string");
-            dump_expr(defs, out, receiver, indent + 4);
-            for argument in args {
-                dump_expr(defs, out, argument, indent + 4);
-            }
-            dump_expr(defs, out, timeout_ms, indent + 4);
-        }
-
-        HirExprKind::RemoteActorSend { receiver, msg, .. } => {
-            writeln!(out, "{pad}  remote-actor-send").expect("write to string");
-            dump_expr(defs, out, receiver, indent + 4);
-            dump_expr(defs, out, msg, indent + 4);
-        }
         HirExprKind::Block(block) => {
             writeln!(out, "{pad}  block {}", block.scope).expect("write to string");
         }

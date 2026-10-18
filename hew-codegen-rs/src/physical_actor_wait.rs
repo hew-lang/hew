@@ -4,6 +4,129 @@ use super::*;
 use hew_runtime::actor_native::HewSubmitStatus;
 
 impl<'ctx> FunctionEmitter<'_, 'ctx> {
+    pub(super) fn emit_actor_observation_wait(
+        &self,
+        target: BasicValueEnum<'ctx>,
+        link: bool,
+        id: PointerValue<'ctx>,
+        unwind: Option<&PhysicalEdge>,
+    ) -> CodegenResult<IntValue<'ctx>> {
+        let frame = self.frame.as_ref().ok_or_else(|| {
+            CodegenError::FailClosed("actor observation requires a resumable invocation".into())
+        })?;
+        let ptr = self.ctx.ptr_type(AddressSpace::default());
+        let wake = get_or_declare_external(
+            self.llvm,
+            "hew_coro_state_waker",
+            ptr.fn_type(&[ptr.into()], false),
+        )?;
+        let waker = call_value(
+            &self.builder,
+            wake,
+            &[frame.state.into()],
+            "observation.waker",
+        )?;
+        let new = get_or_declare_external(
+            self.llvm,
+            "hew_native_actor_observe_new",
+            ptr.fn_type(
+                &[
+                    target.get_type().into(),
+                    self.ctx.i8_type().into(),
+                    ptr.into(),
+                ],
+                false,
+            ),
+        )?;
+        let operation = call_value(
+            &self.builder,
+            new,
+            &[
+                target.into(),
+                self.ctx.i8_type().const_int(u64::from(link), false).into(),
+                waker.into(),
+            ],
+            "observation.operation",
+        )?
+        .into_pointer_value();
+        let poll = self.ctx.append_basic_block(self.value, "observation.poll");
+        let inspect = self
+            .ctx
+            .append_basic_block(self.value, "observation.inspect");
+        let pending = self
+            .ctx
+            .append_basic_block(self.value, "observation.pending");
+        let complete = self
+            .ctx
+            .append_basic_block(self.value, "observation.complete");
+        let cancelled = self
+            .ctx
+            .append_basic_block(self.value, "observation.cancelled");
+        let destroyed = self
+            .ctx
+            .append_basic_block(self.value, "observation.invalid");
+        self.builder
+            .build_unconditional_branch(poll)
+            .llvm_ctx("poll actor observation")?;
+        self.builder.position_at_end(poll);
+        let cancellation = self.state_value("hew_coro_state_is_cancelled", frame.state)?;
+        let cancelled_now = self
+            .builder
+            .build_int_compare(
+                IntPredicate::NE,
+                cancellation,
+                self.ctx.i32_type().const_zero(),
+                "observation.cancel.requested",
+            )
+            .llvm_ctx("inspect observation cancellation")?;
+        self.builder
+            .build_conditional_branch(cancelled_now, cancelled, inspect)
+            .llvm_ctx("route observation cancellation")?;
+        self.builder.position_at_end(inspect);
+        let status = self.state_value("hew_native_actor_observe_poll", operation)?;
+        let waiting = self
+            .builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                status,
+                self.ctx.i32_type().const_all_ones(),
+                "observation.waiting",
+            )
+            .llvm_ctx("inspect observation readiness")?;
+        self.builder
+            .build_conditional_branch(waiting, pending, complete)
+            .llvm_ctx("route observation readiness")?;
+        self.builder.position_at_end(pending);
+        frame.suspend(self.ctx, &self.builder, poll, destroyed)?;
+        self.builder.position_at_end(destroyed);
+        self.reject_invalid_task_state()?;
+        self.builder.position_at_end(cancelled);
+        self.free_handle("hew_native_actor_observe_free", operation)?;
+        self.initialize_cancellation_fault()?;
+        if let Some(unwind) = unwind {
+            self.emit_edge(unwind)?;
+        } else {
+            self.emit_propagate_fault()?;
+        }
+        self.builder.position_at_end(complete);
+        let take = get_or_declare_external(
+            self.llvm,
+            "hew_native_actor_observe_take",
+            self.ctx
+                .i32_type()
+                .fn_type(&[ptr.into(), ptr.into()], false),
+        )?;
+        let result = call_value(
+            &self.builder,
+            take,
+            &[operation.into(), id.into()],
+            "observation.result",
+        )?
+        .into_int_value();
+        self.free_handle("hew_native_actor_observe_free", operation)?;
+        Ok(result)
+    }
+
     pub(super) fn emit_actor_await_restarted(
         &self,
         source: StorageId,

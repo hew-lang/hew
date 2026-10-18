@@ -833,6 +833,7 @@ pub(crate) fn activate_queued_actor(actor: *mut HewActor) {
                     // A peer-tagged one-way node requires the same authenticated
                     // request state as a completion call before it can bypass
                     // the capability-only actor floor. Claim revalidates it below.
+                    // SAFETY: the worker owns the node and its optional envelope.
                     && !(unsafe { msg_ref.envelope.as_ref() })
                         .and_then(|envelope| envelope.request.as_ref())
                         .is_some_and(|state| state.has_authenticated_admission())

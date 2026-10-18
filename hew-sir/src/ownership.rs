@@ -513,10 +513,6 @@ pub enum SuspendKind {
         actor: crate::ActorId,
         export: bool,
     },
-    RemoteAsk {
-        actor: crate::ActorId,
-        message: u32,
-    },
     Read,
     Accept,
     /// A stream consumer takes the next element. `park` is the `recv()`

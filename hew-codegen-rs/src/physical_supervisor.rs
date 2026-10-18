@@ -566,7 +566,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         if !is_pool {
             let nested = matches!(
                 supervisor.children[child as usize].role,
-                hew_sir::SemSupervisedRole::Supervisor(_)
+                hew_mir::physical::SemSupervisedRole::Supervisor(_)
             );
             let role = self.mint_actor_role(
                 token,
@@ -728,7 +728,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .builder
             .build_int_add(base, offset, "pool.slot")
             .llvm_ctx("address the pool member's slot")?;
-        let role = self.mint_actor_role(token, slot.into(), false)?;
+        let role = self.mint_actor_role(token.into(), slot.into(), false)?;
         if let Some(option) = option {
             self.write_variant_value(self.slots[result.0 as usize], 0, &[role], option)?;
         } else {

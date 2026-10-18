@@ -76,50 +76,6 @@ pub(crate) fn terminator_successors(
         ));
     }
     match terminator {
-        PhysicalTerminator::RemoteAsk {
-            target,
-            payload,
-            timeout,
-            result,
-            normal,
-            cancel,
-            unwind,
-            ..
-        } => {
-            // The pid is borrowed, the message is consumed into its encoding
-            // before the caller parks and the timeout is a copied scalar.
-            for source in std::iter::once(target)
-                .chain(payload)
-                .chain(std::iter::once(timeout))
-            {
-                initialized(function, &state, *source, block, "remote ask request")?;
-            }
-            for source in payload {
-                consume_if_owned(function, borrows, &mut state, *source)?;
-            }
-            if state.fault != FaultState::None {
-                return Err(PhysicalError::new(
-                    "remote ask cannot replace an active fault",
-                ));
-            }
-            let mut completed = state.clone();
-            define(
-                function,
-                borrows,
-                &mut completed,
-                *result,
-                block,
-                "remote ask result",
-            )?;
-            let mut successors = vec![apply_edge(function, borrows, normal, completed, block)?];
-            state.fault = FaultState::Active;
-            let mut cancelled = state.clone();
-            cancelled.exit = defer::CANCEL;
-            successors.push(apply_edge(function, borrows, cancel, cancelled, block)?);
-            state.exit = defer::TRAP;
-            successors.push(apply_edge(function, borrows, unwind, state, block)?);
-            Ok(successors)
-        }
         PhysicalTerminator::ActorAsk {
             args,
             result,
@@ -989,50 +945,6 @@ pub(crate) fn verify_terminator(
         }
     };
     match terminator {
-        PhysicalTerminator::RemoteAsk {
-            actor,
-            message,
-            target,
-            payload,
-            timeout,
-            result,
-            normal,
-            cancel,
-            unwind,
-        } => {
-            let signature = module
-                .actors
-                .get(actor.0 as usize)
-                .filter(|descriptor| descriptor.id == *actor)
-                .ok_or_else(|| PhysicalError::new("remote ask requires its exact actor"))?
-                .remote_signature(
-                    &module.defs,
-                    *message,
-                    &slot(*target)?.ty,
-                    slot(*result)?.ty.clone(),
-                    true,
-                )
-                .map_err(PhysicalError::new)?;
-            let types = std::iter::once(target)
-                .chain(payload)
-                .chain(std::iter::once(timeout))
-                .map(|id| Ok(&slot(*id)?.ty))
-                .collect::<Result<Vec<_>, PhysicalError>>()?;
-            if signature.params.len() != types.len()
-                || signature
-                    .params
-                    .iter()
-                    .zip(types)
-                    .any(|(parameter, ty)| parameter.ty != *ty)
-            {
-                return Err(PhysicalError::new(
-                    "remote ask differs from its member's pid, message and timeout",
-                ));
-            }
-            edge(normal)?;
-            edge(cancel)?;
-            edge(unwind)
-        }
         PhysicalTerminator::ActorAsk {
             actor,
             message,

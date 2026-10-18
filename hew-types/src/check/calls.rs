@@ -1135,7 +1135,7 @@ impl Checker {
             return;
         }
         match func_name {
-            "link" | "unlink" | "monitor" | "demonitor" | "link_remote" => {
+            "link" | "unlink" | "monitor" | "demonitor" => {
                 self.reject_wasm_feature(span, WasmUnsupportedFeature::LinkMonitor);
             }
             "supervisor_child" | "supervisor_stop" => {
@@ -1635,9 +1635,6 @@ impl Checker {
         match signature_key {
             "link" => {
                 return CallTarget::Runtime(crate::runtime_call::RuntimeCallFamily::ActorLink);
-            }
-            "link_remote" => {
-                return CallTarget::Runtime(crate::runtime_call::RuntimeCallFamily::LinkRemote);
             }
             "monitor" => {
                 return CallTarget::Runtime(crate::runtime_call::RuntimeCallFamily::ActorMonitor);
@@ -2746,25 +2743,8 @@ impl Checker {
             return target;
         };
         let resolved = self.subst.resolve(ty).materialize_literal_defaults();
-        if resolved.as_remote_pid().is_some() {
-            match family {
-                Some(F::ActorMonitor) => {
-                    return CallTarget::Runtime(F::NodeMonitor);
-                }
-                Some(F::ActorLink | F::ActorUnlink) => {
-                    self.report_error(
-                        TypeErrorKind::InvalidOperation,
-                        span,
-                        format!(
-                            "`{callee}` links a LOCAL actor; for a cross-node link use \
-                             `link_remote(pid, policy)`, which carries a `PartitionPolicy` \
-                             governing what happens to the local actor when its remote peer dies"
-                        ),
-                    );
-                    return target;
-                }
-                _ => {}
-            }
+        if matches!(family, Some(F::ActorLink | F::ActorMonitor)) {
+            self.record_submission_suspension(span, true);
         }
         self.require_actor_handle_argument(&resolved, callee, span);
         target
@@ -3130,9 +3110,6 @@ impl Checker {
         if matches!(
             self.actor_method_dispatch.get(&key),
             Some(ActorMethodKind::Ask { .. })
-        ) || matches!(
-            self.method_call_rewrites.get(&key),
-            Some(MethodCallRewrite::RemoteActorAsk { .. })
         ) {
             return (ty, Some(CheckedSelectSource::ActorAsk { call: key }));
         }

@@ -816,9 +816,8 @@ pub fn shared_handle_payload(ty: &ResolvedTy) -> Option<&ResolvedTy> {
 
 fn is_node_lookup_result(ty: &ResolvedTy) -> bool {
     matches!(ty, ResolvedTy::Named { head: crate::TypeHead::Builtin(BuiltinType::Result), args, .. }
-        if matches!(args.as_slice(), [ResolvedTy::Named { head: crate::TypeHead::Builtin(BuiltinType::RemotePid), args: remote_args, .. }, error]
-            if remote_args.len() == 1
-                && error.is_builtin(BuiltinType::LookupError)))
+        if matches!(args.as_slice(), [location, error]
+            if location.is_builtin(BuiltinType::Location) && error.is_builtin(BuiltinType::LookupError)))
 }
 
 /// Which half of a pipe a runtime contract's receiver is.

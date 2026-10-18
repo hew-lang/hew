@@ -393,8 +393,8 @@ pub(super) unsafe fn start_granted_call(
     };
     Box::into_raw(Box::new(HewRemoteCall {
         route,
-        // SAFETY: the deadline operation retains the caller's live waker.
         timer: if deadline_ns >= 0 {
+            // SAFETY: the deadline operation retains the caller's live waker.
             unsafe { crate::coro_sleep::hew_coro_sleep_until_new(deadline_ns, waker) }
         } else {
             ptr::null_mut()
@@ -722,19 +722,19 @@ pub unsafe extern "C" fn hew_remote_call_take(
         return AskError::ConnectionDropped as i32;
     };
     // SAFETY: the ready operation and output retain the declared reply layout.
-    unsafe { write_remote_reply(operation, reply, output) }
+    unsafe { write_remote_reply(operation, &reply, output) }
 }
 
 unsafe fn write_remote_reply(
     operation: &HewRemoteCall,
-    reply: ReplyOutcome,
+    reply: &ReplyOutcome,
     output: *mut c_void,
 ) -> i32 {
     match remote_reply_value(
         operation.dispatch,
         operation.msg_type,
         operation.reply_size,
-        &reply,
+        reply,
     ) {
         Ok(value) => {
             if operation.reply_size > 0 {
@@ -787,7 +787,7 @@ pub(crate) unsafe fn take_imported_request(
         ReplyStatus::Success => match kind {
             RequestKind::CallWait | RequestKind::CallReject => {
                 // SAFETY: the original checked completion protocol owns this output.
-                RequestOutcome::Completed(unsafe { write_remote_reply(operation, reply, output) })
+                RequestOutcome::Completed(unsafe { write_remote_reply(operation, &reply, output) })
             }
             RequestKind::SendWait | RequestKind::SendReject | RequestKind::SendDropNewest => {
                 match reply.data.as_slice() {

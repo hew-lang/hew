@@ -177,8 +177,7 @@ impl Builder<'_, '_> {
             HirExprKind::ActorMessage { .. } => self.lower_actor_message(expr),
             HirExprKind::ActorDelivery { .. } => self.lower_actor_delivery(expr),
             HirExprKind::ActorAsk { .. } => self.lower_actor_ask(expr),
-            HirExprKind::RemoteActorAsk { .. } => self.lower_remote_actor_ask(expr),
-            HirExprKind::RemoteActorSend { .. } => self.lower_remote_actor_send(expr),
+
             HirExprKind::ActorGenStream { .. } => self.lower_actor_stream(expr),
             HirExprKind::CoerceToDynTrait {
                 value,

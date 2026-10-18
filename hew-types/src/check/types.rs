@@ -1990,20 +1990,6 @@ pub enum MethodCallRewrite {
     GeneratorNext {
         yield_ty: crate::resolved_ty::ResolvedTy,
     },
-    /// Remote `RemotePid<T>::ask(msg, timeout_ms)` request/reply dispatch.
-    ///
-    /// HIR consumes this structured marker and emits a dedicated
-    /// `HirExprKind::RemoteActorAsk`, preserving the checker-authoritative
-    /// `Result<T::Reply, AskError>` return type.
-    RemoteActorAsk {
-        member: crate::actor_protocol::RemoteActorMember,
-        service: bool,
-    },
-    /// Remote `RemotePid<T>::send(msg)` one-way submission, lowered by HIR to
-    /// `HirExprKind::RemoteActorSend` with its `Result<(), SendError>` type.
-    RemoteActorSend {
-        member: crate::actor_protocol::RemoteActorMember,
-    },
     /// Builtin `Vec<T>` higher-order pipeline call (`map` / `filter` /
     /// `reduce`, spec §3.8.6). HIR expands the call site into a counted
     /// loop over the receiver — bind the receiver and the closure argument

@@ -418,7 +418,6 @@ fn callable_slot<'ctx>(
 #[derive(Clone, Copy)]
 pub(super) enum Handle {
     ActorCall,
-    RemoteCall,
     /// A detached-owner cursor, or null when nothing was displaced.
     Cursor,
 }
@@ -427,7 +426,6 @@ impl Handle {
     const fn thunk(self) -> &'static str {
         match self {
             Self::ActorCall => "__hew_release_handle_actor_call",
-            Self::RemoteCall => "__hew_release_handle_remote_call",
             Self::Cursor => "__hew_release_handle_cursor",
         }
     }
@@ -440,11 +438,6 @@ impl Handle {
                 "hew_actor_call_cleanup_poll",
                 "hew_actor_call_cleanup_fault",
                 "hew_actor_call_free",
-            )),
-            Self::RemoteCall => Some((
-                "hew_remote_call_cleanup_poll",
-                "hew_remote_call_cleanup_fault",
-                "hew_remote_call_free",
             )),
             Self::Cursor => None,
         }
@@ -657,11 +650,6 @@ fn handle_body<'ctx>(
             "hew_actor_call_cleanup_poll",
             "hew_actor_call_cleanup_fault",
             "hew_actor_call_free",
-        ),
-        Handle::RemoteCall => (
-            "hew_remote_call_cleanup_poll",
-            "hew_remote_call_cleanup_fault",
-            "hew_remote_call_free",
         ),
         Handle::Cursor => return drain_cursor_inline(values, frame, owner),
     };

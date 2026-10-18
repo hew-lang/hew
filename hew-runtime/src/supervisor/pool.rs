@@ -423,7 +423,7 @@ pub unsafe extern "C" fn hew_supervisor_pool_len(sup: *mut HewSupervisor, pool_k
 // Native declared-supervisor ABI
 // ---------------------------------------------------------------------------
 //
-// A declared supervisor is addressed only by its stable `LocalPid` token; no
+// A declared supervisor is addressed only by its stable opaque actor token; no
 // supervisor pointer ever becomes a program value. Construction is
 // `new` → `add_child` (once per declared child, in declaration order) →
 // `start`. Lookup slots are indexed within each child kind; restart identities

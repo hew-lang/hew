@@ -722,21 +722,14 @@ impl RuntimeCallFamily {
             | F::SinkClone
             | F::SinkClose
             | F::SinkPeerClosed
-            | F::ActorGenSinkComplete
-            | F::ActorGenSinkRegister
             | F::ActorRequestRelease
             | F::ActorCallFree
             | F::ActorRequestTake
-            | F::ActorAsk
-            | F::ActorAskWithChannel
             | F::ActorDemonitor
             | F::ActorLink
             | F::ActorMonitor
-            | F::ActorSelf
             | F::ActorCaller
             | F::ActorRefusalLog
-            | F::ActorSendById
-            | F::ActorSpawn
             | F::ActorUnlink
             | F::AutoMutexAlloc
             | F::AutoMutexFree

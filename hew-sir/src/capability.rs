@@ -45,7 +45,7 @@ pub fn derived_capability_components(
         | ResolvedTy::String
         | ResolvedTy::Bytes => Ok(Vec::new()),
         ResolvedTy::Tuple(fields) => Ok(fields.clone()),
-        // A node identity, location or remote pid is its fixed-width words.
+        // A node identity or location is its fixed-width words.
         _ if is_identity_carrier(ty) => Ok(Vec::new()),
         _ => {
             if let Some((_, arguments)) = hew_types::runtime_call::collection_type_arguments(ty) {

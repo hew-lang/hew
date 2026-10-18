@@ -46,8 +46,6 @@ unsafe impl Send for ActorPtr {}
 
 struct LiveActor {
     actor: ActorPtr,
-    #[cfg(not(target_arch = "wasm32"))]
-    remote_capability_only: bool,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -181,8 +179,6 @@ pub(crate) unsafe fn track_actor(actor: *mut HewActor) -> bool {
         std::collections::hash_map::Entry::Vacant(entry) => {
             entry.insert(LiveActor {
                 actor: ActorPtr(actor),
-                #[cfg(not(target_arch = "wasm32"))]
-                remote_capability_only: false,
             });
             true
         }
@@ -389,34 +385,6 @@ pub(crate) fn get_actor_ptr_by_id(actor_id: u64) -> Option<*mut HewActor> {
         map.as_ref()
             .and_then(|m| m.get(&actor_id).map(|ptr| ptr.actor.0))
             .filter(|ptr| !ptr.is_null())
-    })
-    .flatten()
-}
-
-/// Permanently require a service grant for this live incarnation's remote access.
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn require_remote_grant(target: ActorIncarnation) -> bool {
-    with_live_actors_opt(|map| {
-        let entry = map.as_mut()?.get_mut(&target.actor_id)?;
-        // SAFETY: the registry lock keeps this tracked allocation live.
-        if unsafe { (*entry.actor.0).spawn_serial } != target.spawn_serial {
-            return None;
-        }
-        entry.remote_capability_only = true;
-        Some(())
-    })
-    .flatten()
-    .is_some()
-}
-
-/// Read remote admission policy while the exact incarnation remains tracked.
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn remote_grant_required(target: ActorIncarnation) -> Option<bool> {
-    with_live_actors_opt(|map| {
-        let entry = map.as_ref()?.get(&target.actor_id)?;
-        // SAFETY: the registry lock keeps this tracked allocation live.
-        (unsafe { (*entry.actor.0).spawn_serial } == target.spawn_serial)
-            .then_some(entry.remote_capability_only)
     })
     .flatten()
 }
@@ -661,36 +629,6 @@ pub(crate) fn with_live_incarnation<R>(
         return None;
     }
     with_actor_send_by_identity(target.actor_id, target.spawn_serial, f)
-}
-
-/// Resolve the per-actor-TYPE dispatch function pointer for a live actor id,
-/// returned as an opaque `*const c_void` codec-registry key.
-///
-/// The dispatch pointer is `HewActor.dispatch` — the same
-/// `__hew_actor_dispatch_<Actor>` global the codegen codec seeder registers the
-/// actor's codecs under. The cross-node decode paths resolve it here from the
-/// wire's `target_actor_id` so an inbound frame is decoded ONLY by the codec
-/// belonging to its target actor's type (`(dispatch, msg_type)` keying), never
-/// by a different actor type whose `msg_type` SipHash-collides.
-///
-/// Reads the dispatch field UNDER the liveness lock (via `with_live_actors_opt`)
-/// so a concurrent teardown cannot free the actor mid-read. Returns `None` when
-/// the actor is not live (the caller then takes the existing fail-closed
-/// `ActorStopped` rejection — never a fabricated key) or has no dispatch set.
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn dispatch_ptr_by_id(actor_id: u64) -> Option<*const std::ffi::c_void> {
-    with_live_actors_opt(|map| {
-        let actor_ptr = map
-            .as_ref()
-            .and_then(|m| m.get(&actor_id).map(|ptr| ptr.actor.0))
-            .filter(|ptr| !ptr.is_null())?;
-        // SAFETY: `actor_ptr` is tracked-live under the lock held for this
-        // closure; a concurrent free must remove the entry (under the same lock)
-        // before reclaiming the allocation, so the dispatch field read is valid.
-        let dispatch = unsafe { (*actor_ptr).dispatch }?;
-        Some(dispatch as *const std::ffi::c_void)
-    })
-    .flatten()
 }
 
 /// Check whether an actor pointer is still live (tracked and not yet freed).

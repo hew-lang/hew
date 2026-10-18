@@ -1,117 +1,6 @@
-//! Two-node remote send and ask tests over real transports.
+//! Granted actor calls and authenticated admission over real transports.
 
 use super::*;
-
-#[test]
-fn two_node_remote_send_delivery() {
-    let _guard = crate::runtime_test_guard();
-    let _trace_guard = crate::tracing::tracing_test_guard();
-    let _real_sched;
-    crate::registry::hew_registry_clear();
-
-    // Node 1 starts first and remains CURRENT_NODE; both peers carry
-    // mutually-authorized Noise identities required by v2 admission.
-    let (node1, _node1_port, node2, node2_port) = start_authorized_tcp_pair(301, 302);
-
-    // Ensure the scheduler is running so actor dispatches work.
-    _real_sched = init_real_scheduler();
-    crate::tracing::hew_trace_enable(1);
-
-    // Temporarily set LOCAL_NODE_ID = 302 to assign a node-2 PID to the actor.
-    // This makes the actor look remote from node1's routing perspective.
-    SEND_PROBE_MSG_TYPE.store(0, Ordering::Release);
-    crate::pid::hew_pid_set_local_node(302);
-    let probe_actor = spawn_remote_test_actor(send_probe_dispatch);
-    // Restore node1 as the local node before any routing decisions.
-    crate::pid::hew_pid_set_local_node(301);
-    assert!(!probe_actor.is_null(), "actor spawn failed");
-    // SAFETY: actor was just spawned and is valid.
-    let actor_id = unsafe { (*probe_actor).id };
-    assert_eq!(
-        crate::pid::hew_pid_node(actor_id),
-        302,
-        "actor PID must encode node2's ID"
-    );
-
-    let connect_addr = CString::new(format!("302@127.0.0.1:{node2_port}")).unwrap();
-    // SAFETY: node1 and connect_addr are valid for this call.
-    unsafe { connect_with_retry(node1.as_ptr(), &connect_addr) };
-    // SAFETY: both node pointers are valid.
-    unsafe { wait_for_handshake(node1.as_ptr(), node2.as_ptr()) };
-
-    // Fire-and-forget from node1 to the actor on node2.
-    let msg_type_sent: i32 = 77;
-    let target = remote_pid_for_node(&node2, actor_id);
-    // SAFETY: null payload / size 0 is valid for a bare signal message.
-    let rc = unsafe {
-        hew_node_send_location(
-            node1.as_ptr(),
-            &raw const target,
-            inbound_test_request_codec(
-                send_probe_dispatch,
-                msg_type_sent,
-                c"tests.SendProbe.handle",
-            ),
-            msg_type_sent,
-            TEST_U32_REQUEST.cast(),
-            std::mem::size_of::<u32>(),
-        )
-    };
-    assert_eq!(rc, 0, "hew_node_send should succeed");
-
-    poll_until(|_| {
-        #[expect(
-            clippy::cast_sign_loss,
-            reason = "msg_type_sent is a non-negative tag value"
-        )]
-        let got = SEND_PROBE_MSG_TYPE.load(Ordering::Acquire) == msg_type_sent as u32;
-        if !got {
-            thread::sleep(Duration::from_millis(20));
-        }
-        got
-    });
-
-    let snapshot = crate::tracing::trace_snapshot(None, None, 256)
-        .expect("inbound send trace snapshot must be readable");
-    let inbound_send = snapshot
-        .events
-        .iter()
-        .find(|record| {
-            record.event.event_type == crate::tracing::SPAN_SEND
-                && record.destination_actor_id == Some(actor_id)
-        })
-        .expect("real inbound delivery must emit a send record for the local target");
-    assert_eq!(inbound_send.source_actor_id, None);
-    assert_eq!(
-        inbound_send.source_attribution,
-        crate::tracing::TraceActorAttribution::RemoteUnknown,
-        "transport delivery must not be mislabelled as an external local send"
-    );
-    assert_eq!(
-        inbound_send.destination_attribution,
-        crate::tracing::TraceActorAttribution::LocalActor
-    );
-    assert_eq!(
-        inbound_send.destination_spawn_serial,
-        Some(unsafe {
-            // SAFETY: probe_actor remains live until teardown below.
-            (*probe_actor).spawn_serial
-        })
-    );
-    assert_eq!(
-        inbound_send.destination_dispatch_ptr,
-        send_probe_dispatch as *const () as usize
-    );
-    crate::tracing::hew_trace_reset();
-
-    // SAFETY: actor and nodes were allocated in this test and are valid.
-    unsafe {
-        let _ = crate::actor::hew_actor_free(probe_actor);
-        assert_eq!(hew_node_stop(node1.as_ptr()), 0);
-        assert_eq!(hew_node_stop(node2.as_ptr()), 0);
-    }
-    crate::registry::hew_registry_clear();
-}
 
 #[test]
 fn two_node_remote_ask_reply_records_remote_attribution() {
@@ -140,11 +29,11 @@ fn two_node_remote_ask_reply_records_remote_attribution() {
     unsafe { wait_for_handshake(node1.as_ptr(), node2.as_ptr()) };
 
     let send_value: u32 = 21;
-    let target = remote_pid_for_node(&node2, actor_id);
+    let target = granted_target_for_node(&node1, &node2, actor_id, test_dispatch(), 1);
     // SAFETY: send_value is a valid u32 request and the reply codec returns a u32.
     let (reply, status) = unsafe {
         ask_for_test(
-            &raw const target,
+            target.route(),
             test_dispatch(),
             1,
             (&raw const send_value).cast::<c_void>().cast_mut(),
@@ -195,85 +84,6 @@ fn two_node_remote_ask_reply_records_remote_attribution() {
     // SAFETY: actor and nodes were allocated by this test and remain valid.
     unsafe {
         let _ = crate::actor::hew_actor_free(echo_actor);
-        assert_eq!(hew_node_stop(node1.as_ptr()), 0);
-        assert_eq!(hew_node_stop(node2.as_ptr()), 0);
-    }
-    crate::registry::hew_registry_clear();
-}
-
-#[cfg(feature = "quic")]
-#[test]
-fn two_node_remote_send_delivery_quic_mesh() {
-    let _guard = crate::runtime_test_guard();
-    let _real_sched;
-    crate::registry::hew_registry_clear();
-
-    // Node 1 starts first and remains CURRENT_NODE; the helper installs
-    // mutually-authorized SPKI bindings for v2 admission.
-    let (node1, _node1_port, node2, node2_port) = start_authorized_quic_mesh_pair(401, 402);
-
-    // Ensure the scheduler is running so actor dispatches work.
-    _real_sched = init_real_scheduler();
-
-    // Temporarily set LOCAL_NODE_ID = 402 to assign a node-2 PID to the actor.
-    // This makes the actor look remote from node1's routing perspective.
-    SEND_PROBE_MSG_TYPE_QM.store(0, Ordering::Release);
-    crate::pid::hew_pid_set_local_node(402);
-    let probe_actor = spawn_remote_test_actor(send_probe_dispatch_qm);
-    // Restore node1 as the local node before any routing decisions.
-    crate::pid::hew_pid_set_local_node(401);
-    assert!(!probe_actor.is_null(), "actor spawn failed");
-    // SAFETY: actor was just spawned and is valid.
-    let actor_id = unsafe { (*probe_actor).id };
-    assert_eq!(
-        crate::pid::hew_pid_node(actor_id),
-        402,
-        "actor PID must encode node2's ID"
-    );
-
-    let connect_addr = CString::new(format!("402@127.0.0.1:{node2_port}")).unwrap();
-    // SAFETY: node1 and connect_addr are valid for this call.
-    unsafe { connect_with_retry(node1.as_ptr(), &connect_addr) };
-    // SAFETY: both node pointers are valid.
-    unsafe { wait_for_handshake(node1.as_ptr(), node2.as_ptr()) };
-
-    // Fire-and-forget from node1 to the actor on node2 over quic_mesh.
-    // This exercises a real CBOR-framed round-trip across the mTLS-pinned
-    // mesh transport — not just process startup.
-    let msg_type_sent: i32 = 91;
-    let target = remote_pid_for_node(&node2, actor_id);
-    // SAFETY: null payload / size 0 is valid for a bare signal message.
-    let rc = unsafe {
-        hew_node_send_location(
-            node1.as_ptr(),
-            &raw const target,
-            inbound_test_request_codec(
-                send_probe_dispatch_qm,
-                msg_type_sent,
-                c"tests.SendProbeQm.handle",
-            ),
-            msg_type_sent,
-            TEST_U32_REQUEST.cast(),
-            std::mem::size_of::<u32>(),
-        )
-    };
-    assert_eq!(rc, 0, "hew_node_send should succeed");
-
-    poll_until(|_| {
-        #[expect(
-            clippy::cast_sign_loss,
-            reason = "msg_type_sent is a non-negative tag value"
-        )]
-        let got = SEND_PROBE_MSG_TYPE_QM.load(Ordering::Acquire) == msg_type_sent as u32;
-        if !got {
-            thread::sleep(Duration::from_millis(20));
-        }
-        got
-    });
-
-    // SAFETY: actor and nodes were allocated in this test and are valid.
-    unsafe {
-        let _ = crate::actor::hew_actor_free(probe_actor);
         assert_eq!(hew_node_stop(node1.as_ptr()), 0);
         assert_eq!(hew_node_stop(node2.as_ptr()), 0);
     }
@@ -457,11 +267,17 @@ fn two_node_remote_void_ask_returns_sentinel() {
     // SAFETY: both node pointers remain valid until the end of the test.
     unsafe { wait_for_handshake(node1.as_ptr(), node2.as_ptr()) };
 
-    let target = remote_pid_for_node(&node2, actor_id);
+    let target = granted_target_for_node(
+        &node1,
+        &node2,
+        actor_id,
+        inbound_test_codec(void_ask_probe_dispatch, 0),
+        1,
+    );
     // SAFETY: this is a remote void ask; null payload/size are valid and no reply buffer is expected.
     let (reply, status) = unsafe {
         ask_for_test(
-            &raw const target,
+            target.route(),
             inbound_test_codec(void_ask_probe_dispatch, 0),
             1,
             TEST_U32_REQUEST.cast_mut(),
@@ -532,11 +348,11 @@ fn two_node_remote_ask_reply() {
     // send_reply_envelope uses hew_connmgr_conn_id_for_node to find the accepted
     // connection whose peer_node_id == 311, enabling the reply to flow back to node1.
     let send_value: u32 = 21;
-    let target = remote_pid_for_node(&node2, actor_id);
+    let target = granted_target_for_node(&node1, &node2, actor_id, test_dispatch(), 1);
     // SAFETY: send_value is a valid u32 on the stack; reply is sized-block-allocated, freed below.
     let (reply, status) = unsafe {
         ask_for_test(
-            &raw const target,
+            target.route(),
             test_dispatch(),
             1,
             (&raw const send_value).cast::<c_void>().cast_mut(),
@@ -597,20 +413,20 @@ fn two_node_remote_call_wakes_on_wire_reply() {
     unsafe { wait_for_handshake(node1.as_ptr(), node2.as_ptr()) };
 
     let send_value: u32 = 21;
-    let target = remote_pid_for_node(&node2, actor_id);
+    let target = granted_target_for_node(&node1, &node2, actor_id, test_dispatch(), 1);
     let (readiness, waker) = crate::wake::blocking::Readiness::new();
     // SAFETY: send_value is a valid u32 on the stack; the waker is live.
     let call = unsafe {
-        raw_location_call_for_test(
-            &raw const target,
+        remote_call::start_granted_call(
+            Ok(target.route()),
             test_dispatch(),
             1,
             (&raw const send_value).cast::<c_void>().cast_mut(),
             std::mem::size_of::<u32>(),
             std::mem::size_of::<u32>(),
-            NO_ASK_DEADLINE_MS,
             -1,
             waker.descriptor(),
+            crate::request_state::RequestKind::CallWait,
         )
     };
     // SAFETY: `call` is live and exclusively driven here.
@@ -664,11 +480,17 @@ fn two_node_inbound_orphaned_ask_reports_orphaned() {
     // SAFETY: both node pointers remain valid until teardown.
     unsafe { wait_for_handshake(node1.as_ptr(), node2.as_ptr()) };
 
-    let target = remote_pid_for_node(&node2, actor_id);
+    let target = granted_target_for_node(
+        &node1,
+        &node2,
+        actor_id,
+        inbound_test_codec(orphaned_void_ask_dispatch, 0),
+        1,
+    );
     // SAFETY: this is a remote void ask; null payload/size are valid.
     let (_, status) = unsafe {
         ask_for_test(
-            &raw const target,
+            target.route(),
             inbound_test_codec(orphaned_void_ask_dispatch, 0),
             1,
             TEST_U32_REQUEST.cast_mut(),
@@ -724,14 +546,21 @@ fn two_node_inbound_actor_stopped_reports_actor_stopped() {
     // SAFETY: both node pointers remain valid until teardown.
     unsafe { wait_for_handshake(node1.as_ptr(), node2.as_ptr()) };
 
+    let target = granted_target_for_node(
+        &node1,
+        &node2,
+        actor_id,
+        inbound_test_codec(noop_dispatch, 0),
+        1,
+    );
+
     // SAFETY: actor was spawned above and remains valid while stopped here.
     unsafe { crate::actor::hew_actor_stop(actor) };
 
-    let target = remote_pid_for_node(&node2, actor_id);
     // SAFETY: this is a remote void ask; null payload/size are valid.
     let (_, status) = unsafe {
         ask_for_test(
-            &raw const target,
+            target.route(),
             inbound_test_codec(noop_dispatch, 0),
             1,
             TEST_U32_REQUEST.cast_mut(),
@@ -763,7 +592,7 @@ fn two_node_inbound_actor_stopped_reports_actor_stopped() {
 
 /// A remote ask targeting an actor id that was never spawned at all (a
 /// bogus serial under the peer's real node identity and session) must
-/// report `ActorStopped`/`Dead`, the same as a genuinely freed one below.
+/// report `StaleRef`/`Dead`, the same as a genuinely freed one below.
 /// Before the fix, the connection reader's `location_matches_local` gate
 /// silently dropped ANY envelope whose target wasn't a tracked live actor
 /// — never spawned or already freed alike — before `node_inbound_router`
@@ -806,12 +635,12 @@ fn two_node_inbound_ask_to_never_spawned_actor_reports_dead() {
             .expect("authorized test node has a session"),
     )
     .expect("bogus location must still be well-formed");
-    let target = HewLocation::from(location);
+    let target = (location, 1);
 
     // SAFETY: this is a remote void ask; null payload/size are valid.
     let (_, status) = unsafe {
         ask_for_test(
-            &raw const target,
+            target,
             inbound_test_codec(noop_dispatch, 0),
             1,
             TEST_U32_REQUEST.cast_mut(),
@@ -827,8 +656,8 @@ fn two_node_inbound_ask_to_never_spawned_actor_reports_dead() {
     );
     assert_eq!(
         status,
-        AskError::ActorStopped as i32,
-        "a remote ask to a never-spawned actor must report ActorStopped, not a silent drop"
+        AskError::StaleRef as i32,
+        "an unknown exact target must report StaleRef, not a silent drop"
     );
     assert_eq!(
         AskError::ALL[usize::try_from(status).expect("ask status")].public_role(),
@@ -877,10 +706,16 @@ fn two_node_inbound_dead_actor_ask_reports_dead_not_decode_failure() {
     // SAFETY: both node pointers remain valid until teardown.
     unsafe { wait_for_handshake(node1.as_ptr(), node2.as_ptr()) };
 
-    let target = remote_pid_for_node(&node2, actor_id);
+    let target = granted_target_for_node(
+        &node1,
+        &node2,
+        actor_id,
+        inbound_test_codec(noop_dispatch, 0),
+        1,
+    );
 
     // Fully free the actor — not merely stop it — before the ask arrives,
-    // so `dispatch_ptr_by_id` on the receiving node has no tracked entry
+    // so the receiving node's incarnation lookup has no tracked entry
     // at all (the dead case), distinct from the stopped-but-tracked case
     // `two_node_inbound_actor_stopped_reports_actor_stopped` covers.
     // SAFETY: actor was spawned above and remains valid until freed here.
@@ -892,7 +727,7 @@ fn two_node_inbound_dead_actor_ask_reports_dead_not_decode_failure() {
     // SAFETY: this is a remote void ask; null payload/size are valid.
     let (_, status) = unsafe {
         ask_for_test(
-            &raw const target,
+            target.route(),
             inbound_test_codec(noop_dispatch, 0),
             1,
             TEST_U32_REQUEST.cast_mut(),
@@ -908,8 +743,8 @@ fn two_node_inbound_dead_actor_ask_reports_dead_not_decode_failure() {
     );
     assert_eq!(
         status,
-        AskError::ActorStopped as i32,
-        "a remote ask to a dead (fully freed) actor must report ActorStopped, matching a \
+        AskError::StaleRef as i32,
+        "a granted call to a freed actor must report StaleRef, matching a \
          local dead target's reason rather than DecodeFailure"
     );
     assert_eq!(
@@ -962,11 +797,17 @@ fn two_node_inbound_mailbox_full_reports_mailbox_full() {
     // SAFETY: both node pointers remain valid until teardown.
     unsafe { wait_for_handshake(node1.as_ptr(), node2.as_ptr()) };
 
-    let target = remote_pid_for_node(&node2, actor_id);
+    let target = granted_target_for_node(
+        &node1,
+        &node2,
+        actor_id,
+        inbound_test_codec(noop_dispatch, 0),
+        1,
+    );
     // SAFETY: this is a remote void ask; null payload/size are valid.
     let (_, status) = unsafe {
         ask_for_test(
-            &raw const target,
+            target.route(),
             inbound_test_codec(noop_dispatch, 0),
             1,
             TEST_U32_REQUEST.cast_mut(),
@@ -1023,11 +864,17 @@ fn two_node_remote_nonvoid_empty_reply_returns_null() {
     // SAFETY: both node pointers remain valid until the end of the test.
     unsafe { wait_for_handshake(node1.as_ptr(), node2.as_ptr()) };
 
-    let target = remote_pid_for_node(&node2, actor_id);
+    let target = granted_target_for_node(
+        &node1,
+        &node2,
+        actor_id,
+        inbound_test_codec(void_ask_probe_dispatch, 0),
+        1,
+    );
     // SAFETY: non-void remote ask expects a u32-sized reply; an empty success must fail closed.
     let (_, status) = unsafe {
         ask_for_test(
-            &raw const target,
+            target.route(),
             inbound_test_codec(void_ask_probe_dispatch, 0),
             1,
             TEST_U32_REQUEST.cast_mut(),
@@ -1082,11 +929,17 @@ fn two_node_remote_ask_timeout_reports_timeout() {
     // SAFETY: both node pointers remain valid until the end of the test.
     unsafe { wait_for_handshake(node1.as_ptr(), node2.as_ptr()) };
 
-    let target = remote_pid_for_node(&node2, actor_id);
+    let target = granted_target_for_node(
+        &node1,
+        &node2,
+        actor_id,
+        inbound_test_codec(blocked_ask_probe_dispatch, std::mem::size_of::<u32>()),
+        1,
+    );
     // SAFETY: the actor pid and null payload are valid for this remote ask probe.
     let (_, status) = unsafe {
         ask_for_test(
-            &raw const target,
+            target.route(),
             inbound_test_codec(blocked_ask_probe_dispatch, std::mem::size_of::<u32>()),
             1,
             TEST_U32_REQUEST.cast_mut(),
@@ -1202,11 +1055,17 @@ fn node_stop_wakes_pending_remote_ask() {
     // SAFETY: both node pointers remain valid until the end of the test.
     unsafe { wait_for_handshake(node1.as_ptr(), node2.as_ptr()) };
 
-    let target = remote_pid_for_node(&node2, actor_id);
+    let target = granted_target_for_node(
+        &node1,
+        &node2,
+        actor_id,
+        inbound_test_codec(blocked_ask_probe_dispatch, std::mem::size_of::<u32>()),
+        1,
+    );
     // SAFETY: the actor pid and null payload are valid for this remote ask probe.
     let ask_handle = thread::spawn(move || unsafe {
         let (_, err) = ask_for_test(
-            &raw const target,
+            target.route(),
             inbound_test_codec(blocked_ask_probe_dispatch, std::mem::size_of::<u32>()),
             1,
             TEST_U32_REQUEST.cast_mut(),
@@ -1296,11 +1155,17 @@ fn connection_drop_wakes_pending_remote_ask() {
         outbound_conn_id,
     );
 
-    let target = remote_pid_for_node(&node2, actor_id);
+    let target = granted_target_for_node(
+        &node1,
+        &node2,
+        actor_id,
+        inbound_test_codec(blocked_ask_probe_dispatch, std::mem::size_of::<u32>()),
+        1,
+    );
     // SAFETY: the actor pid and null payload are valid for this remote ask probe.
     let ask_handle = thread::spawn(move || unsafe {
         let (_, err) = ask_for_test(
-            &raw const target,
+            target.route(),
             inbound_test_codec(blocked_ask_probe_dispatch, std::mem::size_of::<u32>()),
             1,
             TEST_U32_REQUEST.cast_mut(),
@@ -1399,11 +1264,17 @@ fn swim_dead_wakes_pending_remote_ask_with_partition() {
         outbound_conn_id,
     );
 
-    let target = remote_pid_for_node(&node2, actor_id);
+    let target = granted_target_for_node(
+        &node1,
+        &node2,
+        actor_id,
+        inbound_test_codec(blocked_ask_probe_dispatch, std::mem::size_of::<u32>()),
+        1,
+    );
     // SAFETY: the actor pid and null payload are valid for this remote ask probe.
     let ask_handle = thread::spawn(move || unsafe {
         let (_, err) = ask_for_test(
-            &raw const target,
+            target.route(),
             inbound_test_codec(blocked_ask_probe_dispatch, std::mem::size_of::<u32>()),
             1,
             TEST_U32_REQUEST.cast_mut(),

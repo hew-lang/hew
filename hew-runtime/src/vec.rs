@@ -3548,48 +3548,6 @@ pub unsafe extern "C" fn hew_vec_reverse_i32(v: *mut HewVec) {
     }
 }
 
-// ---------------------------------------------------------------------------
-// bytes <-> HewVec helpers (used by codec wrappers)
-// ---------------------------------------------------------------------------
-
-/// Extract raw bytes from a `bytes`-typed `HewVec` (i32 elements, one byte per slot).
-///
-/// # Safety
-///
-/// `v` must be a valid, non-null pointer to a `HewVec` with i32 element size.
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) unsafe fn hwvec_to_u8(v: *mut HewVec) -> Vec<u8> {
-    cabi_guard!(v.is_null(), Vec::new());
-    // SAFETY: caller guarantees v is a valid HewVec.
-    let len = unsafe { hew_vec_len(v) };
-    (0..len)
-        .map(|i| {
-            // SAFETY: i < len.
-            #[expect(clippy::cast_sign_loss, reason = "byte values stored as i32 are 0-255")]
-            // SAFETY: i < len, so this read is in-bounds.
-            let b = unsafe { hew_vec_get_i32(v, i) } as u8;
-            b
-        })
-        .collect()
-}
-
-/// Create a new bytes-typed `HewVec` (i32 elements) from a raw u8 slice.
-///
-/// # Safety
-///
-/// None — all memory is managed by the runtime allocator.
-// Used only by vec.rs round-trip tests; file_io.rs migrated to BytesTriple ABI.
-#[cfg(test)]
-pub(crate) unsafe fn u8_to_hwvec(data: &[u8]) -> *mut HewVec {
-    // SAFETY: hew_vec_new allocates a valid HewVec.
-    let v = unsafe { hew_vec_new() };
-    for &b in data {
-        // SAFETY: v is non-null (hew_vec_new aborts on OOM).
-        unsafe { hew_vec_push_i32(v, i32::from(b)) };
-    }
-    v
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4250,41 +4208,6 @@ mod tests {
             assert_eq!(hew_vec_get_i32(saved, 2), 3);
             hew_vec_free(saved);
             hew_vec_free(v);
-        }
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    #[test]
-    fn test_vec_hwvec_to_u8_roundtrip() {
-        // SAFETY: FFI calls use valid data slices and vec pointers.
-        unsafe {
-            let data: &[u8] = &[72, 101, 108, 108, 111]; // "Hello"
-            let v = u8_to_hwvec(data);
-            let result = hwvec_to_u8(v);
-            assert_eq!(result, data);
-            hew_vec_free(v);
-        }
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    #[test]
-    fn test_vec_hwvec_to_u8_empty() {
-        // SAFETY: Empty slice is valid input to u8_to_hwvec.
-        unsafe {
-            let v = u8_to_hwvec(&[]);
-            let result = hwvec_to_u8(v);
-            assert!(result.is_empty());
-            hew_vec_free(v);
-        }
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    #[test]
-    fn test_vec_hwvec_to_u8_null() {
-        // SAFETY: Null is explicitly handled by hwvec_to_u8.
-        unsafe {
-            let result = hwvec_to_u8(core::ptr::null_mut());
-            assert!(result.is_empty());
         }
     }
 

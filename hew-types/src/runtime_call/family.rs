@@ -37,33 +37,16 @@ pub enum RuntimeCallFamily {
         op: EncodingOp,
     },
     // --- Actor cooperate/link/monitor/unlink/spawn surface ------------------
-    ActorAsk,
-    ActorAskWithChannel,
     /// `MonitorRef::close` → `hew_actor_demonitor(ref_id: u64) -> void`.
     /// In the drop path, codegen extracts `ref_id` from the struct alloca
     /// via `build_struct_gep` + `build_load` and passes it directly.
     /// Present as a `RuntimeCallFamily` variant for allowlist parity only;
     /// the canonical path is `RuntimeDropDescriptor::MonitorRefClose`.
     ActorDemonitor,
-    /// `hew_actor_gen_sink_complete(actor, sink) -> void` — a `receive gen
-    /// fn` stream-producer pump's clean (generator-exhausted) exit:
-    /// deregisters the actor's gen-sink slot and frees the sink (decision
-    /// 7). Emitted only by `build_stream_producer_pump`
-    /// (the MIR stream-producer lowering); no user-facing Hew syntax reaches it.
-    /// Pre-staged like `SinkClose`, which it replaces in the pump.
-    ActorGenSinkComplete,
-    /// `hew_actor_gen_sink_register(actor, sink) -> void` — a `receive gen
-    /// fn` pump's prologue registration of its own producer sink, so a
-    /// terminal actor teardown can find and fault-close it (decision
-    /// 7). Emitted only by `build_stream_producer_pump`.
-    ActorGenSinkRegister,
     ActorLink,
     ActorMonitor,
-    ActorSelf,
     ActorCaller,
     ActorRefusalLog,
-    ActorSendById,
-    ActorSpawn,
     ActorUnlink,
 
     // --- Auto-injected mutex substrate (closure-env / generator-state) ------

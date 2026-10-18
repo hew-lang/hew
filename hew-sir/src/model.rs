@@ -1280,7 +1280,7 @@ pub fn collection_value_dependencies(
             continue;
         }
         if crate::is_identity_carrier(&ty) {
-            // A node identity, location or remote pid is fixed-width words
+            // A node identity or location is fixed-width words
             // with no owned fields: a bit copy is its complete recipe.
             continue;
         }

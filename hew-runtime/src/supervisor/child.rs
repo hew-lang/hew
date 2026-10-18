@@ -301,7 +301,7 @@ enum ChildHandleKind {
 /// Resolve one static child while the supervisor allocation is known live.
 ///
 /// Both public lookup ABIs share this discriminator authority. The stable form
-/// copies the current incarnation's `LocalPid` token while `roster` is
+/// copies the current incarnation's opaque actor token while `roster` is
 /// held, so no caller can retain or dereference the child allocation after the
 /// restart machinery replaces it.
 fn child_get_from_supervisor(
@@ -412,7 +412,7 @@ pub(crate) fn classify_null_child_slot(s: &SupervisorRoster, i: usize) -> ChildL
 
 /// Look up a static child through a stable supervisor identity.
 ///
-/// The returned `handle` word encodes the current child's stable `LocalPid`
+/// The returned `handle` word encodes the current child's opaque actor
 /// token, never a child allocation pointer. Supervisor access is pinned for the
 /// complete classified lookup; the child token is copied under `roster`.
 /// A restart after return retires that exact token, so a subsequent token send

@@ -143,9 +143,6 @@ impl ServiceExports {
         }) {
             return Err(AskError::Unauthorized);
         }
-        if !live_actors::require_remote_grant(target) {
-            return Err(AskError::StaleRef);
-        }
         state.exports.insert(
             grant_id,
             ExportRecord {
@@ -333,7 +330,7 @@ impl ServiceExports {
         &self,
         target: ActorIncarnation,
         peer: NodeSessionIdentity,
-        grant: Option<u64>,
+        grant: u64,
         handler: &str,
         publication_removed: &AtomicBool,
         claim: impl FnOnce() -> R,
@@ -342,23 +339,18 @@ impl ServiceExports {
         if state.closed {
             return Err(AskError::LocalShutdown);
         }
-        let required = live_actors::remote_grant_required(target).ok_or(AskError::StaleRef)?;
-        match grant {
-            Some(grant) => {
-                let record = state.exports.get(&grant).ok_or(AskError::Unauthorized)?;
-                if record.target != target
-                    || record.offer.recipient != peer
-                    || record
-                        .offer
-                        .handlers
-                        .binary_search_by(|candidate| candidate.as_str().cmp(handler))
-                        .is_err()
-                {
-                    return Err(AskError::Unauthorized);
-                }
-            }
-            None if required => return Err(AskError::Unauthorized),
-            None => {}
+        live_actors::with_live_incarnation(target, |_| ()).ok_or(AskError::StaleRef)?;
+        let record = state.exports.get(&grant).ok_or(AskError::Unauthorized)?;
+        if grant == 0
+            || record.target != target
+            || record.offer.recipient != peer
+            || record
+                .offer
+                .handlers
+                .binary_search_by(|candidate| candidate.as_str().cmp(handler))
+                .is_err()
+        {
+            return Err(AskError::Unauthorized);
         }
         if publication_removed.load(Ordering::Acquire) {
             return Err(AskError::ConnectionDropped);
@@ -385,7 +377,7 @@ pub(crate) struct RemoteAdmission {
     pub(crate) owner: Arc<ServiceExports>,
     pub(crate) target: ActorIncarnation,
     pub(crate) peer: NodeSessionIdentity,
-    pub(crate) grant: Option<u64>,
+    pub(crate) grant: u64,
     pub(crate) handler: String,
     pub(crate) publication_removed: Arc<AtomicBool>,
 }
@@ -406,7 +398,7 @@ impl RemoteAdmission {
             owner: Arc::clone(&manager.service_exports),
             target,
             peer: connection.peer_session(),
-            grant: (grant != 0).then_some(grant),
+            grant,
             handler: handler.to_owned(),
             publication_removed: connection.publication_removed(),
         };

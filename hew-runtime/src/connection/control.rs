@@ -3,8 +3,6 @@
 use std::ffi::c_int;
 use std::sync::atomic::Ordering;
 
-// Used by both plain and encryption-enabled envelope send paths.
-use crate::envelope::encode_envelope_frame_from_raw_parts;
 use crate::envelope::{
     decode_link_down_payload, decode_link_req_payload, decode_monitor_down_payload,
     decode_monitor_req_payload, decode_registry_gossip_payload, decode_setup_result_payload,
@@ -15,7 +13,6 @@ use crate::envelope::{
     REGISTRY_GOSSIP_OP_ADD, REGISTRY_GOSSIP_OP_REMOVE, SETUP_STATUS_ACCEPTED,
     SETUP_STATUS_TARGET_GONE, WIRE_VERSION,
 };
-use crate::mailbox_envelope::validate_cross_node_send_params;
 use crate::node_identity::Location;
 use crate::set_last_error;
 
@@ -24,38 +21,6 @@ use super::peer::wait_authenticated_peer_node_id_for_conn;
 use super::send::hew_connmgr_send_preencoded_claimed;
 use super::swim::handle_swim_control_frame;
 use super::{HewConnMgr, CONN_STATE_ACTIVE};
-
-// Used by both plain and encryption-enabled send paths in `hew_connmgr_send`.
-pub(super) unsafe fn encode_envelope(
-    target: Location,
-    identity: &str,
-    payload: *mut u8,
-    payload_len: usize,
-    payload_class: u8,
-    cancel_token_handle: u64,
-) -> Option<Vec<u8>> {
-    // Cross-node send gates (Gate 1 before Gate 2; fail-closed in all build
-    // profiles via set_last_error + return None, not debug_assert).
-    validate_cross_node_send_params(payload_class, cancel_token_handle)?;
-    // SAFETY: caller guarantees `payload` is valid for `payload_len` bytes.
-    match unsafe {
-        encode_envelope_frame_from_raw_parts(
-            Some(target),
-            None,
-            crate::envelope::EnvelopeMessage::Handler(identity.to_owned()),
-            payload.cast_const(),
-            payload_len,
-            0,
-            None,
-        )
-    } {
-        Ok(bytes) => Some(bytes),
-        Err(err) => {
-            set_last_error(format!("hew_connmgr_send: {err}"));
-            None
-        }
-    }
-}
 
 pub(super) fn encode_registry_gossip_control(
     name: &str,

@@ -228,7 +228,7 @@ fn tcp_noise_channel_never_carries_node_traffic_in_the_clear() {
         wait_for_handshake(node_a.as_ptr(), node_b.as_ptr());
     }
 
-    let mut marker = *b"hew-channel-marker:this-payload-must-never-cross-the-wire-plain!";
+    let marker = *b"hew-channel-marker:this-payload-must-never-cross-the-wire-plain!";
     // SAFETY: node_b is live for this borrow.
     let b = unsafe { &*node_b.as_ptr() };
     let location = Location::new(
@@ -244,10 +244,14 @@ fn tcp_noise_channel_never_carries_node_traffic_in_the_clear() {
         crate::envelope::encode_envelope_frame_from_raw_parts(
             Some(location),
             None,
-            crate::envelope::EnvelopeMessage::Handler("tests.Marker.handle".into()),
+            crate::envelope::EnvelopeMessage::Service {
+                handler: "tests.Marker.handle".into(),
+                grant_id: 1,
+                kind: crate::request_state::RequestKind::CallWait,
+            },
             marker.as_ptr(),
             marker.len(),
-            0,
+            1,
             None,
         )
     }
@@ -258,19 +262,13 @@ fn tcp_noise_channel_never_carries_node_traffic_in_the_clear() {
     );
 
     let before = recorded.lock_or_recover().len();
-    let hew_location = crate::node_identity::HewLocation::from(location);
     // SAFETY: node_a is live; the location and marker are valid for the call.
     let rc = unsafe {
         let mgr = (*node_a.as_ptr()).conn_mgr;
         let conn_id = connection::hew_connmgr_conn_id_for_node(mgr, 731);
-        connection::hew_connmgr_send(
-            mgr,
-            conn_id,
-            &raw const hew_location,
-            c"tests.Marker.handle".as_ptr(),
-            marker.as_mut_ptr(),
-            marker.len(),
-        )
+        connection::claim_send_to_location(&*mgr, conn_id, location)
+            .expect("authenticated target claim")
+            .send(&clear)
     };
     assert_eq!(rc, 0, "the send over the Noise channel succeeds");
     poll_until(|_| {

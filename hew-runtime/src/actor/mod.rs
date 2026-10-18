@@ -1250,9 +1250,8 @@ pub struct HewActor {
 
     /// Non-owning pointer to the `RuntimeInner` that owns this actor.
     ///
-    /// Off-dispatch producers that already hold an actor pointer can enter the
-    /// actor's owning runtime through `runtime::enter_actor_runtime` instead of
-    /// resolving through the default slot. This does not own or retain the
+    /// Pinned actor operations resolve this actor's owning runtime. This does
+    /// not own or retain the
     /// runtime: `RuntimeInner` owns the live-actor table and cleanup only drops
     /// the runtime after actors/workers are drained, so the runtime outlives every
     /// actor that carries this pointer. Null is reserved for legacy/test actors

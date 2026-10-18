@@ -830,23 +830,17 @@ pub(crate) fn activate_queued_actor(actor: *mut HewActor) {
                 #[cfg(not(target_arch = "wasm32"))]
                 if msg_ref.reply_channel.is_null()
                     && msg_ref.caller.kind == 3
-                    // A peer-tagged one-way node requires the same authenticated
-                    // request state as a completion call before it can bypass
-                    // the capability-only actor floor. Claim revalidates it below.
+                    // Every peer request requires authenticated request state.
+                    // Claim revalidates its grant at dispatch below.
                     // SAFETY: the worker owns the node and its optional envelope.
                     && !(unsafe { msg_ref.envelope.as_ref() })
                         .and_then(|envelope| envelope.request.as_ref())
                         .is_some_and(|state| state.has_authenticated_admission())
                 {
-                    // SAFETY: this worker holds the current actor activation.
-                    let target =
-                        unsafe { crate::lifetime::live_actors::ActorIncarnation::of(actor) };
-                    if crate::lifetime::live_actors::remote_grant_required(target) != Some(false) {
-                        // SAFETY: this unclaimed node and its payload belong to this worker.
-                        unsafe { hew_msg_node_free(msg) };
-                        msgs_processed += 1;
-                        continue;
-                    }
+                    // SAFETY: this unclaimed node and its payload belong to this worker.
+                    unsafe { hew_msg_node_free(msg) };
+                    msgs_processed += 1;
+                    continue;
                 }
                 // The call owner may withdraw until this exact dispatch claim.
                 // Once claimed, losing its select only tombstones the reply;
@@ -2494,7 +2488,7 @@ pub(crate) fn enqueue_resume_by_incarnation(target: ActorIncarnation) {
 ///
 /// The scheduler wake path resolves its scheduler through [`get_scheduler`] →
 /// [`runtime::rt_default`], independently of `rt_current()`, so an `enter()`
-/// (or [`runtime::enter_actor_runtime`]) does not reroute the wake. A wake for
+/// does not reroute the wake. A wake for
 /// a non-default actor must therefore resolve to that actor's runtime before it
 /// reaches the default scheduler.
 ///

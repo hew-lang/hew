@@ -27,10 +27,7 @@
 //! - [`hew_connmgr_free`] — Destroy a connection manager.
 //! - [`hew_connmgr_add`] — Add a connection (spawns reader thread).
 //! - [`hew_connmgr_remove`] — Remove and close a connection.
-//! - [`hew_connmgr_send`] — Send a message over a connection.
-//! - [`hew_connmgr_set_outbound_capacity`] — Legacy API (returns error).
 //! - [`hew_connmgr_count`] — Number of active connections.
-//! - [`hew_connmgr_broadcast`] — Send to all connections.
 #![allow(
     unsafe_op_in_unsafe_fn,
     reason = "FFI entry-point module; SAFETY documented at fn signature."

@@ -28,7 +28,7 @@ use crate::node_identity::{Location, NodeId};
 /// Current wire protocol version.
 ///
 /// Frames carrying any other version value MUST be rejected by the decoder.
-pub const WIRE_VERSION: u8 = 6;
+pub const WIRE_VERSION: u8 = 7;
 pub use crate::request_state::RequestKind;
 
 /// Discriminant for a control frame (`frame_type` field value 0).
@@ -186,7 +186,6 @@ pub struct ControlFrame {
 /// A request names a declaration; replies carry status outside that namespace.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EnvelopeMessage {
-    Handler(String),
     Service {
         handler: String,
         grant_id: u64,
@@ -201,7 +200,6 @@ pub enum EnvelopeMessage {
 impl EnvelopeMessage {
     fn to_value(&self) -> Value {
         match self {
-            Self::Handler(identity) => Value::Text(identity.clone()),
             Self::Service {
                 handler,
                 grant_id,
@@ -223,11 +221,6 @@ impl EnvelopeMessage {
 
     fn from_value(value: &Value) -> Result<Self, DecodeError> {
         match value {
-            Value::Text(identity)
-                if !identity.is_empty() && identity.len() <= 4096 && !identity.contains('\0') =>
-            {
-                Ok(Self::Handler(identity.clone()))
-            }
             Value::Map(_) => {
                 let map = collect_map(value)?;
                 ensure_exact_keys(&map, &[1, 2, 3])?;
@@ -283,7 +276,7 @@ pub struct EnvelopeFrame {
     /// CDDL key 4.
     pub source: Option<Location>,
 
-    /// Handler declaration or explicit reply status (CDDL key 5).
+    /// Granted request, reply status or withdrawal (CDDL key 5).
     pub message: EnvelopeMessage,
 
     /// Serialised message body. May be empty for zero-payload messages.
@@ -294,10 +287,9 @@ pub struct EnvelopeFrame {
     /// CDDL key 6.
     pub payload: Vec<u8>,
 
-    /// Request ID for distributed ask/reply correlation.
+    /// Positive request ID for distributed request/reply correlation.
     ///
-    /// `0` = fire-and-forget. `> 0` = a reply is expected (or this frame
-    /// is a reply to a prior ask with this ID).
+    /// Requests receive a completion; replies and withdrawals echo this ID.
     ///
     /// CDDL key 7.
     pub request_id: u64,
@@ -895,24 +887,11 @@ impl EnvelopeFrame {
             return Err("request budget exceeds the supported range");
         }
         if self.budget_ns.is_some()
-            && (self.request_id == 0
-                || !matches!(
-                    self.message,
-                    EnvelopeMessage::Handler(_) | EnvelopeMessage::Service { .. }
-                ))
+            && (self.request_id == 0 || !matches!(self.message, EnvelopeMessage::Service { .. }))
         {
             return Err("only asks may carry a request budget");
         }
         match &self.message {
-            EnvelopeMessage::Handler(identity) => {
-                if self.target.is_none()
-                    || identity.is_empty()
-                    || identity.len() > 4096
-                    || identity.contains('\0')
-                {
-                    return Err("request requires a target and bounded declaration identity");
-                }
-            }
             EnvelopeMessage::Service {
                 handler, grant_id, ..
             } => {
@@ -944,27 +923,6 @@ impl EnvelopeFrame {
             }
         }
         Ok(())
-    }
-
-    /// Construct a fire-and-forget envelope with no reply routing.
-    ///
-    /// Convenience constructor for the common case: `request_id = 0`.
-    #[must_use]
-    pub fn fire_and_forget(
-        target: Location,
-        source: Option<Location>,
-        message: EnvelopeMessage,
-        payload: Vec<u8>,
-    ) -> Self {
-        Self {
-            version: WIRE_VERSION,
-            target: Some(target),
-            source,
-            message,
-            payload,
-            request_id: 0,
-            budget_ns: None,
-        }
     }
 }
 

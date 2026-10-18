@@ -802,10 +802,11 @@ fn unregister_keeps_issued_location_live_until_actor_death() {
             crate::lifetime::live_actors::get_actor_ptr_by_id((*actor).id),
             Some(actor)
         );
+        let incarnation = crate::lifetime::live_actors::ActorIncarnation::of(actor);
         assert_eq!(crate::actor::hew_actor_free(actor), 0);
         assert_eq!(
-            hew_node_send_location(node, &raw const target, test_dispatch(), 1, ptr::null(), 0,),
-            HEW_ERR_STALE_REF
+            crate::lifetime::live_actors::with_live_incarnation(incarnation, |_| ()),
+            None
         );
         assert_eq!(hew_node_stop(node), 0);
         hew_node_free(node);

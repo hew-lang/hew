@@ -1,5 +1,4 @@
-//! Imported actor send and ask: the message moves into the runtime, which encodes
-//! it for a peer or delivers its fields to an actor on this node.
+//! Authenticated service acquisition and completion of owned peer operations.
 
 use super::*;
 
@@ -104,7 +103,14 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         self.initialize_cancellation_fault()?;
         self.leave(&mut join, suspend::EXIT_CANCEL)?;
         let selected = self.enter_join(&join)?;
-        self.release_handle(release::Handle::RemoteCall, operation)?;
+        let free = get_or_declare_external(
+            self.llvm,
+            "hew_remote_call_free",
+            self.ctx.void_type().fn_type(&[ptr.into()], false),
+        )?;
+        self.builder
+            .build_call(free, &[operation.into()], "")
+            .llvm_ctx("release remote operation")?;
         // Every remote failure is a typed `Err`; no fault reaches `unwind`.
         let _ = unwind;
         let ([normal_block], cancel_block) = self.dispatch_exits(
@@ -118,8 +124,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         self.emit_edge(cancel)
     }
 
-    /// The node's exact-location submission status, which HIR folds into
-    /// `Result<(), SendError>`.
+    /// Acquire an authenticated export or import for the checked actor interface.
     #[expect(
         clippy::too_many_arguments,
         reason = "one typed service acquisition and its continuations"

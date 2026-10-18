@@ -167,8 +167,7 @@ pub(super) fn reader_loop(
                     // session — routing correctness only. Whether the specific
                     // actor is still live is `node_inbound_router`'s decision:
                     // an ask against a dead actor gets a typed `ActorStopped`
-                    // rejection (`handle_inbound_ask`), and a send against one
-                    // is fail-closed dropped (`deliver_inbound_send`). Gating
+                    // rejection (`handle_inbound_ask`). Gating
                     // on liveness here (the former `location_matches_local`)
                     // silently dropped envelopes for an already-freed actor
                     // before either path ran, leaving the asking peer to only
@@ -192,19 +191,14 @@ pub(super) fn reader_loop(
                         );
                         continue;
                     }
-                    let (identity, grant, kind) = match &envelope.message {
-                        crate::envelope::EnvelopeMessage::Handler(identity) => {
-                            (identity, 0, crate::request_state::RequestKind::CallReject)
-                        }
-                        crate::envelope::EnvelopeMessage::Service {
-                            handler,
-                            grant_id,
-                            kind,
-                        } => (handler, *grant_id, *kind),
-                        _ => {
-                            set_last_error("request envelope has reply status");
-                            continue;
-                        }
+                    let crate::envelope::EnvelopeMessage::Service {
+                        handler: identity,
+                        grant_id: grant,
+                        kind,
+                    } = &envelope.message
+                    else {
+                        set_last_error("request envelope has reply status");
+                        continue;
                     };
                     let identity = std::ffi::CString::new(identity.as_str())
                         .expect("decoded wire identity excludes NUL");
@@ -233,9 +227,9 @@ pub(super) fn reader_loop(
                             mgr,
                             peer_identity.node_id.into(),
                             claim_token,
-                            grant,
+                            *grant,
                             deadline.raw(),
-                            kind as u8,
+                            *kind as u8,
                         );
                     }
                     if let Some(saved) = saved_ctx {

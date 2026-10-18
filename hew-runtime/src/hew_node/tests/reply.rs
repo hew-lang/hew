@@ -24,12 +24,12 @@ fn remote_ask_without_active_node_returns_null_for_nonvoid_reply() {
     assert_ne!(remote_node_id, 0);
     assert_ne!(remote_node_id, local_node_id);
 
-    let remote_pid = HewLocation::from(test_location(remote_node_id, 1));
+    let target = (test_location(remote_node_id, 1), 1);
     // SAFETY: null data with size 0 is valid; the remote path should fail
     // immediately because no active node is installed.
     let (_, status) = unsafe {
         ask_for_test(
-            &raw const remote_pid,
+            target,
             test_dispatch(),
             7,
             ptr::null_mut(),
@@ -768,19 +768,21 @@ fn remote_call_setup_expiry_and_cancel_do_not_wait_for_a_blocked_sender() {
                 let (readiness, waker) = crate::wake::blocking::Readiness::new();
                 let key = ConnectionKey::new(manager as *const connection::HewConnMgr, conn_id);
                 let call = if action == "setup" {
-                    let target = HewLocation::from(target);
                     // SAFETY: empty request, registered codec and live waker.
                     unsafe {
-                        raw_location_call_for_test(
-                            &raw const target,
+                        remote_call::start_granted_call(
+                            Ok((target, 1)),
                             test_dispatch(),
                             7,
                             ptr::null_mut(),
                             0,
                             0,
-                            TEST_REMOTE_ASK_TIMEOUT_MS,
-                            -1,
+                            crate::request_deadline::RequestDeadline::after(
+                                i64::try_from(TEST_REMOTE_ASK_TIMEOUT_MS * 1_000_000).unwrap(),
+                            )
+                            .raw(),
                             waker.descriptor(),
+                            crate::request_state::RequestKind::CallWait,
                         )
                     }
                 } else {

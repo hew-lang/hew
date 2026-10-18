@@ -1634,7 +1634,7 @@ pub(crate) fn remove_all_monitors_for_actor(actor_id: u64, _actor_addr: *mut Hew
     let own_shard = get_shard_index(actor_id);
     let target_refs = state.table[own_shard].access(|shard| {
         // Incarnation identities never reuse within a runtime. Preserve the
-        // terminal cause for monitors created through a retired LocalPid.
+        // terminal cause for monitors created through a retired actor token.
         let monitors = shard.monitors.remove(&actor_id).unwrap_or_default();
         for m in &monitors {
             shard.ref_to_monitor.remove(&m.ref_id);

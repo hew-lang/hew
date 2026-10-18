@@ -534,9 +534,9 @@ pub(super) fn remove_connection(
     // routing table — BEFORE removing the connection from mgr.connections.
     //
     // This eliminates the TOCTOU window where hew_routing_lookup returns
-    // route-ok while hew_connmgr_send returns -1 (connection already gone
+    // route-ok while send claims fail (connection already gone
     // from the list). After the route is removed, any new routing lookup for
-    // this peer returns no route, so no new hew_connmgr_send calls are
+    // this peer returns no route, so no new send claims are
     // dispatched to this conn_id. Route removal is idempotent; the full
     // retire_connection_publication call at the end of this function repeats
     // the routing step (no-op second time) and then fires the cluster

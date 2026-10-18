@@ -129,20 +129,20 @@ setup-result-payload = {
 ; tooling and documentation can cross-reference both representations.
 ;
 ; Replies have nil target/source and a positive request_id.
-; request_id is 0 for fire-and-forget; > 0 means a reply is expected (or this
-; is a reply to a prior ask).
+; Every request carries a recipient-bound grant and a positive request_id.
+; Replies and withdrawals echo that request_id.
 
 envelope-frame = {
     version:          1 => wire-version,
     frame_type:       2 => 1,            ; 1 = envelope
     target:           3 => location / nil, ; nil only for replies
     source:           4 => location / nil,
-    message:          5 => handler-identity / service-request / reply-status / withdrawal,
+    message:          5 => service-request / reply-status / withdrawal,
     payload:          6 => bstr,         ; serialised message body; 0..* bytes.
                                          ; The bytes inside this bstr are the
                                          ; per-`#[wire]`-type CBOR body described
                                          ; by `wire-body.cddl` (`wire-body` rule).
-    request_id:       7 => uint,         ; 0 = fire-and-forget
+    request_id:       7 => uint .gt 0,
     budget_ns:        8 => (0..9223372036854775807) / nil, ; remaining ask budget
 }
 
@@ -168,7 +168,7 @@ reply-status = 0 / 1 / 3 ; success / failure after admission or unknown / not ad
 ; Withdrawal has a target, nil source/budget, positive request_id and empty payload.
 withdrawal = 2
 
-wire-version = 6        ; current schema version; decoders reject unknown values
+wire-version = 7        ; current schema version; decoders reject unknown values
 node-id = bstr .size 16
 location = {
     node:        1 => node-id,

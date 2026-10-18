@@ -1,8 +1,6 @@
 use super::*;
 use crate::peer_binding::{ConfigState, PeerCredential, PEER_AUTH_STATE};
-use std::process::{Child, Command, Output, Stdio};
-use std::sync::atomic::AtomicU32;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 mod api;
 mod channel_security;
@@ -12,7 +10,6 @@ mod lifecycle;
 mod remote_wire;
 mod reply;
 mod swim;
-mod two_process;
 
 /// Ask deadline for tests whose outcome IS the timeout: no reply can ever
 /// arrive, so a late-firing deadline on a loaded host still reports Timeout.
@@ -43,11 +40,11 @@ fn test_location(route_slot: u16, actor_slot: u64) -> Location {
     Location::new(test_node_id(route_slot), actor_slot, 1).unwrap()
 }
 
-fn remote_pid_for_node(node: &TestNode, actor_id: u64) -> HewLocation {
+fn location_for_test_node(node: &TestNode, actor_id: u64) -> Location {
     // SAFETY: `TestNode` owns a live, non-null node pointer for this test.
     let node = unsafe { node.as_ptr().as_ref() }.expect("test node must be live");
     assert_eq!(crate::pid::hew_pid_node(actor_id), node.route_slot);
-    let location = Location::new(
+    Location::new(
         node.auth
             .node_identity()
             .expect("authorized test node must have an identity"),
@@ -56,8 +53,61 @@ fn remote_pid_for_node(node: &TestNode, actor_id: u64) -> HewLocation {
             .session_incarnation()
             .expect("authorized test node must have a session"),
     )
-    .expect("test actor must produce a valid location");
-    HewLocation::from(location)
+    .expect("test actor must produce a valid location")
+}
+
+/// Retain the real recipient-bound export while a transport probe drives its call.
+struct GrantedTestTarget {
+    location: Location,
+    grant: u64,
+    _export: service::ExportLease,
+}
+
+impl GrantedTestTarget {
+    fn route(&self) -> (Location, u64) {
+        (self.location, self.grant)
+    }
+}
+
+fn granted_target_for_node(
+    recipient: &TestNode,
+    owner: &TestNode,
+    actor_id: u64,
+    dispatch: *const c_void,
+    message: i32,
+) -> GrantedTestTarget {
+    let location = location_for_test_node(owner, actor_id);
+    let handler = crate::xnode_serial::lookup_request(dispatch, message)
+        .unwrap()
+        .identity;
+    // SAFETY: both TestNodes own their running managers through this export.
+    let manager = unsafe { &*(*owner.as_ptr()).conn_mgr };
+    // SAFETY: the recipient TestNode remains live throughout this export.
+    let recipient = unsafe { &*recipient.as_ptr() }
+        .auth
+        .node_identity()
+        .unwrap();
+    let claim = connection::claim_send_by_identity(manager, recipient, None).unwrap();
+    let target = crate::lifetime::live_actors::with_actor_send_by_id(actor_id, |actor| {
+        // SAFETY: this exact actor is pinned until its incarnation is copied.
+        unsafe { crate::lifetime::live_actors::ActorIncarnation::of(actor) }
+    })
+    .unwrap();
+    let (export, offer) = manager
+        .service_exports
+        .export(
+            claim.peer_session(),
+            1,
+            target,
+            location,
+            vec![handler.into()],
+        )
+        .unwrap();
+    GrantedTestTarget {
+        location,
+        grant: offer.grant_id,
+        _export: export,
+    }
 }
 
 unsafe fn lookup_exact(node: *mut HewNode, name: *const c_char) -> Option<Location> {
@@ -96,14 +146,8 @@ impl Drop for RealSchedulerGuard {
 
 // ── Test-only u32 codec ──────────────────────────────────────────────
 //
-// The two-process remote-send/ask tests transmit a controlled `u32` rather
-// than a Hew-compiled struct, so no codegen-emitted codec exists for their
-// `TWO_PROCESS_REGISTRY_MSG_TYPE`. The cross-node send path now requires a
-// registered codec (fail-closed: no raw-byte escape). These thunks provide
-// the trivial u32 serialize/deserialize the tests need, matching the codec
-// ABI exactly (ser: (value_ptr, out_len) -> bytes; deser: (data, len,
-// out_struct_size) -> value). They register for the request AND, for asks,
-// the reply (both sides of an echo are u32).
+// Transport and ingress controls use a u32 codec with the same request/reply
+// ownership contract as codegen-emitted codecs.
 
 unsafe extern "C" fn test_u32_serialize(
     value_ptr: *const std::ffi::c_void,
@@ -169,7 +213,7 @@ fn dispatch_key(f: crate::internal::types::HewDispatchFn) -> *const c_void {
 }
 
 /// Canonical codec key for the single-process two-node round-trip tests and
-/// the two-process client side: the echo actor is spawned with
+/// the granted transport probes: the echo actor is spawned with
 /// `ask_probe_dispatch`, so its inbound decode resolves that pointer. The
 /// register, the ask FFI arg, and the spawned-actor dispatch all use this.
 fn test_dispatch() -> *const c_void {
@@ -278,32 +322,10 @@ fn inbound_test_codec(
     key
 }
 
-/// Register the `u32` request codec for `msg_type` under `dispatch`'s key.
-fn inbound_test_request_codec(
-    dispatch: crate::internal::types::HewDispatchFn,
-    msg_type: i32,
-    identity: &'static std::ffi::CStr,
-) -> *const c_void {
-    let key = dispatch_key(dispatch);
-    // SAFETY: the thunks match the codec ABI.
-    unsafe {
-        crate::xnode_serial::hew_xnode_register_codec(
-            key,
-            msg_type,
-            identity.as_ptr(),
-            test_u32_serialize,
-            test_u32_deserialize,
-            Some(test_u32_drop),
-            std::mem::size_of::<u32>(),
-        );
-    }
-    key
-}
-
 /// Drive one coroutine remote call to its outcome on this thread: the
 /// taken reply bytes and the `AskError` tag.
 unsafe fn ask_for_test(
-    target: *const HewLocation,
+    target: (Location, u64),
     dispatch: *const c_void,
     msg_type: i32,
     data: *mut c_void,
@@ -314,16 +336,19 @@ unsafe fn ask_for_test(
     let (readiness, waker) = crate::wake::blocking::Readiness::new();
     // SAFETY: the caller's request satisfies the call; the waker is live.
     let call = unsafe {
-        raw_location_call_for_test(
-            target,
+        remote_call::start_granted_call(
+            Ok(target),
             dispatch,
             msg_type,
             data,
             size,
             reply_size,
-            timeout_ms,
-            -1,
+            crate::request_deadline::RequestDeadline::after(
+                i64::try_from(u128::from(timeout_ms) * 1_000_000).unwrap_or(i64::MAX),
+            )
+            .raw(),
             waker.descriptor(),
+            crate::request_state::RequestKind::CallReject,
         )
     };
     // SAFETY: this thread exclusively drives the live call.
@@ -345,7 +370,6 @@ unsafe extern "C" fn test_u32_drop(_value: *mut c_void) {}
 /// request and reply codec, so the send/ask paths can serialize their
 /// controlled payloads. `dispatch` MUST be the dispatch fn the target echo
 /// actor is spawned with (the inbound decode resolves it from the actor).
-/// Idempotent across helper processes (each registers in its own process).
 fn register_test_u32_codec(
     dispatch: *const c_void,
     msg_type: i32,
@@ -487,81 +511,6 @@ fn start_tcp_test_listener_node(node_id: u16) -> (TestNode, u16) {
     (node, port)
 }
 
-/// Environment key naming the pre-generated Noise keyfile a two-process
-/// helper loads its stable identity from (brokered by the parent test).
-const TWO_PROCESS_KEYFILE_ENV: &str = "HEW_2P_KEYFILE";
-
-/// Environment key carrying the peer's Noise static pubkey (lowercase hex)
-/// for the helper to bind via its per-node snapshot before connecting.
-const TWO_PROCESS_PEER_PUBKEY_ENV: &str = "HEW_2P_PEER_PUBKEY";
-
-/// Start a **credentialed, Strict-authorized** TCP-Noise listener node for a
-/// two-process helper (issue #2652, D110).
-///
-/// Reads the pre-generated Noise keyfile (`HEW_2P_KEYFILE`) and the peer's
-/// Noise static pubkey (`HEW_2P_PEER_PUBKEY`, lowercase hex) — the parent
-/// test brokered both out-of-band, mirroring a real key exchange. Installs a
-/// per-node snapshot with the stable Noise identity + a
-/// `peer_node → NoiseKey(peer_pub)` binding, so the TCP-Noise handshake
-/// authenticates the peer and the claim machine binds its `NodeId`. This is a
-/// genuine authorized connection — there is no test-only posture promotion:
-/// a peer presenting an unbound Noise key fails the pre-gate and admission.
-fn start_authorized_tcp_node(
-    node_id: u16,
-    peer_node: u16,
-) -> (TestNode, u16, crate::node_identity::NodeId) {
-    use crate::peer_binding::{PeerAuthConfig, NOISE_KEY_LEN};
-
-    let keyfile = std::env::var(TWO_PROCESS_KEYFILE_ENV).expect("2p keyfile env");
-    let peer_pub_hex = std::env::var(TWO_PROCESS_PEER_PUBKEY_ENV).expect("2p peer pubkey env");
-
-    let identity = crate::encryption::noise_identity_load_or_create(std::path::Path::new(&keyfile))
-        .expect("load 2p noise identity");
-    let peer_pub_bytes = decode_hex(&peer_pub_hex).expect("2p peer pubkey must be hex");
-    assert_eq!(
-        peer_pub_bytes.len(),
-        NOISE_KEY_LEN,
-        "2p peer pubkey must be a 32-byte Noise static key"
-    );
-    let mut peer_pub = [0u8; NOISE_KEY_LEN];
-    peer_pub.copy_from_slice(&peer_pub_bytes);
-    let peer_identity = crate::node_identity::NodeId::from_noise_static_key(&peer_pub);
-
-    let mut config = PeerAuthConfig::default();
-    config.local_route_slot = std::num::NonZeroU16::new(node_id);
-    config.node_identity = Some(crate::node_identity::NodeId::from_noise_static_key(
-        &identity.public(),
-    ));
-    config.identity_path = Some(std::path::PathBuf::from(&keyfile));
-    config.noise_identity = Some(identity);
-    config
-        .pin_peer(peer_node, PeerCredential::NoiseKey(peer_pub))
-        .expect("distinct two-process peer pin");
-    let snapshot = config.snapshot_for_start().expect("acquire 2p session");
-
-    let bind_addr = CString::new("127.0.0.1:0").expect("valid bind addr");
-    // SAFETY: bind_addr is a valid C string for the duration of this helper.
-    let node = unsafe { TestNode::new(node_id, &bind_addr) };
-    assert!(!node.as_ptr().is_null(), "authorized tcp node alloc failed");
-    // SAFETY: node is freshly created (STOPPED); install the snapshot before start.
-    let set_rc = unsafe { hew_node_set_auth_snapshot(node.as_ptr(), snapshot) };
-    assert_eq!(set_rc, 0, "install 2p auth snapshot on node {node_id}");
-    // SAFETY: node pointer is valid; start selects TCP from the snapshot and
-    // reads the installed strict bindings.
-    let rc = unsafe { hew_node_start(node.as_ptr()) };
-    assert_eq!(
-        rc,
-        0,
-        "authorized tcp start({node_id}) failed: {:?}",
-        crate::stream_error::take_last_error()
-    );
-    // SAFETY: node started successfully on the TCP transport.
-    let port =
-        unsafe { crate::transport::hew_transport_tcp_bound_port((*node.as_ptr()).transport) }
-            .expect("authorized tcp node must expose its bound listener port");
-    (node, port, peer_identity)
-}
-
 /// Start one TCP-Noise node with a stable identity that pins each
 /// `(route slot, Noise static key)` in `pins`.
 fn start_tcp_node_pinning(
@@ -634,296 +583,6 @@ fn start_authorized_tcp_pair(id_a: u16, id_b: u16) -> (TestNode, u16, TestNode, 
     let (node_a, port_a) = start_tcp_node_pinning(id_a, identity_a, &path_a, &[(id_b, pub_b)]);
     let (node_b, port_b) = start_tcp_node_pinning(id_b, identity_b, &path_b, &[(id_a, pub_a)]);
     (node_a, port_a, node_b, port_b)
-}
-
-const TWO_PROCESS_REGISTRY_SERVER_NODE: u16 = 620;
-
-const TWO_PROCESS_REGISTRY_CLIENT_NODE: u16 = 621;
-
-const TWO_PROCESS_REGISTRY_MSG_TYPE: i32 = 123;
-
-const TWO_PROCESS_REGISTRY_NAME: &str = "two-process-registry-worker";
-
-const TWO_PROCESS_ASK_ECHO_NAME: &str = "two-process-ask-echo-worker";
-
-const TWO_PROCESS_ASK_TIMEOUT_NAME: &str = "two-process-ask-timeout-worker";
-
-const TWO_PROCESS_ASK_DEAD_NAME: &str = "two-process-ask-dead-worker";
-
-const TWO_PROCESS_HELPER_ENV: &str = "HEW_REGISTRY_GOSSIP_HELPER";
-
-const TWO_PROCESS_READY_FILE_ENV: &str = "HEW_REGISTRY_GOSSIP_READY_FILE";
-
-const TWO_PROCESS_SERVER_PORT_ENV: &str = "HEW_REGISTRY_GOSSIP_SERVER_PORT";
-
-/// Client writes this file once it has resolved the dead-actor test's
-/// registered pid over gossip, so the server knows it is safe to free the
-/// actor: `hew_actor_free` unregisters the name and emits a gossip-remove,
-/// which would make a too-early free leave the lookup unresolved forever
-/// instead of exercising a genuinely dead-actor ask.
-const TWO_PROCESS_RESOLVED_FILE_ENV: &str = "HEW_REGISTRY_GOSSIP_RESOLVED_FILE";
-
-/// Client writes this file once its ask has resolved, so the server knows
-/// it is safe to stop its node: stopping (and dropping the connection)
-/// before a slow-but-successful round trip arrives would surface
-/// `ConnectionDropped` instead of the rejection reason under test.
-const TWO_PROCESS_DONE_FILE_ENV: &str = "HEW_REGISTRY_GOSSIP_DONE_FILE";
-
-/// Server writes this file once `hew_actor_free` has fully returned, so
-/// the client sends its ask only after the target is unreachably dead.
-/// Without this barrier, an ask that lands while the actor is mid-`stop`
-/// (submitted just after `hew_actor_stop` but before `hew_actor_free`
-/// untracks it) can race the mailbox teardown's orphaned-ask completion
-/// and hang rather than resolve — a distinct, pre-existing mailbox-
-/// teardown race, not what this fix addresses. Serializing the ask after
-/// a *complete* free reproduces the reported dead-actor symptom without
-/// that unrelated race's flakiness.
-const TWO_PROCESS_FREED_FILE_ENV: &str = "HEW_REGISTRY_GOSSIP_FREED_FILE";
-
-static TWO_PROCESS_REGISTRY_DELIVERY: (Mutex<bool>, Condvar) = (Mutex::new(false), Condvar::new());
-
-static TWO_PROCESS_ASK_OBSERVED: (Mutex<bool>, Condvar) = (Mutex::new(false), Condvar::new());
-
-struct ManagedChild {
-    name: &'static str,
-    child: Option<Child>,
-}
-
-impl ManagedChild {
-    fn new(name: &'static str, child: Child) -> Self {
-        Self {
-            name,
-            child: Some(child),
-        }
-    }
-
-    fn try_wait(&mut self) -> Option<std::process::ExitStatus> {
-        self.child
-            .as_mut()
-            .expect("child already waited")
-            .try_wait()
-            .expect("child try_wait failed")
-    }
-
-    fn wait_output(&mut self, timeout: Duration) -> Output {
-        let child = self.child.take().expect("child already waited");
-        wait_child_output(self.name, child, timeout)
-    }
-}
-
-impl Drop for ManagedChild {
-    fn drop(&mut self) {
-        let Some(mut child) = self.child.take() else {
-            return;
-        };
-        if child.try_wait().ok().flatten().is_none() {
-            let _ = child.kill();
-        }
-        let _ = child.wait();
-    }
-}
-
-fn wait_child_output(name: &str, mut child: Child, timeout: Duration) -> Output {
-    let deadline = Instant::now() + timeout;
-    loop {
-        if child.try_wait().expect("child try_wait failed").is_some() {
-            return child.wait_with_output().expect("child output failed");
-        }
-        if Instant::now() >= deadline {
-            let pid = child.id();
-            let _ = child.kill();
-            let output = child.wait_with_output().expect("timed-out child output");
-            panic!(
-                "{name} helper process {pid} timed out\nstdout:\n{}\nstderr:\n{}",
-                String::from_utf8_lossy(&output.stdout),
-                String::from_utf8_lossy(&output.stderr)
-            );
-        }
-        thread::sleep(Duration::from_millis(20));
-    }
-}
-
-fn assert_child_success(name: &str, output: &Output) {
-    assert!(
-        output.status.success(),
-        "{name} helper failed with status {:?}\nstdout:\n{}\nstderr:\n{}",
-        output.status.code(),
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-}
-
-fn spawn_registry_gossip_helper(
-    helper_name: &'static str,
-    role: &'static str,
-    envs: &[(&str, String)],
-) -> ManagedChild {
-    let mut command = Command::new(std::env::current_exe().expect("current test binary"));
-    command
-        .args(["--exact", helper_name, "--nocapture"])
-        .env("RUST_TEST_THREADS", "1")
-        .env(TWO_PROCESS_HELPER_ENV, role)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    for (key, value) in envs {
-        command.env(key, value);
-    }
-    ManagedChild::new(role, command.spawn().expect("spawn helper process"))
-}
-
-fn wait_for_ready_port(
-    ready_file: &std::path::Path,
-    server: &mut ManagedChild,
-    timeout: Duration,
-) -> u16 {
-    let deadline = Instant::now() + timeout;
-    loop {
-        if let Ok(text) = std::fs::read_to_string(ready_file) {
-            if let Ok(port) = text.trim().parse::<u16>() {
-                return port;
-            }
-        }
-        if server.try_wait().is_some() {
-            let output = server.wait_output(Duration::from_secs(1));
-            panic!(
-                "server exited before writing readiness file\nstdout:\n{}\nstderr:\n{}",
-                String::from_utf8_lossy(&output.stdout),
-                String::from_utf8_lossy(&output.stderr)
-            );
-        }
-        assert!(
-            Instant::now() < deadline,
-            "server did not write readiness file before timeout"
-        );
-        thread::sleep(Duration::from_millis(20));
-    }
-}
-
-fn wait_for_single_connection(node: *mut HewNode, timeout: Duration) -> bool {
-    let deadline = Instant::now() + timeout;
-    loop {
-        // SAFETY: caller passes a live node pointer for this bounded wait.
-        if unsafe { connection::hew_connmgr_count((*node).conn_mgr) > 0 } {
-            return true;
-        }
-        if Instant::now() >= deadline {
-            return false;
-        }
-        thread::sleep(Duration::from_millis(20));
-    }
-}
-
-fn wait_for_remote_lookup(
-    node: *mut HewNode,
-    name: *const c_char,
-    expected_node_id: crate::node_identity::NodeId,
-    timeout: Duration,
-) -> Option<HewLocation> {
-    let deadline = Instant::now() + timeout;
-    loop {
-        // SAFETY: node/name are valid for this bounded wait.
-        let location = unsafe { lookup_exact(node, name) };
-        if let Some(location) = location {
-            if location.node() == expected_node_id {
-                return Some(HewLocation::from(location));
-            }
-        }
-        if Instant::now() >= deadline {
-            return None;
-        }
-        thread::sleep(Duration::from_millis(20));
-    }
-}
-
-fn reset_two_process_delivery() {
-    let mut delivered = TWO_PROCESS_REGISTRY_DELIVERY
-        .0
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    *delivered = false;
-}
-
-fn wait_for_two_process_delivery(timeout: Duration) -> bool {
-    let deadline = Instant::now() + timeout;
-    let mut delivered = TWO_PROCESS_REGISTRY_DELIVERY
-        .0
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    while !*delivered {
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        if remaining.is_zero() {
-            return false;
-        }
-        let (guard, result) = TWO_PROCESS_REGISTRY_DELIVERY
-            .1
-            .wait_timeout(delivered, remaining)
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        delivered = guard;
-        if result.timed_out() && !*delivered {
-            return false;
-        }
-    }
-    true
-}
-
-fn reset_two_process_ask_observed() {
-    let mut observed = TWO_PROCESS_ASK_OBSERVED
-        .0
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    *observed = false;
-}
-
-fn mark_two_process_ask_observed() {
-    let mut observed = TWO_PROCESS_ASK_OBSERVED
-        .0
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    *observed = true;
-    TWO_PROCESS_ASK_OBSERVED.1.notify_all();
-}
-
-fn wait_for_two_process_ask_observed(timeout: Duration) -> bool {
-    let deadline = Instant::now() + timeout;
-    let mut observed = TWO_PROCESS_ASK_OBSERVED
-        .0
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    while !*observed {
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        if remaining.is_zero() {
-            return false;
-        }
-        let (guard, result) = TWO_PROCESS_ASK_OBSERVED
-            .1
-            .wait_timeout(observed, remaining)
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        observed = guard;
-        if result.timed_out() && !*observed {
-            return false;
-        }
-    }
-    true
-}
-
-unsafe extern "C-unwind" fn two_process_registry_dispatch(
-    _ctx: *mut crate::execution_context::HewExecutionContext,
-    _state: *mut c_void,
-    msg_type: i32,
-    _data: *mut c_void,
-    _size: usize,
-    _borrow_mode: i32,
-) -> *mut c_void {
-    if msg_type == TWO_PROCESS_REGISTRY_MSG_TYPE {
-        let mut delivered = TWO_PROCESS_REGISTRY_DELIVERY
-            .0
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        *delivered = true;
-        TWO_PROCESS_REGISTRY_DELIVERY.1.notify_all();
-    }
-
-    std::ptr::null_mut()
 }
 
 /// Start a node whose transport has been pre-allocated as a `quic_mesh`
@@ -1224,56 +883,12 @@ unsafe fn wait_for_member_state_at_least(observer: *mut HewNode, subject: u16, m
 
 // ── Test: fire-and-forget remote message delivery ─────────────────────
 
-/// Stores the `msg_type` of the most-recently received remote message.
-static SEND_PROBE_MSG_TYPE: AtomicU32 = AtomicU32::new(0);
-
-unsafe extern "C-unwind" fn send_probe_dispatch(
-    _ctx: *mut crate::execution_context::HewExecutionContext,
-    _state: *mut c_void,
-    msg_type: i32,
-    _data: *mut c_void,
-    _size: usize,
-    _borrow_mode: i32,
-) -> *mut c_void {
-    #[expect(
-        clippy::cast_sign_loss,
-        reason = "msg_type is a non-negative tag in this test"
-    )]
-    SEND_PROBE_MSG_TYPE.store(msg_type as u32, Ordering::Release);
-
-    std::ptr::null_mut()
-}
-
 // ── Test: fire-and-forget remote message delivery (quic_mesh) ─────────
 //
 // Mirrors `two_node_remote_send_delivery` but routes the payload over the
 // native `quic_mesh` transport (mTLS-pinned per-actor-pair streams) rather
 // than TCP. Two in-process nodes mutually pin each other's SPKIs in their
 // per-node auth snapshots and inject the matching TLS identities.
-
-/// Stores the `msg_type` of the most-recently received remote message on
-/// the `quic_mesh` path.  Separate from `SEND_PROBE_MSG_TYPE` so the two
-/// tests can run independently without static-state cross-talk.
-#[cfg(feature = "quic")]
-static SEND_PROBE_MSG_TYPE_QM: AtomicU32 = AtomicU32::new(0);
-
-#[cfg(feature = "quic")]
-unsafe extern "C-unwind" fn send_probe_dispatch_qm(
-    _ctx: *mut crate::execution_context::HewExecutionContext,
-    _state: *mut c_void,
-    msg_type: i32,
-    _data: *mut c_void,
-    _size: usize,
-    _borrow_mode: i32,
-) -> *mut c_void {
-    #[expect(
-        clippy::cast_sign_loss,
-        reason = "msg_type is a non-negative tag in this test"
-    )]
-    SEND_PROBE_MSG_TYPE_QM.store(msg_type as u32, Ordering::Release);
-
-    std::ptr::null_mut()
-}
 
 /// Build a mutually-pinned `(MeshTls, MeshTls)` pair so two in-process
 /// `quic_mesh` nodes can complete the handshake. Returns
@@ -1330,7 +945,6 @@ unsafe extern "C-unwind" fn ask_probe_dispatch(
     // Mark observed only AFTER the reply has been handed to the channel, so
     // the server helper (which tears down on observe) cannot drop the
     // connection before the reply flushes to the asking node.
-    mark_two_process_ask_observed();
 
     std::ptr::null_mut()
 }
@@ -1376,8 +990,6 @@ unsafe extern "C-unwind" fn blocked_ask_probe_dispatch(
     _size: usize,
     _borrow_mode: i32,
 ) -> *mut c_void {
-    mark_two_process_ask_observed();
-
     std::ptr::null_mut()
 }
 

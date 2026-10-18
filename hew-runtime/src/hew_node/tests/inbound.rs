@@ -582,6 +582,19 @@ fn queued_withdrawal_requires_the_exact_request_and_connection_publication() {
         }
         let claim = connection::claim_send_by_identity(manager, peer_id, None).unwrap();
         let publication = claim.publication_token;
+        let location = connection::local_location_for_actor(manager, actor_id).unwrap();
+        // SAFETY: the test retains this actor throughout both publication checks.
+        let target = unsafe { crate::lifetime::live_actors::ActorIncarnation::of(actor) };
+        let (_export, offer) = manager
+            .service_exports
+            .export(
+                claim.peer_session(),
+                42,
+                target,
+                location,
+                vec!["tests.Counter.handle".into()],
+            )
+            .unwrap();
         handle_inbound_ask(
             actor_id,
             "tests.Counter.handle",
@@ -592,7 +605,7 @@ fn queued_withdrawal_requires_the_exact_request_and_connection_publication() {
             Arc::new(AtomicBool::new(false)),
             crate::actor_caller::HewCallerStamp::peer(peer_id.into()),
             publication,
-            0,
+            offer.grant_id,
             crate::request_deadline::RequestDeadline::default(),
             crate::request_state::RequestKind::CallReject,
         );
@@ -643,16 +656,7 @@ fn service_revocation_refuses_an_already_queued_dispatch_claim() {
     };
     let claim = connection::claim_send_by_identity(manager, peer_id, None).unwrap();
     let location = connection::local_location_for_actor(manager, actor_id).unwrap();
-    let (export, offer) = manager
-        .service_exports
-        .export(
-            claim.peer_session(),
-            99,
-            incarnation,
-            location,
-            vec!["tests.Counter.handle".into()],
-        )
-        .unwrap();
+    // An authenticated peer cannot call even a never-exported actor without a grant.
     assert!(matches!(
         super::super::service::RemoteAdmission::new(
             manager,
@@ -664,6 +668,16 @@ fn service_revocation_refuses_an_already_queued_dispatch_claim() {
         ),
         Err(AskError::Unauthorized)
     ));
+    let (export, offer) = manager
+        .service_exports
+        .export(
+            claim.peer_session(),
+            99,
+            incarnation,
+            location,
+            vec!["tests.Counter.handle".into()],
+        )
+        .unwrap();
     assert!(matches!(
         super::super::service::RemoteAdmission::new(
             manager,

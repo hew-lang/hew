@@ -87,7 +87,7 @@ fn connmgr_free_sets_reader_stop_before_transport_close() {
 
 /// Regression: `hew_connmgr_remove` must remove the route from the routing
 /// table BEFORE removing the connection from `mgr.connections`. There must be no
-/// window where `hew_routing_lookup` returns a `conn_id` that `hew_connmgr_send`
+/// window where `hew_routing_lookup` returns a `conn_id` whose send claim
 /// would reject (route-ok but conn already gone from the list).
 #[test]
 #[expect(

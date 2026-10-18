@@ -358,6 +358,11 @@ fn main() {
 }
 
 #[test]
+fn select_plain_call_source_executes() {
+    assert_native_manifest("select-plain-call-arm", hew_compile::SourceSet::in_memory());
+}
+
+#[test]
 fn select_keeps_a_losing_task_joinable() {
     let trace = execute(
         r"fn delayed(n: i64, delay: duration) -> i64 {

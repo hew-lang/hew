@@ -83,6 +83,7 @@
 .PHONY: coverage coverage-runtime
 .PHONY: fuzz-corpus fuzz-oracle fuzz-oracle-selftest fuzz-smoke fuzz-smoke-bootstrap-install
 .PHONY: perf-verify-linear
+.PHONY: bench-calibration bench-calibration-smoke test-bench-calibration
 .PHONY: compile-determinism-verify compile-determinism-verify-build compile-determinism-selftest compile-determinism-selftest-build ir-size-verify
 .PHONY: hew-check-all
 .PHONY: downstream-check
@@ -1229,6 +1230,16 @@ HEW_BIN ?= $(RELEASE_LIB_HEW)
 #         tests/perf/verify-linear.sh
 perf-verify-linear: hew ## Test: physical lowering stays linear in awaits per function
 	HEW_BIN="$(HEW_BIN)" bash tests/perf/verify-linear.sh
+
+BENCH_CALIBRATION_ARGS ?=
+bench-calibration: ## Measure: compare primitive, scheduling and application build costs
+	$(MAKE) -C examples/benchmarks/calibration run HEW="$(abspath $(HEW_BIN))" ARGS="$(BENCH_CALIBRATION_ARGS)"
+
+bench-calibration-smoke: ## Test: execute the calibration workloads with checked results
+	$(MAKE) -C examples/benchmarks/calibration smoke HEW="$(abspath $(HEW_BIN))" ARGS="$(BENCH_CALIBRATION_ARGS)"
+
+test-bench-calibration: ## Test: reject invalid calibration measurements and failed commands
+	$(MAKE) -C examples/benchmarks/calibration check
 
 # Fast hew-runtime target: runs lib unit tests and all integration tests without the heavy
 # QUIC/TLS/profiler feature stack (quinn, rustls, rcgen, ring, hyper). Noise (snow) is

@@ -1,0 +1,160 @@
+//! Scheduler calibration. Actor setup and one warm-up task precede timing.
+//! Fanout times concurrent request/reply clients, including their task lifetime.
+//! Timer sleeps run in a task, so they exercise the runtime timer path.
+import std.os;
+
+import std.string;
+
+import std.time.datetime;
+
+type Measurement {
+    elapsed_ns: i64;
+    checksum: i64;
+    latencies_ns: Vec<i64>;
+}
+
+actor Counter {
+    var count: i64;
+    receive fn increment() -> i64 {
+        count += 1;
+        count
+    }
+}
+
+fn ready(index: i64) -> i64 {
+    index % 251
+}
+
+fn increment(counter: Counter) -> i64 {
+    match counter.increment() {
+        .Ok(value) => value,
+        .Err(_) => panic("counter request failed"),
+    }
+}
+
+fn client(counter: Counter, iterations: i64) -> i64 {
+    var sum = 0;
+    for _ in 0..iterations {
+        sum += increment(counter);
+    }
+    sum
+}
+
+fn task_ready(iterations: i64, size: i64) -> Measurement {
+    var sum = 0;
+    let start = datetime.now_nanos();
+    var offset = 0;
+    while offset < iterations {
+        let end = if offset + size < iterations {
+            offset + size
+        } else {
+            iterations
+        };
+        var tasks = [fork ready(offset)];
+        for index in (offset + 1) .. end {
+            tasks.push(fork ready(index));
+        }
+        let values = await tasks;
+        for value in values {
+            sum += value;
+        }
+        offset = end;
+    }
+    Measurement { elapsed_ns: datetime.now_nanos() - start, checksum: sum, latencies_ns: Vec.new() }
+}
+
+fn actor_roundtrip(iterations: i64, measure_latencies: bool) -> Measurement {
+    let counter = spawn Counter { count: 0 };
+    var samples: Vec<i64> = Vec.new();
+    var sum = 0;
+    let start = datetime.now_nanos();
+    for index in 0..iterations {
+        if measure_latencies {
+            let before = datetime.now_nanos();
+            sum += increment(counter);
+            let elapsed = datetime.now_nanos() - before;
+            if index < 10000 {
+                samples.push(elapsed);
+            }
+        } else {
+            sum += increment(counter);
+        }
+    }
+    let elapsed = datetime.now_nanos() - start;
+    stop(counter);
+    stopped(counter);
+    Measurement { elapsed_ns: elapsed, checksum: sum, latencies_ns: samples }
+}
+
+fn actor_fanout(iterations: i64, size: i64) -> Measurement {
+    var counters: Vec<Counter> = Vec.new();
+    for _ in 0..size {
+        counters.push(spawn Counter { count: 0 });
+    }
+    let start = datetime.now_nanos();
+    var clients = [fork client(counters[0], iterations)];
+    for index in 1..size {
+        clients.push(fork client(counters[index], iterations));
+    }
+    let sums = await clients;
+    var sum = 0;
+    for value in sums {
+        sum += value;
+    }
+    let elapsed = datetime.now_nanos() - start;
+    for counter in counters {
+        stop(counter);
+        stopped(counter);
+    }
+    Measurement { elapsed_ns: elapsed, checksum: sum, latencies_ns: Vec.new() }
+}
+
+fn timer(iterations: i64) -> Measurement {
+    var samples: Vec<i64> = Vec.new();
+    let start = datetime.now_nanos();
+    for index in 0..iterations {
+        let before = datetime.now_nanos();
+        sleep(1ms);
+        let overshoot = datetime.now_nanos() - before - 1000000;
+        if index < 10000 {
+            samples.push(if overshoot > 0 {
+                overshoot
+            } else {
+                0
+            });
+        }
+    }
+    Measurement { elapsed_ns: datetime.now_nanos() - start, checksum: iterations, latencies_ns: samples }
+}
+
+fn main() {
+    let arguments = os.args();
+    if arguments.len() != 4 {
+        panic("usage: concurrency WORKLOAD ITERATIONS SIZE");
+    }
+    let workload = arguments[1];
+    let iterations = string.to_int(arguments[2]).expect("positive iteration count");
+    let size = string.to_int(arguments[3]).expect("positive size");
+    if iterations <= 0 || size <= 0 {
+        panic("iterations and size must be positive");
+    }
+    let _ = await fork ready(0);
+    let measured = match workload {
+        "task_ready" => task_ready(iterations, size),
+        "actor_roundtrip" => actor_roundtrip(iterations, true),
+        "actor_roundtrip_alloc" => actor_roundtrip(iterations, false),
+        "actor_fanout" => actor_fanout(iterations, size),
+        "timer" => await fork timer(iterations),
+        _ => panic("unknown concurrency workload"),
+    };
+    var samples = "[";
+    for index in 0..measured.latencies_ns.len() {
+        if index > 0 {
+            samples = samples + ",";
+        }
+        samples = samples + f"{measured.latencies_ns[index]}";
+    }
+    samples = samples + "]";
+    let fields = f"\"workload\":\"{workload}\",\"iterations\":{iterations},\"size\":{size},\"elapsed_ns\":{measured.elapsed_ns},\"checksum\":{measured.checksum},\"latencies_ns\":{samples}";
+    println("{" + fields + "}");
+}

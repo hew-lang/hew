@@ -141,15 +141,6 @@ impl RuntimeCallFamily {
                 physical: RuntimePhysicalForm::NotAnAction,
                 c_return: RuntimeCReturn::Storage,
             },
-            Self::LinkRemote => RuntimeOpRow {
-                authority: RuntimeAuthority::Ambient,
-                symbol: "hew_node_link_remote_location",
-                contract: None,
-                staging: RuntimeStaging::Declared,
-                abi_shape: RuntimeCallAbiShape::Other,
-                physical: RuntimePhysicalForm::NotAnAction,
-                c_return: RuntimeCReturn::Storage,
-            },
             Self::ActorMonitor => RuntimeOpRow {
                 authority: RuntimeAuthority::Service,
                 symbol: "hew_actor_monitor",
@@ -5142,15 +5133,6 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NodeResult,
-                c_return: RuntimeCReturn::Storage,
-            },
-            Self::NodeMonitor => RuntimeOpRow {
-                authority: RuntimeAuthority::Ambient,
-                symbol: "hew_node_monitor_location",
-                contract: None,
-                staging: RuntimeStaging::Declared,
-                abi_shape: RuntimeCallAbiShape::Other,
-                physical: RuntimePhysicalForm::NotAnAction,
                 c_return: RuntimeCReturn::Storage,
             },
             Self::NodeRegister => RuntimeOpRow {

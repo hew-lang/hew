@@ -652,7 +652,6 @@ fn synthetic_builtin_sentinel_ids_are_pairwise_distinct() {
             "hew_stream_try_send_layout",
             SYNTHETIC_STREAM_TRY_SEND_LAYOUT_ITEM,
         ),
-        ("link_remote", SYNTHETIC_LINK_REMOTE_ITEM),
     ];
     for (i, (name_a, id_a)) in ids.iter().enumerate() {
         for (name_b, id_b) in &ids[i + 1..] {

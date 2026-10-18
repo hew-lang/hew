@@ -59,7 +59,13 @@ fn node_register_rejects_location() {
 "#,
     );
     assert!(
-        !output.errors.is_empty(),
+        output.errors.iter().any(|error| {
+            error.kind == TypeErrorKind::InvalidOperation
+                && error
+                    .message
+                    .contains("`Node.register` expects an actor handle")
+                && error.message.contains("`Location` is not one")
+        }),
         "Node::register must reject discovery metadata: {:#?}",
         output.errors
     );

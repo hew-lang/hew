@@ -58,14 +58,6 @@ pub enum RuntimeCallFamily {
     /// 7). Emitted only by `build_stream_producer_pump`.
     ActorGenSinkRegister,
     ActorLink,
-    /// `link_remote(Location, PartitionPolicy)` →
-    /// `hew_node_link_remote_location(target, policy_tag) -> i64`. Establishes a
-    /// cross-node link: a local actor links a remote actor so the remote's
-    /// death (exit / crash / partition) fires the per-link `PartitionPolicy`
-    /// (`CrashLinked` crashes the local actor). Distinct from `ActorLink` (the
-    /// process-local pointer-keyed link); the cross-node form has no local
-    /// `HewActor*` for the remote peer.
-    LinkRemote,
     ActorMonitor,
     ActorSelf,
     ActorCaller,
@@ -215,14 +207,6 @@ pub enum RuntimeCallFamily {
     NodeIdentityKey,
     NodeLoadKeys,
     NodeLookup,
-    /// `monitor(Location)` →
-    /// `hew_node_monitor_location(target, out_monitor_id) -> i32`.
-    /// Zero returns success and writes the distributed-monitor id; non-zero is
-    /// one plus the `LinkError` discriminant. Codegen assembles
-    /// `Result<MonitorRef, LinkError>`. The current node is resolved
-    /// internally, so the single runtime argument is a pointer to the carried
-    /// full `Location`; non-consuming.
-    NodeMonitor,
     NodeRegister,
     NodeSetTransport,
     NodeShutdown,

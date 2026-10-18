@@ -298,17 +298,8 @@ impl LowerCtx {
         // discover inner monomorphisations.
         self.call_site_type_args
             .insert(call_site, type_args.clone());
-        // A generic synthetic builtin (`link_remote<T>`)
-        // has a `fn_registry` entry for arity + type-param resolution but no
-        // AST `fn` body. MIR lowers it through the runtime-call path
-        // (`runtime_symbol_for_call_expr` reads the C symbol off the
-        // `builtin_family` catalog bijection), never as a monomorphised body.
-        // Recording a registry entry here would mint a `MonoKey` whose origin
-        // `ItemId` is absent from `module.items`, so the MIR monomorphisation
-        // loop fails closed with "unknown origin fn id" for every concrete
-        // instantiation. The per-call-site type args recorded above are the
-        // only data downstream needs (codegen reads element layout from
-        // `call_site_type_args`); skip the body-monomorphisation entry.
+        // Runtime builtins carry call-site type arguments, but their runtime
+        // implementation has no source body to monomorphise.
         if builtin_family.is_some() {
             return;
         }

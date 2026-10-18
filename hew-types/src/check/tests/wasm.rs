@@ -1244,23 +1244,6 @@ fn register() {
 "
     }
 
-    fn remote_monitor_returns_typed_result_source() -> &'static str {
-        r"actor Worker {
-    receive fn ping() {}
-}
-
-fn register(remote: Location) {
-    let result: Result<MonitorRef, LinkError> = monitor(remote);
-    match result {
-        .Ok(m) => {
-            m.close();
-        }
-        .Err(_) => {}
-    }
-}
-"
-    }
-
     fn structured_concurrency_scope_source() -> &'static str {
         // `scope { .. }` is a statement, not a `Primary` (HEW-SPEC-2026 §4.2),
         // so the WASM admission check sees it through a statement-expression.
@@ -1483,11 +1466,16 @@ fn main() {}
     }
 
     #[test]
-    fn remote_monitor_returns_typed_result() {
-        let output = check_native(remote_monitor_returns_typed_result_source());
+    fn location_cannot_be_monitored() {
+        let output =
+            check_native("fn monitor_discovery(location: Location) { let _ = monitor(location); }");
         assert!(
-            output.errors.is_empty(),
-            "monitor(Location) should return Result<MonitorRef, LinkError>; got: {:?}",
+            output.errors.iter().any(|error| {
+                error.kind == TypeErrorKind::InvalidOperation
+                    && error.message.contains("`monitor` expects an actor handle")
+                    && error.message.contains("`Location` is not one")
+            }),
+            "discovery metadata must not grant actor lifecycle authority: {:?}",
             output.errors
         );
     }

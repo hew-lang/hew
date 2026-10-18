@@ -731,7 +731,6 @@ impl RuntimeCallFamily {
             | F::ActorAskWithChannel
             | F::ActorDemonitor
             | F::ActorLink
-            | F::LinkRemote
             | F::ActorMonitor
             | F::ActorSelf
             | F::ActorCaller
@@ -831,7 +830,6 @@ impl RuntimeCallFamily {
             | F::NodeIdentityKey
             | F::NodeLoadKeys
             | F::NodeLookup
-            | F::NodeMonitor
             | F::NodeRegister
             | F::NodeSetTransport
             | F::NodeShutdown

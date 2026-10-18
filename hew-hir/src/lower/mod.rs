@@ -352,14 +352,6 @@ const SYNTHETIC_MONITOR_ITEM: ItemId = ItemId(u32::MAX / 2 - 10);
 /// builtin with no AST `fn` item. Resolves to
 /// `ResolvedRef::Builtin(ActorUnlink)` via `builtin_family`.
 const SYNTHETIC_UNLINK_ITEM: ItemId = ItemId(u32::MAX / 2 - 18);
-/// Synthetic-builtin sentinel `ItemId` for the user-facing `link_remote` builtin.
-/// The checker (`registration.rs`) registers `link_remote` as a 2-arg
-/// `(Location, PartitionPolicy) → Result<(), LinkError>` builtin with no AST
-/// `fn` item; it resolves to `ResolvedRef::Builtin(LinkRemote)` via
-/// `builtin_family` and MIR reads the C symbol `hew_node_link_remote_location` off the
-/// catalog bijection.
-const SYNTHETIC_LINK_REMOTE_ITEM: ItemId = ItemId(u32::MAX / 2 - 20);
-
 /// Synthetic-builtin sentinel `ItemId` for the static `instant::now()`
 /// constructor. The `impl instant` block in `std/builtins.hew` binds it via
 /// `#[extern_symbol(hew_instant_now)]`, but a no-receiver static call resolves

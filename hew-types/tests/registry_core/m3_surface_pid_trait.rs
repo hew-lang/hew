@@ -116,6 +116,36 @@ fn main() {
 }
 
 #[test]
+fn wire_actor_handler_rejects_callable_reply() {
+    let output = typecheck(
+        r"fn inc(x: i64) -> i64 { x + 1 }
+
+#[wire]
+type Job {
+    n: i32 @1;
+}
+
+actor Worker {
+    #[wire]
+    receive fn run(job: Job) -> fn(i64) -> i64 { inc }
+}
+
+fn use_actor(worker: Worker) {
+    let _ = worker.run(Job { n: 9 });
+}
+",
+    );
+    assert!(
+        output.errors.iter().any(|error| {
+            error.message.contains("wire handler `Worker.run`")
+                && error.message.contains("fn(i64) -> i64")
+        }),
+        "a callable reply must be refused by the wire handler contract: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
 fn local_pid_remote_conversion_is_not_public() {
     let removed_method = ["to_remote", "_via"].concat();
     let source = r#"

@@ -242,11 +242,15 @@ fn assert_remapped_debug_source(dir: &Path, roots: &[PathBuf; 2]) {
         &roots[1].join("main.hew"),
         "// relocated-source-marker\nfn main() {}\n",
     );
+    let source_root = roots[1]
+        .to_string_lossy()
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"");
     let mut command = Command::new("gdb");
     command
         .current_dir(dir)
         .args(["--batch", "--nx", "-ex"])
-        .arg(format!("set substitute-path . {}", roots[1].display()))
+        .arg(format!("set substitute-path . \"{source_root}\""))
         .args(["-ex", "list main.hew:1"])
         .arg(binary(&moved, "linked"));
     let output = run_bounded_command(command, "read remapped debugger source");

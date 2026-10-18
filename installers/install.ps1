@@ -472,7 +472,7 @@ try {
         }
 
         # Copy binaries
-        foreach ($bin in @("hew", "hew-lsp", "hew-observe")) {
+        foreach ($bin in @("hew")) {
             # On Windows, binaries have .exe extension
             foreach ($ext in @(".exe", "")) {
                 $src = Join-Path $innerDir.FullName "bin/${bin}${ext}"

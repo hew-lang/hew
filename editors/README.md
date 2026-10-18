@@ -6,9 +6,8 @@ For VSCode, see [vscode-hew](https://github.com/hew-lang/vscode-hew).
 
 ## Language Server
 
-The Hew language server is the standalone `hew-lsp` binary crate. LSP clients
-can launch `hew-lsp` directly or use `hew lsp`, which launches the sibling
-`hew-lsp` binary. See the [LSP editor setup guide](../docs/dev/lsp-editor-setup.md)
+The Hew language server is linked into `hew`. LSP clients launch `hew` with
+`lsp` as the first argument. See the [LSP editor setup guide](../docs/dev/lsp-editor-setup.md)
 for discovery and configuration details.
 
 The [Hew v0.6.1 SDK](https://github.com/hew-lang/hew/releases/tag/v0.6.1)
@@ -19,13 +18,13 @@ whether a compiler supports a construct.
 From a source checkout:
 
 ```sh
-make hew-lsp
-# binary: target/debug/hew-lsp
+make hew-native
+# binary: target/debug/hew lsp
 ```
 
 For installation instructions, see the
 [LSP editor setup guide](../docs/dev/lsp-editor-setup.md).
-For quick testing from a checkout, run `target/debug/hew-lsp`. See
+For quick testing from a checkout, run `target/debug/hew lsp`. See
 [`../hew-lsp/README.md`](../hew-lsp/README.md) for crate-specific details.
 
 ## Vim / Neovim

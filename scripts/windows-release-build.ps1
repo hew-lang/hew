@@ -106,7 +106,7 @@ if ($LASTEXITCODE -ne 0) {
 # actual output location.  Capturing these messages from THIS build also makes a
 # stale executable/archive elsewhere on disk unusable as release evidence.
 $ReleaseBuildMessages = @(
-    & cargo build -p hew-cli -p hew-lsp -p hew-observe --release --frozen --message-format=json
+    & cargo build -p hew-cli --release --frozen --message-format=json
 )
 Assert-NativeSuccess 'cargo build release binaries'
 
@@ -174,8 +174,6 @@ function Resolve-UniqueCargoArtifact(
 $ReleaseArtifacts = Get-CargoCompilerArtifacts $ReleaseBuildMessages 'release binary build'
 $ReleaseLibArtifacts = Get-CargoCompilerArtifacts $ReleaseLibBuildMessages 'release-lib build'
 $Hew = Resolve-UniqueCargoArtifact $ReleaseArtifacts 'hew.exe' 'release binary build' -Executable
-$HewLsp = Resolve-UniqueCargoArtifact $ReleaseArtifacts 'hew-lsp.exe' 'release binary build' -Executable
-$HewObserve = Resolve-UniqueCargoArtifact $ReleaseArtifacts 'hew-observe.exe' 'release binary build' -Executable
 $ReleaseLib = Resolve-UniqueCargoArtifact $ReleaseLibArtifacts 'hew.lib' 'release-lib build'
 $ReleaseDir = Split-Path -Parent $Hew
 $ReleaseLibDir = Split-Path -Parent $ReleaseLib
@@ -191,11 +189,11 @@ Assert-NativeSuccess 'release library consumer proof'
 & $Hew --version
 Assert-NativeSuccess 'hew.exe --version'
 
-& $HewLsp --version
-Assert-NativeSuccess 'hew-lsp.exe --version'
+& $Hew lsp --version
+Assert-NativeSuccess 'hew.exe lsp --version'
 
-& $HewObserve --version
-Assert-NativeSuccess 'hew-observe.exe --version'
+& $Hew observe --version
+Assert-NativeSuccess 'hew.exe observe --version'
 
 # Compile and execute a minimal program in this same process so it inherits the
 # candidate-local TEMP/TMP, Cargo target, LLVM, and Visual Studio environment

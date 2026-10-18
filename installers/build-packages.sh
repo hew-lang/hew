@@ -194,14 +194,12 @@ build_tarball() {
     rm -rf "${staging_root}"
     mkdir -p "${staging}/bin" "${staging}/lib" "${staging}/std" "${staging}/include" "${staging}/completions"
 
-    for bin in hew hew-lsp hew-observe; do
-        if [[ -f "${release_dir}/${bin}" ]]; then
-            cp "${release_dir}/${bin}" "${staging}/bin/"
-            chmod +x "${staging}/bin/${bin}"
-        else
-            warn "binary not found: ${release_dir}/${bin}"
-        fi
-    done
+    if [[ -f "${release_dir}/hew" ]]; then
+        cp "${release_dir}/hew" "${staging}/bin/"
+        chmod +x "${staging}/bin/hew"
+    else
+        warn "binary not found: ${release_dir}/hew"
+    fi
 
     # `make release` owns the complete library product: the flat native
     # fallback, target-specific native archives, and portable WASI archives.
@@ -456,7 +454,7 @@ build_alpine() {
         info "cargo" "Building Rust binaries for ${musl_target}..."
         (cd "${REPO_DIR}" &&
             cargo build --release --target "${musl_target}" \
-                -p hew-cli -p hew-lsp -p hew-observe)
+                -p hew-cli)
         info "cargo" "Building hew-lib (release-lib) for ${musl_target}..."
         (cd "${REPO_DIR}" &&
             cargo build --profile release-lib --target "${musl_target}" -p hew-lib)
@@ -475,14 +473,12 @@ build_alpine() {
         musl_release_lib="$(
             _cargo_output_dir --native --profile release-lib --target "${musl_target}"
         )"
-        for bin in hew hew-lsp hew-observe; do
-            if [[ -f "${musl_release}/${bin}" ]]; then
-                cp "${musl_release}/${bin}" "${staging}/bin/"
-                chmod +x "${staging}/bin/${bin}"
-            else
-                warn "musl binary not found: ${musl_release}/${bin}"
-            fi
-        done
+        if [[ -f "${musl_release}/hew" ]]; then
+            cp "${musl_release}/hew" "${staging}/bin/"
+            chmod +x "${staging}/bin/hew"
+        else
+            warn "musl binary not found: ${musl_release}/hew"
+        fi
 
         if [[ -f "${musl_release_lib}/libhew.a" ]]; then
             cp "${musl_release_lib}/libhew.a" "${staging}/lib/"
@@ -604,8 +600,6 @@ RUN apk add --no-cache \
       gcompat \
       ca-certificates
 COPY --from=fetch /tmp/hew-install/hew/bin/hew           /usr/local/bin/hew
-COPY --from=fetch /tmp/hew-install/hew/bin/hew-lsp       /usr/local/bin/hew-lsp
-COPY --from=fetch /tmp/hew-install/hew/bin/hew-observe   /usr/local/bin/hew-observe
 COPY --from=fetch /tmp/hew-install/hew/lib               /usr/local/lib/hew/
 COPY --from=fetch /tmp/hew-install/hew/std               /usr/local/share/hew/std/
 COPY --from=fetch /tmp/hew-install/hew/include           /usr/local/include/

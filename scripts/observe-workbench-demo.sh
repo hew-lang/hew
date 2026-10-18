@@ -22,7 +22,7 @@ Usage: scripts/observe-workbench-demo.sh [run|snapshot|record-tui|replay]
 
   run         Run the real Hew workload with hot profiling on 127.0.0.1:6067.
   snapshot    Run it and save one-second API snapshots plus program output.
-  record-tui  Record a real hew-observe terminal session. Uses asciinema when
+  record-tui  Record a real hew observe terminal session. Uses asciinema when
               installed, otherwise portable util-linux script timing files.
   replay      Replay the latest util-linux script recording.
 
@@ -33,7 +33,7 @@ Environment:
   HEW_OBSERVE_DEMO_SECONDS    terminal recording limit (default 18)
   HEW_OBSERVE_DEMO_ROWS       recorded terminal rows (default 36)
   HEW_OBSERVE_DEMO_COLS       recorded terminal columns (default 120)
-  HEW_OBSERVE_BIN             hew-observe executable (default PATH lookup)
+  HEW_BIN                     hew executable (default PATH lookup)
 USAGE
 }
 
@@ -74,14 +74,12 @@ wait_for_profiler() {
 }
 
 resolve_observer() {
-    if [[ -n "${HEW_OBSERVE_BIN:-}" ]]; then
-        printf '%s\n' "${HEW_OBSERVE_BIN}"
-    elif command -v hew-observe >/dev/null 2>&1; then
-        command -v hew-observe
-    elif [[ -x "${repo_root}/target/debug/hew-observe" ]]; then
-        printf '%s\n' "${repo_root}/target/debug/hew-observe"
+    if [[ -n "${HEW_BIN:-}" ]]; then
+        printf '%s\n' "${HEW_BIN}"
+    elif command -v hew >/dev/null 2>&1; then
+        command -v hew
     else
-        echo "hew-observe was not found; build it with: cargo build -p hew-observe" >&2
+        echo "hew was not found; build it with: make hew" >&2
         return 1
     fi
 }
@@ -156,7 +154,7 @@ record-tui)
         echo "demo seconds, rows, and columns must be positive integers" >&2
         exit 2
     fi
-    printf -v observer_command '%q --addr %q --refresh-ms 250' \
+    printf -v observer_command '%q observe --addr %q --refresh-ms 250' \
         "${observer}" "${listen_addr}"
     record_command="timeout --signal=INT ${demo_seconds}s ${observer_command}"
     start_workload

@@ -1,6 +1,6 @@
 //! Functional profiler/observe HTTP harness for `hew observe`.
 //!
-//! `hew-observe` is intentionally TUI-only in non-demo mode: it has no batch or
+//! `hew observe` is intentionally TUI-only in non-demo mode: it has no batch or
 //! JSON output flag and exits when stdout is not a TTY. This harness therefore
 //! exercises the documented profiler HTTP endpoints that the TUI consumes.
 

@@ -11,8 +11,6 @@
 #
 #   build/
 #     bin/hew              — compiler driver + package manager (Rust)
-#     bin/hew-observe      — TUI actor observer (Rust)
-#     bin/hew-lsp          — language server (Rust)
 #     lib/libhew.a         — combined library: runtime + all stdlib packages
 #     lib/<native-triple>/libhew.a — host/cross consumer-linkable archives
 #     lib/wasm32-wasip1/*.a — WASM runtime + focused wire stdlib archives
@@ -30,7 +28,6 @@
 #   make hew          — release-lib compiler + archive, staged at build/bin/hew
 #   make hew-debug    — debug compiler + archive, staged at build/bin/hew-debug
 #   make hew-native   — compiler driver + native libhew archive for `hew build`
-#   make observe      — just the TUI observer (hew-observe)
 #   make observe-functional-test — HTTP-backed functional observe harness
 #   make mqtt-broker-e2e       — real MQTT broker publish/delivery oracle
 #   make libhew-link-race-test   — real multi-process libhew.a bootstrap-race proof
@@ -73,7 +70,7 @@
 #   make clean        — remove generated build and test artifacts
 # ============================================================================
 
-.PHONY: all build bootstrap install-hooks help shell-script-lint test-install-version-resolution actionlint hew hew-debug hew-native shared-host-debug hew-lsp observe observe-functional-test observe-protocol-generate observe-protocol-check mqtt-broker-e2e libhew-link-race-test runtime stdlib wasm-runtime wasm wasm-capability wasm-capability-check playground-manifest playground-manifest-check sandbox-fixtures sandbox-fixtures-check sandbox-fixtures-record sandbox-vm-deps sandbox-vm-test sandbox-parity playground-check playground-wasi-check preflight ci-preflight ci-local-linux wasm-dist release licenses licenses-check dependency-policy release-checks baselines baselines-check
+.PHONY: all build bootstrap install-hooks help shell-script-lint test-install-version-resolution actionlint hew hew-debug hew-native shared-host-debug observe-functional-test observe-protocol-generate observe-protocol-check mqtt-broker-e2e libhew-link-race-test runtime stdlib wasm-runtime wasm wasm-capability wasm-capability-check playground-manifest playground-manifest-check sandbox-fixtures sandbox-fixtures-check sandbox-fixtures-record sandbox-vm-deps sandbox-vm-test sandbox-parity playground-check playground-wasi-check preflight ci-preflight ci-local-linux wasm-dist release licenses licenses-check dependency-policy release-checks baselines baselines-check
 .PHONY: test test-strict ratchet-accounting ratchet-accounting-nextest test-ratchet-accounting-runner macos-leak-oracle test-leak-oracle-selftest test-cabi test-compiler-pipeline test-pkg-import test-package-install test-runtime-unit test-hew-ratchet test-o2-differential o2-differential-selftest test-release-lib-link asan tsan miri lint lint-rust structural-lint structural-lint-bootstrap structural-lint-bootstrap-install test-ast-grep-contract stdlib-errno-gate hew-fmt-check hew-fmt-fidelity test-migrate-corpus test-build-harness core-acceptance
 .PHONY: test-obligation-site-diff
 .PHONY: test-packaged-sdk
@@ -397,11 +394,11 @@ hew-debug: hew-native
 	@test -f "$(DEBUG_HEW)"
 
 check-frontend: ## Develop: type-check the compiler and shared frontend consumers
-	cargo check -p hew-cli -p hew-lsp
+	cargo check -p hew-cli
 
 LSP_PROTOCOL_ARGS ?=
 test-lsp-protocol: ## Test: drive the language server over its stdio protocol
-	cargo test -p hew-lsp --test protocol_smoke $(LSP_PROTOCOL_ARGS)
+	cargo test -p hew-cli --test lsp_protocol $(LSP_PROTOCOL_ARGS)
 
 # Shared assertion recipe, run by `all` after `assemble` so a later assembly
 # step cannot silently replace the launcher with another profile.
@@ -430,17 +427,7 @@ shared-host-debug:
 hew-native: shared-host-debug
 	@:
 
-# Build the language server (debug).
-hew-lsp:
-	cargo build -p hew-lsp $(CARGO_TARGET_FLAG)
-
-# Build the TUI actor observer (debug).
-# hew-observe is a sibling binary: `hew observe` delegates to it when it is
-# present next to the running hew binary or on PATH (see exec_sibling_binary).
-observe:
-	cargo build -p hew-observe $(CARGO_TARGET_FLAG)
-
-observe-functional-test: hew-native observe
+observe-functional-test: hew-native
 	$(TEST_RUN_ENV) cargo test -p hew-observe --test functional -- --ignored --nocapture
 
 # Opt-in real-client proof for the advertised pure-Hew MQTT broker. Mosquitto
@@ -873,7 +860,7 @@ wasm-dist: wasm
 # shared target directory lock and re-plans overlapping dependency closures.
 .PHONY: assemble-host-debug
 assemble-host-debug:
-	cargo build -p hew-lib -p hew-cli -p hew-lsp -p hew-observe $(CARGO_TARGET_FLAG)
+	cargo build -p hew-lib -p hew-cli $(CARGO_TARGET_FLAG)
 
 # Create symlinks from build/ into the real output locations.
 # This gives you one stable directory to point PATH at during development.
@@ -884,10 +871,6 @@ assemble: require-host-cargo-target | hew assemble-host-debug libhew-cross-relea
 	@# exposing the debug compiler under its explicit debug name.
 	@ln -sfn "$(LINK_UP2)$(RELEASE_LIB_HEW)"              "$(BUILD_DIR)/bin/hew"
 	@ln -sfn "$(LINK_UP2)$(DEBUG_HEW)"                    "$(BUILD_DIR)/bin/hew-debug"
-	@# Language server
-	@ln -sfn "$(LINK_UP2)$(DEBUG_DIR)/hew-lsp"            "$(BUILD_DIR)/bin/hew-lsp"
-	@# TUI actor observer (sibling binary — `hew observe` delegates here)
-	@ln -sfn "$(LINK_UP2)$(DEBUG_DIR)/hew-observe"        "$(BUILD_DIR)/bin/hew-observe"
 	@# Combined Hew library (runtime + all stdlib packages)
 	@ln -sfn "$(LINK_UP2)$(RELEASE_LIB_DIR)/libhew.a"     "$(BUILD_DIR)/lib/libhew.a"
 	@# WASM runtime + focused wire stdlib archives (symlink if built)
@@ -928,7 +911,7 @@ release-cli: require-host-cargo-target
 	cargo build -p hew-cli --release $(CARGO_TARGET_FLAG)
 
 release-host: require-host-cargo-target
-	cargo build -p hew-cli -p hew-lsp -p hew-observe --release $(CARGO_TARGET_FLAG)
+	cargo build -p hew-cli --release $(CARGO_TARGET_FLAG)
 	cargo build -p hew-lib --profile release-lib $(CARGO_TARGET_FLAG)
 
 # Build everything in release mode and repoint the build/ symlinks. Cargo's
@@ -985,8 +968,6 @@ assemble-release: require-host-cargo-target release-host libhew-cross-release-li
 	@rm -rf $(BUILD_DIR)/bin $(BUILD_DIR)/lib $(BUILD_DIR)/std
 	@mkdir -p $(BUILD_DIR)/bin $(BUILD_DIR)/lib
 	@ln -sfn "$(LINK_UP2)$(RELEASE_DIR)/hew"              "$(BUILD_DIR)/bin/hew"
-	@ln -sfn "$(LINK_UP2)$(RELEASE_DIR)/hew-lsp"          "$(BUILD_DIR)/bin/hew-lsp"
-	@ln -sfn "$(LINK_UP2)$(RELEASE_DIR)/hew-observe"      "$(BUILD_DIR)/bin/hew-observe"
 	@# Combined Hew library (runtime + all stdlib packages), from the non-LTO
 	@# release-lib profile — never the fat-LTO target/release archive.
 	@ln -sfn "$(LINK_UP2)$(RELEASE_LIB_DIR)/libhew.a"     "$(BUILD_DIR)/lib/libhew.a"
@@ -1668,10 +1649,6 @@ endef
 define require_release_artifacts
 	@test -x "$(RELEASE_DIR)/hew" \
 		|| { echo "Error: release hew not built. Run 'make release' first."; exit 1; }
-	@test -x "$(RELEASE_DIR)/hew-lsp" \
-		|| { echo "Error: release hew-lsp not built. Run 'make release' first."; exit 1; }
-	@test -x "$(RELEASE_DIR)/hew-observe" \
-		|| { echo "Error: release hew-observe not built. Run 'make release' first."; exit 1; }
 	@test -f "$(RELEASE_LIB_DIR)/libhew.a" \
 		|| { echo "Error: libhew.a not built. Run 'make release' first."; exit 1; }
 	@test -f "$(WASM_RELEASE_DIR)/libhew_runtime.a" \
@@ -1691,8 +1668,6 @@ install: require-host-cargo-target
 	install -d "$(DESTDIR)$(PREFIX)/completions"
 	install -d "$(DESTDIR)$(PREFIX)/share/hew"
 	install -m 755 "$(RELEASE_DIR)/hew"                "$(DESTDIR)$(PREFIX)/bin/hew"
-	install -m 755 "$(RELEASE_DIR)/hew-lsp"            "$(DESTDIR)$(PREFIX)/bin/hew-lsp"
-	install -m 755 "$(RELEASE_DIR)/hew-observe"        "$(DESTDIR)$(PREFIX)/bin/hew-observe"
 	install -m 644 "$(RELEASE_LIB_DIR)/libhew.a"       "$(DESTDIR)$(PREFIX)/lib/libhew.a"
 	@for lib in libhew_runtime.a libhew_std.a; do \
 		if [ -f "$(WASM_RELEASE_DIR)/$$lib" ]; then \

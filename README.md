@@ -285,7 +285,7 @@ source.hew → Lexer → Parser → Type Checker → HIR → MIR → LLVM IR/obj
 
 - **hew-pkg/** — Package-manager library behind the `hew` subcommands (init, add, install, publish, search)
 - **hew-lsp/** — Language server (tower-lsp)
-- **hew-observe/** — Runtime observability TUI (`hew-observe`)
+- **hew-observe/** — Runtime observability TUI (`hew observe`)
 - **hew-wasm/** — Analysis frontend compiled to WASM for in-browser diagnostics; browser execution uses the shared compiler and **hew-sandbox-vm/** runtime
 
 ### Standard Library & Build Support

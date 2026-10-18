@@ -20,7 +20,6 @@ use std::time::{Duration, Instant};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use app::{App, Tab};
-use clap::Parser;
 use client::ClientError;
 use crossterm::event::{self, Event, KeyCode, KeyModifiers};
 use crossterm::terminal::{
@@ -31,9 +30,8 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 
 /// TUI actor observer for Hew — inspect actors, messages, and crashes in real time.
-#[derive(Parser, Debug)]
-#[command(name = "hew-observe", version, about)]
-struct Cli {
+#[derive(clap::Args, Debug)]
+pub struct Options {
     /// Address of the Hew profiler endpoint (host:port).
     #[arg(long)]
     addr: Option<String>,
@@ -99,14 +97,14 @@ impl fmt::Display for ConnectError {
             Self::NoProfilerForPid(pid) => write!(
                 f,
                 "No profiler found for PID {pid} — \
-                 run 'hew-observe --list' to see active profilers"
+                 run 'hew observe --list' to see active profilers"
             ),
             #[cfg(unix)]
             Self::MultipleProfilers(profilers) => {
                 write!(
                     f,
                     "Multiple profilers running — \
-                     use --pid to select one (try 'hew-observe --list' for details):"
+                     use --pid to select one (try 'hew observe --list' for details):"
                 )?;
                 for profiler in profilers {
                     write!(
@@ -127,7 +125,7 @@ impl fmt::Display for ConnectError {
 impl std::error::Error for ConnectError {}
 
 /// Resolve which profiler(s) to connect to, returning the App.
-fn connect(cli: &Cli) -> Result<App, ConnectError> {
+fn connect(cli: &Options) -> Result<App, ConnectError> {
     if cli.demo {
         return Ok(App::new_demo());
     }
@@ -168,7 +166,7 @@ fn connect(cli: &Cli) -> Result<App, ConnectError> {
 
 #[cfg(unix)]
 fn connect_with<FindByPid, ScanProfilers>(
-    cli: &Cli,
+    cli: &Options,
     find_by_pid: FindByPid,
     scan_profilers: ScanProfilers,
     now_secs: u64,
@@ -248,7 +246,7 @@ fn list_profilers() {
     }
 }
 
-fn run_app(cli: &Cli, mut app: App) -> Result<(), Box<dyn std::error::Error>> {
+fn run_app(cli: &Options, mut app: App) -> Result<(), Box<dyn std::error::Error>> {
     let backend = CrosstermBackend::new(io::stdout());
     let mut terminal = Terminal::new(backend)?;
     let refresh = Duration::from_millis(cli.refresh_ms);
@@ -297,47 +295,41 @@ fn run_app(cli: &Cli, mut app: App) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn main() {
-    let cli = Cli::parse();
-
+/// Run the actor observer, or list discovered processes without a terminal.
+///
+/// # Errors
+/// Returns connection or terminal errors after restoring the terminal state.
+pub fn run(cli: &Options) -> Result<(), Box<dyn std::error::Error>> {
     if cli.list {
         #[cfg(unix)]
         list_profilers();
         #[cfg(not(unix))]
         println!("Discovery is not available on this platform. Use --addr host:port.");
-        return;
+        return Ok(());
     }
 
-    let app = match connect(&cli) {
-        Ok(app) => app,
-        Err(error) => {
-            eprintln!("Error: {error}");
-            std::process::exit(1);
-        }
-    };
-
+    let app = connect(cli)?;
     if !std::io::stdout().is_terminal() {
-        eprintln!(
-            "error: hew-observe requires a terminal (stdout is not a TTY); \
-             use the HTTP endpoints directly in non-interactive contexts."
-        );
-        std::process::exit(1);
+        return Err(io::Error::other(
+            "hew observe requires a terminal (stdout is not a TTY); \
+             use the HTTP endpoints directly in non-interactive contexts.",
+        )
+        .into());
     }
 
-    enable_raw_mode().expect("failed to enable raw mode");
-    io::stdout()
-        .execute(EnterAlternateScreen)
-        .expect("failed to enter alternate screen");
+    enable_raw_mode()?;
+    let _terminal = TerminalSession;
+    io::stdout().execute(EnterAlternateScreen)?;
+    run_app(cli, app)
+}
 
-    let result = run_app(&cli, app);
+/// Restore the terminal on both successful exit and I/O failure.
+struct TerminalSession;
 
-    // Always restore terminal, even on error
-    let _ = disable_raw_mode();
-    let _ = io::stdout().execute(LeaveAlternateScreen);
-
-    if let Err(e) = result {
-        eprintln!("Error: {e}");
-        std::process::exit(1);
+impl Drop for TerminalSession {
+    fn drop(&mut self) {
+        let _ = disable_raw_mode();
+        let _ = io::stdout().execute(LeaveAlternateScreen);
     }
 }
 
@@ -418,8 +410,8 @@ mod tests {
     use super::*;
 
     #[cfg(unix)]
-    fn cli(pid: Option<u32>) -> Cli {
-        Cli {
+    fn cli(pid: Option<u32>) -> Options {
+        Options {
             addr: None,
             pid,
             list: false,
@@ -535,7 +527,7 @@ mod tests {
 
     #[test]
     fn explicit_addr_deduplicates_multi_node_targets() {
-        let app = connect(&Cli {
+        let app = connect(&Options {
             addr: Some("alpha:6060".to_owned()),
             pid: None,
             list: false,

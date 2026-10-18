@@ -81,10 +81,8 @@ case "$destination" in
 / | . | ..) die "refusing unsafe destination: $destination" ;;
 esac
 
-for binary in hew hew-lsp hew-observe; do
-    [ -f "$bin_dir/$binary$bin_suffix" ] ||
-        die "missing release binary: $bin_dir/$binary$bin_suffix"
-done
+[ -f "$bin_dir/hew$bin_suffix" ] ||
+    die "missing release binary: $bin_dir/hew$bin_suffix"
 [ -f "$native_lib" ] || die "missing native release library: $native_lib"
 [ -d "$source_dir/std" ] || die "missing standard library directory: $source_dir/std"
 for header in hew.h hew_host.h; do
@@ -117,10 +115,8 @@ mkdir -p "$package_root/bin" "$package_root/lib/$native_triple" \
     "$package_root/lib/wasm32-wasip1" "$package_root/std" \
     "$package_root/include" "$package_root/completions" "$package_root/share/hew"
 
-for binary in hew hew-lsp hew-observe; do
-    cp "$bin_dir/$binary$bin_suffix" "$package_root/bin/$binary$bin_suffix"
-    chmod +x "$package_root/bin/$binary$bin_suffix"
-done
+cp "$bin_dir/hew$bin_suffix" "$package_root/bin/hew$bin_suffix"
+chmod +x "$package_root/bin/hew$bin_suffix"
 
 cp "$native_lib" "$package_root/lib/$native_lib_name"
 cp "$native_lib" "$package_root/lib/$native_triple/$native_lib_name"

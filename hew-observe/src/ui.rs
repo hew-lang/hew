@@ -67,7 +67,7 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect) {
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title(" hew-observe "),
+                .title(" hew observe "),
         )
         .select(tab_idx)
         .style(Style::default().fg(theme::TEXT_PRIMARY))
@@ -199,12 +199,12 @@ fn draw_waiting_splash(f: &mut Frame, area: Rect) {
                 .add_modifier(Modifier::BOLD),
         )),
         Line::from(Span::styled(
-            "    hew-observe --addr localhost:6060",
+            "    hew observe --addr localhost:6060",
             theme::key_style(),
         )),
         Line::from(""),
         Line::from(Span::styled(
-            "  Run  hew-observe --list  to see active profilers.",
+            "  Run  hew observe --list  to see active profilers.",
             theme::dim_style(),
         )),
         Line::from(""),

@@ -13,6 +13,7 @@ categories = ["compilers", "development-tools"]
 workspace = true
 
 [dependencies]
+clap.workspace = true
 tracing.workspace = true
 hew-analysis = { path = "../hew-analysis" }
 hew-compile = { path = "../hew-compile" }

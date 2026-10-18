@@ -101,25 +101,9 @@ pub enum Command {
     /// `HEW_REGISTRY`, `HEW_CC`), naming which are set and which fall back
     /// to their default.
     Env,
-    /// Launch the TUI actor observer (`hew-observe`).
-    ///
-    /// Forwards all arguments to `hew-observe`. Requires the `hew-observe`
-    /// binary to be available in the same directory as `hew` or on PATH.
-    ///
-    /// Examples:
-    ///   hew observe --demo
-    ///   hew observe --addr localhost:6060
-    ///   hew observe --list
+    /// Inspect running actors, messages and crashes in the terminal.
     Observe(ObserveArgs),
-    /// Start the Hew Language Server (`hew-lsp`).
-    ///
-    /// Forwards all arguments to `hew-lsp`. Requires the `hew-lsp`
-    /// binary to be available in the same directory as `hew` or on PATH.
-    /// Communicates via stdin/stdout using the Language Server Protocol.
-    ///
-    /// Examples:
-    ///   hew lsp
-    ///   hew lsp --version
+    /// Serve the Language Server Protocol over stdin/stdout.
     Lsp(LspArgs),
     #[command(flatten)]
     Pkg(hew_pkg::cli::PkgCommand),
@@ -343,7 +327,7 @@ pub struct RunArgs {
     #[arg(long, short = 'g')]
     pub debug: bool,
     /// Enable the built-in runtime profiler.
-    /// On Unix sets `HEW_PPROF=auto` (per-user unix socket, auto-discovered by `hew-observe`).
+    /// On Unix sets `HEW_PPROF=auto` (per-user unix socket, auto-discovered by `hew observe`).
     /// On other platforms sets `HEW_PPROF=:6060` (TCP listener on port 6060).
     /// Has no effect if `HEW_PPROF` is already set in the environment.
     /// Override the address by setting `HEW_PPROF` directly instead of using this flag.
@@ -1064,28 +1048,6 @@ pub struct GenerateArgs {
     pub check: bool,
 }
 
-// ---------------------------------------------------------------------------
-// Observe
-// ---------------------------------------------------------------------------
-
-/// Arguments forwarded verbatim to `hew-observe`.
-#[derive(Debug, Args)]
-#[command(disable_help_flag = true, disable_version_flag = true)]
-pub struct ObserveArgs {
-    /// Arguments passed through to `hew-observe`.
-    #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
-    pub args: Vec<String>,
-}
-
-// ---------------------------------------------------------------------------
-// Lsp
-// ---------------------------------------------------------------------------
-
-/// Arguments forwarded verbatim to `hew-lsp`.
-#[derive(Debug, Args)]
-#[command(disable_help_flag = true)]
-pub struct LspArgs {
-    /// Arguments passed through to `hew-lsp`.
-    #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
-    pub args: Vec<String>,
-}
+// Command libraries own their options so help and execution share one schema.
+pub use hew_lsp::Options as LspArgs;
+pub use hew_observe::Options as ObserveArgs;

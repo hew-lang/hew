@@ -31,8 +31,6 @@ trees and first-class async/await.
 
 This package provides:
   - hew          the compiler driver
-  - hew-lsp      the language server
-  - hew-observe  the actor observer TUI
   - libhew.a     the combined runtime + stdlib static library
 
 %prep
@@ -40,8 +38,6 @@ This package provides:
 
 %install
 install -Dm755 bin/hew          %{buildroot}%{_bindir}/hew
-install -Dm755 bin/hew-lsp      %{buildroot}%{_bindir}/hew-lsp
-install -Dm755 bin/hew-observe  %{buildroot}%{_bindir}/hew-observe
 
 install -Dm644 lib/libhew.a %{buildroot}%{_libdir}/hew/libhew.a
 
@@ -86,8 +82,6 @@ install -Dm644 NOTICE         %{buildroot}%{_licensedir}/%{name}/NOTICE
 %files -f %{_builddir}/completions.lst
 %license LICENSE-MIT LICENSE-APACHE NOTICE
 %{_bindir}/hew
-%{_bindir}/hew-lsp
-%{_bindir}/hew-observe
 %{_libdir}/hew/
 %{_datadir}/hew/
 %{_includedir}/hew.h

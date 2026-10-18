@@ -32,8 +32,8 @@ hew fmt --check file.hew         # Check formatting (CI mode)
 hew check file.hew --format json  # Structured JSON diagnostics (for tooling/CI)
 hew compile file.hew --format json
                                   # Structured JSON diagnostics on compile
-hew observe                       # Launch hew-observe TUI (forwards args to hew-observe binary)
-hew lsp                           # Launch hew-lsp language server (forwards args to hew-lsp binary)
+hew observe                       # Launch the built-in actor observer TUI
+hew lsp                           # Serve the built-in language server
 hew init [name]                   # Scaffold main.hew + README.md in new dir (no hew.toml)
 hew init                          # Scaffold main.hew + README.md in current dir
 hew init [name] --force           # Overwrite existing scaffold files
@@ -393,26 +393,26 @@ program. The value injected into `HEW_PPROF` is platform-dependent:
 
 | Platform            | `HEW_PPROF` value set | How to attach                              |
 | ------------------- | --------------------- | ------------------------------------------ |
-| Unix (Linux, macOS) | `auto`                | `hew-observe` (auto-discovers unix socket) |
-| Other (Windows, …)  | `:6060`               | `hew-observe --addr localhost:6060`        |
+| Unix (Linux, macOS) | `auto`                | `hew observe` (auto-discovers unix socket) |
+| Other (Windows, …)  | `:6060`               | `hew observe --addr localhost:6060`        |
 
 If `HEW_PPROF` is already set in your environment, `--profile` is a no-op and
 your value is used as-is.
 
 ```sh
-# Unix — hew-observe auto-discovers the unix socket
+# Unix — hew observe auto-discovers the unix socket
 # Terminal 1
 hew run myapp.hew --profile
 
 # Terminal 2
-hew-observe
+hew observe
 
 # Non-Unix — profiler binds TCP on :6060
 # Terminal 1
 hew run myapp.hew --profile
 
 # Terminal 2
-hew-observe --addr localhost:6060
+hew observe --addr localhost:6060
 ```
 
 You can also set `HEW_PPROF` directly on an already-compiled binary to choose
@@ -420,7 +420,7 @@ a specific TCP address:
 
 ```sh
 HEW_PPROF=:6060 ./myapp          # bind profiler on 0.0.0.0:6060
-hew-observe --addr localhost:6060
+hew observe --addr localhost:6060
 ```
 
 To write a profile file on exit, set `HEW_PROF_OUTPUT` to `pprof`, `flat`, or
@@ -433,9 +433,8 @@ HEW_PPROF=auto HEW_PROF_OUTPUT=pprof ./myapp
 
 ## Observability (`hew observe`)
 
-`hew observe` is a thin launcher: it forwards all arguments to the standalone
-`hew-observe` binary. The `hew-observe` binary must be on your PATH (it is
-installed alongside `hew`).
+`hew observe` runs the linked actor observer in the current process. The installed
+`hew` executable includes it; no additional executable is required.
 
 ```sh
 hew observe                    # auto-discover unix socket (Unix)
@@ -448,17 +447,15 @@ For full flag documentation see [`../hew-observe/README.md`](../hew-observe/READ
 
 ## Language Server (`hew lsp`)
 
-`hew lsp` is a thin launcher: it forwards all arguments to the standalone
-`hew-lsp` binary. The `hew-lsp` binary must be on your PATH.
+`hew lsp` runs the linked language server over stdin/stdout in the current
+process. Editors launch `hew` with the `lsp` argument.
 
 ```sh
 hew lsp           # start the language server on stdio (for editor integrations)
 hew lsp --version # print the language server version
 ```
 
-Editor integrations should point their LSP client at the `hew-lsp` binary
-directly, not at `hew lsp`, for process management predictability. For full
-documentation see [`../hew-lsp/README.md`](../hew-lsp/README.md).
+For full documentation see [`../hew-lsp/README.md`](../hew-lsp/README.md).
 
 ## Structured JSON diagnostics (`--format json`)
 

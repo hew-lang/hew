@@ -183,13 +183,18 @@ def main():
             path.name: digest(path) for path in (sdk / "include").glob("*.h")
         }
         env["PATH"] = str(sdk / "bin") + os.pathsep + env.get("PATH", "")
-        for tool in ("hew", "hew-lsp", "hew-observe"):
+        require(
+            sorted(path.name for path in (sdk / "bin").iterdir()) == [f"hew{suffix}"],
+            "SDK must ship one hew executable",
+        )
+        for command in ([], ["lsp"], ["observe"]):
+            label = "-".join(["hew", *command])
             _, version, _ = run(
-                f"{tool}-version",
-                [sdk / "bin" / f"{tool}{suffix}", "--version"],
+                f"{label}-version",
+                [hew, *command, "--version"],
                 seconds=30,
             )
-            receipt[tool + "_version"] = version.decode().strip()
+            receipt[label + "_version"] = version.decode().strip()
 
         smoke = output / "pkg-smoke.hew"
         smoke.write_text('fn main() { println("pkg-smoke-ok"); }\n')

@@ -22,8 +22,8 @@
 //! hew tool playground-verify       # Verify runnable playground examples
 //! hew completions <shell>          # Print shell completion script
 //! hew version                      # Print version info
-//! hew observe [args...]             # Launch the TUI actor observer (delegates to hew-observe)
-//! hew lsp [args...]                 # Start the language server (delegates to hew-lsp)
+//! hew observe [args...]             # Launch the TUI actor observer
+//! hew lsp [args...]                 # Start the language server
 //! ```
 
 mod args;
@@ -2911,71 +2911,20 @@ fn cmd_env() {
 }
 
 // ---------------------------------------------------------------------------
-// Observe / LSP — sibling binary delegation
+// Linked command libraries
 // ---------------------------------------------------------------------------
 
-/// Launch `hew-observe` as a subprocess, forwarding `extra_args`.
-///
-/// Looks for `hew-observe` in the same directory as the running `hew` binary
-/// first, then falls back to PATH resolution. This keeps `hew observe` usable
-/// both from an install prefix and from a Cargo workspace `target/` tree.
-fn cmd_observe(a: &args::ObserveArgs) {
-    exec_sibling_binary("hew-observe", &a.args);
-}
-
-/// Launch `hew-lsp` as a subprocess, forwarding `extra_args`.
-///
-/// Looks for `hew-lsp` in the same directory as the running `hew` binary
-/// first, then falls back to PATH resolution.
-fn cmd_lsp(a: &args::LspArgs) {
-    exec_sibling_binary("hew-lsp", &a.args);
-}
-
-/// Replace the current process with `binary_name [extra_args]`.
-///
-/// Resolution order:
-///   1. `<dir of current executable>/<binary_name>[.exe]`
-///   2. PATH lookup (via `std::process::Command` which inherits `PATH`)
-///
-/// On Unix the process image is replaced via `execvp`; on other platforms a
-/// child process is spawned, waited for, and the exit code is forwarded.
-fn exec_sibling_binary(binary_name: &str, extra_args: &[String]) -> ! {
-    // Prefer a sibling binary next to the running `hew` executable.
-    let sibling = std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(|dir| dir.join(binary_name)));
-
-    let binary_path: std::path::PathBuf = match sibling {
-        Some(ref candidate) if candidate.exists() => candidate.clone(),
-        _ => std::path::PathBuf::from(binary_name),
-    };
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt as _;
-        let mut cmd = std::process::Command::new(&binary_path);
-        cmd.args(extra_args);
-        let error = cmd.exec();
-        // exec() only returns on failure.
-        eprintln!(
-            "Error: failed to launch `{}`: {error}",
-            binary_path.display()
-        );
+fn cmd_observe(options: &args::ObserveArgs) {
+    if let Err(error) = hew_observe::run(options) {
+        eprintln!("Error: {error}");
         std::process::exit(1);
     }
+}
 
-    #[cfg(not(unix))]
-    {
-        let status = std::process::Command::new(&binary_path)
-            .args(extra_args)
-            .status();
-        match status {
-            Ok(s) => std::process::exit(s.code().unwrap_or(1)),
-            Err(e) => {
-                eprintln!("Error: failed to launch `{}`: {e}", binary_path.display());
-                std::process::exit(1);
-            }
-        }
+fn cmd_lsp(options: &args::LspArgs) {
+    if let Err(error) = hew_lsp::run(options) {
+        eprintln!("Error: {error}");
+        std::process::exit(1);
     }
 }
 

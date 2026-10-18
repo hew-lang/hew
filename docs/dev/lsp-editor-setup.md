@@ -10,98 +10,71 @@ This page covers building, launching, and pointing an editor (VS Code first) at
 the server. For non-VS Code highlighting configs, see
 [`editors/README.md`](../../editors/README.md).
 
-## Install a matching SDK
+## Build and install a matching SDK
 
-The [v0.6.1 SDK](https://github.com/hew-lang/hew/releases/tag/v0.6.1) includes
-`hew`, `hew-lsp` and their matching standard library. Use the binaries from
-the same SDK so editor diagnostics and command-line checks agree. Confirm
-both with `hew --version` and `hew-lsp --version`.
-
-## Build from source
+The language server is linked into `hew`. Use the compiler and standard library
+from the same build so editor diagnostics and command-line checks agree.
 
 From a source checkout:
 
 ```sh
-make hew-lsp
-# binary: target/debug/hew-lsp
+make hew-native
+target/debug/hew lsp --version
 ```
 
-Build the optimized compiler toolchain:
+To install an optimized toolchain:
 
 ```sh
 make release
-# binary: target/release/hew-lsp
-```
-
-After the release build, install the toolchain onto your `PATH`:
-
-```sh
 make install PREFIX="$HOME/.local"
-# binary: ~/.local/bin/hew-lsp
 ```
 
 ## Launch
 
-The server speaks LSP over stdin/stdout; editors spawn it, you don't run it
-interactively. Two equivalent entry points:
+The server speaks LSP over stdin/stdout; editors launch `hew` with `lsp` as the
+first argument:
 
 ```sh
-hew-lsp                 # the standalone binary
-hew lsp                 # thin launcher; forwards args to hew-lsp on the same PATH/dir
+hew lsp
+hew lsp --help
 ```
 
 `--pkg-path <DIR>` mirrors `hew check --pkg-path`, selecting one package search
-directory so package imports resolve the same way in the editor as on the
-command line. Missing values and repeated `--pkg-path` options are rejected
-before the server starts.
-`--version` and `--help` print and exit without starting a session.
+directory. Missing, empty and repeated values are rejected before the server
+starts. `--version` and `--help` exit without starting a session.
 
-Confirm the binary runs:
-
-```sh
-hew-lsp --version
-```
-
-## VS Code
-
-Install **Hew Language** (`hew-lang.hew-lang`) from the
-[VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=hew-lang.hew-lang),
-or run `code --install-extension hew-lang.hew-lang`. Open a `.hew` file to
-activate highlighting and the language server. The extension searches `PATH`
-and includes a bundled `hew-lsp` for supported platforms.
-
-To select a particular compiler installation, set `hew.lsp.serverPath` to the
-absolute path of its `hew-lsp` binary and `hew.formatterPath` to its `hew`
-binary. Use workspace settings in a workspace you trust, or user settings for
-a trusted installed toolchain. For example, on macOS or Linux:
-
-```jsonc
-// .vscode/settings.json
-{
-  "hew.lsp.serverPath": "/absolute/path/to/hew/bin/hew-lsp",
-  "hew.formatterPath": "/absolute/path/to/hew/bin/hew"
-}
-```
-
-Use full paths rather than `${workspaceFolder}` or `~`; these settings are
-passed to executable discovery without variable expansion. On Windows, use
-paths to `hew-lsp.exe` and `hew.exe`, escaping backslashes in JSON.
-
-A minimal client is just stdio transport with a `.hew` document selector — any
-editor that can spawn a command works the same way:
+A minimal client configuration is:
 
 ```jsonc
 {
-  "command": "hew-lsp",
-  "args": [],
+  "command": "hew",
+  "args": ["lsp"],
   "filetypes": ["hew"],
   "rootPatterns": ["hew.toml", ".git"]
 }
 ```
 
+## VS Code
+
+The matching extension launches the same executable for language-server and
+formatter operations. Set `hew.lsp.serverPath` and `hew.formatterPath` to the
+absolute path of `hew` when selecting an installation:
+
+```jsonc
+{
+  "hew.lsp.serverPath": "/absolute/path/to/hew/bin/hew",
+  "hew.formatterPath": "/absolute/path/to/hew/bin/hew"
+}
+```
+
+On Windows, use `hew.exe` and escape backslashes in JSON. Settings do not expand
+`~` or `${workspaceFolder}`. Restricted Mode ignores workspace executable paths.
+The extension and bundled SDK must be released together: older SDKs still
+require a sibling language-server executable.
+
 ## Other editors
 
-`hew-lsp` is a standard LSP server, so any client works. See
+`hew lsp` is a standard LSP server, so any client works. See
 [`editors/README.md`](../../editors/README.md) for Vim/Neovim, Emacs, Sublime,
 and nano. Crate-level feature notes live in
 [`hew-lsp/README.md`](../../hew-lsp/README.md).
@@ -109,10 +82,10 @@ and nano. Crate-level feature notes live in
 ## Verifying a session
 
 Source CI exercises the built server end to end — `initialize` → `didOpen` →
-`publishDiagnostics` — in `hew-lsp/tests/protocol_smoke.rs`. This is separate
+`publishDiagnostics` — in `hew-cli/tests/lsp_protocol.rs`. This is separate
 from checking the server in a packaged SDK. Run the protocol tests locally to
 confirm a build serves diagnostics, not just `--version`:
 
 ```sh
-make test NEXTEST_WORKSPACE_FILTER='package(hew-lsp) and binary(protocol_smoke)'
+make test-lsp-protocol
 ```

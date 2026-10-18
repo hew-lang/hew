@@ -1,4 +1,4 @@
-//! End-to-end protocol smoke test for `hew-lsp`.
+//! End-to-end protocol smoke test for `hew lsp`.
 //!
 //! Spawns the language server as a child process and drives a real LSP session
 //! over stdio: `initialize` → `initialized` → `textDocument/didOpen`, then waits
@@ -7,8 +7,8 @@
 //! framing, the capability advertisement, or the diagnostics pipeline fails here
 //! instead of slipping past the `--version` check.
 //!
-//! The binary defaults to the freshly built `hew-lsp` (`CARGO_BIN_EXE_hew-lsp`),
-//! but CI points `HEW_LSP_BIN` at the release artifact so the shipped binary is
+//! The binary defaults to the freshly built `hew lsp` (`CARGO_BIN_EXE_hew`),
+//! but CI points `HEW_BIN` at the release artifact so the shipped binary is
 //! exercised directly.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -28,8 +28,15 @@ const SESSION_BUDGET: Duration = Duration::from_secs(30);
 /// is unresolved, so the analysis pipeline must emit at least one error.
 const BAD_SOURCE: &str = "fn main() -> i32 { undefined_var }\n";
 
-fn server_binary() -> String {
-    std::env::var("HEW_LSP_BIN").unwrap_or_else(|_| env!("CARGO_BIN_EXE_hew-lsp").to_string())
+fn hew_binary() -> PathBuf {
+    std::env::var_os("HEW_BIN")
+        .map_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_hew")), PathBuf::from)
+}
+
+fn server_command() -> Command {
+    let mut command = Command::new(hew_binary());
+    command.arg("lsp");
+    command
 }
 
 /// Frame and send a single JSON-RPC message with the LSP `Content-Length` header.
@@ -85,7 +92,7 @@ fn recv_until<F: Fn(&Value) -> bool>(rx: &Receiver<Value>, deadline: Instant, pr
             Ok(message) if pred(&message) => return message,
             Ok(_) => {}
             Err(RecvTimeoutError::Timeout) => panic!("timed out waiting for expected LSP message"),
-            Err(RecvTimeoutError::Disconnected) => panic!("hew-lsp exited before expected message"),
+            Err(RecvTimeoutError::Disconnected) => panic!("hew lsp exited before expected message"),
         }
     }
 }
@@ -93,7 +100,7 @@ fn recv_until<F: Fn(&Value) -> bool>(rx: &Receiver<Value>, deadline: Instant, pr
 /// RAII guard that kills and reaps the spawned server on every exit path —
 /// including a panicking assertion or `recv_until` timeout that fires before the
 /// polite `shutdown()` runs. Without it, a failing run would leak an orphaned
-/// `hew-lsp` child. (#2298)
+/// `hew lsp` child. (#2298)
 struct ServerProcess {
     child: Child,
 }
@@ -111,15 +118,67 @@ fn shutdown(stdin: &mut ChildStdin) {
     send(stdin, &json!({"jsonrpc":"2.0","method":"exit"}));
 }
 
+fn assert_tool_commands(command: impl Fn() -> Command) {
+    for tool in ["lsp", "observe"] {
+        let help = command()
+            .args([tool, "--help"])
+            .output()
+            .expect("tool help");
+        assert!(help.status.success(), "{tool}: {help:?}");
+        assert!(String::from_utf8_lossy(&help.stdout).contains(&format!("hew {tool}")));
+        let version = command()
+            .args([tool, "--version"])
+            .output()
+            .expect("tool version");
+        assert!(version.status.success(), "{tool}: {version:?}");
+        let invalid = command()
+            .args([tool, "--unknown-option"])
+            .output()
+            .expect("invalid option");
+        assert_eq!(invalid.status.code(), Some(2), "{tool}: {invalid:?}");
+        assert!(String::from_utf8_lossy(&invalid.stderr).contains("unexpected argument"));
+    }
+    for arguments in [
+        vec!["lsp", "--pkg-path"],
+        vec!["lsp", "--pkg-path="],
+        vec!["lsp", "--pkg-path", "one", "--pkg-path", "two"],
+    ] {
+        let error = command()
+            .args(arguments)
+            .output()
+            .expect("invalid package path");
+        assert_eq!(error.status.code(), Some(2), "{error:?}");
+        assert!(String::from_utf8_lossy(&error.stderr).contains("--pkg-path"));
+    }
+    let observer = command()
+        .args(["observe", "--demo"])
+        .output()
+        .expect("nonterminal observer");
+    assert_eq!(observer.status.code(), Some(1), "{observer:?}");
+    assert!(String::from_utf8_lossy(&observer.stderr).contains("requires a terminal"));
+}
+
 #[test]
-fn lsp_initialize_didopen_diagnostics_roundtrip() {
+fn installed_hew_serves_tools_without_siblings() {
+    let installation = tempfile::tempdir().expect("isolated installation");
+    let binary = installation
+        .path()
+        .join(format!("hew{}", std::env::consts::EXE_SUFFIX));
+    std::fs::copy(hew_binary(), &binary).expect("install only hew");
+    let command = || {
+        let mut command = Command::new(&binary);
+        command.env("PATH", "").current_dir(installation.path());
+        command
+    };
+    assert_tool_commands(&command);
     let mut server = ServerProcess {
-        child: Command::new(server_binary())
+        child: command()
+            .arg("lsp")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .spawn()
-            .expect("spawn hew-lsp"),
+            .expect("spawn hew lsp"),
     };
 
     let mut stdin = server.child.stdin.take().expect("child stdin");
@@ -178,7 +237,27 @@ fn lsp_initialize_didopen_diagnostics_roundtrip() {
         "expected a hew-types diagnostic, got: {diags:?}"
     );
 
-    shutdown(&mut stdin);
+    send(
+        &mut stdin,
+        &json!({"jsonrpc":"2.0","id":99,"method":"shutdown"}),
+    );
+    let response = recv_until(&rx, deadline, |message| message["id"] == 99);
+    assert!(
+        response.get("error").is_none(),
+        "shutdown failed: {response}"
+    );
+    send(&mut stdin, &json!({"jsonrpc":"2.0","method":"exit"}));
+    loop {
+        if let Some(status) = server.child.try_wait().expect("server exit status") {
+            assert!(status.success(), "server shutdown: {status}");
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "server did not exit after shutdown"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
 }
 
 struct TestProject(PathBuf);
@@ -289,12 +368,12 @@ fn lsp_test_failure_diagnostic_and_seeded_rerun_roundtrip() {
         .to_string();
 
     let mut server = ServerProcess {
-        child: Command::new(server_binary())
+        child: server_command()
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .spawn()
-            .expect("spawn hew-lsp"),
+            .expect("spawn hew lsp"),
     };
     let mut stdin = server.child.stdin.take().expect("child stdin");
     let rx = spawn_reader(server.child.stdout.take().expect("child stdout"));
@@ -401,12 +480,12 @@ fn assert_seeded_rerun_and_edit_clear(
 
 fn diagnostics_for(source: &str, uri: &str) -> Vec<Value> {
     let mut server = ServerProcess {
-        child: Command::new(server_binary())
+        child: server_command()
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .spawn()
-            .expect("spawn hew-lsp"),
+            .expect("spawn hew lsp"),
     };
     let mut stdin = server.child.stdin.take().expect("child stdin");
     let rx = spawn_reader(server.child.stdout.take().expect("child stdout"));
@@ -470,12 +549,12 @@ fn file_uri(path: &Path) -> String {
 impl RenameSession {
     fn new(root: Option<&TestProject>, folders: &[&TestProject]) -> Self {
         let mut server = ServerProcess {
-            child: Command::new(server_binary())
+            child: server_command()
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::null())
                 .spawn()
-                .expect("spawn hew-lsp"),
+                .expect("spawn hew lsp"),
         };
         let stdin = server.child.stdin.take().expect("child stdin");
         let rx = spawn_reader(server.child.stdout.take().expect("child stdout"));
@@ -542,7 +621,7 @@ impl RenameSession {
                     panic!("timed out waiting for response IDs {ids:?}")
                 }
                 Err(RecvTimeoutError::Disconnected) => {
-                    panic!("hew-lsp exited before response IDs {ids:?}")
+                    panic!("hew lsp exited before response IDs {ids:?}")
                 }
             }
         }
@@ -1847,12 +1926,12 @@ fn lsp_cancelled_project_rename_and_queued_snapshot_cannot_deliver_stale_edits()
 fn lsp_field_rename_writes_shorthand_label_out() {
     const SOURCE: &str = "type Endpoint { host: string; port: i64; }\nfn main() {\n    let port = 5432;\n    let host = \"h\";\n    let e = Endpoint { host, port };\n    println(e.port);\n}\n";
     let mut server = ServerProcess {
-        child: Command::new(server_binary())
+        child: server_command()
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .spawn()
-            .expect("spawn hew-lsp"),
+            .expect("spawn hew lsp"),
     };
     let mut stdin = server.child.stdin.take().expect("child stdin");
     let rx = spawn_reader(server.child.stdout.take().expect("child stdout"));

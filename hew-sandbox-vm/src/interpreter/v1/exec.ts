@@ -3325,6 +3325,7 @@ class ExecutorV1 {
     returned: (value: VmValue) => void,
     failed: (fault: Fault) => void,
     rcOwner: RcOwner | null = actor?.rcOwner ?? null,
+    inline = false,
   ): FrameContext {
     const context: FrameContext = {
       id: actor?.id ?? "actor:root",
@@ -3348,11 +3349,16 @@ class ExecutorV1 {
     ) => {
       cancelled = fault;
     };
-    this.scheduler.enqueue(frame.context.id, () => {
-      context.cancel = undefined;
-      if (cancelled && frame.context === context) context.failed(cancelled);
-      else this.runFrame(frame);
-    });
+    if (inline) {
+      this.current = frame;
+      this.running = true;
+    } else {
+      this.scheduler.enqueue(frame.context.id, () => {
+        context.cancel = undefined;
+        if (cancelled && frame.context === context) context.failed(cancelled);
+        else this.runFrame(frame);
+      });
+    }
     return context;
   }
 
@@ -3469,9 +3475,6 @@ class ExecutorV1 {
         this.trace.allocateId("actor", actor.id, act.context.id);
         this.trace.snapshot("actor.spawn", { actor_id: actor.id });
         const handle: VmValue = { kind: "actor", id: actor.id };
-        const asynchronous =
-          layout.init !== undefined || layout.start !== undefined;
-        if (asynchronous) this.running = false;
         const failed = (fault: Fault) => {
           actor.active = null;
           actor.alive = false;
@@ -3521,9 +3524,11 @@ class ExecutorV1 {
           this.startPeriodicTimers(actor);
           this.dispatchActor(actor);
           this.completeShim(act, term, handle);
-          if (asynchronous)
-            this.scheduler.enqueue(act.context.id, () => this.runFrame(act));
+          this.current = act;
+          this.running = true;
         };
+        // Construction enters the same interpreter loop as its caller. Only
+        // a real suspension queues work and advances deterministic scheduling.
         const start = () => {
           if (layout.start !== undefined)
             actor.active = this.invokeFrame(
@@ -3532,6 +3537,8 @@ class ExecutorV1 {
               [actor.state],
               started,
               failed,
+              actor.rcOwner,
+              true,
             );
           else started();
         };
@@ -3542,6 +3549,8 @@ class ExecutorV1 {
             [actor.state, ...args.slice(supplied)],
             start,
             failed,
+            actor.rcOwner,
+            true,
           );
         else start();
         return;

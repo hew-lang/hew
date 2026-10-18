@@ -14,4 +14,5 @@ fn main() {
     let a0 = spawn Slow;
     let a1 = spawn Slow;
     let a2 = spawn Slow;
+    assert(a0.get().expect("start hook completed") == 1);
 }

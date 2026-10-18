@@ -1367,6 +1367,13 @@ fn coalescing_accepts_replacement_and_reports_fallback_discard() {
 }
 
 #[test]
+fn suspended_start_hooks_finish_before_actor_calls() {
+    for case in ["on-start-suspension-low", "on-start-suspension-high"] {
+        assert_native_manifest(case, hew_compile::SourceSet::in_memory());
+    }
+}
+
+#[test]
 fn actor_constructor_cleanup_preserves_child_rc_owner() {
     assert_native_manifest(
         "actor-rc-constructor-close",

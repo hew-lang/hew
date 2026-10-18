@@ -946,23 +946,10 @@ impl LowerCtx {
                 // equality: same-named types in sibling modules can both have
                 // registered methods, making that fallback select a real but
                 // wrong body.
-                // Slice 2: a by-value direct-dot call to a generic impl method
-                // on a concrete generic receiver (e.g. `p.first()` where
-                // `impl<T> Pair<T> { fn first(self) -> T }` and `p: Pair<i64>`)
-                // needs the impl-method monomorphisation registered so MIR has a
-                // concrete body to dispatch to. The var-self (mutable-receiver)
-                // branch above already does this via
-                // `record_method_call_type_args`; the by-value branch
-                // omitted it, so the call lowered to a `Call` whose mangled
-                // callee (`Pair::first$$i64`) had no MIR body and failed closed
-                // at the MIR boundary ("resolved callee has no MIR body").
-                // `record_method_call_type_args` is a no-op for
-                // non-generic / non-named-receiver / builtin callees, so this is
-                // safe to call unconditionally for every RewriteToFunction by-value
-                // method dispatch: it derives the concrete type-args from the
-                // receiver type's args, registers the monomorphisation, and seeds
-                // `call_site_type_args[site]` so MIR's `Call` arm mangles to the
-                // same per-instantiation symbol.
+                // Preserve receiver and method arguments for a generic impl
+                // call, just as the mutable-receiver branch does above. SIR
+                // substitutes enclosing template arguments before requesting
+                // the exact callable instance.
                 self.record_method_call_type_args(
                     &c_symbol,
                     &target,

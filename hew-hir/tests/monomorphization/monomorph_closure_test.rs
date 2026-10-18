@@ -1,6 +1,4 @@
-//! Closure-under-substitution test: the HIR monomorphisation registry
-//! discovers inner generic-fn calls inside specialised bodies and adds
-//! per-instantiation entries.
+//! HIR preserves abstract generic call arguments for SIR instance demand.
 
 use hew_hir::{lower_program, ResolutionCtx};
 use hew_types::module_registry::ModuleRegistry;
@@ -23,8 +21,8 @@ fn typecheck_and_lower(source: &str) -> hew_hir::LowerOutput {
 #[test]
 fn call_site_type_args_records_symbolic_inner_calls() {
     // Inner call `id(y)` inside `outer<U>` records
-    // `call_site_type_args[site] = [TypeParam U]` so MIR can substitute
-    // and emit the mangled symbol per monomorphisation.
+    // `call_site_type_args[site] = [TypeParam U]` so SIR can substitute
+    // the demanded outer instance before requesting the inner callable.
     let source = r"
         pub fn id<T>(x: T) -> T {
             x

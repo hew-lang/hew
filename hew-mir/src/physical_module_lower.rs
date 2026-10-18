@@ -744,12 +744,14 @@ pub(crate) fn destroy_action_for_type(
 /// Resolve an encoding carrier through the shared canonical receiver contract.
 #[must_use]
 pub fn encoding_format(ty: &ResolvedTy) -> Option<EncodingFormat> {
-    [EncodingFormat::Json, EncodingFormat::Yaml]
-        .into_iter()
-        .find(|format| {
-            matches!(ty, ResolvedTy::Named { head, args, .. }
-                if *head == hew_types::TypeHead::Builtin(format.builtin()) && args.is_empty())
-        })
+    match ty {
+        ResolvedTy::Named {
+            head: hew_types::TypeHead::Builtin(builtin),
+            args,
+            ..
+        } if args.is_empty() => EncodingFormat::of_builtin(*builtin),
+        _ => None,
+    }
 }
 
 /// Collect the concrete semantic types that the physical module must realize.

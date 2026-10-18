@@ -1478,8 +1478,7 @@ fn is_initial_call_value(ty: &ResolvedTy) -> bool {
         // as exact compiler-owned ABI carriers rather than user records.
         || ty.is_builtin(hew_types::BuiltinType::NodeId)
         || ty.is_builtin(hew_types::BuiltinType::Location)
-        || ty.is_builtin(hew_types::BuiltinType::JsonValue)
-        || ty.is_builtin(hew_types::BuiltinType::YamlValue)
+        || ty.is_encoding_value()
         // A shared handle is one pointer into a runtime-counted allocation.
         // Its payload is a nested type of its own, published alongside it.
         || hew_types::runtime_call::shared_handle_payload(ty).is_some()

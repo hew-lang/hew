@@ -1066,6 +1066,16 @@ impl EncodingFormat {
         }
     }
 
+    /// The format whose owning value this builtin carrier is, if any.
+    #[must_use]
+    pub const fn of_builtin(builtin: BuiltinType) -> Option<Self> {
+        match builtin {
+            BuiltinType::JsonValue => Some(Self::Json),
+            BuiltinType::YamlValue => Some(Self::Yaml),
+            _ => None,
+        }
+    }
+
     #[must_use]
     pub const fn module(self) -> &'static str {
         match self {

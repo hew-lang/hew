@@ -35,6 +35,7 @@ pub const MONOMORPHIC_CALLABLE_IDENTITIES: &[&str] = &[
     "Node::connect",
     "Node::id",
     "Node::identity_key",
+    "Node::lookup",
     "Node::shutdown",
     "Node::start",
     ASSERT,

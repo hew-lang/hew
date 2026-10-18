@@ -99,6 +99,11 @@ mod node_builtin_catalog_tests {
                 "registered Node builtin {name:?} is not classified for wasm rejection"
             );
         }
+        assert_eq!(
+            checker.call_target_for_signature("Node::lookup"),
+            CallTarget::Runtime(crate::runtime_call::RuntimeCallFamily::NodeLookup),
+            "the concrete catalogue identity retains the canonical lookup runtime operation",
+        );
     }
 }
 

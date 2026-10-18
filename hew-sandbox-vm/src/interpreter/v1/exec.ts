@@ -3468,7 +3468,9 @@ class ExecutorV1 {
         this.trace.allocateId("actor", actor.id, act.context.id);
         this.trace.snapshot("actor.spawn", { actor_id: actor.id });
         const handle: VmValue = { kind: "actor", id: actor.id };
-        this.running = false;
+        const asynchronous =
+          layout.init !== undefined || layout.start !== undefined;
+        if (asynchronous) this.running = false;
         const failed = (fault: Fault) => {
           actor.active = null;
           actor.alive = false;
@@ -3518,7 +3520,8 @@ class ExecutorV1 {
           this.startPeriodicTimers(actor);
           this.dispatchActor(actor);
           this.completeShim(act, term, handle);
-          this.scheduler.enqueue(act.context.id, () => this.runFrame(act));
+          if (asynchronous)
+            this.scheduler.enqueue(act.context.id, () => this.runFrame(act));
         };
         const start = () => {
           if (layout.start !== undefined)

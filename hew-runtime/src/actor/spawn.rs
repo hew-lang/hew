@@ -947,9 +947,20 @@ pub unsafe extern "C" fn hew_actor_publish_native(
         registration.take();
         actor
             .actor_state
-            .store(HewActorState::Runnable as i32, Ordering::Release);
+            .swap(HewActorState::Idle as i32, Ordering::AcqRel);
         drop(registration);
-        crate::resume::sched_enqueue(raw);
+        // Producers that linked work during construction could not wake it.
+        // Publish Idle before checking both lanes, then share their wake CAS;
+        // a later producer either wins that CAS or finds its work scheduled.
+        // SAFETY: the send guard retains the actor and its mailbox.
+        let pending = unsafe {
+            mailbox::hew_mailbox_has_messages(actor.mailbox.cast()) != 0
+                || mailbox::mailbox_is_closed(actor.mailbox.cast())
+        };
+        if pending || actor.pending_external_trap_code.load(Ordering::Acquire) != 0 {
+            // SAFETY: the send guard pins the actor through its wake handoff.
+            unsafe { finish_mailbox_enqueue(raw, actor) };
+        }
         0
     })
     .unwrap_or(1)

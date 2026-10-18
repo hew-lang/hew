@@ -1012,6 +1012,32 @@ fn authored_resource_close_runs_once_for_explicit_and_implicit_release() {
 }
 
 #[test]
+fn authored_close_compute_helpers_yield_to_the_queued_peer() {
+    assert_native_manifest(
+        "compute-close-safepoints",
+        hew_compile::SourceSet::in_memory(),
+    );
+}
+
+#[test]
+fn seeded_driver_covers_serialized_and_lost_deposits() {
+    for (name, seed) in [
+        ("driver-lost-update-random-1", 1),
+        ("driver-lost-update-random-13", 13),
+    ] {
+        let options =
+            serde_json::json!({"schedulerPolicy": "chaos", "replay": {"seed": seed}}).to_string();
+        let trace =
+            assert_native_manifest_options(name, hew_compile::SourceSet::in_memory(), &options);
+        let replay = serde_json::json!({"replay": trace["replay"]}).to_string();
+        assert_eq!(
+            assert_native_manifest_options(name, hew_compile::SourceSet::in_memory(), &replay),
+            trace
+        );
+    }
+}
+
+#[test]
 fn an_owned_return_transfers_its_close_fault_to_the_caller() {
     let trace = execute_expected(
         include_str!("../../tests/core-acceptance/cases/resource-close-fault-returned-owner.hew"),
@@ -1274,7 +1300,9 @@ fn actor_stop_drains_owned_work_in_both_runtimes() {
             .iter()
             .map(|event| event["rc_sweep"]["count"].as_str().unwrap())
             .collect::<Vec<_>>(),
-        ["132", "2"]
+        // Worker includes its later close allocation; Faulting and failed
+        // Broken construction each drain their two remaining cycles.
+        ["132", "2", "2"]
     );
 }
 

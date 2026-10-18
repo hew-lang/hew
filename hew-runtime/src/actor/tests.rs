@@ -4627,6 +4627,72 @@ fn native_ask_self_stop_without_reply_returns_null_and_releases_channel() {
     assert_eq!(reply_channel::active_channel_count(), 0);
 }
 
+mod construction_publication {
+    use super::HewActorState;
+    use loom::sync::atomic::{AtomicI32, AtomicUsize, Ordering};
+    use loom::sync::Arc;
+
+    fn model(producer_handoff: bool) {
+        loom::model(move || {
+            let shared = Arc::new((
+                AtomicI32::new(HewActorState::Constructing as i32),
+                AtomicUsize::new(0),
+            ));
+            let producer = shared.clone();
+            let send = loom::thread::spawn(move || {
+                // Match mailbox admission and finish_mailbox_enqueue_inner.
+                producer.1.fetch_add(1, Ordering::Release);
+                let mut observed = producer.0.load(Ordering::Acquire);
+                if producer_handoff && observed == HewActorState::Constructing as i32 {
+                    observed = match producer.0.compare_exchange(
+                        HewActorState::Constructing as i32,
+                        HewActorState::Constructing as i32,
+                        Ordering::AcqRel,
+                        Ordering::Acquire,
+                    ) {
+                        Ok(state) | Err(state) => state,
+                    };
+                }
+                if observed == HewActorState::Idle as i32 {
+                    let _ = producer.0.compare_exchange(
+                        HewActorState::Idle as i32,
+                        HewActorState::Runnable as i32,
+                        Ordering::AcqRel,
+                        Ordering::Acquire,
+                    );
+                }
+            });
+            // Match hew_actor_publish_native's publication and pending recheck.
+            shared.0.swap(HewActorState::Idle as i32, Ordering::AcqRel);
+            if shared.1.load(Ordering::Acquire) != 0 {
+                let _ = shared.0.compare_exchange(
+                    HewActorState::Idle as i32,
+                    HewActorState::Runnable as i32,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                );
+            }
+            send.join().unwrap();
+            assert_eq!(
+                shared.0.load(Ordering::Acquire),
+                HewActorState::Runnable as i32,
+                "published work must be runnable"
+            );
+        });
+    }
+
+    #[test]
+    fn admitted_work_cannot_miss_construction_publication() {
+        model(true);
+    }
+
+    #[test]
+    #[should_panic(expected = "published work must be runnable")]
+    fn omitting_the_producer_handoff_can_strand_admitted_work() {
+        model(false);
+    }
+}
+
 #[test]
 #[allow(
     clippy::too_many_lines,
@@ -4736,6 +4802,13 @@ fn native_graceful_stop_drains_accepted_turns_before_completion() {
             construction,
         )
     };
+    // A message admitted during construction cannot wake the actor yet.
+    assert_eq!(
+        // SAFETY: the actor retains its direct token and the payload is empty.
+        unsafe { hew_local_pid_send(token, 1, ptr::null_mut(), 0) },
+        0
+    );
+    assert_eq!(turns.load(Ordering::SeqCst), 0);
     // SAFETY: test state is initialized and construction has no suspended borrower.
     unsafe {
         assert_eq!(
@@ -4761,12 +4834,6 @@ fn native_graceful_stop_drains_accepted_turns_before_completion() {
     // SAFETY: the wait descriptor remains live until this test frees it.
     assert_eq!(unsafe { crate::actor_native::hew_actor_wait_poll(wait) }, 0);
 
-    // SAFETY: token names this live actor, and empty payloads are valid.
-    assert_eq!(
-        // SAFETY: the actor retains its direct token and the payload is empty.
-        unsafe { hew_local_pid_send(token, 1, ptr::null_mut(), 0) },
-        0
-    );
     entered.wait();
     // The second turn is already accepted when stop closes admission.
     assert_eq!(

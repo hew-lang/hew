@@ -176,6 +176,7 @@ harness = false
 # The `sim-transport` integration test that consumes proptest is itself
 # native-only, so this scoping costs no test coverage on wasm.
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+loom = "0.7"
 proptest = "1"
 # CDDL validator: the wire-body conformance test feeds the authored
 # `schemas/wire-body.cddl` text + the codegen-emitted CBOR bytes into a real

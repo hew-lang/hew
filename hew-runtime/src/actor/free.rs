@@ -2295,6 +2295,21 @@ pub(crate) unsafe fn finish_mailbox_enqueue_inner(
     close_terminal_handoff: bool,
 ) {
     let observed = a.actor_state.load(Ordering::Acquire);
+    let observed = if observed == HewActorState::Constructing as i32 {
+        // Pair the completed enqueue with construction publication's AcqRel
+        // swap. It either acquires this release sequence and sees our work,
+        // or this CAS observes Idle and takes the ordinary wake path below.
+        match a.actor_state.compare_exchange(
+            HewActorState::Constructing as i32,
+            HewActorState::Constructing as i32,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            Ok(state) | Err(state) => state,
+        }
+    } else {
+        observed
+    };
     if observed != HewActorState::Idle as i32 {
         if close_terminal_handoff {
             // SAFETY: this producer just completed an enqueue against `a`.

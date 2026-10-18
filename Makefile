@@ -20,8 +20,8 @@
 # so there are no redundant copies and incremental builds just work.
 #
 # Usage:
-#   make              — build a usable compiler toolchain, including supported
-#                       native cross archives and WASI runtime archives
+#   make              — build the native compiler and standard library
+#   make assemble     — also build debug tools, native cross archives and WASI
 #   make release      — build everything (release, optimized)
 #   make pre-release  — release + validate on all platforms before tagging
 #   make publish-docs — build stdlib docs + print wrangler deploy command (operator runs wrangler)
@@ -86,6 +86,8 @@
 .PHONY: downstream-check
 
 
+
+.DEFAULT_GOAL := all
 
 help:
 	@$(PYTHON) scripts/make-help.py
@@ -372,10 +374,9 @@ RUNTIME_MIRI_TARGET_DIR := $(CARGO_TARGET_ROOT)/miri-runtime
 
 # ── Default target ──────────────────────────────────────────────────────────
 
-all: assemble ## Build: build the release-lib compiler and debug support artifacts
-	$(ASSERT_RELEASE_LIB_HEW_PROFILE)
+all: hew ## Build: build the native compiler and standard library
 
-# Convenience alias — builds the release-lib compiler and debug support tools.
+# Convenience alias for the native toolchain.
 # Equivalent to `make all`; exists so that `make build` behaves as expected.
 build: all
 
@@ -384,13 +385,14 @@ build: all
 # The supported developer launcher uses the non-LTO release-lib profile for
 # both the driver and its linkable archive. Keep a separate debug launcher for
 # compiler debugging without changing the stable build/bin/hew selection.
-hew: ## Build: build the release-lib compiler and native archive
+hew: require-host-cargo-target ## Build: build the release-lib compiler and native archive
 	cargo build -p hew-lib -p hew-cli --profile release-lib $(CARGO_TARGET_FLAG)
 	@mkdir -p $(BUILD_DIR)/bin $(BUILD_DIR)/lib
 	@ln -sfn "$(LINK_UP2)$(RELEASE_LIB_HEW)" "$(BUILD_DIR)/bin/hew"
 	@ln -sfn "$(LINK_UP2)$(RELEASE_LIBHEW)" "$(BUILD_DIR)/lib/$(notdir $(RELEASE_LIBHEW))"
+	@ln -sfn ../std "$(BUILD_DIR)/std"
 
-hew-debug: hew-native
+hew-debug: hew-native ## Build: build and stage the debug compiler
 	@mkdir -p $(BUILD_DIR)/bin
 	@ln -sfn "$(LINK_UP2)$(DEBUG_HEW)" "$(BUILD_DIR)/bin/hew-debug"
 	@echo "compiler profile: debug"
@@ -403,20 +405,6 @@ check-frontend: ## Develop: type-check the compiler and shared frontend consumer
 LSP_PROTOCOL_ARGS ?=
 test-lsp-protocol: ## Test: drive the language server over its stdio protocol
 	cargo test -p hew-cli --test lsp_protocol $(LSP_PROTOCOL_ARGS)
-
-# Shared assertion recipe, run by `all` after `assemble` so a later assembly
-# step cannot silently replace the launcher with another profile.
-define ASSERT_RELEASE_LIB_HEW_PROFILE
-	@actual="$$(readlink "$(BUILD_DIR)/bin/hew")"; \
-	expected="$(LINK_UP2)$(RELEASE_LIB_HEW)"; \
-	echo "compiler profile: release-lib"; \
-	echo "compiler path: $(RELEASE_LIB_HEW)"; \
-	test -f "$(RELEASE_LIB_HEW)"; \
-	test "$$actual" = "$$expected" || { \
-		echo "Error: build/bin/hew resolves through $$actual, expected $$expected" >&2; \
-		exit 1; \
-	}
-endef
 
 # Build the native artifacts required for `hew build` from a source checkout:
 # the driver plus hew-lib's staticlib (`target/debug/libhew.a` on Unix,
@@ -858,7 +846,7 @@ wasm-dist: wasm
 	cp $(CURDIR)/hew-wasm/pkg/hew_wasm_bg.wasm $(HEW_RUN)/static/wasm/hew_wasm_bg.wasm
 	@echo "==> Done. Commit in hew.sh and hew.run."
 
-# Build the native debug artifacts assembled by `make all` in one Cargo graph.
+# Build the native debug artifacts requested by `make assemble` in one Cargo graph.
 # Individual targets remain separate for focused development builds, but running
 # their Cargo commands concurrently through `assemble` just serializes on the
 # shared target directory lock and re-plans overlapping dependency closures.
@@ -868,7 +856,7 @@ assemble-host-debug:
 
 # Create symlinks from build/ into the real output locations.
 # This gives you one stable directory to point PATH at during development.
-assemble: require-host-cargo-target | hew assemble-host-debug libhew-cross-release-lib wasm-runtime
+assemble: require-host-cargo-target | hew assemble-host-debug libhew-cross-release-lib wasm-runtime ## Build: assemble native, debug, cross-target and WASI artifacts
 	@rm -rf $(BUILD_DIR)/bin $(BUILD_DIR)/lib $(BUILD_DIR)/std
 	@mkdir -p $(BUILD_DIR)/bin $(BUILD_DIR)/lib
 	@# Compiler drivers: keep the supported release-lib launcher stable while
@@ -1667,7 +1655,7 @@ define require_release_artifacts
 		|| { echo "Error: wasm standard library not built. Run 'make release' first."; exit 1; }
 endef
 
-install: require-host-cargo-target
+install: require-host-cargo-target ## Develop: install the release toolchain under PREFIX and DESTDIR
 	$(call require_absolute_install_root)
 	$(call require_release_artifacts)
 	@echo "==> Installing to $(DESTDIR)$(PREFIX)"

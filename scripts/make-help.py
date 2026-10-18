@@ -9,7 +9,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SECTION_ORDER = ("Build", "Check", "Test", "Release", "Develop")
+SECTION_ORDER = ("Build", "Generate", "Check", "Test", "Measure", "Release", "Develop")
 ANNOTATION_RE = re.compile(
     r"^(?P<target>[A-Za-z0-9_.%/-]+)\s*:[^#]*"
     r"##\s*(?P<section>[^:]+):\s*(?P<purpose>.*\S)\s*$"

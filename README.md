@@ -360,9 +360,13 @@ make test     # Run Rust workspace tests against the known-failure ratchet
 make lint     # Run Rust lint, source contracts and Hew formatting
 ```
 
-The default toolchain pairs the `release-lib` compiler with its linkable
-`libhew` archive, builds debug support binaries, and publishes WASI plus any
-native cross-architecture archive supported by the host toolchain. On Linux,
+Plain `make` (or `make all`) builds the native compiler and its linkable
+`libhew` archive with the optimized `release-lib` profile, staged with the
+standard library in `build/`. Add `build/bin` to your `PATH` to use it.
+`make help` lists the available targets.
+
+Use `make hew-debug` for a debug compiler. `make assemble` additionally builds
+debug support binaries, WASI and supported native cross-architecture archives. On Linux,
 the opposite architecture is included when its multiarch sysroot is installed;
 on macOS, the opposite Darwin architecture is included. The same non-LTO
 cross archive is reused by tests, assembly, installation, and packaging.

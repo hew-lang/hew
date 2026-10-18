@@ -850,14 +850,30 @@ pub(crate) fn build_rust_crate(
         .args(["--target", target])
         .current_dir(&crate_dir);
     if paths.prefixes().next().is_some() {
-        command.arg("--");
+        // Cargo's effective flags include environment, target and hierarchical
+        // config precedence. Preserve them before adding dependency-wide remaps.
+        let config = cargo_config2::Config::load_with_options(
+            &crate_dir,
+            cargo_config2::ResolveOptions::default().rustc(cargo_config2::PathAndArgs::new(&rustc)),
+        )
+        .map_err(|e| format!("failed to read native Cargo configuration: {e}"))?;
+        let mut flags = config
+            .rustflags(target)
+            .map_err(|e| format!("failed to resolve native Cargo rustflags: {e}"))?
+            .unwrap_or_default();
         for (source, display) in paths.prefixes().rev() {
-            command.arg(format!(
+            flags.push(format!(
                 "--remap-path-prefix={}={}",
                 source.display(),
                 display.display()
             ));
         }
+        command.env(
+            "CARGO_ENCODED_RUSTFLAGS",
+            flags
+                .encode()
+                .map_err(|e| format!("failed to encode native Cargo rustflags: {e}"))?,
+        );
     }
     let output = command
         .output()

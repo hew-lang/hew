@@ -96,7 +96,7 @@ fn trimmed_package_paths_are_stable_across_roots() {
     let dir = workspace();
     let roots = [
         dir.path().join("first"),
-        dir.path().join("a-longer-second-root"),
+        dir.path().join("a longer second root"),
     ];
     for root in &roots {
         std::fs::create_dir_all(root).unwrap();
@@ -265,16 +265,36 @@ fn assert_trimmed_rust_package(root: &Path) {
     );
     write(&root.join("native/Cargo.toml"), "[workspace]\n[package]\nname = \"rustbridge\"\nversion = \"0.1.0\"\nedition = \"2021\"\n[lib]\ncrate-type = [\"staticlib\"]\n[dependencies]\npath_dep = { path = \"../dependency\" }\n[profile.release]\ndebug = 1\n");
     write(&root.join("native/.cargo/config.toml"), "[build]\nrustflags = [\"--cfg\", \"hew_native_trim_flags\", \"--check-cfg=cfg(hew_native_trim_flags)\"]\n");
-    write(&root.join("native/src/lib.rs"), "#[cfg(not(hew_native_trim_flags))]\ncompile_error!(\"native build lost Cargo flags\");\n#[no_mangle]\npub extern \"C\" fn path_probe() -> *const u8 { path_dep::source().as_ptr() }\n#[no_mangle]\npub extern \"C\" fn calc_answer(extra: i32) -> i32 { 40 + extra }\n");
+    write(&root.join("native/src/lib.rs"), "#![allow(unexpected_cfgs)]\n#[cfg(not(hew_native_trim_flags))]\ncompile_error!(\"native build lost Cargo flags\");\n#[no_mangle]\npub extern \"C\" fn path_probe() -> *const u8 { path_dep::source().as_ptr() }\n#[no_mangle]\npub extern \"C\" fn calc_answer(extra: i32) -> i32 { 40 + extra }\n");
     write(
         &root.join("dependency/Cargo.toml"),
         "[workspace]\n[package]\nname = \"path_dep\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
     );
     write(
         &root.join("dependency/src/lib.rs"),
-        "pub fn source() -> &'static str { file!() }\n",
+        "#![allow(unexpected_cfgs)]\n#[cfg(not(hew_native_trim_flags))]\ncompile_error!(\"dependency lost Cargo flags\");\n#[cfg(hew_native_wrong_flags)]\ncompile_error!(\"Cargo flag precedence changed\");\npub fn source() -> &'static str { file!() }\n",
     );
-    let output = hew(root, &["build", ".", "--release", "-o", "rust-linked"]);
+    let identity = hew_pkg::native::embedded_rustc_identity();
+    let target_flags = format!(
+        "CARGO_TARGET_{}_RUSTFLAGS",
+        identity.host.to_uppercase().replace('-', "_")
+    );
+    let build = |args: &[&str], env: &[(&str, &str)]| {
+        let mut command = Command::new(hew_binary());
+        command
+            .current_dir(root)
+            .args(args)
+            .env_remove("RUSTFLAGS")
+            .env_remove("CARGO_ENCODED_RUSTFLAGS")
+            .env_remove("CARGO_BUILD_RUSTFLAGS")
+            .env_remove(&target_flags);
+        for (name, value) in env {
+            command.env(name, value);
+        }
+        run_bounded_command(command, "build trimmed Rust package")
+    };
+    let build_args = ["build", ".", "--release", "-o", "rust-linked"];
+    let output = build(&build_args, &[]);
     assert_ok(&output, "build trimmed Rust package");
     assert!(
         !stderr(&output).contains(root.to_str().unwrap()),
@@ -287,9 +307,8 @@ fn assert_trimmed_rust_package(root: &Path) {
     } else {
         root.join("native").join(target)
     };
-    let identity = hew_pkg::native::embedded_rustc_identity();
     let artifact = target
-        .join(identity.host)
+        .join(&identity.host)
         .join("release-lib")
         .join(if cfg!(windows) {
             "rustbridge.lib"
@@ -306,13 +325,43 @@ fn assert_trimmed_rust_package(root: &Path) {
     };
     assert_trimmed();
     assert_ok(
-        &hew(
-            root,
+        &build(
             &["native", "build", "--output", "target/paths.tar.zst"],
+            &[],
         ),
         "build trimmed native archive from staged source",
     );
     assert_trimmed();
+
+    // Target flags suppress build flags, and each environment form overrides
+    // the lower-priority source. Dependencies enforce the same contract.
+    let config = root.join("native/.cargo/config.toml");
+    write(
+        &config,
+        "[build]\nrustc = \"missing-configured-rustc\"\nrustflags = [\"--cfg=hew_native_wrong_flags\"]\n[target.'cfg(all())']\nrustflags = [\"--cfg=hew_native_trim_flags\"]\n",
+    );
+    assert_ok(&build(&build_args, &[]), "preserve target cfg flags");
+    assert_trimmed();
+    write(
+        &config,
+        &format!(
+            "[target.{}]\nrustflags = [\"--cfg=hew_native_wrong_flags\"]\n",
+            identity.host
+        ),
+    );
+    for env in [
+        vec![("RUSTFLAGS", "--cfg=hew_native_trim_flags")],
+        vec![
+            ("RUSTFLAGS", "--cfg=hew_native_wrong_flags"),
+            (
+                "CARGO_ENCODED_RUSTFLAGS",
+                "--cfg\u{1f}hew_native_trim_flags",
+            ),
+        ],
+    ] {
+        assert_ok(&build(&build_args, &env), "preserve environment flags");
+        assert_trimmed();
+    }
 }
 
 #[test]

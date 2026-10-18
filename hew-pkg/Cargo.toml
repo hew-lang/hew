@@ -12,6 +12,7 @@ categories = ["command-line-utilities"]
 [dependencies]
 hew-compile = { path = "../hew-compile" }
 clap.workspace = true
+cargo-config2 = "0.1.45"
 semver = "1"
 toml.workspace = true
 serde.workspace = true

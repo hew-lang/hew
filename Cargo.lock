@@ -525,6 +525,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "cargo-config2"
+version = "0.1.45"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "855d1b74d8faf6c56e02ddbb8a60f6eae479bba5ee6ee29cddee73fe9484f261"
+dependencies = [
+ "serde",
+ "serde_derive",
+ "toml",
+]
+
+[[package]]
 name = "cast"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2032,6 +2043,7 @@ name = "hew-pkg"
 version = "0.6.1"
 dependencies = [
  "base64 0.22.1",
+ "cargo-config2",
  "clap",
  "ed25519-dalek",
  "glob",

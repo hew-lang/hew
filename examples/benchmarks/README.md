@@ -1,6 +1,11 @@
 # Benchmarks
 
-This directory contains two distinct benchmark suites:
+Start with the [behaviour calibration suite](calibration/README.md) for checked
+Hew/Rust/C primitives, Go comparisons, Tokio/BEAM concurrency, latency
+distributions and application compilation measurements. It examines design
+costs and scaling rather than ranking languages.
+
+This directory also contains two older benchmark collections:
 
 1. **Hew vs Go algorithm benchmarks** — 57 paired algorithm implementations in
    `hew/` and `go/`, driven by `run_benchmarks.sh`, with results in `results.csv`.
@@ -17,6 +22,11 @@ This directory contains two distinct benchmark suites:
 side-by-side (Rust and Python are only in the HTTP server comparison below),
 writing throughput measurements to `results.csv`.
 
+The checked-in CSV dates to February 2026. It is historical, not a measurement
+of the current compiler. This runner includes `hew run` compilation time while
+Go is precompiled, and its first-numeric-line parsing can treat a checksum as
+an iteration count. Use the calibration suite for current comparisons.
+
 ```
 hew/    57 Hew algorithm implementations  (bench_*.hew)
 go/     57 matching Go implementations    (bench_*.go)
@@ -26,15 +36,15 @@ results.csv         output from the latest local run (not a canonical source of 
 
 **Algorithms covered** (57 total):
 
-| Category | Benchmarks |
-| -------- | ---------- |
-| Sorting | `bubble_sort`, `cocktail_sort`, `counting_sort`, `dutch_flag`, `heap_sort`, `insertion_sort`, `merge_sort`, `quick_sort`, `radix_sort`, `selection_sort`, `shell_sort` |
-| Searching | `binary_search`, `exponential_search`, `fibonacci_search`, `interpolation_search`, `jump_search`, `linear_search`, `sentinel_search`, `ternary_search` |
-| Graph | `bellman_ford`, `bfs`, `detect_cycle`, `dfs`, `dijkstra`, `floyd_warshall`, `kruskal`, `topological_sort` |
-| Dynamic programming | `climbing_stairs`, `coin_change`, `edit_distance`, `knapsack`, `lcs`, `lis`, `matrix_chain`, `max_subarray`, `rod_cutting` |
-| Math / number theory | `catalan`, `factorial`, `fast_power`, `fibonacci`, `gcd`, `is_prime`, `lcm`, `matrix_multiply`, `newton_sqrt`, `pascal`, `sieve` |
-| String / array | `caesar_cipher`, `hamming`, `palindrome`, `remove_dupes`, `rle`, `rotate_array`, `spiral_matrix`, `string_reverse`, `two_sum` |
-| Misc | `merge_sorted` |
+| Category             | Benchmarks                                                                                                                                                             |
+| -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Sorting              | `bubble_sort`, `cocktail_sort`, `counting_sort`, `dutch_flag`, `heap_sort`, `insertion_sort`, `merge_sort`, `quick_sort`, `radix_sort`, `selection_sort`, `shell_sort` |
+| Searching            | `binary_search`, `exponential_search`, `fibonacci_search`, `interpolation_search`, `jump_search`, `linear_search`, `sentinel_search`, `ternary_search`                 |
+| Graph                | `bellman_ford`, `bfs`, `detect_cycle`, `dfs`, `dijkstra`, `floyd_warshall`, `kruskal`, `topological_sort`                                                              |
+| Dynamic programming  | `climbing_stairs`, `coin_change`, `edit_distance`, `knapsack`, `lcs`, `lis`, `matrix_chain`, `max_subarray`, `rod_cutting`                                             |
+| Math / number theory | `catalan`, `factorial`, `fast_power`, `fibonacci`, `gcd`, `is_prime`, `lcm`, `matrix_multiply`, `newton_sqrt`, `pascal`, `sieve`                                       |
+| String / array       | `caesar_cipher`, `hamming`, `palindrome`, `remove_dupes`, `rle`, `rotate_array`, `spiral_matrix`, `string_reverse`, `two_sum`                                          |
+| Misc                 | `merge_sorted`                                                                                                                                                         |
 
 ### Running
 
@@ -68,7 +78,7 @@ else → 404.
 | File              | Language | Port  | HTTP Library            |
 | ----------------- | -------- | ----- | ----------------------- |
 | `http_server.hew` | Hew      | 18080 | tiny_http (via runtime) |
-| `http_server.rs`  | Rust      | 18083 | tiny_http 0.12          |
+| `http_server.rs`  | Rust     | 18083 | tiny_http 0.12          |
 | `http_server.go`  | Go       | 18081 | net/http (stdlib)       |
 | `http_server.py`  | Python   | 18082 | http.server (stdlib)    |
 
@@ -77,7 +87,7 @@ else → 404.
 | File                     | Language | Port  | HTTP Library             |
 | ------------------------ | -------- | ----- | ------------------------ |
 | `http_server_expert.hew` | Hew      | 18080 | tiny_http (via runtime)  |
-| `http_server_expert.rs`  | Rust      | 18083 | axum + tokio (async)     |
+| `http_server_expert.rs`  | Rust     | 18083 | axum + tokio (async)     |
 | `http_server_expert.go`  | Go       | 18081 | net/http + NewServeMux   |
 | `http_server_expert.py`  | Python   | 18082 | http.server + match 3.10 |
 

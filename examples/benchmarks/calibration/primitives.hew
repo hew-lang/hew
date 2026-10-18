@@ -1,0 +1,93 @@
+import std.os;
+
+import std.string;
+
+import std.time.datetime;
+
+fn scalar(iterations: i64) -> i64 {
+    var state = 1;
+    for r in 0..iterations {
+        state = (state * 48271) % 2147483647;
+    }
+    state
+}
+
+fn vector_scan(iterations: i64, size: i64, values: Vec<i64>) -> i64 {
+    var checksum = 0;
+    for r in 0..iterations {
+        for i in 0..size {
+            checksum += values[i];
+        }
+    }
+    checksum
+}
+
+fn vector_build(iterations: i64, size: i64) -> i64 {
+    var checksum = 0;
+    for r in 0..iterations {
+        var values: Vec<i64> = Vec.new();
+        for i in 0..size {
+            values.push(i % 251);
+        }
+        for i in 0..size {
+            checksum += values[i];
+        }
+    }
+    checksum
+}
+
+fn bytes_shared(iterations: i64, size: i64, original: bytes) -> i64 {
+    var checksum = 0;
+    for r in 0..iterations {
+        let snapshot = clone original;
+        checksum += snapshot[r % size] as i64;
+    }
+    checksum
+}
+
+fn bytes_cow(iterations: i64, size: i64, original: bytes) -> i64 {
+    var checksum = 0;
+    for r in 0..iterations {
+        var snapshot = clone original;
+        let index = r % size;
+        snapshot.set(index, ((original[index] as i64 + 1) % 251) as u8);
+        checksum += snapshot[index] as i64 + original[index] as i64;
+    }
+    checksum
+}
+
+fn main() {
+    let args = os.args();
+    if args.len() != 4 {
+        panic("usage: primitives WORKLOAD ITERATIONS SIZE");
+    }
+    let workload = args[1];
+    let iterations = string.to_int(args[2]).expect("positive iteration count");
+    let size = string.to_int(args[3]).expect("positive size");
+    if iterations <= 0 || size <= 0 {
+        panic("iterations and size must be positive");
+    }
+    var values: Vec<i64> = Vec.new();
+    var original = bytes.new();
+    if workload == "vector_scan" {
+        for i in 0..size {
+            values.push(i % 251);
+        }
+    }
+    if workload == "bytes_shared" || workload == "bytes_cow" {
+        for i in 0..size {
+            original.push((i % 251) as u8);
+        }
+    }
+    let start = datetime.now_nanos();
+    let checksum = match workload {
+        "scalar" => scalar(iterations),
+        "vector_scan" => vector_scan(iterations, size, values),
+        "vector_build" => vector_build(iterations, size),
+        "bytes_shared" => bytes_shared(iterations, size, original),
+        "bytes_cow" => bytes_cow(iterations, size, original),
+        _ => panic("unknown workload"),
+    };
+    let elapsed = datetime.now_nanos() - start;
+    println("{\"workload\":\"" + workload + f"\",\"iterations\":{iterations},\"size\":{size},\"elapsed_ns\":{elapsed},\"checksum\":{checksum}" + "}");
+}

@@ -2087,6 +2087,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.11.0",
+ "smallvec",
  "snow",
  "socket2",
  "tempfile",

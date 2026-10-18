@@ -5,6 +5,10 @@ Rust, C, Go and Erlang/OTP. It helps identify surprising overhead, understand
 language and runtime tradeoffs, and choose useful follow-up investigations.
 It is not a language ranking or a performance promise.
 
+The [18 October lifecycle follow-up](results/2026-10-18-lifecycle.md)
+attributes task and actor allocations and readiness notifications, with a
+before/after comparison of the resulting runtime changes.
+
 The [16 October 2026 Linux report](results/2026-10-16-linux-x86_64.md)
 includes the first measured shapes, distributions and follow-up questions.
 

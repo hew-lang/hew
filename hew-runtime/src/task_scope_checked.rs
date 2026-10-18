@@ -391,7 +391,8 @@ pub unsafe extern "C" fn hew_checked_task_race(
 ///
 /// # Safety
 /// `task` is one owning checked task handle. `waker` is a valid retained-target
-/// descriptor. Free the wait after taking its result or abandoning observation.
+/// descriptor. Poll status before parking: an already completed task needs no
+/// registration or wake. Free the wait after taking or abandoning its result.
 #[no_mangle]
 pub unsafe extern "C" fn hew_checked_task_wait_new(
     task: *mut HewTask,
@@ -420,10 +421,6 @@ impl HewCheckedTaskWait {
                 Some(wake)
             }
         };
-        if wake.is_none() {
-            // SAFETY: the caller keeps this descriptor valid until return.
-            unsafe { ((*waker).wake)((*waker).context) };
-        }
         Self { task, wake }
     }
 }

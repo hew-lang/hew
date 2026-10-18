@@ -242,6 +242,7 @@ const UNIT_FAMILY_SHIMS: Record<string, RuntimeShim | undefined> = {
     int(BigInt(compareUtf8(text(args, 0), text(args, 1)))),
   StringStartsWith: (_host, args) =>
     bool(text(args, 0).startsWith(text(args, 1))),
+  StringEndsWith: (_host, args) => bool(text(args, 0).endsWith(text(args, 1))),
   StringContains: (_host, args) =>
     bool(indexed(args, 0).find(indexed(args, 1)) !== undefined),
   StringTrim: (_host, args) =>

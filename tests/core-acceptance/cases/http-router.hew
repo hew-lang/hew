@@ -25,6 +25,8 @@ fn main() {
     let segments = "/a//".split("/");
     check(segments.len() == 4 && segments[0] == "" && segments[3] == "", "split preserves empty segments");
     check("雪🙂雪".split("雪").join("/") == "/🙂/", "Unicode delimiter split");
+    check("".ends_with("") && "雪🙂".ends_with("") && "雪🙂".ends_with("🙂"), "empty and Unicode suffixes");
+    check(!"雪🙂".ends_with("雪") && !"".ends_with("雪"), "nonmatching suffixes");
     var routes: router.Router<Endpoint> = router.new();
     routes.add("GET", "/users/{id}", .User).expect("user route");
     routes.add("POST", "/users/new", .NewUser).expect("static resource");

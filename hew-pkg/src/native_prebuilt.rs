@@ -368,15 +368,22 @@ pub fn build(root: &Path, target: &str) -> Result<crate::tarball::PackResult, St
     if rust.kind != "staticlib" {
         return Err("native prebuilts require kind = staticlib".to_string());
     }
-    let source = crate::tarball::pack(
-        root,
-        manifest.package.exclude.as_deref().unwrap_or_default(),
-        manifest.package.include.as_deref().unwrap_or_default(),
-    )
-    .map_err(|error| error.to_string())?;
+    let (source_archive, source_checksum) = if let Some((_, checksum, archive)) =
+        crate::registry::source_provenance(root, &manifest)?
+    {
+        (archive, checksum)
+    } else {
+        let source = crate::tarball::pack(
+            root,
+            manifest.package.exclude.as_deref().unwrap_or_default(),
+            manifest.package.include.as_deref().unwrap_or_default(),
+        )
+        .map_err(|error| error.to_string())?;
+        (source.data, source.checksum)
+    };
     let slot = root.join("target/native-package-source");
     let staged = StagedDir::new(&slot).map_err(|error| error.to_string())?;
-    crate::tarball::unpack(&source.data, staged.path()).map_err(|error| error.to_string())?;
+    crate::tarball::unpack(&source_archive, staged.path()).map_err(|error| error.to_string())?;
     let mut paths = hew_compile::SourcePathPolicy::default();
     let display = PathBuf::from("packages")
         .join(&manifest.package.name)
@@ -393,7 +400,7 @@ pub fn build(root: &Path, target: &str) -> Result<crate::tarball::PackResult, St
     let descriptor = NativeDescriptor {
         name: manifest.package.name.clone(),
         version: manifest.package.version.clone(),
-        source_checksum: source.checksum,
+        source_checksum,
         identity: NativeIdentity::current(target),
         library: artifact_file_name(rust.lib, rust.kind, target),
     };
@@ -477,4 +484,64 @@ pub(crate) fn publish(
         );
     }
     Ok(record.cksum)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn native_rebuild_preserves_verified_source_archive_identity() {
+        let source = tempfile::tempdir().unwrap();
+        std::fs::create_dir(source.path().join("native")).unwrap();
+        std::fs::write(
+            source.path().join("hew.toml"),
+            "[package]\nname = \"acme.provenance\"\nversion = \"0.1.0\"\nedition = \"2026\"\n[native]\nlib = \"provenance_probe\"\ncrate = \"native\"\n",
+        ).unwrap();
+        std::fs::write(
+            source.path().join("native/Cargo.toml"),
+            "[workspace]\n[package]\nname = \"provenance_probe\"\nversion = \"0.1.0\"\nedition = \"2021\"\n[lib]\npath = \"lib.rs\"\ncrate-type = [\"staticlib\"]\n",
+        ).unwrap();
+        std::fs::write(
+            source.path().join("native/lib.rs"),
+            "pub fn answer() -> u32 { 42 }\n",
+        )
+        .unwrap();
+        let packed = crate::tarball::pack(source.path(), &[], &[]).unwrap();
+        let payload = zstd::decode_all(packed.data.as_slice()).unwrap();
+        let published = zstd::encode_all(payload.as_slice(), 22).unwrap();
+        let published_checksum = crate::tarball::checksum_bytes(&published);
+        let installed = tempfile::tempdir().unwrap();
+        crate::tarball::unpack(&published, installed.path()).unwrap();
+        Registry::write_cache_metadata(
+            installed.path(),
+            "https://registry.example",
+            "acme.provenance",
+            "0.1.0",
+            &published_checksum,
+            &published,
+        )
+        .unwrap();
+        assert_ne!(
+            crate::tarball::pack(installed.path(), &[], &[])
+                .unwrap()
+                .checksum,
+            published_checksum,
+        );
+        let target = embedded_rustc_identity().host;
+        let artifact = build(installed.path(), &target).unwrap();
+        let descriptor = inspect(&artifact.data, source.path()).unwrap();
+        assert_eq!(descriptor.source_checksum, published_checksum);
+
+        std::fs::write(
+            installed.path().join("native/lib.rs"),
+            "compile_error!(\"modified registered source must not reach Cargo\");\n",
+        )
+        .unwrap();
+        let error = build(installed.path(), &target).unwrap_err();
+        assert!(
+            error.contains("package provenance integrity check failed"),
+            "{error}"
+        );
+    }
 }

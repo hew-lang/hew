@@ -3,7 +3,8 @@
 //! `run` and `run_argv` execute a command to completion and capture its
 //! output. `start` launches a `Command` (never through a shell) and returns a
 //! `Child` whose piped stdio are ordinary `Stream<bytes>` and `Sink<bytes>`
-//! values.
+//! values. `Command.output(CaptureLimits { timeout, max_output_bytes })`
+//! captures both output streams with a runtime limit and a shared byte budget.
 //!
 //! A `Child` owns its process until it is reaped. `wait` suspends the calling
 //! task and holds no thread while the child runs: it parks on the I/O reactor
@@ -72,6 +73,51 @@ pub type Command {
     stderr: Stdio;
 }
 
+/// Limits for `Command.output`.
+pub type CaptureLimits {
+    /// A positive runtime limit, including draining output and waiting for exit.
+    timeout: duration;
+    /// The maximum retained raw stdout and stderr bytes together; zero permits
+    /// no output. A chunk that would exceed this limit is rejected before append.
+    max_output_bytes: i64;
+}
+
+impl Command {
+    /// Run without a shell and capture stdout and stderr within `limits`.
+    ///
+    /// Stdout and stderr are piped regardless of their command settings. Stdin
+    /// may be inherited or null; `Piped` is refused because this operation does
+    /// not expose a writer. Use `start` for interactive input.
+    ///
+    /// A nonzero exit is ordinary `CommandOutput.status` data. Exceeding either
+    /// limit returns a structured error without partial output, after killing
+    /// and reaping a child that is still running. Cancellation does the same.
+    /// The byte budget bounds retained raw output, not operating-system pipe
+    /// buffers, the current read chunk or allocation/UTF-8 conversion overhead.
+    fn output(var self, limits: CaptureLimits) -> CommandOutput fails ProcessError {
+        if limits.timeout <= 0ns {
+            return error ProcessError.InvalidArguments("process output: timeout must be positive");
+        }
+        if limits.max_output_bytes < 0 {
+            return error ProcessError.InvalidArguments("process output: max_output_bytes must be nonnegative");
+        }
+        if let Stdio.Piped = self.stdin {
+            return error ProcessError.InvalidArguments("process output: piped stdin requires process.start");
+        }
+        self.stdout = Stdio.Piped;
+        self.stderr = Stdio.Piped;
+        scope within limits.timeout {
+            let child = start(self)?;
+            drain_output(child, .Some(limits.max_output_bytes))?
+        } handle failure {
+            match failure {
+                .Fault { message } => return error ProcessError.LaunchFailed(message),
+                .Deadline { message } => return error ProcessError.TimedOut(limits.timeout),
+            }
+        }
+    }
+}
+
 /// How a process ended.
 pub enum ExitStatus {
     /// The process exited with this code.
@@ -95,6 +141,10 @@ pub enum ProcessError {
     NotPiped;
     /// The operating system refused a wait or signal with this error code.
     System(i64);
+    /// `Command.output` reached its configured runtime limit.
+    TimedOut(duration);
+    /// `Command.output` would retain more than this many raw output bytes.
+    OutputLimitExceeded(i64);
 }
 
 /// A running or finished child process.
@@ -227,6 +277,8 @@ impl Display for ProcessError {
             ProcessError.LaunchFailed(message) => message,
             ProcessError.NotPiped => "NotPiped: the stream was not piped or was already taken",
             ProcessError.System(code) => f"System({code}): the operating system refused the operation",
+            ProcessError.TimedOut(timeout) => f"process output: timed out after {timeout.nanos()} ns",
+            ProcessError.OutputLimitExceeded(limit) => f"process output: exceeded the {limit} byte output limit",
         }
     }
 }
@@ -273,54 +325,63 @@ fn last_process_error(default_message: string) -> ProcessError {
     }
 }
 
-fn capture(consume child: Child) -> CommandOutput fails ProcessError {
+fn drain_output(consume child: Child, max_output_bytes: Option<i64>) -> CommandOutput fails ProcessError {
     let stdout_stream = child.stdout()?;
     let stderr_stream = child.stderr()?;
-    scope {
-        var stdout = bytes.new();
-        var stderr = bytes.new();
-        var stdout_open = true;
-        var stderr_open = true;
-        var prefer_stdout = true;
-        while stdout_open || stderr_open {
-            // Read whichever pipe is ready. Once one ends, do not select its
-            // ready EOF again while the other pipe still has data to drain.
-            let (from_stdout, next) = if stdout_open && stderr_open && prefer_stdout {
-                select {
-                    chunk from stdout_stream.recv() => (true, chunk),
-                    chunk from stderr_stream.recv() => (false, chunk),
-                }
-            } else if stdout_open && stderr_open {
-                select {
-                    chunk from stderr_stream.recv() => (false, chunk),
-                    chunk from stdout_stream.recv() => (true, chunk),
-                }
-            } else if stdout_open {
-                (true, stdout_stream.recv())
-            } else {
-                (false, stderr_stream.recv())
-            };
-            // Prefer the other pipe next when both remain continuously ready.
-            prefer_stdout = !from_stdout;
-            match next {
-                .Some(chunk) => {
-                    if from_stdout {
-                        stdout.append(chunk);
-                    } else {
-                        stderr.append(chunk);
+    var stdout = bytes.new();
+    var stderr = bytes.new();
+    var stdout_open = true;
+    var stderr_open = true;
+    var prefer_stdout = true;
+    while stdout_open || stderr_open {
+        // Read whichever pipe is ready. Once one ends, do not select its
+        // ready EOF again while the other pipe still has data to drain.
+        let (from_stdout, next) = if stdout_open && stderr_open && prefer_stdout {
+            select {
+                chunk from stdout_stream.recv() => (true, chunk),
+                chunk from stderr_stream.recv() => (false, chunk),
+            }
+        } else if stdout_open && stderr_open {
+            select {
+                chunk from stderr_stream.recv() => (false, chunk),
+                chunk from stdout_stream.recv() => (true, chunk),
+            }
+        } else if stdout_open {
+            (true, stdout_stream.recv())
+        } else {
+            (false, stderr_stream.recv())
+        };
+        // Prefer the other pipe next when both remain continuously ready.
+        prefer_stdout = !from_stdout;
+        match next {
+            .Some(chunk) => {
+                if let .Some(limit) = max_output_bytes {
+                    if chunk.len() > limit - stdout.len() - stderr.len() {
+                        return error ProcessError.OutputLimitExceeded(limit);
                     }
                 }
-                .None => {
-                    if from_stdout {
-                        stdout_open = false;
-                    } else {
-                        stderr_open = false;
-                    }
+                if from_stdout {
+                    stdout.append(chunk);
+                } else {
+                    stderr.append(chunk);
+                }
+            }
+            .None => {
+                if from_stdout {
+                    stdout_open = false;
+                } else {
+                    stderr_open = false;
                 }
             }
         }
-        let status = child.wait()?;
-        CommandOutput { status, stdout: utf8.decode_lossy(stdout), stderr: utf8.decode_lossy(stderr) }
+    }
+    let status = child.wait()?;
+    CommandOutput { status, stdout: utf8.decode_lossy(stdout), stderr: utf8.decode_lossy(stderr) }
+}
+
+fn capture(consume child: Child) -> CommandOutput fails ProcessError {
+    scope {
+        drain_output(child, .None)?
     } handle failure {
         match failure {
             .Fault { message } => return error ProcessError.LaunchFailed(message),

@@ -719,10 +719,21 @@
     "actor": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["id", "state_fields", "stop", "handlers", "overflow"],
+      "required": [
+        "id",
+        "name",
+        "state_fields",
+        "stop",
+        "handlers",
+        "overflow"
+      ],
       "properties": {
         "id": {
           "$ref": "#/$defs/id"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
         },
         "state_fields": {
           "type": "array",

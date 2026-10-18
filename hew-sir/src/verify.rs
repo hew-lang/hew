@@ -3215,7 +3215,6 @@ fn is_initial_call_value(ty: &ResolvedTy) -> bool {
         || ty.is_builtin(hew_types::BuiltinType::ActorFn)
         || ty.is_builtin(hew_types::BuiltinType::NodeId)
         || ty.is_builtin(hew_types::BuiltinType::Location)
-        || ty.is_builtin(hew_types::BuiltinType::RemotePid)
         || matches!(
             ty,
             ResolvedTy::Borrow { .. } | ResolvedTy::String | ResolvedTy::Bytes | ResolvedTy::Task(_) | ResolvedTy::Array(_, _)

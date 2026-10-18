@@ -2323,7 +2323,7 @@ const HANDWRITTEN_CATALOG: &[BuiltinEntry] = &[
             pid_accessor: "hew_actor_pid",
         },
     ),
-    // `Node::lookup<T>(name: String) -> Result<RemotePid<T>, LookupError>`
+    // `Node::lookup(name: String) -> Result<Location, LookupError>`
     //
     // Codegen allocates the aggregate Ok payload in the destination Result and
     // passes it to `hew_node_api_lookup_location_string(name, out) -> i32`. A zero
@@ -2367,41 +2367,6 @@ const HANDWRITTEN_CATALOG: &[BuiltinEntry] = &[
     ),
     direct(
         "hew_location_display",
-        BuiltinClass::ClassB,
-        &[BuiltinTy::U64],
-        BuiltinTy::String,
-        BuiltinLinkage::CalleeNameDispatchOnly,
-    ),
-    direct(
-        "hew_remote_pid_location",
-        BuiltinClass::ClassB,
-        &[BuiltinTy::U64],
-        BuiltinTy::U64,
-        BuiltinLinkage::CalleeNameDispatchOnly,
-    ),
-    direct(
-        "hew_remote_pid_node_id",
-        BuiltinClass::ClassB,
-        &[BuiltinTy::U64],
-        BuiltinTy::U64,
-        BuiltinLinkage::CalleeNameDispatchOnly,
-    ),
-    direct(
-        "hew_remote_pid_slot",
-        BuiltinClass::ClassB,
-        &[BuiltinTy::U64],
-        BuiltinTy::U64,
-        BuiltinLinkage::CalleeNameDispatchOnly,
-    ),
-    direct(
-        "hew_remote_pid_incarnation",
-        BuiltinClass::ClassB,
-        &[BuiltinTy::U64],
-        BuiltinTy::U32,
-        BuiltinLinkage::CalleeNameDispatchOnly,
-    ),
-    direct(
-        "hew_remote_pid_display",
         BuiltinClass::ClassB,
         &[BuiltinTy::U64],
         BuiltinTy::String,

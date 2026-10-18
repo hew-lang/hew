@@ -5084,86 +5084,6 @@ impl RuntimeCallFamily {
                 physical: RuntimePhysicalForm::Direct,
                 c_return: RuntimeCReturn::Storage,
             },
-            Self::RemotePidLocation => RuntimeOpRow {
-                authority: RuntimeAuthority::Value,
-                symbol: "hew_remote_pid_location",
-                contract: Some(RuntimeSemanticContract {
-                    arguments: &[A {
-                        ty: K::BuiltinArgument(BuiltinType::RemotePid),
-                        effect: E::Borrow,
-                    }],
-                    result: R::BitCopy(K::BuiltinNominal(BuiltinType::Location)),
-                    failures: &[],
-                }),
-                staging: RuntimeStaging::Declared,
-                abi_shape: RuntimeCallAbiShape::Other,
-                physical: RuntimePhysicalForm::Direct,
-                c_return: RuntimeCReturn::Storage,
-            },
-            Self::RemotePidNodeId => RuntimeOpRow {
-                authority: RuntimeAuthority::Value,
-                symbol: "hew_remote_pid_node_id",
-                contract: Some(RuntimeSemanticContract {
-                    arguments: &[A {
-                        ty: K::BuiltinArgument(BuiltinType::RemotePid),
-                        effect: E::Borrow,
-                    }],
-                    result: R::BitCopy(K::BuiltinNominal(BuiltinType::NodeId)),
-                    failures: &[],
-                }),
-                staging: RuntimeStaging::Declared,
-                abi_shape: RuntimeCallAbiShape::Other,
-                physical: RuntimePhysicalForm::Direct,
-                c_return: RuntimeCReturn::Storage,
-            },
-            Self::RemotePidSlot => RuntimeOpRow {
-                authority: RuntimeAuthority::Value,
-                symbol: "hew_remote_pid_slot",
-                contract: Some(RuntimeSemanticContract {
-                    arguments: &[A {
-                        ty: K::BuiltinArgument(BuiltinType::RemotePid),
-                        effect: E::Borrow,
-                    }],
-                    result: R::BitCopy(K::U64),
-                    failures: &[],
-                }),
-                staging: RuntimeStaging::Declared,
-                abi_shape: RuntimeCallAbiShape::Other,
-                physical: RuntimePhysicalForm::Direct,
-                c_return: RuntimeCReturn::Storage,
-            },
-            Self::RemotePidIncarnation => RuntimeOpRow {
-                authority: RuntimeAuthority::Value,
-                symbol: "hew_remote_pid_incarnation",
-                contract: Some(RuntimeSemanticContract {
-                    arguments: &[A {
-                        ty: K::BuiltinArgument(BuiltinType::RemotePid),
-                        effect: E::Borrow,
-                    }],
-                    result: R::BitCopy(K::U32),
-                    failures: &[],
-                }),
-                staging: RuntimeStaging::Declared,
-                abi_shape: RuntimeCallAbiShape::Other,
-                physical: RuntimePhysicalForm::Direct,
-                c_return: RuntimeCReturn::Storage,
-            },
-            Self::RemotePidDisplay => RuntimeOpRow {
-                authority: RuntimeAuthority::Value,
-                symbol: "hew_remote_pid_display",
-                contract: Some(RuntimeSemanticContract {
-                    arguments: &[A {
-                        ty: K::BuiltinArgument(BuiltinType::RemotePid),
-                        effect: E::Borrow,
-                    }],
-                    result: R::FreshOwned(K::String),
-                    failures: &[],
-                }),
-                staging: RuntimeStaging::Declared,
-                abi_shape: RuntimeCallAbiShape::Other,
-                physical: RuntimePhysicalForm::Direct,
-                c_return: RuntimeCReturn::Storage,
-            },
             Self::NodeId => RuntimeOpRow {
                 authority: RuntimeAuthority::Ambient,
                 symbol: "Node::id",
@@ -5210,7 +5130,13 @@ impl RuntimeCallFamily {
                         ty: K::String,
                         effect: E::Borrow,
                     }],
-                    result: R::IndependentValue(K::NodeLookupResult),
+                    result: R::IndependentValue(K::Applied(
+                        BuiltinType::Result,
+                        &[
+                            K::BuiltinNominal(BuiltinType::Location),
+                            K::BuiltinNominal(BuiltinType::LookupError),
+                        ],
+                    )),
                     failures: &[],
                 }),
                 staging: RuntimeStaging::PreStaged,

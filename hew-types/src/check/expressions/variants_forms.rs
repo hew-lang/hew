@@ -52,9 +52,7 @@ impl Checker {
             resolved,
             Ty::Named {
                 head: crate::TypeHead::Builtin(
-                    crate::BuiltinType::NodeId
-                        | crate::BuiltinType::Location
-                        | crate::BuiltinType::RemotePid
+                    crate::BuiltinType::NodeId | crate::BuiltinType::Location
                 ),
                 ..
             }

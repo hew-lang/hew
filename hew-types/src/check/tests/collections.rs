@@ -1200,7 +1200,6 @@ fn record_clone_affine_veto_preserves_semantic_handle_clones_and_phantom_tags() 
                     "local".to_string(),
                     Ty::actor_for_test("ResourceToken", vec![]),
                 ),
-                ("remote".to_string(), Ty::remote_pid(resource.clone())),
                 (
                     "lambda".to_string(),
                     Ty::actor_fn(resource.clone(), resource.clone()),
@@ -1217,7 +1216,6 @@ fn record_clone_affine_veto_preserves_semantic_handle_clones_and_phantom_tags() 
                 "rc".to_string(),
                 "weak".to_string(),
                 "local".to_string(),
-                "remote".to_string(),
                 "lambda".to_string(),
                 "actor".to_string(),
             ],
@@ -2582,7 +2580,7 @@ fn actor_handle_dispatch_uses_builtin_discriminator() {
 }
 
 #[test]
-fn remote_pid_does_not_fall_through_to_local_actor_dispatch() {
+fn location_does_not_fall_through_to_local_actor_dispatch() {
     let output = check_source(
         r"
         actor Worker {
@@ -2590,7 +2588,7 @@ fn remote_pid_does_not_fall_through_to_local_actor_dispatch() {
         }
 
         fn main() {
-            let remote: RemotePid<Worker>;
+            let remote: Location;
             remote.ping();
         }
         ",
@@ -2598,7 +2596,7 @@ fn remote_pid_does_not_fall_through_to_local_actor_dispatch() {
 
     assert!(
         output.actor_method_dispatch.is_empty(),
-        "RemotePid<Worker> must not be treated as a local actor dispatch receiver: {:?}",
+        "Location must not be treated as a local actor dispatch receiver: {:?}",
         output.actor_method_dispatch
     );
     assert!(
@@ -2606,56 +2604,31 @@ fn remote_pid_does_not_fall_through_to_local_actor_dispatch() {
             .errors
             .iter()
             .any(|error| error.kind == TypeErrorKind::UndefinedMethod),
-        "remote actor receive dispatch should be rejected as an undefined method; got: {:?}",
+        "discovery metadata dispatch should be rejected as an undefined method; got: {:?}",
         output.errors
     );
 }
 
 #[test]
-fn remote_pid_raw_constructor_is_not_public() {
-    let removed_constructor = ["from", "_raw"].concat();
-    let source = r"
+fn location_cannot_be_used_as_an_actor_handle() {
+    let output = check_source(
+        r"
         actor Counter {
             receive fn inc() {}
         }
 
-        fn main() {
-            let p: RemotePid<Counter> = RemotePid<Counter>.$CONSTRUCTOR(1, 42);
+        fn forge(location: Location) -> Counter {
+            location
         }
-        "
-    .replace("$CONSTRUCTOR", &removed_constructor);
-    let output = check_source(&source);
-
+        ",
+    );
     assert!(
         output
             .errors
             .iter()
-            .any(|error| error.kind == TypeErrorKind::UndefinedFunction),
-        "provenance-free remote PID construction must be undefined; got: {:?}",
+            .any(|error| matches!(error.kind, TypeErrorKind::Mismatch { .. })),
+        "discovery metadata must not manufacture an actor handle; got: {:?}",
         output.errors
-    );
-}
-
-#[test]
-fn turbofish_arity_mismatch_is_rejected() {
-    // Fail-closed: too many turbofish args on a 1-arity associated fn
-    // must surface as a typed arity diagnostic, not silent success.
-    let removed_constructor = ["from", "_raw"].concat();
-    let source = r"
-        actor Counter {
-            receive fn inc() {}
-        }
-
-        fn main() {
-            let p = RemotePid<Counter, Counter>.$CONSTRUCTOR(1, 42);
-        }
-        "
-    .replace("$CONSTRUCTOR", &removed_constructor);
-    let output = check_source(&source);
-
-    assert!(
-        !output.errors.is_empty(),
-        "turbofish with too many type args must produce a diagnostic",
     );
 }
 
@@ -3095,14 +3068,14 @@ fn constructor_pattern_against_non_enum_still_errors() {
 }
 
 #[test]
-fn supervisor_wired_to_rejects_remote_pid_by_role() {
+fn supervisor_wired_to_rejects_location_by_role() {
     let output = check_source(
         r"actor Db {
     receive fn query() {}
 }
 
 actor Api {
-    init(db: RemotePid<Db>) {}
+    init(db: Location) {}
 }
 
 supervisor App {
@@ -3121,9 +3094,9 @@ supervisor App {
                 && error
                     .message
                     .contains("E_SUPERVISOR_WIRED_TO_TYPE_MISMATCH")
-                && error.message.contains("RemotePid<Db>")
+                && error.message.contains("Location")
         }),
-        "wired_to must reject RemotePid<Db> rather than accepting actor-pid spelling: {:?}",
+        "wired_to must reject Location rather than accepting actor-pid spelling: {:?}",
         output.errors
     );
 }

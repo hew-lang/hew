@@ -808,8 +808,6 @@ impl Checker {
         };
 
         // Expected: outer has the supervisor-local pid role, inner = expected_sibling_type.
-        // RemotePid is intentionally rejected here by role: supervisors are local, and a
-        // wired_to child param typed `RemotePid<Sibling>` is semantically invalid.
         let type_ok = supervisor_local_pid_target(&param.ty)
             .is_some_and(|target_type| target_type == expected_sibling_type);
 
@@ -1176,7 +1174,7 @@ impl Checker {
             self.record_receiver_output(false);
         }
         // A completely empty body on a method whose `Self` is a compiler
-        // builtin (`ActorHandle`, `RemotePid`, `Vec`, …) is a fail-closed
+        // builtin (`ActorHandle`, `Vec`, …) is a fail-closed
         // declaration stub: no source constructor exists for an opaque pid
         // handle or an abstract `T`, a self-call would stack-overflow, and the
         // real value is produced by codegen / the runtime. The placeholder body

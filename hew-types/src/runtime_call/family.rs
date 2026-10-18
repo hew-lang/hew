@@ -58,7 +58,7 @@ pub enum RuntimeCallFamily {
     /// 7). Emitted only by `build_stream_producer_pump`.
     ActorGenSinkRegister,
     ActorLink,
-    /// `link_remote(RemotePid<T>, PartitionPolicy)` →
+    /// `link_remote(Location, PartitionPolicy)` →
     /// `hew_node_link_remote_location(target, policy_tag) -> i64`. Establishes a
     /// cross-node link: a local actor links a remote actor so the remote's
     /// death (exit / crash / partition) fires the per-link `PartitionPolicy`
@@ -204,23 +204,18 @@ pub enum RuntimeCallFamily {
     NodeConnect,
     NodeId,
     /// The identity and location accessors `std/builtins.hew` declares through
-    /// `#[extern_symbol]`. Each borrows its receiver - a `NodeId`, `Location`
-    /// or `RemotePid<T>` is a by-value identity snapshot whose drop frees
-    /// nothing - and returns either a fresh owned string or a bit-copied field.
+    /// `#[extern_symbol]`. Each borrows its receiver: a `NodeId` or `Location`
+    /// is a by-value identity snapshot whose drop frees nothing. Accessors
+    /// return either a fresh owned string or a bit-copied field.
     NodeIdDisplay,
     LocationNodeId,
     LocationSlot,
     LocationIncarnation,
     LocationDisplay,
-    RemotePidLocation,
-    RemotePidNodeId,
-    RemotePidSlot,
-    RemotePidIncarnation,
-    RemotePidDisplay,
     NodeIdentityKey,
     NodeLoadKeys,
     NodeLookup,
-    /// `monitor(RemotePid<T>)` →
+    /// `monitor(Location)` →
     /// `hew_node_monitor_location(target, out_monitor_id) -> i32`.
     /// Zero returns success and writes the distributed-monitor id; non-zero is
     /// one plus the `LinkError` discriminant. Codegen assembles
@@ -1168,11 +1163,6 @@ impl RuntimeCallFamily {
             "hew_location_slot" => Some(Self::LocationSlot),
             "hew_location_incarnation" => Some(Self::LocationIncarnation),
             "hew_location_display" => Some(Self::LocationDisplay),
-            "hew_remote_pid_location" => Some(Self::RemotePidLocation),
-            "hew_remote_pid_node_id" => Some(Self::RemotePidNodeId),
-            "hew_remote_pid_slot" => Some(Self::RemotePidSlot),
-            "hew_remote_pid_incarnation" => Some(Self::RemotePidIncarnation),
-            "hew_remote_pid_display" => Some(Self::RemotePidDisplay),
             "stream.pair_sink" => Some(Self::StreamPairSink),
             "stream.pair_stream" => Some(Self::StreamPairStream),
             "stream.forward" => Some(Self::StreamForward),

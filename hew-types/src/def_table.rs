@@ -592,7 +592,7 @@ pub(crate) enum BuiltinAnchor {
     Generator,
     Vec,
     HashMap,
-    RemotePid,
+
     Stream,
     Sink,
     Option,
@@ -605,7 +605,7 @@ pub(crate) enum BuiltinAnchor {
 }
 
 impl BuiltinAnchor {
-    const ALL: [Self; 29] = [
+    const ALL: [Self; 28] = [
         Self::I8,
         Self::I16,
         Self::I32,
@@ -625,7 +625,6 @@ impl BuiltinAnchor {
         Self::Generator,
         Self::Vec,
         Self::HashMap,
-        Self::RemotePid,
         Self::Stream,
         Self::Sink,
         Self::Option,
@@ -660,7 +659,6 @@ impl BuiltinAnchor {
             Self::Generator => "Generator",
             Self::Vec => "Vec",
             Self::HashMap => "HashMap",
-            Self::RemotePid => "RemotePid",
             Self::Stream => "Stream",
             Self::Sink => "Sink",
             Self::Option => "Option",
@@ -855,7 +853,6 @@ impl DefTable {
             BuiltinType::Generator => BuiltinAnchor::Generator,
             BuiltinType::Stream => BuiltinAnchor::Stream,
             BuiltinType::Sink => BuiltinAnchor::Sink,
-            BuiltinType::RemotePid => BuiltinAnchor::RemotePid,
             _ => panic!("builtin has no generic catalogue binder owner"),
         };
         crate::ParamHead::new(

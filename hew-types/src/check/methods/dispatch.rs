@@ -1346,19 +1346,8 @@ impl Checker {
                 let has_user_send_handler = method == "send"
                     && matches!(resolved.as_local_actor_ref(), Some(Ty::Named { head, .. })
                         if self.actor_member(*head, method, crate::DeclarationKind::ActorReceive).is_some());
-                // A concrete actor-handle `.send(msg)` call with no user
-                // `receive fn send` handler has no lowerable local-
-                // mailbox delivery path (#2367). Declaring `impl
-                // ActorMsg for T` records a message-envelope binding but
-                // does not, by itself, wire delivery — no receive fn is
-                // ever resolved to receive the message. Admitting this
-                // case let it reach HIR lowering with no
-                // `method_call_rewrites` / `actor_method_dispatch` entry
-                // and fail closed there with an internal
-                // `MethodCallNoRewrite` diagnostic instead of an
-                // actionable one. Reject uniformly here, whether or not
-                // the actor declares `impl ActorMsg` — same diagnostic
-                // as the no-envelope case.
+                // Only an authored `receive fn send` admits this call; reject a
+                // missing handler here before HIR needs a dispatch target.
                 if method == "send"
                     && !has_user_send_handler
                     && !self.checking_canonical_stdlib_source("std.builtins")

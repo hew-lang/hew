@@ -527,7 +527,6 @@ impl RuntimeCallFamily {
                     | RuntimeValueKind::CodecGenerator
                     | RuntimeValueKind::CodecEncoder
                     | RuntimeValueKind::CodecItem
-                    | RuntimeValueKind::NodeLookupResult
                     | RuntimeValueKind::BuiltinNominal(_)
                     | RuntimeValueKind::BuiltinArgument(_)
                     | RuntimeValueKind::Applied(_, _)
@@ -829,11 +828,6 @@ impl RuntimeCallFamily {
             | F::LocationSlot
             | F::LocationIncarnation
             | F::LocationDisplay
-            | F::RemotePidLocation
-            | F::RemotePidNodeId
-            | F::RemotePidSlot
-            | F::RemotePidIncarnation
-            | F::RemotePidDisplay
             | F::NodeIdentityKey
             | F::NodeLoadKeys
             | F::NodeLookup

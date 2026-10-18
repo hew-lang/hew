@@ -1189,7 +1189,6 @@ actor Worker {
 
 actor Server {
     receive fn register(worker: Worker) {}
-    receive fn register_remote(worker: RemotePid<Worker>) {}
 }
 ",
         );

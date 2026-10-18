@@ -196,7 +196,7 @@ impl Checker {
     }
 
     /// A remote message must be data whose records and enums are `#[wire]`,
-    /// the same rule `RemotePid` sends check (D524).
+    /// the same rule imported actor calls check (D524).
     pub(super) fn enforce_remote_actor_msg_serializable(&mut self, ty: &Ty, span: &Span) -> bool {
         let resolved = self.subst.resolve(ty);
         if matches!(resolved, Ty::Var(_) | Ty::Error) {

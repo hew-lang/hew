@@ -42,7 +42,6 @@ pub enum BuiltinType {
     ActorHandle,
     NodeId,
     Location,
-    RemotePid,
     HewActor,
     BoxedActor,
     ActorState,
@@ -154,7 +153,6 @@ pub enum BuiltinHandleFamily {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum BuiltinTypeRole {
     ActorDispatchLocal,
-    ActorDispatchRemote,
     SupervisorHandle,
     WasmNativeOnlyHandle,
     ActorStatePayload,
@@ -211,7 +209,6 @@ builtin_types! {
     ActorHandle => "ActorHandle",
     NodeId => "NodeId",
     Location => "Location",
-    RemotePid => "RemotePid",
     HewActor => "HewActor",
     BoxedActor => "BoxedActor",
     ActorState => "ActorState",
@@ -292,12 +289,7 @@ impl BuiltinType {
     pub const fn is_affine_clone_terminal(self) -> bool {
         matches!(
             self,
-            Self::ActorHandle
-                | Self::RemotePid
-                | Self::ActorFn
-                | Self::HewActor
-                | Self::Rc
-                | Self::Weak
+            Self::ActorHandle | Self::ActorFn | Self::HewActor | Self::Rc | Self::Weak
         )
     }
 
@@ -385,7 +377,6 @@ impl BuiltinType {
             Self::SupervisorPool
             | Self::NodeId
             | Self::Location
-            | Self::RemotePid
             | Self::MonitorId
             | Self::DownTarget
             | Self::DownReason
@@ -463,9 +454,7 @@ impl BuiltinType {
     #[must_use]
     pub const fn handle_family(self) -> Option<BuiltinHandleFamily> {
         match self {
-            Self::ActorHandle | Self::RemotePid | Self::ActorFn => {
-                Some(BuiltinHandleFamily::ActorPid)
-            }
+            Self::ActorHandle | Self::ActorFn => Some(BuiltinHandleFamily::ActorPid),
             Self::HewActor | Self::BoxedActor => Some(BuiltinHandleFamily::ActorRuntime),
             Self::ActorState => Some(BuiltinHandleFamily::ActorState),
             Self::MachineState => Some(BuiltinHandleFamily::MachineState),
@@ -488,7 +477,6 @@ impl BuiltinType {
             | Self::Weak
             | Self::Stream
             | Self::Sink
-            | Self::RemotePid
             | Self::ActorState
             | Self::MachineState => 1,
             Self::Result
@@ -535,7 +523,6 @@ impl BuiltinType {
                 BuiltinTypeRole::ActorDispatchLocal,
                 BuiltinTypeRole::SupervisorHandle,
             ],
-            Self::RemotePid => &[BuiltinTypeRole::ActorDispatchRemote],
             Self::HewActor | Self::BoxedActor => &[BuiltinTypeRole::WasmNativeOnlyHandle],
             Self::ActorState => &[BuiltinTypeRole::ActorStatePayload],
             Self::MachineState => &[BuiltinTypeRole::MachineStatePayload],
@@ -643,9 +630,8 @@ impl BuiltinType {
     /// True when the builtin's complete value ABI is one opaque pointer word.
     ///
     /// This is codegen representation authority, not an ownership or source-
-    /// level handle classification. In particular, `RemotePid<T>` is excluded
-    /// because its value is an inline location aggregate, while
-    /// `SupervisorPool<S, T>` is a three-field aggregate. Consumers must use this
+    /// level handle classification. `Location` and `SupervisorPool<S, T>`
+    /// are inline aggregates. Consumers must use this
     /// discriminator instead of presentation names so renamed builtin spellings
     /// retain their ABI and same-spelling user nominals cannot acquire it.
     #[must_use]
@@ -683,7 +669,6 @@ pub fn lookup_builtin_type(name: &str) -> Option<BuiltinType> {
         // name the carriers themselves.
         "std.builtins.NodeId" => return Some(BuiltinType::NodeId),
         "std.builtins.Location" => return Some(BuiltinType::Location),
-        "std.builtins.RemotePid" => return Some(BuiltinType::RemotePid),
         _ => {}
     }
     if let Some(kind) = builtin_types()
@@ -1000,14 +985,6 @@ mod tests {
                     BuiltinTypeRole::ActorDispatchLocal,
                     BuiltinTypeRole::SupervisorHandle,
                 ][..],
-            ),
-            (
-                BuiltinType::RemotePid,
-                BuiltinTypeMarker::BitCopy,
-                None,
-                Some(BuiltinHandleFamily::ActorPid),
-                1,
-                &[BuiltinTypeRole::ActorDispatchRemote][..],
             ),
             (
                 BuiltinType::ActorFn,

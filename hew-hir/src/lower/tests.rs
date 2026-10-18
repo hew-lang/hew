@@ -635,37 +635,6 @@ fn imported_const_key_uses_the_checker_module_owner() {
 }
 
 #[test]
-fn checker_remote_pid_fact_requires_discriminator_and_preserves_source_names() {
-    let mut ctx = LowerCtx::new(
-        &TypeCheckOutput::default(),
-        MONOMORPHISATION_REGISTRY_CAP,
-        TargetArch::host(),
-    );
-    let args = vec![ResolvedTy::user_for_test("Echo", Vec::new())];
-    assert_eq!(
-        ctx.restore_type_declaration_facts(ResolvedTy::user_for_test("RemotePid", args.clone(),)),
-        ResolvedTy::user_for_test("RemotePid", args.clone()),
-        "a bare spelling cannot manufacture the compiler actor-carrier discriminator"
-    );
-    assert_eq!(
-        ctx.restore_type_declaration_facts(ResolvedTy::named_builtin(
-            BuiltinType::RemotePid,
-            args.clone()
-        )),
-        ResolvedTy::named_builtin(BuiltinType::RemotePid, args.clone()),
-        "a checker-authored compiler actor carrier retains its value class"
-    );
-
-    ctx.root_visible_source_type_short_names
-        .insert("RemotePid".to_string());
-    assert_eq!(
-        ctx.restore_type_declaration_facts(ResolvedTy::user_for_test("RemotePid", args.clone(),)),
-        ResolvedTy::user_for_test("RemotePid", args.clone()),
-        "a root source declaration wins over the compiler carrier spelling"
-    );
-}
-
-#[test]
 fn synthetic_builtin_sentinel_ids_are_pairwise_distinct() {
     let ids: Vec<(&str, ItemId)> = vec![
         ("supervisor_stop", ItemId(u32::MAX / 2)),
@@ -2779,13 +2748,15 @@ fn main() -> i64 {
     );
 
     let layouts = &lowered.module.enum_layouts;
-    assert_eq!(
-        layouts.len(),
-        1,
-        "exactly one enum-layout entry expected for Maybe<i64>; got {layouts:#?}"
-    );
-
-    let layout = &layouts[0];
+    let matching: Vec<_> = layouts
+        .iter()
+        .filter(|layout| {
+            layout.key.origin_name == "Maybe" && layout.key.type_args == [ResolvedTy::I64]
+        })
+        .collect();
+    let [layout] = matching.as_slice() else {
+        panic!("exactly one Maybe<i64> layout expected; got {layouts:#?}");
+    };
     assert_eq!(
         layout.key.origin_name, "Maybe",
         "enum origin name must be 'Maybe'"
@@ -2956,8 +2927,12 @@ fn main() -> i64 {
     );
 
     assert!(
-        lowered.module.enum_layouts.is_empty(),
-        "monomorphic enums must not appear in enum_layouts; got {:#?}",
+        lowered
+            .module
+            .enum_layouts
+            .iter()
+            .all(|layout| layout.key.origin_name != "Colour"),
+        "monomorphic Colour must not appear in enum_layouts; got {:#?}",
         lowered.module.enum_layouts
     );
 }

@@ -1144,9 +1144,7 @@ impl TypeFactService {
                         ..
                     } => matches!(
                         builtin,
-                        crate::BuiltinType::NodeId
-                            | crate::BuiltinType::Location
-                            | crate::BuiltinType::RemotePid
+                        crate::BuiltinType::NodeId | crate::BuiltinType::Location
                     ),
                     ResolvedTy::Named { head, .. } => {
                         self.context.types().of(*head).is_some_and(|definition| {
@@ -1249,10 +1247,7 @@ impl TypeFactService {
                 Ok(Some(args.clone()))
             }
             ResolvedTy::Named {
-                head:
-                    crate::TypeHead::Builtin(
-                        BuiltinType::NodeId | BuiltinType::Location | BuiltinType::RemotePid,
-                    ),
+                head: crate::TypeHead::Builtin(BuiltinType::NodeId | BuiltinType::Location),
                 ..
             } => Ok(Some(Vec::new())),
             ResolvedTy::Named {
@@ -1475,9 +1470,7 @@ impl TypeFactService {
                 args,
                 ..
             } => match builtin {
-                crate::BuiltinType::NodeId
-                | crate::BuiltinType::Location
-                | crate::BuiltinType::RemotePid => Ok(true),
+                crate::BuiltinType::NodeId | crate::BuiltinType::Location => Ok(true),
                 crate::BuiltinType::Vec => {
                     if args.len() != 1 {
                         return Err(ClassError::UnknownDeclaration {
@@ -2299,10 +2292,8 @@ fn main() {}"#,
             );
             let expected: Option<(ValueClass, CloneKind)> = match info.kind {
                 BuiltinType::SupervisorPool
-
                 | BuiltinType::NodeId
                 | BuiltinType::Location
-                | BuiltinType::RemotePid
                 | BuiltinType::MonitorId
                 | BuiltinType::DownTarget
                 | BuiltinType::DownReason

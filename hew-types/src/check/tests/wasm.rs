@@ -1249,7 +1249,7 @@ fn register() {
     receive fn ping() {}
 }
 
-fn register(remote: RemotePid<Worker>) {
+fn register(remote: Location) {
     let result: Result<MonitorRef, LinkError> = monitor(remote);
     match result {
         .Ok(m) => {
@@ -1487,7 +1487,7 @@ fn main() {}
         let output = check_native(remote_monitor_returns_typed_result_source());
         assert!(
             output.errors.is_empty(),
-            "monitor(RemotePid) should return Result<MonitorRef, LinkError>; got: {:?}",
+            "monitor(Location) should return Result<MonitorRef, LinkError>; got: {:?}",
             output.errors
         );
     }
@@ -1525,40 +1525,8 @@ fn main() {}
         );
     }
 
-    // ── Node:: distributed namespace + RemotePid messaging reject ──────────
-    //
-    // The `Node::*` cluster API (`start`, `connect`, `load_keys`, `register`,
-    // `lookup`, …) and `RemotePid<T>::send` / `RemotePid<T>::ask` remote
-    // messaging lower to the native mesh transport (`hew_node_api_*` /
-    // `hew_remote_pid_send`), which is not compiled for wasm32.  Without a
-    // check-time gate the checker admitted these on wasm32 and codegen emitted a
-    // module importing an undefined `env::hew_node_api_*` symbol that fails at
-    // instantiation (admit-then-abort).  They must fail closed AT CHECK, like
-    // every other native-only surface in this file.
-
-    fn remote_pid_send_source() -> &'static str {
-        concat!(
-            "#[wire]\ntype Ping {\n    n: i64 @1;\n}\n",
-            "actor Worker { receive fn ping(msg: Ping) {} }\n",
-            "impl ActorMsg for Worker { type Msg = Ping; type Reply = (); }\n",
-            "fn main() {\n",
-            "    let pid = Node.lookup<Worker>(\"worker\").expect(\"lookup\");\n",
-            "    let _ = pid.send(Ping { n: 0 });\n",
-            "}\n",
-        )
-    }
-
-    fn remote_pid_ask_source() -> &'static str {
-        concat!(
-            "#[wire]\ntype Ping {\n    n: i64 @1;\n}\n",
-            "actor Worker { receive fn ping(msg: Ping) -> i64 { 0 } }\n",
-            "impl ActorMsg for Worker { type Msg = Ping; type Reply = i64; }\n",
-            "fn main() {\n",
-            "    let pid = Node.lookup<Worker>(\"worker\").expect(\"lookup\");\n",
-            "    let _ = pid.ask(Ping { n: 0 }, 1000);\n",
-            "}\n",
-        )
-    }
+    // The Node namespace uses the native mesh transport and is refused at
+    // check time on wasm32, before undefined runtime imports can be emitted.
 
     #[test]
     fn wasm_rejects_node_start() {
@@ -1587,14 +1555,14 @@ fn main() {}
 
     #[test]
     fn wasm_rejects_node_register_and_lookup() {
-        // `Node::register` (actor-handle arg) and `Node::lookup` (RemotePid result)
+        // `Node::register` (actor-handle arg) and `Node::lookup` (Location result)
         // both ride the native registry transport and must fail closed too.
         let source = concat!(
             "actor Worker { receive fn ping() {} }\n",
             "fn main() {\n",
             "    let w = spawn Worker;\n",
             "    Node.register(\"w\", w);\n",
-            "    let _ = Node.lookup<Worker>(\"w\");\n",
+            "    let _ = Node.lookup(\"w\");\n",
             "}\n",
         );
         let output = check_wasm(source);
@@ -1631,51 +1599,6 @@ fn main() {}
         assert!(
             output.errors.is_empty(),
             "Node:: calls should typecheck cleanly on native; got: {:?}",
-            output.errors
-        );
-    }
-
-    #[test]
-    fn wasm_rejects_remote_pid_send() {
-        let output = check_wasm(remote_pid_send_source());
-        assert!(
-            platform_error_contains(&output, "remote-actor"),
-            "RemotePid::send should be a Distributed remote-actor WASM error; got: {:?}",
-            output.errors
-        );
-    }
-
-    #[test]
-    fn wasm_rejects_remote_pid_ask() {
-        let output = check_wasm(remote_pid_ask_source());
-        assert!(
-            platform_error_contains(&output, "remote-actor"),
-            "RemotePid::ask should be a Distributed remote-actor WASM error; got: {:?}",
-            output.errors
-        );
-    }
-
-    #[test]
-    fn native_remote_pid_send_no_platform_error() {
-        let output = check_native(remote_pid_send_source());
-        assert!(
-            !has_platform_limitation_error(&output),
-            "RemotePid::send must not emit PlatformLimitation on native; got: {:?}",
-            output.errors
-        );
-        assert!(
-            output.errors.is_empty(),
-            "RemotePid::send should typecheck cleanly on native; got: {:?}",
-            output.errors
-        );
-    }
-
-    #[test]
-    fn native_remote_pid_ask_no_platform_error() {
-        let output = check_native(remote_pid_ask_source());
-        assert!(
-            !has_platform_limitation_error(&output),
-            "RemotePid::ask must not emit PlatformLimitation on native; got: {:?}",
             output.errors
         );
     }

@@ -1,4 +1,4 @@
-//! The receive member a `RemotePid` addresses and whether its payloads cross
+//! The receive members an imported actor handle addresses and whether their payloads cross
 //! the wire. A remote payload is data whose every record and enum is
 //! `#[wire]` (D524).
 
@@ -128,7 +128,6 @@ impl Checker {
             .expect("selected actor protocol");
         for handler in protocol.handlers.iter_mut().filter(|handler| handler.wire) {
             let receiver = crate::actor_protocol::ActorRemoteReceiver {
-                interface: crate::actor_protocol::RemoteActorInterface::Service,
                 parameters: Vec::new(),
                 args: args.clone(),
             };

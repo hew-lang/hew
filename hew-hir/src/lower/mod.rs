@@ -354,7 +354,7 @@ const SYNTHETIC_MONITOR_ITEM: ItemId = ItemId(u32::MAX / 2 - 10);
 const SYNTHETIC_UNLINK_ITEM: ItemId = ItemId(u32::MAX / 2 - 18);
 /// Synthetic-builtin sentinel `ItemId` for the user-facing `link_remote` builtin.
 /// The checker (`registration.rs`) registers `link_remote` as a 2-arg
-/// `(RemotePid<T>, PartitionPolicy) → Result<(), LinkError>` builtin with no AST
+/// `(Location, PartitionPolicy) → Result<(), LinkError>` builtin with no AST
 /// `fn` item; it resolves to `ResolvedRef::Builtin(LinkRemote)` via
 /// `builtin_family` and MIR reads the C symbol `hew_node_link_remote_location` off the
 /// catalog bijection.

@@ -73,9 +73,7 @@ pub fn derived_capability_components(
 /// The node identity carriers compare and hash by their carried words.
 #[must_use]
 pub fn is_identity_carrier(ty: &ResolvedTy) -> bool {
-    ty.is_builtin(hew_types::BuiltinType::NodeId)
-        || ty.is_builtin(hew_types::BuiltinType::Location)
-        || ty.is_builtin(hew_types::BuiltinType::RemotePid)
+    ty.is_builtin(hew_types::BuiltinType::NodeId) || ty.is_builtin(hew_types::BuiltinType::Location)
 }
 
 pub(crate) fn verify_value_capability(

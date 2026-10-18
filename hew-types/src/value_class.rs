@@ -752,10 +752,8 @@ fn classify_uncached(
         } => match builtin {
             // marker BitCopy today
             BuiltinType::SupervisorPool
-
             | BuiltinType::NodeId
             | BuiltinType::Location
-            | BuiltinType::RemotePid
             | BuiltinType::MonitorId
             | BuiltinType::DownTarget
             | BuiltinType::DownReason

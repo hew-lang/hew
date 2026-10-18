@@ -66,11 +66,6 @@ actor Worker {
     receive fn run(job: Job) {}
 }
 
-impl ActorMsg for Worker {
-    type Msg = Job;
-    type Reply = ();
-}
-
 fn takes_pid<P: Pid>(pid: P, msg: P.Msg) -> Result<(), SendError> {
     pid.send(msg)
 }
@@ -92,13 +87,7 @@ fn main() {
 }
 
 #[test]
-fn local_pid_send_without_handler_rejected_even_with_actor_msg_envelope() {
-    // #2367: an `impl ActorMsg for T` binding records a message-envelope
-    // type but does not by itself wire local-mailbox delivery — there is
-    // no receive fn resolved to accept the message. Previously admitted
-    // here and failed closed later at HIR lowering with an internal
-    // `MethodCallNoRewrite` diagnostic; now rejected uniformly with the
-    // same actionable diagnostic as the no-envelope case.
+fn actor_send_without_handler_is_rejected() {
     let output = typecheck(
         r"type Job {
     n: i32;
@@ -108,11 +97,6 @@ actor Worker {
     let id: i32;
     init() {}
     receive fn run(job: Job) {}
-}
-
-impl ActorMsg for Worker {
-    type Msg = Job;
-    type Reply = ();
 }
 
 fn main() {
@@ -126,112 +110,7 @@ fn main() {
             error.kind == hew_types::error::TypeErrorKind::UndefinedMethod
                 && error.message.contains("no `send` handler on `Worker`")
         }),
-        "an actor handle's send with an ActorMsg envelope but no send handler \
-         must be rejected at type-check with the same actionable diagnostic \
-         as the no-envelope case: {:#?}",
-        output.errors
-    );
-}
-
-#[test]
-fn remote_pid_send_returns_typed_send_error_stub() {
-    let output = typecheck(
-        r"#[wire]
-type Job {
-    n: i32 @1;
-}
-
-actor Worker {
-    let id: i32;
-    init() {}
-    receive fn run(job: Job) {}
-}
-
-impl ActorMsg for Worker {
-    type Msg = Job;
-    type Reply = ();
-}
-
-fn use_remote(remote: RemotePid<Worker>) {
-    let result: Result<(), SendError> = remote.send(Job { n: 9 });
-}
-",
-    );
-    assert!(
-        output.errors.is_empty(),
-        "RemotePid.send should return Result<(), SendError> from the typed stub: {:#?}",
-        output.errors
-    );
-}
-
-#[test]
-fn remote_pid_ask_returns_typed_reply_or_ask_error() {
-    let output = typecheck(
-        r"#[wire]
-type Job {
-    n: i32 @1;
-}
-
-actor Worker {
-    let id: i32;
-    init() {}
-    receive fn run(job: Job) -> i64 {
-        21
-    }
-}
-
-impl ActorMsg for Worker {
-    type Msg = Job;
-    type Reply = i64;
-}
-
-fn use_remote(remote: RemotePid<Worker>) {
-    let result: Result<i64, ActorError<Never>> = remote.ask(Job { n: 9 }, 250);
-}
-",
-    );
-    assert!(
-        output.errors.is_empty(),
-        "RemotePid.ask should return Result<T.Reply, ActorError<Never>>: {:#?}",
-        output.errors
-    );
-}
-
-#[test]
-fn remote_pid_ask_rejects_reply_without_wire_schema() {
-    let output = typecheck(
-        r"fn inc(x: i64) -> i64 {
-    x + 1
-}
-
-#[wire]
-type Job {
-    n: i32 @1;
-}
-
-actor Worker {
-    let id: i32;
-    init() {}
-    receive fn run(job: Job) {}
-}
-
-impl ActorMsg for Worker {
-    type Msg = Job;
-    type Reply = fn(i64) -> i64;
-}
-
-fn use_remote(remote: RemotePid<Worker>) {
-    let result = remote.ask(Job { n: 9 }, 250);
-}
-",
-    );
-    assert!(
-        output.errors.iter().any(|error| {
-            error
-                .message
-                .contains("remote actor `Worker` (`fn(i64) -> i64`)")
-        }),
-        "RemotePid.ask must reject a reply without a wire schema: {:#?}",
+        "an actor handle without a send handler must be rejected at type-check: {:#?}",
         output.errors
     );
 }

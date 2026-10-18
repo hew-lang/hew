@@ -366,9 +366,6 @@ fn actor_handle_accessor() {
         Some(("Counter", &[][..]))
     );
 
-    // RemotePid<T> is a distinct remote handle — NOT a local actor handle.
-    assert_eq!(Ty::remote_pid(Ty::Bool).as_actor_handle(), None);
-
     // Non-actor returns None
     assert_eq!(Ty::I32.as_actor_handle(), None);
     assert_eq!(named("Other").as_actor_handle(), None);

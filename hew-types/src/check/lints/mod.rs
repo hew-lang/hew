@@ -37,8 +37,7 @@
 use std::collections::HashMap;
 
 use hew_parser::ast::{
-    condition_exprs, Block, CallArg, ElseBlock, Expr, MatchArm, ReceiveFnDecl, SelectArm, Span,
-    Stmt, StringPart,
+    condition_exprs, Block, CallArg, ElseBlock, Expr, MatchArm, SelectArm, Span, Stmt, StringPart,
 };
 
 use crate::error::{Severity, TypeError, TypeErrorKind};
@@ -92,10 +91,6 @@ pub enum LintId {
     /// exit is a sibling actor message, but the mailbox is not observed until
     /// the current handler returns.
     SleepLoopBlocksMailbox,
-    /// A receive handler name overlaps a builtin actor-handle method, so
-    /// concrete handle dispatch uses the handler while generic pid dispatch keeps
-    /// the builtin method surface.
-    ActorHandleBuiltinShadow,
     /// A comment contains one of Unicode's explicit bidirectional text controls,
     /// which can visually reorder source around the bytes the compiler sees.
     TextDirectionCodepointInComment,
@@ -127,7 +122,6 @@ impl LintId {
         LintId::DeadCode,
         LintId::MustUse,
         LintId::SleepLoopBlocksMailbox,
-        LintId::ActorHandleBuiltinShadow,
         LintId::TextDirectionCodepointInComment,
         LintId::InvisibleCodepointInComment,
         LintId::VarParamMutationLost,
@@ -151,7 +145,6 @@ impl LintId {
             LintId::DeadCode => "dead_code",
             LintId::MustUse => "must_use",
             LintId::SleepLoopBlocksMailbox => "sleep_loop_blocks_mailbox",
-            LintId::ActorHandleBuiltinShadow => "actor_handle_builtin_shadow",
             LintId::TextDirectionCodepointInComment => "text_direction_codepoint_in_comment",
             LintId::InvisibleCodepointInComment => "invisible_codepoint_in_comment",
             LintId::VarParamMutationLost => "var_param_mutation_lost",
@@ -182,7 +175,6 @@ impl LintId {
             | LintId::DeadCode
             | LintId::MustUse
             | LintId::SleepLoopBlocksMailbox
-            | LintId::ActorHandleBuiltinShadow
             | LintId::InvisibleCodepointInComment
             | LintId::VarParamMutationLost
             | LintId::ForkOutlivesTimedSelect => LintLevel::Warn,
@@ -468,43 +460,6 @@ pub(super) fn lint_receive_fn(
     out: &mut Vec<TypeError>,
 ) {
     sleep_loop_blocks_mailbox::check(ctx, levels, body, out);
-}
-
-/// Run lints whose finding is attached to the receive-handler declaration.
-pub(super) fn lint_receive_fn_definition(
-    ctx: &LintCtx,
-    levels: &LintLevels,
-    rec: &ReceiveFnDecl,
-    out: &mut Vec<TypeError>,
-) {
-    let Some(shadowed_builtin) = shadowed_actor_handle_builtin(rec.name.name.as_str()) else {
-        return;
-    };
-    ctx.emit(
-        levels,
-        LintId::ActorHandleBuiltinShadow,
-        &rec.span,
-        format!(
-            "`receive fn {}` shadows builtin actor-handle method {shadowed_builtin}; \
-             concrete actor handles dispatch to this handler, while generic `P: Pid` \
-             contexts use builtin `Pid.send` semantics",
-            rec.name
-        ),
-        format!(
-            "rename `receive fn {}` or add `// hew:allow(actor_handle_builtin_shadow)` \
-             when this concrete-handle precedence is intentional",
-            rec.name
-        ),
-        out,
-    );
-}
-
-fn shadowed_actor_handle_builtin(name: &str) -> Option<&'static str> {
-    match name {
-        "send" => Some("an actor handle's `.send` / `RemotePid<T>.send`"),
-        "ask" => Some("`RemotePid<T>.ask`"),
-        _ => None,
-    }
 }
 
 /// Run source-text lints over one module's raw source.

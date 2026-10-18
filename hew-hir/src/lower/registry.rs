@@ -73,7 +73,7 @@ impl LowerCtx {
         self.seed_channel_recv_fn_registry();
     }
 
-    /// Seed the `link_remote(RemotePid<T>, PartitionPolicy) -> Result<(),
+    /// Seed the `link_remote(Location, PartitionPolicy) -> Result<(),
     /// LinkError>` builtin. Unlike `link`/`monitor`/`unlink` (1-arg
     /// actor handle, self synthesized), `link_remote` is 2-arg: the explicit remote
     /// target and the `PartitionPolicy`. The linking subject (self) is resolved
@@ -89,8 +89,8 @@ impl LowerCtx {
                 return_ty: ResolvedTy::Unit,
                 param_tys: vec![
                     ResolvedTy::Named {
-                        args: vec![ResolvedTy::Unit],
-                        head: hew_types::TypeHead::Builtin(hew_types::BuiltinType::RemotePid),
+                        args: vec![],
+                        head: hew_types::TypeHead::Builtin(hew_types::BuiltinType::Location),
                         is_opaque: false,
                     },
                     // PartitionPolicy is the stdlib enum the checker also names.

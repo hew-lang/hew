@@ -159,7 +159,7 @@ pub(crate) fn identity_aggregate_layout(ty: &Ty) -> Option<(usize, usize)> {
             ..
         } => Some((16, 8)),
         Ty::Named {
-            head: crate::TypeHead::Builtin(BuiltinType::Location | BuiltinType::RemotePid),
+            head: crate::TypeHead::Builtin(BuiltinType::Location),
             ..
         } => Some((32, 8)),
         _ => None,
@@ -3327,7 +3327,6 @@ mod tests {
     fn identity_aggregate_layouts_are_fixed() {
         let node_id = Ty::builtin_named(BuiltinType::NodeId, vec![]);
         let location = Ty::builtin_named(BuiltinType::Location, vec![]);
-        let remote_pid = Ty::remote_pid(Ty::I64);
         let type_defs = HashMap::new();
 
         assert_eq!(
@@ -3336,10 +3335,6 @@ mod tests {
         );
         assert_eq!(
             primitive_copy_layout(&location, TypeDefView::for_test(&type_defs)),
-            Some((32, 8))
-        );
-        assert_eq!(
-            primitive_copy_layout(&remote_pid, TypeDefView::for_test(&type_defs)),
             Some((32, 8))
         );
     }

@@ -423,7 +423,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 let remote_ty = &result_case.variants[0].fields[0].ty;
                 let remote_layout = self.module.target.layout(remote_ty).ok_or_else(|| {
                     CodegenError::FailClosed(
-                        "Node::lookup RemotePid payload has no physical layout".into(),
+                        "Node::lookup Location payload has no physical layout".into(),
                     )
                 })?;
                 let remote_out = self.value_emitter().entry_scratch(

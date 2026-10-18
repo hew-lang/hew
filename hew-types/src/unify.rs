@@ -392,8 +392,7 @@ fn relate_types(subst: &mut Substitution, a: &Ty, b: &Ty, weaken: bool) -> Resul
         }
 
         // Named types with one head identity — unify type args (rule R5: no
-        // spelling is compared). Arity must match: a handle's type parameter
-        // is load-bearing, so `RemotePid<A>` only unifies with `RemotePid<A>`.
+        // spelling is compared). Arity and all type arguments must match.
         (Ty::Named { head: ha, args: aa }, Ty::Named { head: hb, args: ba }) if ha == hb => {
             if aa.len() != ba.len() {
                 return Err(UnifyError::ArityMismatch {
@@ -692,54 +691,6 @@ mod tests {
     }
 
     #[test]
-    fn remote_pid_same_actor_unifies_distinct_actor_rejects() {
-        // The handle's type parameter is load-bearing: `RemotePid<A>` unifies
-        // only with `RemotePid<A>`, and two remote pids over different actors
-        // never unify. This is the sound generic-arm behaviour the checker
-        // depends on — a wrong-actor handle must surface a mismatch, never a
-        // silent accept that drops the type argument.
-        let actor_a = Ty::named_for_test("ClientHandler", vec![]);
-        let actor_b = Ty::named_for_test("Supervisor", vec![]);
-
-        let mut subst = Substitution::new();
-        assert!(
-            unify(
-                &mut subst,
-                &Ty::remote_pid(actor_a.clone()),
-                &Ty::remote_pid(actor_a.clone()),
-            )
-            .is_ok(),
-            "RemotePid<A> must unify with RemotePid<A>"
-        );
-
-        let mut subst = Substitution::new();
-        assert!(
-            unify(
-                &mut subst,
-                &Ty::remote_pid(actor_a.clone()),
-                &Ty::remote_pid(actor_b),
-            )
-            .is_err(),
-            "RemotePid<A> must NOT unify with RemotePid<B> when A != B"
-        );
-
-        // A typed handle never collapses with a zero-arg same-name shadow:
-        // arity is enforced, so the dropped-type-argument hole stays closed.
-        let mut subst = Substitution::new();
-        let untyped = Ty::Named {
-            head: crate::TypeHead::Builtin(crate::BuiltinType::RemotePid),
-            args: vec![],
-        };
-        assert!(
-            matches!(
-                unify(&mut subst, &Ty::remote_pid(actor_a), &untyped),
-                Err(UnifyError::ArityMismatch { .. })
-            ),
-            "RemotePid<A> vs RemotePid (no arg) must be an arity mismatch"
-        );
-    }
-
-    #[test]
     fn closure_erasure_is_directional_coercion_not_unification() {
         let mut subst = Substitution::new();
         let closure = Ty::Closure {
@@ -887,8 +838,8 @@ mod tests {
     #[test]
     fn same_name_handle_arity_mismatch_rejects_nonstandard_pairs() {
         let mut subst = Substitution::new();
-        let typed = Ty::named_for_test("RemotePid", vec![Ty::I32, Ty::Bool]);
-        let untyped = Ty::named_for_test("RemotePid", vec![]);
+        let typed = Ty::named_for_test("Container", vec![Ty::I32, Ty::Bool]);
+        let untyped = Ty::named_for_test("Container", vec![]);
 
         assert!(matches!(
             unify(&mut subst, &typed, &untyped),

@@ -423,7 +423,7 @@ impl TraitRegistry {
     /// Marker traits are derived automatically based on the structure of the type:
     /// - Primitives implement most marker traits
     /// - Composite types implement a trait if all their components do
-    /// - `ActorHandle`/`RemotePid` are always `Send` and `Frozen`
+    /// - Actor handles are always `Send` and `Frozen`
     /// - Negative impls can override automatic derivation
     #[must_use]
     pub fn implements_marker(&self, ty: &Ty, marker: MarkerTrait) -> bool {
@@ -596,10 +596,7 @@ impl TraitRegistry {
 
             // Key-backed node identity values are immutable inline aggregates.
             Ty::Named {
-                head:
-                    crate::TypeHead::Builtin(
-                        BuiltinType::NodeId | BuiltinType::Location | BuiltinType::RemotePid,
-                    ),
+                head: crate::TypeHead::Builtin(BuiltinType::NodeId | BuiltinType::Location),
                 ..
             } => matches!(
                 marker,

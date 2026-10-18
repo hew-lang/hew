@@ -751,11 +751,8 @@ fn primitive_repr(
             integer_layout(ctx, target, 64)?,
             integer_layout(ctx, target, 64)?,
         ]),
-        location
-            if location.is_builtin(hew_types::BuiltinType::Location)
-                || location.is_builtin(hew_types::BuiltinType::RemotePid) =>
-        {
-            // Matches `HewLocation` / `HewRemotePid`: the NodeId words are
+        location if location.is_builtin(hew_types::BuiltinType::Location) => {
+            // Matches `HewLocation`: the NodeId words are
             // flattened, and reserved remains an explicit zeroed u32.
             PhysicalRepr::Struct(vec![
                 integer_layout(ctx, target, 64)?,

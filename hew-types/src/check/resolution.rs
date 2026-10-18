@@ -80,7 +80,6 @@ impl Checker {
         let candidate = match name {
             "std.builtins.VecIter" => Some(BuiltinType::VecIter),
             "std.builtins.HashMapIter" => Some(BuiltinType::HashMapIter),
-            "std.builtins.RemotePid" => Some(BuiltinType::RemotePid),
             _ => crate::lookup_builtin_type(name),
         }?;
         let Some((surface_owner, _)) = name.rsplit_once('.') else {

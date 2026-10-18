@@ -4418,7 +4418,6 @@ impl Checker {
                     lints::lint_block(&ctx, levels, &method.body, out);
                 }
                 for rec in &actor.receive_fns {
-                    lints::lint_receive_fn_definition(&ctx, levels, rec, out);
                     lints::lint_block(&ctx, levels, &rec.body, out);
                     lints::lint_receive_fn(&ctx, levels, &rec.body, out);
                 }

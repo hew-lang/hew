@@ -123,8 +123,7 @@ const fn builtin_named_type_index(kind: BuiltinNamedType) -> usize {
     match kind {
         BuiltinNamedType::Stream => 0,
         BuiltinNamedType::Sink => 1,
-        BuiltinNamedType::RemotePid => 2,
-        BuiltinNamedType::CancellationToken => 3,
+        BuiltinNamedType::CancellationToken => 2,
     }
 }
 
@@ -211,22 +210,6 @@ builtin_named_types! {
             },
         ]
     },
-    // RemotePid<T>: actor pid on a remote node.
-    //
-    // The constructor is `Node::lookup<T>(name) ->
-    // Result<RemotePid<T>, LookupError>`, which snapshots the full registration
-    // Location the StaleRef boundary tracks. `RemotePid<T>` does NOT unify with
-    // an actor handle and has no provenance-free public constructor.
-    //
-    // `.send` returns Result<(), SendError>; a captured ref whose registration
-    // was superseded fails closed with `SendError::StaleRef`.
-    RemotePid {
-        consts: (REMOTE_PID, QUALIFIED_REMOTE_PID),
-        methods_const: REMOTE_PID_METHODS,
-        canonical: "RemotePid",
-        qualified: "RemotePid",
-        methods: []
-    },
     CancellationToken {
         consts: (CANCELLATION_TOKEN, QUALIFIED_CANCELLATION_TOKEN),
         methods_const: CANCELLATION_TOKEN_METHODS,
@@ -251,7 +234,6 @@ pub fn builtin_named_type(name: &str) -> Option<BuiltinNamedType> {
     match crate::lookup_builtin_type(name) {
         Some(BuiltinType::Stream) => Some(BuiltinNamedType::Stream),
         Some(BuiltinType::Sink) => Some(BuiltinNamedType::Sink),
-        Some(BuiltinType::RemotePid) => Some(BuiltinNamedType::RemotePid),
         Some(BuiltinType::CancellationToken) => Some(BuiltinNamedType::CancellationToken),
         Some(
             BuiltinType::Option
@@ -314,7 +296,6 @@ fn type_parameter(kind: BuiltinNamedType) -> crate::ParamHead {
     let anchor = match kind {
         BuiltinNamedType::Stream => BuiltinAnchor::Stream,
         BuiltinNamedType::Sink => BuiltinAnchor::Sink,
-        BuiltinNamedType::RemotePid => BuiltinAnchor::RemotePid,
         BuiltinNamedType::CancellationToken => unreachable!("CancellationToken has no parameters"),
     };
     crate::ParamHead::new(

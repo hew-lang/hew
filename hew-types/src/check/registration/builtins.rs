@@ -197,7 +197,7 @@ impl Checker {
         // `Node::register(name: String, actor: A) -> i32`. Codegen assumes a
         // local actor handle (it calls `hew_actor_pid` to extract the u64 before
         // forwarding to `hew_node_api_register_by_pid`), so the call-site arm in
-        // `calls.rs` requires one; a `RemotePid<T>` or bare `u64` is caught
+        // `calls.rs` requires one; a `Location` or bare `u64` is caught
         // there rather than failing with a cryptic codegen error.
         self.register_builtin_fn(
             "Node::register",
@@ -345,7 +345,7 @@ impl Checker {
                             &source_def,
                         );
                     }
-                    // Compiler-carrier builtins (`RemotePid`, `NodeId`, ...)
+                    // Compiler-carrier builtins (`NodeId`, `Location`, ...)
                     // retain the catalog's canonical identity; this source file
                     // supplies their declarative surface but does not turn them
                     // into `std.builtins.*` user nominals. Builtin error enums
@@ -767,9 +767,7 @@ impl Checker {
             // An actor is the type of its handle, so an actor handle's
             // canonical key is the actor's own nominal, never a builtin
             // presentation name.
-            if builtin.is_collection()
-                || matches!(builtin, BuiltinType::Generator | BuiltinType::RemotePid)
-            {
+            if builtin.is_collection() || matches!(builtin, BuiltinType::Generator) {
                 return Some(builtin.canonical_name().to_string());
             }
         }
@@ -787,15 +785,11 @@ impl Checker {
         Self::canonical_primitive_or_builtin_key_from_name(name).or_else(|| {
             self.resolved_builtin_type(name)
                 .filter(|builtin| {
-                    matches!(
-                        builtin,
-                        BuiltinType::VecIter | BuiltinType::HashMapIter | BuiltinType::RemotePid
-                    )
+                    matches!(builtin, BuiltinType::VecIter | BuiltinType::HashMapIter)
                 })
                 .map(|builtin| match builtin {
                     BuiltinType::VecIter => "std.builtins.VecIter".to_string(),
                     BuiltinType::HashMapIter => "std.builtins.HashMapIter".to_string(),
-                    BuiltinType::RemotePid => builtin.canonical_name().to_string(),
                     _ => unreachable!("filter admits only compiler carrier builtins"),
                 })
         })

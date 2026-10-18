@@ -144,15 +144,12 @@ pub enum RuntimeValueKind {
     /// handle is not a collection, so its argument does not resolve through
     /// [`Self::TypeArgument`].
     SharedPayload,
-    /// The exact checked result type for a compiler-owned operation whose
-    /// generic payload is not carried by an argument (Node.lookup).
-    NodeLookupResult,
     /// A builtin nominal with no type parameters, named by its own identity
     /// rather than by a source spelling (`NodeId`).
     BuiltinNominal(BuiltinType),
     /// The argument's own checked type, required to carry this builtin
     /// identity. A declared accessor names its value as an ordinary parameter
-    /// rather than a method receiver (`hew_remote_pid_slot(pid)`), so identity
+    /// rather than a method receiver (`hew_location_slot(location)`), so identity
     /// is checked on the argument itself. One authority for that identity: the
     /// type's own `builtin` discriminator, never the receiver table.
     BuiltinArgument(BuiltinType),
@@ -255,9 +252,7 @@ impl RuntimeValueKind {
                 }
                 receiver.clone()
             }
-            Self::ServiceResult(_) | Self::PipeHalfResult(_) | Self::NodeLookupResult => {
-                return None
-            }
+            Self::ServiceResult(_) | Self::PipeHalfResult(_) => return None,
             Self::StreamPair => ResolvedTy::named_opaque(
                 contract(
                     crate::ffi_contracts::extern_owned_resource_result("hew_stream_channel")?
@@ -718,9 +713,7 @@ impl RuntimeSemanticContract {
             | RuntimeResultEffect::Borrowed(kind)
             | RuntimeResultEffect::UpdatedReceiver(kind)
             | RuntimeResultEffect::UpdatedReceiverAndValue(kind) => {
-                let resolved = if (matches!(kind, RuntimeValueKind::NodeLookupResult)
-                    && is_node_lookup_result(result_hint))
-                    || matches!(kind, RuntimeValueKind::IoHandle(handle) if handle.matches(result_hint))
+                let resolved = if matches!(kind, RuntimeValueKind::IoHandle(handle) if handle.matches(result_hint))
                     || matches!(kind, RuntimeValueKind::ServiceResult(op) if op.matches_result(result_hint))
                     || matches!(kind, RuntimeValueKind::PipeHalfResult(half) if half.matches(result_hint))
                 {
@@ -812,12 +805,6 @@ pub fn shared_handle_payload(ty: &ResolvedTy) -> Option<&ResolvedTy> {
         } if args.len() == 1 => args.first(),
         _ => None,
     }
-}
-
-fn is_node_lookup_result(ty: &ResolvedTy) -> bool {
-    matches!(ty, ResolvedTy::Named { head: crate::TypeHead::Builtin(BuiltinType::Result), args, .. }
-        if matches!(args.as_slice(), [location, error]
-            if location.is_builtin(BuiltinType::Location) && error.is_builtin(BuiltinType::LookupError)))
 }
 
 /// Which half of a pipe a runtime contract's receiver is.

@@ -69,7 +69,7 @@ fn main() {
     );
     // The spawn-return type is the actor's own name with the `ActorHandle`
     // builtin discriminator; no stray `ActorRef`-named handle exists anywhere
-    // in the type table (the family is the actor handle / `RemotePid`).
+    // in the type table (the family is the actor handle).
     let has_stray_actor_ref = tc.expr_types.values().any(
         |ty| matches!(ty, Ty::Named { head: name_head, .. } if name_head.spelling() == "ActorRef"),
     );

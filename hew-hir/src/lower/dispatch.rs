@@ -368,10 +368,6 @@ impl LowerCtx {
                 head: hew_types::TypeHead::Builtin(BuiltinType::Location),
                 ..
             } => self.build_catalog_call("hew_location_display", vec![value], span),
-            ResolvedTy::Named {
-                head: hew_types::TypeHead::Builtin(BuiltinType::RemotePid),
-                ..
-            } => self.build_catalog_call("hew_remote_pid_display", vec![value], span),
             ResolvedTy::Named { head, .. } => {
                 // An abstract type parameter `T: Display` (the checker lowers
                 // `T` to a bare `Named`) defers to per-monomorphisation static

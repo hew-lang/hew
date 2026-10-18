@@ -100,21 +100,13 @@ pub struct ActorHandlerDescriptor {
     /// `fails` clause, and for an error type whose rendering the checker
     /// cannot name — those handlers stay refused through a view.
     pub failure_display: Option<ReceiveFailureDisplay>,
-    /// Checked `ActorMsg` impl receivers that select this member. Concrete
-    /// instances match these patterns before admitting their wire payloads.
+    /// Checked actor instances whose payloads have admitted wire schemas.
     pub remote_receivers: Vec<ActorRemoteReceiver>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RemoteActorInterface {
-    Message,
-    Service,
-}
-
-/// The receiver arguments of a checked `ActorMsg` implementation.
+/// The receiver arguments of a checked actor instance.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ActorRemoteReceiver {
-    pub interface: RemoteActorInterface,
     pub parameters: Vec<crate::ParamHead>,
     pub args: Vec<ResolvedTy>,
 }

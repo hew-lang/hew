@@ -22,7 +22,7 @@ fn builtin_named_type_from_builtin(builtin: Option<BuiltinType>) -> Option<Built
         Some(BuiltinType::Stream) => Some(BuiltinNamedType::Stream),
         Some(BuiltinType::Sink) => Some(BuiltinNamedType::Sink),
         Some(BuiltinType::CancellationToken) => Some(BuiltinNamedType::CancellationToken),
-        Some(BuiltinType::RemotePid) => Some(BuiltinNamedType::RemotePid),
+
         Some(
             BuiltinType::Option
             | BuiltinType::Result
@@ -1404,12 +1404,6 @@ impl Ty {
         Self::builtin_named(BuiltinType::SupervisorPool, vec![supervisor, child])
     }
 
-    /// Construct `RemotePid<inner>` — actor pid on a remote node.
-    #[must_use]
-    pub fn remote_pid(inner: Ty) -> Ty {
-        Self::builtin_named(BuiltinType::RemotePid, vec![inner])
-    }
-
     /// Construct `Stream<inner>`.
     #[must_use]
     pub fn stream(inner: Ty) -> Ty {
@@ -1632,23 +1626,7 @@ impl Ty {
         }
     }
 
-    /// If this is `RemotePid<T>`, return `Some(&T)`.
-    #[must_use]
-    pub fn as_remote_pid(&self) -> Option<&Ty> {
-        match self {
-            Ty::Named {
-                head: crate::TypeHead::Builtin(BuiltinType::RemotePid),
-                args,
-                ..
-            } if args.len() == 1 => Some(&args[0]),
-            _ => None,
-        }
-    }
-
     /// If this names an actor reference, return its nominal carrier.
-    ///
-    /// `RemotePid<T>` is intentionally excluded: it is a distinct type that
-    /// does not participate in the local supervisor graph.
     #[must_use]
     pub fn as_local_actor_ref(&self) -> Option<&Ty> {
         self.as_actor_handle()

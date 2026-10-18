@@ -5597,14 +5597,9 @@ fn main() {
     );
 }
 
-/// Cross-node guard for the local pipe-handle transfer surface: a
-/// `RemotePid<T>` exposes no receive-fn dispatch, so a pipe handle can
-/// never ride an actor message across a node boundary through this
-/// surface. If `RemotePid` ever grows handler dispatch, its payloads must
-/// route through the Serializable enforcement (pipe handles are not
-/// Serializable) — this pin fails first.
+/// Discovery metadata grants no actor dispatch capability.
 #[test]
-fn remote_receive_fn_dispatch_with_pipe_handle_refused() {
+fn location_receive_fn_dispatch_with_pipe_handle_refused() {
     let output = typecheck_inline(
         r"
         import std.stream;
@@ -5615,33 +5610,31 @@ fn remote_receive_fn_dispatch_with_pipe_handle_refused() {
             }
         }
 
-        fn forward(o: RemotePid<Observer>, rx: stream.Stream<string>) {
+        fn forward(o: Location, rx: stream.Stream<string>) {
             o.watch(rx);
         }
         ",
     );
     assert!(
-        output.errors.iter().any(|e| e
-            .message
-            .contains("no method `watch` on `RemotePid<Observer>`")),
-        "remote receive-fn dispatch must stay refused; got: {:#?}",
+        output
+            .errors
+            .iter()
+            .any(|e| e.message.contains("no method `watch` on `Location`")),
+        "discovery metadata receive-fn dispatch must stay refused; got: {:#?}",
         output.errors
     );
 }
 
-fn remote_ask_source(ping: &str) -> String {
+fn wire_actor_call_source(ping: &str) -> String {
     format!(
         r"
         {ping}
         actor Echo {{
+            #[wire]
             receive fn handle(msg: Ping) -> i64 {{ msg.seq }}
         }}
-        impl ActorMsg for Echo {{
-            type Msg = Ping;
-            type Reply = i64;
-        }}
-        fn call(echo: RemotePid<Echo>) -> i64 {{
-            match echo.ask(Ping {{ seq: 1 }}, 100) {{
+        fn call(echo: Echo) -> i64 {{
+            match echo.handle(Ping {{ seq: 1 }}) {{
                 .Ok(value) => value,
                 .Err(_) => 0,
             }}
@@ -5650,28 +5643,20 @@ fn remote_ask_source(ping: &str) -> String {
     )
 }
 
-/// A value crosses a node only through an explicit wire schema (D524). A
-/// plain record is refused at the remote call, naming the type and the fix.
+/// Wire handlers require tagged payloads throughout the complete value shape.
 #[test]
-fn remote_ask_requires_explicit_wire_schema() {
-    let plain = typecheck_inline(&remote_ask_source("type Ping {\n    seq: i64;\n}\n"));
-    let refusal = plain
+fn wire_actor_handler_requires_explicit_wire_schema() {
+    let plain = typecheck_inline(&wire_actor_call_source("type Ping {\n    seq: i64;\n}\n"));
+    plain
         .errors
         .iter()
         .find(|e| {
-            e.message.contains("remote actor `Echo` (`Ping`)")
+            e.message
+                .contains("wire handler `Echo.handle` reaches `Ping`")
                 && e.message.contains("without `#[wire]` tags")
         })
         .unwrap_or_else(|| panic!("plain record must be refused; got: {:#?}", plain.errors));
-    assert!(
-        refusal
-            .suggestions
-            .iter()
-            .any(|help| help.contains("#[wire]") && help.contains("@1")),
-        "refusal must suggest a tagged #[wire] schema: {refusal:#?}"
-    );
-
-    let wire = typecheck_inline(&remote_ask_source(
+    let wire = typecheck_inline(&wire_actor_call_source(
         "#[wire]\ntype Ping {\n    seq: i64 @1;\n}\n",
     ));
     assert!(
@@ -5681,7 +5666,7 @@ fn remote_ask_requires_explicit_wire_schema() {
     );
 
     // Every record a remote payload reaches is tagged; the refusal names the field.
-    let nested = typecheck_inline(&remote_ask_source(
+    let nested = typecheck_inline(&wire_actor_call_source(
         "type Inner {\n    v: i64;\n}\n#[wire]\ntype Ping {\n    seq: i64 @1;\n    inner: Inner @2;\n}\n",
     ));
     assert!(

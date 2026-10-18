@@ -1008,7 +1008,6 @@ pub(crate) fn runtime_param_carrier(ty: &ResolvedTy) -> ParamCarrier {
     if *ty == ResolvedTy::Bytes
         || ty.is_builtin(BuiltinType::NodeId)
         || ty.is_builtin(BuiltinType::Location)
-        || ty.is_builtin(BuiltinType::RemotePid)
     {
         ParamCarrier::Indirect
     } else {

@@ -202,7 +202,6 @@ const BUILTIN_TYPE_REGISTRATIONS: &[BuiltinTypeRegistration] = &[
     registration!(ActorHandle, BuiltinTypeShape::Opaque),
     registration!(NodeId, BuiltinTypeShape::Struct(NODE_ID_FIELDS)),
     registration!(Location, BuiltinTypeShape::Struct(LOCATION_FIELDS)),
-    registration!(RemotePid, BuiltinTypeShape::Struct(LOCATION_FIELDS)),
     registration!(HewActor, BuiltinTypeShape::Opaque),
     registration!(BoxedActor, BuiltinTypeShape::Opaque),
     registration!(ActorState, BuiltinTypeShape::Opaque),
@@ -508,15 +507,6 @@ mod tests {
                     BuiltinRegistrationRole::ActorDispatchLocal,
                     BuiltinRegistrationRole::SupervisorHandle,
                 ][..],
-            ),
-            (
-                BuiltinType::RemotePid,
-                ResourceMarker::BitCopy,
-                None,
-                BuiltinTypeShape::Struct(LOCATION_FIELDS),
-                Some(BuiltinHandleFamily::ActorPid),
-                1,
-                &[BuiltinRegistrationRole::ActorDispatchRemote][..],
             ),
             (
                 BuiltinType::HewActor,

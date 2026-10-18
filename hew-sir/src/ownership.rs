@@ -507,7 +507,7 @@ pub enum SuspendKind {
         /// The input is the sealed request owner instead of fresh arguments.
         sealed: bool,
     },
-    /// A `RemotePid` ask to the actor's checked remote member. The request
+    /// An imported actor ask to the actor's checked remote member. The request
     /// is encoded before the caller parks; the reply is decoded on resume.
     ServiceAcquire {
         actor: crate::ActorId,

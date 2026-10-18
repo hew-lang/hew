@@ -1,4 +1,4 @@
-//! `RemotePid` send and ask: the message moves into the runtime, which encodes
+//! Imported actor send and ask: the message moves into the runtime, which encodes
 //! it for a peer or delivers its fields to an actor on this node.
 
 use super::*;

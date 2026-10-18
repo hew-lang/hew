@@ -888,7 +888,7 @@ impl LowerCtx {
                 }
                 // S5: a method-call rewrite that lands on a builtin-generic
                 // enum result type (e.g. `Result<(), SendError>` for
-                // `RemotePid<T>::send`) needs the per-instantiation enum
+                // a pipe send) needs the per-instantiation enum
                 // layout registered here. Unlike struct-ctor/variant-ctor/
                 // match-scrutinee paths — which already invoke
                 // `try_register_enum_instantiation` — the rewrite arm builds

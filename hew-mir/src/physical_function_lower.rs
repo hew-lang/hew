@@ -1806,14 +1806,14 @@ impl FunctionLowerer<'_> {
                     args,
                     ..
                 } if args.len() == 2
-                    && args[0].is_builtin(BuiltinType::RemotePid)
+                    && args[0].is_builtin(BuiltinType::Location)
                     && args[1].is_builtin(BuiltinType::LookupError) =>
                 {
                     &args[1]
                 }
                 _ => {
                     return Err(PhysicalError::new(
-                        "Node::lookup result is not Result<RemotePid<T>, LookupError>",
+                        "Node::lookup result is not Result<Location, LookupError>",
                     ))
                 }
             }

@@ -625,6 +625,7 @@ export type ActorOperation =
 
 export interface ActorShape {
   id: number;
+  name: string;
   state_fields: Array<{ mutable: boolean; deferred: boolean }>;
   init?: number;
   start?: number;

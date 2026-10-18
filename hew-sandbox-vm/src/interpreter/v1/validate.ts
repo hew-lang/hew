@@ -320,6 +320,14 @@ export function admitPackage(pkg: PackageV1): SandboxRejection | null {
   }
 
   for (const actor of pkg.actors ?? []) {
+    if (typeof actor.name !== "string" || actor.name.length === 0)
+      return {
+        category: "invalid_package",
+        code: "sandbox.package.actor_name",
+        capability: null,
+        message: "actor lacks its declared diagnostic name",
+        span: null,
+      };
     if (
       actor.crash != null &&
       (actor.crash_info == null ||

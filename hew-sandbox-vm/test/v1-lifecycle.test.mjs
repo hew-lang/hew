@@ -76,6 +76,7 @@ function lifecyclePackage(request) {
     actors: [
       {
         id: 0,
+        name: "Worker",
         state_fields: [{ mutable: false, deferred: false }],
         stop: [1],
         handlers: [],

@@ -94,7 +94,7 @@ type Fault = (
       actorSendFailed?: boolean;
     }
   | { kind: "trap"; trap: TrapName; message?: string }
-) & { primary?: Fault; secondary?: Fault[] };
+) & { primary?: Fault; secondary?: Fault[]; reported?: boolean };
 
 type CallerStamp =
   | { kind: "Task" | "Timer" }
@@ -3617,7 +3617,7 @@ class ExecutorV1 {
           if (actor.active) {
             actor.active.pendingCancellation ??= fault;
             actor.active.cancel?.(actor.active.pendingCancellation);
-          } else this.crashActor(actor, fault);
+          } else this.crashActor(actor, fault, handler);
         };
         const timer: OneShotTimer = {
           cancel: () => {
@@ -4482,7 +4482,7 @@ class ExecutorV1 {
             actor.active = null;
             const drained = (fault: Fault | null) => {
               actor.busy = false;
-              if (fault) this.crashActor(actor, fault);
+              if (fault) this.crashActor(actor, fault, message.handler);
               else this.dispatchActor(actor);
             };
             this.trace.snapshot("actor.reply", {
@@ -4495,11 +4495,15 @@ class ExecutorV1 {
                 if (message.reply)
                   message.complete(value.payload[0] ?? UNIT, "Failed", drained);
                 else {
-                  this.crashActor(actor, {
-                    kind: "panic",
-                    handlerFailed: true,
-                    message: "unhandled declared handler failure",
-                  });
+                  this.crashActor(
+                    actor,
+                    {
+                      kind: "panic",
+                      handlerFailed: true,
+                      message: "unhandled declared handler failure",
+                    },
+                    message.handler,
+                  );
                   return;
                 }
               } else {
@@ -4524,7 +4528,7 @@ class ExecutorV1 {
               message.complete(null, "Dead");
               this.dispatchActor(actor);
             } else {
-              this.crashActor(actor, fault);
+              this.crashActor(actor, fault, message.handler);
               message.complete(null, "Trapped");
             }
           },
@@ -4535,7 +4539,19 @@ class ExecutorV1 {
     });
   }
 
-  private crashActor(actor: ActorInstance, fault: Fault): void {
+  private crashActor(
+    actor: ActorInstance,
+    fault: Fault,
+    handler?: ActorShape["handlers"][number],
+  ): void {
+    this.reportFault(fault);
+    const context = handler
+      ? `${actor.layout.name}.${handler.name}`
+      : actor.layout.name;
+    this.trace.writeStderr(
+      `hew: actor crash in ${context} (actor ${actor.identity}): ${faultInfo(fault)[1]}\n`,
+      null,
+    );
     const debt = ++this.nextFaultDebt;
     this.faultDebts.add(debt);
     if (actor.supervisor)
@@ -4556,10 +4572,17 @@ class ExecutorV1 {
       this.closeValueAsync(
         actor.state,
         this.faultText(fault),
-        () =>
-          this.drainMailbox(actor, this.faultText(fault), () => {
+        (stateFault) => {
+          fault = combineFaults(fault, stateFault)!;
+          actor.crashing = fault;
+          this.reportFault(fault);
+          this.drainMailbox(actor, this.faultText(fault), (payloadFault) => {
+            fault = combineFaults(fault, payloadFault)!;
+            actor.crashing = fault;
+            this.reportFault(fault);
             this.sweepRcOwner(actor.rcOwner, actor, (sweepFault) => {
               actor.crashing = combineFaults(actor.crashing, sweepFault);
+              this.reportFault(actor.crashing!);
               actor.completed = true;
               for (const wake of actor.closed.splice(0)) wake();
               for (const admit of actor.admission.splice(0)) admit();
@@ -4576,7 +4599,8 @@ class ExecutorV1 {
                 }
               }
             });
-          }),
+          });
+        },
         actor,
       );
     };
@@ -4626,6 +4650,7 @@ class ExecutorV1 {
           (hookFault) => {
             fault = combineFaults(fault, hookFault)!;
             actor.crashing = fault;
+            this.reportFault(fault);
             complete("Restart");
           },
         );
@@ -4650,6 +4675,7 @@ class ExecutorV1 {
     this.drainMailbox(actor, this.faultText(fault), (cleanupFault) => {
       fault = combineFaults(fault, cleanupFault)!;
       actor.crashing = fault;
+      this.reportFault(fault);
       runHook();
     });
   }
@@ -5024,6 +5050,7 @@ class ExecutorV1 {
               // of handler-crash debt and supervisor restart decisions.
               actor.crashing = null;
               if (actor.closingFault) {
+                this.reportFault(actor.closingFault);
                 actor.closeFaultDebt = ++this.nextFaultDebt;
                 this.faultDebts.add(actor.closeFaultDebt);
               }
@@ -5082,6 +5109,16 @@ class ExecutorV1 {
 
   // ── exit and faults ──────────────────────────────────────────────────────
 
+  private reportFault(fault: Fault): void {
+    const diagnostics = [fault.primary ?? fault, ...(fault.secondary ?? [])];
+    diagnostics.forEach((diagnostic, index) => {
+      const origin = diagnostic.primary ?? diagnostic;
+      if (origin.reported) return;
+      this.trace.writeStderr(faultDiagnostic(origin, index !== 0), null);
+      origin.reported = true;
+    });
+  }
+
   private haltWithFault(fault: Fault): never {
     const isPanic = fault.kind === "panic";
     const status: RuntimeStatus = isPanic ? "panic" : "trap";
@@ -5091,7 +5128,7 @@ class ExecutorV1 {
       : (fault.message ?? trapMessage(fault.trap));
     const [code, kind] = faultInfo(fault);
     // Native writes the failure line to stderr before it exits; so does this.
-    this.trace.writeStderr(faultReport(fault), null);
+    this.reportFault(fault);
     // A failing run reports no exit code: native exits 1 for every fault and
     // names the kind in its message, so the kind is what travels, in
     // `runtime_failures`. The page turns it into an exit code of its own.
@@ -5160,12 +5197,21 @@ function faultInfo(fault: Fault): [number, string] {
   }[fault.trap] as [number, string];
 }
 
-function faultReport(fault: Fault, secondary = false): string {
+function faultDiagnostic(fault: Fault, secondary = false): string {
   const [code, reason] = faultInfo(fault);
   const label = secondary ? "secondary failure" : "failure";
-  const message = fault.message === undefined ? "" : `: ${fault.message}`;
+  const message =
+    fault.message === undefined ||
+    (fault.kind === "panic" &&
+      (fault.cancelled || fault.deadline || fault.timerOverdue))
+      ? ""
+      : `: ${fault.message}`;
+  return `hew: ${label}: ${reason} (${code})${message}\n`;
+}
+
+function faultReport(fault: Fault, secondary = false): string {
   return (
-    `hew: ${label}: ${reason} (${code})${message}\n` +
+    faultDiagnostic(fault, secondary) +
     (fault.secondary ?? []).map((next) => faultReport(next, true)).join("")
   );
 }

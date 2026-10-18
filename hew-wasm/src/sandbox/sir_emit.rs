@@ -168,6 +168,7 @@ pub struct ClosureEntry {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Actor {
     pub id: u32,
+    pub name: String,
     pub state_fields: Vec<ActorField>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub init: Option<u32>,
@@ -869,8 +870,12 @@ impl<'m> Walker<'m> {
             .actors
             .iter()
             .map(|actor| {
+                let hew_types::ResolvedTy::Named { head, .. } = &actor.handle_ty else {
+                    return Err(EmitError::new("actor diagnostic lacks its declared type"));
+                };
                 Ok(Actor {
                     id: actor.id.0,
+                    name: head.registry_key().to_owned(),
                     state_fields: actor
                         .fields
                         .iter()

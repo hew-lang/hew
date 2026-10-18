@@ -213,10 +213,6 @@ fn next_spawn_actor_identity() -> Option<SpawnIdentity> {
     })
 }
 
-#[expect(
-    clippy::needless_pass_by_value,
-    reason = "config is a lightweight aggregate of Copy fields; consuming it reads clearly at call sites"
-)]
 fn build_spawned_actor(
     config: ActorSpawnConfig,
     identity: SpawnIdentity,
@@ -803,8 +799,8 @@ pub unsafe extern "C" fn hew_actor_construct_native(
         }
     }
     let mut completion = crate::actor_native::NativeActorCompletion::with_crash(native_crash);
-    // SAFETY: construction remains live through publication.
     if let Some(owner) =
+        // SAFETY: construction remains live through publication.
         unsafe { construction.as_ref() }.and_then(|state| state.execution().rc_owner.clone())
     {
         completion.cleanup.rc = owner;

@@ -375,7 +375,7 @@ impl LowerCtx {
             let Some(ty) = self.checker_expr_ty_if_present(&span) else {
                 return self.unsupported_expr(span, "actor delivery operation has no checked type");
             };
-            self.try_register_enum_instantiation_ty(&ty, &span);
+
             // `.to(actor)` readdresses AND resubmits in one call: the
             // readdressed description is an internal temporary that never
             // reaches a binding, so it is built and submitted here.
@@ -717,9 +717,8 @@ impl LowerCtx {
                 fields,
                 // Surface-level explicit type arguments (`Box<i64> { ... }`).
                 // The HIR-recorded `type_args` below comes from the checker's
-                // `record_init_type_args` side-table (which already reconciled
-                // inferred-vs-explicit and substituted enclosing-fn type-params
-                // where applicable), so we ignore the raw surface args here.
+                // resolved expression type, which already reconciles explicit
+                // and inferred arguments. Ignore the raw surface args here.
                 type_args: _,
                 base,
                 ..
@@ -732,8 +731,20 @@ impl LowerCtx {
                     .get(&self.mk_key(&span))
                     .map(|coercion| &coercion.concrete_type)
                     .or_else(|| self.expr_types.get(&self.mk_key(&span)));
-                let checker_ctor_ty =
-                    checked_constructor.and_then(|ty| ResolvedTy::from_ty(ty).ok());
+                let checker_ctor_ty = match checked_constructor.map(ResolvedTy::from_ty) {
+                    Some(Ok(ty)) => Some(ty),
+                    missing_or_poisoned => {
+                        self.diagnostics.push(HirDiagnostic::new(
+                            HirDiagnosticKind::CheckerBoundaryViolation {
+                                name: format!("initializer `{name}`"),
+                                reason: format!("missing or poisoned checked constructor type: {missing_or_poisoned:?}"),
+                            },
+                            span.clone(),
+                            "record or variant initializer has no valid checker type",
+                        ));
+                        None
+                    }
+                };
                 let enum_struct_variant = if let Some((type_name, variant_idx, kind)) =
                     self.lookup_variant_ctor(name, checker_ctor_ty.as_ref())
                 {
@@ -817,9 +828,6 @@ impl LowerCtx {
                             ));
                         }
                     }
-                    // Register the generic-enum instantiation before building
-                    // result_ty so codegen's mangled-key lookup finds the entry.
-                    self.try_register_enum_instantiation(&span);
                     let result_ty = self.restore_type_declaration_facts(
                         checker_ctor_ty.expect("variant selection requires a checked owner"),
                     );
@@ -849,7 +857,7 @@ impl LowerCtx {
                     };
                     let record_identity = self.defs.path(declaration.declaration()).to_string();
                     let resolved_type_args = args.clone();
-                    self.record_record_layout(&record_identity, &span);
+
                     let hir_fields = fields
                         .iter()
                         .map(|(fname, expr)| {

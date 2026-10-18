@@ -1,0 +1,54 @@
+type Cell<T> {
+    value: T;
+}
+
+enum Packet<T> {
+    Item(Cell<T>);
+    Empty;
+}
+
+indirect enum Chain<T> {
+    Link(T, Chain<T>);
+    End;
+}
+
+fn boxed<T>(value: T) -> Packet<T> {
+    .Item(Cell { value: value })
+}
+
+fn relay<U>(value: U) -> Packet<U> {
+    boxed(value)
+}
+
+fn chain<T>(value: T) -> Chain<T> {
+    .Link(value, .End)
+}
+
+fn text(packet: Packet<string>) -> string {
+    match packet {
+        .Item(cell) => cell.value,
+        .Empty => "empty",
+    }
+}
+
+fn main() -> i64 {
+    let original = relay("retained".to_upper());
+    let saved = original;
+    println(text(original));
+    println(text(saved));
+    match relay(42) {
+        .Item(cell) => println(cell.value),
+        .Empty => return 1,
+    }
+    let first = chain("recursive".to_upper());
+    let second = first;
+    match first {
+        .Link(value, _) => println(value),
+        .End => return 2,
+    }
+    match second {
+        .Link(value, _) => println(value),
+        .End => return 3,
+    }
+    0
+}

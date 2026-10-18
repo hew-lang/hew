@@ -539,7 +539,7 @@ enum CallableState {
 /// Recursive and mutually-recursive calls can therefore refer to the stable
 /// `CallableId` immediately, while a FIFO worklist keeps the construction
 /// deterministic.  The service intentionally never reads
-/// `HirModule::monomorphisations` or invokes MIR lowering.
+/// a HIR body-discovery registry or invokes MIR lowering.
 struct InstanceService<'a> {
     module: &'a HirModule,
     callable_facts: callable_facts::CallableFacts<'a>,
@@ -879,85 +879,29 @@ fn concrete_user_variant_shape(
         ));
     }
 
-    let layout = exact_user_variant_layout(module, decl, &instance.args, enum_ty)?;
-    let variants = sem_variants_from_decl(decl, &instance.args, layout, enum_ty)?;
+    let variants = sem_variants_from_decl(decl, &instance.args, enum_ty)?;
     Ok((decl.is_indirect, variants))
-}
-
-fn exact_user_variant_layout<'a>(
-    module: &'a HirModule,
-    decl: &hew_hir::HirTypeDecl,
-    args: &[ResolvedTy],
-    enum_ty: &ResolvedTy,
-) -> Result<Option<&'a hew_hir::EnumLayout>, String> {
-    let layout = if decl.type_params.is_empty() {
-        None
-    } else {
-        let mut matches = module
-            .enum_layouts
-            .iter()
-            .filter(|layout| layout.key.origin == decl.id && layout.key.type_args == args);
-        let layout = matches.next().ok_or_else(|| {
-            format!(
-                "generic enum `{}` has no exact HIR specialization layout",
-                enum_ty.user_facing()
-            )
-        })?;
-        if matches.next().is_some() {
-            return Err(format!(
-                "generic enum `{}` has more than one exact HIR specialization layout",
-                enum_ty.user_facing()
-            ));
-        }
-        Some(layout)
-    };
-    Ok(layout)
 }
 
 fn sem_variants_from_decl(
     decl: &hew_hir::HirTypeDecl,
     args: &[ResolvedTy],
-    layout: Option<&hew_hir::EnumLayout>,
     enum_ty: &ResolvedTy,
 ) -> Result<Vec<SemVariant>, String> {
     decl.variants
         .iter()
-        .enumerate()
-        .map(|(variant_index, variant)| {
+        .map(|variant| {
             let names = variant.field_names();
-            let tys = layout.map_or_else(
-                || {
-                    variant
-                        .field_tys()
-                        .iter()
-                        .map(|ty| hew_hir::substitute_type_params(ty, &decl.type_params, args))
-                        .collect::<Vec<_>>()
-                },
-                |layout| {
-                    layout
-                        .variants
-                        .get(variant_index)
-                        .map(|variant| variant.field_tys.clone())
-                        .unwrap_or_default()
-                },
-            );
+            let tys: Vec<_> = variant
+                .field_tys()
+                .iter()
+                .map(|ty| hew_types::substitute_type_params(ty, &decl.type_params, args))
+                .collect();
             if names.len() != tys.len() {
                 return Err(format!(
                     "enum `{}` variant `{}` has inconsistent HIR field names and types",
                     enum_ty.user_facing(),
                     variant.name
-                ));
-            }
-            if layout.is_some_and(|layout| {
-                layout
-                    .variants
-                    .get(variant_index)
-                    .is_none_or(|candidate| candidate.name != variant.name)
-            }) {
-                return Err(format!(
-                    "enum `{}` specialization layout disagrees with variant {} identity",
-                    enum_ty.user_facing(),
-                    variant_index
                 ));
             }
             Ok(SemVariant {

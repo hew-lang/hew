@@ -81,7 +81,7 @@ impl LowerCtx {
                     return self.error_conversion_boundary(value, edge_span, "variant target");
                 };
                 let owner = self.defs.path(declaration.declaration()).to_string();
-                self.try_register_enum_instantiation_ty(target, edge_span);
+
                 self.synthetic_variant_ctor(
                     &owner,
                     index as usize,
@@ -151,7 +151,7 @@ impl LowerCtx {
             return value;
         };
         let call_site = self.ids.site();
-        self.register_free_fn_monomorphisation(&symbol, Some(&method), span, call_site);
+        self.record_free_fn_call_type_args(&symbol, Some(&method), span, call_site);
         let callee = HirExpr {
             node: self.ids.node(),
             site: self.ids.site(),
@@ -215,7 +215,7 @@ impl LowerCtx {
             // `builtin_variant_predicate` already recorded a diagnostic.
             return value;
         };
-        self.try_register_enum_instantiation_ty(&return_ty, span);
+
         self.synthetic_variant_ctor(
             "Result",
             ok_idx,
@@ -241,7 +241,7 @@ impl LowerCtx {
         else {
             return value;
         };
-        self.try_register_enum_instantiation_ty(result_ty, span);
+
         self.synthetic_variant_ctor(
             "Result",
             index,
@@ -345,7 +345,7 @@ impl LowerCtx {
                 else {
                     return value;
                 };
-                self.try_register_enum_instantiation_ty(&return_ty, span);
+
                 self.synthetic_variant_ctor(
                     "Result",
                     index,
@@ -393,7 +393,7 @@ impl LowerCtx {
         let Some(result_ty) = self.checker_expr_resolved_ty(span, "scope recovery") else {
             return self.unsupported_postfix_try(span, "missing checked scope recovery result");
         };
-        self.try_register_enum_instantiation_ty(&failure_ty, binding_span);
+
         self.push_scope();
         let error = self.bind_handler_error(name, failure_ty, binding_span);
         let handler = self.lower_expr(body, IntentKind::Read);
@@ -439,8 +439,7 @@ impl LowerCtx {
         let Some(result_ty) = self.checker_expr_resolved_ty(span, "optional chain") else {
             return self.unsupported_postfix_try(span, "optional chain result type missing");
         };
-        self.try_register_enum_instantiation_ty(&scrutinee.ty, &receiver.1);
-        self.try_register_enum_instantiation_ty(&result_ty, span);
+
         let Some((some_predicate, some_idx)) =
             self.builtin_variant_predicate(BuiltinType::Option, "Some", span)
         else {
@@ -522,7 +521,7 @@ impl LowerCtx {
             return self.lower_scope_recovery(operand, body, *name, binding_span, failure_ty, span);
         }
         let scrutinee = self.lower_expr(operand, IntentKind::Read);
-        self.try_register_enum_instantiation_ty(&scrutinee.ty, &operand.1);
+
         let (builtin, success, failure, payload, error_ty) = if error.is_some() {
             let Some((ok, err)) = Self::resolved_result_parts(&scrutinee.ty) else {
                 return self.unsupported_postfix_try(span, "handle operand without a Result type");
@@ -612,7 +611,6 @@ impl LowerCtx {
     ) -> (HirExprKind, ResolvedTy) {
         let scrutinee = self.lower_expr(inner, IntentKind::Read);
         let scrutinee_ty = scrutinee.ty.clone();
-        self.try_register_enum_instantiation_ty(&scrutinee_ty, &inner.1);
 
         let Some(return_ty) = self.current_return_type.clone() else {
             return self
@@ -645,7 +643,7 @@ impl LowerCtx {
                 return self
                     .postfix_try_boundary(span, "`?` in a body whose return type is not Result");
             }
-            self.try_register_enum_instantiation_ty(&return_ty, span);
+
             let Some(result_ty) = self.checker_expr_resolved_ty(span, "`?` expression") else {
                 return self.unsupported_postfix_try(span, "`?` checker payload type is missing");
             };
@@ -669,7 +667,7 @@ impl LowerCtx {
                 return self
                     .postfix_try_boundary(span, "`?` in a body whose return type is not Option");
             }
-            self.try_register_enum_instantiation_ty(&return_ty, span);
+
             let Some(result_ty) = self.checker_expr_resolved_ty(span, "`?` expression") else {
                 return self.unsupported_postfix_try(span, "`?` checker payload type is missing");
             };

@@ -6708,40 +6708,45 @@ fn main() {
         // impl. Its trait-method ID is the static lookup key, but its concrete
         // default-body declaration must drive the monomorphisation and remain
         // distinct for these same-leaf packages.
-        let defaults: Vec<_> = hir
+        let lowered = hew_sir::lower_module(&hir.module, tco);
+        assert!(
+            hew_sir::verify_module(&lowered.module).is_empty(),
+            "{:#?}",
+            lowered.statuses
+        );
+        let defaults: Vec<_> = lowered
             .module
-            .monomorphisations
+            .callables
             .iter()
-            .filter(|mono| mono.key.linker_symbol.ends_with("Box::provided"))
+            .filter(|callable| {
+                tco.defs
+                    .path(callable.declaration)
+                    .contains("::<default impl ")
+                    && tco.defs.path(callable.declaration).ends_with("::provided")
+            })
             .collect();
         assert_eq!(
             defaults.len(),
             2,
-            "each same-leaf default body must be monomorphized: {defaults:#?}"
+            "each same-leaf default must have a concrete SIR callable: {defaults:#?}"
         );
-        assert!(
-            defaults.iter().any(|mono| {
-                tco.defs.path(mono.key.declaration)
-                    == "left.render.Box::<default impl left.render.Render for left.render.Box<T>>::provided"
-            }),
-            "left default body must have its own synthetic implementation identity: {defaults:#?}"
-        );
-        assert!(
-            defaults.iter().any(|mono| {
-                tco.defs.path(mono.key.declaration)
-                    == "right.render.Box::<default impl right.render.Render for right.render.Box<T>>::provided"
-            }),
-            "right default body must have its own synthetic implementation identity: {defaults:#?}"
-        );
-        assert_ne!(defaults[0].mangled_name, defaults[1].mangled_name);
-        for mono in defaults {
+        for owner in ["left", "right"] {
+            assert!(defaults.iter().any(|callable| tco.defs.path(callable.declaration) == format!("{owner}.render.Box::<default impl {owner}.render.Render for {owner}.render.Box<T>>::provided")));
+        }
+        assert_ne!(defaults[0].symbol, defaults[1].symbol);
+        for callable in defaults {
+            let hew_sir::CallableInstance::Generic(key) = &callable.instance else {
+                panic!("default requires an exact generic instance");
+            };
+            let template = lowered
+                .module
+                .generic_templates
+                .iter()
+                .find(|template| template.id == key.template)
+                .expect("selected generic template");
             assert_eq!(
-                mono.mangled_name,
-                hew_hir::monomorph::function_monomorph_symbol(
-                    &mono.key.linker_symbol,
-                    &mono.key.type_args
-                ),
-                "generic direct dispatch must use the shared MonoKey linker-symbol projection"
+                callable.symbol,
+                hew_hir::monomorph::function_monomorph_symbol(&template.symbol, &key.type_args)
             );
         }
     }

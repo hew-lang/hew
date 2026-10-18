@@ -194,11 +194,7 @@ impl LowerCtx {
         // exact builtin discriminator only at this provenance-bearing injected
         // boundary; ordinary source impls continue to trust checker resolution.
         if self.lowering_injected_items {
-            let injected_builtin = SYNTHETIC_CURSOR_LAYOUT_SPECS
-                .iter()
-                .find(|spec| spec.builtin.canonical_name() == self_type_name)
-                .map(|spec| spec.builtin)
-                .or_else(|| hew_types::lookup_builtin_type(self_type_name));
+            let injected_builtin = hew_types::lookup_builtin_type(self_type_name);
             if let (Some(builtin), ResolvedTy::Named { args, .. }) =
                 (injected_builtin, &resolved_impl_self_ty)
             {

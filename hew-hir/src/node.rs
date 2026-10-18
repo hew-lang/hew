@@ -12,7 +12,6 @@ use hew_types::{
 };
 
 use crate::ids::{BindingId, HirNodeId, ItemId, ResolvedRef, ScopeId, SiteId};
-use crate::monomorph::{EnumLayout, MonomorphizedFn, RecordLayout};
 use crate::value_class::{ResourceMarker, TypeClassTable};
 use crate::IntentKind;
 
@@ -67,20 +66,6 @@ pub struct HirModule {
     /// This table carries declared markers and resource lifecycle metadata.
     /// Ownership classification comes from the checker's `TypeFacts`.
     pub type_classes: TypeClassTable,
-    /// Distinct generic-function instantiations observed at call sites in
-    /// this module. Populated from the checker's `call_type_args`
-    /// side-table during HIR lowering (G-1.a). Each entry pairs a
-    /// generic origin `ItemId` with a concrete `Vec<ResolvedTy>` and a
-    /// downstream-stable mangled symbol name. Insertion-ordered for
-    /// deterministic codegen.
-    ///
-    /// Empty when no generic-fn callsites exist (a fully monomorphic
-    /// program). Downstream MIR (G-1.b) and LLVM (G-1.c) iterate this
-    /// list to emit one specialised function per entry.
-    ///
-    /// LESSONS: `end-to-end-before-layer-thickening` (P1),
-    /// `checker-authority` (P0).
-    pub monomorphisations: Vec<MonomorphizedFn>,
     /// Type arguments observed at generic calls and function values.
     /// Keyed by the `SiteId` of the `HirExpr`: `Call` identifies an invocation;
     /// `BindingRef` with `ResolvedRef::Item` identifies a function value.
@@ -93,48 +78,12 @@ pub struct HirModule {
     /// side-table, with one important nuance: when a call appears
     /// inside a generic function body, its recorded type arguments may
     /// reference the enclosing function's type-parameter symbols as
-    /// `ResolvedTy::Named { name: "T", args: [] }`. MIR lowering of a
-    /// specialised body substitutes those symbols with concrete types
-    /// via the per-monomorphisation substitution map, producing the
-    /// concrete mangled callee for the inner call.
+    /// `ResolvedTy::Named` with a parameter head. SIR substitutes these
+    /// binders when requesting the concrete callee from its instance service.
     ///
     /// Empty when no generic-fn call sites exist (a fully monomorphic
     /// program).
     pub call_site_type_args: HashMap<SiteId, Vec<ResolvedTy>>,
-    /// Distinct record-type instantiations observed at user struct-init
-    /// sites against a generic `pub type` / `record`. Populated from the
-    /// checker's `record_init_type_args` side-table during HIR lowering.
-    /// Each entry pairs a generic origin `ItemId` with a concrete
-    /// `Vec<ResolvedTy>`, a mangled symbol name, and the field shape after
-    /// type-parameter substitution. Insertion-ordered for deterministic
-    /// codegen.
-    ///
-    /// Empty when no user generic record-init sites exist. Downstream MIR
-    /// and LLVM consumers iterate this list to emit one `RecordLayout` per
-    /// entry under the mangled name. Builtin-injected generic types (`Vec`,
-    /// `Option`, `Result`, `HashMap`, channel / stream handles) never enter
-    /// this list — they remain compiler-injected for v0.5 by the generics
-    /// scoping decision.
-    ///
-    /// LESSONS: `end-to-end-before-layer-thickening` (P1),
-    /// `checker-authority` (P0).
-    pub record_layouts: Vec<RecordLayout>,
-    /// Distinct generic-enum instantiations observed at enum-ctor sites
-    /// and match scrutinees in this module. Populated from the HIR mono
-    /// pass discovery walker during HIR lowering. Each entry pairs a
-    /// generic origin `ItemId` with concrete `Vec<ResolvedTy>` args, a
-    /// mangled symbol name, and the variant shape after type-parameter
-    /// substitution. Insertion-ordered for deterministic codegen.
-    ///
-    /// Empty when no user generic enum instantiation sites exist. Downstream
-    /// MIR and codegen consumers iterate this list to emit one `EnumLayout`
-    /// per entry under the mangled name. The registry is the substrate that
-    /// consumed by MIR layout-gather and codegen to emit one `EnumLayout`
-    /// per instantiation under the mangled name.
-    ///
-    /// LESSONS: `end-to-end-before-layer-thickening` (P1),
-    /// `checker-authority` (P0).
-    pub enum_layouts: Vec<EnumLayout>,
     /// Per-field-access `SiteId` → `ChildSlot` for supervisor child accessor
     /// expressions. Populated during HIR lowering from the checker's
     /// `supervisor_child_slots` side-table (keyed by span) by translating each
@@ -844,26 +793,16 @@ pub struct HirTypeDecl {
     /// type body. Lifted verbatim from `TypeDecl.consuming_methods`.
     pub consuming_methods: Vec<String>,
     /// Source-declared generic type-parameter names, in order. Empty for
-    /// non-generic type decls. Consumed by the record-layout
-    /// registry to (a) decide whether a `StructInit` site needs a
-    /// per-instantiation layout and (b) substitute field types when
-    /// constructing one.
+    /// non-generic type decls. SIR substitutes exact instance arguments
+    /// into these parameters when deriving semantic fields and variants.
     pub type_params: Vec<hew_types::ParamHead>,
     /// Struct-form field types in declaration order. Empty for enum-kind
     /// type decls (enums have no struct fields; their variants are in
     /// `variants`).
     pub fields: Vec<HirField>,
     /// All enum variants in declaration order — unit, tuple, and struct shapes.
-    /// Empty for struct-kind type decls. The tag ordinal for each variant is
-    /// its position within this vec (0-based) and matches the index assigned
-    /// in `LowerCtx::machine_ctor_registry` for the qualified `Type::Variant`
-    /// key, so MIR's `EnumLayout.variants` lines up 1:1 with this list.
-    ///
-    /// MIR consumes this to populate `EnumLayout.variants` (including
-    /// `field_tys` per variant) without re-reading the parser AST. Generic
-    /// enums (those with non-empty `type_params`) are fail-closed at MIR
-    /// lowering — they require monomorphisation-keyed layouts which the
-    /// next-stage `EnumLayoutRegistry` lane will land.
+    /// Declared variants in tag order; empty for struct declarations.
+    /// SIR instantiates their payload types for each demanded exact enum type.
     pub variants: Vec<HirVariant>,
     pub span: Span,
 }
@@ -1960,9 +1899,7 @@ pub enum HirExprKind {
     /// (`_`) are lowered here. Pattern guards, literal patterns,
     /// tuple-without-ctor patterns, and or-patterns are still rejected at HIR
     /// lowering with a structured `NotYetImplemented` diagnostic. Generic
-    /// Generic enums (`Option<T>`, `Result<T,E>`) are fully supported
-    /// via the `EnumLayoutRegistry` substrate introduced in the
-    /// generic-enum-monomorphisation lane.
+    /// Generic enum payloads are instantiated by SIR for the exact scrutinee type.
     ///
     /// **Exhaustiveness**: enforced by the type checker at
     /// `hew-types/src/check/diagnostics.rs::check_exhaustiveness`. A

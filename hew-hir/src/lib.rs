@@ -8,7 +8,6 @@ pub mod dispatch;
 pub mod dump;
 pub mod ids;
 pub mod intent;
-pub mod layout_mono;
 pub mod lower;
 pub mod mono;
 pub mod monomorph;
@@ -25,21 +24,16 @@ pub use hew_types::error::DiagChannel;
 pub use hew_types::stdlib_authority;
 pub use ids::{BindingId, HirNodeId, ItemId, ResolvedRef, ScopeId, SiteId};
 pub use intent::IntentKind;
-pub use layout_mono::run_layout_mono_pass;
 #[cfg(any(test, feature = "internal-test-hooks"))]
 pub use lower::run_call_shape_gates_for_test;
-pub use lower::{
-    lower_program, lower_program_host_target, lower_program_with_mono_cap, LowerOutput,
-    ResolutionCtx, TargetArch,
-};
+pub use lower::{lower_program, lower_program_host_target, LowerOutput, ResolutionCtx, TargetArch};
 pub use mono::{
     mangle_instantiation, sanitize_for_symbol, ConstValue as MonoConstValue, SymbolClass,
 };
 pub use monomorph::{
     compiler_record_layout_key, layout_key_for_named, mangle, mangle_layout_key,
     mangle_resolved_ty, shorten_named_arg_qualifiers, substitute_type_params,
-    synthetic_cursor_layout_key, EnumLayout, EnumMonoKey, EnumVariantLayout, MonoKey,
-    MonomorphizedFn, RecordLayout, RecordMonoKey, MONOMORPHISATION_REGISTRY_CAP,
+    synthetic_cursor_layout_key,
 };
 pub use node::{
     ExternProvenance, HirActorDecl, HirActorInit, HirActorMethod, HirActorReceiveFn,

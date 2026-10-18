@@ -1331,10 +1331,9 @@ mod tests {
             trait_object_layouts: Arc::default(),
             structural_witnesses: Vec::new(),
             type_classes: TypeClassTable::default(),
-            monomorphisations: Vec::new(),
+
             call_site_type_args: HashMap::new(),
-            record_layouts: Vec::new(),
-            enum_layouts: Vec::new(),
+
             supervisor_child_slots: HashMap::new(),
             pool_accessor_sites: HashMap::new(),
             regex_literals: Vec::new(),

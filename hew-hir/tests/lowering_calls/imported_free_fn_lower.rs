@@ -546,16 +546,12 @@ fn generic_module_function_values_keep_the_selected_declaration() {
             "{root}: {:?}",
             output.diagnostics
         );
-        assert!(
-            output.module.monomorphisations.iter().any(|mono| output
-                .module
-                .defs
-                .path(mono.key.declaration)
-                == "m.id"
-                && mono.key.type_args == vec![hew_types::ResolvedTy::I64]),
-            "{root}: {:?}",
-            output.module.monomorphisations
-        );
+        assert!(output
+            .module
+            .call_site_type_args
+            .values()
+            .any(|args| args == &[hew_types::ResolvedTy::I64]));
+        assert!(output.module.items.iter().any(|item| matches!(item, hew_hir::HirItem::Function(f) if output.module.defs.path(f.declaration) == "m.id")));
     }
 }
 
@@ -568,16 +564,10 @@ fn generic_function_value_keeps_an_imported_private_helper_reachable() {
     let (output, checked) = lower_with_checker(&program);
     assert!(checked.errors.is_empty(), "{:?}", checked.errors);
     assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
-    assert!(
-        output.module.monomorphisations.iter().any(|mono| output
-            .module
-            .defs
-            .path(mono.key.declaration)
-            == "m.id"
-            && mono.key.type_args == vec![hew_types::ResolvedTy::I64]),
-        "{:?}",
-        output.module.monomorphisations
-    );
+    assert!(output.module.items.iter().any(|item| matches!(item, hew_hir::HirItem::Function(f) if output.module.defs.path(f.declaration) == "m.id")));
+    assert!(output.module.call_site_type_args.values().any(|args| args
+        .iter()
+        .any(|ty| matches!(ty, hew_types::ResolvedTy::TypeParam { .. }))));
 }
 
 #[test]

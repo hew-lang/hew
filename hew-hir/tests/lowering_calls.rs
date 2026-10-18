@@ -23,8 +23,6 @@ mod dyn_trait_type_annotation_lower;
 mod imported_free_fn_lower;
 #[path = "lowering_calls/imported_impl_lower.rs"]
 mod imported_impl_lower;
-#[path = "lowering_calls/loop_call_site_walker.rs"]
-mod loop_call_site_walker;
 #[path = "lowering_calls/math_builtin_lower.rs"]
 mod math_builtin_lower;
 #[path = "lowering_calls/mem_intrinsic_floor_lower.rs"]

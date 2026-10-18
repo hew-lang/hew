@@ -11,11 +11,7 @@ impl LowerCtx {
         clippy::too_many_lines,
         reason = "initializes the complete checker-to-HIR typed context atomically"
     )]
-    pub(super) fn new(
-        tc_output: &TypeCheckOutput,
-        mono_cap: usize,
-        target_arch: TargetArch,
-    ) -> Self {
+    pub(super) fn new(tc_output: &TypeCheckOutput, target_arch: TargetArch) -> Self {
         let mut type_classes = crate::value_class::TypeClassTable::default();
         // Seed compiler-known M2 substrate types before source-order TypeDecls.
         // This registers Sink/Stream resource lifecycle metadata as
@@ -142,20 +138,13 @@ impl LowerCtx {
                 })
                 .map(|(id, _)| tc_output.defs.path(id.declaration()).to_string())
                 .collect(),
-            mono_registry: MonoRegistry::with_cap(mono_cap),
-            mono_cap_diag_emitted: false,
             call_site_type_args: HashMap::new(),
             record_registry: HashMap::new(),
             extern_backed_record_names: HashSet::new(),
             colliding_imported_record_names: HashSet::new(),
             file_import_module_names: HashSet::new(),
             cross_module_colliding_record_names: HashSet::new(),
-            record_init_type_args: tc_output.record_init_type_args.clone(),
-            record_layout_registry: RecordLayoutRegistry::with_cap(mono_cap),
-            record_layout_cap_diag_emitted: false,
             enum_type_params: HashMap::new(),
-            enum_item_ids: HashMap::new(),
-            enum_layout_registry: EnumLayoutRegistry::with_cap(mono_cap),
             intrinsic_declarations: tc_output.intrinsic_declarations.clone(),
             supervisor_child_slots_checker: tc_output.supervisor_child_slots.clone(),
             supervisor_child_slots: HashMap::new(),
@@ -169,7 +158,6 @@ impl LowerCtx {
             folded_constants: HashMap::new(),
             folding_constants: HashSet::new(),
             enum_variants_by_name: HashMap::new(),
-            indirect_enum_names: HashSet::new(),
             type_member_tys: HashMap::new(),
             pattern_resolutions: tc_output.pattern_resolutions.clone(),
             pattern_plans: tc_output.pattern_plans.clone(),
@@ -362,10 +350,6 @@ impl LowerCtx {
                 &mut self.checked_call_effects,
                 tc_output.suspension_effects.calls.clone(),
             ),
-            std::mem::replace(
-                &mut self.record_init_type_args,
-                tc_output.record_init_type_args.clone(),
-            ),
         );
 
         let result = f(self);
@@ -394,7 +378,6 @@ impl LowerCtx {
             self.checked_fork_transfers,
             self.fork_call_inputs,
             self.checked_call_effects,
-            self.record_init_type_args,
         ) = saved;
         self.direct_call_targets = saved_direct_calls;
         self.resolutions = saved_resolutions;

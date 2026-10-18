@@ -20,8 +20,8 @@
 
 use hew_hir::{
     lower_program_host_target, run_call_shape_gates_for_test, HirBinding, HirBlock,
-    HirDiagnosticKind, HirExpr, HirExprKind, HirFn, HirItem, HirMachineDecl, HirMachineEvent,
-    HirMachineState, HirMachineTransition, HirStmt, HirStmtKind, IntentKind, ResolvedRef,
+    HirDiagnosticKind, HirExpr, HirExprKind, HirFn, HirItem, HirStmt, HirStmtKind, IntentKind,
+    ResolvedRef,
 };
 use hew_hir::{BindingId, HirNodeId, ItemId, ScopeId, SiteId};
 use hew_parser::parser;
@@ -173,6 +173,7 @@ fn synth_call_with_item_callee(name: &str, item_id: u32) -> HirExpr {
         node: HirNodeId(0),
         site: SiteId(0),
         ty: ResolvedTy::Function {
+            capabilities: hew_types::CallableCapabilities::FUNCTION_ITEM,
             params: Vec::new(),
             ret: Box::new(ResolvedTy::Unit),
         },
@@ -203,6 +204,7 @@ fn synth_call_with_unresolved_callable_callee(name: &str) -> HirExpr {
         node: HirNodeId(0),
         site: SiteId(0),
         ty: ResolvedTy::Function {
+            capabilities: hew_types::CallableCapabilities::FUNCTION_ITEM,
             params: Vec::new(),
             ret: Box::new(ResolvedTy::Unit),
         },
@@ -235,6 +237,7 @@ fn synth_user_call(name: &str, item_id: u32, declaration: &str) -> HirExpr {
         node: HirNodeId(0),
         site: SiteId(0),
         ty: ResolvedTy::Function {
+            capabilities: hew_types::CallableCapabilities::FUNCTION_ITEM,
             params: Vec::new(),
             ret: Box::new(ResolvedTy::Unit),
         },
@@ -288,7 +291,7 @@ fn item_callee_not_in_callable_set_emits_callable_unsupported_in_mir() {
     let main = synth_fn_with_tail("main", 0, synth_call_with_item_callee("phantom_callee", 42));
     let items = vec![main];
 
-    let diagnostics = run_call_shape_gates_for_test(&items, &[]);
+    let diagnostics = run_call_shape_gates_for_test(&items);
 
     assert!(
         diagnostics.iter().any(|d| matches!(
@@ -304,7 +307,7 @@ fn callable_unsupported_message_renders_internal_identity_as_dotted_source() {
     let internal_name = "std::widget::missing";
     let main = synth_fn_with_tail("main", 0, synth_call_with_item_callee(internal_name, 42));
 
-    let diagnostics = run_call_shape_gates_for_test(&[main], &[]);
+    let diagnostics = run_call_shape_gates_for_test(&[main]);
     let diagnostic = diagnostics
         .iter()
         .find(|diagnostic| {
@@ -356,7 +359,7 @@ fn item_callee_referencing_module_fn_does_not_emit_diagnostic() {
     let main = synth_fn_with_tail("main", 0, synth_call_with_item_callee("real_callee", 99));
     let items = vec![target, main];
 
-    let diagnostics = run_call_shape_gates_for_test(&items, &[]);
+    let diagnostics = run_call_shape_gates_for_test(&items);
 
     assert!(
         diagnostics
@@ -403,7 +406,7 @@ fn user_call_is_admitted_by_its_declaration_not_by_the_callee_spelling() {
     let target = emitted_body("lib.twice", "twice", 99);
     let main = synth_fn_with_tail("main", 0, synth_user_call("lib$twice", 99, "lib.twice"));
 
-    let diagnostics = run_call_shape_gates_for_test(&[target, main], &[]);
+    let diagnostics = run_call_shape_gates_for_test(&[target, main]);
 
     assert!(
         diagnostics
@@ -423,7 +426,7 @@ fn user_call_to_a_declaration_with_no_emitted_body_is_still_rejected() {
     let decoy = emitted_body("other.twice", "lib$twice", 99);
     let main = synth_fn_with_tail("main", 0, synth_user_call("lib$twice", 99, "lib.twice"));
 
-    let diagnostics = run_call_shape_gates_for_test(&[decoy, main], &[]);
+    let diagnostics = run_call_shape_gates_for_test(&[decoy, main]);
 
     assert!(
         diagnostics.iter().any(|d| matches!(
@@ -443,7 +446,7 @@ fn unresolved_callable_callee_emits_indirect_call_unsupported() {
     );
     let items = vec![main];
 
-    let diagnostics = run_call_shape_gates_for_test(&items, &[]);
+    let diagnostics = run_call_shape_gates_for_test(&items);
 
     assert!(
         diagnostics.iter().any(|d| matches!(
@@ -464,6 +467,7 @@ fn binding_callee_does_not_emit_indirect_call_unsupported() {
         node: HirNodeId(0),
         site: SiteId(0),
         ty: ResolvedTy::Function {
+            capabilities: hew_types::CallableCapabilities::FUNCTION_ITEM,
             params: Vec::new(),
             ret: Box::new(ResolvedTy::Unit),
         },
@@ -504,7 +508,7 @@ fn binding_callee_does_not_emit_indirect_call_unsupported() {
         terminal_receiver: None,
     });
 
-    let diagnostics = run_call_shape_gates_for_test(&[main], &[]);
+    let diagnostics = run_call_shape_gates_for_test(&[main]);
 
     assert!(
         !has_call_shape_diagnostic(&diagnostics),
@@ -520,7 +524,7 @@ fn item_callee_not_in_callable_set_makes_into_result_fail() {
     // and checking the diagnostic kind is in the fatal set documented on
     // `LowerOutput::into_result`.
     let main = synth_fn_with_tail("main", 0, synth_call_with_item_callee("phantom_callee", 42));
-    let diagnostics = run_call_shape_gates_for_test(&[main], &[]);
+    let diagnostics = run_call_shape_gates_for_test(&[main]);
 
     let fatal = diagnostics.iter().any(|d| {
         matches!(
@@ -574,7 +578,7 @@ fn walker_recurses_into_let_stmt_initializer() {
         terminal_receiver: None,
     });
 
-    let diagnostics = run_call_shape_gates_for_test(&[main], &[]);
+    let diagnostics = run_call_shape_gates_for_test(&[main]);
     assert!(
         diagnostics.iter().any(|d| matches!(
             &d.kind,

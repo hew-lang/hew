@@ -273,3 +273,45 @@ fn a_result_action_reaching_the_verifier_is_rejected() {
         "an unrealized Result action must be rejected: {diagnostics:#?}"
     );
 }
+
+#[test]
+fn generic_entry_display_is_demanded_without_a_source_call() {
+    let (hir, facts) = lower_hir(include_str!(
+        "../../tests/core-acceptance/cases/entry-generic-display.hew"
+    ));
+    assert!(facts.errors.is_empty(), "{:?}", facts.errors);
+    let Some(EntryExitAction::Result {
+        display:
+            hew_types::EntryDisplayTarget::Declared {
+                declaration,
+                instance: hew_types::EntryCallableInstance::Generic { type_args },
+            },
+        ..
+    }) = hir.entry_exit_plan.as_ref().map(|plan| &plan.action)
+    else {
+        panic!("entry must select the generic Display implementation");
+    };
+    let lowered = lower_module(&hir, &facts);
+    assert!(
+        verify_module(&lowered.module).is_empty(),
+        "{:?}",
+        lowered.statuses
+    );
+    let display = lowered
+        .module
+        .callables
+        .iter()
+        .find(|callable| callable.declaration == *declaration)
+        .expect("entry adapter demands its Display callable");
+    assert!(
+        matches!(&display.instance, hew_sir::CallableInstance::Generic(key) if key.type_args == *type_args)
+    );
+    assert!(
+        lowered
+            .module
+            .function_index()
+            .function(display.id)
+            .is_some(),
+        "the selected Display instance requires a body"
+    );
+}

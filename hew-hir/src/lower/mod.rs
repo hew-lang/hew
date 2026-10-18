@@ -31,11 +31,6 @@ use hew_types::{
 use crate::builtin_type_classes::seed_builtin_type_classes;
 use crate::diagnostic::{HirDiagnostic, HirDiagnosticKind};
 use crate::ids::{BindingId, IdGen, ItemId, ResolvedRef, ScopeId, SiteId};
-use crate::monomorph::{
-    contains_recursive_polymorphic_self, substitute_type_params, EnumLayoutRegistry, EnumMonoKey,
-    EnumVariantLayout, MonoKey, MonoRegistry, RecordLayout, RecordLayoutRegistry, RecordMonoKey,
-    MONOMORPHISATION_REGISTRY_CAP,
-};
 use crate::node::{
     ExternProvenance, HirActorDecl, HirActorInit, HirActorMethod, HirActorReceiveFn,
     HirActorStateGuard, HirBinding, HirBlock, HirCaptureKind, HirClosureCapture,
@@ -49,10 +44,12 @@ use crate::node::{
 };
 use crate::stdlib_catalog::{self, BuiltinEntry, BuiltinLinkage};
 use crate::{IntentKind, ResourceMarker};
+use hew_types::substitute_type_params;
 
 mod actors;
 mod builders;
 mod call_shape_gates;
+mod call_type_args;
 mod calls;
 mod captures;
 mod closures;
@@ -71,7 +68,6 @@ mod items;
 mod iteration;
 mod literals;
 mod methods;
-mod monomorphisation;
 mod patterns;
 mod private_refs;
 mod program;
@@ -100,12 +96,11 @@ use self::iteration::*;
 use self::patterns::*;
 use self::private_refs::*;
 use self::resource_lifecycles::*;
-use self::substitution::*;
 use self::vec_index_gates::*;
 
 #[cfg(any(test, feature = "internal-test-hooks"))]
 pub use self::call_shape_gates::run_call_shape_gates_for_test;
-pub use self::program::lower_program_with_mono_cap;
+pub use self::program::lower_program;
 pub use self::substitution::substitute_ty;
 
 /// Target architecture for compilation. Subset of the full `TargetSpec`
@@ -252,89 +247,7 @@ impl TargetArch {
 type ScopeBinding = (BindingId, ResolvedTy, std::ops::Range<usize>);
 type OuterClosureBinding = (String, ResolvedTy, std::ops::Range<usize>);
 type ClosureCaptureCandidate = (BindingId, String, std::ops::Range<usize>);
-const SYNTHETIC_OPTION_ITEM: ItemId = ItemId(u32::MAX - 1);
-const SYNTHETIC_RESULT_ITEM: ItemId = ItemId(u32::MAX - 2);
-/// `LookupError` is declared in `std/builtins.hew`, but builtins.hew is
-/// loaded out-of-band (not via `module_graph`), so the user-enum walk in
-/// `lower_program` never sees it. Surface it through the same builtin-enum
-/// path as `Option` / `Result` so `Err(LookupError::NotFound)` match arms
-/// resolve via `machine_ctor_registry`.
-const SYNTHETIC_LOOKUP_ERROR_ITEM: ItemId = ItemId(u32::MAX - 1000);
-/// `SendError` is also declared in `std/builtins.hew` and likewise invisible
-/// to the user-enum walk. Surface it so `match e { SendError::Full
-/// => ... }` arms inside `Result<(), SendError>` matches resolve via
-/// `machine_ctor_registry`.
-const SYNTHETIC_SEND_ERROR_ITEM: ItemId = ItemId(u32::MAX - 1001);
-const SYNTHETIC_NODE_ERROR_ITEM: ItemId = ItemId(u32::MAX - 1010);
-/// `LinkError` is the `Err` variant of `Result<(), LinkError>` returned by
-/// `link()` in value position. Declared in `std/builtins.hew` and — like
-/// `SendError` — invisible to the user-enum walk in
-/// `lower_program` (builtins.hew is loaded out-of-band, not via `module_graph`).
-/// Surface it through the same builtin-enum path so an
-/// `Err(LinkError.NoContext)` match arm resolves via `machine_ctor_registry`.
-const SYNTHETIC_LINK_ERROR_ITEM: ItemId = ItemId(u32::MAX - 1004);
-/// Sentinel `ItemId` for the synthetic `HashMapIter<K, V>` record — the
-/// `for (k, v) in m` desugar target. Like `VecIter`, it is declared in
-/// `std/builtins.hew` but never emitted as a HIR `Record`/`TypeDecl` item, so
-/// `layout_mono` seeds its decl from `hashmap_iter_field_shape`.
-pub(crate) const SYNTHETIC_HASHMAP_ITER_ITEM: ItemId = ItemId(u32::MAX - 1006);
-const SYNTHETIC_CRASH_ACTION_ITEM: ItemId = ItemId(u32::MAX - 1007);
-const SYNTHETIC_CRASH_KIND_ITEM: ItemId = ItemId(u32::MAX - 1008);
 const BUILTINS_HEW_SOURCE: &str = include_str!("../../../std/builtins.hew");
-
-/// One compiler-owned cursor record admitted at the HIR layout boundary.
-///
-/// The typed builtin discriminator is the identity. Presentation names are
-/// derived from it and never participate in lookup, so a user declaration with
-/// the same leaf cannot enter the synthetic record namespace.
-pub(crate) struct SyntheticCursorLayoutSpec {
-    pub(crate) builtin: BuiltinType,
-    pub(crate) origin: ItemId,
-    pub(crate) type_params: &'static [&'static str],
-}
-
-pub(crate) const SYNTHETIC_CURSOR_LAYOUT_SPECS: &[SyntheticCursorLayoutSpec] =
-    &[SyntheticCursorLayoutSpec {
-        builtin: BuiltinType::HashMapIter,
-        origin: SYNTHETIC_HASHMAP_ITER_ITEM,
-        type_params: &["K", "V"],
-    }];
-
-/// Resolve the declaration and substituted field shape for one synthetic
-/// cursor instantiation. Every origin-site and post-monomorphisation layout
-/// registration consumes this catalog path.
-pub(crate) fn synthetic_cursor_layout(
-    builtin: BuiltinType,
-    type_args: &[ResolvedTy],
-) -> Option<(
-    &'static SyntheticCursorLayoutSpec,
-    Vec<(String, ResolvedTy)>,
-)> {
-    let spec = SYNTHETIC_CURSOR_LAYOUT_SPECS
-        .iter()
-        .find(|spec| spec.builtin == builtin)?;
-    let fields = match (builtin, type_args) {
-        (BuiltinType::HashMapIter, [key, value]) => hashmap_iter_field_shape(key, value),
-        _ => return None,
-    };
-    Some((spec, fields))
-}
-
-/// The single field-order/type authority for `HashMapIter<K, V>`, shared by the
-/// `std/builtins.hew` declaration, the for-in desugar's `StructInit`, and
-/// `layout_mono`'s synthetic-decl seeding so the three can never disagree. The
-/// `for (k, v) in m` desugar constructs the literal with exactly these fields in
-/// this order: parallel key/value snapshot `Vec`s plus the cursor index.
-pub(crate) fn hashmap_iter_field_shape(
-    key_ty: &ResolvedTy,
-    val_ty: &ResolvedTy,
-) -> Vec<(String, ResolvedTy)> {
-    vec![
-        ("ks".to_string(), LowerCtx::resolved_vec_ty(key_ty.clone())),
-        ("vs".to_string(), LowerCtx::resolved_vec_ty(val_ty.clone())),
-        ("idx".to_string(), ResolvedTy::I64),
-    ]
-}
 
 /// Synthetic-builtin sentinel `ItemId`s for the actor `link(target)` /
 /// `monitor(target)` builtins. These have no AST `fn` item, so
@@ -404,15 +317,10 @@ const SYNTHETIC_STREAM_TRY_SEND_LAYOUT_ITEM: ItemId = ItemId(u32::MAX / 2 - 14);
 // (two colliding ids silently overwrite each other's `fn_registry` row) — is
 // pinned by `synthetic_builtin_sentinel_ids_are_pairwise_distinct`.
 
-/// Description of a built-in tagged union for the HIR pre-pass that seeds
-/// the same registries user enums populate (`machine_ctor_registry`,
-/// `enum_variants_by_name`, `enum_type_params`, `enum_item_ids`). Variant
-/// payload type-parameter names index into `type_params`.
 #[derive(Clone, Copy)]
 pub(crate) struct BuiltinEnumSpec {
-    /// Exact declaration identity used by every semantic registry.
+    /// Canonical builtin type path used for constructor metadata.
     pub(crate) canonical_type_name: &'static str,
-    pub(crate) item_id: ItemId,
     pub(crate) type_params: &'static [&'static str],
     variants: BuiltinEnumVariants,
 }
@@ -497,19 +405,18 @@ const MONOMORPHIC_BUILTIN_ENUMS: &[hew_types::builtin_enums::BuiltinMonomorphicE
 const BUILTIN_ENUM_SPEC_COUNT: usize = 2 + MONOMORPHIC_BUILTIN_ENUMS.len();
 const EMPTY_BUILTIN_ENUM_SPEC: BuiltinEnumSpec = BuiltinEnumSpec {
     canonical_type_name: "",
-    item_id: ItemId(0),
     type_params: &[],
     variants: BuiltinEnumVariants::Generic(&[]),
 };
 /// HIR registration order is observable for duplicate bare variant names:
 /// later specs replace earlier entries in `machine_ctor_registry`.
-const MONOMORPHIC_BUILTIN_ENUM_HIR_ORDER: &[(&str, ItemId)] = &[
-    ("std.builtins.LookupError", SYNTHETIC_LOOKUP_ERROR_ITEM),
-    ("std.builtins.SendError", SYNTHETIC_SEND_ERROR_ITEM),
-    ("std.builtins.NodeError", SYNTHETIC_NODE_ERROR_ITEM),
-    ("std.builtins.LinkError", SYNTHETIC_LINK_ERROR_ITEM),
-    ("std.failure.CrashAction", SYNTHETIC_CRASH_ACTION_ITEM),
-    ("std.failure.CrashKind", SYNTHETIC_CRASH_KIND_ITEM),
+const MONOMORPHIC_BUILTIN_ENUM_HIR_ORDER: &[&str] = &[
+    "std.builtins.LookupError",
+    "std.builtins.SendError",
+    "std.builtins.NodeError",
+    "std.builtins.LinkError",
+    "std.failure.CrashAction",
+    "std.failure.CrashKind",
 ];
 
 const fn const_str_eq(left: &str, right: &str) -> bool {
@@ -546,7 +453,7 @@ const fn hir_order_entry_count(type_name: &str) -> usize {
     let mut count = 0;
     let mut index = 0;
     while index < MONOMORPHIC_BUILTIN_ENUM_HIR_ORDER.len() {
-        if const_str_eq(MONOMORPHIC_BUILTIN_ENUM_HIR_ORDER[index].0, type_name) {
+        if const_str_eq(MONOMORPHIC_BUILTIN_ENUM_HIR_ORDER[index], type_name) {
             count += 1;
         }
         index += 1;
@@ -557,7 +464,7 @@ const fn hir_order_entry_count(type_name: &str) -> usize {
 const fn derive_builtin_enum_specs() -> [BuiltinEnumSpec; BUILTIN_ENUM_SPEC_COUNT] {
     assert!(
         MONOMORPHIC_BUILTIN_ENUMS.len() == MONOMORPHIC_BUILTIN_ENUM_HIR_ORDER.len(),
-        "monomorphic builtin enum catalog and HIR item ids differ in length"
+        "monomorphic builtin enum catalog and HIR order differ in length"
     );
     let mut catalog_index = 0;
     while catalog_index < MONOMORPHIC_BUILTIN_ENUMS.len() {
@@ -571,7 +478,7 @@ const fn derive_builtin_enum_specs() -> [BuiltinEnumSpec; BUILTIN_ENUM_SPEC_COUN
     let mut specs = [EMPTY_BUILTIN_ENUM_SPEC; BUILTIN_ENUM_SPEC_COUNT];
     specs[0] = BuiltinEnumSpec {
         canonical_type_name: "Option",
-        item_id: SYNTHETIC_OPTION_ITEM,
+
         type_params: BuiltinType::Option.generic_enum().unwrap().type_params,
         variants: BuiltinEnumVariants::Generic(
             BuiltinType::Option.generic_enum().unwrap().variants,
@@ -579,7 +486,7 @@ const fn derive_builtin_enum_specs() -> [BuiltinEnumSpec; BUILTIN_ENUM_SPEC_COUN
     };
     specs[1] = BuiltinEnumSpec {
         canonical_type_name: "Result",
-        item_id: SYNTHETIC_RESULT_ITEM,
+
         type_params: BuiltinType::Result.generic_enum().unwrap().type_params,
         variants: BuiltinEnumVariants::Generic(
             BuiltinType::Result.generic_enum().unwrap().variants,
@@ -588,11 +495,10 @@ const fn derive_builtin_enum_specs() -> [BuiltinEnumSpec; BUILTIN_ENUM_SPEC_COUN
 
     let mut index = 0;
     while index < MONOMORPHIC_BUILTIN_ENUM_HIR_ORDER.len() {
-        let (canonical_type_name, item_id) = MONOMORPHIC_BUILTIN_ENUM_HIR_ORDER[index];
+        let canonical_type_name = MONOMORPHIC_BUILTIN_ENUM_HIR_ORDER[index];
         let catalog_entry = monomorphic_builtin_enum(canonical_type_name);
         specs[index + 2] = BuiltinEnumSpec {
             canonical_type_name: catalog_entry.canonical_name,
-            item_id,
             type_params: &[],
             variants: BuiltinEnumVariants::Monomorphic(catalog_entry.variants),
         };
@@ -687,9 +593,6 @@ impl LowerOutput {
     /// **Fatal diagnostic kinds** (fail-closed set):
     /// - [`HirDiagnosticKind::CheckerBoundaryViolation`] — a checker-authority
     ///   invariant was violated (e.g. a leaked inference variable).
-    /// - [`HirDiagnosticKind::RecordLayoutMissing`] — a generic record init
-    ///   site was accepted by the checker but its type-arg entry was absent,
-    ///   meaning the downstream `Named { args: [] }` shape would be wrong.
     ///
     /// - [`HirDiagnosticKind::TargetCoroutineUnsupported`] — the program uses
     ///   actors/tasks/coroutines on a target that does not support them.
@@ -713,8 +616,6 @@ impl LowerOutput {
     ///   `ResolvedTy::from_ty` boundary conversion (e.g. contained `Ty::Error`
     ///   or an unresolved inference variable); passing a corrupt monomorphisation
     ///   entry downstream produces an invalid MIR.
-    /// - [`HirDiagnosticKind::RecordLayoutTypeArgsViolation`] — same as above
-    ///   for the record-layout side-table.
     ///
     /// Callers that want to continue despite non-fatal diagnostics should
     /// check `.diagnostics` directly.  This method is the recommended
@@ -734,7 +635,6 @@ impl LowerOutput {
             matches!(
                 d.kind,
                 crate::HirDiagnosticKind::CheckerBoundaryViolation { .. }
-                    | crate::HirDiagnosticKind::RecordLayoutMissing { .. }
                     | crate::HirDiagnosticKind::ImportedBodyMissingPrivateHelper { .. }
                     | crate::HirDiagnosticKind::ImportedFreeFnBodyUnresolvedBareCall { .. }
                     | crate::HirDiagnosticKind::TargetCoroutineUnsupported { .. }
@@ -749,7 +649,6 @@ impl LowerOutput {
                     | crate::HirDiagnosticKind::VecSliceElementTypeUnsupported { .. }
                     | crate::HirDiagnosticKind::CloneNotYetSupported { .. }
                     | crate::HirDiagnosticKind::MonomorphisationCallTypeArgsViolation { .. }
-                    | crate::HirDiagnosticKind::RecordLayoutTypeArgsViolation { .. }
             )
         });
         if has_fatal {
@@ -795,17 +694,6 @@ struct ConstEntry {
     initializer: Spanned<Expr>,
     module_idx: u32,
 }
-///
-/// Populated in the type-decl / record pre-pass and consulted at
-/// `Expr::StructInit` lowering to (a) decide whether a record-init site
-/// needs a per-instantiation `RecordLayout` and (b) substitute the
-/// type-params with the concrete args from `record_init_type_args` to
-/// produce the layout's field shape.
-///
-/// Tuple-form records are admitted with `fields = vec![]` — their
-/// constructor is reached via `Expr::Call`, not `StructInit`, so they
-/// never hit the record-layout registry. The entry is kept for shape
-/// uniformity with the named-form path.
 #[derive(Debug)]
 struct RecordEntry {
     id: ItemId,
@@ -814,8 +702,7 @@ struct RecordEntry {
     type_params: Vec<hew_types::ParamHead>,
     /// Field shape as written in source — types still mention the
     /// declaration's type params verbatim (no substitution yet). The
-    /// record-layout registry walks these and substitutes per
-    /// instantiation.
+    /// marker-admission step inspects these source fields.
     fields: Vec<(String, ResolvedTy)>,
 }
 
@@ -840,22 +727,6 @@ struct ImplBodyPlan {
     /// rather than selected from source/import traversal.
     compiler_selected: HashSet<hew_types::DefId>,
     symbol_self_names: HashMap<*const hew_parser::ast::ImplDecl, String>,
-}
-
-#[must_use]
-pub fn lower_program(
-    program: &Program,
-    type_check_output: &TypeCheckOutput,
-    ctx: &ResolutionCtx,
-    target_arch: TargetArch,
-) -> LowerOutput {
-    lower_program_with_mono_cap(
-        program,
-        type_check_output,
-        ctx,
-        MONOMORPHISATION_REGISTRY_CAP,
-        target_arch,
-    )
 }
 
 /// Convenience helper that defaults to the host's target architecture.
@@ -1199,15 +1070,9 @@ struct LowerCtx {
     /// Checker-resolved type arguments for generic function calls that
     /// lack explicit type annotations. Keyed by the call expression span.
     ///
-    /// Consumed at `Expr::Call` lowering (G-1.a, producer-bridge wakeup):
-    /// every callsite whose callee is a generic top-level user fn
-    /// (non-empty `FnEntry.type_params`) is paired with the entry here
-    /// and inserted into `mono_registry`. A poisoned entry (failing the
-    /// `ResolvedTy::from_ty` boundary conversion) emits
-    /// `MonomorphisationCallTypeArgsViolation`; a generic callsite with
-    /// no entry at all is treated as the trivially-monomorphic case
-    /// (e.g. a builtin or runtime-symbol call) and skipped.
-    /// (LESSONS: checker-authority P0, end-to-end-before-layer-thickening P1)
+    /// Generic user calls preserve these arguments in `call_site_type_args`,
+    /// including abstract arguments inside templates. Missing or poisoned
+    /// checker facts are diagnosed before SIR requests concrete instances.
     call_type_args: HashMap<SpanKey, Vec<Ty>>,
     callable_value_specializations: HashMap<SpanKey, Vec<ResolvedTy>>,
     /// Checker-resolved assignment target classification keyed by the target
@@ -1249,16 +1114,6 @@ struct LowerCtx {
     /// the bare `W` field reaches MIR as an unresolvable nested user record
     /// and fails closed.
     actor_type_names: HashSet<String>,
-    /// Distinct concrete instantiations of generic top-level user fns,
-    /// accumulated as `Expr::Call` lowering walks the program. Drained
-    /// into `HirModule.monomorphisations` at the end of `lower_program`.
-    /// Cap is configurable via `lower_program_with_mono_cap` for
-    /// fail-closed-diagnostic tests.
-    mono_registry: MonoRegistry,
-    /// Tracks whether the `MonomorphisationCapExceeded` diagnostic has
-    /// already been emitted for this lowering invocation, to avoid
-    /// spamming one diagnostic per overflowing callsite.
-    mono_cap_diag_emitted: bool,
     /// Per-call-site recorded concrete type arguments. Populated by
     /// `record_call_site_type_args` whenever a `HirExprKind::Call` is
     /// produced for a generic top-level user-fn callee. Drained into
@@ -1266,17 +1121,14 @@ struct LowerCtx {
     ///
     /// Includes "still-abstract" entries (where the callee is generic
     /// and the call is itself inside a generic body, so the recorded
-    /// args contain the enclosing fn's type-parameter symbols). MIR
-    /// lowering substitutes those symbols via the per-monomorphisation
-    /// substitution map; the registry's closure-under-substitution pass
-    /// uses the same data to discover inner monomorphisations.
+    /// args contain the enclosing function's type-parameter binders). SIR
+    /// substitutes these when it requests the concrete callee instance.
     call_site_type_args: HashMap<SiteId, Vec<ResolvedTy>>,
     /// Pre-collected record/type-decl shape registry. Populated in the
     /// type-decl pre-pass before function bodies lower, so that
     /// `Expr::StructInit` lowering can answer "is this a generic user
-    /// record?" and look up its source field shape. Tuple-form records
-    /// land here with `fields = []`; they never trigger record-layout
-    /// emission (their constructor goes through `Expr::Call`).
+    /// record?" and keep the source field order and declaration ItemId.
+    /// Tuple-form records carry their positional fields on the declaration.
     record_registry: HashMap<String, RecordEntry>,
     /// Nominal type names appearing in the signature (params or return) of an
     /// `#[extern_symbol]` impl method, collected at impl lowering — the only
@@ -1311,44 +1163,7 @@ struct LowerCtx {
     /// root declaration as a colliding scope — the mixed file-import + package
     /// same-bare-name shape the actor-ask coupling depends on.
     cross_module_colliding_record_names: HashSet<String>,
-    /// Checker-resolved type arguments for generic record-init sites
-    /// (`R { ... }` against a `pub type R<T>` or `record R<T>`),
-    /// keyed by the struct-init expression span.
-    ///
-    /// Consumed at `Expr::StructInit` lowering: every init site whose
-    /// record has non-empty `type_params` is paired with the entry here
-    /// and inserted into `record_layout_registry`. A poisoned entry
-    /// (failing the `ResolvedTy::from_ty` boundary conversion) emits
-    /// `RecordLayoutTypeArgsViolation`; a generic init site with no
-    /// entry at all is skipped (the checker only records sites whose
-    /// args resolved fully concretely).
-    /// (LESSONS: `checker-authority` P0, `end-to-end-before-layer-thickening` P1)
-    record_init_type_args: HashMap<SpanKey, Vec<Ty>>,
-    /// Distinct user-record instantiations observed at `StructInit`
-    /// sites, accumulated as expression lowering walks the program.
-    /// Drained into `HirModule.record_layouts` at the end of
-    /// `lower_program`. Cap is configurable via
-    /// `lower_program_with_mono_cap` (shared with the fn registry).
-    record_layout_registry: RecordLayoutRegistry,
-    /// Tracks whether the `RecordLayoutCapExceeded` diagnostic has
-    /// already been emitted for this lowering invocation.
-    record_layout_cap_diag_emitted: bool,
-    /// Per-enum type-parameter names, keyed by enum type name. Populated
-    /// during the type-decl second pass alongside `enum_variants_by_name`.
-    /// Consumed by the enum-layout discovery pass to know which names in a
-    /// variant's field types are type-parameter symbols vs. concrete named
-    /// types, so `substitute_type_params` can substitute correctly.
     enum_type_params: HashMap<String, Vec<hew_types::ParamHead>>,
-    /// Per-enum `ItemId`, keyed by enum type name. Populated alongside
-    /// `enum_type_params` so the `EnumMonoKey.origin` field can be set to
-    /// the HIR-allocated `ItemId` of the originating enum declaration rather
-    /// than a synthetic value.
-    enum_item_ids: HashMap<String, ItemId>,
-    /// Distinct user-enum instantiations observed at enum-ctor sites and
-    /// match scrutinees, accumulated during HIR lowering. Drained into
-    /// `HirModule.enum_layouts` at the end of `lower_program`. Cap is
-    /// shared with the fn and record registries.
-    enum_layout_registry: EnumLayoutRegistry,
     /// Checker-authoritative mapping from qualified function name to the
     /// intrinsic catalog key declared via `#[intrinsic("key")]`. Functions
     /// present here must be validated against `stdlib_catalog` and must have
@@ -1429,10 +1244,6 @@ struct LowerCtx {
     /// `machine_ctor_registry`'s `(type_name, variant_idx)` indexes directly
     /// into it.
     enum_variants_by_name: HashMap<String, Vec<HirVariant>>,
-    /// Names of every enum declared `indirect`, keyed exactly as
-    /// `enum_variants_by_name` is. A generic instantiation of one keeps the
-    /// heap shape: its variables and self-referential payloads are pointers.
-    indirect_enum_names: HashSet<String>,
     /// Structural member types per named type, in declaration order: record
     /// fields, plus every enum variant's payload types. Populated alongside
     /// `type_classes` in the type-decl pre-pass, so it is complete before any

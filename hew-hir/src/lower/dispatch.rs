@@ -486,9 +486,7 @@ impl LowerCtx {
         if let Ok(Some((method, type_args))) = &selected {
             if let Some(symbol) = self.registered_impl_method_symbol(*method) {
                 if let Some(call) = self.build_user_fn_call(&symbol, vec![value], span.clone()) {
-                    self.register_display_impl_monomorphisation(
-                        &symbol, type_args, &span, call.site,
-                    );
+                    self.record_display_call_type_args(&symbol, type_args, &span, call.site);
                     return call;
                 }
             }
@@ -506,12 +504,12 @@ impl LowerCtx {
 
     /// Interpolating a value whose `impl Display` block is generic
     /// (`impl<E> Display for ActorError<E>`) needs the same
-    /// per-instantiation monomorphisation an ordinary `value.fmt()` call gets.
+    /// checked type arguments an ordinary `value.fmt()` call gets.
     /// The f-string spine synthesises its own call site, so no checker
     /// `call_type_args` entry exists for it; the concrete type's own arguments
     /// are the substitution, taken positionally against the impl block's
     /// declared parameters.
-    pub(super) fn register_display_impl_monomorphisation(
+    pub(super) fn record_display_call_type_args(
         &mut self,
         symbol: &str,
         type_args: &[ResolvedTy],
@@ -524,8 +522,6 @@ impl LowerCtx {
         if entry.linkage.is_some() || entry.type_params.is_empty() {
             return;
         }
-        let origin = entry.id;
-        let builtin_family = entry.builtin_family;
         if entry.type_params.len() != type_args.len() {
             self.diagnostics.push(HirDiagnostic::new(
                 HirDiagnosticKind::CheckerBoundaryViolation {
@@ -542,31 +538,7 @@ impl LowerCtx {
             return;
         }
         let type_args = type_args.to_vec();
-        self.call_site_type_args
-            .insert(call_site, type_args.clone());
-        if builtin_family.is_some() {
-            return;
-        }
-        if type_args
-            .iter()
-            .any(super::substitution::contains_abstract_symbol)
-        {
-            return;
-        }
-        let Some(declaration) = self
-            .impl_method_body_symbols
-            .iter()
-            .chain(self.impl_body_plan.symbols.iter())
-            .find_map(|(declaration, emitted)| (emitted == symbol).then_some(*declaration))
-        else {
-            return;
-        };
-        let _ = self.mono_registry.insert(MonoKey {
-            origin,
-            declaration,
-            linker_symbol: symbol.to_string(),
-            type_args,
-        });
+        self.call_site_type_args.insert(call_site, type_args);
     }
 
     /// #1565: route `println` / `print` / `to_string` of a value whose type

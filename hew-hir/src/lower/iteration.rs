@@ -237,13 +237,7 @@ impl LowerCtx {
         let (elem_ty, next_call) = self.for_iter_next_call_for_ty(&ret_ty, span)?;
         let call = self.make_direct_method_call(callee.clone(), iterable, &ret_ty, span.clone());
         if let HirExprKind::Call { target, .. } = &call.kind {
-            self.record_var_self_direct_monomorphisation(
-                &callee,
-                target,
-                &receiver_ty,
-                span,
-                call.site,
-            );
+            self.record_method_call_type_args(&callee, target, &receiver_ty, span, call.site);
         }
         Some((call, ret_ty, elem_ty, next_call))
     }
@@ -324,14 +318,8 @@ impl LowerCtx {
         val_ty: &ResolvedTy,
         span: Span,
     ) -> (HirExprKind, ResolvedTy) {
-        let elem_ty = ResolvedTy::Tuple(vec![key_ty.clone(), val_ty.clone()]);
         let iter_ty = Self::resolved_hashmap_iter_ty(key_ty.clone(), val_ty.clone());
-        self.register_synthetic_cursor_layout(
-            BuiltinType::HashMapIter,
-            &[key_ty.clone(), val_ty.clone()],
-            &span,
-        );
-        self.register_option_layout(&elem_ty, &span, "HashMapIter::next");
+
         if Self::for_in_iterable_is_place(&receiver.0) {
             // Place source: re-read directly per projection (single owner, drop-safe).
             let init = self.make_hashmap_iter_init(
@@ -583,14 +571,6 @@ impl LowerCtx {
         let iterable_span = &iterable.1;
         let elem_ty = ResolvedTy::Tuple(vec![key_ty.clone(), val_ty.clone()]);
         let iter_ty = Self::resolved_hashmap_iter_ty(key_ty.clone(), val_ty.clone());
-        // Register the concrete cursor layout and the `Option<(K, V)>` next
-        // payload layout so MIR's field-order + value-class lookups resolve.
-        self.register_synthetic_cursor_layout(
-            BuiltinType::HashMapIter,
-            &[key_ty.clone(), val_ty.clone()],
-            iterable_span,
-        );
-        self.register_option_layout(&elem_ty, iterable_span, "HashMapIter::next");
         // `keys()` and `values()` are taken from the single-eval `src` temp
         // (NOT a re-lowered clone of the iterable AST — that would evaluate a
         // side-effectful source twice). Each call is spanned at its own
@@ -700,7 +680,6 @@ impl LowerCtx {
         from_back: bool,
         span: Span,
     ) -> (HirExprKind, ResolvedTy) {
-        self.register_option_layout(elem_ty, &span, "VecIter::next");
         let option_ty = Self::resolved_option_ty(elem_ty.clone());
         let iter_ty = Self::resolved_vec_iter_ty(elem_ty.clone());
 
@@ -1544,7 +1523,7 @@ impl LowerCtx {
             }
             ForIterNextCall::VarSelf => {
                 let option_ty = Self::resolved_option_ty(elem_ty.clone());
-                self.register_option_layout(&elem_ty, &iterable.1, "generic Iterator::next");
+
                 let target_label = match &iter_ty {
                     ResolvedTy::Named {
                         head:
@@ -1602,7 +1581,7 @@ impl LowerCtx {
                     // so a generic iterator's `next` is otherwise reported as
                     // missing its checker-resolved type arguments.
                     if let HirExprKind::VarSelfMethodCall { call_target, .. } = &next.kind {
-                        self.record_var_self_direct_monomorphisation(
+                        self.record_method_call_type_args(
                             &target_label,
                             call_target,
                             &iter_ty,
@@ -1636,7 +1615,7 @@ impl LowerCtx {
                     iterable.1.clone(),
                 );
                 let option_ty = Self::resolved_option_ty(elem_ty.clone());
-                self.register_option_layout(&elem_ty, &iterable.1, "Stream::recv (for loop)");
+
                 self.make_direct_method_call(
                     "hew_stream_next_layout".to_string(),
                     stream,
@@ -1657,7 +1636,7 @@ impl LowerCtx {
                     iterable.1.clone(),
                 );
                 let option_ty = Self::resolved_option_ty(elem_ty.clone());
-                self.register_option_layout(&elem_ty, &iterable.1, "Generator::next");
+
                 self.make_expr(
                     HirExprKind::GeneratorNext {
                         receiver: Box::new(receiver),

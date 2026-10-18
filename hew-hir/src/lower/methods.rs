@@ -106,7 +106,7 @@ impl LowerCtx {
                         ResolvedTy::Unit,
                     );
                 };
-                self.try_register_enum_instantiation_ty(&ty, &span);
+
                 let message = HirExpr {
                     node: self.ids.node(),
                     site: self.ids.site(),
@@ -610,22 +610,9 @@ impl LowerCtx {
                 ..
             })
         );
-        // Look up the checker's `resolved_calls` verdict unconditionally so any
-        // boundary-type conversion failure (TyPattern -> ResolvedTy mapping
-        // bugs, `expr_types` side-table inconsistency, missing impl registration)
-        // surfaces as a real `CheckerBoundaryViolation` diagnostic at the
-        // boundary — not deferred until a runtime user hits the regression.
-        // When a resolver verdict survives boundary conversion, we emit
-        // `HirExprKind::ResolvedImplCall` carrying `MethodTarget.symbol_name`
-        // verbatim; MIR/codegen consume that symbol via `Terminator::Call`.
-        //
-        // Precedence: when both `resolved_calls` and `method_call_rewrites`
-        // have an entry for the same key (the current dual-emit overlap for
-        // HashMap/HashSet during the C2→C3 transition), `resolved_calls`
-        // wins — it carries the structured `(ImplId, MethodTarget)` verdict.
-        // The legacy `method_call_rewrites` entries for that overlap are
-        // removed in the C3 commit that retires the per-V allowlists, so the
-        // precedence is exercised by construction once dual-emit retires.
+        // Runtime rewrites retain their typed ABI contract. Other checker-selected
+        // impl calls must survive result-type conversion before HIR emits them;
+        // an inconsistent verdict cannot choose a different dispatch path.
         if !runtime_rewrite_selected {
             if let Some(resolved) = self.resolved_calls.get(&key).cloned() {
                 // The checker's `expr_types` is the authoritative source for
@@ -664,65 +651,38 @@ impl LowerCtx {
                         None
                     }
                 };
-                #[allow(
-                    clippy::items_after_statements,
-                    reason = "the activation gate lives next to the guard it controls; \
-                          promoting to a module-level const would scatter the \
-                          deferral rationale across the file"
-                )]
-                const RESOLVED_IMPL_CALL_ACTIVATED: bool = true;
-                if RESOLVED_IMPL_CALL_ACTIVATED {
-                    // Only emit when the resolver verdict survived boundary
-                    // conversion; otherwise fall through to the legacy
-                    // `method_call_rewrites` arm below.
-                    if let Some(ret_ty) = ret_ty {
-                        if !self.ensure_executable_target(
-                            &resolved.target,
-                            "resolved impl call",
-                            &span,
-                        ) {
-                            return (
-                                HirExprKind::Unsupported(
-                                    "resolved impl call has no checker target".to_string(),
-                                ),
-                                ret_ty,
-                            );
-                        }
-                        // Register any enum instantiation that surfaces as the
-                        // return type (e.g. `HashMap::get -> Option<V>`,
-                        // `HashMap::remove -> Option<V>`). Without this the
-                        // module-level `enum_layouts` table lacks the matching
-                        // key for `Named { name: "Option", .. }`, MIR records
-                        // `ValueClass::Unknown → Strategy::UnknownBlocked` at
-                        // the call site, and the totality gate fires
-                        // (`DecisionMapTotal { offending_sites: [...] }`).
-                        // This mirrors the legacy `RewriteToFunction` arm
-                        // below — the new resolver-authority path inherits
-                        // the same boundary obligation.
-                        self.try_register_enum_instantiation(&span);
-                        let lowered_receiver = self.lower_expr(receiver, IntentKind::Read);
-                        let lowered_args = self.lower_positional_call_args(args, &span);
-                        return (
-                            HirExprKind::ResolvedImplCall {
-                                receiver: Box::new(lowered_receiver),
-                                target: resolved.target,
-                                impl_id: resolved.impl_id,
-                                method_name: resolved.method_name,
-                                target_symbol: resolved.method_target.symbol_name,
-                                target_family: resolved.method_target.family,
-                                type_args: resolved.type_args,
-                                args: lowered_args,
-                                ret_ty: ret_ty.clone(),
-                            },
-                            ret_ty,
-                        );
-                    }
+                let Some(ret_ty) = ret_ty else {
+                    return (
+                        HirExprKind::Unsupported(
+                            "resolved impl call has no checked result type".to_string(),
+                        ),
+                        ResolvedTy::Unit,
+                    );
+                };
+                if !self.ensure_executable_target(&resolved.target, "resolved impl call", &span) {
+                    return (
+                        HirExprKind::Unsupported(
+                            "resolved impl call has no checker target".to_string(),
+                        ),
+                        ret_ty,
+                    );
                 }
-                // Dormant path: the lookup ran (and diagnostics fired if the
-                // boundary failed), but emission is deferred. Fall through to
-                // the legacy `method_call_rewrites` branch below so live sites
-                // keep their current dispatch behaviour.
-                let _ = resolved;
+                let lowered_receiver = self.lower_expr(receiver, IntentKind::Read);
+                let lowered_args = self.lower_positional_call_args(args, &span);
+                return (
+                    HirExprKind::ResolvedImplCall {
+                        receiver: Box::new(lowered_receiver),
+                        target: resolved.target,
+                        impl_id: resolved.impl_id,
+                        method_name: resolved.method_name,
+                        target_symbol: resolved.method_target.symbol_name,
+                        target_family: resolved.method_target.family,
+                        type_args: resolved.type_args,
+                        args: lowered_args,
+                        ret_ty: ret_ty.clone(),
+                    },
+                    ret_ty,
+                );
             }
         }
         match rewrite {
@@ -841,7 +801,6 @@ impl LowerCtx {
                 if descriptor.as_ref().is_some_and(|descriptor| {
                     descriptor.family() == hew_types::RuntimeCallFamily::StringGetRange
                 }) {
-                    self.try_register_enum_instantiation(&span);
                     let result_ty = self
                         .checker_expr_ty(&span, "string range get")
                         .unwrap_or(ResolvedTy::Unit);
@@ -886,21 +845,7 @@ impl LowerCtx {
                         ResolvedTy::Unit,
                     );
                 }
-                // S5: a method-call rewrite that lands on a builtin-generic
-                // enum result type (e.g. `Result<(), SendError>` for
-                // a pipe send) needs the per-instantiation enum
-                // layout registered here. Unlike struct-ctor/variant-ctor/
-                // match-scrutinee paths — which already invoke
-                // `try_register_enum_instantiation` — the rewrite arm builds
-                // a synthetic `HirExprKind::Call` whose return type is the
-                // checker-recorded `Result<...>`. Without explicit
-                // registration MIR sees the `Named { name: "Result", .. }`
-                // type but `module.enum_layouts` lacks the matching key,
-                // and `machine_layout_names` therefore omits "Result" →
-                // `UnknownType { name: "Result" }` plus
-                // `ValueClass::Unknown → Strategy::UnknownBlocked` at the
-                // MIR boundary.
-                self.try_register_enum_instantiation(&span);
+
                 // Read the actual return type from the checker's expr_types table.
                 // Unit-returning methods (e.g. channel send/recv) record Unit there,
                 // so the fallback is safe and this path remains correct for all callers.
@@ -958,7 +903,7 @@ impl LowerCtx {
                 if requires_mutable_receiver {
                     let lowered_receiver = self.lower_expr(receiver, IntentKind::Consume);
                     let receiver_ty = lowered_receiver.ty.clone();
-                    self.record_var_self_direct_monomorphisation(
+                    self.record_method_call_type_args(
                         &c_symbol,
                         &target,
                         &receiver_ty,
@@ -1007,18 +952,18 @@ impl LowerCtx {
                 // needs the impl-method monomorphisation registered so MIR has a
                 // concrete body to dispatch to. The var-self (mutable-receiver)
                 // branch above already does this via
-                // `record_var_self_direct_monomorphisation`; the by-value branch
+                // `record_method_call_type_args`; the by-value branch
                 // omitted it, so the call lowered to a `Call` whose mangled
                 // callee (`Pair::first$$i64`) had no MIR body and failed closed
                 // at the MIR boundary ("resolved callee has no MIR body").
-                // `record_var_self_direct_monomorphisation` is a no-op for
+                // `record_method_call_type_args` is a no-op for
                 // non-generic / non-named-receiver / builtin callees, so this is
                 // safe to call unconditionally for every RewriteToFunction by-value
                 // method dispatch: it derives the concrete type-args from the
                 // receiver type's args, registers the monomorphisation, and seeds
                 // `call_site_type_args[site]` so MIR's `Call` arm mangles to the
                 // same per-instantiation symbol.
-                self.record_var_self_direct_monomorphisation(
+                self.record_method_call_type_args(
                     &c_symbol,
                     &target,
                     &lowered_receiver.ty,
@@ -1204,7 +1149,7 @@ impl LowerCtx {
             Some(MethodCallRewrite::GeneratorNext { yield_ty }) => {
                 // The result is `Option<yield_ty>`; register its layout so MIR /
                 // codegen can size the enum slot the unbox writes into.
-                self.register_option_layout(&yield_ty, &span, "Generator::next");
+
                 let option_ty = Self::resolved_option_ty(yield_ty.clone());
                 // The receiver is borrowed (Read): the coro `.next()` drive
                 // resumes the generator but does not consume the handle — it
@@ -1327,8 +1272,8 @@ impl LowerCtx {
                                 }
                                 _ => c_symbol,
                             };
-                            self.try_register_enum_instantiation(&span);
-                            self.record_var_self_direct_monomorphisation(
+
+                            self.record_method_call_type_args(
                                 &c_symbol,
                                 &concrete_target,
                                 // receiver type will be the concrete self type

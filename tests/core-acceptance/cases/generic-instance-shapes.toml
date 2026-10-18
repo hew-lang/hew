@@ -1,0 +1,10 @@
+[[case]]
+id = "generic-instance-shapes"
+intent = "Transitive generic calls specialize nested record and enum payloads at distinct types, preserving independent owned strings and finite indirect recursion."
+source = "cases/generic-instance-shapes.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "RETAINED\nRETAINED\n42\nRECURSIVE\nRECURSIVE\n"
+exit = 0

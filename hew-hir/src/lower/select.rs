@@ -71,7 +71,7 @@ impl LowerCtx {
             || result_ty.clone(),
             |module| self.qualify_colliding_module_record_ty(&result_ty, module),
         );
-        self.try_register_enum_instantiation_ty(&result_ty, span);
+
         Some(result_ty)
     }
 

@@ -970,21 +970,9 @@ fn example() -> string {
         "Wrapper",
         vec![hew_types::ResolvedTy::I64],
     )];
-    let display_mono = output
+    assert!(output
         .module
-        .monomorphisations
-        .iter()
-        .find(|mono| mono.key.linker_symbol == "display")
-        .expect("expected canonical `display<Wrapper<i64>>` monomorphisation");
-    assert_eq!(display_mono.key.type_args, expected_args);
-    assert_eq!(display_mono.mangled_name, "display$$Wrapper$li64$g");
-    assert!(
-        output.module.monomorphisations.iter().all(|mono| output
-            .module
-            .defs
-            .path(mono.key.declaration)
-            != "Wrapper::show"),
-        "static dispatch must retain the checker implementation declaration rather than a leaf-derived `Wrapper::show` identity: {:#?}",
-        output.module.monomorphisations
-    );
+        .call_site_type_args
+        .values()
+        .any(|args| args == &expected_args));
 }

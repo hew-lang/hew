@@ -374,92 +374,7 @@ pub enum HirDiagnosticKind {
         /// Human-readable description of the `BoundaryError`.
         reason: String,
     },
-    /// HIR-lowering produced more distinct generic-function
-    /// monomorphisations than the configured cap admits. Almost always
-    /// the symptom of polymorphic recursion that — once G-1.b's
-    /// substitution lands — would expand without bound. G-1.a surfaces
-    /// the cap at the registry seam so downstream stages don't OOM.
-    MonomorphisationCapExceeded {
-        /// The configured cap (typically
-        /// `MONOMORPHISATION_REGISTRY_CAP`).
-        cap: usize,
-    },
-    /// A generic record-init site's recorded `record_init_type_args`
-    /// failed the `ResolvedTy::from_ty` boundary conversion. Same shape
-    /// as `MonomorphisationCallTypeArgsViolation` but for the record-
-    /// layout registry. Fail-closed per `checker-authority` (P0).
-    RecordLayoutTypeArgsViolation {
-        /// Record name at the offending site.
-        record: String,
-        /// Human-readable description of the `BoundaryError`.
-        reason: String,
-    },
-    /// HIR lowering produced more distinct record-layout
-    /// monomorphisations than the configured cap admits. Almost always
-    /// the symptom of polymorphic-recursive record types whose layout
-    /// expansion would not converge (each layer introduces a fresh
-    /// arg). Surfaced at the registry seam so codegen never sees an
-    /// unbounded layout set.
-    RecordLayoutCapExceeded {
-        /// The configured cap (typically
-        /// `MONOMORPHISATION_REGISTRY_CAP`, shared with the fn
-        /// registry).
-        cap: usize,
-    },
-    /// A generic record init site has no `record_init_type_args` entry
-    /// despite the checker having accepted the expression (the span
-    /// appears in `expr_types`).  This signals a missed re-record path
-    /// in the checker: the type arguments exist at the source level but
-    /// were never written to the side-table.  Fail-closed:
-    /// `unwrap_or_default()` on the missing layout would silently
-    /// produce `Named { args: [] }` — an under-instantiated shape that
-    /// downstream MIR/codegen would treat as monomorphic.
-    RecordLayoutMissing {
-        /// The user-declared record name at the offending init site.
-        record: String,
-    },
-    /// A generic record's substituted field shape mentions the same
-    /// origin record with *different* concrete type arguments — e.g.
-    /// `pub type Node<T> { next: Box<Node<int>> }` instantiated at
-    /// `T = string` would force a `Node<int>` layout, which in turn
-    /// would force a `Node<int>` re-expansion, never converging unless
-    /// `int = string`. Recursive *same-arg* self-reference is fine
-    /// (it's an ordinary recursive type and converges to one layout).
-    /// Deferred to v0.6.
-    RecursiveGenericTypeUnsupported {
-        /// Origin record name.
-        name: String,
-    },
-    /// HIR lowering produced more distinct enum-layout monomorphisations
-    /// than the configured cap admits. Almost always the symptom of
-    /// polymorphic-recursive generic enum types whose layout expansion
-    /// would not converge (each layer introduces a fresh arg). Surfaced
-    /// at the registry seam so codegen never sees an unbounded layout set.
-    EnumLayoutCapExceeded {
-        /// The configured cap (typically `MONOMORPHISATION_REGISTRY_CAP`,
-        /// shared with the fn and record registries).
-        cap: usize,
-    },
-    /// The dedicated layout-mono pass
-    /// ([`crate::layout_mono::run_layout_mono_pass`]) observed a generic
-    /// record or enum type whose substituted type arguments still carry a
-    /// residual type-parameter symbol after function-mono completed. This is
-    /// the record/enum analogue of
-    /// [`Self::UnresolvedMachineTypeParamPostMono`]: once the function-mono
-    /// closure has finished, every record/enum instantiation reachable from a
-    /// monomorphic entry point must be fully concrete. A residual abstract
-    /// symbol is a function-mono defect (the closure failed to reach this site
-    /// with a concrete substitution map) or a checker-authority gap. The
-    /// layout-mono pass fails closed rather than registering an
-    /// under-instantiated layout that would leak `T` to MIR/codegen.
-    UnresolvedLayoutTypeParamPostMono {
-        /// Origin record/enum name as written in source.
-        type_name: String,
-        /// Human-readable rendering of the residual abstract symbol (e.g.
-        /// `"T"`). Kept as a `String` so the diagnostic schema does not leak
-        /// the full `ResolvedTy` shape; the surrounding span pins the site.
-        residual_var: String,
-    },
+
     /// A function declared with `#[intrinsic("key")]` names an intrinsic
     /// key that does not appear in `stdlib_catalog`. Fail-closed: the
     /// compiler never silently drops a typed declaration — if the key is
@@ -680,11 +595,8 @@ impl HirDiagnosticKind {
     pub const fn channel(&self) -> DiagChannel {
         match self {
             Self::CheckerBoundaryViolation { .. }
-            | Self::MonomorphisationCallTypeArgsViolation { .. }
-            | Self::RecordLayoutTypeArgsViolation { .. } => DiagChannel::Internal,
-            Self::NotYetImplemented { .. }
-            | Self::MonomorphisationCapExceeded { .. }
-            | Self::RecordLayoutCapExceeded { .. } => DiagChannel::Limitation,
+            | Self::MonomorphisationCallTypeArgsViolation { .. } => DiagChannel::Internal,
+            Self::NotYetImplemented { .. } => DiagChannel::Limitation,
             _ => DiagChannel::User,
         }
     }

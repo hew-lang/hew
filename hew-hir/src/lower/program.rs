@@ -3,29 +3,23 @@
 use super::*;
 use hew_parser::ast::Ident;
 
-/// Variant of [`lower_program`] with an explicit monomorphisation-registry
-/// cap. Intended for tests that exercise the
-/// `MonomorphisationCapExceeded` diagnostic with a small fixture; the
-/// production entry point [`lower_program`] always uses
-/// `MONOMORPHISATION_REGISTRY_CAP`.
 #[must_use]
 #[allow(
     clippy::too_many_lines,
     reason = "three structured passes (fn pre-pass, record/type-decl pre-pass, \
               source-order emit) read more clearly here than across helpers"
 )]
-pub fn lower_program_with_mono_cap(
+pub fn lower_program(
     program: &Program,
     type_check_output: &TypeCheckOutput,
     _ctx: &ResolutionCtx,
-    mono_cap: usize,
     target_arch: TargetArch,
 ) -> LowerOutput {
     let program = type_check_output
         .normalized_program
         .as_ref()
         .map_or(program, |normalized| &normalized.program);
-    let mut ctx = LowerCtx::new(type_check_output, mono_cap, target_arch);
+    let mut ctx = LowerCtx::new(type_check_output, target_arch);
     let entry_exit_plan = type_check_output.entry_exit_plan.clone();
     let compiling_prelude_manifest = program.module_graph.as_ref().is_some_and(|graph| {
         graph
@@ -1248,29 +1242,12 @@ pub fn lower_program_with_mono_cap(
         }
     }
 
-    // Seed `enum_variants_by_name`, `enum_type_params`, and `enum_item_ids`
-    // for the built-in tagged unions. These mirror what the type-decl second
-    // pass below populates for user enums; the variant payload types reference
-    // the generic type-parameter names (e.g. `Named { name: "T", args: [] }`)
-    // so `substitute_type_params` in `try_register_enum_instantiation`
-    // produces correctly substituted per-instantiation layouts that flow into
-    // MIR via `module.enum_layouts`.
     for spec in BUILTIN_ENUM_SPECS {
         let variants = builtin_enum_hir_variants(spec);
         ctx.enum_variants_by_name
             .insert(spec.canonical_type_name.to_string(), variants);
         ctx.enum_type_params
             .insert(spec.canonical_type_name.to_string(), spec.parameter_heads());
-        ctx.enum_item_ids
-            .insert(spec.canonical_type_name.to_string(), spec.item_id);
-        // Tag-only / monomorphic builtin enums (e.g. `LookupError`) need a
-        // `type_classes` registration so MIR `push_unknown_type_diagnostics`
-        // does not flag them, and so `ValueClass::of_ty` resolves them as
-        // `BitCopy` (no payload → no drop work). Generic builtin enums
-        // (`Option`, `Result`) are skipped here: their per-instantiation
-        // origin name is added to `machine_layout_names` via the
-        // `enum_layouts.iter().map(origin_name)` chain in `hew-mir/src/lower.rs`,
-        // and their `ValueClass` is computed on the substituted variants.
         if spec.type_params.is_empty() {
             ctx.type_classes.insert(
                 spec.canonical_type_name.to_string(),
@@ -1381,24 +1358,11 @@ pub fn lower_program_with_mono_cap(
                 let enum_name = hir_decl.qualified_name(&ctx.defs);
                 ctx.enum_variants_by_name
                     .insert(enum_name.clone(), hir_decl.variants.clone());
-                if hir_decl.is_indirect {
-                    ctx.indirect_enum_names.insert(enum_name);
-                }
             }
-            // Snapshot type-params and ItemId for the enum-layout discovery
-            // pass (slice 2). Needed to substitute variant payload types and
-            // to build EnumMonoKey.origin. Stored even for non-generic enums
-            // (empty type_params) so discovery can safely skip them. ENUMS
-            // only: a struct sharing a prelude generic enum's name (e.g. a
-            // user `type Result { handle: i64 }`) must not overwrite the
-            // prelude's `enum_type_params` entry, or every later
-            // `try_register_enum_instantiation` for that enum silently
-            // no-ops and codegen-front fails with registration-mismatch.
             if decl.kind == TypeDeclKind::Enum {
                 let enum_name = hir_decl.qualified_name(&ctx.defs);
                 ctx.enum_type_params
                     .insert(enum_name.clone(), hir_decl.type_params.clone());
-                ctx.enum_item_ids.insert(enum_name, hir_decl.id);
             }
             type_decl_cache.insert(decl as *const _, hir_decl);
         }
@@ -1448,13 +1412,9 @@ pub fn lower_program_with_mono_cap(
                             if hir_decl.kind == HirTypeDeclKind::Enum {
                                 ctx.enum_variants_by_name
                                     .insert(canonical_name.clone(), hir_decl.variants.clone());
-                                if hir_decl.is_indirect {
-                                    ctx.indirect_enum_names.insert(canonical_name.clone());
-                                }
                             }
                             ctx.enum_type_params
                                 .insert(canonical_name.clone(), hir_decl.type_params.clone());
-                            ctx.enum_item_ids.insert(canonical_name, hir_decl.id);
                         }
                         Item::Machine(machine) if machine.visibility.is_pub() => {
                             ctx.register_machine_ctor_variant_metadata(
@@ -1489,28 +1449,6 @@ pub fn lower_program_with_mono_cap(
         }
     }
 
-    // §4b — Imported-module type-decl + machine pre-pass.
-    //
-    // Mirror the root second pass above for `program.module_graph` non-root
-    // modules so cross-module enum and machine variant descriptors are
-    // available before any function body in either the root or an imported
-    // module is lowered. Without this, `lookup_variant_ctor` (which consults
-    // `enum_variants_by_name`) misses for imported enum tuple/struct variants
-    // and for imported machine struct-states, and struct-init lowering falls
-    // through to the regular-record path which then fails at MIR.
-    //
-    // For imported enum TypeDecls: lower once via `lower_type_decl`, cache
-    // the result so the fourth-pass HirItem-emit walk reuses it (avoiding
-    // double lowering and the resulting `ItemId` mismatch between the id
-    // seeded into `enum_item_ids` and the id stamped on the emitted
-    // `HirItem::TypeDecl`).
-    //
-    // For imported machines: synthesise `HirVariant` descriptors directly
-    // from the AST state + event lists (machines have no `HirTypeDecl`),
-    // seeding `enum_variants_by_name` under both the machine name (states)
-    // and the synthesised `{Name}Event` companion (events). The checker's
-    // `register_machine_decl` produces the same two `TypeDef` entries; this
-    // is the HIR-side symmetric producer.
     if let Some(ref mg) = program.module_graph {
         for mod_id in &mg.topo_order {
             if *mod_id == mg.root || file_import_modules.contains(mod_id) {
@@ -1575,25 +1513,12 @@ pub fn lower_program_with_mono_cap(
                                     hir_decl.variants.clone(),
                                 );
                             }
-                            // Enum-layout discovery registries are seeded for
-                            // ENUMS only, mirroring the root-module pre-pass
-                            // above. An imported STRUCT must not insert under
-                            // its bare name: a record sharing a prelude generic
-                            // enum's name (e.g. sqlite's `type Result`) would
-                            // overwrite `enum_type_params["Result"]` with an
-                            // empty param list, silently turning every later
-                            // `try_register_enum_instantiation` for that enum
-                            // into a no-op (the ask-site `Result<R, ActorError>`
-                            // layout then never registers and codegen-front
-                            // fails closed with registration-mismatch).
+                            // Pattern lowering needs enum parameters under the
+                            // canonical owner, independently of record declarations.
                             if decl.kind == TypeDeclKind::Enum {
                                 ctx.enum_type_params.insert(
                                     format!("{source_module}.{}", hir_decl.name),
                                     hir_decl.type_params.clone(),
-                                );
-                                ctx.enum_item_ids.insert(
-                                    format!("{source_module}.{}", hir_decl.name),
-                                    hir_decl.id,
                                 );
                             }
                             type_decl_cache.insert(decl as *const _, hir_decl);
@@ -1880,7 +1805,7 @@ pub fn lower_program_with_mono_cap(
                     .insert(canonical_name.clone(), decl.variants.clone());
                 ctx.enum_type_params
                     .insert(canonical_name.clone(), decl.type_params.clone());
-                ctx.enum_item_ids.insert(canonical_name.clone(), decl.id);
+
                 for (index, variant) in decl.variants.iter().enumerate() {
                     ctx.machine_ctor_registry.insert(
                         format!("{canonical_name}::{}", variant.name),
@@ -2158,11 +2083,8 @@ pub fn lower_program_with_mono_cap(
     // keyed by the same mangled name registered in the pre-pass above.
     //
     // Pub TypeDecls are emitted here for the same reason: imported stdlib
-    // record types must appear as `HirItem::TypeDecl` so that `hew-mir`'s layout
-    // pass (which walks `module.items`) can populate `record_field_orders` and
-    // emit a `RecordLayout`. Without this, field accesses like `info.kind` in
-    // `#[on(crash)]` bodies fail at MIR time because the payload record layout
-    // is absent from `record_field_orders`.
+    // record types must appear as `HirItem::TypeDecl` so SIR can derive exact
+    // semantic shapes for demanded values, including callback payloads.
     if let Some(ref mg) = program.module_graph {
         // A file-imported module's declarations are lowered by the source-order
         // third pass: `flatten_file_import_items` splices them into
@@ -2312,12 +2234,6 @@ pub fn lower_program_with_mono_cap(
                             ) {
                                 continue;
                             }
-                            // Consume the cached `HirTypeDecl` produced by the
-                            // §4b imported-module pre-pass so the emitted item
-                            // shares the same `ItemId` already seeded into
-                            // `enum_item_ids`. Re-lowering here would mint a
-                            // fresh id and silently drift the registry's view
-                            // of the enum from the emitted decl.
                             let hir_decl = if let Some(hir_decl) =
                                 type_decl_cache.remove(&(decl as *const _))
                             {
@@ -2811,108 +2727,9 @@ pub fn lower_program_with_mono_cap(
     items.extend(prelude_declarations.into_iter().map(HirItem::TypeDecl));
     items.extend(actor_intercept_types.into_iter().map(HirItem::TypeDecl));
 
-    // Monomorphic builtin enums (e.g. `LookupError`) intentionally do NOT
-    // appear in `items` here. Their declarations live in
-    // `std/builtins.hew` and their tagged-union layout is registered
-    // out-of-band into MIR via
-    // `hew-mir::register_builtin_monomorphic_enum_layouts`, which reads
-    // the catalog in `hew_types::builtin_enums::monomorphic_builtin_enums`.
-    // Aside from the explicit Vec iterator impl harness entries above, this
-    // keeps `HirProgram::items` a faithful mirror of user source — an earlier
-    // prototype injected a synthetic `HirItem::TypeDecl` here for every
-    // monomorphic builtin enum and leaked the type into the downstream
-    // sandbox-VM bytecode descriptor table of every program, including ones
-    // that never referenced `Node::lookup`. Generic builtin enums (`Option`,
-    // `Result`) continue to flow through `EnumLayoutRegistry` per-instantiation
-    // (see below).
-
-    // A `Result<(), E>` process entry calls the checker-selected
-    // `Display::fmt` target from its generated boundary adapter. That edge has
-    // no source call expression, so it must enter the same monomorphisation
-    // registry explicitly or a generic impl body is never materialized.
-    if let Some((declaration, type_args)) =
-        entry_exit_plan
-            .as_ref()
-            .and_then(|plan| match &plan.action {
-                hew_types::EntryExitAction::Result { display, .. } => match display {
-                    hew_types::EntryDisplayTarget::Declared {
-                        declaration,
-                        instance: hew_types::EntryCallableInstance::Generic { type_args },
-                    } => Some((declaration, type_args)),
-                    // A concrete target needs no specialization, and an erased
-                    // one dispatches through a vtable slot rather than a body.
-                    hew_types::EntryDisplayTarget::Declared { .. }
-                    | hew_types::EntryDisplayTarget::DynSlot { .. } => None,
-                },
-                hew_types::EntryExitAction::Unit | hew_types::EntryExitAction::Integer(_) => None,
-            })
-    {
-        if let Some(function) = items.iter().find_map(|item| match item {
-            HirItem::Function(function) if &function.declaration == declaration => Some(function),
-            _ => None,
-        }) {
-            let key = MonoKey {
-                origin: function.id,
-                declaration: *declaration,
-                linker_symbol: function.name.clone(),
-                type_args: type_args.clone(),
-            };
-            if ctx.mono_registry.insert(key).is_err() && !ctx.mono_cap_diag_emitted {
-                ctx.mono_cap_diag_emitted = true;
-                ctx.diagnostics.push(HirDiagnostic::new(
-                    HirDiagnosticKind::MonomorphisationCapExceeded { cap: mono_cap },
-                    function.span.clone(),
-                    "the selected process entry Display implementation exceeds the function monomorphisation cap",
-                ));
-            }
-        }
-    }
-
-    let mut monomorphisations = ctx.mono_registry.into_vec();
     let call_site_type_args = ctx.call_site_type_args;
-    let mut record_layouts = ctx.record_layout_registry.into_vec();
-    let mut enum_layouts = ctx.enum_layout_registry.into_vec();
     let supervisor_child_slots = ctx.supervisor_child_slots;
     let pool_accessor_sites = ctx.pool_accessor_sites;
-
-    // Closure under substitution: walk every monomorphisation's origin
-    // body, find inner generic-fn call sites, substitute their recorded
-    // type args via the monomorphisation's substitution map, and add
-    // any newly discovered concrete instantiations to the registry.
-    // Repeat to a fixed point (bounded by the configured cap).
-    closure_under_substitution(
-        &ctx.defs,
-        &items,
-        &type_check_output.structural_witnesses,
-        &call_site_type_args,
-        &mut monomorphisations,
-        mono_cap,
-        &mut ctx.diagnostics,
-    );
-
-    // Post-function-mono record/enum layout discovery. MUST run AFTER
-    // `closure_under_substitution` has closed the function-mono registry —
-    // a generic record/enum constructed only inside a generic fn body (e.g.
-    // `fn make<T>() -> Box<T> { Box { value: x } }`) is observable as a
-    // concrete `Box<i64>` layout only after `make` is substituted as
-    // `make$$i64`.
-    // The pass is purely additive: the origin-site path already registered
-    // every concrete-site instantiation, and the dedup set is seeded from
-    // those so nothing is double-counted. New entries are merged BEFORE
-    // `finalize_user_record_value_classes` so each new mangled layout gets a
-    // value-class assigned.
-    let (extra_record_layouts, extra_enum_layouts, layout_mono_diagnostics) =
-        crate::layout_mono::run_layout_mono_pass(
-            &ctx.defs,
-            &items,
-            &monomorphisations,
-            &record_layouts,
-            &enum_layouts,
-            mono_cap,
-        );
-    record_layouts.extend(extra_record_layouts);
-    enum_layouts.extend(extra_enum_layouts);
-    ctx.diagnostics.extend(layout_mono_diagnostics);
 
     // Extern-backed record surface: the `#[extern_symbol]` method names were
     // collected at impl lowering (the attribute does not survive onto the
@@ -2939,31 +2756,13 @@ pub fn lower_program_with_mono_cap(
 
     finalize_user_record_value_classes(
         &ctx.record_registry,
-        &record_layouts,
         &extern_backed_records,
         &mut ctx.type_classes,
         &ctx.type_declarations,
     );
 
-    // FC-P1-B: HIR pre-pass for call-shape gates. Lifts MIR's call-shape
-    // fail-closed diagnostics (`hew-mir/src/lower.rs:4194` / `:4236`) to the
-    // HIR boundary so unresolved-Item callees and indirect-callable
-    // unresolved callees surface during HIR lowering instead of after the
-    // MIR producer has begun emitting instructions for the surrounding
-    // function. Runs AFTER `ctx.diagnostics.clear()` at line ~921 and after
-    // `closure_under_substitution` so the callable set includes the final
-    // monomorphisation list. See `check_call_shape_gates` for the predicate.
-    check_call_shape_gates(&items, &monomorphisations, &mut ctx.diagnostics);
+    check_call_shape_gates(&items, &mut ctx.diagnostics);
 
-    // W3.033c Stage 2 (R244=B): dedicated post-function-mono machine
-    // instantiation discovery pass. MUST run AFTER
-    // `closure_under_substitution` has finished closing the function-mono
-    // registry — generic-function-mediated machine instantiations (e.g.
-    // `fn make<T>() -> Lifecycle<T>` instantiated as `make::<File>()`) are
-    // only observable once function-mono has substituted `T` into the
-    // return-type slot — and BEFORE the `HirModule` is handed to MIR for
-    // `machine_layouts` build (Stage 3, out of scope for this change).
-    //
     admit_opaque_resource_lifecycles(
         &ctx.defs,
         &items,
@@ -2999,10 +2798,7 @@ pub fn lower_program_with_mono_cap(
         trait_object_layouts: Arc::clone(&ctx.trait_object_layouts),
         structural_witnesses: type_check_output.structural_witnesses.clone(),
         type_classes: ctx.type_classes,
-        monomorphisations,
         call_site_type_args,
-        record_layouts,
-        enum_layouts,
         supervisor_child_slots,
         pool_accessor_sites,
         regex_literals: ctx.regex_literals,
@@ -3024,7 +2820,6 @@ const SOURCE_PRELUDE_TYPES: &[&str] = &[
 
 pub(super) fn finalize_user_record_value_classes(
     record_registry: &HashMap<String, RecordEntry>,
-    record_layouts: &[RecordLayout],
     extern_backed_records: &HashSet<String>,
     type_classes: &mut crate::value_class::TypeClassTable,
     declarations: &std::collections::BTreeMap<
@@ -3083,25 +2878,50 @@ pub(super) fn finalize_user_record_value_classes(
             }
         }
     }
+}
 
-    for layout in record_layouts {
-        if layout.fields.is_empty() {
-            continue;
-        }
-        if type_classes
-            .get(&layout.mangled_name)
-            .is_some_and(|(marker, _)| *marker != ResourceMarker::None)
-        {
-            continue;
-        }
-        if layout.fields.iter().all(|(_, ty)| {
-            hew_types::ValueClass::of_ty(ty, &classes) == Ok(hew_types::ValueClass::BitCopy)
-        }) {
-            type_classes.insert(layout.mangled_name.clone(), (ResourceMarker::BitCopy, None));
-        } else {
-            type_classes
-                .entry(layout.mangled_name.clone())
-                .or_insert((ResourceMarker::None, None));
-        }
+/// Map the HIR lowering context's current-module authority to a total
+/// [`ExternProvenance`] for an `extern` fn declared under it.
+///
+/// `None` is the genuine root compilation unit (module index 0), which lowers
+/// to [`ExternProvenance::Root`]; `Some(dotted)` is a named module (std or
+/// user/package) lowered to [`ExternProvenance::Module`]. This is the ONLY
+/// mapping either construction site uses, so a std and a user extern are
+/// classified from the same authority regardless of which lowering pass emitted
+/// them.
+fn extern_provenance(current_module_name: Option<&str>) -> ExternProvenance {
+    match current_module_name {
+        None => ExternProvenance::Root,
+        Some(name) => ExternProvenance::Module(name.to_string()),
+    }
+}
+
+fn extern_runtime_capability(
+    provenance: &ExternProvenance,
+    declaration: &str,
+) -> Option<hew_types::ExternRuntimeCapability> {
+    let ExternProvenance::Module(module_name) = provenance else {
+        return None;
+    };
+    hew_types::stdlib_authority().extern_runtime_capability(module_name, declaration)
+}
+
+fn record_source_modules_for_items(
+    items: &[HirItem],
+    source_module: &str,
+    diagnostic_source_modules: &mut HashMap<ItemId, String>,
+) {
+    for item in items {
+        let id = match item {
+            HirItem::Function(item) => item.id,
+            HirItem::TypeDecl(item) => item.id,
+            HirItem::Record(item) => item.id,
+            HirItem::Actor(item) => item.id,
+            HirItem::Supervisor(item) => item.id,
+            HirItem::Impl(item) => item.id,
+            HirItem::ExternFn(item) => item.id,
+            HirItem::Const(item) => item.id,
+        };
+        diagnostic_source_modules.insert(id, source_module.to_string());
     }
 }

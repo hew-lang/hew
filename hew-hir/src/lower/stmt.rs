@@ -980,7 +980,6 @@ impl LowerCtx {
         span: &Span,
     ) -> Option<HirStmt> {
         let scrutinee_hir = self.lower_expr(scrutinee_expr, IntentKind::Read);
-        self.try_register_enum_instantiation(&scrutinee_expr.1);
 
         let pattern_span = pattern.1.clone();
         let arms: Vec<PatternArm<'_>> = flatten_or_pattern(pattern)

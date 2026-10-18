@@ -384,7 +384,7 @@ impl LowerCtx {
                 ResolvedTy::Unit,
             );
         };
-        self.try_register_enum_instantiation_ty(&ty, span);
+
         let message = HirExpr {
             node: self.ids.node(),
             site: self.ids.site(),

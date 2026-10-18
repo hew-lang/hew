@@ -1,0 +1,10 @@
+[[case]]
+id = "entry-generic-display"
+intent = "A Result entry demands its generic Display implementation without a source call and releases the owned payload of its concrete error record."
+source = "cases/entry-generic-display.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stderr = "error: entry failure\n"
+exit = 1

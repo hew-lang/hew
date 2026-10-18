@@ -112,7 +112,7 @@ impl LowerCtx {
             .collect();
         // Register the generic-enum instantiation before building result_ty so
         // the registry is populated when codegen performs its mangled lookup.
-        self.try_register_enum_instantiation(span);
+
         // Checker-authoritative result type: the checker records the full
         // `Named { name: "Option", args: [I64] }` at this call-expression span.
         // Using it directly preserves type args so codegen can compute the

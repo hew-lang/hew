@@ -1,0 +1,15 @@
+type AppError<T> {
+    detail: T;
+}
+
+impl<T> Display for AppError<T> {
+    fn fmt(self) -> string {
+        "entry failure"
+    }
+}
+
+impl<T> Error for AppError<T> {}
+
+fn main() -> Result<(), AppError<string>> {
+    .Err(AppError { detail: "owned error".to_upper() })
+}

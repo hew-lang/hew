@@ -25,7 +25,6 @@ use crate::scheduler::NoWorkerSchedulerForTest;
 /// Build a minimal `HewActor` with sensible defaults.
 pub(crate) fn stub_actor() -> HewActor {
     HewActor {
-        dispatch_ownership: crate::actor::HewDispatchOwnership::CopiedPayload,
         sched_link_next: AtomicPtr::new(ptr::null_mut()),
         id: 1,
         state: ptr::null_mut(),

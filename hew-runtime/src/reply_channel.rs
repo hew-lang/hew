@@ -1536,7 +1536,6 @@ mod tests {
         // reply path woke the caller.
         fn caller_actor(id: u64) -> Box<HewActor> {
             Box::new(HewActor {
-                dispatch_ownership: crate::actor::HewDispatchOwnership::CopiedPayload,
                 sched_link_next: AtomicPtr::new(ptr::null_mut()),
                 id,
                 state: ptr::null_mut(),

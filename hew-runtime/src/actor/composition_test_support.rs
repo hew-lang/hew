@@ -40,7 +40,6 @@ unsafe extern "C-unwind" fn dispatch_must_not_run(
 
 fn idle_actor(mailbox: *mut HewMailbox) -> *mut HewActor {
     Box::into_raw(Box::new(HewActor {
-        dispatch_ownership: crate::actor::HewDispatchOwnership::CopiedPayload,
         sched_link_next: AtomicPtr::new(ptr::null_mut()),
         id: u64::MAX - 2_848,
         state: ptr::null_mut(),

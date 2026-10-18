@@ -1,4 +1,4 @@
-//! Target-neutral COW mailbox envelope representation and lifecycle.
+//! Target-neutral owned mailbox envelope representation and lifecycle.
 //!
 //! Native and WASM mailboxes deliberately keep different queue and scheduling
 //! implementations. The payload envelope, however, is ABI-identical and has
@@ -8,17 +8,22 @@ use std::ffi::c_void;
 use std::ptr;
 use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 
-use crate::mailbox_header::{
-    header_validate, HEW_MSG_ENVELOPE_ALIAS_ACTIVE, HEW_MSG_ENVELOPE_FORKED,
-};
+use crate::mailbox_header::header_validate;
 
 /// Drop glue invoked once, before the envelope releases its payload allocation.
 pub type HewMsgEnvelopeDropFn = unsafe extern "C" fn(*mut c_void);
 
-/// ABI-stable, refcounted COW container for an actor message payload.
+/// Typed cleanup supplied by a raw C message producer at admission.
+#[derive(Clone, Copy)]
+pub(crate) struct IngressDrop {
+    pub message: i32,
+    pub callback: unsafe extern "C" fn(i32, *mut c_void, usize),
+}
+
+/// Owned container for an actor message payload, with a stable payload prefix.
 #[repr(C)]
 pub struct HewMsgEnvelope {
-    /// Number of live observers.
+    /// Live ownership references; admitted payloads are exclusive.
     pub refcount: AtomicUsize,
     /// Envelope contract bits; see [`crate::mailbox_header`].
     pub header_bits: AtomicU32,
@@ -37,6 +42,8 @@ pub struct HewMsgEnvelope {
     pub release_reply: *mut c_void,
     /// One-shot start/loss claim, attached only after the timer releases its payload.
     pub(crate) timer: Option<std::sync::Arc<crate::timer_actor::OneShot>>,
+    /// Raw C adapter cleanup, consumed when its dispatch adapter claims fields.
+    pub(crate) ingress_drop: Option<IngressDrop>,
 }
 
 impl std::fmt::Debug for HewMsgEnvelope {
@@ -90,26 +97,7 @@ pub unsafe fn new(
         (*env).release_serial = 0;
         (*env).release_reply = ptr::null_mut();
         ptr::write(&raw mut (*env).timer, None);
-    }
-    env
-}
-
-/// Add an alias observer and return the same envelope pointer.
-///
-/// # Safety
-///
-/// `env` must be live and the caller must own one reference.
-pub unsafe fn clone_alias(env: *mut HewMsgEnvelope) -> *mut HewMsgEnvelope {
-    if env.is_null() {
-        return ptr::null_mut();
-    }
-    // SAFETY: the caller guarantees a live envelope.
-    unsafe {
-        let prev = (*env).refcount.fetch_add(1, Ordering::Relaxed);
-        debug_assert!(prev >= 1, "clone_alias on a released envelope");
-        (*env)
-            .header_bits
-            .fetch_or(HEW_MSG_ENVELOPE_ALIAS_ACTIVE, Ordering::Relaxed);
+        (*env).ingress_drop = None;
     }
     env
 }
@@ -179,6 +167,9 @@ pub unsafe fn release(env: *mut HewMsgEnvelope) {
                 }
                 crate::mem::buf_free(env.cast());
                 return;
+            }
+            if let Some(drop) = (*env).ingress_drop.take() {
+                (drop.callback)(drop.message, (*env).payload, (*env).payload_size);
             }
             if let Some(drop_fn) = (*env).drop_glue {
                 if !(*env).payload.is_null() {
@@ -301,93 +292,21 @@ pub unsafe fn payload_ptr(env: *mut HewMsgEnvelope) -> *mut c_void {
     unsafe { (*env).payload }
 }
 
-/// Fork an envelope into a private single-observer payload copy.
-///
-/// # Safety
-///
-/// `env` must be live and the caller transfers one owned reference to this call.
-pub unsafe fn fork_for_write(
-    env: *mut HewMsgEnvelope,
-    allocate: EnvelopeAlloc,
-) -> *mut HewMsgEnvelope {
-    if env.is_null() {
-        return ptr::null_mut();
-    }
-    // Native consuming payloads are affine and cannot acquire a byte alias.
-    // SAFETY: the caller retains the envelope throughout this check.
-    if unsafe { (*env).release_start.is_some() } {
-        return ptr::null_mut();
-    }
-    // SAFETY: the caller guarantees a live envelope and the payload alias
-    // contract permits this read-only snapshot.
-    let (payload_size, drop_glue, src_payload, src_bits) = unsafe {
-        (
-            (*env).payload_size,
-            (*env).drop_glue,
-            (*env).payload,
-            (*env).header_bits.load(Ordering::Relaxed),
-        )
-    };
-    let new_payload = if payload_size > 0 && !src_payload.is_null() {
-        let buf = allocate(payload_size);
-        if buf.is_null() {
-            return ptr::null_mut();
-        }
-        // SAFETY: `buf` is fresh and `src_payload` is readable under the alias contract.
-        unsafe { libc::memcpy(buf, src_payload, payload_size) };
-        buf
-    } else {
-        ptr::null_mut()
-    };
-    // SAFETY: `new_payload` is a fresh compatible allocation.
-    let forked = unsafe { new(new_payload, payload_size, drop_glue, allocate) };
-    if forked.is_null() {
-        if !new_payload.is_null() {
-            // SAFETY: this unpublished allocation belongs to this function.
-            unsafe { crate::mem::buf_free(new_payload) }; // ALLOCATOR-PAIRING: GlobalAlloc
-        }
-        return ptr::null_mut();
-    }
-    let inherited_bits = (src_bits & !HEW_MSG_ENVELOPE_ALIAS_ACTIVE) | HEW_MSG_ENVELOPE_FORKED;
-    // SAFETY: `forked` was created above and is live.
-    unsafe {
-        (*forked)
-            .header_bits
-            .fetch_or(inherited_bits, Ordering::Relaxed);
-        release(env);
-    }
-    forked
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mailbox_header::{
-        HEW_MSG_ENVELOPE_ARENA_BACKED, HEW_MSG_ENVELOPE_CAPABILITY_TRANSFER,
-        HEW_MSG_ENVELOPE_MUST_BE_ZERO_MASK, HEW_MSG_ENVELOPE_RESERVED_DELTA_A,
-        HEW_MSG_ENVELOPE_RESERVED_GAMMA_B, HEW_MSG_ENVELOPE_SHARED_FROZEN,
-    };
+    use crate::mailbox_header::HEW_MSG_ENVELOPE_MUST_BE_ZERO_MASK;
     use std::panic::{catch_unwind, AssertUnwindSafe};
     use std::sync::Mutex;
 
     static CORE_TEST_LOCK: Mutex<()> = Mutex::new(());
     static DROP_COUNT: AtomicUsize = AtomicUsize::new(0);
-    static ALLOC_CALLS: AtomicUsize = AtomicUsize::new(0);
-    static FAIL_ALLOC_ON_CALL: AtomicUsize = AtomicUsize::new(usize::MAX);
 
     unsafe extern "C" fn drop_probe(_payload: *mut c_void) {
         DROP_COUNT.fetch_add(1, Ordering::SeqCst);
     }
 
     fn alloc(size: usize) -> *mut c_void {
-        crate::mem::buf_try_alloc(size) // ALLOCATOR-PAIRING: GlobalAlloc
-    }
-
-    fn fail_on_selected_call(size: usize) -> *mut c_void {
-        let call = ALLOC_CALLS.fetch_add(1, Ordering::SeqCst);
-        if call == FAIL_ALLOC_ON_CALL.load(Ordering::SeqCst) {
-            return ptr::null_mut();
-        }
         crate::mem::buf_try_alloc(size) // ALLOCATOR-PAIRING: GlobalAlloc
     }
 
@@ -418,25 +337,6 @@ mod tests {
     }
 
     #[test]
-    fn alias_refcount_starts_at_one_and_sets_the_alias_bit() {
-        let _serial = CORE_TEST_LOCK.lock().unwrap();
-        // SAFETY: the test owns the payload and every envelope reference.
-        unsafe {
-            let env = new(payload(b"alias"), 5, None, alloc);
-            assert_eq!((*env).refcount.load(Ordering::SeqCst), 1);
-            assert_eq!((*env).header_bits.load(Ordering::SeqCst), 0);
-            assert_eq!(clone_alias(env), env);
-            assert_eq!((*env).refcount.load(Ordering::SeqCst), 2);
-            assert_ne!(
-                (*env).header_bits.load(Ordering::SeqCst) & HEW_MSG_ENVELOPE_ALIAS_ACTIVE,
-                0
-            );
-            release(env);
-            release(env);
-        }
-    }
-
-    #[test]
     fn null_payload_is_borrowable_and_never_calls_drop_glue() {
         let _serial = CORE_TEST_LOCK.lock().unwrap();
         DROP_COUNT.store(0, Ordering::SeqCst);
@@ -454,84 +354,12 @@ mod tests {
     fn final_release_runs_drop_glue_exactly_once() {
         let _serial = CORE_TEST_LOCK.lock().unwrap();
         DROP_COUNT.store(0, Ordering::SeqCst);
-        // SAFETY: the test owns the payload and both alias references.
+        // SAFETY: the test owns the payload and its envelope.
         unsafe {
             let env = new(payload(b"drop"), 4, Some(drop_probe), alloc);
-            clone_alias(env);
-            release(env);
-            assert_eq!(DROP_COUNT.load(Ordering::SeqCst), 0);
             release(env);
         }
         assert_eq!(DROP_COUNT.load(Ordering::SeqCst), 1);
-    }
-
-    #[test]
-    fn fork_oom_rolls_back_without_consuming_the_source_reference() {
-        let _serial = CORE_TEST_LOCK.lock().unwrap();
-        DROP_COUNT.store(0, Ordering::SeqCst);
-        ALLOC_CALLS.store(0, Ordering::SeqCst);
-        FAIL_ALLOC_ON_CALL.store(usize::MAX, Ordering::SeqCst);
-        // SAFETY: the test owns the payload and both alias references.
-        unsafe {
-            let env = new(
-                payload(b"rollback"),
-                8,
-                Some(drop_probe),
-                fail_on_selected_call,
-            );
-            assert!(!env.is_null());
-            clone_alias(env);
-            ALLOC_CALLS.store(0, Ordering::SeqCst);
-            // The payload copy succeeds, then allocating its envelope fails.
-            FAIL_ALLOC_ON_CALL.store(1, Ordering::SeqCst);
-            assert!(fork_for_write(env, fail_on_selected_call).is_null());
-            assert_eq!((*env).refcount.load(Ordering::SeqCst), 2);
-            assert_eq!(
-                std::slice::from_raw_parts((*env).payload.cast::<u8>(), 8),
-                b"rollback"
-            );
-            release(env);
-            release(env);
-        }
-        FAIL_ALLOC_ON_CALL.store(usize::MAX, Ordering::SeqCst);
-        assert_eq!(DROP_COUNT.load(Ordering::SeqCst), 1);
-    }
-
-    #[test]
-    fn fork_copies_payload_and_inherits_only_non_alias_bits() {
-        let _serial = CORE_TEST_LOCK.lock().unwrap();
-        DROP_COUNT.store(0, Ordering::SeqCst);
-        let inherited = HEW_MSG_ENVELOPE_SHARED_FROZEN
-            | HEW_MSG_ENVELOPE_ARENA_BACKED
-            | HEW_MSG_ENVELOPE_CAPABILITY_TRANSFER
-            | HEW_MSG_ENVELOPE_RESERVED_GAMMA_B
-            | HEW_MSG_ENVELOPE_RESERVED_DELTA_A;
-        // SAFETY: the test owns the payload and both resulting envelope references.
-        unsafe {
-            let env = new(payload(b"fork"), 4, Some(drop_probe), alloc);
-            clone_alias(env);
-            (*env).header_bits.fetch_or(inherited, Ordering::SeqCst);
-            let forked = fork_for_write(env, alloc);
-            assert!(!forked.is_null());
-            assert_ne!((*forked).payload, (*env).payload);
-            assert_eq!((*forked).refcount.load(Ordering::SeqCst), 1);
-            assert_eq!(
-                (*forked).header_bits.load(Ordering::SeqCst),
-                inherited | HEW_MSG_ENVELOPE_FORKED
-            );
-            *(*forked).payload.cast::<u8>() = b'F';
-            assert_eq!(
-                std::slice::from_raw_parts((*forked).payload.cast::<u8>(), 4),
-                b"Fork"
-            );
-            assert_eq!(
-                std::slice::from_raw_parts((*env).payload.cast::<u8>(), 4),
-                b"fork"
-            );
-            release(forked);
-            release(env);
-        }
-        assert_eq!(DROP_COUNT.load(Ordering::SeqCst), 2);
     }
 
     #[test]

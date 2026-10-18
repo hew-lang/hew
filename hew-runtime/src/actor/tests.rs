@@ -1459,7 +1459,6 @@ fn make_stop_test_actor_with_id(
         let mailbox = mailbox::hew_mailbox_new();
         assert!(!mailbox.is_null());
         let actor = Box::into_raw(Box::new(HewActor {
-            dispatch_ownership: crate::actor::HewDispatchOwnership::CopiedPayload,
             sched_link_next: AtomicPtr::new(ptr::null_mut()),
             id,
             state: ptr::null_mut(),

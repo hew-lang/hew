@@ -16,10 +16,10 @@ struct hew_cabi_manifest_row {
   enum hew_cabi_manifest_ownership ownership;
 };
 
-#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1664u
+#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1662u
 #define HEW_CABI_MANIFEST_STATIC_COUNT 24u
 
-static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1664] = {
+static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1662] = {
     {"hew_actor_abort_construction",
      "{\"native\": \"fn hew_actor_abort_construction( HewLocalPidId, *mut "
      "HewCoroState, )\", \"wasm32-wasip1\": \"fn hew_actor_abort_construction( "
@@ -4491,20 +4491,6 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1664] = {
      "\"wasm32-wasip1\": \"fn hew_milliseconds( c_int) -> HewDuration\"}",
      "native,wasm32-wasip1", "stable", "not-applicable", "not-applicable",
      HEW_CABI_OWNERSHIP_UNMEASURED},
-    {"hew_msg_envelope_clone_alias",
-     "{\"native\": \"fn hew_msg_envelope_clone_alias( *mut HewMsgEnvelope, ) "
-     "-> *mut HewMsgEnvelope\", \"wasm32-wasip1\": \"fn "
-     "hew_msg_envelope_clone_alias( *mut HewMsgEnvelope, ) -> *mut "
-     "HewMsgEnvelope\"}",
-     "native,wasm32-wasip1", "stable", "not-applicable",
-     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
-    {"hew_msg_envelope_fork_for_write",
-     "{\"native\": \"fn hew_msg_envelope_fork_for_write( *mut HewMsgEnvelope, "
-     ") -> *mut HewMsgEnvelope\", \"wasm32-wasip1\": \"fn "
-     "hew_msg_envelope_fork_for_write( *mut HewMsgEnvelope, ) -> *mut "
-     "HewMsgEnvelope\"}",
-     "native,wasm32-wasip1", "stable", "not-applicable",
-     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_msg_envelope_new",
      "{\"native\": \"fn hew_msg_envelope_new( *mut c_void, usize, "
      "Option<HewMsgEnvelopeDropFn>, ) -> *mut HewMsgEnvelope\", "

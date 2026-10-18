@@ -102,14 +102,9 @@ pub const DEFAULT_STOP_BUDGET_NS: i64 = 5_000_000_000;
 /// Configuration shared by the public actor spawn functions.
 struct ActorSpawnConfig {
     initial_state: HewActorState,
-    rc_owner: Option<std::sync::Arc<crate::rc::RcAllocations>>,
-    native_crash: Option<HewNativeCrashFn>,
+    native_completion: Option<std::sync::Arc<crate::actor_native::NativeActorCompletion>>,
     native_state_release: Option<hew_cabi::value::HewValueReleaseStart>,
-    /// The generated `#[on(stop)]` sequence as a resumable continuation that
-    /// terminal cleanup runs on the live state before releasing it.
-    native_stop_release: Option<hew_cabi::value::HewValueReleaseStart>,
     rejected_state_release: *mut *mut crate::release_walker::HewReleaseCursor,
-    dispatch_ownership: HewDispatchOwnership,
     /// The generated `#[on(stop)]` sequence, installed before publication so
     /// no stop request can observe an actor without its hooks.
     terminate_fn: Option<unsafe extern "C-unwind" fn(*mut c_void)>,
@@ -229,7 +224,6 @@ fn build_spawned_actor(
     arena: *mut crate::arena::ActorArena,
 ) -> Box<HewActor> {
     Box::new(HewActor {
-        dispatch_ownership: config.dispatch_ownership,
         sched_link_next: AtomicPtr::new(ptr::null_mut()),
         id: identity.id,
         state: config.state,
@@ -280,21 +274,7 @@ fn build_spawned_actor(
         parked_ask_channel: AtomicPtr::new(std::ptr::null_mut()),
         checked_invocation: AtomicPtr::new(std::ptr::null_mut()),
         pending_external_trap_code: AtomicI32::new(0),
-        native_completion: (config.dispatch_ownership == HewDispatchOwnership::UniqueEnvelope)
-            .then(|| {
-                let mut completion =
-                    crate::actor_native::NativeActorCompletion::with_crash(config.native_crash);
-                if let Some(owner) = &config.rc_owner {
-                    completion.cleanup.rc = owner.clone();
-                }
-                completion
-                    .cleanup
-                    .set_state_release(config.native_state_release);
-                completion
-                    .cleanup
-                    .set_stop_release(config.native_stop_release);
-                std::sync::Arc::new(completion)
-            }),
+        native_completion: config.native_completion,
     })
 }
 
@@ -528,12 +508,9 @@ pub unsafe extern "C" fn hew_actor_spawn(
     unsafe {
         spawn_actor_internal(ActorSpawnConfig {
             initial_state: HewActorState::Idle,
-            rc_owner: None,
-            native_crash: None,
+            native_completion: None,
             native_state_release: None,
-            native_stop_release: None,
             rejected_state_release: ptr::null_mut(),
-            dispatch_ownership: HewDispatchOwnership::CopiedPayload,
             terminate_fn: None,
             state_drop_fn: None,
             state_clone_fn: None,
@@ -604,12 +581,9 @@ pub unsafe extern "C" fn hew_actor_spawn_opts(opts: *const HewActorOpts) -> *mut
     unsafe {
         spawn_actor_internal(ActorSpawnConfig {
             initial_state: HewActorState::Idle,
-            rc_owner: None,
-            native_crash: None,
+            native_completion: None,
             native_state_release: None,
-            native_stop_release: None,
             rejected_state_release: ptr::null_mut(),
-            dispatch_ownership: HewDispatchOwnership::CopiedPayload,
             terminate_fn: None,
             state_drop_fn: None,
             state_clone_fn: None,
@@ -716,12 +690,9 @@ pub unsafe extern "C" fn hew_actor_spawn_opts_adopt(
     unsafe {
         spawn_actor_internal(ActorSpawnConfig {
             initial_state: HewActorState::Idle,
-            rc_owner: None,
-            native_crash: None,
+            native_completion: None,
             native_state_release: None,
-            native_stop_release: None,
             rejected_state_release: ptr::null_mut(),
-            dispatch_ownership: HewDispatchOwnership::CopiedPayload,
             terminate_fn: None,
             state_drop_fn: None,
             state_clone_fn: None,
@@ -831,19 +802,22 @@ pub unsafe extern "C" fn hew_actor_construct_native(
             );
         }
     }
+    let mut completion = crate::actor_native::NativeActorCompletion::with_crash(native_crash);
+    // SAFETY: construction remains live through publication.
+    if let Some(owner) =
+        unsafe { construction.as_ref() }.and_then(|state| state.execution().rc_owner.clone())
+    {
+        completion.cleanup.rc = owner;
+    }
+    completion.cleanup.set_state_release(state_release);
+    completion.cleanup.set_stop_release(stop_release);
     // SAFETY: ownership and callbacks are supplied atomically before publication.
     let actor = unsafe {
         spawn_actor_internal(ActorSpawnConfig {
             initial_state: HewActorState::Constructing,
-            // SAFETY: construction remains live through publication.
-            rc_owner: construction
-                .as_ref()
-                .and_then(|state| state.execution().rc_owner.clone()),
-            native_crash,
+            native_completion: Some(std::sync::Arc::new(completion)),
             native_state_release: state_release,
-            native_stop_release: stop_release,
             rejected_state_release,
-            dispatch_ownership: HewDispatchOwnership::UniqueEnvelope,
             terminate_fn: None,
             state_drop_fn: Some(state_drop),
             state_clone_fn: Some(state_clone),
@@ -1231,12 +1205,9 @@ pub unsafe extern "C" fn hew_actor_spawn_bounded(
     unsafe {
         spawn_actor_internal(ActorSpawnConfig {
             initial_state: HewActorState::Idle,
-            rc_owner: None,
-            native_crash: None,
+            native_completion: None,
             native_state_release: None,
-            native_stop_release: None,
             rejected_state_release: ptr::null_mut(),
-            dispatch_ownership: HewDispatchOwnership::CopiedPayload,
             terminate_fn: None,
             state_drop_fn: None,
             state_clone_fn: None,

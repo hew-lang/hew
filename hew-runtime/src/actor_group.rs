@@ -409,7 +409,6 @@ mod tests {
     /// Only `id` and `actor_state` are exercised by `all_stopped`.
     fn stub_actor(id: u64, state: HewActorState) -> HewActor {
         HewActor {
-            dispatch_ownership: crate::actor::HewDispatchOwnership::CopiedPayload,
             sched_link_next: AtomicPtr::new(ptr::null_mut()),
             id,
             state: ptr::null_mut(),
@@ -605,7 +604,6 @@ mod tests {
         assert!(!mb.is_null());
 
         let actor = TrackedActor::install(HewActor {
-            dispatch_ownership: crate::actor::HewDispatchOwnership::CopiedPayload,
             sched_link_next: AtomicPtr::new(ptr::null_mut()),
             id: actor_id,
             state: ptr::null_mut(),

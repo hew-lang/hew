@@ -1,6 +1,6 @@
 //! Local termination observers outlive the actor or supervisor allocation.
 
-use crate::actor::{HewActor, HewDispatchOwnership};
+use crate::actor::HewActor;
 use crate::internal::types::HewActorState;
 use crate::lifetime::{live_actors, local_handles};
 use crate::util::MutexExt;
@@ -133,10 +133,6 @@ pub(crate) unsafe fn finish_native_terminal_after_terminate(actor: &HewActor) {
     // A pending timer owns a registered payload. Retire it before terminal
     // cleanup closes the inbox and waits for its remaining owners.
     crate::timer_periodic::cancel_all_timers_for_actor(std::ptr::from_ref(actor).cast_mut());
-    debug_assert_eq!(
-        actor.dispatch_ownership,
-        HewDispatchOwnership::UniqueEnvelope
-    );
     if completion.crash.is_some() || completion.cleanup.needs_terminal_cleanup() {
         // SAFETY: the terminal claim retains state until scheduler cleanup
         // completes; raw actor reclamation must observe this pending claim.
@@ -404,7 +400,6 @@ mod tests {
             let mut actor = crate::test_actor::stub_actor();
             actor.state = storage.as_mut_ptr().cast();
             actor.state_drop_fn = Some(drop_state);
-            actor.dispatch_ownership = HewDispatchOwnership::UniqueEnvelope;
             let completion = Arc::new(NativeActorCompletion::default());
             actor.native_completion = Some(completion.clone());
             let waker = Arc::new(waker);
@@ -445,7 +440,6 @@ mod tests {
         for observe in [false, true] {
             crate::exit_status::reset_process_exit_status();
             let mut actor = crate::test_actor::stub_actor();
-            actor.dispatch_ownership = HewDispatchOwnership::UniqueEnvelope;
             let completion = Arc::new(NativeActorCompletion::default());
             actor.native_completion = Some(completion.clone());
             actor

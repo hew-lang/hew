@@ -982,7 +982,6 @@ mod tests {
         actor.state_drop_fn = Some(external_trap_state_drop);
         actor.state_clone_fn = Some(external_trap_state_clone);
         actor.state_size = std::mem::size_of::<ExternalTrapHooks>();
-        actor.dispatch_ownership = crate::actor::HewDispatchOwnership::UniqueEnvelope;
         let completion = std::sync::Arc::new(super::NativeActorCompletion::with_crash(Some(
             external_trap_hook,
         )));

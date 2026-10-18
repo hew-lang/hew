@@ -11750,36 +11750,6 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_msg_envelope_clone_alias( *mut HewMsgEnvelope, ) -> *mut HewMsgEnvelope",
-        "wasm32-wasip1": "fn hew_msg_envelope_clone_alias( *mut HewMsgEnvelope, ) -> *mut HewMsgEnvelope"
-      },
-      "symbol": "hew_msg_envelope_clone_alias"
-    },
-    {
-      "availability": [
-        "native",
-        "wasm32-wasip1"
-      ],
-      "classification": "stable",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_msg_envelope_fork_for_write( *mut HewMsgEnvelope, ) -> *mut HewMsgEnvelope",
-        "wasm32-wasip1": "fn hew_msg_envelope_fork_for_write( *mut HewMsgEnvelope, ) -> *mut HewMsgEnvelope"
-      },
-      "symbol": "hew_msg_envelope_fork_for_write"
-    },
-    {
-      "availability": [
-        "native",
-        "wasm32-wasip1"
-      ],
-      "classification": "stable",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
         "native": "fn hew_msg_envelope_new( *mut c_void, usize, Option<HewMsgEnvelopeDropFn>, ) -> *mut HewMsgEnvelope",
         "wasm32-wasip1": "fn hew_msg_envelope_new( *mut c_void, usize, Option<HewMsgEnvelopeDropFn>, ) -> *mut HewMsgEnvelope"
       },

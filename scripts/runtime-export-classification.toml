@@ -446,8 +446,6 @@ stable = [
   "hew_metric_vec_with",
   # --- end user metrics (#1862) ---
   "hew_milliseconds",
-  "hew_msg_envelope_clone_alias",
-  "hew_msg_envelope_fork_for_write",
   "hew_msg_envelope_new",
   "hew_msg_envelope_payload_ptr",
   "hew_msg_envelope_release",

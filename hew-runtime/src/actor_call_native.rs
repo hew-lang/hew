@@ -573,7 +573,6 @@ mod tests {
                 actor.state = (&raw mut state).cast();
                 actor.state_size = size_of_val(&state);
                 actor.dispatch = Some(dispatch_late_reply);
-                actor.dispatch_ownership = crate::actor::HewDispatchOwnership::UniqueEnvelope;
                 drop(waker);
                 if !dispatched && !expired {
                     hew_actor_call_free(operation);

@@ -929,22 +929,16 @@ pub(crate) fn activate_queued_actor(actor: *mut HewActor) {
                     std::process::abort();
                 }
 
-                let (dispatch_data, dispatch_size) = if msg_ref.envelope.is_null() {
-                    (msg_ref.data, msg_ref.data_size)
-                } else {
-                    // The generated adapter takes each payload field and clears
-                    // its owner bit before entering checked handler cleanup.
-                    // An aliased envelope cannot satisfy that exclusive contract.
-                    // SAFETY: this dequeued node owns one live envelope reference.
-                    let envelope = unsafe { &*msg_ref.envelope };
-                    if a.dispatch_ownership != crate::actor::HewDispatchOwnership::UniqueEnvelope
-                        || envelope.refcount.load(Ordering::Acquire) != 1
-                    {
-                        eprintln!("fatal: actor dispatch lacks unique envelope ownership");
-                        std::process::abort();
-                    }
-                    (envelope.payload, envelope.payload_size)
-                };
+                // Every producer publishes one owned envelope. The generated
+                // adapter takes each field and clears its typed owner bit;
+                // an aliased envelope cannot satisfy that exclusive contract.
+                // SAFETY: this dequeued node owns one live envelope reference.
+                let envelope = unsafe { &*msg_ref.envelope };
+                if envelope.refcount.load(Ordering::Acquire) != 1 {
+                    eprintln!("fatal: actor dispatch lacks unique envelope ownership");
+                    std::process::abort();
+                }
+                let (dispatch_data, dispatch_size) = (envelope.payload, envelope.payload_size);
 
                 let mut execution_context = HewExecutionContext {
                     actor,
@@ -1061,11 +1055,16 @@ pub(crate) fn activate_queued_actor(actor: *mut HewActor) {
                 // the system entry point — the discriminator is which arm
                 // of `DispatchTarget` was built, not a value either callee
                 // inspects.
+                // Raw C adapters consume their payload fields on entry. Until
+                // this claim, cancellation and failed pre-dispatch checks leave
+                // the same envelope responsible for typed cleanup.
+                // SAFETY: this activation exclusively owns the envelope.
+                unsafe { (*msg_ref.envelope).ingress_drop = None };
                 let dispatch_result = catch_unwind(AssertUnwindSafe(|| match dispatch {
                     DispatchTarget::User(user_dispatch) =>
                     // SAFETY: `user_dispatch` is the actor's registered
                     // application trampoline; the arguments come from a
-                    // well-formed copy-mode `HewMsgNode`.
+                    // exclusively owned payload envelope.
                     unsafe {
                         user_dispatch(
                             ec_ptr,

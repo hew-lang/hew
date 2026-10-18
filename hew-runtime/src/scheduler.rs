@@ -3710,7 +3710,6 @@ mod tests {
         );
 
         let actor = HewActor {
-            dispatch_ownership: crate::actor::HewDispatchOwnership::CopiedPayload,
             sched_link_next: AtomicPtr::new(ptr::null_mut()),
             id: 42,
             state: ptr::null_mut(),
@@ -6278,7 +6277,6 @@ mod tests {
         );
 
         let actor = HewActor {
-            dispatch_ownership: crate::actor::HewDispatchOwnership::CopiedPayload,
             sched_link_next: AtomicPtr::new(ptr::null_mut()),
             id: 7,
             state: ptr::null_mut(),

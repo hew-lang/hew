@@ -108,7 +108,7 @@ fn trimmed_package_paths_are_stable_across_roots() {
     assert_ne!(original[0].0, original[1].0);
     for (root, (_, llvm)) in roots.iter().zip(&original) {
         assert!(
-            llvm.contains(root.to_str().unwrap()),
+            llvm.contains(&llvm_string_contents(root.to_str().unwrap())),
             "untrimmed debug source"
         );
     }
@@ -120,7 +120,9 @@ fn trimmed_package_paths_are_stable_across_roots() {
         assert!(objects[0].0 == objects[1].0, "trimmed object bytes");
         assert_eq!(objects[0].1, objects[1].1, "trimmed LLVM");
         for root in &roots {
-            assert!(!objects[0].1.contains(root.to_str().unwrap()));
+            assert!(!objects[0]
+                .1
+                .contains(&llvm_string_contents(root.to_str().unwrap())));
             let mut args = vec!["build", ".", "-g", "-o", "linked"];
             args.extend_from_slice(flags);
             assert_ok(&hew(root, &args), "link native package");
@@ -188,6 +190,19 @@ fn trimmed_package_paths_are_stable_across_roots() {
     }
     #[cfg(target_os = "linux")]
     assert_remapped_debug_source(dir.path(), &roots);
+}
+
+fn llvm_string_contents(value: &str) -> String {
+    use std::fmt::Write as _;
+
+    let mut escaped = String::new();
+    for byte in value.bytes() {
+        match byte {
+            b' '..=b'~' if !matches!(byte, b'"' | b'\\') => escaped.push(char::from(byte)),
+            _ => write!(escaped, "\\{byte:02X}").unwrap(),
+        }
+    }
+    escaped
 }
 
 fn emit_package_paths(root: &Path, flags: &[&str]) -> (Vec<u8>, String) {

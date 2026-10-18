@@ -113,6 +113,7 @@ unsafe extern "C" fn run_file_job(context: *mut c_void) {
     {
         Ok(guard) => guard,
         Err(error) => {
+            request.discard();
             operation.complete(Err(IoFailure::from_io(
                 "register pipe cancellation",
                 &error,

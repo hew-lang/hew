@@ -4545,13 +4545,13 @@ class ExecutorV1 {
     handler?: ActorShape["handlers"][number],
   ): void {
     this.reportFault(fault);
-    const context = handler
-      ? `${actor.layout.name}.${handler.name}`
-      : actor.layout.name;
-    this.trace.writeStderr(
-      `hew: actor crash in ${context} (actor ${actor.identity}): ${faultInfo(fault)[1]}\n`,
-      null,
-    );
+    if (handler) {
+      const context = `${actor.layout.name}.${handler.name}`;
+      this.trace.writeStderr(
+        `hew: actor crash in ${context} (actor ${actor.identity}): ${faultInfo(fault)[1]}\n`,
+        null,
+      );
+    }
     const debt = ++this.nextFaultDebt;
     this.faultDebts.add(debt);
     if (actor.supervisor)

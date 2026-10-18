@@ -16,25 +16,30 @@ impl Builder<'_, '_> {
         let ResolvedTy::Named { args: result, .. } = &output else {
             return Err("service acquisition lacks Result".into());
         };
-        let Some(ResolvedTy::Named { args: instance, .. }) = result.first() else {
-            return Err("service acquisition lacks its handle".into());
-        };
-        let [actor_ty] = instance.as_slice() else {
-            return Err("service acquisition names one actor".into());
+        let export = operation == hew_types::runtime_call::ServiceOp::Export;
+        let success = result
+            .first()
+            .ok_or("service acquisition lacks its actor")?;
+        let actor_ty = if export {
+            let ResolvedTy::Named { args, .. } = success else {
+                return Err("service export lacks its actor".into());
+            };
+            let [actor] = args.as_slice() else {
+                return Err("service export names one actor".into());
+            };
+            actor
+        } else {
+            success
         };
         let actor = self.service.require_actor(actor_ty)?;
         let descriptor = &self.service.actors[actor.0 as usize];
-        if descriptor.handlers.is_empty()
-            || descriptor
-                .handlers
-                .iter()
-                .any(|handler| handler.codec.is_none())
+        if !descriptor
+            .handlers
+            .iter()
+            .any(|handler| handler.codec.is_some())
         {
-            return Err(
-                "every service handler requires checked portable request and reply codecs".into(),
-            );
+            return Err("service acquisition requires at least one wire handler".into());
         }
-        let export = operation == hew_types::runtime_call::ServiceOp::Export;
         if export
             && args
                 .get(1)

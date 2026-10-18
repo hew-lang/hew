@@ -62,12 +62,9 @@ impl LowerCtx {
         if !interceptor_token
             && matches!(marker, ResourceMarker::Resource | ResourceMarker::Linear)
             && facts.is_opaque
-            && ![
-                hew_types::KnownDecl::Service,
-                hew_types::KnownDecl::ServiceExport,
-            ]
-            .into_iter()
-            .any(|known| declaration == hew_types::DefTable::known(known))
+            && ![hew_types::KnownDecl::ServiceExport]
+                .into_iter()
+                .any(|known| declaration == hew_types::DefTable::known(known))
             && !facts.type_params.is_empty()
         {
             self.diagnostics.push(HirDiagnostic::new(

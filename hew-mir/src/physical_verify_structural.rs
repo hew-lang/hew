@@ -880,6 +880,7 @@ pub(crate) fn verify_clone_action(
                 CloneKind::Retain,
                 CloneAction::StringRetain
                     | CloneAction::BytesRetain
+                    | CloneAction::ActorRetain
                     | CloneAction::RcRetain
                     | CloneAction::WeakRetain
             )
@@ -911,6 +912,15 @@ pub(crate) fn verify_clone_action(
             CloneAction::Bitwise => own == OwnKind::None,
             CloneAction::StringRetain => ty == &ResolvedTy::String && own == OwnKind::Owned,
             CloneAction::BytesRetain => ty == &ResolvedTy::Bytes && own == OwnKind::Owned,
+            CloneAction::ActorRetain => {
+                matches!(
+                    ty,
+                    ResolvedTy::Named {
+                        head: hew_types::TypeHead::Actor(_),
+                        ..
+                    }
+                ) && own == OwnKind::Owned
+            }
             CloneAction::RcRetain => ty.is_builtin(BuiltinType::Rc) && own == OwnKind::Owned,
             CloneAction::WeakRetain => ty.is_builtin(BuiltinType::Weak) && own == OwnKind::Owned,
             CloneAction::Aggregate(id) => {
@@ -992,6 +1002,15 @@ pub(crate) fn verify_destroy_action(
             }
             DestroyAction::StringRelease => ty == &ResolvedTy::String && own == OwnKind::Owned,
             DestroyAction::BytesRelease => ty == &ResolvedTy::Bytes && own == OwnKind::Owned,
+            DestroyAction::ActorRelease => {
+                matches!(
+                    ty,
+                    ResolvedTy::Named {
+                        head: hew_types::TypeHead::Actor(_),
+                        ..
+                    }
+                ) && own == OwnKind::Owned
+            }
             DestroyAction::RcRelease(id) => {
                 let glue = shared_glue(module, id)?;
                 glue.ty == *ty

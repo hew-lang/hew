@@ -32,7 +32,7 @@ mod inbound_call;
 mod monitor_link;
 mod remote_call;
 pub(crate) mod service;
-mod service_api;
+pub(crate) mod service_api;
 #[cfg(test)]
 mod tests;
 
@@ -2189,6 +2189,7 @@ impl InboundRequest {
                 None,
                 None,
                 caller,
+                ptr::null(),
                 Some(admission),
             )
         }

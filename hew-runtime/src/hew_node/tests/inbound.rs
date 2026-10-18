@@ -692,6 +692,7 @@ fn service_revocation_refuses_an_already_queued_dispatch_claim() {
             None,
             None,
             crate::actor_caller::HewCallerStamp::peer(peer_id.into()),
+            ptr::null(),
             Some(admission),
         )
     };

@@ -341,6 +341,8 @@ pub enum CloneAction {
     Bitwise,
     StringRetain,
     BytesRetain,
+    /// Share an actor descriptor without owning its actor or issuer grant.
+    ActorRetain,
     /// Retain one more strong reference to a shared allocation.
     RcRetain,
     /// Retain one more weak reference to a shared allocation.
@@ -366,6 +368,8 @@ pub enum DestroyAction {
     Callable,
     StringRelease,
     BytesRelease,
+    /// Release an actor descriptor, without requesting actor termination.
+    ActorRelease,
     /// Release one strong reference. When it was the last, the runtime runs
     /// the payload's release recipe - which the glue identity names - before
     /// the allocation goes.

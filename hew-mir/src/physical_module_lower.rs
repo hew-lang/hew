@@ -650,6 +650,17 @@ pub(crate) fn clone_action_for_type(
         CloneKind::Bits => CloneAction::Bitwise,
         CloneKind::Retain if ty == &ResolvedTy::String => CloneAction::StringRetain,
         CloneKind::Retain if ty == &ResolvedTy::Bytes => CloneAction::BytesRetain,
+        CloneKind::Retain
+            if matches!(
+                ty,
+                ResolvedTy::Named {
+                    head: hew_types::TypeHead::Actor(_),
+                    ..
+                }
+            ) =>
+        {
+            CloneAction::ActorRetain
+        }
         CloneKind::Retain if ty.is_builtin(BuiltinType::Rc) => CloneAction::RcRetain,
         CloneKind::Retain if ty.is_builtin(BuiltinType::Weak) => CloneAction::WeakRetain,
         CloneKind::DeepCopy if encoding_format(ty).is_some() => {
@@ -711,6 +722,10 @@ pub(crate) fn destroy_action_for_type(
         ResolvedTy::TraitObject { .. } => Some(DestroyAction::TraitObject),
         ResolvedTy::String => Some(DestroyAction::StringRelease),
         ResolvedTy::Bytes => Some(DestroyAction::BytesRelease),
+        ResolvedTy::Named {
+            head: hew_types::TypeHead::Actor(_),
+            ..
+        } => Some(DestroyAction::ActorRelease),
         _ if ty.is_builtin(BuiltinType::Rc) => {
             ids.shared.get(ty).copied().map(DestroyAction::RcRelease)
         }

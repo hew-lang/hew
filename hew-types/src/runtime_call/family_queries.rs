@@ -697,7 +697,7 @@ impl RuntimeCallFamily {
 
             // Everything else: NOT suspending today. Exhaustively listed
             // so adding a new variant requires an explicit decision.
-            F::Service(super::ServiceOp::Peer | super::ServiceOp::Call | super::ServiceOp::ClosePeer | super::ServiceOp::CloseService | super::ServiceOp::CloseExport)
+            F::Service(super::ServiceOp::Peer | super::ServiceOp::ClosePeer | super::ServiceOp::CloseExport)
             | F::FileRead(_)
             | F::Tcp(_)
             | F::Array(_)

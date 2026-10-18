@@ -9,15 +9,16 @@ use crate::{ResolvedTy, Ty};
 const ACTOR_MSG: &str = "std.builtins.ActorMsg";
 
 impl Checker {
-    pub(super) fn select_service_codecs(&mut self, program: &hew_parser::ast::Program) {
+    pub(super) fn select_wire_actor_codecs(&mut self, program: &hew_parser::ast::Program) {
         fn collect(ty: &Ty, actors: &mut Vec<Ty>) {
-            if let Ty::Named { head, args } = ty {
-                if [crate::KnownDecl::Service, crate::KnownDecl::ServiceExport]
-                    .into_iter()
-                    .any(|known| head.nominal() == Some(known.nominal()))
-                {
-                    actors.extend(args.iter().cloned());
+            if matches!(
+                ty,
+                Ty::Named {
+                    head: crate::TypeHead::Actor(_),
+                    ..
                 }
+            ) {
+                actors.push(ty.clone());
             }
             ty.map_children(&mut |child| {
                 collect(child, actors);
@@ -42,11 +43,11 @@ impl Checker {
             if instance.has_inference_var() || instance.has_type_parameters() {
                 continue;
             }
-            self.select_service_instance(&instance, &site, indices.as_ref());
+            self.select_wire_actor_instance(&instance, &site, indices.as_ref());
         }
     }
 
-    fn select_service_instance(
+    fn select_wire_actor_instance(
         &mut self,
         instance: &Ty,
         site: &crate::SpanKey,
@@ -83,8 +84,8 @@ impl Checker {
         let Some(protocol) = self.actor_protocol_descriptors.get(&actor_key) else {
             return;
         };
-        let mut valid = !protocol.handlers.is_empty();
-        for handler in &protocol.handlers {
+        let mut valid = protocol.handlers.iter().any(|handler| handler.wire);
+        for handler in protocol.handlers.iter().filter(|handler| handler.wire) {
             for ty in handler
                 .param_tys
                 .iter()
@@ -99,7 +100,7 @@ impl Checker {
                 if let Some(reason) = self.remote_payload_error(&ty) {
                     valid = false;
                     let message = Self::not_data_message(
-                        &format!("service handler `{}`", handler.wire_identity),
+                        &format!("wire handler `{}`", handler.wire_identity),
                         &reason,
                     );
                     let mut error = crate::TypeError::new(
@@ -128,7 +129,7 @@ impl Checker {
             .actor_protocol_descriptors
             .get_mut(&actor_key)
             .expect("selected actor protocol");
-        for handler in &mut protocol.handlers {
+        for handler in protocol.handlers.iter_mut().filter(|handler| handler.wire) {
             let receiver = crate::actor_protocol::ActorRemoteReceiver {
                 interface: crate::actor_protocol::RemoteActorInterface::Service,
                 parameters: Vec::new(),
@@ -138,70 +139,6 @@ impl Checker {
                 handler.remote_receivers.push(receiver);
             }
         }
-    }
-
-    /// Select each receive member through its checked `ActorMsg` impl receiver.
-    /// Concrete instances reuse ordinary impl matching and wire admission.
-    pub(super) fn select_actor_codecs(&mut self) {
-        let Some(trait_id) = self.assoc_carrier_trait(ACTOR_MSG) else {
-            return;
-        };
-        let mut protocols = std::mem::take(&mut self.actor_protocol_descriptors);
-        for (actor, protocol) in &mut protocols {
-            let Some(nominal) = self.nominal_head_for_key(actor) else {
-                continue;
-            };
-            let Some(definition) = self.head_type_def(crate::TypeHead::Actor(nominal)) else {
-                continue;
-            };
-            let Some(key) = Self::impl_self_key(&Ty::actor_handle(nominal, Vec::new())) else {
-                continue;
-            };
-            let Some(bindings) = self.associated_schema_parameters.implementations.get(&(
-                key,
-                trait_id,
-                hew_parser::ast::Symbol::intern("Msg"),
-            )) else {
-                continue;
-            };
-            for binding in bindings {
-                let receiver = self.normalize_for_use(&binding.receiver);
-                let Ty::Named { args, .. } = &receiver else {
-                    continue;
-                };
-                let Some((msg, reply)) = self.actor_msg_types(&receiver) else {
-                    continue;
-                };
-                let substitutions = definition
-                    .type_params
-                    .iter()
-                    .copied()
-                    .zip(args.iter().cloned())
-                    .collect();
-                let Some(index) = remote_member(protocol, &msg, &reply, |ty| {
-                    self.normalize_for_use(
-                        &ty.to_ty().substitute_type_params_parallel(&substitutions),
-                    )
-                }) else {
-                    continue;
-                };
-                let Ok(args) = args
-                    .iter()
-                    .map(ResolvedTy::from_ty)
-                    .collect::<Result<Vec<_>, _>>()
-                else {
-                    continue;
-                };
-                protocol.handlers[index].remote_receivers.push(
-                    crate::actor_protocol::ActorRemoteReceiver {
-                        interface: crate::actor_protocol::RemoteActorInterface::Message,
-                        parameters: binding.parameters.clone(),
-                        args,
-                    },
-                );
-            }
-        }
-        self.actor_protocol_descriptors = protocols;
     }
 
     /// Project `A.Msg` and `A.Reply` through the actor's `ActorMsg` impl.

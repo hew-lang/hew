@@ -305,6 +305,12 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         );
         types.push(ptr.into());
         arguments.push(self.sender_stamp()?.into());
+        types.push(ptr.into());
+        let dispatch = self
+            .llvm
+            .get_function(&symbol(actor.id, "dispatch"))
+            .ok_or_else(|| CodegenError::FailClosed("actor call lacks its dispatch key".into()))?;
+        arguments.push(dispatch.as_global_value().as_pointer_value().into());
         let start = get_or_declare_external(
             self.llvm,
             if sealed {

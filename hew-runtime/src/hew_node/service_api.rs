@@ -23,7 +23,7 @@ struct PeerSession {
     peer: NodeSessionIdentity,
 }
 
-struct ImportedService {
+pub(crate) struct ImportedService {
     owner: Weak<ServiceExports>,
     offer: ServiceOfferPayload,
 }
@@ -116,18 +116,6 @@ pub unsafe extern "C" fn hew_peer_session_close(handle: *mut c_void) {
     if !handle.is_null() {
         // SAFETY: the resource's consuming close transfers this allocation.
         drop(unsafe { Box::from_raw(handle.cast::<PeerSession>()) });
-    }
-}
-
-/// Release one imported descriptor; the issuer owns revocation.
-///
-/// # Safety
-/// `handle` is null or one live service handle transferred once.
-#[no_mangle]
-pub unsafe extern "C" fn hew_service_close(handle: *mut c_void) {
-    if !handle.is_null() {
-        // SAFETY: the resource's consuming close transfers this allocation.
-        drop(unsafe { Box::from_raw(handle.cast::<ImportedService>()) });
     }
 }
 
@@ -307,96 +295,85 @@ pub(super) unsafe fn take_acquisition(operation: &mut HewRemoteCall, output: *mu
             let Some(lease) = lease.take() else {
                 return AskError::StaleRef as i32;
             };
-            Box::into_raw(Box::new(lease)).cast::<c_void>()
+            Box::into_raw(Box::new(lease)) as usize
         }
         RemoteCallRoute::Import(_, owner) => {
             let Ok(offer) = crate::envelope::decode_service_offer_payload(&reply.data) else {
                 return AskError::DecodeFailure as i32;
             };
-            Box::into_raw(Box::new(ImportedService {
+            let descriptor = Arc::new(ImportedService {
                 owner: owner.clone(),
                 offer,
-            }))
-            .cast()
+            });
+            match crate::lifetime::local_handles::register_current_imported_actor(descriptor) {
+                Ok(token) => token.as_usize(),
+                Err(_) => return AskError::LocalShutdown as i32,
+            }
         }
         _ => unreachable!(),
     };
-    // SAFETY: the operation's successful source result is one opaque pointer.
-    unsafe { output.cast::<*mut c_void>().write(value) };
+    // SAFETY: exports and actor values each have one target-word carrier.
+    unsafe { output.cast::<usize>().write(value) };
     AskError::None as i32
 }
 
-/// Submit a selected handler through the imported interface.
-///
+fn imported_actor_target(
+    service: &ImportedService,
+    dispatch: *const c_void,
+    message: i32,
+) -> Result<(crate::node_identity::Location, u64), AskError> {
+    with_manager(|manager| {
+        if !service
+            .owner
+            .ptr_eq(&Arc::downgrade(&manager.service_exports))
+            || local_session(manager) != Some(service.offer.recipient)
+        {
+            return Err(AskError::StaleRef);
+        }
+        let handler =
+            crate::xnode_serial::lookup_request(dispatch, message).ok_or(AskError::Unauthorized)?;
+        if service
+            .offer
+            .handlers
+            .binary_search_by(|candidate| candidate.as_str().cmp(handler.identity))
+            .is_err()
+        {
+            return Err(AskError::Unauthorized);
+        }
+        Ok((service.offer.target, service.offer.grant_id))
+    })
+}
+
+/// Borrow a prepared actor request during authenticated encoding. Its actor
+/// call remains the owner until the request is taken or cleanup completes.
 /// # Safety
-/// The service is borrowed; the remaining arguments have `hew_remote_call_new`'s contract.
-#[no_mangle]
-pub unsafe extern "C" fn hew_service_call_new(
-    service: *const c_void,
+/// The exact request wrapper and waker remain live throughout this call.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one exact imported actor request"
+)]
+pub(crate) unsafe fn start_imported_actor_call(
+    service: &ImportedService,
     dispatch: *const c_void,
     message: i32,
     request: *mut c_void,
     request_size: usize,
     reply_size: usize,
-    timeout_ms: u64,
     deadline_ns: i64,
     waker: *const crate::wake::HewWaker,
 ) -> *mut HewRemoteCall {
-    // SAFETY: the source borrows a live opaque service descriptor.
-    let service = unsafe { service.cast::<ImportedService>().as_ref() };
-    let admitted = service.ok_or(AskError::StaleRef).and_then(|service| {
-        with_manager(|manager| {
-            if !service
-                .owner
-                .ptr_eq(&Arc::downgrade(&manager.service_exports))
-                || local_session(manager) != Some(service.offer.recipient)
-            {
-                return Err(AskError::StaleRef);
-            }
-            let handler = crate::xnode_serial::lookup_request(dispatch, message)
-                .ok_or(AskError::EncodeFailed)?;
-            if service
-                .offer
-                .handlers
-                .binary_search_by(|candidate| candidate.as_str().cmp(handler.identity))
-                .is_err()
-            {
-                return Err(AskError::Unauthorized);
-            }
-            Ok((service.offer.target, service.offer.grant_id))
-        })
-    });
-    match admitted {
-        Ok((target, grant)) => {
-            let target = crate::node_identity::HewRemotePid::from(target);
-            // SAFETY: forwards the owned request; target is readable until setup returns.
-            unsafe {
-                super::remote_call::new_call(
-                    &raw const target,
-                    Some(grant),
-                    dispatch,
-                    message,
-                    request,
-                    request_size,
-                    reply_size,
-                    timeout_ms,
-                    deadline_ns,
-                    waker,
-                )
-            }
-        }
-        Err(error) => {
-            // SAFETY: setup did not transfer these owned request fields.
-            unsafe { super::release_request(dispatch, message, request) };
-            Box::into_raw(Box::new(HewRemoteCall {
-                route: RemoteCallRoute::Failed(error),
-                timer: ptr::null_mut(),
-                timed_out: false,
-                deadline: RequestDeadline::from_raw(deadline_ns),
-                dispatch,
-                msg_type: message,
-                reply_size,
-            }))
-        }
+    let target = imported_actor_target(service, dispatch, message);
+    // SAFETY: encoding is synchronous and the source retains its wrapper.
+    unsafe {
+        super::remote_call::start_granted_call(
+            target,
+            dispatch,
+            message,
+            request,
+            request_size,
+            reply_size,
+            deadline_ns,
+            waker,
+        )
     }
 }

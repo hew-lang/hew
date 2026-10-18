@@ -175,6 +175,7 @@ impl Tables {
             DestroyAction::Encoding(_)
             | DestroyAction::StringRelease
             | DestroyAction::BytesRelease
+            | DestroyAction::ActorRelease
             // A weak handle owns no payload; dropping one only decrements.
             | DestroyAction::WeakRelease => false,
             DestroyAction::Callable | DestroyAction::TraitObject => true,

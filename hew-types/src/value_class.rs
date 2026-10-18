@@ -674,14 +674,14 @@ fn classify_uncached(
 
     Ok(match ty {
         ResolvedTy::GenericCallable { callable, .. } => classify(callable, decls, walk)?,
-        // integers, floats, Bool, Char, Unit, Never, Duration; and an actor,
-        // which is the type of its handle: a pid never owns the actor, so its
-        // drop frees nothing.
+        // Actor values share their descriptor, never the actor allocation or
+        // the issuer's export authority. Local descriptor retain/release is a
+        // no-op; an imported descriptor is reclaimed after its last local use.
         ResolvedTy::Named {
             head: crate::TypeHead::Actor(_),
             ..
-        }
-        | ResolvedTy::I8
+        } => (ValueClass::PersistentShare, CloneKind::Retain),
+        ResolvedTy::I8
         | ResolvedTy::I16
         | ResolvedTy::I32
         | ResolvedTy::I64

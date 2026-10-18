@@ -295,6 +295,10 @@ pub struct HewRemoteCall {
 }
 
 impl HewRemoteCall {
+    pub(crate) fn has_deadline(&self) -> bool {
+        self.deadline.raw() >= 0
+    }
+
     fn ready(&mut self) -> bool {
         let pending = match &self.route {
             RemoteCallRoute::Wire(pending, _, _)
@@ -331,6 +335,67 @@ impl HewRemoteCall {
         }
         self.timed_out
     }
+}
+
+/// Start an authenticated call while its actor operation retains the original
+/// request. Encoding borrows its fields; no byte or field loan escapes setup.
+///
+/// # Safety
+/// The request and waker remain live through this synchronous encoding step.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one exact granted request contract"
+)]
+pub(super) unsafe fn start_granted_call(
+    target: Result<(Location, u64), AskError>,
+    dispatch: *const c_void,
+    message: i32,
+    request: *mut c_void,
+    request_size: usize,
+    reply_size: usize,
+    deadline_ns: i64,
+    waker: *const crate::wake::HewWaker,
+) -> *mut HewRemoteCall {
+    let deadline = RequestDeadline::from_raw(deadline_ns);
+    let setup = match target {
+        Ok((target, grant)) => {
+            // SAFETY: the caller retains the live descriptor through setup.
+            let wake = unsafe { crate::wake::OwnedWaker::retain(&*waker) };
+            setup_remote_ask(
+                target,
+                dispatch,
+                message,
+                request,
+                request_size,
+                wake,
+                deadline,
+                Some(grant),
+            )
+        }
+        Err(error) => RemoteAskSetupResult::Error(error),
+    };
+    let route = match setup {
+        RemoteAskSetupResult::Ok((pending, target, publication)) => {
+            RemoteCallRoute::Wire(pending, target, publication)
+        }
+        RemoteAskSetupResult::Error(error) => RemoteCallRoute::Failed(error),
+        // A peer grant never authorizes a local-location fallback.
+        RemoteAskSetupResult::Local(_) => RemoteCallRoute::Failed(AskError::Unauthorized),
+    };
+    Box::into_raw(Box::new(HewRemoteCall {
+        route,
+        // SAFETY: the deadline operation retains the caller's live waker.
+        timer: if deadline_ns >= 0 {
+            unsafe { crate::coro_sleep::hew_coro_sleep_until_new(deadline_ns, waker) }
+        } else {
+            ptr::null_mut()
+        },
+        timed_out: false,
+        deadline,
+        dispatch,
+        msg_type: message,
+        reply_size,
+    }))
 }
 
 impl Drop for HewRemoteCall {
@@ -587,6 +652,7 @@ unsafe fn start_local_call(
             None,
             None,
             &crate::actor_caller::local_sender(),
+            dispatch,
         )
     };
     operation(RemoteCallRoute::Local(call))

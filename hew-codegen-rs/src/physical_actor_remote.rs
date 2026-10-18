@@ -130,13 +130,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .transpose()?;
         let start = get_or_declare_external(
             self.llvm,
-            if hew_types::runtime_call::ServiceHandleKind::Service
-                .matches(&self.storage(target)?.ty)
-            {
-                "hew_service_call_new"
-            } else {
-                "hew_remote_call_new"
-            },
+            "hew_remote_call_new",
             ptr.fn_type(
                 &[
                     ptr.into(),
@@ -156,13 +150,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             &self.builder,
             start,
             &[
-                if hew_types::runtime_call::ServiceHandleKind::Service
-                    .matches(&self.storage(target)?.ty)
-                {
-                    self.load(target, "remote.service")?.into()
-                } else {
-                    self.slots[target.0 as usize].into()
-                },
+                self.slots[target.0 as usize].into(),
                 self.remote_dispatch(actor)?.into(),
                 i32_ty.const_int(u64::from(message), false).into(),
                 wrapper.into(),
@@ -335,6 +323,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             let handlers = descriptor
                 .handlers
                 .iter()
+                .filter(|handler| handler.codec.is_some())
                 .map(|handler| {
                     self.builder
                         .build_global_string_ptr(&handler.wire_identity, "service.handler")
@@ -397,7 +386,14 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 },
                 interface.as_pointer_value().into(),
                 size_ty
-                    .const_int(descriptor.handlers.len() as u64, false)
+                    .const_int(
+                        descriptor
+                            .handlers
+                            .iter()
+                            .filter(|handler| handler.codec.is_some())
+                            .count() as u64,
+                        false,
+                    )
                     .into(),
                 self.ctx
                     .bool_type()

@@ -114,6 +114,14 @@ struct LocalHandleState {
     supervisor_roles: HashMap<HewLocalPidId, SupervisorRole>,
     #[cfg(not(target_arch = "wasm32"))]
     supervisor_role_tokens: HashMap<(HewLocalPidId, u32), HewLocalPidId>,
+    #[cfg(not(target_arch = "wasm32"))]
+    imports: HashMap<HewLocalPidId, ImportedActorBinding>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+struct ImportedActorBinding {
+    references: usize,
+    service: Arc<crate::hew_node::service_api::ImportedService>,
 }
 
 /// An internal owner path used by `ChildRef`, never an incarnation `LocalPid`.
@@ -1057,6 +1065,74 @@ fn current_handles() -> Option<&'static LocalHandles> {
 #[cfg(target_arch = "wasm32")]
 fn current_handles() -> Option<&'static LocalHandles> {
     Some(WASM_LOCAL_HANDLES.get_or_init(LocalHandles::new))
+}
+
+/// Publish one admitted descriptor in the existing actor-handle authority.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn register_current_imported_actor(
+    service: Arc<crate::hew_node::service_api::ImportedService>,
+) -> Result<HewLocalPidId, LocalHandleError> {
+    let handles = current_handles().ok_or(LocalHandleError::ShuttingDown)?;
+    let _publication = handles.begin_publication()?;
+    let token = allocate().ok_or(LocalHandleError::Exhausted)?;
+    handles.state.access(|state| {
+        state.imports.insert(
+            token,
+            ImportedActorBinding {
+                references: 1,
+                service,
+            },
+        );
+    });
+    Ok(token)
+}
+
+/// Borrow the descriptor without extending either peer's node session.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn current_imported_actor(
+    token: HewLocalPidId,
+) -> Option<Arc<crate::hew_node::service_api::ImportedService>> {
+    current_handles()?.state.access(|state| {
+        state
+            .imports
+            .get(&token)
+            .map(|binding| Arc::clone(&binding.service))
+    })
+}
+
+/// Copy an actor value. Local incarnations and roles own no target allocation;
+/// imported values share only their local descriptor, never the issuer grant.
+#[no_mangle]
+pub extern "C" fn hew_actor_handle_retain(token: HewLocalPidId) -> HewLocalPidId {
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(handles) = current_handles() {
+        handles.state.access(|state| {
+            if let Some(binding) = state.imports.get_mut(&token) {
+                binding.references = binding
+                    .references
+                    .checked_add(1)
+                    .expect("actor descriptor reference count overflow");
+            }
+        });
+    }
+    token
+}
+
+/// Release one actor value. Last imported-handle release frees its descriptor;
+/// exporter revocation and actor lifecycle remain separate authorities.
+#[no_mangle]
+pub extern "C" fn hew_actor_handle_release(token: HewLocalPidId) {
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(handles) = current_handles() {
+        let retired = handles.state.access(|state| {
+            let binding = state.imports.get_mut(&token)?;
+            binding.references -= 1;
+            (binding.references == 0).then(|| state.imports.remove(&token))
+        });
+        drop(retired);
+    }
+    #[cfg(target_arch = "wasm32")]
+    let _ = token;
 }
 
 /// Start one actor publication in the current runtime authority.

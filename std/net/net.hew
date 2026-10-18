@@ -766,12 +766,6 @@ extern "C" {
 pub type PeerSession {
 }
 
-/// An imported actor interface supplied by one authenticated peer.
-#[resource]
-#[opaque]
-pub type Service<A> {
-}
-
 /// The sole close authority for one exported actor interface.
 #[resource]
 #[opaque]
@@ -787,7 +781,7 @@ impl PeerSession {
 
     /// Wait cancellably for this peer to supply the requested actor interface.
     #[extern_symbol(hew_service_receive)]
-    fn receive_service<A>(self) -> Result<Service<A>, ActorError<Never, Never>> {
+    fn receive_service<A>(self) -> Result<A, ActorError<Never, Never>> {
         panic("service import requires native lowering")
     }
 
@@ -796,15 +790,6 @@ impl PeerSession {
     }
 
     #[extern_symbol(hew_peer_session_close)]
-    fn release(consume self) {}
-}
-
-impl<A> Service<A> {
-    fn close(consume self) {
-        self.release();
-    }
-
-    #[extern_symbol(hew_service_close)]
     fn release(consume self) {}
 }
 

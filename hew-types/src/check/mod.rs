@@ -3797,8 +3797,7 @@ impl Checker {
         // `self.actor_protocol_descriptors`. Take it for the typed output here
         // rather than rebuilding: a rebuild would re-run collision detection
         // and double-emit the diagnostics.
-        self.select_service_codecs(program);
-        self.select_actor_codecs();
+        self.select_wire_actor_codecs(program);
         let actor_protocol_descriptors = std::mem::take(&mut self.actor_protocol_descriptors);
 
         // Compute the set of monomorphic builtin enum names that landed in
@@ -5653,6 +5652,10 @@ fn actor_handler_specs(
         specs.push(crate::actor_protocol::ActorHandlerSpec {
             declaration,
             wire_identity: defs.dotted_declaration_path(declaration),
+            wire: rf
+                .attributes
+                .iter()
+                .any(|attribute| attribute.name == "wire"),
             name: rf.name.to_string(),
             param_tys,
             return_ty,

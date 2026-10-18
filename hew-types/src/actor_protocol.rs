@@ -76,6 +76,8 @@ pub struct ActorHandlerDescriptor {
     pub name: String,
     /// Canonical dotted declaration identity, independent of surface aliases.
     pub wire_identity: String,
+    /// Only explicitly declared wire handlers may enter an exported interface.
+    pub wire: bool,
     /// Receiver-local dispatch index.
     pub msg_id: u32,
     /// Parameter types declared by the handler, in source order.
@@ -152,6 +154,7 @@ pub enum ReceiveFailureDisplay {
 pub struct ActorHandlerSpec {
     pub declaration: crate::DefId,
     pub wire_identity: String,
+    pub wire: bool,
     pub name: String,
     pub param_tys: Vec<ResolvedTy>,
     pub return_ty: ResolvedTy,
@@ -176,6 +179,7 @@ impl ActorProtocolDescriptor {
                     coalesce_key: None,
                     declaration: spec.declaration,
                     wire_identity: spec.wire_identity.clone(),
+                    wire: spec.wire,
                     name: spec.name.clone(),
                     msg_id: u32::try_from(index)
                         .expect("actor handler count fits a dispatch index"),

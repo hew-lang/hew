@@ -414,14 +414,13 @@ pub enum KnownDecl {
     Call,
     Outcome,
     PeerSession,
-    Service,
     ServiceExport,
     ActorTimerMailbox,
     Timer,
 }
 
 impl KnownDecl {
-    pub const ALL: [Self; 28] = [
+    pub const ALL: [Self; 27] = [
         Self::ActorError,
         Self::Never,
         Self::ActorMailbox,
@@ -446,7 +445,6 @@ impl KnownDecl {
         Self::Call,
         Self::Outcome,
         Self::PeerSession,
-        Self::Service,
         Self::ServiceExport,
         Self::ActorTimerMailbox,
         Self::Timer,
@@ -482,7 +480,6 @@ impl KnownDecl {
             Self::Call => "std.builtins.Call",
             Self::Outcome => "std.builtins.Outcome",
             Self::PeerSession => "std.net.PeerSession",
-            Self::Service => "std.net.Service",
             Self::ServiceExport => "std.net.Export",
         }
     }
@@ -515,7 +512,6 @@ impl KnownDecl {
             Self::Call => "Call",
             Self::Outcome => "Outcome",
             Self::PeerSession => "PeerSession",
-            Self::Service => "Service",
             Self::ServiceExport => "Export",
         }
     }

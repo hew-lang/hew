@@ -386,8 +386,7 @@ impl SemActor {
             .find(|handler| handler.message_id == message && handler.codec.is_some())
             .ok_or("remote call has no portable receive member")?;
         let addressed = matches!(target, ResolvedTy::Named { head, args, .. }
-            if (*head == hew_types::TypeHead::Builtin(hew_types::BuiltinType::RemotePid)
-                || head.nominal() == Some(hew_types::KnownDecl::Service.nominal()))
+            if *head == hew_types::TypeHead::Builtin(hew_types::BuiltinType::RemotePid)
                 && args.as_slice() == std::slice::from_ref(&self.handle_ty));
         if !addressed {
             return Err("remote call target differs from its exact actor interface".into());

@@ -98,7 +98,11 @@ pub(crate) fn run_module_pipeline(
 ) -> CodegenResult<()> {
     let pipeline = match level {
         OptLevel::O0 => "default<O0>",
-        OptLevel::O2 => "default<O2>",
+        // Physical loop chunks retain their shared-budget suppression choice
+        // as an invariant branch. Once the main pipeline has promoted scalar
+        // storage and established checked arithmetic bounds, unswitch that
+        // choice and fold its CFG instead of cloning cyclic regions in emission.
+        OptLevel::O2 => "default<O2>,function(loop-simplify,lcssa,loop-mssa(simple-loop-unswitch<nontrivial>),instcombine,simplifycfg,loop(loop-rotate),instcombine,simplifycfg)",
     };
     module
         .run_passes(

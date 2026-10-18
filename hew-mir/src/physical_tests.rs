@@ -3519,3 +3519,76 @@ fn selected_value_call_cleanup_cannot_discard_fault_or_read_failed_result() {
         assert!(verify_physical_module(&module).is_err());
     }
 }
+
+#[test]
+fn scalar_loop_chunks_leave_checked_failures_and_calls_in_the_caller() {
+    let semantic = lower_source(
+        r"
+        fn scalar(limit: i64) -> i64 {
+            var sum: i64 = 0;
+            for index in 0..limit { sum += index; }
+            sum
+        }
+        fn calling(limit: i64) -> i64 {
+            var sum: i64 = 0;
+            for index in 0..limit { sum += scalar(index); }
+            sum
+        }
+        fn nested(limit: i64) -> i64 {
+            var sum: i64 = 0;
+            for index in 0..limit {
+                for inner in 0..index { sum += inner; }
+            }
+            sum
+        }
+        fn main() -> i64 { scalar(3) + calling(3) + nested(3) }
+        ",
+    );
+    let physical = lower_physical_module(&semantic, target_for_inventory(&semantic)).unwrap();
+    let module = physical.module();
+    let chunks = |name: &str| {
+        module
+            .functions
+            .iter()
+            .find(|function| {
+                let callable = &module.callables[function.callable.0 as usize];
+                module.defs.path(callable.declaration) == name
+            })
+            .unwrap()
+            .loop_chunks()
+    };
+    let scalar = chunks("scalar");
+    assert_eq!(scalar.len(), 1);
+    let function = module
+        .functions
+        .iter()
+        .find(|function| {
+            function.callable
+                == module
+                    .callables
+                    .iter()
+                    .find(|callable| module.defs.path(callable.declaration) == "scalar")
+                    .unwrap()
+                    .id
+        })
+        .unwrap();
+    assert!(scalar[0]
+        .exits
+        .keys()
+        .any(
+            |target| function.blocks.iter().any(|block| block.id == *target
+                && matches!(
+                    block.terminator,
+                    PhysicalTerminator::CheckedRaiseFault { .. }
+                ))
+        ));
+    assert!(
+        chunks("calling").is_empty(),
+        "a serial call must observe the synchronized shared budget"
+    );
+    assert_eq!(
+        chunks("nested").len(),
+        1,
+        "only the innermost scheduling boundary is batched"
+    );
+}

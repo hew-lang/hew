@@ -396,6 +396,20 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .build_conditional_branch(exhausted, slow, continuing)
             .llvm_ctx("select safepoint slow path")?;
         self.builder.position_at_end(slow);
+        self.emit_safepoint_poll(continuing, cancel)?;
+        self.builder.position_at_end(continuing);
+        self.emit_edge(normal)
+    }
+
+    /// Poll after a physical chunk has already consumed the final budget tick.
+    pub(super) fn emit_safepoint_poll(
+        &self,
+        continuing: inkwell::basic_block::BasicBlock<'ctx>,
+        cancel: Option<&PhysicalEdge>,
+    ) -> CodegenResult<()> {
+        let frame = self.frame.as_ref().ok_or_else(|| {
+            CodegenError::FailClosed("safepoint requires a resumable body".into())
+        })?;
         let poll = get_or_declare_external(
             self.llvm,
             "hew_coro_safepoint",
@@ -460,8 +474,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 .build_unconditional_branch(continuing)
                 .llvm_ctx("continue mandatory close after yielding")?;
         }
-        self.builder.position_at_end(continuing);
-        self.emit_edge(normal)
+        Ok(())
     }
 
     pub(super) fn emit_sleep(

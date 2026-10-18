@@ -1359,3 +1359,102 @@ fn build_info_record_survives_optimization_only_when_requested() {
         }
     }
 }
+
+#[test]
+fn scalar_loop_chunks_preserve_the_shared_budget_across_serial_calls() {
+    use std::cell::Cell;
+    thread_local! {
+        static BUDGET: Cell<u32> = const { Cell::new(0) };
+        static POLLS: Cell<u32> = const { Cell::new(0) };
+        static SUPPRESSED: Cell<bool> = const { Cell::new(false) };
+    }
+    unsafe extern "C" fn countdown(_: *mut std::ffi::c_void, _: u32) -> *mut u32 {
+        if SUPPRESSED.get() {
+            std::ptr::null_mut()
+        } else {
+            BUDGET.with(Cell::as_ptr)
+        }
+    }
+    unsafe extern "C" fn poll(_: *mut std::ffi::c_void, budget: u32) -> i32 {
+        assert_eq!(
+            BUDGET.get(),
+            0,
+            "poll only after the shared budget is consumed"
+        );
+        BUDGET.set(budget);
+        POLLS.set(POLLS.get() + 1);
+        0
+    }
+    let semantic = lower_source(
+        r"
+        fn short(limit: i64) -> i64 {
+            var sum: i64 = 0;
+            for index in 0..limit { sum += index; }
+            sum
+        }
+        fn main() -> i64 {
+            var sum: i64 = 0;
+            for _ in 0..7 { sum += short(3); }
+            sum
+        }
+        ",
+    );
+    let triple = native_emission_triple();
+    let target = physical_target_for_inventory(
+        &triple,
+        &hew_mir::physical::physical_type_inventory(&semantic),
+    )
+    .unwrap();
+    let verified = hew_mir::lower_physical_module(&semantic, target).unwrap();
+    // One main entry, eight outer headers, and seven calls each taking one
+    // entry plus four inner headers: 44 ticks, even when a chunk ends early.
+    let ticks = 44;
+    for opt in [OptLevel::O0, OptLevel::O2] {
+        let ctx = Context::create();
+        let machine = crate::llvm::target_machine_for_triple_with_opt_level(&triple, opt).unwrap();
+        let llvm = build_module(&ctx, verified.module(), "shared_loop_budget", &machine).unwrap();
+        crate::llvm::run_module_pipeline(&llvm, &machine, opt).unwrap();
+        let engine = llvm
+            .create_jit_execution_engine(inkwell::OptimizationLevel::None)
+            .unwrap();
+        super::test_runtime::bind_runtime(&llvm, &engine);
+        for (name, address) in [
+            ("hew_coro_safepoint_budget", countdown as *const () as usize),
+            ("hew_coro_safepoint", poll as *const () as usize),
+        ] {
+            engine.add_global_mapping(&llvm.get_function(name).unwrap(), address);
+        }
+        type Main = unsafe extern "C" fn(*mut i64, *mut *mut hew_runtime::fault::HewFault) -> i32;
+        // SAFETY: the generated main wrapper has the physical result/fault ABI.
+        let main = unsafe { engine.get_function::<Main>("__hew_main_body").unwrap() };
+        for initial in [0, 1, 2, 17, 4000] {
+            BUDGET.set(initial);
+            POLLS.set(0);
+            let mut result = 0;
+            let mut fault = std::ptr::null_mut();
+            // SAFETY: output carriers remain live through the synchronous root.
+            assert_eq!(unsafe { main.call(&raw mut result, &raw mut fault) }, 0);
+            assert_eq!(result, 21);
+            assert!(fault.is_null());
+            let polls = u32::from(initial != 0 && initial <= ticks);
+            assert_eq!(POLLS.get(), polls, "{opt:?}, initial={initial}");
+            assert_eq!(
+                BUDGET.get(),
+                (initial + polls * hew_mir::SAFEPOINT_BUDGET).wrapping_sub(ticks),
+                "{opt:?}, initial={initial}"
+            );
+        }
+        SUPPRESSED.set(true);
+        BUDGET.set(17);
+        POLLS.set(0);
+        let mut result = 0;
+        let mut fault = std::ptr::null_mut();
+        // SAFETY: output carriers remain live through the synchronous root.
+        assert_eq!(unsafe { main.call(&raw mut result, &raw mut fault) }, 0);
+        assert_eq!(result, 21);
+        assert!(fault.is_null());
+        assert_eq!(BUDGET.get(), 17, "suppression leaves the budget untouched");
+        assert_eq!(POLLS.get(), 0);
+        SUPPRESSED.set(false);
+    }
+}

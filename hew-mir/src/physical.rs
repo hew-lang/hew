@@ -41,9 +41,12 @@ mod callable;
 mod defer;
 #[path = "physical_extern.rs"]
 mod extern_abi;
+#[path = "physical_loops.rs"]
+mod loops;
 #[path = "physical_storage_uses.rs"]
 mod storage_uses;
 pub use extern_abi::PhysicalExternResultAbi;
+pub use loops::PhysicalLoopChunk;
 #[cfg(test)]
 #[path = "physical_defer_tests.rs"]
 mod defer_tests;

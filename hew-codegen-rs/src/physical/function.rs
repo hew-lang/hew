@@ -234,8 +234,23 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
     pub(super) fn emit(self) -> CodegenResult<()> {
         let inspectable = self.debug.is_some();
         let value = self.value;
+        let chunks = if self.frame.is_some() && !inspectable && self.module.coverage.is_empty() {
+            self.function.loop_chunks()
+        } else {
+            Vec::new()
+        };
         for block in &self.function.blocks {
             self.builder.position_at_end(self.blocks[&block.id]);
+            if let Some(chunk) = chunks.iter().find(|chunk| chunk.blocks.contains(&block.id)) {
+                if block.id == chunk.header {
+                    self.emit_loop_chunk(chunk)?;
+                } else {
+                    self.builder
+                        .build_unreachable()
+                        .llvm_ctx("omit outlined loop block")?;
+                }
+                continue;
+            }
             // Blocks are emitted in id order, not execution order, so a block
             // opens on its own first source point rather than inheriting the
             // line of whichever block was emitted before it.
@@ -406,7 +421,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
         clippy::too_many_lines,
         reason = "the physical operation match is deliberately exhaustive and contains no ownership selection"
     )]
-    fn emit_op(&self, operation: &PhysicalOp) -> CodegenResult<()> {
+    pub(super) fn emit_op(&self, operation: &PhysicalOp) -> CodegenResult<()> {
         match operation {
             PhysicalOp::GeneratorMake { callable, dest, .. } => {
                 self.emit_generator_make(*callable, *dest)

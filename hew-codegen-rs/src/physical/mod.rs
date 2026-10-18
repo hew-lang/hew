@@ -67,6 +67,7 @@ mod collections;
 mod control;
 mod function;
 mod helpers;
+mod loop_chunks;
 mod module_emitter;
 mod runtime_calls;
 mod text;

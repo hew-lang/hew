@@ -1,0 +1,65 @@
+import std.stream;
+
+fn short(limit: i64) -> i64 {
+    var sum: i64 = 0;
+    for index in 0..limit { sum += index; }
+    sum
+}
+
+fn serial(consume ready: stream.Sink<i64>) -> i64 {
+    ready.send(1).expect("ready");
+    var total: i64 = 0;
+    defer { assert(total > 0); println("serial cancelled"); }
+    loop {
+        total = total.wrapping_add(short(10));
+    }
+}
+
+fn nested(consume ready: stream.Sink<i64>) -> i64 {
+    ready.send(1).expect("ready");
+    var total: i64 = 0;
+    defer { assert(total > 0); println("nested cancelled"); }
+    loop {
+        for index in 0..20 {
+            for inner in 0..index { total = total.wrapping_add(inner); }
+        }
+    }
+}
+
+fn peer(consume ready: stream.Stream<i64>) -> i64 {
+    ready.recv().expect("ready");
+    ready.close();
+    println("peer progressed");
+    7
+}
+
+fn labelled_exit() -> i64 {
+    var outer: i64 = 0;
+    var total: i64 = 0;
+    @outer: while outer < 4 {
+        let limit = outer;
+        outer += 1;
+        for inner in 0..limit {
+            total += 1;
+            if inner == 1 { continue @outer; }
+        }
+    }
+    total
+}
+
+fn main() {
+    assert(labelled_exit() == 5);
+    assert(short(0) == 0);
+    assert(short(1) == 0);
+    assert(short(10) == 45);
+    let (serial_tx, serial_rx): (stream.Sink<i64>, stream.Stream<i64>) = stream.pipe(1).expect("pipe");
+    println(await race [serial(serial_tx), peer(serial_rx)]);
+    let (nested_tx, nested_rx): (stream.Sink<i64>, stream.Stream<i64>) = stream.pipe(1).expect("pipe");
+    println(await race [nested(nested_tx), peer(nested_rx)]);
+    scope {
+        var index: i64 = 9223372036854775800;
+        for _ in 0..20 { index += 1; }
+        panic("overflow escaped");
+    } handle failure { println("checked fault recovered"); };
+    println(short(10));
+}

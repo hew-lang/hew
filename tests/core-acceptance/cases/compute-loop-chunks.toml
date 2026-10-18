@@ -1,0 +1,12 @@
+[[case]]
+id = "compute-loop-chunks"
+intent = "Short serial calls and nested scalar loops share the invocation countdown, yield to a queued peer, preserve mutated locals for cancellation cleanup, and retain checked overflow recovery."
+source = "cases/compute-loop-chunks.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+env = { HEW_DETERMINISTIC = "schedule=fifo,seed=0,budget=100000", HEW_ACTOR_LEAK_CHECK = "1" }
+
+[case.expected]
+stdout = "peer progressed\nserial cancelled\n7\npeer progressed\nnested cancelled\n7\nchecked fault recovered\n45\n"
+stderr = ""
+exit = 0

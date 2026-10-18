@@ -2682,7 +2682,12 @@ fn cyclic_trait_hierarchy_bound_check_surfaces_diagnostic() {
         .trait_super
         .insert(trait_b, vec![TraitRef::bare(trait_a)]);
     let thing = checker.test_named("Thing", vec![]);
-    checker.record_trait_impl(&thing, &crate::check::TraitRef::bare(trait_a), Vec::new());
+    checker.record_trait_impl(
+        &thing,
+        &crate::check::TraitRef::bare(trait_a),
+        Vec::new(),
+        crate::check::ParamBounds::default(),
+    );
 
     let param = crate::ParamHead::for_test("T");
     let mut bounds = crate::check::ParamBounds::default();

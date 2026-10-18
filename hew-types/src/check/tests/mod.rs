@@ -45,6 +45,7 @@ mod optional_control_flow;
 mod output;
 mod pattern_conditions;
 mod patterns;
+mod projection_bounds;
 mod race;
 mod records;
 mod result_drop;

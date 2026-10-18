@@ -302,6 +302,7 @@ impl Checker {
             .lang_trait(crate::LangItem::IntoIterator)
             .filter(|into_iterator| self.type_satisfies_trait(&resolved, *into_iterator))
         {
+            self.defer_inferred_receiver_bound(&resolved, into_iterator, span);
             let item_projection = Ty::AssocType {
                 base: Box::new(resolved),
                 trait_name: self.defs.path(into_iterator).into(),
@@ -454,44 +455,8 @@ impl Checker {
         }
     }
 
-    /// The synthetic span the `for (k, v) in m` desugar uses for the `keys()`
-    /// projection call.
-    ///
-    /// `resolved_calls` (and `expr_types`) are keyed by span, so the projection
-    /// calls this for-in synthesizes cannot share a span with each other OR with
-    /// the iterable expression itself. Recording any projection at the iterable's
-    /// real span would clobber `expr_types[iterable_span]` with `Vec<…>`, and HIR
-    /// derives the for-in route from that side-table type for non-identifier
-    /// iterables (a field access / call / index / method-call source reads its
-    /// type exclusively from the checker side-table) — so the loop would
-    /// mis-route to the Vec arm and build a `VecIter` directly over the
-    /// HashMap/HashSet handle (silent type confusion). Every projection therefore
-    /// uses its own zero-width synthetic span, leaving `expr_types[iterable_span]`
-    /// holding the iterable's true `HashMap`/`HashSet` type.
-    ///
-    /// `keys()` anchors at the iterable's start offset; `values()` at the end
-    /// offset. Both are zero-width (start == end), so each is distinct from every
-    /// real expression span (real spans have start < end) and from each other
-    /// (the iterable has start < end, so its start and end offsets differ). The
-    /// derivation is deterministic, so the checker (recording the facts) and HIR
-    /// (emitting the synthetic calls) agree byte-for-byte. Both layers call these
-    /// single helpers; do not inline the derivation.
-    pub(super) fn hashmap_for_in_keys_span(iterable: &Span) -> Span {
-        iterable.start..iterable.start
-    }
-
-    /// The synthetic span the `for (k, v) in m` desugar uses for the `values()`
-    /// projection call. See [`Self::hashmap_for_in_keys_span`] for the
-    /// synthetic-span rationale; `values()` anchors at the iterable's end offset.
-    pub(super) fn hashmap_for_in_values_span(iterable: &Span) -> Span {
-        iterable.end..iterable.end
-    }
-
-    /// The synthetic span the `for x in s` desugar uses for the `HashSet`
-    /// `to_vec()` projection call. See [`Self::hashmap_for_in_keys_span`] for the
-    /// synthetic-span rationale; `to_vec()` anchors at the iterable's start
-    /// offset (a `HashSet` for-in has only this one projection, so it cannot
-    /// collide with `keys()`/`values()`, which only appear in `HashMap` for-in).
+    /// Keep the synthetic `HashSet` projection distinct from the iterable's
+    /// real expression span, whose type remains `HashSet<T>`.
     pub(super) fn hashset_for_in_to_vec_span(iterable: &Span) -> Span {
         iterable.start..iterable.start
     }
@@ -2139,55 +2104,6 @@ impl Checker {
                         } else {
                             Ty::Error
                         }
-                    }
-                    Ty::Named {
-                        head: crate::TypeHead::Builtin(BuiltinType::HashMap),
-                        args,
-                        ..
-                    } if args.len() >= 2 => {
-                        // `for (k, v) in m` desugars (in HIR) to a `HashMapIter`
-                        // cursor built from `m.keys()` and `m.values()`. Both
-                        // projections must be lowerable for the key/value types,
-                        // and the resolved-call facts (plus matching expr_types,
-                        // the HIR boundary's totality contract) must exist where
-                        // the HIR synthesis emits the two calls. `resolved_calls`
-                        // and `expr_types` are keyed by span, so the projections
-                        // cannot share a span with each other OR with the iterable
-                        // expression: `keys` and `values` are recorded at distinct
-                        // synthetic zero-width spans anchored at the iterable's
-                        // start/end offsets (distinct from every real expression
-                        // span, reproduced byte-for-byte by the HIR desugar via
-                        // `Self::hashmap_for_in_keys_span`/`..values_span`). This
-                        // leaves `expr_types[iterable_span]` holding the iterable's
-                        // true HashMap type so HIR routes non-identifier sources
-                        // (field/call/index) to the HashMap arm, not the Vec arm.
-                        let key_ty = args[0].clone();
-                        let val_ty = args[1].clone();
-                        let keys_span = Self::hashmap_for_in_keys_span(&iterable.1);
-                        let values_span = Self::hashmap_for_in_values_span(&iterable.1);
-                        // The desugar snapshots `values()`, so every value is
-                        // copied out of the map.
-                        if self.validate_hashmap_owned_element_types(&key_ty, &val_ty, &iterable.1)
-                            && self.validate_collection_value_clone_type(
-                                &val_ty,
-                                BuiltinType::HashMap,
-                                "for (k, v) in m",
-                                &iterable.1,
-                            )
-                        {
-                            let key_vec = self.make_vec_type(key_ty.clone(), &keys_span);
-                            let val_vec = self.make_vec_type(val_ty.clone(), &values_span);
-                            self.record_type(&keys_span, &key_vec);
-                            self.record_type(&values_span, &val_vec);
-                            self.record_resolved_hashmap_call("keys", &key_ty, &val_ty, &keys_span);
-                            self.record_resolved_hashmap_call(
-                                "values",
-                                &key_ty,
-                                &val_ty,
-                                &values_span,
-                            );
-                        }
-                        Ty::Tuple(vec![key_ty, val_ty])
                     }
                     Ty::Named {
                         head: crate::TypeHead::Builtin(BuiltinType::HashSet),

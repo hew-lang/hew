@@ -1,0 +1,11 @@
+[[case]]
+id = "hashmap-iterator-snapshot"
+intent = "Owned map cursors preserve paired snapshots, source liveness and single evaluation, including early exit."
+source = "cases/hashmap-iterator-snapshot.hew"
+suites = ["acceptance", "safety"]
+
+timeout_seconds = 30
+
+[case.expected]
+stdout = "stock\nstock\nstock\n"
+exit = 0

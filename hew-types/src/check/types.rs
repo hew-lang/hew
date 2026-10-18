@@ -1959,16 +1959,6 @@ pub enum MethodCallRewrite {
     BuiltinVecIntoIter,
     /// Snapshot cursor constructor, with the same ordinary value semantics.
     BuiltinVecIter,
-    /// Builtin `HashMap<K, V>::into_iter()` iterator constructor. HIR expands
-    /// this directly to a `HashMapIter<K, V>` record built from `keys()` /
-    /// `values()` snapshots — the same cursor the `for (k, v) in m` desugar
-    /// synthesises — so the pipeline form (`iter::map(m.into_iter(), ..)`)
-    /// matches `Vec`'s without a generic stdlib `impl IntoIterator for HashMap`
-    /// body (which the checker cannot admit on an abstract receiver).
-    BuiltinHashMapIntoIter {
-        key_ty: crate::resolved_ty::ResolvedTy,
-        val_ty: crate::resolved_ty::ResolvedTy,
-    },
     /// Builtin `VecIter<T>::next(var self)` state advance. HIR expands this at
     /// the call site so the caller's mutable iterator binding observes the
     /// cursor update.
@@ -2938,20 +2928,11 @@ pub(super) struct TraitImplArgs {
     pub(super) target: Ty,
     pub(super) args: Vec<Ty>,
     pub(super) params: Vec<crate::ParamHead>,
+    /// Bounds declared by the impl, independent of any method's constraints.
+    pub(super) bounds: ParamBounds,
 }
 
 impl TraitImplArgs {
-    pub(super) fn matches_receiver(&self, receiver: &Ty) -> bool {
-        let parameters = self
-            .params
-            .iter()
-            .copied()
-            .map(|parameter| (parameter, Ty::Var(TypeVar::fresh())))
-            .collect();
-        let pattern = self.target.substitute_type_params_parallel(&parameters);
-        crate::unify::unify_exact(&mut Substitution::new(), &pattern, receiver).is_ok()
-    }
-
     pub(super) fn overlaps(&self, other: &Self) -> bool {
         if self.args.len() != other.args.len() {
             return false;
@@ -3040,6 +3021,12 @@ impl TraitRef {
             assoc: Vec::new(),
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum TraitProofKind {
+    DeclaredImpl,
+    Conformance,
 }
 
 /// The trait bounds of generic binders, by binder.
@@ -3663,10 +3650,14 @@ pub struct Checker {
     /// Declared trait impls: the receiver with its type arguments erased and
     /// the trait, to the trait arguments of each impl.
     pub(super) trait_impls: HashMap<(ResolvedTy, crate::DefId), Vec<TraitImplArgs>>,
+    /// Ordinary trait obligations currently being proven, with applied arguments.
+    pub(super) active_trait_proofs: Vec<(TraitProofKind, Ty, TraitRef)>,
+    /// Abort remaining candidates after this root proof exhausts its budget.
+    pub(super) trait_proof_limit_reached: bool,
     pub(super) source_impl_declarations:
         HashMap<(ResolvedTy, Option<crate::DefId>), Vec<SourceImplDeclaration>>,
     pub(super) rejected_impl_declarations: HashSet<crate::DefId>,
-    /// Bound sites already reported as naming no trait or misapplying one.
+    /// Bound sites already reported with an invalid subject or trait shape.
     pub(super) reported_unknown_bounds: HashSet<SpanKey>,
     /// Method names provided by each trait impl block, keyed like
     /// `trait_impls`. This preserves provenance that is lost when impl
@@ -4535,6 +4526,8 @@ impl Checker {
             trait_defs: HashMap::new(),
             trait_super: HashMap::new(),
             trait_impls: HashMap::new(),
+            active_trait_proofs: Vec::new(),
+            trait_proof_limit_reached: false,
             source_impl_declarations: HashMap::new(),
             rejected_impl_declarations: HashSet::new(),
             reported_unknown_bounds: HashSet::new(),

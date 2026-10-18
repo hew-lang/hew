@@ -271,6 +271,11 @@ impl Checker {
         }
         let params =
             self.source_parameter_heads(id.type_params.as_deref().unwrap_or_default(), span);
+        let bounds = self.collect_type_param_bounds(
+            id.type_params.as_ref(),
+            id.where_clause.as_ref(),
+            &mut Vec::new(),
+        );
         let head = TraitImplArgs {
             target,
             args: trait_ref.as_ref().map_or_else(Vec::new, |bound| {
@@ -281,6 +286,7 @@ impl Checker {
                     .collect()
             }),
             params,
+            bounds,
         };
         let replaces_prelude = self.source_impl_declarations.get(&key).is_some_and(|rows| {
             rows.iter()

@@ -99,16 +99,21 @@ impl Checker {
         let canonical = Checker::canonical_primitive_or_builtin_key(&defaulted_receiver)?;
         let (trait_id, sig) = match self.lookup_primitive_trait_method(&defaulted_receiver, method)
         {
-            Ok(selection) => selection?,
-            Err(traits) => {
-                for arg in args {
-                    let (expr, span) = arg.expr();
-                    self.synthesize(expr, span);
+            Ok(Some(selection)) => selection,
+            Ok(None) => {
+                if self.report_primitive_trait_method_bounds(&defaulted_receiver, method, span) {
+                    self.synthesize_call_arguments(args);
+                    return Some(Ty::Error);
                 }
+                return None;
+            }
+            Err(traits) => {
+                self.synthesize_call_arguments(args);
                 self.report_ambiguous_method(&defaulted_receiver, method, &traits, span);
                 return Some(Ty::Error);
             }
         };
+        self.defer_inferred_receiver_bound(&defaulted_receiver, trait_id, span);
         // Bind the impl's type parameters from the concrete receiver's type
         // arguments BEFORE applying the signature, and PROVE the impl's `Self`
         // structurally matches the receiver. Without the binding a generic
@@ -122,6 +127,10 @@ impl Checker {
         // non-match `instantiate_*` returns `None` and we fall through to the
         // "no method" path below, failing closed. User `Ty::Named` receivers
         // already do both via `lookup_named_method_sig`.
+        let receiver_type_args = match &defaulted_receiver {
+            Ty::Named { args, .. } => args.as_slice(),
+            _ => &[],
+        };
         let applied_sig = self.apply_instantiated_call_signature_with_assoc(
             &sig,
             None,
@@ -134,7 +143,7 @@ impl Checker {
             Some(GenericCallee::Method {
                 type_name: &canonical,
                 method,
-                owner_type_args: &[],
+                owner_type_args: receiver_type_args,
             }),
         );
         let method_key = format!("{canonical}::{method}");
@@ -216,15 +225,96 @@ impl Checker {
         Some(self.project_assoc_types(&applied_sig.return_type))
     }
 
+    fn report_primitive_trait_method_bounds(
+        &mut self,
+        receiver: &Ty,
+        method: &str,
+        span: &Span,
+    ) -> bool {
+        let Some(canonical) = Self::canonical_primitive_or_builtin_key(receiver) else {
+            return false;
+        };
+        let mut candidates: Vec<_> = self
+            .primitive_trait_impls
+            .iter()
+            .filter(|((owner, _), _)| owner == &canonical)
+            .flat_map(|((_, trait_id), methods)| {
+                methods
+                    .get(method)
+                    .into_iter()
+                    .flatten()
+                    .cloned()
+                    .map(|entry| (*trait_id, entry))
+            })
+            .collect();
+        candidates.sort_unstable_by_key(|(trait_id, entry)| {
+            (
+                self.defs.path(*trait_id),
+                entry.origin == super::super::types::SourceImplOrigin::Prelude,
+            )
+        });
+        let before = self.errors.len();
+        for (trait_id, entry) in candidates {
+            self.instantiate_primitive_trait_method_sig_reporting(
+                entry.signature,
+                &entry.receiver,
+                trait_id,
+                receiver,
+                Some((method, span)),
+            );
+            if self.errors.len() > before {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Revisit an inferred receiver once the rest of its scope settles.
+    pub(in crate::check) fn defer_inferred_receiver_bound(
+        &mut self,
+        receiver: &Ty,
+        trait_id: crate::DefId,
+        span: &Span,
+    ) {
+        if receiver.has_inference_var() {
+            self.deferred_bound_checks.push(DeferredBoundCheck {
+                type_param: crate::ParamHead::receiver(trait_id),
+                bounds: vec![TraitRef::bare(trait_id)],
+                type_arg: receiver.clone(),
+                span: span.clone(),
+                scope_bounds: self.active_param_bounds(),
+                required_by: None,
+            });
+        }
+    }
+
     /// Instantiate an admitted impl only when its full receiver pattern matches.
     pub(in crate::check) fn instantiate_primitive_trait_method_sig(
+        &mut self,
+        sig: FnSig,
+        receiver_pattern: &Ty,
+        trait_id: crate::DefId,
+        receiver_ty: &Ty,
+    ) -> Option<FnSig> {
+        self.instantiate_primitive_trait_method_sig_reporting(
+            sig,
+            receiver_pattern,
+            trait_id,
+            receiver_ty,
+            None,
+        )
+    }
+
+    fn instantiate_primitive_trait_method_sig_reporting(
         &mut self,
         mut sig: FnSig,
         receiver_pattern: &Ty,
         trait_id: crate::DefId,
         receiver_ty: &Ty,
+        diagnostic: Option<(&str, &Span)>,
     ) -> Option<FnSig> {
         let mut subst: HashMap<crate::ParamHead, Ty> = HashMap::new();
+        let subst_snapshot = self.subst.snapshot();
         // Clone out of the side table so the structural match can take `&mut
         // self` (it unifies unbound receiver vars against concrete `Self` args).
         if let Ty::Named {
@@ -249,7 +339,6 @@ impl Checker {
             // var from an impl that does not actually apply. Restore on every
             // non-match so the probe is side-effect-free (hardening per the
             // A-general gate's non-blocking note).
-            let subst_snapshot = self.subst.snapshot();
             for (self_arg, receiver_arg) in self_args.iter().zip(receiver_args.iter()) {
                 if !self.match_self_arg_param(self_arg, receiver_arg, &impl_params, &mut subst) {
                     // `Self` does not structurally match the receiver — this impl
@@ -258,6 +347,35 @@ impl Checker {
                     self.subst.restore(subst_snapshot);
                     return None;
                 }
+            }
+        }
+        // Receiver substitution discharges the impl's binders only after
+        // their declared bounds are proven for the selected receiver.
+        sig.bounds = sig.bounds.map_types(|ty| {
+            ty.substitute_type_param(crate::ParamHead::receiver(trait_id), receiver_ty)
+                .substitute_type_params_parallel(&subst)
+        });
+        for (parameter, bound) in sig.bounds.iter() {
+            let Some(receiver_arg) = self.impl_bound_subject(*parameter, &subst) else {
+                continue;
+            };
+            if !receiver_arg.has_inference_var()
+                && (!self.type_satisfies_bound(&receiver_arg, bound)
+                    || !self.bound_associated_types_agree(&receiver_arg, bound))
+            {
+                if let Some((method, span)) = diagnostic {
+                    self.report_error(
+                        TypeErrorKind::BoundsNotSatisfied,
+                        span,
+                        format!(
+                            "method `{method}` requires `{}` to implement `{}`",
+                            receiver_arg.user_facing(),
+                            self.trait_ref_display(bound)
+                        ),
+                    );
+                }
+                self.subst.restore(subst_snapshot);
+                return None;
             }
         }
         for param_ty in &mut sig.params {
@@ -270,9 +388,6 @@ impl Checker {
             .substitute_type_param(crate::ParamHead::receiver(trait_id), receiver_ty)
             .substitute_type_params_parallel(&subst);
         sig.type_params.retain(|tp| !subst.contains_key(tp));
-        sig.bounds = sig
-            .bounds
-            .map_types(|ty| ty.substitute_type_params_parallel(&subst));
         let remaining: HashSet<crate::TypeParamId> = sig
             .type_params
             .iter()

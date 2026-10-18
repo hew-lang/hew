@@ -96,7 +96,7 @@ use self::types::{
     DeferredHashMapAdmission, DeferredHashSetAdmission, DeferredInferenceHole,
     DeferredMonomorphicSite, DeferredVecAdmission, ImplAliasEntry, ImplAliasScope, IndexContext,
     IntegerTypeInfo, PendingLoweringFact, SourceExternDeclaration, TraitAssociatedTypeInfo,
-    TraitImplArgs, TraitInfo,
+    TraitImplArgs, TraitInfo, TraitProofKind,
 };
 pub use self::types::{
     ActorMethodKind, ActorStateGuard, AllocationClass, ArmResolution, AssignTargetKind,
@@ -3020,6 +3020,8 @@ impl Checker {
             trait_defs: self.trait_defs.clone(),
             trait_super: self.trait_super.clone(),
             trait_impls: self.trait_impls.clone(),
+            active_trait_proofs: self.active_trait_proofs.clone(),
+            trait_proof_limit_reached: self.trait_proof_limit_reached,
             source_impl_declarations: self.source_impl_declarations.clone(),
             rejected_impl_declarations: self.rejected_impl_declarations.clone(),
             reported_unknown_bounds: self.reported_unknown_bounds.clone(),

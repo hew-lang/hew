@@ -126,6 +126,15 @@ impl AssociatedTypeSchemas {
             .find_map(|(projection, binder)| (*binder == parameter).then_some(*projection))
     }
 
+    pub(super) fn projection_for_id(
+        &self,
+        id: crate::TypeParamId,
+    ) -> Option<(crate::ParamHead, crate::DefId, Symbol)> {
+        self.parameters
+            .iter()
+            .find_map(|(projection, binder)| (binder.id == id).then_some(*projection))
+    }
+
     /// Project implicit associated binders through a method's checked receiver.
     #[must_use]
     pub fn instantiate_receiver_type(

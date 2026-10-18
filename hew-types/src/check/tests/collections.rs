@@ -3851,3 +3851,252 @@ fn compound_assignment_takes_only_the_operators_its_target_admits() {
         ]
     );
 }
+
+#[test]
+fn hashmap_snapshot_iteration_requires_cloneable_keys_and_values() {
+    for (key_type, value_type, setup) in [
+        (
+            "string",
+            "Token",
+            "values.insert(\"key\", Token { id: 1 });",
+        ),
+        (
+            "Token",
+            "string",
+            "values.insert(Token { id: 1 }, \"value\");",
+        ),
+    ] {
+        for iteration in [
+            "let _cursor = values.into_iter();",
+            "for _item in values { break; }",
+            "demand(values);",
+        ] {
+            let source = format!(
+                r#"
+#[resource]
+type Token {{ id: i64; }}
+impl Token {{ fn close(consume self) {{}} }}
+impl Hash for Token {{ fn hash(self) -> i64 {{ self.id }} }}
+impl Eq for Token {{ fn eq(self, other: Token) -> bool {{ self.id == other.id }} }}
+fn demand<I: IntoIterator>(input: I) {{ let _ = input; }}
+fn main() {{
+    var values: HashMap<{key_type}, {value_type}> = HashMap.new();
+    {setup}
+    {iteration}
+}}
+"#
+            );
+            let output = check_source_with_stdlib(&source);
+            assert!(
+                !output.errors.is_empty(),
+                "snapshotting an affine element must fail: {source}"
+            );
+            assert!(
+                output
+                    .errors
+                    .iter()
+                    .any(|error| error.message.contains("Clone")
+                        || error.message.contains("not iterable")
+                        || error.message.contains("IntoIterator")),
+                "snapshot refusal must identify the unavailable contract: {:?}",
+                output.errors
+            );
+        }
+    }
+}
+
+#[test]
+fn bounded_builtin_trait_method_keeps_copyable_record_receivers() {
+    let output = check_source_with_stdlib(
+        r#"
+type Label { text: string; }
+trait First { type Item; fn first(self) -> Self.Item; }
+impl<T: Clone> First for Vec<T> {
+    type Item = T;
+    fn first(self) -> T { self[0] }
+}
+fn copy_first<T: Clone>(values: Vec<T>) -> T { values.first() }
+fn main() {
+    let values = [Label { text: "kept" }];
+    let copied = copy_first(values);
+    assert(copied.text == "kept");
+}
+"#,
+    );
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+}
+
+#[test]
+fn hashmap_iterator_bound_waits_for_receiver_inference() {
+    for (value, accepted) in [("7", true), ("Token { id: 7 }", false)] {
+        let source = format!(
+            r#"
+#[resource]
+type Token {{ id: i64; }}
+impl Token {{ fn close(consume self) {{}} }}
+fn main() {{
+    var values = HashMap.new();
+    let cursor = values.into_iter();
+    values.insert("entry", {value});
+    let _ = cursor;
+}}
+"#,
+        );
+        let output = check_source_with_stdlib(&source);
+        if accepted {
+            assert!(output.errors.is_empty(), "{:?}", output.errors);
+        } else {
+            assert!(
+                output
+                    .errors
+                    .iter()
+                    .any(|error| error.message.contains("IntoIterator")),
+                "{:?}",
+                output.errors
+            );
+        }
+    }
+}
+
+#[test]
+fn builtin_impl_receiver_bounds_keep_associated_equalities() {
+    for (item, accepted) in [("string", true), ("i64", false)] {
+        for call in ["let _ = rows.label();", "demand(rows);"] {
+            let source = format!(
+                r#"
+type Cursor {{ done: bool; }}
+impl Iterator for Cursor {{
+    type Item = {item};
+    fn next(var self) -> Option<{item}> {{ .None }}
+}}
+trait StringRows {{ fn label(self) -> i64; }}
+impl<T: Iterator<Item = string>> StringRows for Vec<T> {{
+    fn label(self) -> i64 {{ 1 }}
+}}
+fn demand<R: StringRows>(rows: R) {{ let _ = rows; }}
+fn main() {{
+    let rows: Vec<Cursor> = [];
+    {call}
+}}
+"#,
+            );
+            let output = check_source_with_stdlib(&source);
+            if accepted {
+                assert!(output.errors.is_empty(), "{:?}", output.errors);
+            } else {
+                let required = if call.contains("label") {
+                    "string"
+                } else {
+                    "StringRows"
+                };
+                assert!(
+                    output
+                        .errors
+                        .iter()
+                        .any(|error| error.kind == TypeErrorKind::BoundsNotSatisfied
+                            && error.message.contains(required)),
+                    "{:?}",
+                    output.errors
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn builtin_impl_exists_independently_of_conditional_methods() {
+    for call_method in [false, true] {
+        let call = if call_method {
+            "let other: Vec<Token> = []; let _ = other.inspect();"
+        } else {
+            ""
+        };
+        let source = format!(
+            r#"
+#[resource]
+type Token {{ id: i64; }}
+impl Token {{ fn close(consume self) {{}} }}
+trait Inspect<Tag> {{ fn inspect(self) -> i64 where Tag: Clone; }}
+impl<T> Inspect<T> for Vec<T> {{
+    fn inspect(self) -> i64 where T: Clone {{ 0 }}
+}}
+fn accept<X: Inspect<Token>>(consume value: X) {{}}
+fn main() {{
+    let values: Vec<Token> = [];
+    accept(values);
+    {call}
+}}
+"#,
+        );
+        let output = check_source_with_stdlib(&source);
+        if call_method {
+            assert!(
+                output
+                    .errors
+                    .iter()
+                    .any(|error| error.kind == TypeErrorKind::BoundsNotSatisfied
+                        && error.message.contains("Clone")),
+                "{:?}",
+                output.errors
+            );
+            assert!(
+                !output
+                    .errors
+                    .iter()
+                    .any(|error| error.message.contains("Inspect<Token>")),
+                "{:?}",
+                output.errors
+            );
+        } else {
+            assert!(output.errors.is_empty(), "{:?}", output.errors);
+        }
+    }
+}
+
+#[test]
+fn builtin_impl_receiver_bounds_check_projected_item_copyability() {
+    for (item, accepted) in [("string", true), ("Token", false)] {
+        for call in ["let _ = rows.count();", "demand(rows);"] {
+            let source = format!(
+                r#"
+#[resource]
+type Token {{ id: i64; }}
+impl Token {{ fn close(consume self) {{}} }}
+type Cursor {{ done: bool; }}
+impl Iterator for Cursor {{
+    type Item = {item};
+    fn next(var self) -> Option<{item}> {{ .None }}
+}}
+trait CloneItems {{ fn count(self) -> i64; }}
+impl<T: Iterator> CloneItems for Vec<T> where T.Item: Clone {{
+    fn count(self) -> i64 {{ 0 }}
+}}
+fn demand<R: CloneItems>(rows: R) {{ let _ = rows; }}
+fn main() {{
+    let rows: Vec<Cursor> = [];
+    {call}
+}}
+"#,
+            );
+            let output = check_source_with_stdlib(&source);
+            if accepted {
+                assert!(output.errors.is_empty(), "{:?}", output.errors);
+            } else {
+                let required = if call.contains("count") {
+                    "Clone"
+                } else {
+                    "CloneItems"
+                };
+                assert!(
+                    output
+                        .errors
+                        .iter()
+                        .any(|error| error.kind == TypeErrorKind::BoundsNotSatisfied
+                            && error.message.contains(required)),
+                    "{:?}",
+                    output.errors
+                );
+            }
+        }
+    }
+}

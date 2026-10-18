@@ -1,0 +1,42 @@
+pub trait Message {
+    type Reply;
+    fn reply(self) -> Self.Reply;
+}
+
+pub trait ReplyCode {
+    fn reply_code(self) -> i64;
+}
+
+pub type Ack {
+    code: i64;
+}
+
+impl ReplyCode for Ack {
+    fn reply_code(self) -> i64 {
+        self.code
+    }
+}
+
+pub type Ping {
+}
+
+impl Message for Ping {
+    type Reply = Ack;
+    fn reply(self) -> Ack {
+        Ack { code: 42 }
+    }
+}
+
+pub type Pending<T> {
+    message: T;
+}
+
+impl<T: Message> ReplyCode for Pending<T> where T.Reply: ReplyCode {
+    fn reply_code(self) -> i64 {
+        self.message.reply().reply_code()
+    }
+}
+
+pub fn code<R: ReplyCode>(value: R) -> i64 {
+    value.reply_code()
+}

@@ -867,7 +867,7 @@ fn main() {
 
 `.get(k)` returns an owned copy of the value (not a reference). Modify the copy and reinsert with `.insert(k, new_value)`. This is the only mutation path — there is no `.get_mut()` or entry API.
 
-### Iterating a HashMap — .keys() and .values()
+### Iterating a HashMap
 
 ```hew
 fn main() {
@@ -889,6 +889,19 @@ fn main() {
 ```
 
 `.keys()` returns a `Vec<string>` snapshot of every key; `.values()` returns a `Vec<V>` snapshot of the corresponding values. Order is unspecified but both snapshots use the same internal order, so `keys()[i]` maps to `values()[i]`. Both return new Vecs — safe to iterate or pass to other functions.
+
+Use `for (key, value) in m` to iterate paired entries directly, or
+`m.into_iter()` to obtain a `HashMapIter<K, V>` cursor. Both take an owned
+snapshot and leave `m` usable. Later changes to `m` do not change that cursor.
+Iteration order is unspecified.
+
+`HashMap<K, V>` implements the ordinary `IntoIterator` trait with
+`Item = (K, V)` and `IntoIter = HashMapIter<K, V>`, so it also works with
+generic collection consumers. Snapshot iteration requires copyable keys and
+values: generic declarations express this with `K: Hash + Eq + Clone` and
+`V: Clone`. `Clone` describes Hew's semantic copy operation; an ordinary
+record whose fields can be copied needs no explicit `Clone` implementation.
+
 
 ### Create and use a HashSet
 

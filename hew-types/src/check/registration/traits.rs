@@ -501,39 +501,7 @@ impl Checker {
             }
         }
         if let (true, Some(trait_id)) = (enforce, implemented_trait) {
-            // Snapshot trait-side data we need; cloned so we can release the
-            // borrow on `self.trait_defs` before calling into the resolver /
-            // bound-checker which need `&mut self`.
-            let trait_snapshot = self
-                .trait_info(trait_id)
-                .map(|info| info.associated_types.clone());
-            if let Some(associated_types) = trait_snapshot {
-                let missing: Vec<TraitAssociatedTypeInfo> = associated_types
-                    .iter()
-                    .filter(|assoc| !entries.contains_key(&assoc.name))
-                    .cloned()
-                    .collect();
-                let target_name_owned = target_name.to_string();
-                let trait_display = self.defs.display(trait_id).to_string();
-                for assoc in missing {
-                    self.report_error_with_note(
-                        TypeErrorKind::UndefinedType,
-                        span,
-                        format!(
-                            "impl `{trait_display}` for `{target_name_owned}` must define associated type `{}`",
-                            assoc.name
-                        ),
-                        &assoc.span,
-                        "required associated type declared here".to_string(),
-                    );
-                }
-                self.check_assoc_type_bounds(
-                    &associated_types,
-                    &entries,
-                    trait_id,
-                    &target_name_owned,
-                );
-            }
+            self.check_impl_associated_types(id, &entries, trait_id, target_name, span);
         }
         if pushed_impl_bounds {
             self.current_type_param_bounds.pop();
@@ -545,6 +513,52 @@ impl Checker {
             report_missing: enforce,
         });
         true
+    }
+
+    fn check_impl_associated_types(
+        &mut self,
+        id: &ImplDecl,
+        entries: &HashMap<String, ImplAliasEntry>,
+        trait_id: crate::DefId,
+        target_name: &str,
+        span: &Span,
+    ) {
+        let Some(associated_types) = self
+            .trait_info(trait_id)
+            .map(|info| info.associated_types.clone())
+        else {
+            return;
+        };
+        let trait_display = self.defs.display(trait_id).to_string();
+        for assoc in associated_types
+            .iter()
+            .filter(|assoc| !entries.contains_key(&assoc.name))
+        {
+            self.report_error_with_note(
+                TypeErrorKind::UndefinedType,
+                span,
+                format!(
+                    "impl `{trait_display}` for `{target_name}` must define associated type `{}`",
+                    assoc.name
+                ),
+                &assoc.span,
+                "required associated type declared here".to_string(),
+            );
+        }
+        let trait_args: Vec<Ty> = id
+            .trait_bound
+            .as_ref()
+            .into_iter()
+            .flat_map(|bound| bound.type_args.iter().flatten())
+            .map(|arg| self.resolve_type_expr(arg))
+            .collect();
+        self.check_assoc_type_bounds(
+            &associated_types,
+            entries,
+            trait_id,
+            target_name,
+            &trait_args,
+        );
     }
 
     pub(in crate::check) fn exit_impl_scope(&mut self) {
@@ -613,7 +627,17 @@ impl Checker {
         entries: &HashMap<String, ImplAliasEntry>,
         trait_id: crate::DefId,
         target_name: &str,
+        trait_args: &[Ty],
     ) {
+        let mut substitutions: HashMap<_, _> = self
+            .trait_info(trait_id)
+            .into_iter()
+            .flat_map(|info| info.type_params.iter().copied())
+            .zip(trait_args.iter().cloned())
+            .collect();
+        if let Some(target) = self.current_impl_target() {
+            substitutions.insert(crate::ParamHead::receiver(trait_id), target);
+        }
         let trait_display = self.defs.display(trait_id).to_string();
         for assoc in associated_types {
             if assoc.bounds.is_empty() {
@@ -631,10 +655,32 @@ impl Checker {
                 continue;
             }
             for bound in &assoc.bounds {
-                if self.type_satisfies_bound(&resolved, bound) {
+                let mut bound = bound.clone();
+                bound.args = bound
+                    .args
+                    .iter()
+                    .map(|ty| {
+                        self.normalize_for_use(&ty.substitute_type_params_parallel(&substitutions))
+                    })
+                    .collect();
+                bound.assoc = bound
+                    .assoc
+                    .iter()
+                    .map(|(name, ty)| {
+                        (
+                            *name,
+                            self.normalize_for_use(
+                                &ty.substitute_type_params_parallel(&substitutions),
+                            ),
+                        )
+                    })
+                    .collect();
+                if self.type_satisfies_bound(&resolved, &bound)
+                    && self.bound_associated_types_agree(&resolved, &bound)
+                {
                     continue;
                 }
-                let bound_display = self.trait_ref_display(bound);
+                let bound_display = self.trait_ref_display(&bound);
                 self.report_error(
                     TypeErrorKind::BoundsNotSatisfied,
                     &entry_span,
@@ -718,6 +764,42 @@ impl Checker {
             })
             .collect();
         self.trait_super.insert(trait_id, supers);
+        // Resolve associated equalities after the trait's members have identities,
+        // so Self.Item refers to this declaration rather than an enclosing impl.
+        let scope = self.enter_primary_sig_scope(&[(td.type_params.as_ref(), None)]);
+        let previous = self.current_trait_for_self_projection.replace(trait_id);
+        let previous_self_type = self.current_self_type.take();
+        let mut resolved = Vec::new();
+        for item in &td.items {
+            let TraitItem::AssociatedType { name, bounds, .. } = item else {
+                continue;
+            };
+            let bounds = bounds
+                .iter()
+                .filter_map(|bound| {
+                    let mut resolved = self.resolve_written_bound(name.name, bound)?;
+                    resolved.assoc = bound
+                        .assoc_type_bindings
+                        .iter()
+                        .map(|binding| (binding.name.name, self.resolve_type_expr(&binding.ty)))
+                        .collect();
+                    Some(resolved)
+                })
+                .collect();
+            resolved.push((name.to_string(), bounds));
+        }
+        self.current_trait_for_self_projection = previous;
+        self.current_self_type = previous_self_type;
+        self.exit_primary_sig_scope(scope);
+        if let Some(info) = self.trait_defs.get_mut(&trait_id) {
+            for associated in &mut info.associated_types {
+                if let Some((_, bounds)) =
+                    resolved.iter().find(|(name, _)| name == &associated.name)
+                {
+                    associated.bounds.clone_from(bounds);
+                }
+            }
+        }
     }
 
     /// Type-parameter names declared by trait `trait_id`.

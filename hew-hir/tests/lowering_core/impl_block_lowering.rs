@@ -1,18 +1,8 @@
-//! V0b: user `impl [Trait for] UserNominal` HIR lowering beyond `Index`.
+//! Implementation methods and their dispatch metadata lower together.
 //!
-//! These tests pin the V0b sufficient surface (per `vec-iterator-substrate-v05`
-//! plan §3 V0b):
-//!   - `impl<T> Trait for UserNominal<T> { type X = ...; fn m(...) { ... } }`
-//!     lowers without falling through to the `unsupported "top-level-item"
-//!     "slice-2"` catch-all.
-//!   - Methods land as `HirItem::Function` entries named
-//!     `<SelfType>::<method>` (matching the pre-V0b `impl Index` precedent).
-//!   - A metadata-only `HirItem::Impl` is emitted alongside, carrying the
-//!     trait/self pair, the lowered associated-type bindings, and the list
-//!     of emitted method symbols.
-//!   - Fail-closed boundary: shapes outside V0b emit
-//!     `ImplBlockShapeNotLowered { shape }`, NOT a generic
-//!     `NotYetImplemented { construct: "top-level-item" }`.
+//! Compile-time impl conditions belong to the checker. HIR emits the checked
+//! methods and associated-type bindings while retaining its target-shape
+//! restrictions.
 
 use hew_hir::{lower_program, HirDiagnosticKind, HirItem, ResolutionCtx};
 use hew_types::{module_registry::ModuleRegistry, Checker};
@@ -215,11 +205,8 @@ impl Index for Grid {
 
 #[test]
 fn impl_block_with_single_bound_where_clause_lowers() {
-    // V0b admits single-bound where-clauses of shape `where T: SingleTrait`
-    // where `T` is one of the impl's own type parameters. The bound has no
-    // runtime artefact (consumed by the checker's bound-enforcement plumbing
-    // at the use site); HIR lowering simply admits the impl and threads its
-    // methods through the regular flatten-to-`HirItem::Function` path.
+    // The checker consumes the bound at use sites; HIR emits the ordinary
+    // method without a runtime representation for its compile-time condition.
     let output = lower(
         r"pub trait Eq {
     fn eq(self, b: Self) -> bool;
@@ -264,10 +251,7 @@ impl<T> Wrap<T> where T: Eq {
 
 #[test]
 fn impl_block_with_multi_bound_where_clause_lowers() {
-    // Slice ε lift: multi-bound `where T: A + B` predicates are now admitted
-    // (the checker already enforces them; HIR has no runtime artefact for bounds).
-    // Both the single-bound and multi-bound forms must lower cleanly and emit
-    // the impl's method as a top-level `HirItem::Function`.
+    // Multiple checked bounds use the same ordinary method lowering.
     let output = lower(
         r"pub trait Eq {
     fn eq(self, b: Self) -> bool;
@@ -299,7 +283,7 @@ impl<T> Wrap<T> where T: Eq + Ord {
     });
     assert!(
         shape_diag.is_none(),
-        "multi-bound `where T: A + B` impl must lower in slice ε; \
+        "multi-bound `where T: A + B` impl must lower; \
          got shape diagnostic: {shape_diag:?} out of full diagnostics: {:#?}",
         output.diagnostics,
     );
@@ -315,44 +299,68 @@ impl<T> Wrap<T> where T: Eq + Ord {
 }
 
 #[test]
-fn impl_block_with_where_clause_on_non_type_param_emits_fail_closed_shape_diagnostic() {
-    // Fail-closed boundary: predicates on non-type-param types (e.g.
-    // `where Wrap<T>: Eq`) are outside V0b's sufficient surface — γ1 only
-    // admits predicates on the impl's own type parameters.
-    let output = lower(
-        r"pub trait Eq {
-    fn eq(self, b: Self) -> bool;
-}
+fn projected_impl_conditions_lower_local_and_imported_methods() {
+    use crate::support::checker_pipeline::{parse_source, program_with_imported_module};
 
-pub type Wrap<T> {
-    inner: T;
-}
-
-impl<T> Wrap<T> where Wrap<T>: Eq {
-    fn first(self) -> Wrap<T> {
-        self
+    let replies = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../tests/core-acceptance/cases/projection_bound_support/replies.hew"
+    ));
+    let local = parse_source(&format!(
+        "{replies}\nfn main() {{ println(code(Pending {{ message: Ping {{}} }})); }}"
+    ))
+    .program;
+    let imported = program_with_imported_module(
+        replies,
+        "import m; fn main() { println(m.code(m.Pending { message: m.Ping {} })); }",
+    );
+    for (label, program) in [("local", local), ("imported", imported)] {
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let checked = checker.check_program(&program);
+        assert!(checked.errors.is_empty(), "{label}: {:?}", checked.errors);
+        let output = lower_program(
+            &program,
+            &checked,
+            &ResolutionCtx,
+            hew_hir::TargetArch::host(),
+        );
+        assert!(
+            output.diagnostics.is_empty(),
+            "{label}: {:#?}",
+            output.diagnostics
+        );
+        let implementation = output
+            .module
+            .items
+            .iter()
+            .find_map(|item| match item {
+                HirItem::Impl(implementation)
+                    if implementation.self_type_name.ends_with("Pending") =>
+                {
+                    Some(implementation)
+                }
+                _ => None,
+            })
+            .expect("conditional impl dispatch metadata");
+        let method = output
+            .module
+            .items
+            .iter()
+            .find_map(|item| match item {
+                HirItem::Function(function)
+                    if implementation.method_item_ids.contains(&function.id) =>
+                {
+                    Some(function)
+                }
+                _ => None,
+            })
+            .expect("conditional impl method body");
+        assert!(
+            method.name.ends_with("Pending::reply_code"),
+            "{label}: {}",
+            method.name
+        );
     }
-}
-",
-    );
-
-    let shape_diag = output.diagnostics.iter().find_map(|d| {
-        if let HirDiagnosticKind::ImplBlockShapeNotLowered { shape } = &d.kind {
-            Some(shape.clone())
-        } else {
-            None
-        }
-    });
-    assert!(
-        matches!(
-            shape_diag.as_deref(),
-            Some(s) if s.starts_with("where-clause predicate on parameterised type")
-        ),
-        "V0b must surface a precise shape diagnostic for parameterised-type \
-         where-clauses; got diagnostic: {shape_diag:?} out of full diagnostics: \
-         {:#?}",
-        output.diagnostics,
-    );
 }
 
 #[test]

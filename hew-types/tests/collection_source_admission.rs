@@ -274,8 +274,13 @@ fn map_snapshots_preserve_resource_and_function_value_refusals() {
             );
             let output = check(&source);
             assert!(
-                output.errors.iter().any(|error| error.kind == TypeErrorKind::InvalidOperation
-                    && error.message.contains(reason)),
+                output.errors.iter().any(|error| {
+                    if projection == "into_iter" && keys_ok {
+                        error.kind == TypeErrorKind::BoundsNotSatisfied && error.message.contains("Clone")
+                    } else {
+                        error.kind == TypeErrorKind::InvalidOperation && error.message.contains(reason)
+                    }
+                }),
                 "{value}.{projection} must refuse an unavailable copy operation: {:#?}",
                 output.errors
             );

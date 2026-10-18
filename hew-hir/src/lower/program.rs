@@ -290,7 +290,7 @@ pub fn lower_program(
                 }
             }
             Item::Impl(impl_decl) => {
-                // Register methods of any V0b-acceptable impl block under the
+                // Register checked impl methods under the
                 // qualified `<SelfType>::<method>` name so call sites can
                 // resolve them in the second pass. The Index special-case is
                 // a subset of this because its methods use the same
@@ -301,64 +301,52 @@ pub fn lower_program(
                 } = &impl_decl.target_type.0
                 {
                     let name = &named_path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
-                    if impl_decl.where_clause.is_none()
-                        || classify_unsupported_where_clause(impl_decl).is_none()
-                    {
-                        let impl_type_params = impl_type_parameters(&mut ctx, impl_decl);
-                        // For concrete specialised impls (empty impl type-params,
-                        // non-empty target type args), compute the mangled self-type
-                        // name so the fn_registry key is distinct per instantiation.
-                        // Mirrors the identical logic in `lower_impl_block` (#2270).
-                        let symbol_name: std::borrow::Cow<str> = if impl_type_params.is_empty() {
-                            let concrete_args: Vec<hew_types::ResolvedTy> = target_type_args
-                                .as_deref()
-                                .unwrap_or(&[])
-                                .iter()
-                                .map(|a| ctx.lower_type(a))
-                                .collect();
-                            if concrete_args.is_empty() {
-                                std::borrow::Cow::Borrowed(name.as_str())
-                            } else {
-                                std::borrow::Cow::Owned(crate::monomorph::mangle(
-                                    name,
-                                    &concrete_args,
-                                ))
-                            }
-                        } else {
+                    let impl_type_params = impl_type_parameters(&mut ctx, impl_decl);
+                    // For concrete specialised impls (empty impl type-params,
+                    // non-empty target type args), compute the mangled self-type
+                    // name so the fn_registry key is distinct per instantiation.
+                    // Mirrors the identical logic in `lower_impl_block` (#2270).
+                    let symbol_name: std::borrow::Cow<str> = if impl_type_params.is_empty() {
+                        let concrete_args: Vec<hew_types::ResolvedTy> = target_type_args
+                            .as_deref()
+                            .unwrap_or(&[])
+                            .iter()
+                            .map(|a| ctx.lower_type(a))
+                            .collect();
+                        if concrete_args.is_empty() {
                             std::borrow::Cow::Borrowed(name.as_str())
-                        };
-                        for method in &impl_decl.methods {
-                            ctx.register_impl_method_fn_entry(
-                                &symbol_name,
-                                method,
-                                &impl_type_params,
-                            );
+                        } else {
+                            std::borrow::Cow::Owned(crate::monomorph::mangle(name, &concrete_args))
                         }
-                        // Also register trait default methods that are NOT
-                        // overridden in this impl block — they need fn_registry
-                        // entries so call sites resolve `Type::method` even
-                        // when the body lives on the trait declaration.
-                        if let Some(tb) = &impl_decl.trait_bound {
-                            let overridden: HashSet<&str> = impl_decl
-                                .methods
-                                .iter()
-                                .map(|m| m.name.name.as_str())
-                                .collect();
-                            if let Some(default_owner) = ctx.trait_declaration(&tb.path) {
-                                // TRANSITION(P1): deleted by A1 commit 2
-                                if let Some(defaults) =
-                                    ctx.trait_defaults.get(&default_owner).cloned()
-                                {
-                                    for default_method in &defaults {
-                                        if !overridden
-                                            .contains(default_method.method.name.name.as_str())
-                                        {
-                                            ctx.register_trait_default_fn_entry(
-                                                &symbol_name,
-                                                default_method,
-                                                &impl_type_params,
-                                            );
-                                        }
+                    } else {
+                        std::borrow::Cow::Borrowed(name.as_str())
+                    };
+                    for method in &impl_decl.methods {
+                        ctx.register_impl_method_fn_entry(&symbol_name, method, &impl_type_params);
+                    }
+                    // Also register trait default methods that are NOT
+                    // overridden in this impl block — they need fn_registry
+                    // entries so call sites resolve `Type::method` even
+                    // when the body lives on the trait declaration.
+                    if let Some(tb) = &impl_decl.trait_bound {
+                        let overridden: HashSet<&str> = impl_decl
+                            .methods
+                            .iter()
+                            .map(|m| m.name.name.as_str())
+                            .collect();
+                        if let Some(default_owner) = ctx.trait_declaration(&tb.path) {
+                            // TRANSITION(P1): deleted by A1 commit 2
+                            if let Some(defaults) = ctx.trait_defaults.get(&default_owner).cloned()
+                            {
+                                for default_method in &defaults {
+                                    if !overridden
+                                        .contains(default_method.method.name.name.as_str())
+                                    {
+                                        ctx.register_trait_default_fn_entry(
+                                            &symbol_name,
+                                            default_method,
+                                            &impl_type_params,
+                                        );
                                     }
                                 }
                             }
@@ -637,45 +625,40 @@ pub fn lower_program(
                             } = &impl_decl.target_type.0
                             {
                                 let name = &named_path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
-                                if impl_decl.where_clause.is_none()
-                                    || classify_unsupported_where_clause(impl_decl).is_none()
-                                {
-                                    let impl_type_params =
-                                        impl_type_parameters(&mut ctx, impl_decl);
-                                    let symbol_self_name =
-                                        imported_impl_symbol_self_name(&module_full_path, name);
-                                    for method in &impl_decl.methods {
-                                        ctx.register_impl_method_fn_entry(
-                                            &symbol_self_name,
-                                            method,
-                                            &impl_type_params,
-                                        );
-                                    }
-                                    if let Some(tb) = &impl_decl.trait_bound {
-                                        let overridden: HashSet<&str> = impl_decl
-                                            .methods
-                                            .iter()
-                                            .map(|m| m.name.name.as_str())
-                                            .collect();
-                                        if let Some(default_owner) = ctx.trait_declaration(&tb.path)
-                                        // TRANSITION(P1): deleted by A1 commit 2
+                                let impl_type_params = impl_type_parameters(&mut ctx, impl_decl);
+                                let symbol_self_name =
+                                    imported_impl_symbol_self_name(&module_full_path, name);
+                                for method in &impl_decl.methods {
+                                    ctx.register_impl_method_fn_entry(
+                                        &symbol_self_name,
+                                        method,
+                                        &impl_type_params,
+                                    );
+                                }
+                                if let Some(tb) = &impl_decl.trait_bound {
+                                    let overridden: HashSet<&str> = impl_decl
+                                        .methods
+                                        .iter()
+                                        .map(|m| m.name.name.as_str())
+                                        .collect();
+                                    if let Some(default_owner) = ctx.trait_declaration(&tb.path)
+                                    // TRANSITION(P1): deleted by A1 commit 2
+                                    {
+                                        if let Some(defaults) =
+                                            ctx.trait_defaults.get(&default_owner).cloned()
                                         {
-                                            if let Some(defaults) =
-                                                ctx.trait_defaults.get(&default_owner).cloned()
-                                            {
-                                                for default_method in &defaults {
-                                                    if !overridden.contains(
-                                                        default_method.method.name.name.as_str(),
-                                                    ) {
-                                                        let fn_decl = trait_method_to_fn_decl(
-                                                            &default_method.method,
-                                                        );
-                                                        ctx.register_impl_method_fn_entry(
-                                                            &symbol_self_name,
-                                                            &fn_decl,
-                                                            &impl_type_params,
-                                                        );
-                                                    }
+                                            for default_method in &defaults {
+                                                if !overridden.contains(
+                                                    default_method.method.name.name.as_str(),
+                                                ) {
+                                                    let fn_decl = trait_method_to_fn_decl(
+                                                        &default_method.method,
+                                                    );
+                                                    ctx.register_impl_method_fn_entry(
+                                                        &symbol_self_name,
+                                                        &fn_decl,
+                                                        &impl_type_params,
+                                                    );
                                                 }
                                             }
                                         }

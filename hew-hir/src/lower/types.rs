@@ -425,10 +425,6 @@ impl LowerCtx {
         ResolvedTy::named_builtin(BuiltinType::VecIter, vec![elem_ty])
     }
 
-    pub(super) fn resolved_hashmap_iter_ty(key_ty: ResolvedTy, val_ty: ResolvedTy) -> ResolvedTy {
-        ResolvedTy::named_builtin(BuiltinType::HashMapIter, vec![key_ty, val_ty])
-    }
-
     pub(super) fn resolved_option_ty(elem_ty: ResolvedTy) -> ResolvedTy {
         ResolvedTy::named_builtin(BuiltinType::Option, vec![elem_ty])
     }

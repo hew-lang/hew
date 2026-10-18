@@ -1,0 +1,11 @@
+[[case]]
+id = "hashmap-into-iterator-generic"
+intent = "HashMap satisfies the ordinary IntoIterator contract and associated iterator equality."
+source = "cases/hashmap-into-iterator-generic.hew"
+suites = ["acceptance"]
+
+timeout_seconds = 30
+
+[case.expected]
+stdout = ""
+exit = 0

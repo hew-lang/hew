@@ -486,7 +486,7 @@ impl Checker {
 
     /// Type every argument of a refused call on its own, so the refusal does
     /// not cascade into positional mismatches.
-    fn synthesize_call_arguments(&mut self, args: &[CallArg]) {
+    pub(in crate::check) fn synthesize_call_arguments(&mut self, args: &[CallArg]) {
         for arg in args {
             let (expr, sp) = arg.expr();
             self.synthesize(expr, sp);

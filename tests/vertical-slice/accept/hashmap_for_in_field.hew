@@ -1,14 +1,5 @@
-// `for (k, v) in self.field` over a HashMap<i64, i64> held in a record field.
-//
-// A field-access iterable routes via the checker side-table type at the
-// iterable span. Pre-fix, recording the `keys()` projection at that span
-// clobbered it with `Vec<i64>`, so the loop mis-routed: HashMap failed closed
-// with a misleading "nested tuple pattern on non-tuple value". The
-// synthetic-span fix keeps the field-read type as HashMap, so this routes to
-// the HashMap arm and yields all three pairs.
-//
-// Entries 1->10, 2->20, 3->30: keys sum 6, values sum 60, exit 66; a count
-// guard pins the iteration count to 3.
+// Direct iteration over a record field preserves the source map type.
+
 type MapBox {
     m: HashMap<i64, i64>;
 }

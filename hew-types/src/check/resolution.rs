@@ -2097,28 +2097,37 @@ impl Checker {
     /// the carrier passes through — `enforce_type_param_bounds` is the
     /// authoritative diagnostic surface for "type does not implement trait".
     pub(super) fn project_assoc_types(&self, ty: &Ty) -> Ty {
+        self.project_assoc_types_inner(ty, &mut HashSet::new())
+    }
+
+    fn project_assoc_types_inner(&self, ty: &Ty, expanding: &mut HashSet<Ty>) -> Ty {
         match ty {
             Ty::AssocType {
                 base,
                 trait_name,
                 assoc_name,
             } => {
-                let carrier = |base: Ty| Ty::AssocType {
-                    base: Box::new(base),
+                let projected_base = self.project_assoc_types_inner(base, expanding);
+                let carrier = || Ty::AssocType {
+                    base: Box::new(projected_base.clone()),
                     trait_name: trait_name.clone(),
                     assoc_name: assoc_name.clone(),
                 };
-                let projected_base = self.project_assoc_types(base);
                 let Some(trait_id) = self.assoc_carrier_trait(trait_name) else {
-                    return carrier(projected_base);
+                    return carrier();
                 };
                 let owners = self.associated_type_owners(trait_id, assoc_name);
                 let [trait_id] = owners.as_slice() else {
-                    return carrier(projected_base);
+                    return carrier();
                 };
-                self.project_associated_type(&projected_base, *trait_id, Symbol::intern(assoc_name))
+                self.project_associated_type_inner(
+                    &projected_base,
+                    *trait_id,
+                    Symbol::intern(assoc_name),
+                    expanding,
+                )
             }
-            _ => ty.map_children_pub(&|child| self.project_assoc_types(child)),
+            _ => ty.map_children(&mut |child| self.project_assoc_types_inner(child, expanding)),
         }
     }
 
@@ -2128,40 +2137,51 @@ impl Checker {
         trait_id: crate::DefId,
         associated: Symbol,
     ) -> Ty {
+        self.project_associated_type_inner(base, trait_id, associated, &mut HashSet::new())
+    }
+
+    fn project_associated_type_inner(
+        &self,
+        base: &Ty,
+        trait_id: crate::DefId,
+        associated: Symbol,
+        expanding: &mut HashSet<Ty>,
+    ) -> Ty {
         let resolved_base = self.subst.resolve(base);
-        if let Ty::Named {
-            head: crate::TypeHead::Param(parameter),
-            args,
-        } = &resolved_base
-        {
-            if args.is_empty() {
-                if let Some(binding) = self
-                    .active_bounds_of(parameter.id)
-                    .into_iter()
-                    .filter(|bound| self.bound_provides(bound.trait_id, trait_id))
-                    .find_map(|bound| {
-                        bound
-                            .assoc
-                            .into_iter()
-                            .find(|(name, _)| *name == associated)
-                            .map(|(_, ty)| ty)
-                    })
-                {
-                    return self.project_assoc_types(&binding);
-                }
-            }
-        }
-        if let Some(binding) =
-            self.associated_schema_parameters
-                .implementation(&resolved_base, trait_id, associated)
-        {
-            return self.project_assoc_types(&binding);
-        }
-        Ty::AssocType {
-            base: Box::new(resolved_base),
+        let carrier = Ty::AssocType {
+            base: Box::new(resolved_base.clone()),
             trait_name: self.defs.path(trait_id).into(),
             assoc_name: associated.as_str().into(),
+        };
+        // A recursive equality remains an abstract projection until a concrete
+        // instantiation can decide it. Identity includes the complete receiver.
+        if !expanding.insert(carrier.clone()) {
+            return carrier;
         }
+        let binding = self
+            .active_bounds_for_type(&resolved_base)
+            .into_iter()
+            .filter(|bound| self.bound_provides(bound.trait_id, trait_id))
+            .find_map(|bound| {
+                bound
+                    .assoc
+                    .into_iter()
+                    .find(|(name, _)| *name == associated)
+                    .map(|(_, ty)| ty)
+            })
+            .or_else(|| {
+                self.associated_schema_parameters.implementation(
+                    &resolved_base,
+                    trait_id,
+                    associated,
+                )
+            });
+        let result = binding.map_or_else(
+            || carrier.clone(),
+            |binding| self.project_assoc_types_inner(&binding, expanding),
+        );
+        expanding.remove(&carrier);
+        result
     }
 
     /// Normalize a type at a semantic use boundary.

@@ -20,7 +20,7 @@ pub enum BuiltinType {
     HashSet,
     /// Compiler-synthesised owned snapshot cursor for `Vec<T>` iteration.
     VecIter,
-    /// Compiler-synthesised parallel snapshot cursor for `HashMap<K, V>`.
+    /// Standard-library snapshot cursor for `HashMap<K, V>`.
     HashMapIter,
     Task,
     /// Compiler-only owned completion operation; its argument is the checked result.

@@ -101,18 +101,10 @@ impl LowerCtx {
         iter_ty: &ResolvedTy,
         span: &Span,
     ) -> Option<ResolvedTy> {
-        let ResolvedTy::Named {
-            head:
-                head @ (hew_types::TypeHead::Nominal(_)
-                | hew_types::TypeHead::Param(_)
-                | hew_types::TypeHead::Unresolved(_)),
-            args,
-            ..
-        } = iter_ty
-        else {
+        let ResolvedTy::Named { head, args, .. } = iter_ty else {
             return None;
         };
-        let name = head.registry_key();
+        let name = injected_builtin_impl_symbol_owner(head.registry_key());
         let callee = crate::node::HirImplBlock::method_symbol(name, "next");
         let sig = self.signatures().get(&callee).cloned()?;
         if !sig.requires_mutable_receiver {
@@ -215,18 +207,10 @@ impl LowerCtx {
         iterable: HirExpr,
         span: &Span,
     ) -> Option<(HirExpr, ResolvedTy, ResolvedTy, ForIterNextCall)> {
-        let ResolvedTy::Named {
-            head:
-                head @ (hew_types::TypeHead::Nominal(_)
-                | hew_types::TypeHead::Param(_)
-                | hew_types::TypeHead::Unresolved(_)),
-            args,
-            ..
-        } = &iterable.ty
-        else {
+        let ResolvedTy::Named { head, args, .. } = &iterable.ty else {
             return None;
         };
-        let name = head.registry_key();
+        let name = injected_builtin_impl_symbol_owner(head.registry_key());
         let callee = crate::node::HirImplBlock::method_symbol(name, "into_iter");
         if !self.signatures().contains(&callee) {
             return None;
@@ -291,135 +275,6 @@ impl LowerCtx {
         let receiver_hir = self.lower_expr(receiver, IntentKind::Read);
         let iter_expr = self.make_vec_iter_init(receiver_hir, elem_ty, span);
         (iter_expr.kind, iter_expr.ty)
-    }
-
-    /// Expand `m.into_iter()` over a `HashMap<K, V>` into the same
-    /// `HashMapIter<K, V> { ks: m.keys(), vs: m.values(), idx: 0 }` cursor the
-    /// `for (k, v) in m` desugar builds — the map twin of
-    /// `lower_builtin_vec_into_iter`. The `keys()` / `values()` projections are
-    /// spanned at the call's start/end offsets (zero-width, distinct from each
-    /// other and every real span), reproduced byte-for-byte from the checker's
-    /// `BuiltinHashMapIntoIter` recording so the span-keyed resolved-call facts
-    /// resolve. The projections clone every key/value into fresh owned `Vec`s,
-    /// so each yielded `(K, V)` is independently droppable and the source map
-    /// stays live.
-    ///
-    /// A place receiver (identifier/field/index) is re-read once per projection
-    /// — the proven drop-safe path: each read borrows its owner, no second owner
-    /// of the map handle. A non-place rvalue (`make_map().into_iter()`) is bound
-    /// to one temp so the source runs EXACTLY once; both projections borrow the
-    /// temp. This mirrors the `HashMap` for-in single-eval temp; recording
-    /// `keys()` AND `values()` against the same cloned AST would otherwise
-    /// evaluate a side-effectful producer twice.
-    pub(super) fn lower_builtin_hashmap_into_iter(
-        &mut self,
-        receiver: &Spanned<Expr>,
-        key_ty: &ResolvedTy,
-        val_ty: &ResolvedTy,
-        span: Span,
-    ) -> (HirExprKind, ResolvedTy) {
-        let iter_ty = Self::resolved_hashmap_iter_ty(key_ty.clone(), val_ty.clone());
-
-        if Self::for_in_iterable_is_place(&receiver.0) {
-            // Place source: re-read directly per projection (single owner, drop-safe).
-            let init = self.make_hashmap_iter_init(
-                receiver.clone(),
-                key_ty,
-                val_ty,
-                iter_ty.clone(),
-                &span,
-            );
-            return (init.kind, iter_ty);
-        }
-        // Non-place rvalue: bind to one temp so the source evaluates once.
-        let block_scope = self.ids.scope();
-        self.push_scope();
-        let temp_name = format!("__hew_into_iter_src_{}", self.ids.binding().0);
-        let src_ty = ResolvedTy::Named {
-            args: vec![key_ty.clone(), val_ty.clone()],
-            head: hew_types::TypeHead::Builtin(BuiltinType::HashMap),
-            is_opaque: false,
-        };
-        let temp_binding = self.bind(temp_name.clone(), src_ty, false, span.clone());
-        let recv_hir = self.lower_expr(receiver, IntentKind::Consume);
-        let init_stmt = HirStmt {
-            node: self.ids.node(),
-            kind: HirStmtKind::Let(temp_binding.clone(), Some(recv_hir)),
-            span: span.clone(),
-        };
-        let tail = self.with_synthetic_binding_use(&span, &temp_binding, |ctx| {
-            ctx.make_hashmap_iter_init(
-                (Expr::Ident(Ident::new(&temp_name)), span.clone()),
-                key_ty,
-                val_ty,
-                iter_ty.clone(),
-                &span,
-            )
-        });
-        self.pop_scope();
-        (
-            HirExprKind::Block(HirBlock {
-                node: self.ids.node(),
-                scope: block_scope,
-                statements: vec![init_stmt],
-                tail: Some(Box::new(tail)),
-                ty: iter_ty.clone(),
-                span,
-            }),
-            iter_ty,
-        )
-    }
-
-    /// Build the `HashMapIter<K, V> { ks: recv.keys(), vs: recv.values(), idx: 0 }`
-    /// `StructInit` from a projection receiver. `keys()`/`values()` are spanned at
-    /// the call span's start/end offsets, matching the checker's
-    /// `BuiltinHashMapIntoIter` recording so the span-keyed projection facts
-    /// resolve. The receiver keeps its own original span and is either re-read
-    /// (place) or the single-eval temp.
-    pub(super) fn make_hashmap_iter_init(
-        &mut self,
-        receiver: Spanned<Expr>,
-        key_ty: &ResolvedTy,
-        val_ty: &ResolvedTy,
-        iter_ty: ResolvedTy,
-        span: &Span,
-    ) -> HirExpr {
-        let keys_span = span.start..span.start;
-        let values_span = span.end..span.end;
-        let keys_call = (
-            Expr::MethodCall {
-                receiver: Box::new(receiver.clone()),
-                method: (Ident::new("keys"), keys_span.clone()),
-                args: Vec::new(),
-            },
-            keys_span,
-        );
-        let values_call = (
-            Expr::MethodCall {
-                receiver: Box::new(receiver),
-                method: (Ident::new("values"), values_span.clone()),
-                args: Vec::new(),
-            },
-            values_span,
-        );
-        let keys_hir = self.lower_expr(&keys_call, IntentKind::Consume);
-        let values_hir = self.lower_expr(&values_call, IntentKind::Consume);
-        let idx = self.make_i64_literal(0, span.clone());
-        self.make_expr(
-            HirExprKind::StructInit {
-                name: "HashMapIter".to_string(),
-                type_args: vec![key_ty.clone(), val_ty.clone()],
-                fields: vec![
-                    ("ks".to_string(), keys_hir),
-                    ("vs".to_string(), values_hir),
-                    ("idx".to_string(), idx),
-                ],
-                base: None,
-            },
-            iter_ty,
-            IntentKind::Read,
-            span.clone(),
-        )
     }
 
     pub(super) fn make_vec_iter_init(
@@ -498,16 +353,9 @@ impl LowerCtx {
     /// evaluation cost (an identifier, or a field/index projection rooted in a
     /// place).
     ///
-    /// `HashMap` for-in takes two projections (`keys()`, `values()`) and
-    /// `HashSet` for-in takes one (`to_vec()`), each lowered as a `MethodCall` on
-    /// the iterable. For a place the receiver is re-lowered directly per
-    /// projection — the proven drop-safe path: a field/index read borrows its
-    /// owner, yields a fresh owned `Vec`, and leaves the source owner live (no
-    /// second owner of the collection handle, so no double-free at scope exit).
-    /// For a non-place rvalue (a call, a method call, …) re-lowering would
-    /// *re-evaluate* the source once per projection — `for x in make_set()` would
-    /// call `make_set()` twice — so those bind the value to a single-eval temp
-    /// instead ([`Self::bind_for_in_source`]).
+    /// Collection projections borrow place receivers directly. Non-place
+    /// receivers use a temporary binding so their evaluation and cleanup each
+    /// happen once (see [`Self::bind_for_in_source`]).
     pub(super) fn for_in_iterable_is_place(expr: &Expr) -> bool {
         match expr {
             Expr::Ident(_) => true,
@@ -519,7 +367,7 @@ impl LowerCtx {
     }
 
     /// Bind a for-in iterable's already-lowered value to a synthetic temp so a
-    /// non-place `HashMap`/`HashSet` source is evaluated exactly once.
+    /// non-place `HashSet` source is evaluated exactly once.
     ///
     /// Only used for non-place rvalue sources (see
     /// [`Self::for_in_iterable_is_place`]); place sources re-lower their
@@ -542,98 +390,6 @@ impl LowerCtx {
             span: span.clone(),
         };
         (src_binding, src_stmt)
-    }
-
-    /// Build the for-in shape for `for (k, v) in m` over a `HashMap<K, V>`.
-    ///
-    /// Synthesizes a `HashMapIter<K, V> { ks: src.keys(), vs: src.values(), idx: 0 }`
-    /// constructor as AST and lowers it through the normal `StructInit` path so
-    /// the cursor's per-`(K, V)` layout monomorphises exactly like any user
-    /// record. `receiver` is the spanned projection receiver — the iterable AST
-    /// with its original span for a place source (re-read per projection,
-    /// drop-safe), or an `Expr::Ident` for the single-eval temp of a
-    /// non-place rvalue source.
-    /// The `keys()`/`values()` calls are spanned at two synthetic zero-width
-    /// spans (`iterable.start..start`, `iterable.end..end`) the checker recorded
-    /// the `keys`/`values` resolved-call facts at (`resolved_calls` is keyed by
-    /// span, so the two projections must not share one, and neither may share the
-    /// iterable's real span — that would clobber `expr_types[iterable_span]` and
-    /// mis-route non-identifier sources to the Vec arm). Iteration then drives
-    /// `HashMapIter::next` via the same `VarSelf` direct-call shape user iterator
-    /// types use.
-    pub(super) fn lower_hashmap_for_in_init(
-        &mut self,
-        iterable: &Spanned<Expr>,
-        receiver: &Spanned<Expr>,
-        key_ty: ResolvedTy,
-        val_ty: ResolvedTy,
-    ) -> (HirExpr, ResolvedTy, ResolvedTy, ForIterNextCall) {
-        let iterable_span = &iterable.1;
-        let elem_ty = ResolvedTy::Tuple(vec![key_ty.clone(), val_ty.clone()]);
-        let iter_ty = Self::resolved_hashmap_iter_ty(key_ty.clone(), val_ty.clone());
-        // `keys()` and `values()` are taken from the single-eval `src` temp
-        // (NOT a re-lowered clone of the iterable AST — that would evaluate a
-        // side-effectful source twice). Each call is spanned at its own
-        // synthetic zero-width span: `keys()` at `iterable.start..start`,
-        // `values()` at `iterable.end..end`. Their receiver keeps its original
-        // iterable span; otherwise a field/tuple projection reads the
-        // projection's `Vec` result type from `expr_types` instead of the
-        // receiver's `HashMap` type. The call-span derivation MUST match
-        // `Checker::hashmap_for_in_keys_span`/`..values_span` (hew-types)
-        // byte-for-byte — `resolved_calls`/`expr_types` are span-keyed, so a
-        // drift here would miss the checker's facts and trip the HIR boundary's
-        // totality contract. Neither span is the iterable's real span, so
-        // `expr_types[iterable_span]` keeps the map's true type and routing of
-        // non-identifier sources (field/call/index) stays correct. Each
-        // projection is lowered as a real `MethodCall` so it picks up the
-        // checker's `keys`/`values` resolved-call fact (→ the
-        // `hew_hashmap_keys_layout`/`values_layout` runtime symbols and their
-        // clone-on-read discipline). The receiver (`receiver`) is borrowed (Read)
-        // inside the resolved-impl-call lowering, so a place source's owner — or
-        // the single-eval temp — stays the sole owner and drops once.
-        let keys_span = iterable_span.start..iterable_span.start;
-        let values_span = iterable_span.end..iterable_span.end;
-        let keys_call = (
-            Expr::MethodCall {
-                receiver: Box::new(receiver.clone()),
-                method: (Ident::new("keys"), keys_span.clone()),
-                args: Vec::new(),
-            },
-            keys_span,
-        );
-        let values_call = (
-            Expr::MethodCall {
-                receiver: Box::new(receiver.clone()),
-                method: (Ident::new("values"), values_span.clone()),
-                args: Vec::new(),
-            },
-            values_span,
-        );
-        // The projections produce fresh owned Vecs; the StructInit consumes
-        // them into the cursor.
-        let keys_hir = self.lower_expr(&keys_call, IntentKind::Consume);
-        let values_hir = self.lower_expr(&values_call, IntentKind::Consume);
-        let idx = self.make_i64_literal(0, iterable_span.clone());
-        // Build the `HashMapIter<K, V>` StructInit HIR directly (carrying its
-        // `type_args` so MIR mangles the concrete layout), mirroring
-        // `make_vec_iter_init`; the layout + Option payload were registered
-        // above.
-        let iter_init = self.make_expr(
-            HirExprKind::StructInit {
-                name: "HashMapIter".to_string(),
-                type_args: vec![key_ty, val_ty],
-                fields: vec![
-                    ("ks".to_string(), keys_hir),
-                    ("vs".to_string(), values_hir),
-                    ("idx".to_string(), idx),
-                ],
-                base: None,
-            },
-            iter_ty.clone(),
-            IntentKind::Read,
-            iterable_span.clone(),
-        );
-        (iter_init, iter_ty, elem_ty, ForIterNextCall::VarSelf)
     }
 
     pub(super) fn lower_builtin_vec_iter_next(
@@ -1288,7 +1044,7 @@ impl LowerCtx {
         }
 
         // Statements that must run before the iterator-cursor `Let` in the
-        // for-in's outer block. The HashMap/HashSet arms push a single-eval
+        // for-in's outer block. The HashSet arm pushes a single-eval
         // source temp here so a side-effectful iterable is evaluated once.
         let mut source_prelude: Vec<HirStmt> = Vec::new();
         let (iter_init, iter_ty, elem_ty, next_call) = match lowered_iterable.ty.clone() {
@@ -1306,47 +1062,6 @@ impl LowerCtx {
                     elem_ty,
                     ForIterNextCall::BuiltinVecIter,
                 )
-            }
-            ResolvedTy::Named {
-                args,
-                head: hew_types::TypeHead::Builtin(BuiltinType::HashMap),
-                ..
-            } if args.len() >= 2 => {
-                // `for (k, v) in m` over a HashMap builds a `HashMapIter`
-                // cursor at this concrete site from the map's `keys()` and
-                // `values()` projections (the checker recorded the resolved
-                // calls at two synthetic spans — see the HashMap arm in
-                // statements.rs `Stmt::For`). The map is a refcounted handle;
-                // like Vec for-in, sharing it (Capture) leaves the source
-                // binding Live after the loop, and the projections each clone
-                // every key/value into a fresh owned `Vec`, so every yielded
-                // `(K, V)` is independently droppable and the cursor never
-                // co-owns a yielded pair with the source map.
-                //
-                // A place source (identifier/field/index) is re-read directly
-                // per projection — the proven drop-safe path (the read borrows
-                // its owner; no second owner of the map handle). A non-place
-                // rvalue (`for (k, v) in next_map()`) would re-evaluate the
-                // source once per projection, so it is bound to a single-eval
-                // temp and both projections borrow the temp.
-                lowered_iterable.intent = IntentKind::Capture;
-                let key_ty = args[0].clone();
-                let val_ty = args[1].clone();
-                if Self::for_in_iterable_is_place(&iterable.0) {
-                    self.lower_hashmap_for_in_init(iterable, iterable, key_ty, val_ty)
-                } else {
-                    let source_ty = lowered_iterable.ty.clone();
-                    let (src_binding, src_stmt) =
-                        self.bind_for_in_source(lowered_iterable, source_ty, &iterable.1);
-                    source_prelude.push(src_stmt);
-                    let receiver = (
-                        Expr::Ident(Ident::new(&src_binding.name)),
-                        iterable.1.clone(),
-                    );
-                    self.with_synthetic_binding_use(&iterable.1, &src_binding, |ctx| {
-                        ctx.lower_hashmap_for_in_init(iterable, &receiver, key_ty, val_ty)
-                    })
-                }
             }
             ResolvedTy::Named {
                 args,
@@ -1472,8 +1187,8 @@ impl LowerCtx {
                 )
             }
             other => {
-                // Generic IntoIterator/Iterator: the into_iter() call consumes
-                // the source, or a plain Iterator binding is drained.
+                // Resolve the ordinary IntoIterator receiver call, or drain
+                // a plain Iterator binding through next().
                 lowered_iterable.intent = IntentKind::Consume;
                 if let Some(shape) =
                     self.generic_into_iter_init(lowered_iterable.clone(), &iterable.1)
@@ -1525,18 +1240,8 @@ impl LowerCtx {
                 let option_ty = Self::resolved_option_ty(elem_ty.clone());
 
                 let target_label = match &iter_ty {
-                    ResolvedTy::Named {
-                        head:
-                            hew_types::TypeHead::Builtin(
-                                builtin @ (BuiltinType::VecIter | BuiltinType::HashMapIter),
-                            ),
-                        ..
-                    } => crate::node::HirImplBlock::method_symbol(
-                        injected_builtin_impl_symbol_owner(builtin.canonical_name()),
-                        "next",
-                    ),
                     ResolvedTy::Named { head, .. } => {
-                        let name = head.registry_key();
+                        let name = injected_builtin_impl_symbol_owner(head.registry_key());
                         crate::node::HirImplBlock::method_symbol(name, "next")
                     }
                     _ => String::new(),
@@ -1779,7 +1484,7 @@ impl LowerCtx {
         self.pop_scope();
 
         // The single-eval source temp (`__hew_for_src_N`, pushed by the
-        // HashMap/HashSet arms) must define before the iterator-cursor `Let`,
+        // HashSet arm) must define before the iterator-cursor `Let`,
         // which builds its projections by borrowing the temp.
         let mut statements = source_prelude;
         statements.push(iter_stmt);

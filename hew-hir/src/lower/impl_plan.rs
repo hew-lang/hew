@@ -293,9 +293,6 @@ pub(super) fn plan_impl_block_symbols(
     base_symbol_self_name: &str,
     skip_methods: &HashSet<hew_types::DefId>,
 ) {
-    if impl_decl.where_clause.is_some() && classify_unsupported_where_clause(impl_decl).is_some() {
-        return;
-    }
     let TypeExpr::Named { path: _, type_args } = &impl_decl.target_type.0 else {
         return;
     };
@@ -685,7 +682,7 @@ pub(super) fn is_builtin_iterator_impl(item: &Item) -> bool {
             "Iterator",
             "VecIter" | "StringIter" | "HashMapIter" | "Generator"
         ) | ("DoubleEndedIterator", "VecIter" | "StringIter")
-            | ("IntoIterator", "Vec" | "string")
+            | ("IntoIterator", "Vec" | "string" | "HashMap")
     )
 }
 

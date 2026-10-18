@@ -766,9 +766,6 @@ impl LowerCtx {
                     _ => unreachable!("matched cursor operation"),
                 }
             }
-            Some(MethodCallRewrite::BuiltinHashMapIntoIter { key_ty, val_ty }) => {
-                self.lower_builtin_hashmap_into_iter(receiver, &key_ty, &val_ty, span)
-            }
             Some(MethodCallRewrite::BuiltinVecHigherOrder {
                 op,
                 elem_ty,

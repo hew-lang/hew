@@ -408,12 +408,6 @@ pub(super) fn semantic_callables(checked: &hew_sir::CheckedModule<'_>) -> BTreeS
                         .or_default()
                         .extend(&targets.known);
                 }
-                hew_sir::SemTerminator::ActorCall {
-                    operation: hew_sir::ActorOperation::Submit { .. },
-                    ..
-                } => {
-                    resumable.insert(function.callable);
-                }
                 hew_sir::SemTerminator::Safepoint { .. }
                     if block.id == function.entry && !reenters_entry =>
                 {
@@ -424,7 +418,8 @@ pub(super) fn semantic_callables(checked: &hew_sir::CheckedModule<'_>) -> BTreeS
                 | hew_sir::SemTerminator::Suspend { .. }
                 | hew_sir::SemTerminator::ActorCall {
                     operation:
-                        hew_sir::ActorOperation::AwaitStopped(_)
+                        hew_sir::ActorOperation::Submit { .. }
+                        | hew_sir::ActorOperation::AwaitStopped(_)
                         | hew_sir::ActorOperation::LocalObservation {
                             kind:
                                 hew_sir::LocalObservationKind::Link
@@ -649,7 +644,8 @@ pub(super) fn verify_callables(module: &PhysicalModule) -> Result<(), PhysicalEr
                 | PhysicalTerminator::TaskScopeJoin { .. }
                 | PhysicalTerminator::ActorCall {
                     operation:
-                        hew_sir::ActorOperation::AwaitStopped(_)
+                        hew_sir::ActorOperation::Submit { .. }
+                        | hew_sir::ActorOperation::AwaitStopped(_)
                         | hew_sir::ActorOperation::LocalObservation {
                             kind:
                                 hew_sir::LocalObservationKind::Link
@@ -674,12 +670,6 @@ pub(super) fn verify_callables(module: &PhysicalModule) -> Result<(), PhysicalEr
                         .entry(function.callable)
                         .or_default()
                         .extend(&targets.known);
-                }
-                PhysicalTerminator::ActorCall {
-                    operation: hew_sir::ActorOperation::Submit { .. },
-                    ..
-                } => {
-                    resumable.insert(function.callable);
                 }
                 PhysicalTerminator::RuntimeCall { action, args, .. } => {
                     if action.family == hew_types::RuntimeCallFamily::RcNew {

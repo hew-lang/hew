@@ -22,6 +22,8 @@ use crate::env::{PlaceConflict, PlacePath};
 use crate::BuiltinType;
 use std::collections::VecDeque;
 
+type GenericInstantiation = (crate::DefId, BTreeMap<crate::ParamHead, Ty>);
+
 impl Checker {
     fn generic_body_parameters(&self, declaration: crate::DefId) -> Vec<crate::ParamHead> {
         let mut parameters = self
@@ -719,6 +721,112 @@ impl Checker {
         instances
     }
 
+    fn instantiate_generic_requirement(
+        &self,
+        requirement: &GenericRequirement,
+        substitution: &HashMap<crate::ParamHead, Ty>,
+    ) -> Option<Ty> {
+        // Substitution can resolve an associated projection. A surviving
+        // projection, inference variable or unpinned parameter is undecidable.
+        let concrete =
+            self.project_assoc_types(&requirement.ty.substitute_type_params_parallel(substitution));
+        (!concrete.contains_error()
+            && !concrete.has_inference_var()
+            && !concrete.contains_assoc_type()
+            && !Self::ty_mentions_type_params(&concrete, &requirement.owner_type_params))
+        .then_some(concrete)
+    }
+
+    /// Prove a concrete application has a demand before charging its forward
+    /// walk against the instantiation budget. Potential close/transfer demands
+    /// can be trivial after substitution, even along a long generic call chain.
+    /// A repeated declaration is conservatively relevant: only the bounded
+    /// discharge walk decides a recursive application's obligations.
+    fn generic_instantiation_is_relevant(
+        &self,
+        root: &GenericInstantiation,
+        requirements: &HashMap<Option<crate::DefId>, Vec<GenericRequirement>>,
+        edges: &HashMap<crate::DefId, Vec<GenericCallEdge>>,
+        relevant: &mut HashMap<GenericInstantiation, bool>,
+    ) -> bool {
+        enum Visit {
+            Enter(GenericInstantiation),
+            Leave(GenericInstantiation, Vec<GenericInstantiation>),
+        }
+        let mut work = vec![Visit::Enter(root.clone())];
+        let mut active = HashSet::new();
+        while let Some(visit) = work.pop() {
+            match visit {
+                Visit::Enter(instance) => {
+                    if relevant.contains_key(&instance) {
+                        continue;
+                    }
+                    if active.contains(&instance.0) {
+                        relevant.insert(instance, true);
+                        continue;
+                    }
+                    let substitution = instance
+                        .1
+                        .iter()
+                        .map(|(parameter, ty)| (*parameter, ty.clone()))
+                        .collect();
+                    let demanded = requirements
+                        .get(&Some(instance.0))
+                        .into_iter()
+                        .flatten()
+                        .any(|requirement| {
+                            let Some(concrete) =
+                                self.instantiate_generic_requirement(requirement, &substitution)
+                            else {
+                                return false;
+                            };
+                            match requirement.kind {
+                                GenericRequirementKind::Eq => true,
+                                GenericRequirementKind::BorrowedTransfer { .. } => {
+                                    self.place_read_transfers_ownership(&concrete)
+                                }
+                                GenericRequirementKind::ResourceClose => {
+                                    !self.resource_close_instances(&concrete).is_empty()
+                                }
+                            }
+                        });
+                    if demanded {
+                        relevant.insert(instance, true);
+                        continue;
+                    }
+                    let children: Vec<GenericInstantiation> = edges
+                        .get(&instance.0)
+                        .into_iter()
+                        .flatten()
+                        .map(|edge| {
+                            (
+                                edge.callee,
+                                edge.substitution
+                                    .iter()
+                                    .map(|(parameter, ty)| {
+                                        (
+                                            *parameter,
+                                            ty.substitute_type_params_parallel(&substitution),
+                                        )
+                                    })
+                                    .collect(),
+                            )
+                        })
+                        .collect();
+                    active.insert(instance.0);
+                    work.push(Visit::Leave(instance, children.clone()));
+                    work.extend(children.into_iter().rev().map(Visit::Enter));
+                }
+                Visit::Leave(instance, children) => {
+                    active.remove(&instance.0);
+                    let demanded = children.iter().any(|child| relevant[child]);
+                    relevant.insert(instance, demanded);
+                }
+            }
+        }
+        relevant[root]
+    }
+
     /// Discharge concrete demands and the generic type obligations reachable
     /// through the program's instantiation graph.
     ///
@@ -761,26 +869,32 @@ impl Checker {
             return;
         }
         let (roots, edges) = self.partition_generic_instantiation_sites(sites);
-        let mut seen: HashSet<(
-            crate::DefId,
-            BTreeMap<crate::ParamHead, Ty>,
-            usize,
-            Option<String>,
-        )> = HashSet::new();
+        let mut relevant = HashMap::new();
+        let mut seen: HashSet<(GenericInstantiation, usize, Option<String>)> = HashSet::new();
         let mut work: VecDeque<PendingInstantiation> = roots.into();
         work.extend(resource_roots);
 
         while let Some(pending) = work.pop_front() {
-            // Span offsets are module-local, so two modules can produce the same
-            // (callee, args, offset) triple for genuinely different sites; the
-            // module completes the identity.
-            if !seen.insert((
+            let instance = (
                 pending.callee,
                 pending
                     .substitution
                     .iter()
                     .map(|(parameter, ty)| (*parameter, ty.clone()))
                     .collect(),
+            );
+            if !self.generic_instantiation_is_relevant(
+                &instance,
+                &requirements,
+                &edges,
+                &mut relevant,
+            ) {
+                continue;
+            }
+            // Diagnostic offsets are module-local; keep their source module
+            // alongside the complete instantiated declaration identity.
+            if !seen.insert((
+                instance,
                 pending.report_span.start,
                 pending.report_module.clone(),
             )) {
@@ -798,27 +912,11 @@ impl Checker {
                 .into_iter()
                 .flatten()
             {
-                // Substitute, then collapse any associated-type projection the
-                // substitution just made resolvable (`Option<C::Item>` with
-                // `C = IntBox` becomes `Option<i64>`). A projection that
-                // survives collapse has an unresolved carrier: the instantiation
-                // is not decidable here, so do not answer for it.
-                let concrete = self.project_assoc_types(
-                    &requirement
-                        .ty
-                        .substitute_type_params_parallel(&pending.substitution),
-                );
-                if concrete.contains_error()
-                    || concrete.has_inference_var()
-                    || concrete.contains_assoc_type()
-                {
+                let Some(concrete) =
+                    self.instantiate_generic_requirement(requirement, &pending.substitution)
+                else {
                     continue;
-                }
-                // A parameter no source pinned leaves the obligation abstract;
-                // deciding it here would be guessing.
-                if Self::ty_mentions_type_params(&concrete, &requirement.owner_type_params) {
-                    continue;
-                }
+                };
                 if let Some(error) = self.generic_requirement_error(
                     requirement,
                     &concrete,

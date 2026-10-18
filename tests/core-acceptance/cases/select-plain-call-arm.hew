@@ -1,0 +1,11 @@
+// An ordinary call is an admitted select source and yields its result.
+fn compute() -> i64 {
+    7
+}
+
+fn main() {
+    select {
+        done from compute() => println(f"done:{done}"),
+        after 1s => println("timeout"),
+    };
+}

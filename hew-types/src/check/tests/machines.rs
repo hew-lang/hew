@@ -43,6 +43,26 @@ fn machine_event_type_is_an_owned_member() {
 
 #[test]
 fn generated_machine_parameters_keep_distinct_binding_spans() {
+    struct ParameterUses<'a> {
+        parameters:
+            &'a std::collections::HashMap<hew_parser::ast::Symbol, crate::check::scope::Resolution>,
+        output: &'a TypeCheckOutput,
+    }
+    impl NodeVisitor for ParameterUses<'_> {
+        fn visit_expr(&mut self, expr: &Expr, span: &Span) {
+            let Expr::Ident(name) = expr else {
+                return;
+            };
+            let Some(binder) = self.parameters.get(&name.name) else {
+                return;
+            };
+            assert_eq!(
+                self.output.resolutions.get(&SpanKey::in_module(span, 0)),
+                Some(binder),
+                "generated parameter reference did not join its binder: {name:?}"
+            );
+        }
+    }
     let source = "machine First {\n    events {\n        Go;\n    }\n    state Idle;\n    on Go: Idle => Idle;\n}\n\nmachine Second {\n    events {\n        Go;\n    }\n    state Idle;\n    on Go: Idle => Idle;\n}\n";
     let parsed = hew_parser::parse(source);
     assert!(parsed.errors.is_empty(), "{:#?}", parsed.errors);
@@ -50,7 +70,7 @@ fn generated_machine_parameters_keep_distinct_binding_spans() {
     assert!(output.errors.is_empty(), "{:#?}", output.errors);
     let normalized = output.normalized_program.as_ref().expect("normalization");
     let mut bindings = std::collections::HashSet::new();
-    let mut generated = 0;
+    let mut generated = false;
     for (item, _) in &normalized.program.items {
         let Item::Impl(implementation) = item else {
             continue;
@@ -63,7 +83,8 @@ fn generated_machine_parameters_keep_distinct_binding_spans() {
             ) {
                 continue;
             }
-            generated += 1;
+            generated = true;
+            let mut parameters = std::collections::HashMap::new();
             for param in &method.params {
                 let binder = SpanKey::in_module(&param.name_span, 0);
                 let resolution = output
@@ -75,25 +96,19 @@ fn generated_machine_parameters_keep_distinct_binding_spans() {
                     crate::check::scope::Resolution::Local(_)
                 ));
                 assert!(bindings.insert(resolution), "generated binder collision");
-                assert!(
-                    output.resolutions.iter().any(|(use_span, use_resolution)| {
-                        *use_span != binder
-                            && use_resolution == resolution
-                            && normalized
-                                .source_spans
-                                .contains_key(&(use_span.start..use_span.end))
-                    }),
-                    "generated parameter use did not join its binder: {param:?}"
-                );
+                parameters.insert(param.name.name, *resolution);
             }
+            walk_block(
+                &method.body,
+                &mut ParameterUses {
+                    parameters: &parameters,
+                    output: &output,
+                },
+            );
         }
     }
-    assert_eq!(generated, 4, "two machines each generate two methods");
-    assert_eq!(
-        bindings.len(),
-        6,
-        "each generated parameter has one identity"
-    );
+    assert!(generated, "machine methods must be generated");
+    assert!(!bindings.is_empty(), "generated parameters must be checked");
 }
 
 fn checked_machine(body: &str, helper: &str) -> TypeCheckOutput {

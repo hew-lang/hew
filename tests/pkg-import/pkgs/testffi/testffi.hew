@@ -58,7 +58,7 @@ impl TestResultMethods for TestResult {
         s.len()
     }
     fn echo_tag(self, s: string) -> i64 {
-        self.echo_s.len()
+        self.echo_len(s)
     }
 }
 

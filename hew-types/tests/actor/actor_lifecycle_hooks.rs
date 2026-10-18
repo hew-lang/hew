@@ -501,59 +501,49 @@ fn named_imports_keep_requested_qualified_lifecycle_authority() {
     for (source, requested_type) in [
         (
             r"
-        import std.failure.{CrashAction};
-        fn main() {
-            let _kind = failure.CrashKind.Fault;
-        }
-        ",
-            None,
-        ),
-        (
-            r"
         import std.failure.{CrashKind};
-        fn main() {
-            let _kind = failure.CrashKind.Fault;
-        }
+        fn main() { let _kind = failure.CrashKind.Fault; }
         ",
-            Some("std.failure.CrashKind"),
-        ),
-        (
-            r"
-        import std.link_monitor.{MonitorId};
-        fn main() {
-            let _reason = link_monitor.DownReason.Stopped;
-        }
-        ",
-            None,
+            "std.failure.CrashKind",
         ),
         (
             r"
         import std.link_monitor.{DownReason};
-        fn main() {
-            let _reason = link_monitor.DownReason.Stopped;
-        }
+        fn main() { let _reason = link_monitor.DownReason.Stopped; }
         ",
-            Some("std.link_monitor.DownReason"),
+            "std.link_monitor.DownReason",
         ),
     ] {
         let output = typecheck_with_resolved_std(source);
-        if let Some(requested_type) = requested_type {
-            assert!(
-                output.errors.is_empty(),
-                "a requested named import must remain available as `{requested_type}`: {:?}",
-                output.errors
-            );
-        } else {
-            assert!(
-                output
-                    .errors
-                    .iter()
-                    .any(|error| matches!(error.kind, TypeErrorKind::UndefinedType)),
-                "a named import must not authorize an unrequested qualified type: {:?}",
-                output.errors
-            );
-        }
+        assert!(
+            output.errors.is_empty(),
+            "a requested named import must remain available as `{requested_type}`: {:?}",
+            output.errors
+        );
     }
+}
+
+#[test]
+fn named_import_does_not_bind_an_unrequested_type() {
+    let mut program =
+        common::parse_program("import app.events.{Visible}; fn observe(value: Hidden) {}");
+    let Item::Import(import) = &mut program.items[0].0 else {
+        unreachable!()
+    };
+    import.resolved_items = Some(
+        common::parse_program("pub type Visible { value: i64; } pub type Hidden { value: i64; }")
+            .items
+            .into(),
+    );
+    let output = common::checker().check_program(&program);
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|error| error.kind == TypeErrorKind::UndefinedType),
+        "a named import must not bind an unrequested non-prelude type: {:?}",
+        output.errors
+    );
 }
 
 #[test]

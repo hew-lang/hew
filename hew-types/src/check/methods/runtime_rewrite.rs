@@ -364,15 +364,10 @@ impl Checker {
     /// or a user binding that string-matches `hew_vec_push_layout`), no typed
     /// descriptor is produced.
     ///
-    /// `consumes_receiver` IS still derived from the resolved symbol via the
-    /// single consume authority. This is NOT string reclassification but a
-    /// load-bearing ownership fact with no other source: stdlib declares
-    /// `#[extern_symbol(hew_lambda_actor_release)]`, a genuine consuming handle
-    /// release, and dropping its consume mark would let the handle's scope-exit
-    /// drop fire on already-freed memory (double-free). The verdict stays
-    /// fail-closed (LESSONS: drop-allowset-from-value-flow): any symbol the
-    /// allow-set does not name is borrowing, so an FFI binding that merely
-    /// collides with a non-release name at worst leaks — it never double-frees.
+    /// Receiver consumption comes from the resolved symbol's consume authority.
+    /// A consuming close transfers ownership to the runtime, so scope-exit
+    /// cleanup must not release that receiver a second time. Unlisted symbols
+    /// borrow their receiver.
     pub(super) fn record_extern_symbol_method_call_rewrite(
         &mut self,
         span: &Span,

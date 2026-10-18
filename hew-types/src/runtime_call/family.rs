@@ -404,7 +404,7 @@ pub enum RuntimeCallFamily {
     SupervisorDirectId,
     SupervisorChildGet,
     /// Resolve a static child role through a stable supervisor identity and
-    /// return the current incarnation's stable `LocalPid` token.
+    /// return the current incarnation's opaque actor token.
     LocalPidSupervisorChildGet,
     SupervisorNestedGet,
     /// `hew_supervisor_pool_child_get(sup, pool_key, index) -> ChildLookupResult`

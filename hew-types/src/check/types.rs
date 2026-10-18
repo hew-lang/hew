@@ -1900,16 +1900,10 @@ pub enum MethodCallRewrite {
     /// descriptor.
     ///
     /// `consumes_receiver` is `true` when the rewritten runtime call takes
-    /// ownership of (consumes) its receiver — the `.close()`-family handle
-    /// release builtins plus the lambda-actor handle release. The single
-    /// authority for which symbols consume is
-    /// [`crate::builtin_names::runtime_symbol_consumes_receiver`] (currently
-    /// `hew_stream_close`, `hew_sink_close`, `hew_channel_sender_close`,
-    /// `hew_channel_receiver_close`, `hew_duplex_close`, `hew_duplex_close_half`,
-    /// `hew_lambda_actor_release`); consult that function rather than this list,
-    /// which is illustrative and must not drift from it. HIR lowers a consuming
-    /// receiver with `IntentKind::Consume` so the MIR move-checker marks the
-    /// handle moved-out — its scope-exit drop must NOT fire again
+    /// ownership of its receiver. The sole symbol authority is
+    /// [`crate::builtin_names::runtime_symbol_consumes_receiver`]. HIR lowers a
+    /// consuming receiver with `IntentKind::Consume` so the MIR move-checker
+    /// marks the handle moved-out; its scope-exit drop must not fire again
     /// (double-`close`/double-free). Borrowing methods (`send`/`recv`) leave
     /// this `false`. The verdict is derived from the resolved `c_symbol` in
     /// the single rewrite-recording authority, keyed on the runtime

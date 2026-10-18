@@ -531,7 +531,7 @@ impl Checker {
             }
         }
         // Root expressions may carry a compiler builtin through a bare
-        // source-facing declaration name (notably `LocalPid`).  Its builtin
+        // source-facing declaration name. Its builtin
         // discriminator is established before lowering; qualifying that
         // presentation through the general unique-owner fallback would turn
         // it into a source nominal after the lexical authority has gone away.

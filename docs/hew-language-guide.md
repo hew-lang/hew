@@ -1825,12 +1825,12 @@ that result remains an ordinary value. Other waiting operations are calls:
 
 | You want                          | You write                            |
 | --------------------------------- | ------------------------------------ |
-| a reply from an actor             | `actor.method(args)`                 |
-| that reply concurrently           | `let t = fork actor.method(args);` then `await t` |
-| an actor to stop, and to wait     | `stop(actor); stopped(actor);`       |
-| an actor to stop, without waiting | `stop(actor)`                        |
-| to wait for a stop someone else asked for | `stopped(actor)`             |
-| each item of another actor's stream | `for x in actor.stream()`          |
+| a reply from an actor             | `worker.method(args)`                 |
+| that reply concurrently           | `let t = fork worker.method(args);` then `await t` |
+| an actor to stop, and to wait     | `stop(worker); stopped(worker);`       |
+| an actor to stop, without waiting | `stop(worker)`                        |
+| to wait for a stop someone else asked for | `stopped(worker)`             |
+| each item of another actor's stream | `for x in worker.stream()`          |
 
 Do not put `await` on an actor call, actor handle or generator operation.
 Use it on the task created by `fork`.
@@ -2388,9 +2388,9 @@ hook, which is a plain `fn` invoked when the actor is tearing down. The
 receive handler loops around `sleep`/`sleep_until` without an in-loop exit path.
 
 The handler above is named `halt` for its application-level flag change. A
-`receive fn stop()` is also allowed; the lifecycle operation is `stop(actor)`.
+`receive fn stop()` is also allowed; the lifecycle operation is `stop(worker)`.
 It requests a graceful stop and returns immediately, whether called inside or
-outside the actor. `stopped(actor)` waits for terminal cleanup, while
+outside the actor. `stopped(worker)` waits for terminal cleanup, while
 `terminate(actor)` requests cancellation. After `stop(self)`, the current
 handler finishes and queued messages drain before `#[on(stop)]` runs.
 
@@ -4951,7 +4951,7 @@ non-zero program exit status is preserved.
 ### Authenticated remote actor calls
 
 An actor's ordinary type is used for local and imported handles. Mark each
-portable receive handler with `#[wire]`; its named arguments and result cross
+receive handler with `#[wire]` before exporting the actor; its named arguments and result cross
 the node using Hew's checked wire codec:
 
 ```hew
@@ -4988,8 +4988,8 @@ return `Result`.
 `Node.lookup(name)` returns `Result<Location, LookupError>` for discovery. A
 `Location` describes identity but cannot authorize an actor call. Obtain call
 authority from an authenticated `Node.peer(credential)` session and an explicit
-service offer. Only `#[wire]` handlers are exported, and an imported service
-cannot be exported onward.
+service offer. All receive handlers of an exported actor must be `#[wire]`, and an imported
+service cannot be exported onward.
 
 Setup, encoding and queue time consume the current request budget. A lost
 connection or acknowledgement can leave remote admission uncertain. Use an

@@ -136,10 +136,10 @@ fn main() {
 }
 ",
     );
-    let rejected = output
-        .errors
-        .iter()
-        .any(|e| e.message.contains("`restarted` expects a supervised role"));
+    let rejected = output.errors.iter().any(|e| {
+        e.kind == hew_types::error::TypeErrorKind::InvalidOperation
+            && e.message.contains("`restarted` expects an actor value")
+    });
     assert!(
         rejected,
         "`restarted` on a whole pool must be rejected; \
@@ -182,10 +182,9 @@ fn main() {
     );
 }
 
-/// `restarted` on a non-supervisor-child operand is rejected with a clear
-/// diagnostic — the operand must name a supervisor child slot.
+/// `restarted` rejects a scalar operand: lifecycle observation needs an actor.
 #[test]
-fn restarted_on_non_child_operand_rejected() {
+fn restarted_on_scalar_operand_rejected() {
     let output = typecheck(
         r"
         fn main() {
@@ -194,13 +193,13 @@ fn restarted_on_non_child_operand_rejected() {
         }
         ",
     );
-    let rejected = output
-        .errors
-        .iter()
-        .any(|e| e.message.contains("`restarted` expects a supervised role"));
+    let rejected = output.errors.iter().any(|e| {
+        e.kind == hew_types::error::TypeErrorKind::InvalidOperation
+            && e.message.contains("`restarted` expects an actor value")
+    });
     assert!(
         rejected,
-        "`restarted` on a non-supervised-child operand must be rejected; got: {:#?}",
+        "`restarted` on a scalar operand must be rejected; got: {:#?}",
         output.errors
     );
 }

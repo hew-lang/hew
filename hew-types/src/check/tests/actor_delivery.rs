@@ -51,11 +51,27 @@ fn main() {
             .count(),
         2
     );
-    assert!(output
-        .suspension_effects
-        .calls
-        .values()
-        .all(|effect| *effect == SuspensionEffect::MaySuspend));
+    for call in [
+        "worker.process(\"work\")",
+        "worker.process(\"again\")",
+        "rejected.message.to(backup)",
+        "rejected.message.retry()",
+    ] {
+        let start = source.find(call).unwrap();
+        assert!(
+            output
+                .suspension_effects
+                .calls
+                .iter()
+                .any(|(span, effect)| span.start == start
+                    && source
+                        .get(span.start..span.end)
+                        .is_some_and(|spelling| spelling.trim_end() == call)
+                    && *effect == SuspensionEffect::MaySuspend),
+            "delivery `{call}` must retain its admission suspension: {:?}",
+            output.suspension_effects.calls
+        );
+    }
 }
 
 /// Both policies can await destination admission over an imported actor handle.
@@ -123,7 +139,7 @@ fn statement_position_delivery_outcomes_are_refused() {
          receive fn process(n: i64) -> i64 { n * 2 } }";
 
     for (body, error) in [
-        ("mailbox(d, on_full: .Reject).tell(1);", "SendFailure"),
+        ("mailbox(d, on_full: .Reject).tell(1);", "ActorError"),
         ("d.tell(1);", "ActorError"),
         ("d.process(5);", "ActorError"),
         // A call on a lambda actor's handle is the completion call, so its
@@ -191,20 +207,13 @@ fn used_delivery_outcomes_outside_statement_position_are_accepted() {
          receive fn process(n: i64) -> i64 { n * 2 } }";
 
     for signature_and_body in [
-        "fn main() -> Result<i64, AskError> { let d = spawn Doubler; d.process(5) }",
-        "fn main() -> Result<(), AskError> { let d = spawn Doubler; \
-         let _ = d.process(5)?; .Ok(()) }",
+        "fn inspect() -> Result<i64, ActorError<Never>> { let d = policy(spawn Doubler, on_full: .Wait); d.process(5) }",
+        "fn inspect() fails ActorError<Never> { let d = policy(spawn Doubler, on_full: .Wait); \
+         let _ = d.process(5)?; }",
     ] {
-        let source = format!("{ACTOR} {signature_and_body}");
+        let source = format!("{ACTOR} {signature_and_body} fn main() {{ let _ = inspect(); }}");
         let output = check_source(&source);
-        assert!(
-            !output
-                .errors
-                .iter()
-                .any(|e| e.kind == crate::error::TypeErrorKind::ResultDropped),
-            "{signature_and_body}: {:?}",
-            output.errors
-        );
+        assert!(output.errors.is_empty(), "{signature_and_body}: {:?}", output.errors);
     }
 }
 

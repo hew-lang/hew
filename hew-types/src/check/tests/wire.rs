@@ -501,3 +501,28 @@ type Message {
         output.errors
     );
 }
+
+#[test]
+fn wire_actor_codec_refusal_uses_the_first_source_site() {
+    let source = include_str!(
+        "../../../../tests/vertical-slice/reject/actor_local_pid_remote_nonserializable.hew"
+    );
+    let output = check_wire_program(source);
+    let refusals: Vec<_> = output
+        .errors
+        .iter()
+        .filter(|error| {
+            error.kind == TypeErrorKind::BoundsNotSatisfied
+                && error.message
+                    == "E_NOT_SERIALIZABLE: wire handler `Holder.take` reaches `Holder`, not data"
+        })
+        .collect();
+    assert_eq!(refusals.len(), 1, "{:?}", output.errors);
+    let call = "peer.export(target)";
+    let start = source.find(call).expect("authenticated export call");
+    assert_eq!(
+        refusals[0].span,
+        start..start + call.len(),
+        "the nested Export<Holder> result and Holder argument select one canonical source site"
+    );
+}

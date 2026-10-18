@@ -3086,11 +3086,12 @@ mod tests {
     fn authenticated_actor_acquisition_requires_real_time() {
         let declaration =
             "import std.net;\nactor Worker { #[wire] receive fn ping() -> i64 { 21 } }\n";
-        for (setup, call) in [
-            ("", "Node.peer(\"credential\")"),
+        for (setup, call, operation) in [
+            ("", "Node.peer(\"credential\")", "Node.peer"),
             (
                 "let peer = Node.peer(\"credential\").expect(\"peer\");",
                 "peer.receive_service<Worker>()",
+                "receive_service",
             ),
         ] {
             let source = format!("{declaration}fn main() {{ {setup} let _ = {call}; }}");
@@ -3100,7 +3101,7 @@ mod tests {
                 "{failure}"
             );
             assert!(
-                failure.contains(call),
+                failure.contains(operation),
                 "the acquisition itself must be refused: {failure}"
             );
         }

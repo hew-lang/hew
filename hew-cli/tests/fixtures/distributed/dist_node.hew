@@ -1026,7 +1026,7 @@ actor MonitorProbe {
     // Phase B (real teardown): the client signals READY_DROP so the harness can
     // kill the server (dropping the route to the peer), then issues a remote ask
     // to the now-unreachable actor. The invariant under test is: the ask FAILS
-    // CLOSED — it resolves to a typed AskError WITHOUT hanging — rather than
+    // CLOSED — it resolves to a typed ActorError without hanging — rather than
     // blocking to the client ceiling or fabricating a value.
     //
     // The EXACT fail-closed cause is timing-dependent: a two-process SIGKILL races
@@ -2151,14 +2151,9 @@ fn scenario_partition_ask(kv: KeyValue) -> i64 {
                         ActorError.ConnectionDropped => println(f"PASS partition_ask reason=conn-dropped ms={elapsed_ms}"),
                         ActorError.RoutingFailed => println(f"PASS partition_ask reason=routing-failed ms={elapsed_ms}"),
                         ActorError.NodeNotRunning => println(f"PASS partition_ask reason=node-not-running ms={elapsed_ms}"),
-                        // AskError (retired) had no send-admission variant equivalent for
-                        // "SendFailed" beyond Rejected(SendFailure<Req>) — nothing was
-                        // accepted for delivery. ActorError names that case Rejected.
+                        // Rejected retains the request when delivery was not accepted.
                         ActorError.Rejected(_) => println(f"PASS partition_ask reason=rejected ms={elapsed_ms}"),
-                        // AskError.StaleRef (retired) had no direct ActorError equivalent;
-                        // a stale incarnation now surfaces as Dead (the destination is
-                        // gone and will not come back), per
-                        // tests/hew/distributed_error_taxonomy_test.hew.
+                        // A stale incarnation is Dead: that destination cannot return.
                         ActorError.Dead => println(f"PASS partition_ask reason=dead ms={elapsed_ms}"),
                         _ => println(f"PASS partition_ask reason=fail-closed ms={elapsed_ms}"),
                     }
@@ -2828,10 +2823,7 @@ fn scenario_stale_incarnation_restart(old: KeyValue, kx: string, port: string) -
                         Result.Ok(KvResp.Value(_)) => {}
                     }
                     match old.handle(KvReq.GetKey("restart-proof")) {
-                        // AskError.StaleRef (retired) has no direct ActorError equivalent;
-                        // a stale incarnation now surfaces as Dead (the destination is
-                        // gone and will not come back), per
-                        // tests/hew/distributed_error_taxonomy_test.hew.
+                        // A stale incarnation is Dead: that destination cannot return.
                         Result.Err(ActorError.Dead) => {
                             println(f"PASS stale_incarnation_restart old={old_incarnation} new={fresh_incarnation} error=Dead");
                             return 0;

@@ -2291,6 +2291,8 @@ fn main() {}"#,
                 },
             );
             let expected: Option<(ValueClass, CloneKind)> = match info.kind {
+                // Expected class of ordinary retained actor descriptors.
+                BuiltinType::ActorHandle => Some((ValueClass::PersistentShare, CloneKind::Retain)),
                 BuiltinType::SupervisorPool
                 | BuiltinType::NodeId
                 | BuiltinType::Location
@@ -2309,7 +2311,6 @@ fn main() {}"#,
                 | BuiltinType::NodeError
                 | BuiltinType::LookupError
                 | BuiltinType::LinkError
-                | BuiltinType::ActorHandle
                 // A lambda actor's handle is a pid under another spelling.
                 | BuiltinType::ActorFn
                 | BuiltinType::HewActor => Some((ValueClass::BitCopy, CloneKind::Bits)),
@@ -2384,25 +2385,8 @@ fn main() {}"#,
                 },
             );
             let classed = ValueClass::of_ty(&ty, &context);
-            // RECORDED EXCEPTIONS - `ActorHandle`, `HewActor` and `BoxedActor`.
-            //
-            // §1.1 gives both the BitCopy row and the class table above records
-            // that verdict. Neither `marker()` can follow in this change:
-            // `marker()` is the legacy lowering's input and the legacy route is
-            // the parity oracle. Flipping `ActorHandle` routes a
-            // `Vec` of actor handles off its pointer ABI
-            // (`hew-cli::run_e2e run_generic_vec_element_methods_roundtrip_ptr_abi`
-            // panics "Vec layout-aware operation is not implemented") and moves
-            // an elaborated-MIR baseline
-            // (`hew-cli::funcupdate_mir_baselines funcupdate_reassign_elab_mir_matches_committed_baselines`).
-            // `HewActor` and `BoxedActor` additionally carry
-            // `close_method() = Some("close")`, which
-            // `hew-hir/src/builtin_type_classes.rs` refuses on a BitCopy
-            // builtin. All three flip at P5 with the legacy carrier (§9).
-            //
-            // The list is closed and explicit: every other builtin's marker and
-            // class agree, the `None` arm below included, so this is a named
-            // exception rather than a hole the table can grow into.
+            // Actor handles carry a coarse Resource marker. Their exact class
+            // distinguishes retained descriptors from affine boxed actors.
             if matches!(
                 info.kind,
                 BuiltinType::ActorHandle

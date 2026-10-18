@@ -31,10 +31,9 @@ fn lookup_error_id(err: LookupError) -> i64 {
     }
 }
 
-// `AskError` (a flat ~20-variant taxonomy) has been retired in favour of
 // Completion outcomes include `Rejected(SendFailure<Req>)`,
 // `Failed(E)`, or one of a small set of terminal transport/lifecycle
-// variants. `ActorError` bare means `ActorError<Never>`.
+// variants. omitted `ActorError` parameters default to `Never`.
 fn ask_error_id(err: ActorError) -> i64 {
     match err {
         ActorError.Rejected(_) => 1,

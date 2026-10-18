@@ -2635,7 +2635,7 @@ fn location_cannot_be_used_as_an_actor_handle() {
 #[test]
 fn actor_ask_in_match_types_as_result() {
     // Regression guard: an actor ask is an ordinary call and must resolve to
-    // `Result<i64, AskError>` so that `Ok`/`Err` arms type-check.
+    // `Result<i64, ActorError>` so that `Ok`/`Err` arms type-check.
     let output = check_source(
         r"
         actor Doubler {
@@ -2666,7 +2666,7 @@ fn user_method_on_builtin_result_wrapper_is_rejected() {
     // A user package may declare its own `type Result` and `impl` methods on
     // it (the sqlite ecosystem package does exactly this). An actor ask
     // (`await db.query(...)`) is typed as the builtin wrapper
-    // `Result<UserResult, AskError>`. Calling the user method `free` on that
+    // `Result<UserResult, ActorError>`. Calling the user method `free` on that
     // wrapper must be rejected: `free` is not part of the builtin `Result`
     // surface, and admitting it (via the bare-name `Result::free` key the user
     // impl registers in `fn_sigs`) produces an ill-typed call that passes the
@@ -2725,7 +2725,7 @@ fn builtin_result_methods_resolve_on_actor_ask_wrapper() {
     // COLLIDES with the builtin surface but whose signature differs — here
     // `fn is_ok(self) -> i64`. Both land in `fn_sigs` under the bare key
     // `Result::is_ok`. An actor ask (`await d.process(5)`) is typed as the
-    // builtin wrapper `Result<i64, AskError>`. Calling `r.is_ok()` on that
+    // builtin wrapper `Result<i64, ActorError>`. Calling `r.is_ok()` on that
     // builtin receiver must resolve to the BUILTIN `bool`-returning method, not
     // the user `i64`-returning one.
     //

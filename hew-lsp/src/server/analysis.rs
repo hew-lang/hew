@@ -1741,7 +1741,7 @@ pub(super) mod tests {
 
     #[test]
     fn coverage_actor_completion_surface() {
-        let source = "#[wire]\ntype Job {\n    n: i32 @1;\n}\n\nactor Worker {\n    #[wire]\n    receive fn run(job: Job) -> i64 {\n        21\n    }\n}\n\nactor Caller {\n    receive fn inspect(peer: Worker) {\n        let result = peer.run(Job { n: 9 });\n    }\n}\n";
+        let source = "#[wire]\ntype Job {\n    n: i32 @1;\n}\n\nactor Worker {\n    #[wire]\n    receive fn run(job: Job) -> i64 {\n        21\n    }\n    receive fn notify(job: Job) {}\n}\n\nactor Caller {\n    receive fn inspect(peer: Worker) {\n        let result = peer.run(Job { n: 9 });\n        let inbox = mailbox(peer, on_full: .Reject);\n        let submission = inbox.notify(Job { n: 10 });\n    }\n}\n";
         let doc = analyze_repo_rooted("lsp_cov_actor_completion", source);
         assert_eq!(hard_type_diagnostic(&doc), None);
         let hover = surface_hover(&doc, source, "peer.run");
@@ -1753,6 +1753,14 @@ pub(super) mod tests {
         assert!(
             sig.iter().any(|s| s.contains("run(") && s.contains("Job") && s.contains("Result<i64,") && s.contains("ActorError")),
             "actor completion signature must expose its handler, payload and typed outcome: {sig:?}",
+        );
+        let submission_sig = surface_sighelp(&doc, source, "inbox.notify");
+        assert!(
+            submission_sig.iter().any(|s| s.contains("notify(")
+                && s.contains("Job")
+                && s.contains("Result<Delivery,")
+                && s.contains("ActorError")),
+            "mailbox signature must expose its checked submission result: {submission_sig:?}",
         );
         let completions = surface_completions(&doc, source, "peer.run");
         assert!(completions.contains(&"run".to_string()), "{completions:?}");

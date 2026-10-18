@@ -28,6 +28,10 @@ impl Checker {
             collect(&self.subst.resolve(ty), &mut actors);
             instances.extend(actors.into_iter().map(|actor| (actor, site.clone())));
         }
+        // A concrete actor can occur at both an argument and its enclosing
+        // Export<A> result. Attribute each instance to its first source site,
+        // independently of the expression table's hash iteration order.
+        instances.sort_by_key(|(_, site)| (site.module_idx, site.start, site.end));
         let indices = program
             .module_graph
             .as_ref()

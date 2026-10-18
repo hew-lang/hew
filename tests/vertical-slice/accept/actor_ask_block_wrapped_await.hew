@@ -1,5 +1,5 @@
 // Accept fixture: `match actor.method() { ... }` — an actor ask is an ordinary
-// call, so the scrutinee must be typed `Result<i64, AskError>` and not the
+// call, so the scrutinee must be typed `Result<i64, ActorError>` and not the
 // handler's raw return type (`i64`, which would give "constructor pattern `Ok`
 // cannot match non-enum type i64").
 //

@@ -95,7 +95,28 @@ pub fn build_signature_help(
     offset: usize,
 ) -> Option<SignatureHelpResult> {
     let context = find_call_context(source, offset)?;
-    let sig = find_call_sig(&context, tc)?;
+    // Checked actor dispatch identifies the handler through mailbox and policy
+    // views. The checked call result is the value the caller receives.
+    let actor_call = tc
+        .actor_method_dispatch
+        .iter()
+        .filter(|(span, _)| {
+            span.module_idx == 0 && span.start == context.callee_start && span.end >= offset
+        })
+        .min_by_key(|(span, _)| span.end);
+    let sig = if let Some((span, dispatch)) = actor_call {
+        use hew_types::check::ActorMethodKind;
+        let method = match dispatch {
+            ActorMethodKind::Ask { method, .. }
+            | ActorMethodKind::Message { method, .. }
+            | ActorMethodKind::StreamProducer(method, _) => method,
+        };
+        let mut sig = tc.fn_sigs.get(method)?.clone();
+        sig.return_type = tc.expr_types.get(span)?.clone();
+        sig
+    } else {
+        find_call_sig(&context, tc)?
+    };
     let active_param = context.active_param(&sig);
     let label = format_sig_label(&context.callee, &sig);
 

@@ -2,7 +2,7 @@
 //! outcomes: only a successful `0` reply increments `rejected`.
 //!
 //! The stopped supervisor is a bounded negative control for the `Err` arm. It
-//! produces `AskError.ActorStopped` without crashing the test process, so this
+//! produces a typed actor error without crashing the test process, so this
 //! executable test proves the unavailable path remains distinct from a normal
 //! rate-limit denial.
 

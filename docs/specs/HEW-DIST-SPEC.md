@@ -359,8 +359,8 @@ The recipient's cancellable
 `peer.receive_service<A>()` waits for an offer and returns an ordinary actor
 value `A` inside `Result<A, ActorError<Never, Never>>`. An offered incompatible
 interface fails promptly; an absent offer waits under ordinary scope cancellation
-and deadlines. Different generic
-specialisations are incompatible even when they share a handler declaration.
+and deadlines. Different generic specializations are incompatible even when
+they share a handler declaration.
 Imported actor methods use ordinary named or positional arguments and the same
 completion-call results as local actor methods. Every
 request and reply uses the actor's checked wire codec. Native handles cannot be

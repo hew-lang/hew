@@ -14887,7 +14887,7 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_remote_call_cleanup_poll( *mut HewRemoteCall, #[cfg_attr( not(test), expect( unused_variables, reason = \"only raw-location test calls can own local cleanup\" ) )] parent: *mut HewCoroState, ) -> i32"
+        "native": "fn hew_remote_call_cleanup_poll( *mut HewRemoteCall, *mut HewCoroState, ) -> i32"
       },
       "symbol": "hew_remote_call_cleanup_poll"
     },

@@ -5631,9 +5631,7 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1662] = {
      "native", "non-declarable", "not-applicable", "no-in-signature-extent",
      HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_remote_call_cleanup_poll",
-     "{\"native\": \"fn hew_remote_call_cleanup_poll( *mut HewRemoteCall, "
-     "#[cfg_attr( not(test), expect( unused_variables, reason = \\\"only "
-     "raw-location test calls can own local cleanup\\\" ) )] parent: *mut "
+     "{\"native\": \"fn hew_remote_call_cleanup_poll( *mut HewRemoteCall, *mut "
      "HewCoroState, ) -> i32\"}",
      "native", "non-declarable", "not-applicable", "no-in-signature-extent",
      HEW_CABI_OWNERSHIP_UNMEASURED},

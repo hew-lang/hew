@@ -8,7 +8,7 @@ use hew_types::RcIntrinsicOp;
 use hew_types::TryConversionKind;
 use hew_types::{
     ChildSlot, DefId, ExecutionContextReader, ImplId, MethodTargetFamily, PoolAccessor, ResolvedTy,
-    Ty, TyPattern, VariantMatch,
+    TyPattern, VariantMatch,
 };
 
 use crate::ids::{BindingId, HirNodeId, ItemId, ResolvedRef, ScopeId, SiteId};

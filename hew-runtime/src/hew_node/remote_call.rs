@@ -823,15 +823,10 @@ unsafe fn take_local_call(
 #[no_mangle]
 pub unsafe extern "C" fn hew_remote_call_cleanup_poll(
     operation: *mut HewRemoteCall,
-    #[cfg_attr(
-        not(test),
-        expect(
-            unused_variables,
-            reason = "only raw-location test calls can own local cleanup"
-        )
-    )]
     parent: *mut crate::coro_state::HewCoroState,
 ) -> i32 {
+    #[cfg(not(test))]
+    let _ = parent;
     // SAFETY: generated cleanup exclusively owns this live operation.
     match unsafe { &(*operation).route } {
         // SAFETY: forwards the cleanup contract to the local call.

@@ -667,6 +667,60 @@ fn effect_graph_shared_descendants_remain_synchronous() {
 }
 
 #[test]
+fn effect_graph_ignores_opaque_data_origins_in_shared_cleanup_calls() {
+    let mut source = String::from(
+        "#[opaque] type Data {}\n#[resource] type Guard {}\nimpl Guard { fn close(consume self) {} }\nfn fresh(value: Data) -> Data { value }\nfn f0(value: Data) { let guard = Guard {}; }\n",
+    );
+    // Distinct call sites share descendants. Data provenance cannot change
+    // Guard's close effect, so these calls must not multiply effect instances.
+    for level in 1..=22 {
+        let child = level - 1;
+        writeln!(
+            source,
+            "fn f{level}(value: Data) {{ f{child}(fresh(value)); f{child}(fresh(value)); }}"
+        )
+        .unwrap();
+    }
+    source.push_str("fn main() {}\n");
+    let output = check_source(&source);
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+    assert!(output
+        .suspension_effects
+        .calls
+        .values()
+        .all(|effect| *effect == SuspensionEffect::Never));
+}
+
+#[test]
+fn effect_origins_follow_callables_extracted_from_linear_values() {
+    let source = r"
+#[resource] type Ticket { id: i64; }
+impl Ticket { fn close(consume self) { sleep(1ms); } }
+#[linear] type Pack<T> { callback: T; }
+impl<T> Pack<T> { fn take(consume self) -> T { let Pack { callback } = self; callback } }
+fn discard(consume pack: Pack<fn() -> i64>) { let callback = pack.take(); }
+fn pure() -> i64 { 1 }
+fn synchronous() { discard(Pack { callback: pure }); }
+fn main() {
+    let ticket = Ticket { id: 1 };
+    let capturing = move || ticket.id;
+    synchronous();
+    discard(Pack { callback: capturing });
+}
+";
+    let output = check_source(source);
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+    assert_eq!(
+        call_effects(&output, source, "discard(Pack { callback: pure })"),
+        vec![SuspensionEffect::Never]
+    );
+    assert_eq!(
+        call_effects(&output, source, "discard(Pack { callback: capturing })"),
+        vec![SuspensionEffect::MaySuspend]
+    );
+}
+
+#[test]
 fn effect_graph_ignores_irrelevant_growing_generic_arguments() {
     let source = r"
 fn recurse<T>(n: i64) {

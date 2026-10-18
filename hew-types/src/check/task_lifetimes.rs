@@ -1,3 +1,4 @@
+use super::cleanup_effects::CleanupTarget;
 use super::effects::EffectBody;
 use super::types::PendingCallableTarget;
 use super::{
@@ -819,7 +820,7 @@ impl Checker {
             if nominal.is_some_and(|nominal| active.get(&nominal).is_some_and(|other| other != &ty))
             {
                 // Expansive generic recursion cannot establish absence of a
-                // task. Exact recursive types remain ordinary graph cycles.
+                // relevant origin. Exact recursive types remain graph cycles.
                 carries.insert(ty);
                 continue;
             }
@@ -857,25 +858,43 @@ impl Checker {
     fn origin_carrier_members(
         &self,
         ty: &crate::Ty,
-        _query: OriginCarrierQuery,
+        query: OriginCarrierQuery,
     ) -> (bool, Vec<crate::Ty>) {
         use crate::{BuiltinType, Ty};
+        let effects = matches!(query, OriginCarrierQuery::Effects);
+        if effects
+            && self
+                .cleanup_type_targets(ty, &HashMap::new(), true)
+                .iter()
+                .any(|target| {
+                    matches!(
+                        target,
+                        CleanupTarget::Callable { .. }
+                            | CleanupTarget::Body { .. }
+                            | CleanupTarget::Unknown(_)
+                    )
+                })
+        {
+            return (true, Vec::new());
+        }
         match ty {
             Ty::Tuple(values) => (false, values.clone()),
             Ty::Array(value, _) | Ty::Slice(value) => (false, vec![(**value).clone()]),
             Ty::Named { head, args } => {
-                if matches!(
-                    head.builtin(),
-                    Some(
-                        BuiltinType::Option
-                            | BuiltinType::Result
-                            | BuiltinType::Vec
-                            | BuiltinType::HashMap
-                            | BuiltinType::HashSet
-                            | BuiltinType::Rc
-                            | BuiltinType::Weak
+                if (effects && head.builtin().is_some())
+                    || matches!(
+                        head.builtin(),
+                        Some(
+                            BuiltinType::Option
+                                | BuiltinType::Result
+                                | BuiltinType::Vec
+                                | BuiltinType::HashMap
+                                | BuiltinType::HashSet
+                                | BuiltinType::Rc
+                                | BuiltinType::Weak
+                        )
                     )
-                ) {
+                {
                     return (false, args.clone());
                 }
                 let Some(nominal) = head.nominal() else {
@@ -887,9 +906,10 @@ impl Checker {
                 ) else {
                     return (true, Vec::new());
                 };
-                if declaration.is_opaque
-                    || declaration.marker != crate::DeclarationMarker::None
-                    || declaration.type_params.len() != args.len()
+                if declaration.type_params.len() != args.len()
+                    || (!effects
+                        && (declaration.is_opaque
+                            || declaration.marker != crate::DeclarationMarker::None))
                 {
                     return (true, Vec::new());
                 }
@@ -910,6 +930,11 @@ impl Checker {
             }
             Ty::String | Ty::Bytes | Ty::CancellationToken | Ty::Never => (false, Vec::new()),
             ty if ty.is_primitive() => (false, Vec::new()),
+            _ if effects => {
+                let mut children = Vec::new();
+                ty.for_each_child(&mut |child| children.push(child.clone()));
+                (false, children)
+            }
             _ => (true, Vec::new()),
         }
     }

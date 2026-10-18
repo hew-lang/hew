@@ -32,8 +32,8 @@ pub use actor::{
     SemActorOverflow, SemCoalesceFallback, SemCoalesceKey, SemFailureDisplay,
 };
 pub use analysis::{
-    build_cfg_index, build_def_use, compute_dominators, replace_all_uses, replace_use, CfgIndex,
-    DefUseIndex, Dominators, EdgeRef, RewriteError,
+    build_cfg_index, build_def_use, compute_dominators, compute_indexed_dominators,
+    replace_all_uses, replace_use, CfgIndex, DefUseIndex, Dominators, EdgeRef, RewriteError,
 };
 pub use callable::{
     callable_parts, callable_value_signature, generator_parts, verify_callable_coercion,

@@ -6,8 +6,8 @@
 //
 // The first four lines are `1` iff the string-indexed read agrees with the
 // literal — the roundtrip invariant. The last two lines pin the integer
-// width rules on '€' (8364): `as u32` preserves the scalar value, `as u8`
-// truncates to the low byte (8364 & 0xFF = 172).
+// width rules on '€' (8364): `as u32` preserves the scalar value, and checked
+// narrowing to u8 refuses a scalar outside the byte range.
 
 fn main() -> i64 {
     let s: string = "Aé€😀";
@@ -37,7 +37,7 @@ fn main() -> i64 {
     println("");
     print((s[2] as u32) as i64);
     println("");
-    print((s[2] as u8) as i64);
+    print((s[2] as u32).try_to_u8().is_none());
     println("");
     0
 }

@@ -85,7 +85,7 @@ fn f() -> i32 {
 
 #[test]
 fn dyn_index_lowers_to_vtable_call() {
-    let output = lower("fn f(idx: dyn Index<Output = i32>) -> i32 { idx[2] }");
+    let output = lower("fn f(idx: dyn Index<i64, Output = i32>) -> i32 { idx[2] }");
     let tail = function_tail(&output, "f");
     assert!(
         matches!(
@@ -108,7 +108,7 @@ fn dyn_index_selects_index_at_beside_another_at() {
     let output = lower(
         r"
         trait Other { fn at(self, position: i64) -> i32; }
-        fn f(idx: dyn (Index<Output = i32> + Other)) -> i32 { idx[2] }
+        fn f(idx: dyn (Index<i64, Output = i32> + Other)) -> i32 { idx[2] }
         ",
     );
     let tail = function_tail(&output, "f");

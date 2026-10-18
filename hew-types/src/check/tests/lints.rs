@@ -450,12 +450,6 @@ fn builtin_print_registration_keeps_display_bounds_on_bare_names() {
             "{name} should bound its parameter by the prelude Display"
         );
     }
-
-    let len_sig = checker.sigs().get("len").expect("missing len builtin");
-    assert!(
-        len_sig.bounds.is_empty(),
-        "len must stay out of the Display migration"
-    );
 }
 
 #[test]

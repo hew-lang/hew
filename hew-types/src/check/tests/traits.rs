@@ -2011,10 +2011,10 @@ fn index_read_for_hashmap_string_key_is_not_option() {
 
 #[test]
 fn dyn_index_with_output_binding() {
-    let output = check_source("fn f(idx: dyn Index<Output = i32>) -> i32 { idx[2] }");
+    let output = check_source("fn f(idx: dyn Index<i64, Output = i32>) -> i32 { idx[2] }");
     assert!(
         output.errors.is_empty(),
-        "dyn Index<Output = i32> indexing should type-check: {:?}",
+        "dyn Index<i64, Output = i32> indexing should type-check: {:?}",
         output.errors
     );
     assert!(

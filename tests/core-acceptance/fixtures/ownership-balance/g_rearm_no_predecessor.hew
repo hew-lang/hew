@@ -1,5 +1,5 @@
 // G: a record var passed through a consuming call in a loop and returned early.
-import std.string;
+
 
 type Run {
     checkpoint_seq: i64;

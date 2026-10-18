@@ -81,12 +81,12 @@ fn main() {
 
 // ─── associated-type bound annotation ────────────────────────────────────────
 
-/// `fn f(idx: dyn Index<Output = i32>) -> i32` — `dyn Trait` with an
+/// `fn f(idx: dyn Index<i64, Output = i32>) -> i32` — `dyn Trait` with an
 /// associated-type binding in a parameter annotation must lower without NYI.
 #[test]
 fn dyn_trait_assoc_type_annotation_lowers_without_nyi() {
     let src = r"
-fn first(idx: dyn Index<Output = i32>) -> i32 {
+fn first(idx: dyn Index<i64, Output = i32>) -> i32 {
     idx[2]
 }
 ";

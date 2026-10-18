@@ -3207,12 +3207,12 @@ fn vec_owned_element_admits_rc_and_weak_handles() {
 }
 
 #[test]
-fn free_call_len_on_hashset_records_lowering_fact() {
+fn hashset_len_method_records_lowering_fact() {
     let parsed = hew_parser::parse(
         r"
         fn main() -> i64 {
             let s: HashSet<i64> = HashSet.new();
-            len(s)
+            s.len()
         }
         ",
     );
@@ -3228,7 +3228,7 @@ fn free_call_len_on_hashset_records_lowering_fact() {
             .trailing_expr
             .as_ref()
             .map(|expr| expr.1.clone())
-            .expect("expected trailing len(s) call"),
+            .expect("expected trailing s.len() call"),
         other => panic!("expected function item, got: {other:?}"),
     };
 
@@ -3239,7 +3239,7 @@ fn free_call_len_on_hashset_records_lowering_fact() {
     let fact = output
         .lowering_facts
         .get(&SpanKey::from(&call_span))
-        .expect("expected len(s) to record a lowering fact");
+        .expect("expected s.len() to record a lowering fact");
     assert_eq!(fact.kind, crate::LoweringKind::HashSet);
     assert_eq!(fact.element_type, crate::HashSetElementType::I64);
     assert_eq!(fact.abi_variant, crate::HashSetAbi::Int64);

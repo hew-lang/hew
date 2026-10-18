@@ -1,5 +1,5 @@
 // E: a string var grown in a loop and returned from inside it.
-import std.string;
+
 
 fn is_marked(p: string) -> bool {
     p.len() > 12

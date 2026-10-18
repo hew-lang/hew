@@ -98,8 +98,9 @@ Each sibling repository releases from its own `v*` tag and consumes the
 published Hew release; nothing here pushes into them.
 
 - **vscode-hew**: bump `package.json` and pin the new archives' hashes in
-  `hew-release.sha256`, then tag. Its `release.yml` bundles `hew-lsp` and
-  `std/` from the pinned archives and publishes to the Marketplace behind its
+  `hew-release.sha256`, then tag. Its `release.yml` bundles `hew` and
+  `std/` from the pinned archives, starts the language server with `hew lsp`,
+  and publishes to the Marketplace behind its
   `vs-marketplace` environment (Entra ID OIDC, no PAT).
 - **tree-sitter-hew**: tag after a grammar change; `publish.yml` publishes
   `@hew-lang/tree-sitter-hew` to npmjs by trusted publishing behind its `npm`
@@ -238,14 +239,17 @@ and the docs site, publishing nothing), so tag-time packaging fails here
 rather than on the tag. `.github/workflows/release-gate.yml` checks the
 release identity and `make release-checks`, then runs:
 
-| Platform                        | Build scope                                          | Test scope                                                   |
-| ------------------------------- | ---------------------------------------------------- | ------------------------------------------------------------ |
-| Linux x86_64                    | hew-cli, hew-lsp, hew-observe, hew-lib, WASM runtime | Rust workspace, codegen E2E (native + WASM)                  |
-| Linux aarch64                   | hew-cli, hew-lsp, hew-observe, hew-lib, WASM runtime | Rust workspace, codegen E2E (native + WASM)                  |
-| macOS arm64                     | hew-cli, hew-lsp, hew-observe, hew-lib               | Rust workspace, codegen E2E (native)                         |
-| macOS x86_64 (`macos-15-intel`) | hew-cli, hew-lsp, hew-observe, hew-lib               | Rust workspace, codegen E2E (native)                         |
-| Windows x86_64                  | hew-cli, hew-lsp, hew-observe, hew-lib               | Rust workspace + C-ABI + executable release-library consumer |
-| FreeBSD x86_64                  | hew-cli, hew-lsp, hew-observe, hew-lib               | Rust workspace + C-ABI + executable release-library consumer |
+| Platform                        | Build scope                    | Test scope                                                   |
+| ------------------------------- | ------------------------------ | ------------------------------------------------------------ |
+| Linux x86_64                    | hew-cli, hew-lib, WASM runtime | Rust workspace, codegen E2E (native + WASM)                  |
+| Linux aarch64                   | hew-cli, hew-lib, WASM runtime | Rust workspace, codegen E2E (native + WASM)                  |
+| macOS arm64                     | hew-cli, hew-lib               | Rust workspace, codegen E2E (native)                         |
+| macOS x86_64 (`macos-15-intel`) | hew-cli, hew-lib               | Rust workspace, codegen E2E (native)                         |
+| Windows x86_64                  | hew-cli, hew-lib               | Rust workspace + C-ABI + executable release-library consumer |
+| FreeBSD x86_64                  | hew-cli, hew-lib               | Rust workspace + C-ABI + executable release-library consumer |
+
+Each toolchain carries one executable. Language-server and Observe entry points
+are `hew lsp` and `hew observe`; neither needs a sibling executable.
 
 Require successful results for every release-gate platform and
 `gate-sanitizers`, plus a successful `release.yml` dry run, on the recorded

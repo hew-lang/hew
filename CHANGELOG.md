@@ -2,13 +2,26 @@
 
 ## [Unreleased]
 
-- Observe machine inputs through bounded read-only feeds, atomic snapshots and
-  ordered notices with explicit lag and resource-scoped detach.
-- Select ordinary calls while retaining their input loans through cancellation
-  and cleanup; reuse a subscription after a timeout or cancelled receive.
+- Use an actor's own type for local, supervised and authenticated imported
+  references. Preserve stable supervised roles across restart and distinguish
+  definite mailbox rejection from uncertain remote admission.
+- Add revocable actor service grants, actor-owned timers, typed crash notices
+  and configured supervisor pools. Allow crash hooks to suspend within the
+  child's stop budget, with restart fallback after failure or deadline expiry.
+- Observe machine inputs through bounded feeds, atomic snapshots and ordered
+  notices with explicit lag. Select ordinary calls while retaining input loans
+  through cancellation and cleanup.
+- Add indexed Unicode strings, projected fields and generic indexing, and move
+  generic sorting, command-line parsing and HTTP routing into Hew.
+- Capture process output with combined byte limits, deadlines and structured
+  cancellation; install signed native packages and expose typed C host owners.
+- Run the language server and Observe through `hew lsp` and `hew observe` in
+  one executable, and extend browser/WASI task, select and periodic execution.
+- Preserve generic signatures across repeated imports, bound cleanup analysis
+  of invalid recursive types and remove superseded actor lowering paths.
 
-- Allow actor crash hooks to suspend within the child's stop budget, with
-  ordinary restart fallback after hook failure or deadline expiry.
+See the [migration guide](docs/migrations/v0.6.2.md) for changed actor, string,
+sorting, native SDK and tool interfaces.
 
 ## [0.6.1] - 2026-10-15
 

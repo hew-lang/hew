@@ -85,12 +85,19 @@ struct OriginEnvironment {
 
 type EnvironmentKey = (Option<usize>, Vec<(TypeBindingId, ActualSource)>);
 
+#[derive(Clone, Copy)]
+enum OriginCarrierQuery {
+    TaskEscape,
+    Effects,
+}
+
 #[derive(Default)]
 pub(super) struct OriginEnvironments {
     incomplete: usize,
     values: Vec<OriginEnvironment>,
     identities: HashMap<EnvironmentKey, usize>,
     task_carriers: HashMap<crate::Ty, bool>,
+    effect_carriers: HashMap<crate::Ty, bool>,
     formal_sources: HashMap<TypeBindingId, Vec<IndirectCallCandidates>>,
     origins: OriginGraph,
     recursive_sources: HashMap<(TypeBindingId, usize), HashSet<ActualSource>>,
@@ -446,7 +453,7 @@ impl Checker {
                             .subst
                             .resolve(&ty)
                             .substitute_type_params_parallel(types);
-                        (!self.task_carrier_type(&ty, &mut environments.task_carriers))
+                        (!self.effect_origin_carrier_type(&ty, &mut environments.effect_carriers))
                             .then_some(*formal)
                     })
                     .collect();
@@ -472,6 +479,14 @@ impl Checker {
         }
         let parent = matches!(owner, EffectBody::Closure(_)).then_some(actuals);
         environments.intern(arguments.into_iter().collect(), parent)
+    }
+
+    fn effect_origin_carrier_type(
+        &self,
+        ty: &crate::Ty,
+        cache: &mut HashMap<crate::Ty, bool>,
+    ) -> bool {
+        self.origin_carrier_type(ty, cache, OriginCarrierQuery::Effects)
     }
 
     fn current_task_lifetime(&self) -> TaskLifetime {
@@ -762,6 +777,15 @@ impl Checker {
     }
 
     fn task_carrier_type(&self, ty: &crate::Ty, known: &mut HashMap<crate::Ty, bool>) -> bool {
+        self.origin_carrier_type(ty, known, OriginCarrierQuery::TaskEscape)
+    }
+
+    fn origin_carrier_type(
+        &self,
+        ty: &crate::Ty,
+        known: &mut HashMap<crate::Ty, bool>,
+        query: OriginCarrierQuery,
+    ) -> bool {
         let root = self.subst.resolve(ty);
         if let Some(carries) = known.get(&root) {
             return *carries;
@@ -799,7 +823,7 @@ impl Checker {
                 carries.insert(ty);
                 continue;
             }
-            let (direct, children) = self.task_carrier_members(&ty);
+            let (direct, children) = self.origin_carrier_members(&ty, query);
             if direct {
                 carries.insert(ty.clone());
             }
@@ -830,7 +854,11 @@ impl Checker {
         known[&root]
     }
 
-    fn task_carrier_members(&self, ty: &crate::Ty) -> (bool, Vec<crate::Ty>) {
+    fn origin_carrier_members(
+        &self,
+        ty: &crate::Ty,
+        _query: OriginCarrierQuery,
+    ) -> (bool, Vec<crate::Ty>) {
         use crate::{BuiltinType, Ty};
         match ty {
             Ty::Tuple(values) => (false, values.clone()),

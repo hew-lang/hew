@@ -3169,7 +3169,6 @@ pub(crate) unsafe fn mailbox_close(mb: *mut HewMailbox) {
         // coalesce key/drop callback. Always use the protocol: a sender may
         // already be parked even if coalesce configuration changed afterward.
         mb.notify_not_full_all();
-        #[cfg(not(target_arch = "wasm32"))]
         mb.native_capacity.notify();
     }
 }
@@ -3298,7 +3297,6 @@ pub(crate) unsafe fn mailbox_try_recv_with_origin(mb: *mut HewMailbox) -> RecvNo
                 // Preserve the foreign-thread blocking sender path.
                 mb.notify_not_full_one();
             }
-            #[cfg(not(target_arch = "wasm32"))]
             mb.native_capacity.notify();
             return RecvNode {
                 node,
@@ -3311,7 +3309,6 @@ pub(crate) unsafe fn mailbox_try_recv_with_origin(mb: *mut HewMailbox) -> RecvNo
         if !node.is_null() {
             mb.count.fetch_sub(1, Ordering::Release);
             MESSAGES_RECEIVED.fetch_add(1, Ordering::Relaxed);
-            #[cfg(not(target_arch = "wasm32"))]
             mb.native_capacity.notify();
             return RecvNode {
                 node,

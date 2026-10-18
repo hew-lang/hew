@@ -453,6 +453,8 @@ fn checked_tasks_select_and_scope_cleanup_run_under_wasi() {
         "fork-outlives-timed-select",
         "select-first-completion",
         "select-actor-dependencies",
+        "actor-mailbox-view",
+        "select-actor-lifecycle",
         "task-nested-deadline",
         "race-unobserved-result-cleanup",
     ] {

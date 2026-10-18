@@ -4344,8 +4344,8 @@ mod tests {
         unsafe extern "C" fn drop_payload(_message: i32, payload: *mut c_void, _size: usize) {
             // SAFETY: the copied payload borrows the caller's retained channel.
             let channel = unsafe { *payload.cast::<*mut crate::reply_channel::HewReplyChannel>() };
-            // SAFETY: the caller and queued request both retain this channel.
             assert_eq!(
+                // SAFETY: the caller and queued request both retain this channel.
                 unsafe { crate::reply_channel::ref_count_for_test(channel) },
                 2
             );

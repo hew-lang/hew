@@ -36,8 +36,8 @@
 //! * The server prints `READY <port>` only after its actor is registered; the
 //!   harness blocks on that line before launching the client (readiness signal,
 //!   not a fixed sleep).
-//! * The client retries `Node::lookup` in a bounded poll loop until registry
-//!   gossip resolves the remote actor, instead of sleeping once and hoping.
+//! * The client receives ordinary actor values from authenticated peer offers.
+//!   Registry lookup supplies discovery metadata and never callable authority.
 
 mod support;
 
@@ -150,6 +150,7 @@ fn compiled_node_binary() -> &'static Path {
                 .arg("--emit-dir")
                 .arg(&emit_path)
                 .arg(&source)
+                .env("HEW_STD", repo_root().join("std"))
                 .current_dir(repo_root());
             let compile_timeout = if sanitize {
                 Duration::from_mins(2)
@@ -1080,7 +1081,13 @@ fn authenticated_service_grants_supply_and_revoke_exact_interface() {
     let _server_stdout = wait_for_server_ready(&mut server);
     let stdout = run_client_to_completion(client, 0, StderrExpectation::Ignore);
     run_client_to_completion(server, 0, StderrExpectation::Ignore);
-    assert!(stdout.contains("PASS service_grants file=supplied-file sum=42 unit declared-failure incompatible generic-incompatible cancelled raw-refused reconnect no-replay disconnected-revoke actor-restart node-restart"), "{stdout}");
+    assert!(
+        stdout.contains(
+            "PASS service_grants identity-equal independent-revocation rejected-request-retained"
+        ),
+        "{stdout}"
+    );
+    assert!(stdout.contains("PASS service_grants file=supplied-file sum=42 unit declared-failure incompatible generic-incompatible cancelled raw-metadata mailbox-acked-before-completion reconnect no-replay disconnected-revoke actor-restart node-restart"), "{stdout}");
 }
 
 /// The linchpin assertion: a real two-process remote-ask round-trip over a
@@ -1146,10 +1153,10 @@ fn pending_inbound_asks_preserve_other_services_and_retire_on_shutdown() {
     assert!(!stdout.contains("FAIL "), "{stdout}");
 }
 
-/// A `RemotePid` of the client's own actor routes locally beside a live peer:
-/// its send, ask, monitor DOWN and linked crash match what a peer delivers.
+/// Ordinary local actors operate beside a supplied actor from a live peer:
+/// submission, completion, monitor DOWN and linked crash retain their semantics.
 #[test]
-fn remote_pid_on_own_node_routes_locally() {
+fn local_actor_operations_compose_with_imported_peer() {
     // The linked crash leaves the client exiting nonzero.
     let stdout = run_link_cascade_scenario(
         "local_route",
@@ -1237,8 +1244,8 @@ fn node_identity_location_and_incarnation_cross_process() {
     );
 }
 
-/// Re-pointing a registry name changes future lookups without revoking an
-/// already-issued Location for a still-live actor.
+/// Re-pointing discovery and issuing another grant preserve the captured actor
+/// identity and state while the newly supplied actor starts independently.
 #[test]
 fn captured_remote_ref_survives_name_repoint() {
     let stdout = run_two_process_scenario("repoint_preserves_ref");
@@ -1544,23 +1551,80 @@ fn quarantine_rejoin_stale_rejected_higher_readmitted() {
     );
 }
 
-/// A carried `RemotePid` is fenced across a same-key process restart. The
+/// An imported actor is fenced across a same-key process restart. The
 /// replacement has the same key-derived `NodeId` and a strictly higher durable
-/// session incarnation; its fresh PID works while the captured PID fails. The
+/// session incarnation; its fresh grant works while the captured grant fails. The
 /// runtime's stale-reference refusal reaches the caller as `ActorError.Dead`:
 /// the incarnation it named is gone and will not come back.
 #[test]
-fn carried_remote_pid_rejected_after_same_key_restart() {
+fn imported_actor_rejected_after_same_key_restart() {
     let stdout = run_stale_incarnation_restart_scenario();
     assert!(
         stdout.contains("PASS stale_incarnation_restart old=")
             && stdout.contains(" new=")
             && stdout.contains(" error=Dead"),
         "same-key restart must admit only the higher incarnation and reject the \
-         captured PID as Dead; client stdout:\n{stdout}"
+         captured actor as Dead; client stdout:\n{stdout}"
     );
     assert!(
         !stdout.contains("FAIL "),
         "client reported a FAIL on stale-incarnation fencing; client stdout:\n{stdout}"
     );
+}
+
+/// A discovery location cannot be promoted to callable or lifecycle authority.
+#[test]
+fn discovery_locations_cannot_authorize_actor_operations() {
+    let directory = tempfile::tempdir().expect("create location refusal fixtures");
+    for (name, operation) in [
+        ("completion", "target.ping()"),
+        ("mailbox", "mailbox(target).ping()"),
+        ("monitor", "monitor(target)"),
+        ("link", "link(target)"),
+        ("stopped", "stopped(target)"),
+    ] {
+        let source = directory.path().join(format!("{name}.hew"));
+        std::fs::write(
+            &source,
+            format!(
+                "actor Observer {{ receive fn inspect() {{ \
+                 let target = Node.lookup(\"discovery-only\").expect(\"location\"); \
+                 let _ = {operation}; }} }} fn main() {{}}"
+            ),
+        )
+        .expect("write location refusal fixture");
+        let mut command = Command::new(
+            std::env::var_os("HEW_DIST_E2E_HEW_BIN").map_or_else(hew_binary, PathBuf::from),
+        );
+        command
+            .arg("check")
+            .arg(&source)
+            .env("HEW_STD", repo_root().join("std"))
+            .current_dir(repo_root());
+        let output =
+            support::run_bounded_command(command, format!("check location {name} refusal"));
+        let diagnostics = support::describe_output(&output);
+        assert!(
+            !output.status.success()
+                && diagnostics.contains("Location")
+                && (diagnostics.contains("actor") || diagnostics.contains("method")),
+            "discovery metadata must be refused as {name} authority:\n{diagnostics}"
+        );
+    }
+}
+
+#[test]
+fn discovery_metadata_display_releases_temporary_and_named_strings() {
+    for (scenario, iterations) in [("identity_display_low", 3), ("identity_display_high", 50)] {
+        let stdout = run_two_process_scenario(scenario);
+        assert!(
+            stdout.contains(&format!("PASS {scenario} iterations={iterations}")),
+            "{stdout}"
+        );
+        assert!(!stdout.contains("FAIL "), "{stdout}");
+        assert_eq!(
+            stdout.lines().filter(|line| *line == "frame").count(),
+            iterations
+        );
+    }
 }

@@ -256,7 +256,7 @@ mod tests {
     };
 
     use super::{
-        compile_fallback_args, dispatch_command, parse_from, try_parse_cli_with_compile_fallback,
+        compile_fallback_args, dispatch_command, try_parse_cli_with_compile_fallback,
         CommandDispatcher,
     };
 

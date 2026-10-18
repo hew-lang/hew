@@ -1338,9 +1338,10 @@ mod mailbox_transfer_gate {
     #[test]
     fn non_owning_actor_references_are_not_transfers() {
         // The actor handle and the raw runtime word have no payload transfer.
-        for (name, kind) in [("Worker", BuiltinType::ActorHandle)] {
-            assert!(!transfers(&builtin_handle(name, kind)));
-        }
+        assert!(!transfers(&builtin_handle(
+            "Worker",
+            BuiltinType::ActorHandle
+        )));
         assert!(!transfers(&builtin_handle(
             "HewActor",
             BuiltinType::HewActor

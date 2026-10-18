@@ -170,7 +170,7 @@ fn installed_hew_serves_tools_without_siblings() {
         command.env("PATH", "").current_dir(installation.path());
         command
     };
-    assert_tool_commands(&command);
+    assert_tool_commands(command);
     let mut server = ServerProcess {
         child: command()
             .arg("lsp")

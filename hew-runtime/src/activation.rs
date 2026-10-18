@@ -828,7 +828,15 @@ pub(crate) fn activate_queued_actor(actor: *mut HewActor) {
                 // SAFETY: `msg` is exclusively owned by this worker.
                 let msg_ref = unsafe { &*msg };
                 #[cfg(not(target_arch = "wasm32"))]
-                if msg_ref.reply_channel.is_null() && msg_ref.caller.kind == 3 {
+                if msg_ref.reply_channel.is_null()
+                    && msg_ref.caller.kind == 3
+                    // A peer-tagged one-way node requires the same authenticated
+                    // request state as a completion call before it can bypass
+                    // the capability-only actor floor. Claim revalidates it below.
+                    && !(unsafe { msg_ref.envelope.as_ref() })
+                        .and_then(|envelope| envelope.request.as_ref())
+                        .is_some_and(|state| state.has_authenticated_admission())
+                {
                     // SAFETY: this worker holds the current actor activation.
                     let target =
                         unsafe { crate::lifetime::live_actors::ActorIncarnation::of(actor) };
@@ -844,7 +852,8 @@ pub(crate) fn activate_queued_actor(actor: *mut HewActor) {
                 // it does not cancel a handler that has already started.
                 // SAFETY: this node retains its sender-side reply reference.
                 if !unsafe {
-                    crate::reply_channel::claim_native_request_dispatch(
+                    crate::request_state::claim_message(
+                        msg_ref.envelope,
                         msg_ref.reply_channel.cast(),
                     )
                 } {
@@ -956,9 +965,9 @@ pub(crate) fn activate_queued_actor(actor: *mut HewActor) {
                     reply_channel: msg_ref.reply_channel,
                     checked_fault: crate::actor_native::CheckedActorFault::default(),
                     caller: msg_ref.caller,
-                    // SAFETY: this request node retains its optional reply channel.
+                    // SAFETY: this request node retains its owned envelope.
                     request_deadline: unsafe {
-                        crate::reply_channel::native_request_deadline(msg_ref.reply_channel.cast())
+                        crate::request_state::message_deadline(msg_ref.envelope)
                     },
                 };
                 let prev_context = execution_context.prev_context;

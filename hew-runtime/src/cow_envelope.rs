@@ -44,6 +44,8 @@ pub struct HewMsgEnvelope {
     pub(crate) timer: Option<std::sync::Arc<crate::timer_actor::OneShot>>,
     /// Raw C adapter cleanup, consumed when its dispatch adapter claims fields.
     pub(crate) ingress_drop: Option<IngressDrop>,
+    /// The same immutable request state retained by its optional reply owner.
+    pub(crate) request: Option<std::sync::Arc<crate::request_state::RequestState>>,
 }
 
 impl std::fmt::Debug for HewMsgEnvelope {
@@ -98,8 +100,26 @@ pub unsafe fn new(
         (*env).release_reply = ptr::null_mut();
         ptr::write(&raw mut (*env).timer, None);
         (*env).ingress_drop = None;
+        ptr::write(&raw mut (*env).request, None);
     }
     env
+}
+
+/// Free envelope storage after its payload and timer owners have been settled.
+/// This runs Rust field destruction, including the shared request-state Arc.
+/// # Safety
+/// The envelope is exclusive; its payload storage is independently retired and
+/// its one-shot timer has already been taken or was never attached.
+pub(crate) unsafe fn free_allocation(env: *mut HewMsgEnvelope) {
+    // SAFETY: the caller owns this initialized envelope allocation exclusively.
+    unsafe {
+        debug_assert!(
+            (*env).timer.is_none(),
+            "timer claim must settle before envelope retirement"
+        );
+        ptr::drop_in_place(env);
+        crate::mem::buf_free(env.cast());
+    }
 }
 
 /// Release one observer, destroying the payload and envelope on the final one.
@@ -165,7 +185,7 @@ pub unsafe fn release(env: *mut HewMsgEnvelope) {
                 if queued.is_none() {
                     std::process::abort();
                 }
-                crate::mem::buf_free(env.cast());
+                free_allocation(env);
                 return;
             }
             if let Some(drop) = (*env).ingress_drop.take() {
@@ -179,7 +199,7 @@ pub unsafe fn release(env: *mut HewMsgEnvelope) {
             if !(*env).payload.is_null() {
                 crate::mem::buf_free((*env).payload); // ALLOCATOR-PAIRING: GlobalAlloc
             }
-            crate::mem::buf_free(env.cast()); // ALLOCATOR-PAIRING: GlobalAlloc
+            free_allocation(env); // ALLOCATOR-PAIRING: GlobalAlloc
         }
     }
 }
@@ -212,7 +232,7 @@ pub(crate) unsafe fn release_cursor(
                 start,
                 true,
             );
-            crate::mem::buf_free(env.cast());
+            free_allocation(env);
             cursor
         } else {
             release(env);
@@ -360,6 +380,34 @@ mod tests {
             release(env);
         }
         assert_eq!(DROP_COUNT.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn cancelled_request_survives_reply_owner_until_envelope_retirement() {
+        let _runtime = crate::runtime_test_guard();
+        // SAFETY: the test owns both unpublished allocations, then retires the
+        // reply owner before claiming and releasing the still-owned envelope.
+        unsafe {
+            let channel = crate::reply_channel::hew_reply_channel_new();
+            crate::reply_channel::configure_native_request(
+                channel,
+                crate::request_deadline::RequestDeadline::default(),
+                #[cfg(not(target_arch = "wasm32"))]
+                None,
+            );
+            let env = new(ptr::null_mut(), 0, None, alloc);
+            assert!(!env.is_null());
+            crate::request_state::bind_reply(env, channel);
+            let state = crate::reply_channel::native_request_state(channel).unwrap();
+            let lifetime = std::sync::Arc::downgrade(&state);
+            drop(state);
+            crate::reply_channel::withdraw_native_request(channel);
+            crate::reply_channel::hew_reply_channel_free(channel);
+            assert!(lifetime.upgrade().is_some());
+            assert!(!crate::request_state::claim_message(env, ptr::null_mut()));
+            release(env);
+            assert!(lifetime.upgrade().is_none());
+        }
     }
 
     #[test]

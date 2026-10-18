@@ -702,7 +702,8 @@ fn service_revocation_refuses_an_already_queued_dispatch_claim() {
     unsafe {
         let message = crate::mailbox::hew_mailbox_try_recv((*actor).mailbox.cast());
         assert!(!message.is_null(), "the request must already be queued");
-        assert!(!crate::reply_channel::claim_native_request_dispatch(
+        assert!(!crate::request_state::claim_message(
+            (*message).envelope,
             (*message).reply_channel.cast()
         ));
         crate::mailbox::hew_msg_node_free(message);

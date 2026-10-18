@@ -23,7 +23,7 @@ impl Drop for HewNativeSend {
             // source message. Admission clears this slot before relinquishing it.
             unsafe {
                 crate::mem::buf_free((*self.envelope).payload);
-                crate::mem::buf_free(self.envelope.cast());
+                crate::cow_envelope::free_allocation(self.envelope);
             }
         }
     }
@@ -208,7 +208,10 @@ pub unsafe extern "C" fn hew_actor_ask_wait_take_request(
     if !envelope.is_null() {
         // SAFETY: the unadmitted request owns one channel reference. A later
         // resubmission creates its own channel; the old reply cannot escape.
-        unsafe { crate::reply_channel::hew_reply_channel_free(wait.channel.cast()) };
+        unsafe {
+            (*envelope).request = None;
+            crate::reply_channel::hew_reply_channel_free(wait.channel.cast());
+        }
         wait.channel = std::ptr::null_mut();
     }
     envelope
@@ -252,6 +255,10 @@ pub(crate) unsafe fn ask_wait_resume(
     if envelope.is_null() {
         return std::ptr::null_mut();
     }
+    // A resumed sealed request starts a fresh invocation; no prior deadline,
+    // cancellation or grant metadata follows it into this call.
+    // SAFETY: this unadmitted envelope is exclusive and the new channel is live.
+    unsafe { (*envelope).request = crate::reply_channel::native_request_state(channel.cast()) };
     // SAFETY: the completion call supplies live channel and waker references.
     let waker = unsafe {
         crate::reply_channel::hew_reply_channel_retain(channel.cast());

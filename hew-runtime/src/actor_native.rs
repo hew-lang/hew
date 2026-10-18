@@ -466,7 +466,7 @@ pub(crate) unsafe fn submit_native(
     // the typed fields; these two allocations contain no other owning resources.
     unsafe {
         crate::mem::buf_free(payload); // ALLOCATOR-PAIRING: GlobalAlloc
-        crate::mem::buf_free(envelope.cast()); // ALLOCATOR-PAIRING: GlobalAlloc
+        crate::cow_envelope::free_allocation(envelope); // ALLOCATOR-PAIRING: GlobalAlloc
     }
     status
 }

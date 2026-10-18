@@ -18,10 +18,8 @@ use crate::lifetime::live_actors::ActorIncarnation;
 use crate::util::{CondvarExt, MutexExt};
 use std::ffi::c_void;
 use std::ptr;
-use std::sync::atomic::{
-    AtomicBool, AtomicI32, AtomicPtr, AtomicU64, AtomicU8, AtomicUsize, Ordering,
-};
-use std::sync::{Condvar, Mutex};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 #[path = "reply_channel_native.rs"]
@@ -112,13 +110,8 @@ pub struct HewReplyChannel {
     /// Retained readiness target for a checked native invocation. Registration
     /// precedes admission; abandonment detaches it without touching the sender.
     native_waker: Mutex<Option<crate::wake::OwnedWaker>>,
-    /// Native operation dispatch claim: 0 is an untracked foreign request,
-    /// 1 is withdrawable, 2 is dispatched, and 3 is withdrawn. The scheduler
-    /// and the request owner race one CAS, so a queued loser cannot execute.
-    native_dispatch: AtomicU8,
-    native_deadline: crate::request_deadline::RequestDeadline,
-    #[cfg(not(target_arch = "wasm32"))]
-    native_admission: Option<crate::hew_node::service::RemoteAdmission>,
+    /// Immutable request metadata and the claim shared with its owned envelope.
+    native_request: Option<Arc<crate::request_state::RequestState>>,
 }
 
 // SAFETY: `HewReplyChannel` is designed for cross-thread use. The atomic
@@ -165,101 +158,67 @@ pub extern "C" fn hew_reply_channel_new() -> *mut HewReplyChannel {
         cond: Condvar::new(),
         await_cancel: AtomicPtr::new(ptr::null_mut()),
         native_waker: Mutex::new(None),
-        native_dispatch: AtomicU8::new(0),
-        native_deadline: crate::request_deadline::RequestDeadline::default(),
-        #[cfg(not(target_arch = "wasm32"))]
-        native_admission: None,
+        native_request: None,
     }))
 }
 
-/// Mark an unpublished native request as withdrawable until dispatch claims it.
-///
+/// Construct the complete immutable request state before publishing either owner.
 /// # Safety
-/// The channel is exclusively owned and no request has been published.
-pub(crate) unsafe fn enable_native_withdrawal(channel: *mut HewReplyChannel) {
-    // SAFETY: the caller owns the unpublished channel.
-    unsafe { (*channel).native_dispatch.store(1, Ordering::Release) };
+/// The channel is exclusive, fresh and has not been shared with an envelope.
+pub(crate) unsafe fn configure_native_request(
+    channel: *mut HewReplyChannel,
+    deadline: crate::request_deadline::RequestDeadline,
+    #[cfg(not(target_arch = "wasm32"))] admission: Option<
+        crate::hew_node::service::RemoteAdmission,
+    >,
+) {
+    // SAFETY: the caller exclusively owns this fresh reply channel.
+    let channel = unsafe { &mut *channel };
+    assert!(
+        channel.native_request.is_none(),
+        "request metadata is configured once"
+    );
+    channel.native_request = Some(Arc::new(crate::request_state::RequestState::new(
+        deadline,
+        #[cfg(not(target_arch = "wasm32"))]
+        admission,
+    )));
 }
 
-/// Withdraw before dispatch, or leave an already running handler alone.
-///
+/// Withdraw before dispatch, leaving an already running handler alone.
 /// # Safety
 /// The optional channel is retained throughout this call.
 pub(crate) unsafe fn withdraw_native_request(channel: *mut HewReplyChannel) {
-    // SAFETY: the caller retains the optional channel through this CAS.
-    if let Some(channel) = unsafe { channel.as_ref() } {
-        let _ = channel
-            .native_dispatch
-            .compare_exchange(1, 3, Ordering::AcqRel, Ordering::Acquire);
+    // SAFETY: the caller retains the optional reply owner during this borrow.
+    if let Some(state) =
+        unsafe { channel.as_ref() }.and_then(|channel| channel.native_request.as_ref())
+    {
+        state.withdraw();
     }
-}
-
-/// Claim a queued request immediately before the scheduler enters its handler.
-/// A withdrawal that won the race makes the scheduler discard its owned node.
-///
-/// # Safety
-/// The channel is null or retained by the scheduler's current request node.
-pub(crate) unsafe fn claim_native_request_dispatch(channel: *mut HewReplyChannel) -> bool {
-    // SAFETY: the node retains its channel while deadline expiry competes with claim.
-    if unsafe { native_request_deadline(channel) }.expired() {
-        // SAFETY: the same request node retains the reply owner during expiry.
-        unsafe { native::expire_native_request(channel) };
-    }
-    // SAFETY: a non-null channel is retained by the owned message node.
-    let Some(channel_ref) = (unsafe { channel.as_ref() }) else {
-        return true;
-    };
-    let claim = || {
-        channel_ref
-            .native_dispatch
-            .compare_exchange(1, 2, Ordering::AcqRel, Ordering::Acquire)
-            != Err(3)
-    };
-    #[cfg(not(target_arch = "wasm32"))]
-    if let Some(admission) = &channel_ref.native_admission {
-        return match admission.claim(claim) {
-            Ok(claimed) => claimed,
-            Err(reason) => {
-                // SAFETY: the scheduler's request node retains this channel.
-                unsafe { native::reject_remote_request(channel, reason) };
-                false
-            }
-        };
-    }
-    claim()
-}
-
-/// Attach authenticated admission before publishing the request or reply owner.
-///
-/// # Safety
-/// The channel is exclusively owned and no request has been published.
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) unsafe fn set_native_request_admission(
-    channel: *mut HewReplyChannel,
-    admission: Option<crate::hew_node::service::RemoteAdmission>,
-) {
-    // SAFETY: construction owns this unpublished channel.
-    unsafe { (*channel).native_admission = admission };
 }
 
 /// Read immutable request metadata from its retained reply owner.
+/// # Safety
+/// The optional channel remains retained through the read.
 pub(crate) unsafe fn native_request_deadline(
     channel: *const HewReplyChannel,
 ) -> crate::request_deadline::RequestDeadline {
     // SAFETY: a non-null channel remains retained through this read.
-    unsafe { channel.as_ref() }.map_or_else(
-        crate::request_deadline::RequestDeadline::default,
-        |channel| channel.native_deadline,
-    )
+    unsafe { channel.as_ref() }
+        .and_then(|channel| channel.native_request.as_ref())
+        .map_or_else(crate::request_deadline::RequestDeadline::default, |state| {
+            state.deadline
+        })
 }
 
-/// Set the request expiry before either the request or channel is published.
-pub(crate) unsafe fn set_native_request_deadline(
-    channel: *mut HewReplyChannel,
-    deadline: crate::request_deadline::RequestDeadline,
-) {
-    // SAFETY: construction exclusively owns the unpublished channel.
-    unsafe { (*channel).native_deadline = deadline };
+/// Retain the canonical request state for its envelope before publication.
+/// # Safety
+/// The optional channel remains retained through this borrow.
+pub(crate) unsafe fn native_request_state(
+    channel: *const HewReplyChannel,
+) -> Option<Arc<crate::request_state::RequestState>> {
+    // SAFETY: the caller retains the optional channel.
+    unsafe { channel.as_ref() }.and_then(|channel| channel.native_request.clone())
 }
 
 /// Record that the waiter on this reply channel is a PARKED CONTINUATION

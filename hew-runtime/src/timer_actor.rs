@@ -341,7 +341,7 @@ pub unsafe extern "C" fn hew_actor_timer_new(
         // SAFETY: failed registration retained the source's typed fields.
         unsafe {
             crate::mem::buf_free(payload);
-            crate::mem::buf_free(envelope.cast());
+            crate::cow_envelope::free_allocation(envelope);
         }
         ptr::null()
     }

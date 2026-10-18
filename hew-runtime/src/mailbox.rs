@@ -705,6 +705,7 @@ unsafe fn msg_node_alloc_with_trace(
             crate::mem::buf_free(node.cast());
             return ptr::null_mut();
         }
+        crate::request_state::bind_reply((*node).envelope, reply_channel.cast());
     }
 
     #[cfg(test)]
@@ -750,6 +751,7 @@ unsafe fn msg_node_alloc_owned(
         (*node).reply_channel = reply_channel;
         (*node).obligated = !reply_channel.is_null();
         (*node).envelope = envelope;
+        crate::request_state::bind_reply(envelope, reply_channel.cast());
         (*node).trace_context = crate::tracing::current_context();
         // Explicit zero-init for the mailbox-envelope ABI fields.
         // See msg_node_alloc for the rationale; same invariant applies here.

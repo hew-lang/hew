@@ -452,10 +452,12 @@ pub(crate) unsafe fn actor_call_resume(
     };
     // SAFETY: channel and request are still unpublished, and this call owns both.
     let admission = unsafe {
-        crate::reply_channel::enable_native_withdrawal(channel);
-        crate::reply_channel::set_native_request_deadline(channel, deadline);
-        #[cfg(not(target_arch = "wasm32"))]
-        crate::reply_channel::set_native_request_admission(channel, remote_admission);
+        crate::reply_channel::configure_native_request(
+            channel,
+            deadline,
+            #[cfg(not(target_arch = "wasm32"))]
+            remote_admission,
+        );
         ask_wait_resume(token, message, envelope, channel.cast(), waker, caller)
     };
     let mut operation = Box::new(HewActorCall {
@@ -653,13 +655,16 @@ mod tests {
             unsafe {
                 let channel =
                     hew_reply_channel_new_native(waker.descriptor(), Some(drop_counted), None);
-                crate::reply_channel::enable_native_withdrawal(channel);
-                if expired {
-                    crate::reply_channel::set_native_request_deadline(
-                        channel,
-                        crate::request_deadline::RequestDeadline::from_raw(0),
-                    );
-                }
+                crate::reply_channel::configure_native_request(
+                    channel,
+                    crate::request_deadline::RequestDeadline::from_raw(if expired {
+                        0
+                    } else {
+                        -1
+                    }),
+                    #[cfg(not(target_arch = "wasm32"))]
+                    None,
+                );
                 let operation = Box::into_raw(Box::new(HewActorCall {
                     route: CallRoute::Local(LocalCall {
                         admission: ptr::null_mut(),

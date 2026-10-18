@@ -1018,19 +1018,6 @@
     },
     {
       "availability": [
-        "native"
-      ],
-      "classification": "stable",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_actor_send_wire( *mut HewActor, i32, *mut HewVec, )"
-      },
-      "symbol": "hew_actor_send_wire"
-    },
-    {
-      "availability": [
         "native",
         "wasm32-wasip1"
       ],
@@ -4396,19 +4383,6 @@
         "native"
       ],
       "classification": "stable",
-      "extent": "length-or-count",
-      "nul": "nul-terminated",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_connmgr_broadcast( *mut HewConnMgr, *const HewLocation, *const c_char, *mut u8, usize, ) -> c_int"
-      },
-      "symbol": "hew_connmgr_broadcast"
-    },
-    {
-      "availability": [
-        "native"
-      ],
-      "classification": "stable",
       "extent": "no-in-signature-extent",
       "nul": "nul-terminated",
       "ownership": "unmeasured",
@@ -4494,32 +4468,6 @@
         "native": "fn hew_connmgr_remove( *mut HewConnMgr, c_int) -> c_int"
       },
       "symbol": "hew_connmgr_remove"
-    },
-    {
-      "availability": [
-        "native"
-      ],
-      "classification": "stable",
-      "extent": "length-or-count",
-      "nul": "nul-terminated",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_connmgr_send( *mut HewConnMgr, c_int, *const HewLocation, *const c_char, *mut u8, usize, ) -> c_int"
-      },
-      "symbol": "hew_connmgr_send"
-    },
-    {
-      "availability": [
-        "native"
-      ],
-      "classification": "stable",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_connmgr_set_outbound_capacity( *mut HewConnMgr, c_int, usize, ) -> c_int"
-      },
-      "symbol": "hew_connmgr_set_outbound_capacity"
     },
     {
       "availability": [
@@ -12234,19 +12182,6 @@
       "availability": [
         "native"
       ],
-      "classification": "non-declarable",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_node_api_send_location( *const HewLocation, *const c_void, i32, *const u8, usize, ) -> c_int"
-      },
-      "symbol": "hew_node_api_send_location"
-    },
-    {
-      "availability": [
-        "native"
-      ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
       "nul": "nul-terminated",
@@ -12426,19 +12361,6 @@
         "native": "fn hew_node_register( *mut HewNode, *const c_char, u64, ) -> c_int"
       },
       "symbol": "hew_node_register"
-    },
-    {
-      "availability": [
-        "native"
-      ],
-      "classification": "non-declarable",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_node_send_location( *mut HewNode, *const HewLocation, *const c_void, i32, *const u8, usize, ) -> c_int"
-      },
-      "symbol": "hew_node_send_location"
     },
     {
       "availability": [
@@ -14864,32 +14786,6 @@
         "wasm32-wasip1": "fn hew_release_sync( *mut HewReleaseCursor)"
       },
       "symbol": "hew_release_sync"
-    },
-    {
-      "availability": [
-        "native"
-      ],
-      "classification": "non-declarable",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_remote_call_cleanup_fault( *mut HewRemoteCall, ) -> *mut HewFault"
-      },
-      "symbol": "hew_remote_call_cleanup_fault"
-    },
-    {
-      "availability": [
-        "native"
-      ],
-      "classification": "non-declarable",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_remote_call_cleanup_poll( *mut HewRemoteCall, *mut HewCoroState, ) -> i32"
-      },
-      "symbol": "hew_remote_call_cleanup_poll"
     },
     {
       "availability": [

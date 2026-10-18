@@ -177,7 +177,6 @@ stable = [
   "hew_actor_self_stop",
   "hew_actor_send",
   "hew_actor_send_by_id",
-  "hew_actor_send_wire",
   "hew_actor_set_budget",
   "hew_actor_set_hibernation",
   "hew_actor_set_message_drop",
@@ -262,7 +261,6 @@ stable = [
   "hew_cluster_tick",
   "hew_connection_is_valid",
   "hew_connmgr_add",
-  "hew_connmgr_broadcast",
   "hew_connmgr_configure_reconnect",
   "hew_connmgr_conn_state",
   "hew_connmgr_count",
@@ -270,8 +268,6 @@ stable = [
   "hew_connmgr_last_activity",
   "hew_connmgr_new",
   "hew_connmgr_remove",
-  "hew_connmgr_send",
-  "hew_connmgr_set_outbound_capacity",
   "hew_connmgr_set_reconnect_policy",
   "hew_crash_log_count",
   "hew_crash_log_last",
@@ -1550,11 +1546,8 @@ non-declarable = [
   "hew_machine_emit_take",
   "hew_node_api_id",
   "hew_node_api_lookup_location",
-  "hew_node_api_send_location",
   "hew_node_id_display",
   "hew_node_id_format",
-  "hew_remote_call_cleanup_fault",
-  "hew_remote_call_cleanup_poll",
   "hew_remote_call_free",
   "hew_remote_call_poll",
   "hew_remote_call_take",
@@ -1819,7 +1812,6 @@ non-declarable = [
   "hew_node_api_lookup_location_string",
   "hew_node_api_register",
   "hew_node_lookup_location",
-  "hew_node_send_location",
   "hew_periodic_shutdown",
   "hew_pid_set_local_node",
   "hew_register_handler_name",
@@ -2301,13 +2293,6 @@ discharge-depth = "none"
 symbol = "hew_node_api_id"
 result = "none"
 params = ["borrow"]
-release-symbol = ""
-discharge-depth = "none"
-
-[[ownership.contracts]]
-symbol = "hew_node_api_send_location"
-result = "none"
-params = ["borrow", "borrow", "borrow", "borrow", "borrow"]
 release-symbol = ""
 discharge-depth = "none"
 

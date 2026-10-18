@@ -16,10 +16,10 @@ struct hew_cabi_manifest_row {
   enum hew_cabi_manifest_ownership ownership;
 };
 
-#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1663u
+#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1662u
 #define HEW_CABI_MANIFEST_STATIC_COUNT 24u
 
-static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1663] = {
+static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1662] = {
     {"hew_actor_abort_construction",
      "{\"native\": \"fn hew_actor_abort_construction( HewLocalPidId, *mut "
      "HewCoroState, )\", \"wasm32-wasip1\": \"fn hew_actor_abort_construction( "
@@ -5631,19 +5631,15 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1663] = {
      "native", "non-declarable", "not-applicable", "no-in-signature-extent",
      HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_remote_call_cleanup_poll",
-     "{\"native\": \"fn hew_remote_call_cleanup_poll( *mut HewRemoteCall, *mut "
+     "{\"native\": \"fn hew_remote_call_cleanup_poll( *mut HewRemoteCall, "
+     "#[cfg_attr( not(test), expect( unused_variables, reason = \\\"only "
+     "raw-location test calls can own local cleanup\\\" ) )] parent: *mut "
      "HewCoroState, ) -> i32\"}",
      "native", "non-declarable", "not-applicable", "no-in-signature-extent",
      HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_remote_call_free",
      "{\"native\": \"fn hew_remote_call_free( *mut HewRemoteCall)\"}", "native",
      "non-declarable", "not-applicable", "no-in-signature-extent",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
-    {"hew_remote_call_new",
-     "{\"native\": \"fn hew_remote_call_new( *const HewLocation, *const "
-     "c_void, i32, *mut c_void, usize, usize, u64, i64, *const HewWaker, ) -> "
-     "*mut HewRemoteCall\"}",
-     "native", "non-declarable", "not-applicable", "no-in-signature-extent",
      HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_remote_call_poll",
      "{\"native\": \"fn hew_remote_call_poll( *mut HewRemoteCall) -> i32\"}",

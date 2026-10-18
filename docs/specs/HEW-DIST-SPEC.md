@@ -105,14 +105,11 @@ Location {
 The native C ABI representation is 32 bytes. The reserved field MUST be zero.
 Actor slot `0` and session incarnation `0` are invalid.
 
-`RemotePid<T>` is a phantom-typed inline `Location`. It owns no heap allocation,
-has no reference count, and does not keep either the remote node or actor alive.
-Moving, storing, or duplicating the location metadata does not grant authority
-and does not affect actor lifetime.
-
-There is no public provenance-free constructor. A program obtains a
-`RemotePid<T>` only from authenticated runtime discovery or another typed value
-that already carries a validated location.
+`Location` is discovery metadata. Moving, storing or duplicating it does not
+grant authority and does not affect actor lifetime. `Node.lookup(name)` obtains
+locations from authenticated registry discovery. An imported actor value `A`
+comes from an authenticated export offer (§7.1), carrying the authority needed
+for calls and observations.
 
 ### Identity files
 
@@ -302,11 +299,9 @@ that authority.
 
 `Node.register(name, actor: A) -> Result<(), RegisterError>` publishes
 the actor's exact `Location` and records `A`'s declaration identity beside it.
-`Node.lookup<A>(name)` returns a typed `RemotePid<A>` discovered through the
-authenticated registry, and MUST compare the recorded identity against `A`
-before returning one: a disagreement is `Err(LookupError.TypeMismatch)`, never
-a handle. Without that comparison the type argument is the reader's wish and
-the returned handle is an unchecked cast.
+`Node.lookup(name) -> Result<Location, LookupError>` returns discovery metadata
+from the authenticated registry. A location cannot authorize actor operations.
+Obtain an imported actor value from an authenticated export offer (§7.1).
 
 `Node.register` is the one registration verb. It registers locally whether or
 not a node has started, and publishes cluster-wide once one has.
@@ -344,6 +339,15 @@ recipient needs admission: discarding it or leaving its scope revokes the grant
 through ordinary affine cleanup. For example:
 
 ```hew
+import std.net;
+
+actor Store {
+    #[wire]
+    receive fn get(key: string) -> string {
+        key
+    }
+}
+
 fn offer(peer: net.PeerSession, store: Store, done: Stream<i64>) {
     let export = peer.export(store).expect("offer admission");
     let _ = done.recv();
@@ -352,12 +356,13 @@ fn offer(peer: net.PeerSession, store: Store, done: Stream<i64>) {
 ```
 
 The recipient's cancellable
-`peer.receive_service<A>()` waits for an offer and returns a resource
-`net.Service<A>`. An offered incompatible interface fails promptly; an absent
-offer waits under ordinary scope cancellation and deadlines. Different generic
+`peer.receive_service<A>()` waits for an offer and returns an ordinary actor
+value `A` inside `Result<A, ActorError<Never, Never>>`. An offered incompatible
+interface fails promptly; an absent offer waits under ordinary scope cancellation
+and deadlines. Different generic
 specialisations are incompatible even when they share a handler declaration.
-Service methods use
-ordinary named or positional arguments and completion-call results. Every
+Imported actor methods use ordinary named or positional arguments and the same
+completion-call results as local actor methods. Every
 request and reply uses the actor's checked wire codec. Native handles cannot be
 transferred as payloads or forwarded as service descriptors.
 
@@ -380,9 +385,12 @@ report the distributed-platform refusal at source.
 
 ## 8. Messaging and asks
 
-`RemotePid<T>.send(message)` is fire-and-forget delivery. `RemotePid<T>.ask`
-creates a request identifier, sends the typed request, suspends the caller, and
-resumes with the completion-call `Result` and its `ActorError` envelope.
+Calling a handler on an imported actor value uses the same completion-call
+syntax as a local actor value. The call creates a request identifier, sends the
+typed request, suspends the caller and resumes with its `Result` and
+`ActorError` envelope. `mailbox(actor)` selects submission-only delivery and
+returns `ActorError<Never, Req>` on failure. Only a definite rejection returns
+the original request.
 
 An ask's effective expiry is the earliest incoming request budget, active
 scope expiry and explicit timeout. Setup, payload encoding and transport send
@@ -544,17 +552,10 @@ match Node.connect("1@127.0.0.1:9000") {
     .Ok(_) => {},
     .Err(e) => println(f"dial refused: {e}"),
 }
-let found: Result<RemotePid<Counter>, LookupError> = Node.lookup("counter");
+let found: Result<Location, LookupError> = Node.lookup("counter");
 ```
 
 The route-slot prefix selects the local credential pin. The authenticated key
-derives the peer's `NodeId`; the numeric prefix is never the peer identity. A
-`found` of `Err(LookupError.TypeMismatch)` means the name resolved to an actor
-whose declaration is not `Counter` (§7).
-
-> **Implementation status.** Native `Node.start(NodeConfig)` performs the
-> configuration transaction, and registration and lookup carry actor locations.
-> Lookup does not yet validate the requested actor declaration, and
-> `LookupError.TypeMismatch` is not implemented. Remote send and ask still lack
-> ownership-SIR lowering. These gaps prevent the distributed contract above
-> from being considered complete. Tracked in hew-lang/hew#3256.
+derives the peer's `NodeId`; the numeric prefix is never the peer identity. The
+discovered location is metadata; the client receives callable actor authority
+from the server's authenticated export offer (§7.1).

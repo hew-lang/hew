@@ -8,6 +8,6 @@ kind = "reject"
 
 [[case.expected.diagnostics]]
 code = "BoundsNotSatisfied"
-line = 25
-column = 47
-message = "E_NOT_SERIALIZABLE: a value sent to remote actor `Holder` (`Holder`) reaches `Holder`, not data"
+line = 10
+column = 31
+message = "E_NOT_SERIALIZABLE: wire handler `Holder.take` reaches `Holder`, not data"

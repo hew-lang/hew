@@ -2002,7 +2002,9 @@ fn scenario_remote_monitor_setup_after_drop(kv: KeyValue) -> i64 {
 }
 
 fn scenario_remote_setup_exit_race(monitor_target: KeyValue, link_target: KeyValue) -> i64 {
-    let monitor_status = monitor_hook_scenario(monitor_target, "remote_setup_exit_race_monitor", 2, -1, false);
+    // The server pauses setup until the stopper has completed target cleanup.
+    // This is a proved terminal actor, so preserve Stopped rather than lost reachability.
+    let monitor_status = monitor_hook_scenario(monitor_target, "remote_setup_exit_race_monitor", 2, 6, false);
     if monitor_status != 0 {
         return monitor_status;
     }

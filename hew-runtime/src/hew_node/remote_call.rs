@@ -1,13 +1,17 @@
 //! Remote actor call operations.
 
 use super::{
-    quarantine_blocks_send, release_request, remote_reply_data_to_ptr, reply_table,
-    with_current_node_read, AskError, ConnectionKey, HewNode, InboundRequest, PendingReply,
-    PendingReplyKind, ReplyOutcome, ReplyStatus, NODE_STATE_RUNNING,
+    quarantine_blocks_send, remote_reply_data_to_ptr, reply_table, with_current_node_read,
+    AskError, ConnectionKey, HewNode, PendingReply, PendingReplyKind, ReplyOutcome, ReplyStatus,
+    NODE_STATE_RUNNING,
 };
+#[cfg(test)]
+use super::{release_request, InboundRequest};
 use crate::connection;
 use crate::envelope::encode_envelope_frame_from_raw_parts;
-use crate::node_identity::{HewLocation, Location};
+#[cfg(test)]
+use crate::node_identity::HewLocation;
+use crate::node_identity::Location;
 use crate::request_deadline::RequestDeadline;
 use crate::routing;
 use crate::set_last_error;
@@ -19,6 +23,7 @@ use std::sync::Arc;
 enum RemoteAskSetupResult {
     Ok((Arc<PendingReply>, Location, u64)),
     /// This node owns the target actor.
+    #[cfg(test)]
     Local(u64),
     Error(AskError),
 }
@@ -80,11 +85,13 @@ fn setup_remote_ask(
                 return RemoteAskSetupResult::Error(AskError::StaleRef);
             }
             routing::LocationRoute::Local { actor_id } => {
-                return if grant.is_some() {
-                    RemoteAskSetupResult::Error(AskError::Unauthorized)
-                } else {
-                    RemoteAskSetupResult::Local(actor_id)
-                };
+                #[cfg(test)]
+                if grant.is_none() {
+                    return RemoteAskSetupResult::Local(actor_id);
+                }
+                #[cfg(not(test))]
+                let _ = actor_id;
+                return RemoteAskSetupResult::Error(AskError::Unauthorized);
             }
         };
 
@@ -276,6 +283,7 @@ pub(super) enum RemoteCallRoute {
         crate::request_state::RequestKind,
     ),
     /// This node owns the target: the local actor call carrying the request.
+    #[cfg(test)]
     Local(*mut crate::actor_call_native::HewActorCall),
     Offer(Arc<PendingReply>, Option<super::service::ExportLease>),
     Import(
@@ -311,6 +319,7 @@ impl HewRemoteCall {
             RemoteCallRoute::Wire(pending, _, _, _)
             | RemoteCallRoute::Offer(pending, _)
             | RemoteCallRoute::Import(pending, _) => pending,
+            #[cfg(test)]
             RemoteCallRoute::Local(call) => {
                 // SAFETY: the operation exclusively drives its live local call.
                 return unsafe { crate::actor_call_native::hew_actor_call_poll(*call) } != -1;
@@ -389,6 +398,7 @@ pub(super) unsafe fn start_granted_call(
         }
         RemoteAskSetupResult::Error(error) => RemoteCallRoute::Failed(error),
         // A peer grant never authorizes a local-location fallback.
+        #[cfg(test)]
         RemoteAskSetupResult::Local(_) => RemoteCallRoute::Failed(AskError::Unauthorized),
     };
     Box::into_raw(Box::new(HewRemoteCall {
@@ -419,6 +429,7 @@ impl Drop for HewRemoteCall {
                 }
             }
             // SAFETY: generated code drained the call's cleanup before freeing.
+            #[cfg(test)]
             RemoteCallRoute::Local(call) => unsafe {
                 crate::actor_call_native::hew_actor_call_free(*call);
             },
@@ -481,42 +492,13 @@ fn withdraw_remote(route: &RemoteCallRoute) {
 /// - `request` must hold `request_size` readable bytes of the member's message
 ///   wrapper; its fields transfer to this call and the caller keeps the bytes.
 /// - `waker` must be a live descriptor.
-#[no_mangle]
-pub unsafe extern "C" fn hew_remote_call_new(
-    target: *const HewLocation,
-    dispatch: *const c_void,
-    msg_type: i32,
-    request: *mut c_void,
-    request_size: usize,
-    reply_size: usize,
-    timeout_ms: u64,
-    inherited_deadline_ns: i64,
-    waker: *const crate::wake::HewWaker,
-) -> *mut HewRemoteCall {
-    // SAFETY: forwards the caller's owned-request and readable target contracts.
-    unsafe {
-        new_call(
-            target,
-            None,
-            dispatch,
-            msg_type,
-            request,
-            request_size,
-            reply_size,
-            timeout_ms,
-            inherited_deadline_ns,
-            waker,
-        )
-    }
-}
-
 #[expect(
     clippy::too_many_arguments,
-    reason = "the existing owned remote operation ABI"
+    reason = "the raw-location regression builder supplies one exact request"
 )]
-pub(super) unsafe fn new_call(
+#[cfg(test)]
+pub(super) unsafe fn raw_location_call_for_test(
     target: *const HewLocation,
-    grant: Option<u64>,
     dispatch: *const c_void,
     msg_type: i32,
     request: *mut c_void,
@@ -541,7 +523,7 @@ pub(super) unsafe fn new_call(
             request_size,
             owned,
             deadline,
-            grant,
+            None,
             crate::request_state::RequestKind::CallReject,
         ),
         _ => RemoteAskSetupResult::Error(AskError::StaleRef),
@@ -590,11 +572,12 @@ pub(super) unsafe fn new_call(
 /// and a missing actor has stopped. The local call carries the deadline.
 ///
 /// # Safety
-/// As [`hew_remote_call_new`].
+/// As [`HewRemoteCall`].
 #[expect(
     clippy::too_many_arguments,
     reason = "forwards the complete remote call contract"
 )]
+#[cfg(test)]
 unsafe fn start_local_call(
     actor_id: u64,
     dispatch: *const c_void,
@@ -675,7 +658,7 @@ unsafe fn start_local_call(
 /// outstanding and the deadline has not passed, `0` once it can be taken.
 ///
 /// # Safety
-/// `operation` is a live call from [`hew_remote_call_new`].
+/// `operation` is a live call from [`HewRemoteCall`].
 #[no_mangle]
 pub unsafe extern "C" fn hew_remote_call_poll(operation: *mut HewRemoteCall) -> i32 {
     // SAFETY: the caller exclusively drives this live operation.
@@ -709,6 +692,7 @@ pub unsafe extern "C" fn hew_remote_call_take(
         RemoteCallRoute::Wire(..) if operation.timed_out => return AskError::Timeout as i32,
         RemoteCallRoute::Wire(pending, _, _, _) => pending,
         // SAFETY: the local call is ready and `output` holds its reply.
+        #[cfg(test)]
         RemoteCallRoute::Local(call) => return unsafe { take_local_call(*call, output) },
         RemoteCallRoute::Failed(error) => return *error as i32,
         RemoteCallRoute::Offer(..) | RemoteCallRoute::Import(..) => unreachable!(),
@@ -805,6 +789,7 @@ pub(crate) unsafe fn take_imported_request(
 ///
 /// # Safety
 /// `call` is ready and untaken; `output` is writable for its reply.
+#[cfg(test)]
 unsafe fn take_local_call(
     call: *mut crate::actor_call_native::HewActorCall,
     output: *mut c_void,
@@ -838,11 +823,19 @@ unsafe fn take_local_call(
 #[no_mangle]
 pub unsafe extern "C" fn hew_remote_call_cleanup_poll(
     operation: *mut HewRemoteCall,
+    #[cfg_attr(
+        not(test),
+        expect(
+            unused_variables,
+            reason = "only raw-location test calls can own local cleanup"
+        )
+    )]
     parent: *mut crate::coro_state::HewCoroState,
 ) -> i32 {
     // SAFETY: generated cleanup exclusively owns this live operation.
     match unsafe { &(*operation).route } {
         // SAFETY: forwards the cleanup contract to the local call.
+        #[cfg(test)]
         RemoteCallRoute::Local(call) => unsafe {
             crate::actor_call_native::hew_actor_call_cleanup_poll(*call, parent)
         },
@@ -864,6 +857,7 @@ pub unsafe extern "C" fn hew_remote_call_cleanup_fault(
     // SAFETY: generated cleanup exclusively owns this live operation.
     match unsafe { &(*operation).route } {
         // SAFETY: forwards the cleanup contract to the local call.
+        #[cfg(test)]
         RemoteCallRoute::Local(call) => unsafe {
             crate::actor_call_native::hew_actor_call_cleanup_fault(*call)
         },

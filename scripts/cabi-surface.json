@@ -14887,7 +14887,7 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_remote_call_cleanup_poll( *mut HewRemoteCall, *mut HewCoroState, ) -> i32"
+        "native": "fn hew_remote_call_cleanup_poll( *mut HewRemoteCall, #[cfg_attr( not(test), expect( unused_variables, reason = \"only raw-location test calls can own local cleanup\" ) )] parent: *mut HewCoroState, ) -> i32"
       },
       "symbol": "hew_remote_call_cleanup_poll"
     },
@@ -14903,19 +14903,6 @@
         "native": "fn hew_remote_call_free( *mut HewRemoteCall)"
       },
       "symbol": "hew_remote_call_free"
-    },
-    {
-      "availability": [
-        "native"
-      ],
-      "classification": "non-declarable",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_remote_call_new( *const HewLocation, *const c_void, i32, *mut c_void, usize, usize, u64, i64, *const HewWaker, ) -> *mut HewRemoteCall"
-      },
-      "symbol": "hew_remote_call_new"
     },
     {
       "availability": [

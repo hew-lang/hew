@@ -2197,11 +2197,7 @@ impl Checker {
                 self.report_error(
                     TypeErrorKind::InvalidOperation,
                     span,
-                    if func_name == "restarted" {
-                        "`restarted` expects a supervised role".to_string()
-                    } else {
-                        format!("`{func_name}` expects an actor handle")
-                    },
+                    format!("`{func_name}` expects an actor value, found `{resolved}`"),
                 );
                 return Ty::Error;
             }

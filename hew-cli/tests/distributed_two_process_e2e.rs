@@ -975,7 +975,7 @@ fn remote_monitor_setup_after_drop_delivers_lost_down() {
 fn remote_monitor_and_link_target_exit_during_setup_deliver_once() {
     let stdout = run_setup_exit_race_scenario(StderrExpectation::ExactOneCrashIn("Linker"));
     assert!(
-        stdout.contains("PASS remote_setup_exit_race_monitor reason=-1")
+        stdout.contains("PASS remote_setup_exit_race_monitor reason=6")
             && stdout.contains("PASS remote_setup_exit_race_monitor no-dup")
             && stdout.contains("PASS remote_setup_exit_race link-down=5")
             && stdout.contains("PASS remote_setup_exit_race link-no-dup"),

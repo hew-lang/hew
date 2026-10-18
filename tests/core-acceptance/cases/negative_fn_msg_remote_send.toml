@@ -1,6 +1,6 @@
 [[case]]
 id = "negative_fn_msg_remote_send"
-intent = "Reject: a function value has no wire representation, so it must not cross a RemotePid<T>::send boundary."
+intent = "Reject: a function value has no wire representation, so it must not cross the authenticated actor export boundary."
 source = "../vertical-slice/reject/negative_fn_msg_remote_send.hew"
 suites = ["acceptance"]
 timeout_seconds = 30
@@ -8,6 +8,6 @@ kind = "reject"
 
 [[case.expected.diagnostics]]
 code = "BoundsNotSatisfied"
-line = 17
-column = 5
-message = "E_NOT_SERIALIZABLE: a value sent to remote actor `Worker` (`fn(i64) -> i64`) reaches `fn(i64) -> i64`, not data"
+line = 10
+column = 31
+message = "E_NOT_SERIALIZABLE: wire handler `Worker.carry` reaches `fn(i64) -> i64`, not data"

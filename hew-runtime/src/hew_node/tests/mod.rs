@@ -314,7 +314,7 @@ unsafe fn ask_for_test(
     let (readiness, waker) = crate::wake::blocking::Readiness::new();
     // SAFETY: the caller's request satisfies the call; the waker is live.
     let call = unsafe {
-        hew_remote_call_new(
+        raw_location_call_for_test(
             target,
             dispatch,
             msg_type,

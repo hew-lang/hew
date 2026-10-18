@@ -771,7 +771,7 @@ fn remote_call_setup_expiry_and_cancel_do_not_wait_for_a_blocked_sender() {
                     let target = HewLocation::from(target);
                     // SAFETY: empty request, registered codec and live waker.
                     unsafe {
-                        hew_remote_call_new(
+                        raw_location_call_for_test(
                             &raw const target,
                             test_dispatch(),
                             7,

@@ -1,14 +1,13 @@
 [[case]]
 id = "remote_pid_old_verb"
-intent = "The retired `tell` verb on a `RemotePid<T>` is reported as an unknown method."
+intent = "Actor values reject the retired tell verb as an unknown handler."
 source = "../vertical-slice/reject/remote_pid_old_verb.hew"
 suites = ["acceptance"]
 timeout_seconds = 30
 kind = "reject"
 
 [[case.expected.diagnostics]]
-severity = "error"
 code = "UndefinedMethod"
-line = 9
+line = 5
 column = 18
-message = "no method `tell` on `RemotePid<Worker>`"
+message = "no method `tell` on `Worker`"

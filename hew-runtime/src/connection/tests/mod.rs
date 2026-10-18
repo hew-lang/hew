@@ -165,39 +165,6 @@ fn collect_finished_reconnect_worker_reports_panic_and_removes_handle() {
 }
 
 #[test]
-fn manager_free_reports_reverse_link_worker_panic() {
-    crate::hew_clear_error();
-    let (mgr, transport) = test_manager_with_transport();
-    let exited = Arc::new(AtomicBool::new(false));
-    let worker_exited = Arc::clone(&exited);
-    let worker = std::thread::spawn(move || {
-        worker_exited.store(true, Ordering::Release);
-        panic!("reverse-link free intentional panic");
-    });
-    // SAFETY: mgr is live and exclusively owned by this test.
-    unsafe { &*mgr }
-        .reverse_link_workers
-        .access(|workers| workers.push(worker));
-
-    // SAFETY: this test owns mgr and transport.
-    unsafe { free_test_manager_and_transport(mgr, transport) };
-
-    let error = last_error_string();
-    assert!(
-        error.contains("connection reverse-link worker panicked during teardown"),
-        "unexpected last error: {error}"
-    );
-    assert!(
-        error.contains("reverse-link free intentional panic"),
-        "panic payload must be included in the diagnostic: {error}"
-    );
-    assert!(
-        exited.load(Ordering::Acquire),
-        "manager free must join the reverse-link worker before returning"
-    );
-}
-
-#[test]
 fn manager_free_reports_reconnect_worker_panic() {
     crate::hew_clear_error();
     let (mgr, transport) = test_manager_with_transport();
@@ -228,48 +195,6 @@ fn manager_free_reports_reconnect_worker_panic() {
         exited.load(Ordering::Acquire),
         "manager free must join the reconnect worker before returning"
     );
-}
-
-#[test]
-fn reverse_link_tracking_reports_panics_on_immediate_and_reaped_joins() {
-    crate::hew_clear_error();
-    let immediate = std::thread::spawn(|| panic!("reverse-link null manager panic"));
-    // SAFETY: null manager explicitly requests an immediate join.
-    unsafe { hew_connmgr_track_reverse_link_worker(std::ptr::null_mut(), immediate) };
-    let error = last_error_string();
-    assert!(error.contains("reverse-link null manager panic"));
-
-    crate::hew_clear_error();
-    let (mgr, transport) = test_manager_with_transport();
-    let finished = std::thread::spawn(|| panic!("reverse-link reaped panic"));
-    while !finished.is_finished() {
-        std::thread::yield_now();
-    }
-    // SAFETY: mgr is live and exclusively owned by this test.
-    unsafe { &*mgr }
-        .reverse_link_workers
-        .access(|workers| workers.push(finished));
-    let following = std::thread::spawn(|| {});
-    // SAFETY: mgr remains live through manager teardown below.
-    unsafe { hew_connmgr_track_reverse_link_worker(mgr, following) };
-
-    let error = last_error_string();
-    assert!(
-        error.contains("connection reverse-link worker panicked during teardown"),
-        "unexpected last error: {error}"
-    );
-    assert!(
-        error.contains("reverse-link reaped panic"),
-        "panic payload must be included in the diagnostic: {error}"
-    );
-    // SAFETY: mgr remains live and only the non-panicking following worker is tracked.
-    let tracked_workers = unsafe { &*mgr }
-        .reverse_link_workers
-        .access(|workers| workers.len());
-    assert_eq!(tracked_workers, 1);
-
-    // SAFETY: this test owns mgr and transport.
-    unsafe { free_test_manager_and_transport(mgr, transport) };
 }
 
 fn test_node_id(route_slot: u16) -> NodeId {
@@ -316,7 +241,6 @@ fn snapshot_connections_json_emits_expected_array() {
         inbound_ask_active: Arc::new(AtomicUsize::new(0)),
         inbound_asks: Arc::default(),
         reconnect_workers: PoisonSafe::new(Vec::new()),
-        reverse_link_workers: PoisonSafe::new(Vec::new()),
         reader_lifecycle: Arc::new(ReaderLifecycle::default()),
         next_publication_token: AtomicU64::new(1),
         gossip_in: AtomicU64::new(0),

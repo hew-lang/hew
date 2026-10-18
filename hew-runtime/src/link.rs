@@ -87,7 +87,7 @@ pub unsafe extern "C" fn hew_actor_link(a: *mut HewActor, b: *mut HewActor) {
 
     let id_a = actor_a.id;
     let id_b = actor_b.id;
-    let (a_terminal_reason, b_terminal_reason) = register_link(actor_a, actor_b);
+    let (a_terminal_reason, b_terminal_reason, _) = register_link(actor_a, actor_b);
 
     if let (Some(reason), None) = (a_terminal_reason, b_terminal_reason) {
         send_exit_signal(id_b, id_a, reason);
@@ -98,7 +98,7 @@ pub unsafe extern "C" fn hew_actor_link(a: *mut HewActor, b: *mut HewActor) {
 
 /// The single registration authority orders both shard locks and samples
 /// terminal state under those locks before publishing either direction.
-fn register_link(actor_a: &HewActor, actor_b: &HewActor) -> (Option<i32>, Option<i32>) {
+fn register_link(actor_a: &HewActor, actor_b: &HewActor) -> (Option<i32>, Option<i32>, bool) {
     let id_a = actor_a.id;
     let id_b = actor_b.id;
     let shard_index_a = get_shard_index(id_a);
@@ -109,24 +109,30 @@ fn register_link(actor_a: &HewActor, actor_b: &HewActor) -> (Option<i32>, Option
             let a_terminal_reason = terminal_exit_reason(shard, id_a, actor_a);
             let b_terminal_reason = terminal_exit_reason(shard, id_b, actor_b);
 
-            if a_terminal_reason.is_none() && b_terminal_reason.is_none() {
-                add_link_locked(shard, id_a, id_b);
+            let inserted = if a_terminal_reason.is_none() && b_terminal_reason.is_none() {
+                let inserted = add_link_locked(shard, id_a, id_b);
                 add_link_locked(shard, id_b, id_a);
-            }
+                inserted
+            } else {
+                false
+            };
 
-            (a_terminal_reason, b_terminal_reason)
+            (a_terminal_reason, b_terminal_reason, inserted)
         }),
         std::cmp::Ordering::Less => LINK_TABLE[shard_index_a].access(|shard_a| {
             LINK_TABLE[shard_index_b].access(|shard_b| {
                 let a_terminal_reason = terminal_exit_reason(shard_a, id_a, actor_a);
                 let b_terminal_reason = terminal_exit_reason(shard_b, id_b, actor_b);
 
-                if a_terminal_reason.is_none() && b_terminal_reason.is_none() {
-                    add_link_locked(shard_a, id_a, id_b);
+                let inserted = if a_terminal_reason.is_none() && b_terminal_reason.is_none() {
+                    let inserted = add_link_locked(shard_a, id_a, id_b);
                     add_link_locked(shard_b, id_b, id_a);
-                }
+                    inserted
+                } else {
+                    false
+                };
 
-                (a_terminal_reason, b_terminal_reason)
+                (a_terminal_reason, b_terminal_reason, inserted)
             })
         }),
         std::cmp::Ordering::Greater => LINK_TABLE[shard_index_b].access(|shard_b| {
@@ -134,12 +140,15 @@ fn register_link(actor_a: &HewActor, actor_b: &HewActor) -> (Option<i32>, Option
                 let a_terminal_reason = terminal_exit_reason(shard_a, id_a, actor_a);
                 let b_terminal_reason = terminal_exit_reason(shard_b, id_b, actor_b);
 
-                if a_terminal_reason.is_none() && b_terminal_reason.is_none() {
-                    add_link_locked(shard_a, id_a, id_b);
+                let inserted = if a_terminal_reason.is_none() && b_terminal_reason.is_none() {
+                    let inserted = add_link_locked(shard_a, id_a, id_b);
                     add_link_locked(shard_b, id_b, id_a);
-                }
+                    inserted
+                } else {
+                    false
+                };
 
-                (a_terminal_reason, b_terminal_reason)
+                (a_terminal_reason, b_terminal_reason, inserted)
             })
         }),
     }
@@ -151,29 +160,36 @@ fn register_link(actor_a: &HewActor, actor_b: &HewActor) -> (Option<i32>, Option
 /// current actor; a negative status is a logical fault code.
 #[no_mangle]
 pub extern "C" fn hew_native_actor_link(target: HewLocalPidId) -> i32 {
+    link_actor_for_observation(target).0
+}
+
+/// Return only a newly installed link's selected incarnation. Cancelling an
+/// untaken operation must not remove a link that already existed.
+pub(crate) fn link_actor_for_observation(target: HewLocalPidId) -> (i32, Option<u64>) {
     let current = crate::actor::hew_actor_self();
     if current.is_null() {
-        return crate::monitor::HEW_OBSERVATION_NO_CONTEXT;
+        return (crate::monitor::HEW_OBSERVATION_NO_CONTEXT, None);
     }
     let Some(target_id) = crate::lifetime::local_handles::resolve_current_observation_actor(target)
     else {
-        return -crate::internal::types::HEW_TRAP_ACTOR_SEND_FAILED;
+        return (-crate::internal::types::HEW_TRAP_ACTOR_SEND_FAILED, None);
     };
     // SAFETY: the current activation owns its actor allocation.
     let current = unsafe { &*current };
     if current.id == target_id {
-        return 0;
+        return (0, None);
     }
     let Some(target) = pin_actor_by_id(target_id) else {
         // A clean free retires an incarnation without a terminal sweep; its
         // identity still answers with a normal exit (error code zero).
         send_exit_signal(current.id, target_id, 0);
-        return 0;
+        return (0, None);
     };
-    if let (_, Some(reason)) = register_link(current, target.actor()) {
+    let (_, terminal, inserted) = register_link(current, target.actor());
+    if let Some(reason) = terminal {
         send_exit_signal(current.id, target_id, reason);
     }
-    0
+    (0, inserted.then_some(target_id))
 }
 
 /// Remove the current actor's local subscription; repeated removal is harmless.
@@ -181,6 +197,22 @@ pub extern "C" fn hew_native_actor_link(target: HewLocalPidId) -> i32 {
 pub extern "C" fn hew_native_actor_unlink(target: HewLocalPidId) {
     let current = crate::actor::hew_actor_self();
     if current.is_null() {
+        return;
+    }
+    if let Some(imported) = crate::lifetime::local_handles::current_imported_actor(target) {
+        // SAFETY: the current activation owns its actor allocation.
+        let actor = unsafe { (*current).id };
+        for (id, authority) in crate::runtime::rt_current()
+            .monitors
+            .remove_imported_links(actor, imported.identity())
+        {
+            crate::hew_node::monitor_link::send_admitted_cleanup(
+                imported.identity(),
+                authority,
+                id,
+                true,
+            );
+        }
         return;
     }
     let Some(target) = crate::lifetime::local_handles::resolve_current_observation_actor(target)
@@ -216,7 +248,7 @@ pub unsafe extern "C" fn hew_actor_unlink(a: *mut HewActor, b: *mut HewActor) {
 
 /// Remove both directions under the same shard ordering as registration.
 /// A concurrent link cannot publish between the two removals.
-fn unlink_by_ids(a: u64, b: u64) {
+pub(crate) fn unlink_by_ids(a: u64, b: u64) {
     let (first, second) = if get_shard_index(a) <= get_shard_index(b) {
         (a, b)
     } else {
@@ -318,14 +350,18 @@ pub extern "C" fn hew_local_pid_unlink(a: HewLocalPidId, b: HewLocalPidId) {
     unsafe { hew_actor_unlink(pin_a.as_ptr(), pin_b.as_ptr()) };
 }
 
-fn add_link_locked(shard: &mut LinkShard, from_id: u64, to_actor_id: u64) {
-    shard
-        .links
-        .entry(from_id)
-        .or_default()
-        .push(LinkedActorEntry {
-            linked_actor_id: to_actor_id,
-        });
+fn add_link_locked(shard: &mut LinkShard, from_id: u64, to_actor_id: u64) -> bool {
+    let links = shard.links.entry(from_id).or_default();
+    if links
+        .iter()
+        .any(|entry| entry.linked_actor_id == to_actor_id)
+    {
+        return false;
+    }
+    links.push(LinkedActorEntry {
+        linked_actor_id: to_actor_id,
+    });
+    true
 }
 
 fn terminal_exit_reason(shard: &LinkShard, actor_id: u64, actor: &HewActor) -> Option<i32> {

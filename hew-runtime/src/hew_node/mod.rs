@@ -29,7 +29,7 @@ mod api;
 mod dist_probes;
 mod inbound;
 mod inbound_call;
-mod monitor_link;
+pub(crate) mod monitor_link;
 mod remote_call;
 pub(crate) mod service;
 pub(crate) mod service_api;
@@ -592,6 +592,7 @@ impl ReplyRoutingTable {
         self.register_with_waker(connection, None, PendingReplyKind::Ask(0))
     }
 
+    #[cfg(test)]
     fn register_setup(
         &self,
         connection: ConnectionKey,

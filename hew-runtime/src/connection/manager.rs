@@ -8,7 +8,6 @@ use std::thread::JoinHandle;
 
 use crate::cluster::HewCluster;
 use crate::lifetime::poison_safe::PoisonSafe;
-use crate::node_identity::Location;
 use crate::peer_binding::PeerAuthSnapshot;
 use crate::routing::HewRoutingTable;
 use crate::set_last_error;
@@ -20,7 +19,7 @@ use super::identity_claim::test_node_identity;
 use super::reconnect::normalize_max_retries;
 use super::{
     ConnectionActor, HewConnMgr, InboundRouter, ReaderLifecycle, ReconnectSettings,
-    CONN_STATE_ACTIVE, RECONNECT_DEFAULT_MAX_RETRIES,
+    RECONNECT_DEFAULT_MAX_RETRIES,
 };
 
 // ── C ABI ──────────────────────────────────────────────────────────────
@@ -109,7 +108,6 @@ pub(crate) unsafe fn connmgr_new(
         inbound_asks: Arc::default(),
         service_exports: Arc::default(),
         reconnect_workers: PoisonSafe::new(Vec::new()),
-        reverse_link_workers: PoisonSafe::new(Vec::new()),
         reader_lifecycle: Arc::new(ReaderLifecycle::default()),
         next_publication_token: AtomicU64::new(1),
         gossip_in: AtomicU64::new(0),
@@ -210,10 +208,6 @@ pub unsafe extern "C" fn hew_connmgr_free(mgr: *mut HewConnMgr) {
         let drained: Vec<ConnectionActor> = mgr.connections.access(std::mem::take);
         drop(drained);
         mgr.reader_lifecycle.wait_for_idle();
-        let workers: Vec<JoinHandle<()>> = mgr.reverse_link_workers.access(std::mem::take);
-        for worker in workers {
-            crate::util::report_join_panic("connection reverse-link worker", worker.join());
-        }
         let workers: Vec<JoinHandle<()>> = mgr.reconnect_workers.access(std::mem::take);
         for worker in workers {
             crate::util::report_join_panic("connection reconnect worker", worker.join());
@@ -300,67 +294,6 @@ pub(crate) unsafe fn hew_connmgr_inbound_ask_active(
     // SAFETY: caller guarantees `mgr` is valid for the duration of the call.
     let mgr_ref = unsafe { &*mgr };
     Some(Arc::clone(&mgr_ref.inbound_ask_active))
-}
-
-/// Resolve the active publication token only when `conn_id` is still bound to
-/// the exact peer node/session owning `target`.
-///
-/// # Safety
-///
-/// `mgr` must remain valid for this call.
-pub(crate) unsafe fn hew_connmgr_publication_token_for_target(
-    mgr: *mut HewConnMgr,
-    conn_id: c_int,
-    target: Location,
-) -> Option<u64> {
-    if mgr.is_null() {
-        return None;
-    }
-    // SAFETY: caller guarantees `mgr` is valid for this call.
-    unsafe { &*mgr }.connections.access(|connections| {
-        connections
-            .iter()
-            .find(|connection| {
-                connection.conn_id == conn_id
-                    && connection.state.load(Ordering::Acquire) == CONN_STATE_ACTIVE
-                    && connection.peer_identity == Some(target.node())
-                    && connection.peer_session_incarnation == target.incarnation()
-            })
-            .map(|connection| connection.publication_token)
-    })
-}
-
-/// Track a deferred reverse-link worker so manager teardown joins it.
-///
-/// # Safety
-///
-/// `mgr` must remain valid for this call.
-pub(crate) unsafe fn hew_connmgr_track_reverse_link_worker(
-    mgr: *mut HewConnMgr,
-    worker: JoinHandle<()>,
-) {
-    if mgr.is_null() {
-        crate::util::report_join_panic("connection reverse-link worker", worker.join());
-        return;
-    }
-    // SAFETY: caller guarantees `mgr` is valid for this call.
-    let mgr_ref = unsafe { &*mgr };
-    let finished = mgr_ref.reverse_link_workers.access(|workers| {
-        let mut finished = Vec::new();
-        let mut index = 0;
-        while index < workers.len() {
-            if workers[index].is_finished() {
-                finished.push(workers.swap_remove(index));
-            } else {
-                index += 1;
-            }
-        }
-        workers.push(worker);
-        finished
-    });
-    for worker in finished {
-        crate::util::report_join_panic("connection reverse-link worker", worker.join());
-    }
 }
 
 /// Configure manager-wide reconnect policy.

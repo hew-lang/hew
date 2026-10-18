@@ -618,6 +618,10 @@ fn queued_withdrawal_requires_the_exact_request_and_connection_publication() {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one admitted request fixture verifies grant revocation at dispatch"
+)]
 fn service_revocation_refuses_an_already_queued_dispatch_claim() {
     unsafe extern "C" fn drop_unit(_payload: *mut c_void) {}
     let _guard = crate::runtime_test_guard();
@@ -671,6 +675,59 @@ fn service_revocation_refuses_an_already_queued_dispatch_claim() {
         ),
         Err(AskError::Unauthorized)
     ));
+    let publication_removed = AtomicBool::new(false);
+    let mut wrong_session = claim.peer_session();
+    wrong_session.session_incarnation += 1;
+    assert!(manager
+        .service_exports
+        .claim_observation(
+            incarnation,
+            wrong_session,
+            offer.grant_id,
+            &publication_removed,
+            || ()
+        )
+        .is_err());
+    assert!(manager
+        .service_exports
+        .claim_observation(
+            crate::lifetime::live_actors::ActorIncarnation::NONE,
+            claim.peer_session(),
+            offer.grant_id,
+            &publication_removed,
+            || ()
+        )
+        .is_err());
+    assert!(manager
+        .service_exports
+        .claim_observation(
+            incarnation,
+            claim.peer_session(),
+            0,
+            &publication_removed,
+            || ()
+        )
+        .is_err());
+    assert!(manager
+        .service_exports
+        .claim_observation(
+            incarnation,
+            claim.peer_session(),
+            offer.grant_id,
+            &AtomicBool::new(true),
+            || ()
+        )
+        .is_err());
+    assert!(manager
+        .service_exports
+        .claim_observation(
+            incarnation,
+            claim.peer_session(),
+            offer.grant_id,
+            &publication_removed,
+            || ()
+        )
+        .is_ok());
     let admission = super::super::service::RemoteAdmission::new(
         manager,
         incarnation,
@@ -869,5 +926,181 @@ fn mailbox_admission_precedes_dispatch_and_preserves_queued_authority() {
                 assert_eq!(hew_node_stop(node.as_ptr()), 0);
             }
         }
+    }
+}
+
+fn await_observation_setup(operation: *mut monitor_link::HewNativeActorObservation) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    // SAFETY: each fixture retains its unique operation until this helper returns.
+    while unsafe { monitor_link::hew_native_actor_observe_poll(operation) } == -1 {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "peer setup acknowledgement timed out"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+}
+
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one peer fixture owns both nodes, actor allocations, grants and every observer"
+)]
+fn admitted_lifecycle_observes_peer_cleanup_and_revokes_only_future_setup() {
+    use crate::actor_native::{hew_actor_wait_free, hew_actor_wait_new, hew_actor_wait_poll};
+    use crate::lifetime::local_handles::{
+        hew_actor_handle_identical, hew_actor_handle_release, register_current_imported_actor,
+    };
+    let _guard = crate::runtime_test_guard();
+    let _scheduler = init_real_scheduler();
+    let (client, _, server, port) = start_authorized_tcp_pair(371, 372);
+    crate::pid::hew_pid_set_local_node(372);
+    let target = spawn_remote_test_actor(noop_dispatch);
+    inbound_test_codec(noop_dispatch, 0);
+    crate::pid::hew_pid_set_local_node(371);
+    let watcher = spawn_remote_test_actor(noop_dispatch);
+    let address = CString::new(format!("372@127.0.0.1:{port}")).unwrap();
+    // SAFETY: both nodes and actor allocations remain live through all observers.
+    unsafe {
+        connect_with_retry(client.as_ptr(), &address);
+        wait_for_handshake(client.as_ptr(), server.as_ptr());
+        let client_manager = &*(*client.as_ptr()).conn_mgr;
+        let server_manager = &*(*server.as_ptr()).conn_mgr;
+        let client_identity = (*client.as_ptr()).auth.node_identity().unwrap();
+        let claim =
+            connection::claim_send_by_identity(server_manager, client_identity, None).unwrap();
+        let location = connection::local_location_for_actor(server_manager, (*target).id).unwrap();
+        let (export, offer) = server_manager
+            .service_exports
+            .export(
+                claim.peer_session(),
+                1,
+                crate::lifetime::live_actors::ActorIncarnation::of(target),
+                location,
+                vec!["tests.Counter.handle".into()],
+            )
+            .unwrap();
+        drop(claim);
+        let descriptor = service_api::ImportedService::from_offer(
+            Arc::downgrade(&client_manager.service_exports),
+            offer.clone(),
+        );
+        let token = register_current_imported_actor(descriptor).unwrap();
+        let mut same_offer = offer.clone();
+        same_offer.grant_id += 100;
+        let same = register_current_imported_actor(service_api::ImportedService::from_offer(
+            Arc::downgrade(&client_manager.service_exports),
+            same_offer,
+        ))
+        .unwrap();
+        let mut other_offer = offer.clone();
+        other_offer.target =
+            Location::new(location.node(), location.slot() + 1, location.incarnation()).unwrap();
+        let other = register_current_imported_actor(service_api::ImportedService::from_offer(
+            Arc::downgrade(&client_manager.service_exports),
+            other_offer,
+        ))
+        .unwrap();
+        assert_eq!(hew_actor_handle_identical(token, same), 1);
+        assert_eq!(hew_actor_handle_identical(token, other), 0);
+
+        let (readiness, waker) = crate::wake::blocking::Readiness::new();
+        // stopped is valid outside an actor context and must remain pending while alive.
+        let stopped = hew_actor_wait_new(token, waker.descriptor());
+        let (detached_ready, detached_waker) = crate::wake::blocking::Readiness::new();
+        let detached = hew_actor_wait_new(token, detached_waker.descriptor());
+        assert_eq!(hew_actor_wait_poll(stopped), 0);
+        assert_eq!(hew_actor_wait_poll(detached), 0);
+        hew_actor_wait_free(detached);
+        let _ = detached_ready.take_ready();
+
+        let mut context = crate::execution_context::HewExecutionContext {
+            actor: watcher,
+            actor_id: (*watcher).id,
+            ..Default::default()
+        };
+        let previous = crate::execution_context::set_current_context(&raw mut context);
+        let monitor = monitor_link::hew_native_actor_observe_new(token, 0, waker.descriptor());
+        await_observation_setup(monitor);
+        let mut monitor_id = 0;
+        assert_eq!(
+            monitor_link::hew_native_actor_observe_take(monitor, &raw mut monitor_id),
+            0
+        );
+        assert_ne!(monitor_id, 0);
+        monitor_link::hew_native_actor_observe_free(monitor);
+
+        // A counterfeit grant cannot subscribe even though it has the exact Location.
+        let refused = monitor_link::hew_native_actor_observe_new(same, 0, waker.descriptor());
+        await_observation_setup(refused);
+        assert!(monitor_link::hew_native_actor_observe_take(refused, &raw mut monitor_id) < 0);
+        monitor_link::hew_native_actor_observe_free(refused);
+
+        // The reciprocal half completes before the original link is acknowledged.
+        let link = monitor_link::hew_native_actor_observe_new(token, 1, waker.descriptor());
+        await_observation_setup(link);
+        assert_eq!(
+            monitor_link::hew_native_actor_observe_take(link, &raw mut monitor_id),
+            0
+        );
+        monitor_link::hew_native_actor_observe_free(link);
+        crate::link::hew_native_actor_unlink(token);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while crate::runtime::rt_current()
+            .monitors
+            .pending_observation_count()
+            > 2
+        {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "unlink retained a reciprocal observation"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        drop(export);
+        assert_eq!(
+            hew_actor_handle_identical(token, same),
+            1,
+            "identity survives grant revocation"
+        );
+        let revoked = monitor_link::hew_native_actor_observe_new(token, 1, waker.descriptor());
+        await_observation_setup(revoked);
+        assert!(monitor_link::hew_native_actor_observe_take(revoked, &raw mut monitor_id) < 0);
+        monitor_link::hew_native_actor_observe_free(revoked);
+        let _ = crate::execution_context::set_current_context(previous);
+        assert_eq!(hew_actor_wait_poll(stopped), 0);
+
+        // The target's terminal owner publishes only after state cleanup.
+        with_current_node(|current| *current = server.as_ptr() as usize);
+        (*target).actor_state.store(
+            crate::internal::types::HewActorState::Stopped as i32,
+            Ordering::Release,
+        );
+        (*target).terminate_finished.store(true, Ordering::Release);
+        crate::actor_native::finish_native_terminal(&*target);
+        with_current_node(|current| *current = client.as_ptr() as usize);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while hew_actor_wait_poll(stopped) == 0 {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "stopped missed the peer terminal notice"
+            );
+            let _ = readiness.take_ready();
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        assert_eq!(hew_actor_wait_poll(stopped), 1);
+        assert!(
+            !detached_ready.take_ready(),
+            "cancelled stopped observer retained a callback target"
+        );
+        hew_actor_wait_free(stopped);
+        crate::monitor::hew_actor_demonitor(monitor_id);
+        hew_actor_handle_release(token);
+        hew_actor_handle_release(same);
+        hew_actor_handle_release(other);
+        crate::actor::hew_actor_free(watcher);
+        crate::actor::hew_actor_free(target);
+        assert_eq!(hew_node_stop(server.as_ptr()), 0);
+        assert_eq!(hew_node_stop(client.as_ptr()), 0);
     }
 }

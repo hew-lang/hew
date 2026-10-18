@@ -1419,6 +1419,7 @@ fn monitor_ctrl_kinds_are_distinct_and_stable() {
 #[test]
 fn monitor_req_payload_round_trips_with_cddl_shape() {
     let original = MonitorReqPayload {
+        grant_id: 17,
         watcher: location(50, 55, 181),
         ref_id: 4242,
         target: location(51, 99, 191),
@@ -1428,15 +1429,16 @@ fn monitor_req_payload_round_trips_with_cddl_shape() {
     let decoded = decode_monitor_req_payload(&bytes).expect("req should decode");
     assert_eq!(decoded, original);
 
-    // CDDL shape: definite map keyed {1,2,3,4} with exact Location values.
+    // CDDL shape: definite map keyed {1,2,3,4,5} with exact Location values.
     let value = decode_value(&bytes);
     let entries = map_entries(&value);
-    assert_eq!(entries.len(), 4);
-    assert_integer_keys_and_order(entries, &[1, 2, 3, 4]);
+    assert_eq!(entries.len(), 5);
+    assert_integer_keys_and_order(entries, &[1, 2, 3, 4, 5]);
     assert_location_value(find_field(entries, 1), original.watcher);
     assert_integer_value(find_field(entries, 2), 4242);
     assert_location_value(find_field(entries, 3), original.target);
     assert_integer_value(find_field(entries, 4), 8080);
+    assert_integer_value(find_field(entries, 5), 17);
 }
 
 #[test]
@@ -1536,11 +1538,12 @@ fn monitor_req_payload_codec_rejects_malformed_payloads() {
         (int(2u64), int(2u64)),
         (int(3u64), location_value(location(54, 3, 199))),
         (int(4u64), int(4u64)),
-        (int(5u64), int(5u64)),
+        (int(6u64), int(6u64)),
+        (int(5u64), int(17u64)),
     ]);
     assert!(matches!(
         decode_monitor_req_payload(&value_to_cbor(&unknown_key)),
-        Err(MonitorPayloadError::UnknownKey { key: 5 })
+        Err(MonitorPayloadError::UnknownKey { key: 6 })
     ));
 
     // Missing required key 3 (target Location).
@@ -1548,6 +1551,7 @@ fn monitor_req_payload_codec_rejects_malformed_payloads() {
         (int(1u64), location_value(location(53, 1, 197))),
         (int(2u64), int(2u64)),
         (int(4u64), int(4u64)),
+        (int(5u64), int(17u64)),
     ]);
     assert!(matches!(
         decode_monitor_req_payload(&value_to_cbor(&missing)),
@@ -1560,6 +1564,7 @@ fn monitor_req_payload_codec_rejects_malformed_payloads() {
         (int(2u64), int(2u64)),
         (int(3u64), location_value(location(54, 3, 199))),
         (int(4u64), int(4u64)),
+        (int(5u64), int(17u64)),
     ]);
     assert!(matches!(
         decode_monitor_req_payload(&value_to_cbor(&wrong_type)),
@@ -1583,6 +1588,7 @@ fn monitor_req_payload_codec_rejects_malformed_payloads() {
             (int(2u64), int(2u64)),
             (int(3u64), location_value(location(54, 3, 199))),
             (int(4u64), int(4u64)),
+            (int(5u64), int(17u64)),
         ]);
         assert!(matches!(
             decode_monitor_req_payload(&value_to_cbor(&malformed)),
@@ -1595,6 +1601,7 @@ fn monitor_req_payload_codec_rejects_malformed_payloads() {
         (int(2u64), int(2u64)),
         (int(3u64), Value::Null),
         (int(4u64), int(4u64)),
+        (int(5u64), int(17u64)),
     ]);
     assert!(matches!(
         decode_monitor_req_payload(&value_to_cbor(&malformed_target)),
@@ -1620,6 +1627,7 @@ fn monitor_payload_rejects_oversized_input() {
 #[test]
 fn monitor_payload_truncated_cbor_returns_error() {
     let req = MonitorReqPayload {
+        grant_id: 0,
         watcher: location(56, 3, 211),
         ref_id: 7,
         target: location(57, 11, 223),
@@ -1692,6 +1700,8 @@ fn link_req_payload_round_trips_with_cddl_shape() {
     // CrashLinked (policy_tag == 3) link request carrying both directions'
     // identity for the bidirectional reciprocation.
     let original = LinkReqPayload {
+        grant_id: 17,
+        reciprocal_ref: 0,
         linker: location(58, 55, 227),
         ref_id: 4242,
         target: location(59, 99, 229),
@@ -1703,17 +1713,19 @@ fn link_req_payload_round_trips_with_cddl_shape() {
     let decoded = decode_link_req_payload(&bytes).expect("link req should decode");
     assert_eq!(decoded, original);
 
-    // CDDL shape: definite map keyed {1,2,3,4,5,6} with exact Locations.
+    // CDDL shape: definite map keyed {1,2,3,4,5,6,7,8} with exact Locations.
     let value = decode_value(&bytes);
     let entries = map_entries(&value);
-    assert_eq!(entries.len(), 6);
-    assert_integer_keys_and_order(entries, &[1, 2, 3, 4, 5, 6]);
+    assert_eq!(entries.len(), 8);
+    assert_integer_keys_and_order(entries, &[1, 2, 3, 4, 5, 6, 7, 8]);
     assert_location_value(find_field(entries, 1), original.linker);
     assert_integer_value(find_field(entries, 2), 4242);
     assert_location_value(find_field(entries, 3), original.target);
     assert_integer_value(find_field(entries, 4), 3);
     assert_integer_value(find_field(entries, 5), 1);
     assert_integer_value(find_field(entries, 6), 8081);
+    assert_integer_value(find_field(entries, 7), 17);
+    assert_integer_value(find_field(entries, 8), 0);
 }
 
 #[test]
@@ -1754,11 +1766,13 @@ fn link_req_payload_codec_rejects_malformed_payloads() {
         (int(4u64), int(3u64)),
         (int(5u64), int(1u64)),
         (int(6u64), int(9u64)),
-        (int(7u64), int(10u64)),
+        (int(9u64), int(10u64)),
+        (int(7u64), int(17u64)),
+        (int(8u64), int(0u64)),
     ]);
     assert!(matches!(
         decode_link_req_payload(&value_to_cbor(&unknown_key)),
-        Err(MonitorPayloadError::UnknownKey { key: 7 })
+        Err(MonitorPayloadError::UnknownKey { key: 9 })
     ));
 
     // Missing required key 3 (target Location): the reverse-link half cannot be
@@ -1770,6 +1784,8 @@ fn link_req_payload_codec_rejects_malformed_payloads() {
         (int(4u64), int(3u64)),
         (int(5u64), int(1u64)),
         (int(6u64), int(9u64)),
+        (int(7u64), int(17u64)),
+        (int(8u64), int(0u64)),
     ]);
     assert!(matches!(
         decode_link_req_payload(&value_to_cbor(&missing)),
@@ -1783,6 +1799,8 @@ fn link_req_payload_codec_rejects_malformed_payloads() {
         (int(4u64), int(3u64)),
         (int(5u64), int(1u64)),
         (int(6u64), int(9u64)),
+        (int(7u64), int(17u64)),
+        (int(8u64), int(0u64)),
     ]);
     assert!(matches!(
         decode_link_req_payload(&value_to_cbor(&malformed_linker)),
@@ -1796,6 +1814,8 @@ fn link_req_payload_codec_rejects_malformed_payloads() {
         (int(4u64), int(3u64)),
         (int(5u64), int(1u64)),
         (int(6u64), int(9u64)),
+        (int(7u64), int(17u64)),
+        (int(8u64), int(0u64)),
     ]);
     assert!(matches!(
         decode_link_req_payload(&value_to_cbor(&malformed_target)),
@@ -1810,6 +1830,8 @@ fn link_req_payload_codec_rejects_malformed_payloads() {
         (int(4u64), int(9000u64)),
         (int(5u64), int(1u64)),
         (int(6u64), int(9u64)),
+        (int(7u64), int(17u64)),
+        (int(8u64), int(0u64)),
     ]);
     assert!(matches!(
         decode_link_req_payload(&value_to_cbor(&oob_policy)),
@@ -1823,6 +1845,8 @@ fn link_req_payload_codec_rejects_malformed_payloads() {
         (int(4u64), int(3u64)),
         (int(5u64), int(9000u64)),
         (int(6u64), int(9u64)),
+        (int(7u64), int(17u64)),
+        (int(8u64), int(0u64)),
     ]);
     assert!(matches!(
         decode_link_req_payload(&value_to_cbor(&oob_reciprocate)),
@@ -1843,6 +1867,8 @@ fn link_payload_rejects_oversized_input() {
 #[test]
 fn link_req_payload_truncated_cbor_returns_error() {
     let req = LinkReqPayload {
+        grant_id: 0,
+        reciprocal_ref: 0,
         linker: location(62, 22, 241),
         ref_id: 7,
         target: location(63, 11, 251),
@@ -1864,6 +1890,7 @@ fn monitor_control_frame_round_trips_through_wire_frame() {
     // The monitor payload rides inside a ControlFrame; the full wire frame must
     // round-trip with the right ctrl_kind so the reader dispatches it.
     let req = MonitorReqPayload {
+        grant_id: 0,
         watcher: location(64, 55, 257),
         ref_id: 4242,
         target: location(65, 99, 263),

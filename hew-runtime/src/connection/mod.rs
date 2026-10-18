@@ -285,8 +285,6 @@ pub struct HewConnMgr {
     pub(crate) service_exports: Arc<crate::hew_node::service::ServiceExports>,
     /// Background reconnect worker handles.
     reconnect_workers: PoisonSafe<Vec<JoinHandle<()>>>,
-    /// Deferred reverse-link setup workers, joined before manager teardown.
-    reverse_link_workers: PoisonSafe<Vec<JoinHandle<()>>>,
     /// Counts every spawned reader until its thread function fully returns.
     ///
     /// A reader can remove and drop its own [`ConnectionActor`] on an unexpected

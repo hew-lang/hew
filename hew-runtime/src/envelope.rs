@@ -395,7 +395,7 @@ pub struct SwimControlPayload {
 /// Bounded cross-node monitor REQUEST / DEMONITOR control payload.
 ///
 /// Encoded as a definite CBOR map `{1: watcher, 2: ref_id, 3: target,
-/// 4: setup_id}`. Used by both `CTRL_MONITOR_REQ` and `CTRL_DEMONITOR`: the
+/// 4: setup_id, 5: grant_id}`. Used by both `CTRL_MONITOR_REQ` and `CTRL_DEMONITOR`: the
 /// request registers with a nonzero setup id, while demonitor retracts with
 /// `setup_id = 0`.
 ///
@@ -407,6 +407,8 @@ pub struct SwimControlPayload {
 /// - `target` is the exact monitored actor location on the owning node.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MonitorReqPayload {
+    /// Export grant authorizing this exact observation.
+    pub grant_id: u64,
     /// Exact watcher actor identity.
     pub watcher: Location,
     /// Watcher's local monitor-registration id.
@@ -444,7 +446,7 @@ pub struct MonitorDownPayload {
 /// Bounded cross-node link REQUEST / UNLINK control payload.
 ///
 /// Encoded as a definite CBOR map `{1: linker, 2: ref_id, 3: target,
-/// 4: policy_tag, 5: reciprocate, 6: setup_id}`. Used by both `CTRL_LINK_REQ`
+/// 4: policy_tag, 5: reciprocate, 6: setup_id, 7: grant_id, 8: reciprocal_ref}`. Used by both `CTRL_LINK_REQ`
 /// and `CTRL_UNLINK`: a request carries a nonzero setup id, while unlink
 /// retracts the identifying tuple with `setup_id = 0`.
 ///
@@ -463,6 +465,10 @@ pub struct MonitorDownPayload {
 ///   again — bounding the handshake without an infinite request loop).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LinkReqPayload {
+    /// Export grant authorizing the original link.
+    pub grant_id: u64,
+    /// Original caller registration that authorizes a reciprocal request.
+    pub reciprocal_ref: u64,
     /// Exact linking actor identity.
     pub linker: Location,
     /// Linker's local link-registration id.
@@ -483,6 +489,8 @@ pub const SETUP_STATUS_ACCEPTED: u8 = 0;
 pub const SETUP_STATUS_TARGET_GONE: u8 = 1;
 /// The receiver could not allocate the state needed to complete setup.
 pub const SETUP_STATUS_RESOURCE_EXHAUSTED: u8 = 2;
+/// The authenticated publication lacks the required export grant.
+pub const SETUP_STATUS_REFUSED: u8 = 3;
 
 /// Bounded acknowledged monitor/link setup result.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1493,6 +1501,10 @@ pub fn encode_monitor_req_payload(
             Value::Integer(Integer::from(4u64)),
             Value::Integer(Integer::from(payload.setup_id)),
         ),
+        (
+            Value::Integer(5u64.into()),
+            Value::Integer(payload.grant_id.into()),
+        ),
     ]);
     let mut bytes = Vec::new();
     ciborium::ser::into_writer(&value, &mut bytes).map_err(MonitorPayloadError::CborEncode)?;
@@ -1520,8 +1532,9 @@ pub fn decode_monitor_req_payload(bytes: &[u8]) -> Result<MonitorReqPayload, Mon
     }
     let value: Value = ciborium::de::from_reader(bytes).map_err(MonitorPayloadError::CborDecode)?;
     let map = collect_map(&value)?;
-    ensure_exact_keys(&map, &[1, 2, 3, 4])?;
+    ensure_exact_keys(&map, &[1, 2, 3, 4, 5])?;
     Ok(MonitorReqPayload {
+        grant_id: value_to_u64(required(&map, 5)?, 5)?,
         watcher: value_to_location(required(&map, 1)?, 1)?,
         ref_id: value_to_u64(required(&map, 2)?, 2)?,
         target: value_to_location(required(&map, 3)?, 3)?,
@@ -1638,6 +1651,14 @@ pub fn encode_link_req_payload(payload: &LinkReqPayload) -> Result<Vec<u8>, Moni
             Value::Integer(Integer::from(6u64)),
             Value::Integer(Integer::from(payload.setup_id)),
         ),
+        (
+            Value::Integer(7u64.into()),
+            Value::Integer(payload.grant_id.into()),
+        ),
+        (
+            Value::Integer(8u64.into()),
+            Value::Integer(payload.reciprocal_ref.into()),
+        ),
     ]);
     let mut bytes = Vec::new();
     ciborium::ser::into_writer(&value, &mut bytes).map_err(MonitorPayloadError::CborEncode)?;
@@ -1667,8 +1688,10 @@ pub fn decode_link_req_payload(bytes: &[u8]) -> Result<LinkReqPayload, MonitorPa
     }
     let value: Value = ciborium::de::from_reader(bytes).map_err(MonitorPayloadError::CborDecode)?;
     let map = collect_map(&value)?;
-    ensure_exact_keys(&map, &[1, 2, 3, 4, 5, 6])?;
+    ensure_exact_keys(&map, &[1, 2, 3, 4, 5, 6, 7, 8])?;
     Ok(LinkReqPayload {
+        grant_id: value_to_u64(required(&map, 7)?, 7)?,
+        reciprocal_ref: value_to_u64(required(&map, 8)?, 8)?,
         linker: value_to_location(required(&map, 1)?, 1)?,
         ref_id: value_to_u64(required(&map, 2)?, 2)?,
         target: value_to_location(required(&map, 3)?, 3)?,
@@ -1735,10 +1758,10 @@ pub fn decode_setup_result_payload(
     let map = collect_map(&value)?;
     ensure_exact_keys(&map, &[1, 2, 3, 4])?;
     let status = value_to_u8(required(&map, 4)?, 4)?;
-    if status > SETUP_STATUS_RESOURCE_EXHAUSTED {
+    if status > SETUP_STATUS_REFUSED {
         return Err(MonitorPayloadError::MalformedField {
             key: 4,
-            expected: "a known setup status (0..=2)",
+            expected: "a known setup status (0..=3)",
         });
     }
     Ok(SetupResultPayload {

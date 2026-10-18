@@ -29,6 +29,10 @@ pub(crate) struct ImportedService {
 }
 
 impl ImportedService {
+    pub(super) fn from_offer(owner: Weak<ServiceExports>, offer: ServiceOfferPayload) -> Arc<Self> {
+        Arc::new(Self { owner, offer })
+    }
+
     pub(crate) fn identity(&self) -> crate::node_identity::Location {
         self.offer.target
     }
@@ -319,10 +323,7 @@ pub(super) unsafe fn take_acquisition(operation: &mut HewRemoteCall, output: *mu
             let Ok(offer) = crate::envelope::decode_service_offer_payload(&reply.data) else {
                 return AskError::DecodeFailure as i32;
             };
-            let descriptor = Arc::new(ImportedService {
-                owner: owner.clone(),
-                offer,
-            });
+            let descriptor = ImportedService::from_offer(owner.clone(), offer);
             match crate::lifetime::local_handles::register_current_imported_actor(descriptor) {
                 Ok(token) => token.as_usize(),
                 Err(_) => return AskError::LocalShutdown as i32,
@@ -333,6 +334,29 @@ pub(super) unsafe fn take_acquisition(operation: &mut HewRemoteCall, output: *mu
     // SAFETY: exports and actor values each have one target-word carrier.
     unsafe { output.cast::<usize>().write(value) };
     AskError::None as i32
+}
+
+/// Validate the imported value against its original node owner, recipient,
+/// peer session before selecting the current authenticated publication for a new operation.
+pub(crate) fn with_imported_actor<R>(
+    service: &ImportedService,
+    run: impl FnOnce(&HewConnMgr, SendClaim, &ServiceOfferPayload) -> Result<R, AskError>,
+) -> Result<R, AskError> {
+    with_manager(|manager| {
+        if !service
+            .owner
+            .ptr_eq(&Arc::downgrade(&manager.service_exports))
+            || local_session(manager) != Some(service.offer.recipient)
+        {
+            return Err(AskError::StaleRef);
+        }
+        let claim = connection::claim_send_by_identity(manager, service.offer.target.node(), None)
+            .ok_or(AskError::ConnectionDropped)?;
+        if claim.peer_session().session_incarnation != service.offer.target.incarnation() {
+            return Err(AskError::StaleRef);
+        }
+        run(manager, claim, &service.offer)
+    })
 }
 
 fn imported_actor_target(

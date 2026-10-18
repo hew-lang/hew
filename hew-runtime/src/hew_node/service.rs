@@ -304,6 +304,31 @@ impl ServiceExports {
         true
     }
 
+    /// Lifecycle rights share the export's recipient and exact incarnation; each
+    /// setup must also retain its currently authenticated publication.
+    pub(crate) fn claim_observation<R>(
+        &self,
+        target: ActorIncarnation,
+        peer: NodeSessionIdentity,
+        grant: u64,
+        publication_removed: &AtomicBool,
+        claim: impl FnOnce() -> R,
+    ) -> Result<R, AskError> {
+        let state = self.state.lock_or_recover();
+        if state.closed {
+            return Err(AskError::LocalShutdown);
+        }
+        let record = state.exports.get(&grant).ok_or(AskError::Unauthorized)?;
+        if grant == 0
+            || record.target != target
+            || record.offer.recipient != peer
+            || publication_removed.load(Ordering::Acquire)
+        {
+            return Err(AskError::Unauthorized);
+        }
+        Ok(claim())
+    }
+
     fn claim<R>(
         &self,
         target: ActorIncarnation,
@@ -366,20 +391,6 @@ pub(crate) struct RemoteAdmission {
 }
 
 impl RemoteAdmission {
-    pub(crate) fn raw(
-        manager: &crate::connection::HewConnMgr,
-        actor_id: u64,
-        peer: crate::node_identity::NodeId,
-        publication: u64,
-    ) -> Result<Self, AskError> {
-        let target = live_actors::with_actor_send_by_id(actor_id, |actor| {
-            // SAFETY: the registry's send pin retains this incarnation.
-            unsafe { ActorIncarnation::of(actor) }
-        })
-        .ok_or(AskError::StaleRef)?;
-        Self::new(manager, target, peer, publication, 0, "")
-    }
-
     pub(crate) fn new(
         manager: &crate::connection::HewConnMgr,
         target: ActorIncarnation,

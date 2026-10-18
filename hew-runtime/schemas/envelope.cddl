@@ -77,6 +77,7 @@ monitor-req-payload = {
     ref_id:  2 => uint,            ; watcher's local monitor-registration id
     target:  3 => location,
     setup_id: 4 => uint,           ; zero for demonitor
+    grant_id: 5 => uint,           ; active recipient-bound export grant
 }
 
 monitor-down-payload = {
@@ -110,13 +111,15 @@ link-req-payload = {
     reciprocate: 5 => uint,        ; 1 = original request, 0 = reverse (bounds the
                                    ; bidirectional handshake to one round trip)
     setup_id:    6 => uint,        ; zero for unlink
+    grant_id:    7 => uint,        ; same export grant as ordinary actor calls
+    reciprocal_ref: 8 => uint,     ; original caller ref; zero on original setup
 }
 
 setup-result-payload = {
     setup_id: 1 => uint,
     ref_id:   2 => uint,
     target:   3 => location,
-    status:   4 => 0..2,
+    status:   4 => 0..3,           ; accepted, target gone, capacity, refused
 }
 
 ; ── Envelope frame ───────────────────────────────────────────────────────────

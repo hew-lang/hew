@@ -4008,10 +4008,6 @@ impl Checker {
             pool_accessor_sites: std::mem::take(&mut self.pool_accessor_sites),
             lowering_facts: resolved_lowering_facts,
             method_call_rewrites: std::mem::take(&mut self.method_call_rewrites),
-            // W4.001 Stage A: substrate-only. Field is empty in Stage A
-            // (no production populator); Stage B's resolver fills it.
-            // See `check::dispatch` module docs and
-            // `TypeCheckOutput::resolved_calls`.
             resolved_calls: std::mem::take(&mut self.resolved_calls),
             import_type_name_aliases: std::mem::take(&mut self.import_type_name_aliases),
             module_import_bindings: std::mem::take(&mut self.module_import_bindings),

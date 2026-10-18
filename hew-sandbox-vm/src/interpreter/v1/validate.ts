@@ -20,7 +20,7 @@ import {
 
 const UNSUPPORTED = "sandbox.capability.unsupported";
 const NATIVE_FAMILIES = new Set(["AsyncIo", "FileRead", "Tcp"]);
-const NATIVE_SUSPENSIONS = new Set(["NativeIo", "RemoteAsk", "Read", "Accept"]);
+const NATIVE_SUSPENSIONS = new Set(["NativeIo", "Read", "Accept"]);
 
 const OPS = new Set([
   "coverage.hit",
@@ -129,7 +129,6 @@ function capabilityMessage(capability: string, native: boolean): string {
     NativeIo: "Host input and output",
     Read: "Host input and output",
     Accept: "Accepting network connections",
-    RemoteAsk: "Remote actor calls",
   };
   const features: Record<string, string> = {
     Vector: "This vector operation",

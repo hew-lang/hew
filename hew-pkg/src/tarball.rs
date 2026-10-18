@@ -140,7 +140,7 @@ pub(crate) fn pack_files(
         builder.finish()?;
     }
 
-    let compressed = zstd::encode_all(tar_data.as_slice(), 22)
+    let compressed = zstd::encode_all(tar_data.as_slice(), zstd::DEFAULT_COMPRESSION_LEVEL)
         .map_err(|e| TarballError::Io(io::Error::other(e)))?;
 
     if compressed.len() > MAX_TARBALL_SIZE {

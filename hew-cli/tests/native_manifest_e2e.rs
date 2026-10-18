@@ -308,7 +308,7 @@ fn assert_trimmed_rust_package(root: &Path) {
         for (name, value) in env {
             command.env(name, value);
         }
-        run_bounded_command(command, "build trimmed Rust package")
+        run_bounded_command(command, format!("hew {}", args.join(" ")))
     };
     let build_args = ["build", ".", "--release", "-o", "rust-linked"];
     let output = build(&build_args, &[]);

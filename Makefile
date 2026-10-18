@@ -1193,7 +1193,7 @@ test-native-prebuilt-sqlite: hew-native ## Test: install signed SQLite without C
 
 .PHONY: test-trim-paths
 test-trim-paths: hew-native ## Test: compare package paths and objects across checkout roots
-	HEW_BIN="$(DEBUG_HEW)" cargo test -p hew-cli --test native_manifest_e2e trimmed_package_paths_are_stable_across_roots -- --nocapture
+	$(TEST_RUN_ENV) HEW_BIN="$(DEBUG_HEW)" cargo test -p hew-cli --test native_manifest_e2e trimmed_package_paths_are_stable_across_roots -- --nocapture
 
 # Repeated-compile determinism over the LL-oracle corpus: the same input
 # compiled several times must produce the same exit status, the same

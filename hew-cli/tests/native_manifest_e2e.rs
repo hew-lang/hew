@@ -11,14 +11,12 @@ mod support;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
-use support::{describe_output, hew_binary, repo_root, require_codegen, run_bounded_command};
+use support::{describe_output, hew_binary, require_codegen, run_bounded_command};
 
-/// Builds resolve `libhew.a` by walking up from the working directory, so
-/// fixtures live under the repo root like every other linking test.
 fn workspace() -> tempfile::TempDir {
     tempfile::Builder::new()
         .prefix("native-manifest-hew-")
-        .tempdir_in(repo_root())
+        .tempdir()
         .expect("temp dir")
 }
 

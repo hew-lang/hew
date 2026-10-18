@@ -11,6 +11,7 @@
 // Start the client while the server is listening. Keep each key file between
 // runs so the printed credentials continue to identify the same nodes.
 import std.net;
+
 import std.os;
 
 actor Counter {
@@ -58,7 +59,6 @@ fn main() {
         Node.shutdown();
         return;
     }
-
     let counter = spawn Counter { count: 0 };
     // Wait for the client to connect and authenticate with its pinned key.
     let peer = authenticated_peer(peer_credential);

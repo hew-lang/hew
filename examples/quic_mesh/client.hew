@@ -7,6 +7,7 @@
 // Start this client while the server is listening. Keep each key file between
 // runs so the printed credentials continue to identify the same nodes.
 import std.net;
+
 import std.os;
 
 actor Counter {
@@ -53,12 +54,10 @@ fn main() {
         Node.shutdown();
         return;
     }
-
     Node.connect("1@127.0.0.1:9000").expect("connect to pinned QUIC peer");
     let peer = authenticated_peer(server_credential);
     let counter: Counter = peer.receive_service<Counter>().expect("receive Counter service");
     println("[client] received the Counter service");
-
     for amount in [10, 20, 30] {
         let total = counter.increment(amount).expect("increment completes");
         println(f"[client] incremented by {amount}: total={total}");

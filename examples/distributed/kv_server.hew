@@ -6,6 +6,7 @@
 //   hew run examples/distributed/kv_client.hew <server-credential> [host] [port]
 // Keep the key files between runs. Start the client while this server listens.
 import std.net;
+
 import std.os;
 
 actor KeyValue {
@@ -24,7 +25,6 @@ actor KeyValue {
             .None => "",
         }
     }
-
 }
 
 fn authenticated_peer(credential: string) -> net.PeerSession {
@@ -66,7 +66,6 @@ fn main() {
         Node.shutdown();
         return;
     }
-
     let empty: HashMap<string, string> = HashMap.new();
     let store = spawn KeyValue { store: empty };
     // A registry name would provide discovery metadata only. This example

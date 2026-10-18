@@ -6,6 +6,7 @@
 //   hew run examples/distributed/kv_client.hew <server-credential> [host] [port]
 // Keep the key files between runs. Start this client while the server listens.
 import std.net;
+
 import std.os;
 
 // This declaration mirrors the server's portable receive interface. The client
@@ -61,13 +62,11 @@ fn main() -> i64 {
         Node.shutdown();
         return 0;
     }
-
     let address = f"1@{host}:{port}";
     Node.connect(address).expect("connect to pinned KV server");
     let peer = authenticated_peer(server_credential);
     let kv: KeyValue = peer.receive_service<KeyValue>().expect("receive KeyValue service");
     println("[kv-client] received the KeyValue service");
-
     let first = kv.put("hello", "world").expect("store first value completes");
     let second = kv.put("count", "42").expect("store second value completes");
     if first != "stored" || second != "stored" {
@@ -75,7 +74,6 @@ fn main() -> i64 {
         Node.shutdown();
         return 1;
     }
-
     let hello = kv.get("hello").expect("read hello completes");
     if hello != "world" {
         println(f"[kv-client] FAIL: get('hello') returned '{hello}'");
@@ -83,7 +81,6 @@ fn main() -> i64 {
         return 2;
     }
     println("[kv-client] PASS: get('hello') == 'world'");
-
     let count = kv.get("count").expect("read count completes");
     if count != "42" {
         println(f"[kv-client] FAIL: get('count') returned '{count}'");

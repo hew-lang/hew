@@ -99,7 +99,6 @@ fn main() {
     let r1 = spawn Replica { name: "node-1", coordinator: coord, local_count: 0 };
     let r2 = spawn Replica { name: "node-2", coordinator: coord, local_count: 0 };
     let r3 = spawn Replica { name: "node-3", coordinator: coord, local_count: 0 };
-
     // Register replicas with coordinator
     let _ = coord.register_replica("node-1");
     let _ = coord.register_replica("node-2");

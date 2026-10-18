@@ -320,7 +320,6 @@ impl LowerCtx {
     ///
     /// Imported generic calls retain their checker-selected declaration and
     /// call-site type arguments, like bare-identifier calls.
-
     pub(super) fn lower_module_qualified_direct_call_lowered(
         &mut self,
         target: CallTarget,

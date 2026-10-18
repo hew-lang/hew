@@ -1127,7 +1127,7 @@ struct LowerCtx {
     /// Pre-collected record/type-decl shape registry. Populated in the
     /// type-decl pre-pass before function bodies lower, so that
     /// `Expr::StructInit` lowering can answer "is this a generic user
-    /// record?" and keep the source field order and declaration ItemId.
+    /// record?" and keep the source field order and declaration `ItemId`.
     /// Tuple-form records carry their positional fields on the declaration.
     record_registry: HashMap<String, RecordEntry>,
     /// Nominal type names appearing in the signature (params or return) of an

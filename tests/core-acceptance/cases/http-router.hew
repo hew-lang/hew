@@ -16,6 +16,10 @@ fn check(condition: bool, reason: string) {
 }
 
 fn main() {
+    let empty: Vec<string> = [];
+    check(empty.join(",") == "", "empty string-vector join");
+    check(["雪"].join("/") == "雪", "single string-vector join");
+    check(["", "café", "🙂"].join("雪") == "雪café雪🙂", "Unicode string-vector join");
     var routes: router.Router<Endpoint> = router.new();
     routes.add("GET", "/users/{id}", .User).expect("user route");
     routes.add("POST", "/users/new", .NewUser).expect("static resource");

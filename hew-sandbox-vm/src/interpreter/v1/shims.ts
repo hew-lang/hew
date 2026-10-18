@@ -516,6 +516,14 @@ const VECTOR_SHIMS: Record<string, RuntimeShim | undefined> = {
   Index: (_host, args) => cloneValue(sequenceElement(args)),
   IndexBorrow: (_host, args) => sequenceElement(args),
   Len: (_host, args) => int(BigInt(vec(args, 0).items.length)),
+  Join: (_host, args) => {
+    const items = vec(args, 0).items;
+    return str(
+      items
+        .map((_, at) => indexed(items, at).value)
+        .join(indexed(args, 1).value),
+    );
+  },
   Slice: (_host, args) => {
     const items = vec(args, 0).items;
     const start = index(args, 1);

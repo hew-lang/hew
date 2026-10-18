@@ -688,9 +688,25 @@ fn role_holds_running_incarnation(sup: *mut HewSupervisor, key: u32, nested: boo
         if child.is_null() {
             return false;
         }
-        // SAFETY: the roster guard owns this child pointer.
-        let state = unsafe { &*child }.actor_state.load(Ordering::Acquire);
-        state != HewActorState::Stopped as i32 && state != HewActorState::Crashed as i32
+        // SAFETY: the roster guard owns this child and its mailbox.
+        let actor = unsafe { &*child };
+        let state = actor.actor_state.load(Ordering::Acquire);
+        let running = [
+            HewActorState::Idle,
+            HewActorState::Runnable,
+            HewActorState::Running,
+            HewActorState::Suspended,
+            HewActorState::Constructing,
+        ]
+        .iter()
+        .any(|candidate| state == *candidate as i32);
+        // Cancellation and crash fallback can wake the caller before terminal
+        // publication opens the role's fault record. That ending incarnation
+        // cannot satisfy a restart observer, even while its pointer is live.
+        running
+            && actor.pending_external_trap_code.load(Ordering::Acquire) == 0
+            // SAFETY: the roster guard retains the child and its mailbox.
+            && !unsafe { mailbox::mailbox_is_closed(actor.mailbox.cast()) }
     }
 }
 

@@ -3512,6 +3512,63 @@ mod tests {
 
     // ── await_restart cooperative observer ───────────────────────────────────
 
+    #[test]
+    fn native_restart_wait_rejects_ending_incarnations() {
+        let _rt = crate::runtime_test_guard();
+        let (ready, waker) = crate::wake::blocking::Readiness::new();
+        // SAFETY: no workers run. The test owns the tree and drives the exact
+        // intermediate states before handing both incarnations to teardown.
+        let (healthy, ending, closed, replacement_ready, notified) = unsafe {
+            let (sup, child, _self_actor) = make_supervisor_with_child();
+            let wait = hew_supervisor_native_restart_wait_new(
+                (*sup).local_pid_id,
+                0,
+                ROLE_KIND_ACTOR,
+                waker.descriptor(),
+            );
+            let healthy = hew_supervisor_native_restart_wait_poll(wait);
+            // A cancelled parked call publishes its failure while Stopping;
+            // a failed resume publishes its fallback while Crashing. Neither
+            // has published the terminal fault record or its replacement yet.
+            let ending = [HewActorState::Stopping, HewActorState::Crashing].map(|state| {
+                (*child).actor_state.store(state as i32, Ordering::Release);
+                hew_supervisor_native_restart_wait_poll(wait)
+            });
+            // External timer faults close admission before their checked turn
+            // drains, while the physical state may still read Running.
+            (*child)
+                .actor_state
+                .store(HewActorState::Running as i32, Ordering::Release);
+            mailbox::mailbox_close((*child).mailbox.cast());
+            let closed = hew_supervisor_native_restart_wait_poll(wait);
+
+            (*child)
+                .actor_state
+                .store(HewActorState::Idle as i32, Ordering::Release);
+            let replacement = restart_child_from_spec(sup, 0);
+            assert!(!replacement.is_null());
+            actor::hew_actor_stop(child);
+            assert_eq!(actor::hew_actor_free(child), 0);
+            wake_restart_waiters(sup);
+            let notified = ready.take_ready();
+            let replacement_ready = hew_supervisor_native_restart_wait_poll(wait);
+            hew_supervisor_native_restart_wait_free(wait);
+            hew_supervisor_stop(sup);
+            (healthy, ending, closed, replacement_ready, notified)
+        };
+        assert_eq!(healthy, 1, "a healthy occupant needs no restart wait");
+        assert_eq!(ending, [0, 0], "an ending occupant is not a settled role");
+        assert_eq!(
+            closed, 0,
+            "closed admission cannot satisfy restart readiness"
+        );
+        assert!(
+            notified,
+            "replacement settlement wakes the registered observer"
+        );
+        assert_eq!(replacement_ready, 1, "the fresh occupant settles the wait");
+    }
+
     /// A `temporary` child that crashes is never restarted: the decline spends
     /// the spec, so the empty slot classifies `Dead(BudgetExhausted)` instead of
     /// sitting on `Transient(Restarting)` for good.

@@ -1,0 +1,9 @@
+import repeated_stdlib_signature.first;
+
+import repeated_stdlib_signature.second;
+
+fn main() {
+    let a = first.ordered();
+    let b = second.ordered();
+    println(a[0] + b[0]);
+}

@@ -675,7 +675,6 @@ impl Checker {
             Ok(info) => {
                 if info.unsupported_type_signatures.is_empty() {
                     let functions = &info.functions;
-                    let wrapper_fns = &info.wrapper_fns;
                     let clean_names = &info.clean_names;
                     let handle_types = &info.handle_types;
                     let resource_wrapper_types = &info.resource_wrapper_types;
@@ -775,46 +774,6 @@ impl Checker {
                         self.insert_fn_sig_at(&func.name, sig);
                     }
 
-                    // Register wrapper pub fn signatures
-                    for wfn in wrapper_fns {
-                        let type_params = if wfn.type_params.is_empty() {
-                            Vec::new()
-                        } else {
-                            self.declaration_parameter_heads(format!(
-                                "{canonical_owner}.{}",
-                                wfn.name
-                            ))
-                        };
-                        let bounds = self.registry_bounds(&type_params, &wfn.type_param_bounds);
-                        let sig = FnSig {
-                            params: wfn
-                                .params
-                                .iter()
-                                .map(|ty| {
-                                    self.canonicalize_registry_signature(
-                                        ty,
-                                        &canonical_owner,
-                                        &type_params,
-                                    )
-                                })
-                                .collect(),
-                            return_type: self.canonicalize_registry_signature(
-                                &wfn.return_type,
-                                &canonical_owner,
-                                &type_params,
-                            ),
-                            type_params,
-                            bounds,
-                            ..FnSig::default()
-                        };
-                        // Wrapper functions belong to the imported module;
-                        // publishing them under a bare leaf here would make
-                        // `import m::{ f as alias }` accidentally retain an
-                        // ambient `f` binding. Selected bare bindings are
-                        // published later from the resolved source surface.
-                        self.insert_fn_sig_at(&format!("{canonical_owner}.{}", wfn.name), sig);
-                    }
-
                     // Register module and clean names
                     self.modules.insert(short.to_string());
                     self.module_import_bindings.insert(
@@ -828,50 +787,6 @@ impl Checker {
                     if let Some(span) = import_span {
                         self.record_reportable_import(&short.to_string(), span);
                     }
-                    for (method, c_symbol) in clean_names {
-                        // Prefer the wrapper function's own signature (registered under
-                        // the method name) over the extern C function's signature.
-                        // E.g. `log.setup()` should have 0 params (the wrapper's sig),
-                        // not 1 param (the extern `hew_log_set_level(level)` sig).
-                        let key = format!("{canonical_owner}.{method}");
-                        let wrapper_sig = self.fn_sig(&key).cloned();
-                        let sig = wrapper_sig
-                            .clone()
-                            .or_else(|| self.fn_sig(c_symbol.as_str()).cloned());
-                        if let Some(sig) = sig {
-                            // Module functions are source declarations, so their
-                            // registry authority is the exact full module owner.
-                            // The lexical `short`/alias is resolved through
-                            // `module_import_bindings` at each call site.
-                            self.module_fn_exports.insert(key.clone());
-                            // A parsed Hew declaration already registered under
-                            // the canonical owner is the type authority. Registry
-                            // clean-name metadata is a lookup surface and must not
-                            // replace that declaration with a legacy short-owner
-                            // signature (`net.NetError` versus
-                            // `std.net.NetError`). Only fill a genuinely absent
-                            // canonical slot from the wrapper/extern registry.
-                            if !self.has_fn_sig(&key) {
-                                if wrapper_sig.is_some() {
-                                    self.insert_fn_sig_at(&key, sig);
-                                } else {
-                                    self.alias_fn_sig(&key, c_symbol);
-                                }
-                            }
-                            if wrapper_sig.is_none() {
-                                // The clean name resolved straight to the C
-                                // function: the call is an FFI call and keeps
-                                // its `unsafe` gate under the canonical key.
-                                self.declare_contractless_extern(
-                                    registry_module,
-                                    &canonical_owner,
-                                    hew_parser::ast::Symbol::intern(method),
-                                    &key,
-                                );
-                            }
-                        }
-                    }
-
                     // Register opaque handles and fielded resource wrappers so
                     // registry-only imports can use either in type annotations.
                     //
@@ -921,6 +836,24 @@ impl Checker {
                             StdlibBarePublication::Import(&decl.spec),
                         );
                     }
+                    // Hew declarations own complete signatures. Clean names only
+                    // adapt an extern symbol when no Hew declaration owns the name.
+                    for (method, c_symbol) in clean_names {
+                        let key = format!("{canonical_owner}.{method}");
+                        if self.has_fn_sig(&key) {
+                            self.module_fn_exports.insert(key);
+                        } else if self.has_fn_sig(c_symbol.as_str()) {
+                            self.module_fn_exports.insert(key.clone());
+                            self.alias_fn_sig(&key, c_symbol);
+                            self.declare_contractless_extern(
+                                registry_module,
+                                &canonical_owner,
+                                hew_parser::ast::Symbol::intern(method),
+                                &key,
+                            );
+                        }
+                    }
+
                     // Registry signatures are lexical input. Publish their
                     // metadata against the declarations just registered.
                     for (names, is_drop) in [(handle_types, false), (drop_types, true)] {

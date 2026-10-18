@@ -28,21 +28,6 @@ pub struct CFunction {
     pub return_type: Ty,
 }
 
-/// A wrapper `pub fn` signature from a stdlib module.
-#[derive(Debug, Clone)]
-pub struct WrapperFn {
-    /// The Hew function name (e.g. `"parse"`).
-    pub name: String,
-    /// Function type parameters.
-    pub type_params: Vec<String>,
-    /// Trait bounds keyed by type parameter name.
-    pub type_param_bounds: HashMap<String, Vec<String>>,
-    /// Parameter types.
-    pub params: Vec<Ty>,
-    /// Return type.
-    pub return_type: Ty,
-}
-
 /// A handle method mapping extracted from an `impl` block.
 #[derive(Debug, Clone)]
 pub struct HandleMethod {
@@ -81,8 +66,6 @@ pub struct ModuleInfo {
     pub handle_types: Vec<String>,
     /// Handle method mappings extracted from `impl` blocks.
     pub handle_methods: Vec<HandleMethod>,
-    /// Wrapper `pub fn` signatures.
-    pub wrapper_fns: Vec<WrapperFn>,
     /// Types with deterministic cleanup — move-only, not Copy.
     pub drop_types: Vec<String>,
     /// Fielded `#[resource]` handle-wrapper type names, e.g. `"regex.Pattern"`
@@ -100,11 +83,8 @@ pub struct ModuleInfo {
     /// `impl Drop` bodies while old fixtures are being removed).
     /// Only populated when the drop body is a single direct C call.
     pub drop_funcs: Vec<(String, String)>,
-    /// Public / extern signatures that used unsupported slice annotations.
-    ///
-    /// The loader is used for registry-loaded modules (stdlib, ecosystem, and
-    /// module-path imports). The backend still has no slice lowering, so these
-    /// signatures must be rejected before they are registered with the checker.
+    /// Extern ABI signatures the loader cannot represent.
+    /// Hew function annotations resolve from their source declarations in the checker.
     pub unsupported_type_signatures: Vec<String>,
 }
 
@@ -275,7 +255,6 @@ fn extract_module_info(program: &hew_parser::ast::Program, module_short: &str) -
         clean_names: Vec::new(),
         handle_types: Vec::new(),
         handle_methods: Vec::new(),
-        wrapper_fns: Vec::new(),
         drop_types: Vec::new(),
         resource_wrapper_types: Vec::new(),
         drop_funcs: Vec::new(),
@@ -338,20 +317,7 @@ fn extract_module_info(program: &hew_parser::ast::Program, module_short: &str) -
                 }
             }
             Item::Function(fn_decl) if fn_decl.visibility.is_pub() => {
-                // Extract wrapper function's own signature
-                let (type_params, type_param_bounds, params, return_type) =
-                    wrapper_fn_sig(fn_decl, module_short);
-                if signature_contains_error_type(&params, &return_type) {
-                    info.unsupported_type_signatures
-                        .push(format!("public function `{}`", fn_decl.name));
-                }
-                info.wrapper_fns.push(WrapperFn {
-                    name: fn_decl.name.to_string(),
-                    type_params,
-                    type_param_bounds,
-                    params,
-                    return_type,
-                });
+                assert_source_function_signature(fn_decl);
 
                 // Clean name mapping: use the inner call target only for trivial
                 // pass-through wrappers that forward to an extern C symbol with
@@ -545,12 +511,8 @@ fn extern_fn_sig(func: &ExternFnDecl, module_short: &str) -> (Vec<Ty>, Ty) {
     (params, ret)
 }
 
-/// Convert a wrapper `pub fn` declaration to type checker types.
-/// Mirrors `extern_fn_sig` but works on `FnDecl` params (`Param` not `ExternParam`).
-fn wrapper_fn_sig(
-    func: &FnDecl,
-    module_short: &str,
-) -> (Vec<String>, HashMap<String, Vec<String>>, Vec<Ty>, Ty) {
+/// Borrow nodes belong only to extern signatures, never ordinary Hew declarations.
+fn assert_source_function_signature(func: &FnDecl) {
     assert!(
         func.params
             .iter()
@@ -561,19 +523,6 @@ fn wrapper_fn_sig(
                 .is_none_or(|ret| !type_expr_contains_borrow(&ret.0)),
         "borrow type reached a non-extern stdlib signature"
     );
-    let (type_params, type_param_bounds) = wrapper_fn_type_params(func);
-    let type_param_names: HashSet<String> = type_params.iter().cloned().collect();
-    let params: Vec<Ty> = func
-        .params
-        .iter()
-        .map(|p| type_expr_to_ty_with_params(&p.ty.0, module_short, &type_param_names))
-        .collect();
-
-    let ret = func.return_type.as_ref().map_or(Ty::Unit, |rt| {
-        type_expr_to_ty_with_params(&rt.0, module_short, &type_param_names)
-    });
-
-    (type_params, type_param_bounds, params, ret)
 }
 
 fn type_expr_contains_borrow(type_expr: &TypeExpr) -> bool {
@@ -622,44 +571,6 @@ fn type_expr_contains_borrow(type_expr: &TypeExpr) -> bool {
     }
 }
 
-fn wrapper_fn_type_params(func: &FnDecl) -> (Vec<String>, HashMap<String, Vec<String>>) {
-    let mut type_params = Vec::new();
-    let mut bounds = HashMap::new();
-    if let Some(params) = &func.type_params {
-        for param in params {
-            type_params.push(param.name.to_string());
-            bounds.insert(
-                param.name.to_string(),
-                param
-                    .bounds
-                    .iter()
-                    .map(|bound| bound.path.to_string()) // TRANSITION(P1): deleted by A1 commit 2
-                    .collect(),
-            );
-        }
-    }
-    let type_param_names: HashSet<String> = type_params.iter().map(ToString::to_string).collect();
-    if let Some(where_clause) = &func.where_clause {
-        for predicate in &where_clause.predicates {
-            if let TypeExpr::Named {
-                path: named_path,
-                type_args,
-            } = &predicate.ty.0
-            {
-                let name = &named_path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
-                if type_args.as_ref().is_none_or(Vec::is_empty) && type_param_names.contains(name) {
-                    bounds
-                        .entry(name.clone())
-                        .or_insert_with(Vec::new)
-                        .extend(predicate.bounds.iter().map(|bound| bound.path.to_string()));
-                    // TRANSITION(P1): deleted by A1 commit 2
-                }
-            }
-        }
-    }
-    (type_params, bounds)
-}
-
 /// Convert a Hew type expression to the type checker's `Ty`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TypeConversionContext {
@@ -667,57 +578,22 @@ enum TypeConversionContext {
     ExternSignature,
 }
 
-#[allow(
-    clippy::too_many_lines,
-    reason = "type mapping covers all primitive and generic variants"
-)]
 fn type_expr_to_ty(texpr: &TypeExpr, module_short: &str) -> Ty {
     type_expr_to_ty_with_context(texpr, module_short, TypeConversionContext::Ordinary)
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "type mapping covers all primitive and generic variants"
+)]
 fn type_expr_to_ty_with_context(
     texpr: &TypeExpr,
     module_short: &str,
     context: TypeConversionContext,
 ) -> Ty {
-    type_expr_to_ty_with_params_and_context(texpr, module_short, &HashSet::new(), context)
-}
-
-#[allow(
-    clippy::too_many_lines,
-    reason = "type mapping covers all primitive and generic variants"
-)]
-fn type_expr_to_ty_with_params(
-    texpr: &TypeExpr,
-    module_short: &str,
-    type_params: &HashSet<String>,
-) -> Ty {
-    type_expr_to_ty_with_params_and_context(
-        texpr,
-        module_short,
-        type_params,
-        TypeConversionContext::Ordinary,
-    )
-}
-
-#[allow(
-    clippy::too_many_lines,
-    reason = "type mapping covers all primitive and generic variants"
-)]
-fn type_expr_to_ty_with_params_and_context(
-    texpr: &TypeExpr,
-    module_short: &str,
-    type_params: &HashSet<String>,
-    context: TypeConversionContext,
-) -> Ty {
     match texpr {
         TypeExpr::QualifiedAssocPath(path) => {
-            let base = type_expr_to_ty_with_params_and_context(
-                &path.base.0,
-                module_short,
-                type_params,
-                context,
-            );
+            let base = type_expr_to_ty_with_context(&path.base.0, module_short, context);
             let Some(assoc_name) = path.members.first() else {
                 return Ty::Error;
             };
@@ -746,23 +622,13 @@ fn type_expr_to_ty_with_params_and_context(
                 }
             }
             match name.as_str() {
-                param
-                    if type_args.as_ref().is_none_or(Vec::is_empty)
-                        && type_params.contains(param) =>
-                {
-                    Ty::Named {
-                        head: crate::TypeHead::Unresolved(hew_parser::ast::Symbol::intern(param)),
-                        args: vec![],
-                    }
-                }
                 // Option<T> → Ty::option() helper
                 "Option" => {
                     if let Some(args) = type_args {
                         if let Some(first) = args.first() {
-                            return Ty::option(type_expr_to_ty_with_params_and_context(
+                            return Ty::option(type_expr_to_ty_with_context(
                                 &first.0,
                                 module_short,
-                                type_params,
                                 context,
                             ));
                         }
@@ -774,18 +640,8 @@ fn type_expr_to_ty_with_params_and_context(
                     if let Some(args) = type_args {
                         if args.len() >= 2 {
                             return Ty::result(
-                                type_expr_to_ty_with_params_and_context(
-                                    &args[0].0,
-                                    module_short,
-                                    type_params,
-                                    context,
-                                ),
-                                type_expr_to_ty_with_params_and_context(
-                                    &args[1].0,
-                                    module_short,
-                                    type_params,
-                                    context,
-                                ),
+                                type_expr_to_ty_with_context(&args[0].0, module_short, context),
+                                type_expr_to_ty_with_context(&args[1].0, module_short, context),
                             );
                         }
                     }
@@ -798,12 +654,7 @@ fn type_expr_to_ty_with_params_and_context(
                         .map(|a| {
                             a.iter()
                                 .map(|(te, _)| {
-                                    type_expr_to_ty_with_params_and_context(
-                                        te,
-                                        module_short,
-                                        type_params,
-                                        context,
-                                    )
+                                    type_expr_to_ty_with_context(te, module_short, context)
                                 })
                                 .collect()
                         })
@@ -818,12 +669,7 @@ fn type_expr_to_ty_with_params_and_context(
                         .map(|args| {
                             args.iter()
                                 .map(|(te, _)| {
-                                    type_expr_to_ty_with_params_and_context(
-                                        te,
-                                        module_short,
-                                        type_params,
-                                        context,
-                                    )
+                                    type_expr_to_ty_with_context(te, module_short, context)
                                 })
                                 .collect()
                         })
@@ -837,12 +683,7 @@ fn type_expr_to_ty_with_params_and_context(
                         .map(|args| {
                             args.iter()
                                 .map(|(te, _)| {
-                                    type_expr_to_ty_with_params_and_context(
-                                        te,
-                                        module_short,
-                                        type_params,
-                                        context,
-                                    )
+                                    type_expr_to_ty_with_context(te, module_short, context)
                                 })
                                 .collect()
                         })
@@ -850,10 +691,9 @@ fn type_expr_to_ty_with_params_and_context(
                 ),
             }
         }
-        TypeExpr::Option(inner) => Ty::option(type_expr_to_ty_with_params_and_context(
+        TypeExpr::Option(inner) => Ty::option(type_expr_to_ty_with_context(
             &inner.0,
             module_short,
-            type_params,
             context,
         )),
         TypeExpr::Result { ok, err }
@@ -861,33 +701,29 @@ fn type_expr_to_ty_with_params_and_context(
             success: ok,
             error: err,
         } => Ty::result(
-            type_expr_to_ty_with_params_and_context(&ok.0, module_short, type_params, context),
-            type_expr_to_ty_with_params_and_context(&err.0, module_short, type_params, context),
+            type_expr_to_ty_with_context(&ok.0, module_short, context),
+            type_expr_to_ty_with_context(&err.0, module_short, context),
         ),
         TypeExpr::Tuple(elems) if elems.is_empty() => Ty::Unit,
         TypeExpr::Tuple(elems) => Ty::Tuple(
             elems
                 .iter()
-                .map(|(te, _)| {
-                    type_expr_to_ty_with_params_and_context(te, module_short, type_params, context)
-                })
+                .map(|(te, _)| type_expr_to_ty_with_context(te, module_short, context))
                 .collect(),
         ),
         TypeExpr::Array { element, size } => Ty::Array(
-            Box::new(type_expr_to_ty_with_params_and_context(
+            Box::new(type_expr_to_ty_with_context(
                 &element.0,
                 module_short,
-                type_params,
                 context,
             )),
             *size,
         ),
         TypeExpr::Slice(element) => Ty::registry_named(
             "Vec",
-            vec![type_expr_to_ty_with_params_and_context(
+            vec![type_expr_to_ty_with_context(
                 &element.0,
                 module_short,
-                type_params,
                 context,
             )],
         ),
@@ -903,9 +739,7 @@ fn type_expr_to_ty_with_params_and_context(
         } => {
             let resolved: Vec<Ty> = params
                 .iter()
-                .map(|(te, _)| {
-                    type_expr_to_ty_with_params_and_context(te, module_short, type_params, context)
-                })
+                .map(|(te, _)| type_expr_to_ty_with_context(te, module_short, context))
                 .collect();
             let msg = match resolved.len() {
                 0 => Ty::Tuple(Vec::new()),
@@ -914,12 +748,7 @@ fn type_expr_to_ty_with_params_and_context(
             };
             Ty::actor_fn(
                 msg,
-                type_expr_to_ty_with_params_and_context(
-                    &return_type.0,
-                    module_short,
-                    type_params,
-                    context,
-                ),
+                type_expr_to_ty_with_context(&return_type.0, module_short, context),
             )
         }
         TypeExpr::Function {
@@ -931,14 +760,11 @@ fn type_expr_to_ty_with_params_and_context(
             capabilities: *capabilities,
             params: params
                 .iter()
-                .map(|(te, _)| {
-                    type_expr_to_ty_with_params_and_context(te, module_short, type_params, context)
-                })
+                .map(|(te, _)| type_expr_to_ty_with_context(te, module_short, context))
                 .collect(),
-            ret: Box::new(type_expr_to_ty_with_params_and_context(
+            ret: Box::new(type_expr_to_ty_with_context(
                 &return_type.0,
                 module_short,
-                type_params,
                 context,
             )),
         },
@@ -947,19 +773,17 @@ fn type_expr_to_ty_with_params_and_context(
             pointee,
         } => Ty::Pointer {
             is_mutable: *is_mutable,
-            pointee: Box::new(type_expr_to_ty_with_params_and_context(
+            pointee: Box::new(type_expr_to_ty_with_context(
                 &pointee.0,
                 module_short,
-                type_params,
                 context,
             )),
         },
         TypeExpr::Borrow(inner) if context == TypeConversionContext::ExternSignature => {
             Ty::Borrow {
-                pointee: Box::new(type_expr_to_ty_with_params_and_context(
+                pointee: Box::new(type_expr_to_ty_with_context(
                     &inner.0,
                     module_short,
-                    type_params,
                     context,
                 )),
             }
@@ -1484,37 +1308,6 @@ mod tests {
     }
 
     #[test]
-    fn directory_peer_extracts_under_the_package_owner() {
-        // A peer of a directory module is owned by the package, so its
-        // extracted signatures must qualify a module-local nominal with the
-        // PACKAGE's short owner. The registry projects that spelling onto the
-        // package's canonical owner; a peer that extracted under its own file
-        // name would leave the projection nothing to join and the declaration
-        // would carry two identities.
-        let root = test_root();
-        let peer = load_module("std::net::http::http_async_server", &root)
-            .expect("http_async_server loads");
-        let parse_request = peer
-            .wrapper_fns
-            .iter()
-            .find(|wrapper| wrapper.name == "parse_request")
-            .expect("parse_request is a public wrapper");
-        assert_eq!(
-            parse_request.return_type,
-            Ty::unresolved_for_test("http.AsyncRequest", vec![]),
-        );
-
-        // Negative control: a module that owns itself keeps its own short
-        // owner, so the projection is not simply dropping the leaf segment.
-        let flat = load_module("std::encoding::json", &root).expect("json loads");
-        assert!(
-            flat.handle_types.iter().any(|name| name == "json.Value"),
-            "a self-owned module keeps its own short owner: {:?}",
-            flat.handle_types,
-        );
-    }
-
-    #[test]
     fn load_json_module() {
         let info = load_module("std::encoding::json", &test_root());
         assert!(info.is_some(), "should load json module");
@@ -1712,7 +1505,7 @@ mod tests {
 
         for name in ["run", "run_argv", "command", "start"] {
             assert!(
-                info.wrapper_fns.iter().any(|f| f.name == name),
+                info.source_items.iter().any(|(item, _)| matches!(item, Item::Function(function) if function.name.name.as_str() == name && function.visibility.is_pub())),
                 "process module should expose `{name}`"
             );
         }
@@ -1909,33 +1702,6 @@ mod tests {
     }
 
     #[test]
-    fn wrapper_fns_extracted() {
-        let info = load_module("std::misc::log", &test_root()).unwrap();
-
-        assert!(
-            !info.wrapper_fns.is_empty(),
-            "log module should have wrapper fns"
-        );
-
-        // `pub fn setup()` takes no params and returns Unit
-        let setup = info.wrapper_fns.iter().find(|f| f.name == "setup");
-        assert!(setup.is_some(), "log module should have 'setup' wrapper fn");
-        let setup = setup.unwrap();
-        assert!(setup.params.is_empty(), "setup() takes no parameters");
-        assert_eq!(setup.return_type, Ty::Unit, "setup() returns Unit");
-
-        // `pub fn set_level(level: i64)` takes one i64 param
-        let set_level = info.wrapper_fns.iter().find(|f| f.name == "set_level");
-        assert!(
-            set_level.is_some(),
-            "log module should have 'set_level' wrapper fn"
-        );
-        let set_level = set_level.unwrap();
-        assert_eq!(set_level.params.len(), 1);
-        assert_eq!(set_level.params[0], Ty::I64);
-    }
-
-    #[test]
     fn drop_types_extracted() {
         let info = load_module("std::net::http", &test_root()).unwrap();
 
@@ -2112,29 +1878,7 @@ mod tests {
         };
         let inner = function.params[0].ty.clone();
         function.params[0].ty = (TypeExpr::Borrow(Box::new(inner)), 21..22);
-        let _ = wrapper_fn_sig(function, "test");
-    }
-
-    #[test]
-    fn module_info_accepts_public_slice_signatures_as_vec_aliases() {
-        let result = parse("pub fn take(xs: [i32]) {}\n");
-        assert!(
-            result.errors.is_empty(),
-            "parse errors: {:?}",
-            result.errors
-        );
-
-        let info = extract_module_info(&result.program, "widgets");
-        assert_eq!(
-            info.unsupported_type_signatures,
-            Vec::<String>::new(),
-            "slice-bearing public signatures should be accepted as Vec aliases"
-        );
-        assert_eq!(
-            info.wrapper_fns[0].params,
-            vec![Ty::registry_named("Vec", vec![Ty::I32])],
-            "slice parameter should be loaded as a Vec alias"
-        );
+        assert_source_function_signature(function);
     }
 
     fn handle_method_registered(info: &ModuleInfo, type_name: &str, method: &str) -> bool {

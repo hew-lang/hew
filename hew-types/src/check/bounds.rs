@@ -855,29 +855,6 @@ impl Checker {
             .filter(|trait_id| self.trait_info(*trait_id).is_some())
     }
 
-    /// The bounds a module registry signature spells, resolved in the
-    /// importing file.
-    ///
-    /// TRANSITION(A1c4): WHY the registry mirrors a std module's signatures as
-    /// spellings before its source registers. WHEN the registry reads the
-    /// checker's signatures, the source declaration's resolved bounds are the
-    /// only ones. WHAT: delete the registry signature mirror.
-    pub(in crate::check) fn registry_bounds(
-        &mut self,
-        type_params: &[crate::ParamHead],
-        spelled: &HashMap<String, Vec<String>>,
-    ) -> ParamBounds {
-        let mut bounds = ParamBounds::default();
-        for param in type_params {
-            for spelling in spelled.get(param.spelling.as_str()).into_iter().flatten() {
-                if let Some(trait_id) = self.trait_spelled_here(spelling) {
-                    bounds.push(param.id, TraitRef::bare(trait_id));
-                }
-            }
-        }
-        bounds
-    }
-
     /// Record the active impl block's conformance: `trait_ref` for its
     /// resolved target, and the methods the block writes.
     pub(in crate::check) fn record_trait_impl_from_decl(

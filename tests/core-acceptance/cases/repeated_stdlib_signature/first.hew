@@ -1,0 +1,5 @@
+import std.sort;
+
+pub fn ordered() -> Vec<string> {
+    sort.sort(["b", "a"])
+}

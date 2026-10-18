@@ -29,6 +29,14 @@ fn rejected(app: cli.Command, args: Vec<string>, expected: string) {
 }
 
 fn main() {
+    assert("--label=雪".starts_with("--"));
+    assert("雪🦀".starts_with("雪"));
+    assert(!"雪🦀".starts_with("🦀"));
+    assert(!"雪".starts_with("雪🦀"));
+    assert("雪".starts_with(""));
+    assert("".starts_with(""));
+    assert(!"".starts_with("雪"));
+    assert(!"e\u{301}".starts_with("é"));
     let app = application();
     let supplied = ["-vv", "deploy", "--jobs=4", "--mode", "safe", "-Ilib", "--include=generated", "--label=", "--", "雪", "-report", ""];
     let matches = parsed(app, supplied);

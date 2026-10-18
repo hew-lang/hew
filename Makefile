@@ -161,6 +161,10 @@ COMMON_GIT_DIR := $(shell git rev-parse --git-common-dir 2>/dev/null)
 # remain relative to the caller's source checkout.
 MAKEFILE_ROOT := $(patsubst %/,%,$(dir $(abspath $(firstword $(MAKEFILE_LIST)))))
 
+# Cargo does not track its own CARGO_MANIFEST_DIR as a build-script rerun
+# input. Keep shared targets tied to the checkout selected by this invocation.
+export HEW_BUILD_SOURCE_ROOT := $(CURDIR)
+
 # Cargo profile directory names.
 #
 # Cargo does not always write into `target/`: CARGO_TARGET_DIR, build.target-dir
@@ -1447,7 +1451,7 @@ test-ast-grep-contract:
 
 # These Hew-compiler-free behaviour tests have their own CI result. Source lint
 # still validates the real ABI/symbol inputs; these prove checker failures.
-test-tooling: test-build-harness test-cabi-surface ## Test: verify build tooling and ABI checker behaviour
+test-tooling: test-build-harness test-build-version test-cabi-surface ## Test: verify build tooling and ABI checker behaviour
 
 # Focused behaviour tests for the Hew JUnit transaction, shell discovery,
 # and compiled-Hew report aggregation. None needs a built compiler.
@@ -1458,6 +1462,12 @@ test-build-harness:
 	$(PYTHON) scripts/tests/test_cargo_output_dir.py
 	$(PYTHON) scripts/tests/test_compiled_hew_shards.py
 	$(PYTHON) scripts/tests/test_release_qualification.py
+
+# A dependency-free Rust fixture exercises the actual version producer; it does not
+# build the compiler or share the toolchain target directory.
+.PHONY: test-build-version
+test-build-version:
+	$(PYTHON) scripts/tests/test_build_version.py
 
 # Python and shell only; no artifacts.
 

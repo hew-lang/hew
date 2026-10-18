@@ -3,8 +3,15 @@ use std::process::Command;
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
-
-    let repo_dir = Path::new("..");
+    // Cargo-provided build-script variables cannot be rerun inputs. Make
+    // exports the checkout identity so shared targets refresh their watches.
+    println!("cargo:rerun-if-env-changed=HEW_BUILD_SOURCE_ROOT");
+    let manifest_dir = std::env::var_os("CARGO_MANIFEST_DIR")
+        .map(PathBuf::from)
+        .expect("Cargo supplies the package directory");
+    let repo_dir = manifest_dir
+        .parent()
+        .expect("hew-compile belongs to the workspace");
     let version = env!("CARGO_PKG_VERSION");
     println!(
         "cargo:rustc-env=HEW_VERSION={}",
@@ -85,6 +92,19 @@ fn git_watch_paths(repo_dir: &Path) -> Vec<PathBuf> {
             .map(|path| repo_dir.join(path))
     };
     let mut paths = Vec::new();
+    // Dirty identity depends on staged changes and tracked working-tree files,
+    // including non-Rust inputs outside Cargo's normal dependency graph.
+    if let Some(index) = git_path("index").filter(|path| path.exists()) {
+        paths.push(index);
+    }
+    if let Ok(files) = git_stdout(repo_dir, &["ls-files", "-z"]) {
+        paths.extend(
+            files
+                .split('\0')
+                .filter(|file| !file.is_empty())
+                .map(|file| repo_dir.join(file)),
+        );
+    }
     if let Some(head) = git_path("HEAD").filter(|path| path.exists()) {
         paths.push(head);
     }
@@ -123,7 +143,9 @@ fn git_stdout(repo_dir: &Path, args: &[&str]) -> Result<String, String> {
     if !output.status.success() {
         return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
     }
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    Ok(String::from_utf8_lossy(&output.stdout)
+        .trim_end_matches(['\r', '\n'])
+        .to_string())
 }
 
 #[cfg(test)]
@@ -193,8 +215,8 @@ mod tests {
 
         git_stdout(&worktree, &["checkout", "--detach"]).unwrap();
         let watches = canonical_watches();
-        assert_eq!(watches.len(), 1);
-        assert!(watches[0].ends_with("HEAD"));
+        assert!(watches.contains(&repo.join(".git/worktrees/linked/HEAD")));
+        assert!(!watches.contains(&reference));
     }
 
     #[test]

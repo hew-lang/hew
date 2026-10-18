@@ -132,6 +132,43 @@ mod tests {
     }
 
     #[test]
+    fn cancellation_wakes_inline_and_spilled_subscriptions_after_detach() {
+        for count in [1, 4] {
+            let (detached, detached_waker) = Readiness::new();
+            // SAFETY: the fixture owns the token and every subscription handle.
+            unsafe {
+                let token = hew_cancel_token_new_child(std::ptr::null_mut());
+                let observer = hew_cancel_observe(token, detached_waker.descriptor());
+                hew_cancel_unobserve(observer);
+                let subscriptions: Vec<_> = (0..count)
+                    .map(|_| {
+                        let (ready, waker) = Readiness::new();
+                        let observer = hew_cancel_observe(token, waker.descriptor());
+                        (ready, waker, observer)
+                    })
+                    .collect();
+                // Detach from the spilled list as well as from its inline form.
+                if count > 1 {
+                    let observer = hew_cancel_observe(token, detached_waker.descriptor());
+                    hew_cancel_unobserve(observer);
+                }
+                hew_cancel_token_cancel(token, 1);
+                assert!(!detached.take_ready());
+                for (ready, waker, observer) in subscriptions {
+                    assert!(ready.take_ready());
+                    hew_cancel_unobserve(observer);
+                    drop(waker);
+                    assert_eq!(Arc::strong_count(&ready), 1);
+                }
+                assert!((*token).observers.lock_or_recover().is_empty());
+                hew_cancel_token_release(token);
+            }
+            drop(detached_waker);
+            assert_eq!(Arc::strong_count(&detached), 1);
+        }
+    }
+
+    #[test]
     fn already_cancelled_ancestor_notifies_registration() {
         let (ready, waker) = Readiness::new();
         // SAFETY: every token and observer is locally owned until released.

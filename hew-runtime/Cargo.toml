@@ -81,6 +81,8 @@ serde_json.workspace = true
 hew-cabi = { path = "../hew-cabi" }
 libc.workspace = true
 tracing.workspace = true
+# Most cancellation tokens have one subscriber; keep that registration inline.
+smallvec = "1.16.2"
 sha2.workspace = true
 zeroize = { version = "1.9.0", features = ["zeroize_derive"] }
 # Unicode general categories (Unicode 18). Pinned exactly: `hew_unicode_is_punct`

@@ -4,6 +4,43 @@ use crate::actor_native::HewSubmitStatus;
 use crate::wake::{HewWaker, OwnedWaker};
 use std::sync::Arc;
 
+/// A capacity subscription is needed only after admission finds a full queue.
+/// The direct descriptor already retains its target independently of the frame.
+#[derive(Debug)]
+enum CapacityWake {
+    Direct(OwnedWaker),
+    Registered { _registration: Arc<OwnedWaker> },
+}
+
+impl CapacityWake {
+    fn poll(
+        &mut self,
+        token: crate::lifetime::local_handles::HewLocalPidId,
+        mut admit: impl FnMut() -> super::SendOutcome,
+    ) -> super::SendOutcome {
+        let outcome = admit();
+        if matches!(outcome, super::SendOutcome::Failed) && self.register(token) {
+            admit()
+        } else {
+            outcome
+        }
+    }
+
+    /// Register before rechecking capacity, so a dequeue in either interval
+    /// is observed by the retry or by a retained readiness notification.
+    fn register(&mut self, token: crate::lifetime::local_handles::HewLocalPidId) -> bool {
+        let Self::Direct(waker) = self else {
+            return false;
+        };
+        let registration = Arc::new(waker.clone());
+        crate::actor::register_native_capacity(token, &registration);
+        *self = Self::Registered {
+            _registration: registration,
+        };
+        true
+    }
+}
+
 /// The source message keeps its typed fields until admission succeeds. This
 /// operation owns only the shallow unpublished wrapper and its readiness target.
 #[derive(Debug)]
@@ -13,7 +50,7 @@ pub struct HewNativeSend {
     token: crate::lifetime::local_handles::HewLocalPidId,
     message: i32,
     envelope: *mut super::HewMsgEnvelope,
-    _waker: Arc<OwnedWaker>,
+    wake: CapacityWake,
 }
 
 impl Drop for HewNativeSend {
@@ -29,8 +66,8 @@ impl Drop for HewNativeSend {
     }
 }
 
-/// Register readiness before the first capacity check, closing the missed-wake
-/// window without parking an actor worker or retaining an actor allocation.
+/// Retain readiness without parking a worker or retaining an actor allocation.
+/// A full poll registers capacity readiness and rechecks before returning pending.
 ///
 /// # Safety
 /// The payload is a unique malloc wrapper with shallow fields still owned by
@@ -54,7 +91,7 @@ pub unsafe extern "C" fn hew_actor_send_wait_new(
     let (envelope, waker) = unsafe {
         (
             super::hew_msg_envelope_new(payload, size, Some(drop_payload)),
-            Arc::new(OwnedWaker::retain(&*waker)),
+            CapacityWake::Direct(OwnedWaker::retain(&*waker)),
         )
     };
     if envelope.is_null() {
@@ -64,14 +101,13 @@ pub unsafe extern "C" fn hew_actor_send_wait_new(
     }
     // SAFETY: the unpublished envelope's fields still belong to its source.
     unsafe { (*envelope).release_start = payload_release };
-    crate::actor::register_native_capacity(token, &waker);
     Box::into_raw(Box::new(HewNativeSend {
         caller: crate::actor_caller::local_sender(),
         obligated: obligated != 0,
         token,
         message,
         envelope,
-        _waker: waker,
+        wake: waker,
     }))
 }
 
@@ -86,7 +122,7 @@ pub struct HewNativeAsk {
     message: i32,
     envelope: *mut super::HewMsgEnvelope,
     channel: *mut std::ffi::c_void,
-    _waker: Arc<OwnedWaker>,
+    wake: CapacityWake,
 }
 
 impl Drop for HewNativeAsk {
@@ -102,7 +138,8 @@ impl Drop for HewNativeAsk {
     }
 }
 
-/// Register readiness before the first admission attempt of a completion call.
+/// Retain the readiness target for a completion call. A full admission poll
+/// registers capacity readiness and rechecks before returning pending.
 ///
 /// # Safety
 /// The payload is a unique malloc wrapper whose fields have transferred to this
@@ -150,16 +187,19 @@ pub unsafe extern "C" fn hew_actor_ask_wait_poll(wait: *mut HewNativeAsk) -> i32
         return AskError::Timeout as i32;
     }
     // SAFETY: this operation owns its unpublished request until admission.
-    let outcome = unsafe {
-        crate::actor::try_submit_native_request(
-            wait.token,
-            wait.message,
-            wait.envelope,
-            wait.channel,
-            true,
-            wait.caller,
-        )
-    };
+    let outcome = wait.wake.poll(wait.token, || {
+        // SAFETY: a failed attempt keeps both owners unpublished for the retry.
+        unsafe {
+            crate::actor::try_submit_native_request(
+                wait.token,
+                wait.message,
+                wait.envelope,
+                wait.channel,
+                true,
+                wait.caller,
+            )
+        }
+    });
     match outcome {
         super::SendOutcome::Enqueued => {
             wait.envelope = std::ptr::null_mut();
@@ -252,16 +292,15 @@ pub(crate) unsafe fn ask_wait_resume(
     // SAFETY: the completion call supplies live channel and waker references.
     let waker = unsafe {
         crate::reply_channel::hew_reply_channel_retain(channel.cast());
-        Arc::new(OwnedWaker::retain(&*waker))
+        CapacityWake::Direct(OwnedWaker::retain(&*waker))
     };
-    crate::actor::register_native_capacity(token, &waker);
     Box::into_raw(Box::new(HewNativeAsk {
         caller,
         token,
         message,
         envelope,
         channel,
-        _waker: waker,
+        wake: waker,
     }))
 }
 
@@ -278,16 +317,19 @@ pub unsafe extern "C" fn hew_actor_send_wait_poll(wait: *mut HewNativeSend) -> i
         return HewSubmitStatus::Oom as i32;
     };
     // SAFETY: this operation owns its unpublished envelope until admission.
-    let outcome = unsafe {
-        crate::actor::try_submit_native_request(
-            wait.token,
-            wait.message,
-            wait.envelope,
-            std::ptr::null_mut(),
-            wait.obligated,
-            wait.caller,
-        )
-    };
+    let outcome = wait.wake.poll(wait.token, || {
+        // SAFETY: refusal leaves the shallow wrapper and source fields intact.
+        unsafe {
+            crate::actor::try_submit_native_request(
+                wait.token,
+                wait.message,
+                wait.envelope,
+                std::ptr::null_mut(),
+                wait.obligated,
+                wait.caller,
+            )
+        }
+    });
     let status = match crate::actor_native::submission_status(outcome) {
         HewSubmitStatus::Full => HewSubmitStatus::Pending,
         status => status,
@@ -372,6 +414,154 @@ mod tests {
         // SAFETY: the wrapper contains one raw Arc reference owned by its source.
         let count = unsafe { Arc::from_raw(*payload.cast::<*const AtomicUsize>()) };
         count.fetch_add(1, Ordering::SeqCst);
+    }
+
+    #[test]
+    fn capacity_wait_rechecks_a_dequeue_or_close_before_registration() {
+        for close in [false, true] {
+            let (ready, waker) = Readiness::new();
+            let mut wake = CapacityWake::Direct(waker);
+            let mut attempts = 0;
+            // SAFETY: the fixture exclusively owns the mailbox and envelope;
+            // a failed attempt preserves the envelope for the second attempt.
+            unsafe {
+                let mailbox =
+                    mailbox::hew_mailbox_new_with_policy(1, mailbox::OverflowPolicy::Fail);
+                assert_eq!(mailbox::hew_mailbox_send(mailbox, 0, ptr::null_mut(), 0), 0);
+                let envelope = super::super::hew_msg_envelope_new(ptr::null_mut(), 0, None);
+                let outcome = wake.poll(
+                    crate::lifetime::local_handles::HewLocalPidId::INVALID,
+                    || {
+                        attempts += 1;
+                        let outcome = mailbox::try_admit_native_request(
+                            &*mailbox,
+                            1,
+                            envelope,
+                            ptr::null_mut(),
+                            true,
+                            crate::actor_caller::local_sender(),
+                        );
+                        if attempts == 1 {
+                            assert!(matches!(outcome, mailbox::SendOutcome::Failed));
+                            let filler = mailbox::hew_mailbox_try_recv(mailbox);
+                            assert!(!filler.is_null());
+                            mailbox::hew_msg_node_free(filler);
+                            if close {
+                                mailbox::mailbox_close(mailbox);
+                            }
+                        }
+                        outcome
+                    },
+                );
+                assert_eq!(
+                    attempts, 2,
+                    "the retry must observe a change before registration"
+                );
+                if close {
+                    assert!(matches!(outcome, mailbox::SendOutcome::Closed));
+                    super::super::hew_msg_envelope_release(envelope);
+                } else {
+                    assert!(matches!(outcome, mailbox::SendOutcome::Enqueued));
+                    let node = mailbox::hew_mailbox_try_recv(mailbox);
+                    assert!(!node.is_null());
+                    mailbox::hew_msg_node_free(node);
+                }
+                mailbox::hew_mailbox_free(mailbox);
+            }
+            assert!(
+                !ready.take_ready(),
+                "the state change preceded registration"
+            );
+        }
+    }
+
+    #[test]
+    fn native_ask_capacity_wait_preserves_admission_wakes_and_cancellation() {
+        let _guard = crate::runtime_test_guard();
+        let _scheduler = crate::scheduler::NoWorkerSchedulerForTest::install();
+        for outcome in ["immediate", "dequeue", "close", "cancel"] {
+            let (ready, waker) = Readiness::new();
+            let drops = Arc::new(AtomicUsize::new(0));
+            // SAFETY: the fixture owns the mailbox, routable actor and request.
+            // Running prevents scheduler handoffs; the test dequeues explicitly.
+            unsafe {
+                let mailbox =
+                    mailbox::hew_mailbox_new_with_policy(1, mailbox::OverflowPolicy::Fail);
+                let mut stub = crate::test_actor::stub_actor();
+                stub.mailbox = mailbox.cast();
+                stub.actor_state.store(
+                    crate::internal::types::HewActorState::Running as i32,
+                    Ordering::Release,
+                );
+                let actor = crate::test_actor::TrackedTestActor::install(stub);
+                let runtime = crate::runtime::rt_current();
+                let token = runtime
+                    .local_handles
+                    .register_actor(crate::runtime_id::RuntimeId::DEFAULT, actor.id)
+                    .unwrap();
+                (*actor.ptr()).runtime = std::ptr::from_ref(runtime);
+                (*actor.ptr()).local_pid_id = token;
+                if outcome != "immediate" {
+                    assert_eq!(mailbox::hew_mailbox_send(mailbox, 0, ptr::null_mut(), 0), 0);
+                }
+                let payload = crate::mem::buf_try_alloc(size_of::<*const AtomicUsize>())
+                    .cast::<*const AtomicUsize>();
+                payload.write(Arc::into_raw(drops.clone()));
+                // Isolate capacity notifications from reply/orphan readiness.
+                let channel = crate::reply_channel::hew_reply_channel_new();
+                let wait = hew_actor_ask_wait_new(
+                    token,
+                    7,
+                    payload.cast(),
+                    size_of::<*const AtomicUsize>(),
+                    drop_owned,
+                    channel.cast(),
+                    waker.descriptor(),
+                );
+                assert!(!ready.take_ready());
+                if outcome == "immediate" {
+                    assert_eq!(hew_actor_ask_wait_poll(wait), 0);
+                    let node = mailbox::hew_mailbox_try_recv(mailbox);
+                    assert!(!node.is_null());
+                    mailbox::hew_msg_node_free(node);
+                    assert!(
+                        !ready.take_ready(),
+                        "an admitted request needs no capacity wake"
+                    );
+                } else {
+                    assert_eq!(hew_actor_ask_wait_poll(wait), -1);
+                    if outcome == "dequeue" {
+                        let filler = mailbox::hew_mailbox_try_recv(mailbox);
+                        assert!(!filler.is_null());
+                        mailbox::hew_msg_node_free(filler);
+                        assert!(
+                            ready.take_ready(),
+                            "a pending request must observe released capacity"
+                        );
+                        assert_eq!(hew_actor_ask_wait_poll(wait), 0);
+                    } else if outcome == "close" {
+                        mailbox::mailbox_close(mailbox);
+                        assert!(ready.take_ready(), "close must wake a pending request");
+                        assert_eq!(
+                            hew_actor_ask_wait_poll(wait),
+                            crate::internal::types::AskError::ActorStopped as i32
+                        );
+                    }
+                }
+                hew_actor_ask_wait_free(wait);
+                crate::reply_channel::hew_reply_channel_free(channel);
+                mailbox::mailbox_close(mailbox);
+                assert!(
+                    !ready.take_ready(),
+                    "released admission must detach its wake target"
+                );
+                mailbox::hew_mailbox_free(mailbox);
+                drop(actor);
+                assert_eq!(drops.load(Ordering::SeqCst), 1);
+            }
+            drop(waker);
+            assert_eq!(Arc::strong_count(&ready), 1);
+        }
     }
 
     #[test]

@@ -57,7 +57,7 @@ pub struct HewCancellationToken {
     parent: *mut HewCancellationToken,
     pub(crate) deadline_ns: AtomicI64,
     /// Readiness subscribers; token state remains the cancellation authority.
-    observers: Mutex<Vec<std::sync::Weak<HewCancelObserver>>>,
+    observers: Mutex<smallvec::SmallVec<[std::sync::Weak<HewCancelObserver>; 1]>>,
     children_total: AtomicI32,
 }
 
@@ -154,7 +154,7 @@ pub unsafe extern "C" fn hew_cancel_token_new_child(
         reason: AtomicI32::new(0),
         parent,
         deadline_ns: AtomicI64::new(-1),
-        observers: Mutex::new(Vec::new()),
+        observers: Mutex::new(smallvec::SmallVec::new()),
         children_total: AtomicI32::new(0),
     });
     Box::into_raw(token)

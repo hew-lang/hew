@@ -3069,7 +3069,7 @@ impl Checker {
         }
         self.actor_method_dispatch
             .insert(key, ActorMethodKind::Message { method, policy });
-        self.record_submission_suspension(span, policy.may_suspend());
+        self.record_submission_suspension(span, true);
         crate::actor_delivery::result_type(crate::actor_delivery::message_type(
             target.clone(),
             Ty::Tuple(payload),

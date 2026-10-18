@@ -28,7 +28,8 @@ use crate::node_identity::{Location, NodeId};
 /// Current wire protocol version.
 ///
 /// Frames carrying any other version value MUST be rejected by the decoder.
-pub const WIRE_VERSION: u8 = 5;
+pub const WIRE_VERSION: u8 = 6;
+pub use crate::request_state::RequestKind;
 
 /// Discriminant for a control frame (`frame_type` field value 0).
 pub const FRAME_TYPE_CONTROL: u8 = 0;
@@ -186,9 +187,14 @@ pub struct ControlFrame {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EnvelopeMessage {
     Handler(String),
-    Service { handler: String, grant_id: u64 },
+    Service {
+        handler: String,
+        grant_id: u64,
+        kind: RequestKind,
+    },
     Reply,
     Rejected,
+    NotAdmitted,
     Withdraw,
 }
 
@@ -196,12 +202,21 @@ impl EnvelopeMessage {
     fn to_value(&self) -> Value {
         match self {
             Self::Handler(identity) => Value::Text(identity.clone()),
-            Self::Service { handler, grant_id } => Value::Map(vec![
+            Self::Service {
+                handler,
+                grant_id,
+                kind,
+            } => Value::Map(vec![
                 (Value::Integer(1.into()), Value::Text(handler.clone())),
                 (Value::Integer(2.into()), Value::Integer((*grant_id).into())),
+                (
+                    Value::Integer(3.into()),
+                    Value::Integer((*kind as u8).into()),
+                ),
             ]),
             Self::Reply => Value::Integer(0.into()),
             Self::Rejected => Value::Integer(1.into()),
+            Self::NotAdmitted => Value::Integer(3.into()),
             Self::Withdraw => Value::Integer(2.into()),
         }
     }
@@ -215,7 +230,12 @@ impl EnvelopeMessage {
             }
             Value::Map(_) => {
                 let map = collect_map(value)?;
-                ensure_exact_keys(&map, &[1, 2])?;
+                ensure_exact_keys(&map, &[1, 2, 3])?;
+                let kind = RequestKind::from_wire(value_to_u8(required(&map, 3)?, 3)?).ok_or(
+                    DecodeError::MalformedFrame {
+                        reason: "invalid request mode",
+                    },
+                )?;
                 let handler = value_to_text(required(&map, 1)?, 1)?;
                 let grant_id = value_to_u64(required(&map, 2)?, 2)?;
                 if grant_id == 0 || !valid_handler_identity(&handler) {
@@ -223,10 +243,15 @@ impl EnvelopeMessage {
                         reason: "invalid service request",
                     });
                 }
-                Ok(Self::Service { handler, grant_id })
+                Ok(Self::Service {
+                    handler,
+                    grant_id,
+                    kind,
+                })
             }
             Value::Integer(status) if *status == Integer::from(0) => Ok(Self::Reply),
             Value::Integer(status) if *status == Integer::from(1) => Ok(Self::Rejected),
+            Value::Integer(status) if *status == Integer::from(3) => Ok(Self::NotAdmitted),
             Value::Integer(status) if *status == Integer::from(2) => Ok(Self::Withdraw),
             _ => Err(DecodeError::MalformedFrame {
                 reason: "invalid handler declaration or reply status",
@@ -880,7 +905,9 @@ impl EnvelopeFrame {
                     return Err("request requires a target and bounded declaration identity");
                 }
             }
-            EnvelopeMessage::Service { handler, grant_id } => {
+            EnvelopeMessage::Service {
+                handler, grant_id, ..
+            } => {
                 if self.target.is_none()
                     || self.request_id == 0
                     || *grant_id == 0
@@ -902,7 +929,7 @@ impl EnvelopeFrame {
                     );
                 }
             }
-            EnvelopeMessage::Reply | EnvelopeMessage::Rejected => {
+            EnvelopeMessage::Reply | EnvelopeMessage::Rejected | EnvelopeMessage::NotAdmitted => {
                 if self.target.is_some() || self.source.is_some() || self.request_id == 0 {
                     return Err("reply status requires reply routing");
                 }

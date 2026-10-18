@@ -17,15 +17,17 @@ fn main() {
     let backup = spawn Worker;
     match worker.process("work") {
         .Ok(delivery) => {}
-        .Err(rejected) => {
+        .Err(ActorError.Rejected(rejected)) => {
             let _ = rejected.message.to(backup);
         }
+        .Err(_) => {}
     }
     match worker.process("again") {
         .Ok(delivery) => {}
-        .Err(rejected) => {
+        .Err(ActorError.Rejected(rejected)) => {
             let _ = rejected.message.retry();
         }
+        .Err(_) => {}
     }
 }
 "#;
@@ -53,13 +55,12 @@ fn main() {
         .suspension_effects
         .calls
         .values()
-        .all(|effect| *effect == SuspensionEffect::Never));
+        .all(|effect| *effect == SuspensionEffect::MaySuspend));
 }
 
-/// `.Wait` is the only suspending submission policy, and the effect comes from
-/// the view's type, not from the handler being called (A399).
+/// Both policies can await destination admission over an imported actor handle.
 #[test]
-fn actor_delivery_wait_policy_only_suspends_submission() {
+fn mailbox_policies_record_destination_admission_suspension() {
     let source = r"actor Worker { receive fn process(value: i64) {} }
         fn main() {
             let worker = spawn Worker;
@@ -70,17 +71,16 @@ fn actor_delivery_wait_policy_only_suspends_submission() {
         }";
     let output = check_source(source);
     assert!(output.errors.is_empty(), "{:?}", output.errors);
-    let submissions: Vec<_> = output
-        .suspension_effects
-        .calls
-        .iter()
-        .filter(|(_, effect)| **effect == SuspensionEffect::MaySuspend)
-        .collect();
-    assert_eq!(submissions.len(), 1, "{:?}", output.suspension_effects);
-    assert_eq!(
-        &source[submissions[0].0.start..submissions[0].0.end],
-        "sender.process(42)"
-    );
+    for call in ["quick.process(1)", "sender.process(42)"] {
+        let start = source.find(call).unwrap();
+        assert!(output
+            .suspension_effects
+            .calls
+            .iter()
+            .any(|(span, effect)| span.start == start
+                && span.end == start + call.len()
+                && *effect == SuspensionEffect::MaySuspend));
+    }
 }
 
 /// A returned message is affine, addressed to one protocol, and opaque.
@@ -98,7 +98,7 @@ fn actor_delivery_rejects_reuse_and_incompatible_destination() {
              fn main() {{ let worker = mailbox(spawn Worker, on_full: .Reject); \
              match worker.process(1) {{ \
                  .Ok(_) => {{}} \
-                 .Err(rejected) => {{ let m = rejected.message; {body} }} \
+                 .Err(ActorError.Rejected(rejected)) => {{ let m = rejected.message; {body} }} .Err(_) => {{}} \
              }} }}"
         );
         let output = check_source(&source);
@@ -225,7 +225,7 @@ fn actor_delivery_seals_message_destructuring_and_construction() {
              fn main() {{ let worker = mailbox(spawn Worker, on_full: .Reject); \
              match worker.process(1) {{ \
                  .Ok(_) => {{}} \
-                 .Err(rejected) => {{ let m = rejected.message; {body} }} \
+                 .Err(ActorError.Rejected(rejected)) => {{ let m = rejected.message; {body} }} .Err(_) => {{}} \
              }} }}"
         );
         let output = check_source(&source);
@@ -266,7 +266,7 @@ fn actor_delivery_named_arguments_preserve_protocol_order() {
 
 #[test]
 fn actor_delivery_failure_reason_matches_annotated_error_values() {
-    let output = check_source("actor Worker {\n    receive fn process() {}\n}\n\nfn reason(error: SendError) -> SendError {\n    error\n}\n\nfn main() {\n    let worker = mailbox(spawn Worker, on_full: .Reject);\n    match worker.process() {\n        .Ok(_) => {}\n        .Err(failure) => {\n            let same = reason(failure.reason);\n        }\n    }\n}\n");
+    let output = check_source("actor Worker {\n    receive fn process() {}\n}\n\nfn reason(error: SendError) -> SendError {\n    error\n}\n\nfn main() {\n    let worker = mailbox(spawn Worker, on_full: .Reject);\n    match worker.process() {\n        .Ok(_) => {}\n        .Err(ActorError.Rejected(failure)) => {\n            let same = reason(failure.reason);\n        }\n        .Err(_) => {}\n    }\n}\n");
     assert!(output.errors.is_empty(), "{:?}", output.errors);
     assert_eq!(
         output

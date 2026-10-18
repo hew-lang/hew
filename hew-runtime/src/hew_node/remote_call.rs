@@ -50,6 +50,7 @@ fn setup_remote_ask(
     waker: crate::wake::OwnedWaker,
     deadline: RequestDeadline,
     grant: Option<u64>,
+    kind: crate::request_state::RequestKind,
 ) -> RemoteAskSetupResult {
     if deadline.expired() {
         return RemoteAskSetupResult::Error(AskError::Timeout);
@@ -179,7 +180,7 @@ fn setup_remote_ask(
                 }
                 let remaining = deadline.remaining();
                 if remaining.is_some_and(|budget| budget <= 0) {
-                    table.fail(request_id, AskError::Timeout);
+                    table.refuse(request_id, AskError::Timeout);
                     return None;
                 }
                 // SAFETY: the job owns the serialized request through preparation.
@@ -191,6 +192,7 @@ fn setup_remote_ask(
                             Some(grant_id) => crate::envelope::EnvelopeMessage::Service {
                                 handler: codec.identity.to_owned(),
                                 grant_id,
+                                kind,
                             },
                             None => {
                                 crate::envelope::EnvelopeMessage::Handler(codec.identity.to_owned())
@@ -205,7 +207,7 @@ fn setup_remote_ask(
                     Ok(bytes) => Some(bytes),
                     Err(error) => {
                         set_last_error(format!("hew_node_api_ask: {error}"));
-                        table.fail(request_id, AskError::EncodeFailed);
+                        table.refuse(request_id, AskError::EncodeFailed);
                         None
                     }
                 }
@@ -217,7 +219,7 @@ fn setup_remote_ask(
             },
         );
         if !submitted {
-            reply_table().fail(request_id, AskError::SendFailed);
+            reply_table().refuse(request_id, AskError::SendFailed);
         }
         RemoteAskSetupResult::Ok((pending, target, publication))
     })
@@ -231,7 +233,7 @@ fn remote_reply_value(
     reply_size: usize,
     reply: &ReplyOutcome,
 ) -> Result<*mut c_void, AskError> {
-    if reply.status == ReplyStatus::Failed {
+    if reply.status != ReplyStatus::Success {
         return Err(reply.ask_error);
     }
     // Void ask (reply_size == 0) or empty reply: there is no value to
@@ -267,7 +269,12 @@ fn remote_reply_value(
 /// Where a remote call's reply comes from.
 pub(super) enum RemoteCallRoute {
     /// A peer owns the target: the pending registration of the encoded ask.
-    Wire(Arc<PendingReply>, Location, u64),
+    Wire(
+        Arc<PendingReply>,
+        Location,
+        u64,
+        crate::request_state::RequestKind,
+    ),
     /// This node owns the target: the local actor call carrying the request.
     Local(*mut crate::actor_call_native::HewActorCall),
     Offer(Arc<PendingReply>, Option<super::service::ExportLease>),
@@ -301,7 +308,7 @@ impl HewRemoteCall {
 
     fn ready(&mut self) -> bool {
         let pending = match &self.route {
-            RemoteCallRoute::Wire(pending, _, _)
+            RemoteCallRoute::Wire(pending, _, _, _)
             | RemoteCallRoute::Offer(pending, _)
             | RemoteCallRoute::Import(pending, _) => pending,
             RemoteCallRoute::Local(call) => {
@@ -355,6 +362,7 @@ pub(super) unsafe fn start_granted_call(
     reply_size: usize,
     deadline_ns: i64,
     waker: *const crate::wake::HewWaker,
+    kind: crate::request_state::RequestKind,
 ) -> *mut HewRemoteCall {
     let deadline = RequestDeadline::from_raw(deadline_ns);
     let setup = match target {
@@ -370,13 +378,14 @@ pub(super) unsafe fn start_granted_call(
                 wake,
                 deadline,
                 Some(grant),
+                kind,
             )
         }
         Err(error) => RemoteAskSetupResult::Error(error),
     };
     let route = match setup {
         RemoteAskSetupResult::Ok((pending, target, publication)) => {
-            RemoteCallRoute::Wire(pending, target, publication)
+            RemoteCallRoute::Wire(pending, target, publication, kind)
         }
         RemoteAskSetupResult::Error(error) => RemoteCallRoute::Failed(error),
         // A peer grant never authorizes a local-location fallback.
@@ -402,7 +411,7 @@ impl Drop for HewRemoteCall {
     fn drop(&mut self) {
         match &self.route {
             // A late reply finds no registration and is dropped.
-            RemoteCallRoute::Wire(pending, _, _)
+            RemoteCallRoute::Wire(pending, _, _, _)
             | RemoteCallRoute::Offer(pending, _)
             | RemoteCallRoute::Import(pending, _) => {
                 if reply_table().remove(pending.request_id).is_some() {
@@ -422,7 +431,7 @@ impl Drop for HewRemoteCall {
 
 /// Best-effort withdrawal is bound to the same authenticated connection publication.
 fn withdraw_remote(route: &RemoteCallRoute) {
-    let RemoteCallRoute::Wire(pending, target, publication) = route else {
+    let RemoteCallRoute::Wire(pending, target, publication, _) = route else {
         return;
     };
     with_current_node_read(|guard| {
@@ -533,13 +542,17 @@ pub(super) unsafe fn new_call(
             owned,
             deadline,
             grant,
+            crate::request_state::RequestKind::CallReject,
         ),
         _ => RemoteAskSetupResult::Error(AskError::StaleRef),
     };
     let route = match setup {
-        RemoteAskSetupResult::Ok((pending, target, publication)) => {
-            RemoteCallRoute::Wire(pending, target, publication)
-        }
+        RemoteAskSetupResult::Ok((pending, target, publication)) => RemoteCallRoute::Wire(
+            pending,
+            target,
+            publication,
+            crate::request_state::RequestKind::CallReject,
+        ),
         RemoteAskSetupResult::Error(error) => RemoteCallRoute::Failed(error),
         RemoteAskSetupResult::Local(actor_id) => {
             // SAFETY: forwards the request and waker contracts.
@@ -694,7 +707,7 @@ pub unsafe extern "C" fn hew_remote_call_take(
     }
     let pending = match &operation.route {
         RemoteCallRoute::Wire(..) if operation.timed_out => return AskError::Timeout as i32,
-        RemoteCallRoute::Wire(pending, _, _) => pending,
+        RemoteCallRoute::Wire(pending, _, _, _) => pending,
         // SAFETY: the local call is ready and `output` holds its reply.
         RemoteCallRoute::Local(call) => return unsafe { take_local_call(*call, output) },
         RemoteCallRoute::Failed(error) => return *error as i32,
@@ -708,6 +721,15 @@ pub unsafe extern "C" fn hew_remote_call_take(
     else {
         return AskError::ConnectionDropped as i32;
     };
+    // SAFETY: the ready operation and output retain the declared reply layout.
+    unsafe { write_remote_reply(operation, reply, output) }
+}
+
+unsafe fn write_remote_reply(
+    operation: &HewRemoteCall,
+    reply: ReplyOutcome,
+    output: *mut c_void,
+) -> i32 {
     match remote_reply_value(
         operation.dispatch,
         operation.msg_type,
@@ -730,6 +752,51 @@ pub unsafe extern "C" fn hew_remote_call_take(
             AskError::None as i32
         }
         Err(error) => error as i32,
+    }
+}
+
+/// Consume an imported request's ready outcome, retaining non-admission proof.
+/// # Safety
+/// The operation is a ready imported request taken once; output holds its reply.
+pub(crate) unsafe fn take_imported_request(
+    operation: *mut HewRemoteCall,
+    output: *mut c_void,
+) -> crate::request_state::RequestOutcome {
+    use crate::request_state::{RequestKind, RequestOutcome};
+    // SAFETY: the caller exclusively owns this ready operation.
+    let operation = unsafe { &mut *operation };
+    let (pending, kind) = match &operation.route {
+        RemoteCallRoute::Failed(error) => return RequestOutcome::Refused(*error),
+        RemoteCallRoute::Wire(..) if operation.timed_out => {
+            return RequestOutcome::Completed(AskError::Timeout as i32)
+        }
+        RemoteCallRoute::Wire(pending, _, _, kind) => (pending, *kind),
+        _ => return RequestOutcome::Completed(AskError::DecodeFailure as i32),
+    };
+    let Some(reply) = pending
+        .outcome
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .take()
+    else {
+        return RequestOutcome::Completed(AskError::ConnectionDropped as i32);
+    };
+    match reply.status {
+        ReplyStatus::Refused => RequestOutcome::Refused(reply.ask_error),
+        ReplyStatus::Failed => RequestOutcome::Completed(reply.ask_error as i32),
+        ReplyStatus::Success => match kind {
+            RequestKind::CallWait | RequestKind::CallReject => {
+                // SAFETY: the original checked completion protocol owns this output.
+                RequestOutcome::Completed(unsafe { write_remote_reply(operation, reply, output) })
+            }
+            RequestKind::SendWait | RequestKind::SendReject | RequestKind::SendDropNewest => {
+                match reply.data.as_slice() {
+                    [0] => RequestOutcome::Submitted { discarded: false },
+                    [1] => RequestOutcome::Submitted { discarded: true },
+                    _ => RequestOutcome::Completed(AskError::DecodeFailure as i32),
+                }
+            }
+        },
     }
 }
 

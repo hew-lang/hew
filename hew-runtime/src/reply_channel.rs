@@ -197,20 +197,6 @@ pub(crate) unsafe fn withdraw_native_request(channel: *mut HewReplyChannel) {
     }
 }
 
-/// Read immutable request metadata from its retained reply owner.
-/// # Safety
-/// The optional channel remains retained through the read.
-pub(crate) unsafe fn native_request_deadline(
-    channel: *const HewReplyChannel,
-) -> crate::request_deadline::RequestDeadline {
-    // SAFETY: a non-null channel remains retained through this read.
-    unsafe { channel.as_ref() }
-        .and_then(|channel| channel.native_request.as_ref())
-        .map_or_else(crate::request_deadline::RequestDeadline::default, |state| {
-            state.deadline
-        })
-}
-
 /// Retain the canonical request state for its envelope before publication.
 /// # Safety
 /// The optional channel remains retained through this borrow.

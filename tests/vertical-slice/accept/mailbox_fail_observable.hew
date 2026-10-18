@@ -24,7 +24,7 @@ actor Driver {
             }
         }
         match inbox.work(2) {
-            .Err(failure) => match failure.reason {
+            .Err(ActorError.Rejected(failure)) => match failure.reason {
                 SendError.Full => {
                     println("FAIL_VISIBLE");
                     exit(43);
@@ -34,7 +34,7 @@ actor Driver {
                     exit(44);
                 }
             }
-            .Ok(_) => {
+            _ => {
                 println("FAIL_HIDDEN");
                 exit(45);
             }

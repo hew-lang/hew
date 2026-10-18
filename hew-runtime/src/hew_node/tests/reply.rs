@@ -787,7 +787,7 @@ fn remote_call_setup_expiry_and_cancel_do_not_wait_for_a_blocked_sender() {
                     let (_, _, call) = remote_call_for_test(key);
                     // SAFETY: this thread exclusively owns the fresh call.
                     unsafe {
-                        if let RemoteCallRoute::Wire(_, location, token) = &mut (*call).route {
+                        if let RemoteCallRoute::Wire(_, location, token, _) = &mut (*call).route {
                             *location = target;
                             *token = publication;
                         }

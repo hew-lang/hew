@@ -5,7 +5,7 @@ use super::*;
 impl LowerCtx {
     /// Preserve the checked call result separately from the raw actor reply ABI.
     /// The addressed description a submission consumes, read out of the
-    /// checked `Result<Delivery, SendFailure<M>>` the call site carries.
+    /// checked `Result<Delivery, ActorError<Never, M>>` the call site carries.
     pub(super) fn submitted_message_ty(ty: &ResolvedTy) -> Option<ResolvedTy> {
         let ResolvedTy::Named {
             head: hew_types::TypeHead::Builtin(BuiltinType::Result),

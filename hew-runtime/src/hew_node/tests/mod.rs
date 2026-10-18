@@ -1110,7 +1110,12 @@ fn remote_call_for_test(
     let (id, pending) =
         reply_table().register_with_waker(key, Some(waker), PendingReplyKind::Ask(0));
     let call = Box::into_raw(Box::new(HewRemoteCall {
-        route: RemoteCallRoute::Wire(pending, test_location(1, 1), 0),
+        route: RemoteCallRoute::Wire(
+            pending,
+            test_location(1, 1),
+            0,
+            crate::request_state::RequestKind::CallWait,
+        ),
         timer,
         timed_out: false,
         deadline: crate::request_deadline::RequestDeadline::after(i64::MAX),

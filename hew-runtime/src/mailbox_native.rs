@@ -85,6 +85,7 @@ pub unsafe extern "C" fn hew_actor_send_wait_new(
 #[derive(Debug)]
 pub struct HewNativeAsk {
     caller: crate::actor_caller::HewCallerStamp,
+    obligated: bool,
     token: crate::lifetime::local_handles::HewLocalPidId,
     message: i32,
     envelope: *mut super::HewMsgEnvelope,
@@ -146,35 +147,58 @@ pub unsafe extern "C" fn hew_actor_ask_wait_poll(wait: *mut HewNativeAsk) -> i32
     let Some(wait) = (unsafe { wait.as_mut() }) else {
         return AskError::SendFailed as i32;
     };
-    // SAFETY: the unpublished request retains its channel until admission.
-    if unsafe { crate::reply_channel::native_request_deadline(wait.channel.cast()) }.expired() {
-        // SAFETY: expiry and the reply owner settle the same request.
-        unsafe { crate::reply_channel::native::expire_native_request(wait.channel.cast()) };
-        return AskError::Timeout as i32;
+    // SAFETY: this operation exclusively owns its request admission.
+    match unsafe { poll_request_admission(wait) } {
+        Ok(super::SendOutcome::Enqueued) => AskError::None as i32,
+        Ok(super::SendOutcome::Failed) => -1,
+        Ok(super::SendOutcome::Closed) => AskError::ActorStopped as i32,
+        Ok(super::SendOutcome::ShuttingDown) => AskError::LocalShutdown as i32,
+        Ok(super::SendOutcome::Oom) => AskError::SendFailed as i32,
+        Err(error) => error as i32,
+        _ => unreachable!("completion admission cannot discard or coalesce its request"),
     }
-    // SAFETY: this operation owns its unpublished request until admission.
+}
+
+/// Try the shared owned-envelope ingress once; caller policy decides whether a
+/// full mailbox is final or needs another readiness notification.
+/// # Safety
+/// This wait exclusively owns its unpublished envelope and optional reply.
+pub(crate) unsafe fn poll_request_admission(
+    wait: &mut HewNativeAsk,
+) -> Result<super::SendOutcome, crate::internal::types::AskError> {
+    use crate::internal::types::AskError;
+    // SAFETY: the admission owner retains the envelope through this poll.
+    if unsafe { crate::request_state::message_deadline(wait.envelope) }.expired() {
+        if wait.channel.is_null() {
+            // SAFETY: the unpublished envelope retains its immutable request state.
+            if let Some(state) = unsafe { (*wait.envelope).request.as_ref() } {
+                state.withdraw();
+            }
+        } else {
+            // SAFETY: expiry and the reply owner settle the same request.
+            unsafe { crate::reply_channel::native::expire_native_request(wait.channel.cast()) };
+        }
+        return Err(AskError::Timeout);
+    }
+    // SAFETY: the operation retains its unpublished envelope until transfer.
     let outcome = unsafe {
         crate::actor::try_submit_native_request(
             wait.token,
             wait.message,
             wait.envelope,
             wait.channel,
-            true,
+            wait.obligated,
             wait.caller,
         )
     };
-    match outcome {
-        super::SendOutcome::Enqueued => {
-            wait.envelope = std::ptr::null_mut();
-            wait.channel = std::ptr::null_mut();
-            AskError::None as i32
-        }
-        super::SendOutcome::Failed => -1,
-        super::SendOutcome::Closed => AskError::ActorStopped as i32,
-        super::SendOutcome::ShuttingDown => AskError::LocalShutdown as i32,
-        super::SendOutcome::Oom => AskError::SendFailed as i32,
-        _ => unreachable!("native admission does not select an overflow policy"),
+    if matches!(
+        outcome,
+        super::SendOutcome::Enqueued | super::SendOutcome::Coalesced | super::SendOutcome::Dropped
+    ) {
+        wait.envelope = std::ptr::null_mut();
+        wait.channel = std::ptr::null_mut();
     }
+    Ok(outcome)
 }
 
 /// Release readiness, an unadmitted request and its reply-channel reference.
@@ -252,13 +276,39 @@ pub(crate) unsafe fn ask_wait_resume(
     waker: *const HewWaker,
     caller: crate::actor_caller::HewCallerStamp,
 ) -> *mut HewNativeAsk {
+    // SAFETY: the optional channel is retained through state capture.
+    let state = unsafe { crate::reply_channel::native_request_state(channel.cast()) };
+    // SAFETY: the completion adapter transfers the exclusive envelope.
+    unsafe {
+        request_wait_resume(
+            token, message, envelope, channel, waker, caller, state, true,
+        )
+    }
+}
+
+/// Bind an owned request to the existing capacity driver, with or without a reply.
+/// # Safety
+/// The envelope is exclusive and the supplied state is complete before publication.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one owned ingress request and readiness contract"
+)]
+pub(crate) unsafe fn request_wait_resume(
+    token: crate::lifetime::local_handles::HewLocalPidId,
+    message: i32,
+    envelope: *mut super::HewMsgEnvelope,
+    channel: *mut std::ffi::c_void,
+    waker: *const HewWaker,
+    caller: crate::actor_caller::HewCallerStamp,
+    state: Option<Arc<crate::request_state::RequestState>>,
+    obligated: bool,
+) -> *mut HewNativeAsk {
     if envelope.is_null() {
         return std::ptr::null_mut();
     }
-    // A resumed sealed request starts a fresh invocation; no prior deadline,
-    // cancellation or grant metadata follows it into this call.
-    // SAFETY: this unadmitted envelope is exclusive and the new channel is live.
-    unsafe { (*envelope).request = crate::reply_channel::native_request_state(channel.cast()) };
+    // A resumed request receives the new invocation's exact immutable state.
+    // SAFETY: the unpublished envelope is exclusive.
+    unsafe { (*envelope).request = state };
     // SAFETY: the completion call supplies live channel and waker references.
     let waker = unsafe {
         crate::reply_channel::hew_reply_channel_retain(channel.cast());
@@ -267,6 +317,7 @@ pub(crate) unsafe fn ask_wait_resume(
     crate::actor::register_native_capacity(token, &waker);
     Box::into_raw(Box::new(HewNativeAsk {
         caller,
+        obligated,
         token,
         message,
         envelope,

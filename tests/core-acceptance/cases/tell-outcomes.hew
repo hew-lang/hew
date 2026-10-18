@@ -1,5 +1,5 @@
 // A call through a `mailbox(..)` view submits and returns as soon as the
-// message is accepted, yielding `Result<Delivery, SendFailure<_>>`. `let _ =`
+// message is accepted, yielding `Result<Delivery, ActorError<Never, _>>`. `let _ =`
 // discards a rejection deliberately. A call on the actor handle itself waits
 // for the handler instead.
 actor Worker {
@@ -18,7 +18,8 @@ fn drive(w: Worker) -> Result<(), SendError> {
     match inbox.process("a") {
         .Ok(Delivery.Accepted) => println("accepted"),
         .Ok(Delivery.Discarded) => println("discarded"),
-        .Err(failure) => return .Err(failure.reason),
+        .Err(ActorError.Rejected(failure)) => return .Err(failure.reason),
+        .Err(_) => panic("uncertain submission"),
     }
     let _ = inbox.process("b");
     .Ok(())

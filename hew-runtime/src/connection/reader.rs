@@ -192,11 +192,15 @@ pub(super) fn reader_loop(
                         );
                         continue;
                     }
-                    let (identity, grant) = match &envelope.message {
-                        crate::envelope::EnvelopeMessage::Handler(identity) => (identity, 0),
-                        crate::envelope::EnvelopeMessage::Service { handler, grant_id } => {
-                            (handler, *grant_id)
+                    let (identity, grant, kind) = match &envelope.message {
+                        crate::envelope::EnvelopeMessage::Handler(identity) => {
+                            (identity, 0, crate::request_state::RequestKind::CallReject)
                         }
+                        crate::envelope::EnvelopeMessage::Service {
+                            handler,
+                            grant_id,
+                            kind,
+                        } => (handler, *grant_id, *kind),
                         _ => {
                             set_last_error("request envelope has reply status");
                             continue;
@@ -231,6 +235,7 @@ pub(super) fn reader_loop(
                             claim_token,
                             grant,
                             deadline.raw(),
+                            kind as u8,
                         );
                     }
                     if let Some(saved) = saved_ctx {

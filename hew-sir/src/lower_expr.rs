@@ -309,6 +309,27 @@ impl Builder<'_, '_> {
                 }
             }
             HirExprKind::IdentityCompare { left, right } => {
+                if self.ty(&left.ty) != self.ty(&right.ty) {
+                    self.lower_read_operand(left, "identity left operand")?;
+                    self.lower_read_operand(right, "identity right operand")?;
+                    return self.emit(expr, SemOpKind::ConstBool(false));
+                }
+                let target = self.ty(&left.ty);
+                if matches!(
+                    target,
+                    ResolvedTy::Named {
+                        head: hew_types::TypeHead::Actor(_),
+                        ..
+                    }
+                ) {
+                    let operation = crate::ActorOperation::Identity { target };
+                    let signature = self.actor_signature(&operation)?;
+                    let lhs = self.lower_read_operand(left, "actor identity left operand")?;
+                    let rhs = self.lower_read_operand(right, "actor identity right operand")?;
+                    return self
+                        .emit_actor_call(operation, signature, vec![lhs.value, rhs.value])?
+                        .ok_or_else(|| "actor identity has no result".into());
+                }
                 let lhs = self.lower_read_operand(left, "identity left operand")?;
                 let rhs = self.lower_read_operand(right, "identity right operand")?;
                 self.emit(

@@ -213,7 +213,15 @@ pub(super) fn deposit_reply_envelope(
     {
         return;
     }
-    if envelope.message == crate::envelope::EnvelopeMessage::Rejected {
+    if envelope.message == crate::envelope::EnvelopeMessage::NotAdmitted {
+        crate::hew_node::refuse_remote_reply(
+            mgr.cast_const(),
+            conn_id,
+            publication,
+            envelope.request_id,
+            &envelope.payload,
+        );
+    } else if envelope.message == crate::envelope::EnvelopeMessage::Rejected {
         // Rejection reply: the remote node hit its inbound ask path and sent an
         // encoded AskError reason. Mark the pending ask as failed so the
         // originating caller gets the precise remote rejection reason.

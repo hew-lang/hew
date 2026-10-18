@@ -540,6 +540,7 @@ type InboundRouter = unsafe extern "C" fn(
     u64, // authenticated connection publication
     u64, // service grant id, zero for ordinary location requests
     i64, // absolute local request deadline, -1 when absent
+    u8,  // validated request kind and admission policy
 );
 
 // SAFETY: HewConnMgr is only accessed through C ABI functions that

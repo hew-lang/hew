@@ -137,6 +137,9 @@ fn runtime_role_name(role: RuntimeVariantRole) -> &'static str {
         Role::SendErrorVersionMismatch => "SendErrorVersionMismatch",
         Role::SendErrorBackpressure => "SendErrorBackpressure",
         Role::SendErrorDead => "SendErrorDead",
+        Role::SendErrorUnauthorized => "SendErrorUnauthorized",
+        Role::SendErrorInvalidMessage => "SendErrorInvalidMessage",
+        Role::SendErrorTimedOut => "SendErrorTimedOut",
         Role::SendErrorWriteTimedOut => "SendErrorWriteTimedOut",
         Role::DeliveryAccepted => "DeliveryAccepted",
         Role::DeliveryDiscarded => "DeliveryDiscarded",
@@ -612,9 +615,13 @@ impl<'m> Walker<'m> {
         let success = args
             .first()
             .and_then(|ty| self.module.variant_shape_for_type(ty));
-        let failure = args
+        let error = args
             .get(1)
-            .and_then(|ty| self.module.aggregate_shape_for_type(ty));
+            .and_then(|ty| self.module.variant_shape_for_type(ty));
+        let failure = error
+            .and_then(|shape| shape.variants.first())
+            .and_then(|variant| variant.fields.first())
+            .and_then(|field| self.module.aggregate_shape_for_type(&field.ty));
         serde_json::json!({
             "success": success.map(|shape| shape.id.0),
             "failure": failure.map(|shape| shape.id.0),
@@ -2217,6 +2224,7 @@ fn actor_operation(operation: &hew_sir::ActorOperation) -> serde_json::Value {
             "actor": actor.0,
             "message": message,
         }),
+        Op::Identity { .. } => serde_json::json!({ "op": "identity" }),
         Op::LocalObservation { kind, .. } => serde_json::json!({
             "op": "local_observation",
             "kind": observation_name(*kind),

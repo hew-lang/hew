@@ -1,6 +1,8 @@
 //! Node-owned inbound asks driven by ordinary actor-call readiness.
 
-use super::inbound::{send_rejection_reply, send_reply_envelope, InboundAskGuard};
+use super::inbound::{
+    send_refusal_reply, send_rejection_reply, send_reply_envelope, InboundAskGuard,
+};
 use super::{AskError, InboundRequest, SendConnMgr};
 use crate::actor_call_native::{hew_actor_call_free, hew_actor_call_poll, HewActorCall};
 use crate::actor_caller::HewCallerStamp;
@@ -154,12 +156,38 @@ impl ReadyWork for InboundAsk {
     }
 }
 
+enum PendingState {
+    Input(Option<InboundRequest>),
+    Active(*mut HewActorCall),
+    Queued {
+        request: Arc<crate::request_state::RequestState>,
+        timer: *mut crate::coro_sleep::HewCoroSleep,
+    },
+    Done,
+}
+
+impl Drop for PendingState {
+    fn drop(&mut self) {
+        // SAFETY: the pending owner exclusively owns each operation and timer.
+        unsafe {
+            match self {
+                Self::Active(operation) => hew_actor_call_free(*operation),
+                Self::Queued { request, timer } => {
+                    request.withdraw();
+                    crate::coro_sleep::hew_coro_sleep_free(*timer);
+                }
+                Self::Input(_) | Self::Done => {}
+            }
+        }
+    }
+}
+
 pub(super) struct PendingCall {
     token: HewLocalPidId,
+    kind: crate::request_state::RequestKind,
     message: i32,
-    request: Option<InboundRequest>,
-    operation: *mut HewActorCall,
-    reply: ThunkPair,
+    state: PendingState,
+    reply: Option<ThunkPair>,
     caller: HewCallerStamp,
     source_node: u16,
     request_id: u64,
@@ -184,7 +212,7 @@ impl PendingCall {
         token: HewLocalPidId,
         message: i32,
         request: InboundRequest,
-        reply: ThunkPair,
+        reply: Option<ThunkPair>,
         caller: HewCallerStamp,
         source_node: u16,
         request_id: u64,
@@ -194,12 +222,13 @@ impl PendingCall {
         publication: u64,
         deadline: crate::request_deadline::RequestDeadline,
         admission: super::service::RemoteAdmission,
+        kind: crate::request_state::RequestKind,
     ) -> Self {
         Self {
             token,
+            kind,
             message,
-            request: Some(request),
-            operation: ptr::null_mut(),
+            state: PendingState::Input(Some(request)),
             reply,
             caller,
             source_node,
@@ -218,27 +247,106 @@ impl PendingCall {
             return true;
         }
         let _remote_trace_source = crate::tracing::enter_remote_trace_source();
-        if let Some(request) = self.request.take() {
-            self.operation = request.ask_start(
-                self.token,
-                self.message,
-                self.reply,
-                self.caller,
-                waker,
-                self.deadline,
-                self.admission
-                    .take()
-                    .expect("unpublished authenticated request"),
+        if let PendingState::Queued { request, timer } = &self.state {
+            if request.deadline.expired()
+                // SAFETY: this pending publication retains the moved timer.
+                || (!timer.is_null() && unsafe { crate::coro_sleep::hew_coro_sleep_status(*timer) } > 0)
+            {
+                request.withdraw();
+            }
+            return request.terminal();
+        }
+        if let PendingState::Input(request) = &mut self.state {
+            let request = request.take().expect("unpublished request");
+            self.state = PendingState::Active(
+                request.ask_start(
+                    self.token,
+                    self.message,
+                    self.reply,
+                    self.caller,
+                    waker,
+                    self.deadline,
+                    self.admission
+                        .take()
+                        .expect("unpublished authenticated request"),
+                    self.kind,
+                ),
             );
         }
+        let PendingState::Active(operation) = self.state else {
+            return true;
+        };
         // SAFETY: the mutex gives this poll exclusive access to the operation.
-        let status = unsafe { hew_actor_call_poll(self.operation) };
+        let status = unsafe { hew_actor_call_poll(operation) };
         if status == -1 {
             return false;
         }
-        let operation = std::mem::replace(&mut self.operation, ptr::null_mut());
+        if self.kind.completion_policy().is_none() {
+            // SAFETY: ready admission is exclusively owned; mailbox sends have no reply payload.
+            let outcome = unsafe { (*operation).take_outcome(ptr::null_mut()) };
+            match outcome {
+                crate::request_state::RequestOutcome::Submitted { discarded } => {
+                    let queued = if discarded {
+                        PendingState::Done
+                    } else {
+                        // SAFETY: the taken local admission transfers its timer once.
+                        let (request, timer) = unsafe { (*operation).take_queued() };
+                        PendingState::Queued { request, timer }
+                    };
+                    self.state = queued;
+                    send_reply_envelope(
+                        self.source_node,
+                        self.request_id,
+                        self.publication,
+                        &[u8::from(discarded)],
+                        self.manager.0,
+                        self.shutdown.as_ref(),
+                    );
+                    return discarded;
+                }
+                crate::request_state::RequestOutcome::Refused(reason) => {
+                    send_refusal_reply(
+                        self.source_node,
+                        self.request_id,
+                        self.publication,
+                        reason,
+                        self.manager.0,
+                        self.shutdown.as_ref(),
+                    );
+                }
+                crate::request_state::RequestOutcome::Completed(code) => {
+                    let reason = AskError::ALL
+                        .iter()
+                        .copied()
+                        .find(|error| *error as i32 == code)
+                        .unwrap_or(AskError::SendFailed);
+                    send_rejection_reply(
+                        self.source_node,
+                        self.request_id,
+                        self.publication,
+                        reason,
+                        self.manager.0,
+                        self.shutdown.as_ref(),
+                    );
+                }
+            }
+            return true;
+        }
+        // ask_take owns and frees the active call; disarm this state's destructor.
+        if let PendingState::Active(active) = &mut self.state {
+            *active = ptr::null_mut();
+        }
+        self.state = PendingState::Done;
+        // SAFETY: the ready operation remains exclusively owned until take below.
+        let refused = unsafe { (*operation).unaccepted() };
         // SAFETY: this ready operation is uniquely owned and consumed here.
-        match unsafe { InboundRequest::ask_take(operation, self.reply, status) } {
+        match unsafe {
+            InboundRequest::ask_take(
+                operation,
+                self.reply.expect("completion reply codec"),
+                status,
+            )
+        } {
             Ok(reply) => send_reply_envelope(
                 self.source_node,
                 self.request_id,
@@ -247,7 +355,11 @@ impl PendingCall {
                 self.manager.0,
                 self.shutdown.as_ref(),
             ),
-            Err(reason) => send_rejection_reply(
+            Err(reason) => (if refused {
+                send_refusal_reply
+            } else {
+                send_rejection_reply
+            })(
                 self.source_node,
                 self.request_id,
                 self.publication,
@@ -257,13 +369,6 @@ impl PendingCall {
             ),
         }
         true
-    }
-}
-
-impl Drop for PendingCall {
-    fn drop(&mut self) {
-        // SAFETY: cancelling this owner withdraws its request or tombstones its reply.
-        unsafe { hew_actor_call_free(self.operation) };
     }
 }
 

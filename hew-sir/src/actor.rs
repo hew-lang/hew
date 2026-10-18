@@ -945,6 +945,10 @@ impl LifecycleTarget {
 /// Actor boundary selected from an exact demanded protocol.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ActorOperation {
+    /// Compare actor identity without resolving a role or exercising grant rights.
+    Identity {
+        target: ResolvedTy,
+    },
     LocalObservation {
         kind: LocalObservationKind,
         target: ResolvedTy,
@@ -1179,6 +1183,29 @@ impl ActorOperation {
                 return_ty: ResolvedTy::Unit,
             });
         }
+        if let Self::Identity { target } = self {
+            if !matches!(
+                target,
+                ResolvedTy::Named {
+                    head: hew_types::TypeHead::Actor(_),
+                    ..
+                }
+            ) {
+                return Err("actor identity requires an actor handle".into());
+            }
+            return Ok(crate::SemSignature {
+                failure_domain: hew_types::CallableFailureDomain::HewFault,
+                params: vec![
+                    crate::SemAbiParam {
+                        ty: target.clone(),
+                        passing: crate::SemParamPassing::Borrow,
+                        caller_visible_projection: false,
+                    };
+                    2
+                ],
+                return_ty: ResolvedTy::Bool,
+            });
+        }
         if let Self::LocalObservation {
             kind,
             target,
@@ -1208,7 +1235,8 @@ impl ActorOperation {
             return_ty,
         };
         let id = match self {
-            Self::LocalObservation { .. }
+            Self::Identity { .. }
+            | Self::LocalObservation { .. }
             | Self::RemoteObservation { .. }
             | Self::CallStart(_)
             | Self::CallTake(_)
@@ -1245,7 +1273,8 @@ impl ActorOperation {
             .filter(|actor| actor.id == id)
             .ok_or("unknown actor identity")?;
         let (mut types, return_ty) = match self {
-            Self::LocalObservation { .. }
+            Self::Identity { .. }
+            | Self::LocalObservation { .. }
             | Self::RemoteObservation { .. }
             | Self::CallStart(_)
             | Self::CallTake(_)

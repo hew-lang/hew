@@ -153,7 +153,11 @@ pub(super) unsafe extern "C" fn node_inbound_router(
     publication: u64,
     grant: u64,
     deadline_ns: i64,
+    kind: u8,
 ) {
+    let Some(kind) = crate::request_state::RequestKind::from_wire(kind) else {
+        return;
+    };
     // SAFETY: the reader supplies a NUL-terminated UTF-8 declaration for this call.
     let identity = unsafe { std::ffi::CStr::from_ptr(identity) }
         .to_str()
@@ -183,6 +187,7 @@ pub(super) unsafe extern "C" fn node_inbound_router(
             publication,
             grant,
             crate::request_deadline::RequestDeadline::from_raw(deadline_ns),
+            kind,
         );
     } else {
         // Fire-and-forget message — reconstruct the value into THIS node's
@@ -301,6 +306,7 @@ pub(super) fn handle_inbound_ask(
     publication: u64,
     grant: u64,
     deadline: crate::request_deadline::RequestDeadline,
+    kind: crate::request_state::RequestKind,
 ) {
     // Hold a router before it acquires the manager's publication barrier.
     #[cfg(test)]
@@ -333,7 +339,7 @@ pub(super) fn handle_inbound_ask(
     let reject = |reason: AskError| {
         #[cfg(test)]
         INBOUND_ASK_ERROR_REPLY_HOOK.hit();
-        send_rejection_reply(
+        send_refusal_reply(
             source_node_id,
             request_id,
             publication,
@@ -382,12 +388,15 @@ pub(super) fn handle_inbound_ask(
     };
     // The codecs are keyed by the target actor type's dispatch pointer, so a
     // frame is decoded, and its reply encoded, only by that actor's member.
-    let codecs = crate::xnode_serial::lookup_request(dispatch, msg_type)
-        .zip(crate::xnode_serial::lookup_reply(dispatch, msg_type));
-    let Some((request_codec, reply_codec)) = codecs else {
+    let Some(request_codec) = crate::xnode_serial::lookup_request(dispatch, msg_type) else {
         reject(AskError::DecodeFailure);
         return;
     };
+    let reply_codec = crate::xnode_serial::lookup_reply(dispatch, msg_type);
+    if kind.completion_policy().is_some() && reply_codec.is_none() {
+        reject(AskError::DecodeFailure);
+        return;
+    }
     // SAFETY: the registered codec decodes into a fresh owned wrapper.
     let Some(request) = (unsafe { InboundRequest::decode(request_codec, payload) }) else {
         reject(AskError::DecodeFailure);
@@ -407,6 +416,7 @@ pub(super) fn handle_inbound_ask(
         publication,
         deadline,
         admission,
+        kind,
     );
     if let Err(reason) = pending.admit(target, call, gate.as_ref()) {
         if reason != AskError::LocalShutdown {
@@ -429,6 +439,46 @@ pub(super) fn send_rejection_reply(
     reason: AskError,
     conn_mgr: *mut connection::HewConnMgr,
     shutdown_started: &AtomicBool,
+) {
+    send_failure_reply(
+        target_node_id,
+        request_id,
+        publication,
+        reason,
+        conn_mgr,
+        shutdown_started,
+        crate::envelope::EnvelopeMessage::Rejected,
+    );
+}
+
+/// Report a proved refusal before destination mailbox admission.
+pub(super) fn send_refusal_reply(
+    target_node_id: u16,
+    request_id: u64,
+    publication: u64,
+    reason: AskError,
+    conn_mgr: *mut connection::HewConnMgr,
+    shutdown_started: &AtomicBool,
+) {
+    send_failure_reply(
+        target_node_id,
+        request_id,
+        publication,
+        reason,
+        conn_mgr,
+        shutdown_started,
+        crate::envelope::EnvelopeMessage::NotAdmitted,
+    );
+}
+
+fn send_failure_reply(
+    target_node_id: u16,
+    request_id: u64,
+    publication: u64,
+    reason: AskError,
+    conn_mgr: *mut connection::HewConnMgr,
+    shutdown_started: &AtomicBool,
+    message: crate::envelope::EnvelopeMessage,
 ) {
     if conn_mgr.is_null() {
         return;
@@ -464,7 +514,7 @@ pub(super) fn send_rejection_reply(
             encode_envelope_frame_from_raw_parts(
                 None,
                 None,
-                crate::envelope::EnvelopeMessage::Rejected,
+                message,
                 reason_payload.as_ptr(),
                 reason_payload.len(),
                 request_id,

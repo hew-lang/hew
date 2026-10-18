@@ -367,7 +367,7 @@ impl Checker {
                 SpanKey::in_module(span, self.current_module_idx),
                 ActorDeliveryCall::Submit { policy: old_policy },
             );
-            self.record_submission_suspension(span, old_policy.may_suspend());
+            self.record_submission_suspension(span, true);
             return Some(delivery::result_type(ty.clone()));
         }
         if method != "to" || args.len() != 1 || args[0].name().is_some() {
@@ -392,7 +392,7 @@ impl Checker {
                 target_is_view: view.is_some(),
             },
         );
-        self.record_submission_suspension(span, policy.may_suspend());
+        self.record_submission_suspension(span, true);
         Some(delivery::result_type(delivery::message_type(
             target.clone(),
             payload.clone(),
@@ -538,7 +538,7 @@ impl Checker {
         }
         // The call is the send: a `receive fn` without a reply submits at its
         // call site, under the policy its receiver view carries.
-        self.record_submission_suspension(span, policy.may_suspend());
+        self.record_submission_suspension(span, true);
         delivery::result_type(delivery::message_type(
             target.clone(),
             Ty::Tuple(payload),

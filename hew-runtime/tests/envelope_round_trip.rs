@@ -13,11 +13,11 @@ use hew_runtime::envelope::{
     encode_monitor_down_payload, encode_monitor_req_payload, encode_registry_gossip_payload,
     encode_setup_result_payload, encode_swim_payload, ControlFrame, DecodeError, EnvelopeFrame,
     EnvelopeMessage, LinkReqPayload, MonitorDownPayload, MonitorPayloadError, MonitorReqPayload,
-    NodeSessionIdentity, RegistryGossipPayload, RegistryGossipPayloadError, SetupResultPayload,
-    SwimControlPayload, SwimGossipEntry, SwimPayloadError, WireFrame, CTRL_DEMONITOR,
-    CTRL_LINK_DOWN, CTRL_LINK_REQ, CTRL_LINK_SETUP_RESULT, CTRL_MONITOR_DOWN, CTRL_MONITOR_REQ,
-    CTRL_MONITOR_SETUP_RESULT, CTRL_REGISTRY_GOSSIP, CTRL_UNLINK, FRAME_TYPE_CONTROL,
-    FRAME_TYPE_ENVELOPE, MAX_LINK_PAYLOAD_BYTES, MAX_MONITOR_PAYLOAD_BYTES,
+    NodeSessionIdentity, RegistryGossipPayload, RegistryGossipPayloadError, RequestKind,
+    SetupResultPayload, SwimControlPayload, SwimGossipEntry, SwimPayloadError, WireFrame,
+    CTRL_DEMONITOR, CTRL_LINK_DOWN, CTRL_LINK_REQ, CTRL_LINK_SETUP_RESULT, CTRL_MONITOR_DOWN,
+    CTRL_MONITOR_REQ, CTRL_MONITOR_SETUP_RESULT, CTRL_REGISTRY_GOSSIP, CTRL_UNLINK,
+    FRAME_TYPE_CONTROL, FRAME_TYPE_ENVELOPE, MAX_LINK_PAYLOAD_BYTES, MAX_MONITOR_PAYLOAD_BYTES,
     MAX_REGISTRY_GOSSIP_NAME_BYTES, MAX_REGISTRY_GOSSIP_PAYLOAD_BYTES, MAX_SWIM_GOSSIP_ENTRIES,
     MAX_SWIM_PAYLOAD_BYTES, REGISTRY_GOSSIP_OP_ADD, REGISTRY_GOSSIP_OP_REMOVE,
     SETUP_STATUS_TARGET_GONE, WIRE_VERSION,
@@ -237,13 +237,19 @@ fn cddl_envelope_shape(frame: &EnvelopeFrame) {
         }
         EnvelopeMessage::Reply => assert_integer_value(find_field(entries, 5), 0),
         EnvelopeMessage::Rejected => assert_integer_value(find_field(entries, 5), 1),
+        EnvelopeMessage::NotAdmitted => assert_integer_value(find_field(entries, 5), 3),
         EnvelopeMessage::Withdraw => assert_integer_value(find_field(entries, 5), 2),
-        EnvelopeMessage::Service { handler, grant_id } => {
+        EnvelopeMessage::Service {
+            handler,
+            grant_id,
+            kind,
+        } => {
             let Value::Map(service) = find_field(entries, 5) else {
                 panic!("service map");
             };
             assert_eq!(find_field(service, 1), &Value::Text(handler.clone()));
             assert_integer_value(find_field(service, 2), i128::from(*grant_id));
+            assert_integer_value(find_field(service, 3), i128::from(*kind as u8));
         }
     }
     assert_bytes_value(find_field(entries, 6), &frame.payload);
@@ -369,20 +375,30 @@ fn service_offer_and_request_reject_noncanonical_authority() {
     }
     let mut request = minimal_envelope();
     request.request_id = 3;
-    request.message = EnvelopeMessage::Service {
-        handler: offer.handlers[0].clone(),
-        grant_id: 7,
-    };
-    assert_eq!(
-        decode_envelope_frame(&encode_envelope_frame(&request).unwrap()).unwrap(),
-        request
-    );
+    for kind in [
+        RequestKind::CallWait,
+        RequestKind::CallReject,
+        RequestKind::SendWait,
+        RequestKind::SendReject,
+        RequestKind::SendDropNewest,
+    ] {
+        request.message = EnvelopeMessage::Service {
+            handler: offer.handlers[0].clone(),
+            grant_id: 7,
+            kind,
+        };
+        assert_eq!(
+            decode_envelope_frame(&encode_envelope_frame(&request).unwrap()).unwrap(),
+            request
+        );
+    }
     request.request_id = 0;
     assert!(encode_envelope_frame(&request).is_err());
     request.request_id = 3;
     request.message = EnvelopeMessage::Service {
         handler: offer.handlers[0].clone(),
         grant_id: 0,
+        kind: RequestKind::CallReject,
     };
     assert!(encode_envelope_frame(&request).is_err());
 }
@@ -771,7 +787,11 @@ fn request_budgets_and_withdrawals_are_bounded_and_kind_checked() {
 
 #[test]
 fn reply_status_round_trips_outside_handler_namespace() {
-    for message in [EnvelopeMessage::Reply, EnvelopeMessage::Rejected] {
+    for message in [
+        EnvelopeMessage::Reply,
+        EnvelopeMessage::Rejected,
+        EnvelopeMessage::NotAdmitted,
+    ] {
         let frame = EnvelopeFrame {
             target: None,
             source: None,
@@ -838,7 +858,7 @@ fn same_envelope_produces_same_bytes() {
     // 3=>ctrl_kind, 4=>empty bstr.
     assert_eq!(
         to_cbor(&minimal_control()),
-        vec![0xa4, 0x01, 0x05, 0x02, 0x00, 0x03, 0x00, 0x04, 0x40]
+        vec![0xa4, 0x01, 0x06, 0x02, 0x00, 0x03, 0x00, 0x04, 0x40]
     );
 
     // a8 map(8), then k/v pairs: 1=>version, 2=>frame_type,
@@ -847,7 +867,7 @@ fn same_envelope_produces_same_bytes() {
     assert_eq!(
         encode_envelope_frame(&minimal_envelope()).unwrap(),
         vec![
-            0xa8, 0x01, 0x05, 0x02, 0x01, 0x03, 0xa3, 0x01, 0x50, 0x01, 0x01, 0x01, 0x01, 0x01,
+            0xa8, 0x01, 0x06, 0x02, 0x01, 0x03, 0xa3, 0x01, 0x50, 0x01, 0x01, 0x01, 0x01, 0x01,
             0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x02, 0x01, 0x03,
             0x01, 0x04, 0xf6, 0x05, 0x72, 0x74, 0x65, 0x73, 0x74, 0x73, 0x2e, 0x41, 0x63, 0x74,
             0x6f, 0x72, 0x2e, 0x68, 0x61, 0x6e, 0x64, 0x6c, 0x65, 0x06, 0x40, 0x07, 0x00, 0x08,

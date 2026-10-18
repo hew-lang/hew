@@ -1100,6 +1100,42 @@ pub(crate) fn current_imported_actor(
     })
 }
 
+/// Observe an actor's identity independently of descriptor allocation and grant liveness.
+#[no_mangle]
+pub extern "C" fn hew_actor_handle_identical(left: HewLocalPidId, right: HewLocalPidId) -> i32 {
+    if left == right {
+        return 1;
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        // A role names a stable place, never its current incarnation.
+        if current_actor_role_owner_slot(left).is_some()
+            || current_actor_role_owner_slot(right).is_some()
+        {
+            return 0;
+        }
+        let left_import = current_imported_actor(left);
+        let right_import = current_imported_actor(right);
+        match (left_import, right_import) {
+            (Some(left), Some(right)) => return i32::from(left.identity() == right.identity()),
+            (Some(imported), None) => {
+                return i32::from(
+                    crate::hew_node::service_api::local_actor_identity(right)
+                        == Some(imported.identity()),
+                )
+            }
+            (None, Some(imported)) => {
+                return i32::from(
+                    crate::hew_node::service_api::local_actor_identity(left)
+                        == Some(imported.identity()),
+                )
+            }
+            (None, None) => {}
+        }
+    }
+    0
+}
+
 /// Copy an actor value. Local incarnations and roles own no target allocation;
 /// imported values share only their local descriptor, never the issuer grant.
 #[no_mangle]

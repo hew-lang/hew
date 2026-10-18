@@ -488,13 +488,15 @@ pub use crate::internal::types::AskError;
 enum ReplyStatus {
     Success,
     Failed,
+    /// The authenticated destination, or our unpublished send job, refused admission.
+    Refused,
 }
 
 #[derive(Debug)]
 struct ReplyOutcome {
     status: ReplyStatus,
     data: Vec<u8>,
-    /// Meaningful only when `status == ReplyStatus::Failed`; carries the
+    /// Meaningful for either failure status; carries the
     /// specific ask-error discriminant so callers can distinguish rejection
     /// (e.g. [`AskError::WorkerAtCapacity`]) from a genuine connection drop.
     ask_error: AskError,
@@ -724,6 +726,15 @@ impl ReplyRoutingTable {
     /// request was found. Used by the owning submission job; peer failures
     /// arrive through the connection-validated paths.
     fn fail(&self, request_id: u64, ask_error: AskError) -> bool {
+        self.resolve_failure(request_id, ask_error, ReplyStatus::Failed)
+    }
+
+    /// Refuse a job whose request bytes have not been published to the peer.
+    fn refuse(&self, request_id: u64, ask_error: AskError) -> bool {
+        self.resolve_failure(request_id, ask_error, ReplyStatus::Refused)
+    }
+
+    fn resolve_failure(&self, request_id: u64, ask_error: AskError, status: ReplyStatus) -> bool {
         let entry = {
             let mut map = self
                 .pending
@@ -732,7 +743,14 @@ impl ReplyRoutingTable {
             map.remove(&request_id)
         };
         if let Some(pending) = entry {
-            Self::fail_pending_with_reason(&pending, ask_error);
+            Self::complete_pending(
+                &pending,
+                ReplyOutcome {
+                    status,
+                    data: Vec::new(),
+                    ask_error,
+                },
+            );
             true
         } else {
             false
@@ -833,11 +851,19 @@ impl ReplyRoutingTable {
         expected: ConnectionKey,
         publication: u64,
         ask_error: AskError,
+        status: ReplyStatus,
     ) -> bool {
         if let Some(pending) =
             self.remove_if_connection(request_id, expected, PendingReplyKind::Ask(publication))
         {
-            Self::fail_pending_with_reason(&pending, ask_error);
+            Self::complete_pending(
+                &pending,
+                ReplyOutcome {
+                    status,
+                    data: Vec::new(),
+                    ask_error,
+                },
+            );
             true
         } else {
             false
@@ -1026,13 +1052,48 @@ pub(crate) fn fail_remote_reply(
     request_id: u64,
     reason_payload: &[u8],
 ) -> bool {
+    resolve_remote_failure(
+        conn_mgr,
+        conn_id,
+        publication,
+        request_id,
+        reason_payload,
+        ReplyStatus::Failed,
+    )
+}
+
+pub(crate) fn refuse_remote_reply(
+    conn_mgr: *const HewConnMgr,
+    conn_id: c_int,
+    publication: u64,
+    request_id: u64,
+    reason_payload: &[u8],
+) -> bool {
+    resolve_remote_failure(
+        conn_mgr,
+        conn_id,
+        publication,
+        request_id,
+        reason_payload,
+        ReplyStatus::Refused,
+    )
+}
+
+fn resolve_remote_failure(
+    conn_mgr: *const HewConnMgr,
+    conn_id: c_int,
+    publication: u64,
+    request_id: u64,
+    reason_payload: &[u8],
+    status: ReplyStatus,
+) -> bool {
     // On unknown codes, leave the pending ask unresolved (it will timeout)
     // rather than fabricating a misleading AskError.
     match decode_rejection_reason(reason_payload) {
         Ok(reason) => {
             let expected = ConnectionKey::new(conn_mgr, conn_id);
             reply_table_opt().is_some_and(|table| {
-                table.fail_from_connection(request_id, expected, publication, reason)
+                table.fail_from_connection(request_id, expected, publication, reason, status)
             })
         }
         Err(_) => false,
@@ -2165,11 +2226,12 @@ impl InboundRequest {
         self,
         token: crate::lifetime::local_handles::HewLocalPidId,
         msg_type: i32,
-        reply: crate::xnode_serial::ThunkPair,
+        reply: Option<crate::xnode_serial::ThunkPair>,
         caller: crate::actor_caller::HewCallerStamp,
         waker: &crate::wake::HewWaker,
         deadline: crate::request_deadline::RequestDeadline,
         admission: service::RemoteAdmission,
+        kind: crate::request_state::RequestKind,
     ) -> *mut crate::actor_call_native::HewActorCall {
         let (wrapper, size, drop) = (self.wrapper, self.size, self.drop);
         std::mem::forget(self);
@@ -2181,11 +2243,11 @@ impl InboundRequest {
                 wrapper,
                 size,
                 drop,
-                reply.size,
-                reply.drop,
+                reply.map_or(0, |reply| reply.size),
+                reply.and_then(|reply| reply.drop),
                 waker,
                 deadline.raw(),
-                1,
+                kind,
                 None,
                 None,
                 caller,

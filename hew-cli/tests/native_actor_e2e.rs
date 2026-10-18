@@ -568,14 +568,14 @@ actor Worker {
             _ => panic("expected explicit discard"),
         }
         match mailbox(me, on_full: .Reject).process(payload("retry")) {
-            .Err(rejected) => {
+            .Err(ActorError.Rejected(rejected)) => {
                 match rejected.reason {
                     .Full => println("full"),
                     _ => panic("expected full mailbox"),
                 }
                 let _ = rejected.message.to(backup);
             }
-            .Ok(_) => panic("expected rejection"),
+            _ => panic("expected rejection"),
         }
     }
 }

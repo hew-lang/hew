@@ -117,6 +117,9 @@ pub(crate) unsafe fn free_allocation(env: *mut HewMsgEnvelope) {
             (*env).timer.is_none(),
             "timer claim must settle before envelope retirement"
         );
+        if let Some(state) = &(*env).request {
+            state.withdraw();
+        }
         ptr::drop_in_place(env);
         crate::mem::buf_free(env.cast());
     }

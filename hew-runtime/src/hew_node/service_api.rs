@@ -28,6 +28,24 @@ pub(crate) struct ImportedService {
     offer: ServiceOfferPayload,
 }
 
+impl ImportedService {
+    pub(crate) fn identity(&self) -> crate::node_identity::Location {
+        self.offer.target
+    }
+}
+
+/// Resolve a direct local incarnation through the same location authority used
+/// for service exports, while the current node keeps its manager alive.
+pub(crate) fn local_actor_identity(
+    token: crate::lifetime::local_handles::HewLocalPidId,
+) -> Option<crate::node_identity::Location> {
+    let actor = crate::lifetime::local_handles::resolve_current_observation_actor(token)?;
+    with_manager(|manager| {
+        connection::local_location_for_actor(manager, actor).ok_or(AskError::StaleRef)
+    })
+    .ok()
+}
+
 fn local_session(manager: &HewConnMgr) -> Option<NodeSessionIdentity> {
     Some(NodeSessionIdentity {
         node_id: manager.auth.node_identity()?,
@@ -287,7 +305,7 @@ pub(super) unsafe fn take_acquisition(operation: &mut HewRemoteCall, output: *mu
     let Some(reply) = pending.outcome.lock_or_recover().take() else {
         return AskError::ConnectionDropped as i32;
     };
-    if reply.status == ReplyStatus::Failed {
+    if reply.status != ReplyStatus::Success {
         return reply.ask_error as i32;
     }
     let value = match &mut operation.route {
@@ -361,6 +379,7 @@ pub(crate) unsafe fn start_imported_actor_call(
     reply_size: usize,
     deadline_ns: i64,
     waker: *const crate::wake::HewWaker,
+    kind: crate::request_state::RequestKind,
 ) -> *mut HewRemoteCall {
     let target = imported_actor_target(service, dispatch, message);
     // SAFETY: encoding is synchronous and the source retains its wrapper.
@@ -374,6 +393,7 @@ pub(crate) unsafe fn start_imported_actor_call(
             reply_size,
             deadline_ns,
             waker,
+            kind,
         )
     }
 }

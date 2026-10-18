@@ -1040,6 +1040,9 @@ pub(crate) fn runtime_variant_tags(
             (Role::SendErrorVersionMismatch, "VersionMismatch"),
             (Role::SendErrorBackpressure, "Backpressure"),
             (Role::SendErrorDead, "Dead"),
+            (Role::SendErrorUnauthorized, "Unauthorized"),
+            (Role::SendErrorInvalidMessage, "InvalidMessage"),
+            (Role::SendErrorTimedOut, "TimedOut"),
             (Role::SendErrorWriteTimedOut, "WriteTimedOut"),
         ],
         head if *head == KnownDecl::Caller.head() => &[

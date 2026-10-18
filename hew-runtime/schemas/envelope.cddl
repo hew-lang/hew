@@ -156,15 +156,16 @@ service-offer-payload = {
 service-request = {
     handler: 1 => handler-identity,
     grant_id: 2 => uint .gt 0,
+    kind: 3 => 0..4, ; call Wait/Reject; mailbox Wait/Reject/DropNewest
 } ; only with target and positive request_id
 
 handler-identity = text ; canonical package.module.Actor.handler; 1..4096 UTF-8 bytes, no NUL
-reply-status = 0 / 1    ; success / rejection; only for replies (nil target/source, positive request_id)
+reply-status = 0 / 1 / 3 ; success / failure after admission or unknown / not admitted; only for replies (nil target/source, positive request_id)
 
 ; Withdrawal has a target, nil source/budget, positive request_id and empty payload.
 withdrawal = 2
 
-wire-version = 5        ; current schema version; decoders reject unknown values
+wire-version = 6        ; current schema version; decoders reject unknown values
 node-id = bstr .size 16
 location = {
     node:        1 => node-id,

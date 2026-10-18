@@ -104,6 +104,7 @@ const TERMS = new Set([
 ]);
 
 const ACTOR_OPS = new Set([
+  "identity",
   "spawn",
   "self_handle",
   "stop",

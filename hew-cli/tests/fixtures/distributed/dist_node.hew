@@ -109,17 +109,24 @@ actor ServiceFacade {
     let started: Sink<i64>;
     let gate: Stream<i64>;
     var held_calls: i64 = 0;
+    #[wire]
     receive fn read() -> bytes { self.file.read().expect("supplied read") }
+    #[wire]
     receive fn add(left: i64, right: i64) -> i64 { left + right }
+    #[wire]
     receive fn handle(value: i64) -> i64 { value + 1 }
+    #[wire]
     receive fn finish() {}
+    #[wire]
     receive fn held() -> i64 {
         held_calls += 1;
         started.send(1).expect("held service started");
         let _ = gate.recv();
         held_calls
     }
+    #[wire]
     receive fn calls() -> i64 { held_calls }
+    #[wire]
     receive fn decline() -> i64 fails string { return error "declared-service-error"; }
 }
 
@@ -129,7 +136,7 @@ impl ActorMsg for ServiceFacade {
 }
 
 #[confined]
-fn supplied_sum(service: net.Service<ServiceFacade>) -> i64 {
+fn supplied_sum(service: ServiceFacade) -> i64 {
     service.add(right: 5, left: 37).expect("supplied add")
 }
 
@@ -173,6 +180,7 @@ fn scenario_server_service_grants(kx: string) {
     let (started, begins): (Sink<i64>, Stream<i64>) = stream.pipe(1).expect("started");
     let (release, gate): (Sink<i64>, Stream<i64>) = stream.pipe(1).expect("gate");
     let facade = spawn ServiceFacade { file: fs.open_read(path).expect("file"), started: started, gate: gate };
+    assert(supplied_sum(facade) == 42);
     Node.register("service-facade", facade);
     let credential = wait_for_file(f"{kx}/client.pub");
     let peer = authenticated_peer(credential);
@@ -301,6 +309,7 @@ fn scenario_service_grants(kx: string, port: string) -> i64 {
 }
 
 actor GenericEcho<T> {
+    #[wire]
     receive fn handle(value: T) -> T {
         value
     }

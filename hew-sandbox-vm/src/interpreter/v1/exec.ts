@@ -3434,6 +3434,16 @@ class ExecutorV1 {
       ? { kind: "Actor", identity: act.context.actor.identity }
       : { kind: "Task" };
     switch (operation.op) {
+      case "identity": {
+        const [left, right] = args;
+        if (left?.kind !== "actor" || right?.kind !== "actor")
+          throw new Error("actor identity requires two actor handles");
+        this.completeShim(act, term, {
+          kind: "bool",
+          value: left.id === right.id,
+        });
+        return;
+      }
       case "spawn": {
         const layout = this.pkg.actors?.find(
           (actor) => actor.id === operation.actor,
@@ -3790,15 +3800,17 @@ class ExecutorV1 {
           ]);
         const rejected = (reason: string) =>
           this.variant(term.result_shape, "ResultErr", [
-            {
-              kind: "record",
-              typeId: this.aggregateName(shapes.failure!),
-              shape: shapes.failure!,
-              fields: [
-                this.variant(shapes.reason, sendErrorRole(reason)),
-                request,
-              ],
-            },
+            this.variant(term.error_shape, "ActorErrorRejected", [
+              {
+                kind: "record",
+                typeId: this.aggregateName(shapes.failure!),
+                shape: shapes.failure!,
+                fields: [
+                  this.variant(shapes.reason, sendErrorRole(reason)),
+                  request,
+                ],
+              },
+            ]),
           ]);
         let parked = false;
         const finish = (value: VmValue) => {

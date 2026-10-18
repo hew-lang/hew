@@ -409,9 +409,9 @@ pub(super) fn semantic_callables(checked: &hew_sir::CheckedModule<'_>) -> BTreeS
                         .extend(&targets.known);
                 }
                 hew_sir::SemTerminator::ActorCall {
-                    operation: hew_sir::ActorOperation::Submit { policy, .. },
+                    operation: hew_sir::ActorOperation::Submit { .. },
                     ..
-                } if policy.may_suspend() => {
+                } => {
                     resumable.insert(function.callable);
                 }
                 hew_sir::SemTerminator::Safepoint { .. }
@@ -665,9 +665,9 @@ pub(super) fn verify_callables(module: &PhysicalModule) -> Result<(), PhysicalEr
                         .extend(&targets.known);
                 }
                 PhysicalTerminator::ActorCall {
-                    operation: hew_sir::ActorOperation::Submit { policy, .. },
+                    operation: hew_sir::ActorOperation::Submit { .. },
                     ..
-                } if policy.may_suspend() => {
+                } => {
                     resumable.insert(function.callable);
                 }
                 PhysicalTerminator::RuntimeCall { action, args, .. } => {

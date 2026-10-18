@@ -142,7 +142,7 @@ handler's turn has finished, which means processed, not durable.
 
 One-way delivery is a separate, explicit surface: `mailbox(target)` yields a
 view whose calls submit and return as soon as the message is accepted, with
-the value `Result<Delivery, SendFailure<Req>>`. `Delivery` reports
+the value `Result<Delivery, ActorError<Never, Req>>`. `Delivery` reports
 `.Accepted`, or `.Discarded` for a loss chosen by the destination's declared
 policy or by the sender's own `on_full`. A value-returning
 handler cannot be called through a mailbox view; the diagnostic names
@@ -170,7 +170,7 @@ was accepted or its fate is unknown. One view type per kind — `policy`
 completes, `mailbox` submits — and both are immutable.
 
 **Rejected requests.** A rejected completion or
-submission returns `SendFailure<Req>`, which retains the unaccepted request
+submission returns `ActorError.Rejected(SendFailure<Req>)`, which retains the unaccepted request
 and exposes its `reason`. The payload stays sealed. Consuming retry resubmits
 to the original target; consuming redirection checks the new target against
 the request's handler and parameter types before resubmitting. A program
@@ -329,7 +329,7 @@ actor Counter {
 
 - `receive fn` declares a message handler (entry point for actor messages)
 - `fn` declares a private internal method
-- **`receive fn` without return type** → completion. The call waits for the handler to finish and produces `Result<(), ActorError>`. Through a `mailbox(..)` view the same call submits instead, with the value `Result<Delivery, SendFailure<Req>>`.
+- **`receive fn` without return type** → completion. The call waits for the handler to finish and produces `Result<(), ActorError>`. Through a `mailbox(..)` view the same call submits instead, with the value `Result<Delivery, ActorError<Never, Req>>`.
 - **`receive fn` with return type** → request-response. The call waits for the reply and produces `Result<R, ActorError>`. Inside a `select` arm the call is the arm's source, so the arm's `from` clause is what waits.
 
 **Calling named actors:**
@@ -396,12 +396,15 @@ refused at the remote call.
 
 **Delivery outcomes (normative).**
 
-A mailbox view returns `Result<Delivery, SendFailure<Req>>` for every
+A mailbox view returns `Result<Delivery, ActorError<Never, Req>>` for every
 submission, whether the mailbox is bounded or unbounded. `Delivery.Accepted`
 means the mailbox accepted responsibility for the message; it does not mean
 that the handler has run. A policy that explicitly discards this submission
 reports `Delivery.Discarded`. Refusal returns the unaccepted request and its
-reason under the intended sealed-request contract above.
+reason in `ActorError.Rejected` under the sealed-request contract above.
+For an imported actor, success acknowledges admission at the authenticated
+destination. Connection loss before that acknowledgement can leave delivery
+uncertain; that error consumes the request and cannot be retried from its result.
 
 A direct handle call or a completion-policy view returns the completion
 envelope. A handler's `fails E` result maps to `ActorError.Failed(E)`; a

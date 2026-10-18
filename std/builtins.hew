@@ -296,11 +296,20 @@ pub enum SendError {
     /// reached the operating system. The peer's view of the stream is
     /// unknown, so the caller retires the stream.
     WriteTimedOut(i64);
+    /// The peer refused this message's grant before admission.
+    Unauthorized;
+    /// Encoding or decoding refused the message before admission.
+    InvalidMessage;
+    /// The request deadline expired before admission.
+    TimedOut;
 }
 
 impl Display for SendError {
     fn fmt(self) -> string {
         match self {
+            SendError.Unauthorized => "Unauthorized: the peer refused the message grant",
+            SendError.InvalidMessage => "InvalidMessage: the message could not be encoded or decoded",
+            SendError.TimedOut => "TimedOut: the deadline expired before admission",
             SendError.Full => "Full: the destination mailbox is full",
             SendError.Closed => "Closed: the sink or connection is closed",
             SendError.Partition => "Partition: the route to the peer is unavailable or the peer is suspected dead",

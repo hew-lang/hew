@@ -243,6 +243,6 @@ fn view_parts(ty: &Ty, view: KnownDecl) -> Option<(&Ty, SendPolicy)> {
 pub fn result_type(message: Ty) -> Ty {
     Ty::result(
         nominal(KnownDecl::Delivery, Vec::new()),
-        nominal(KnownDecl::SendFailure, vec![message]),
+        Ty::actor_error_with_request(Ty::never_type(), message),
     )
 }

@@ -9,8 +9,8 @@ use crate::internal::types::AskError;
 use crate::lifetime::live_actors::ActorIncarnation;
 use crate::lifetime::local_handles::HewLocalPidId;
 use crate::mailbox::native::{
-    ask_wait_resume, hew_actor_ask_wait_free, hew_actor_ask_wait_poll,
-    hew_actor_ask_wait_take_request, HewNativeAsk,
+    hew_actor_ask_wait_free, hew_actor_ask_wait_take_request, poll_request_admission,
+    request_wait_resume, HewNativeAsk,
 };
 use crate::mailbox::{hew_msg_envelope_new, HewMsgEnvelope, HewMsgEnvelopeDropFn};
 use crate::release_walker::{HewReleaseCursor, ReleaseDriver};
@@ -20,15 +20,18 @@ use crate::reply_channel::native::{
 use crate::reply_channel::{
     hew_reply_channel_cancel, hew_reply_channel_free, HewReplyChannel, HewReplyDropFn,
 };
+use crate::request_state::{RequestKind, RequestOutcome, RequestState};
 use crate::wake::HewWaker;
 use hew_cabi::value::HewValueReleaseStart;
+use std::sync::Arc;
 use std::{ffi::c_void, ptr};
 
 #[derive(Debug)]
 enum CallState {
     Admitting,
     Waiting,
-    Ready(i32),
+    Ready(RequestOutcome),
+    RemoteReady,
     Taken,
 }
 
@@ -37,6 +40,7 @@ struct LocalCall {
     admission: *mut HewNativeAsk,
     channel: *mut HewReplyChannel,
     timer: *mut HewCoroSleep,
+    request: Arc<RequestState>,
 }
 
 #[derive(Debug)]
@@ -54,8 +58,9 @@ enum CallRoute {
 #[derive(Debug)]
 pub struct HewActorCall {
     route: CallRoute,
+    owned_target: Option<HewLocalPidId>,
     expected_size: usize,
-    reject: bool,
+    kind: RequestKind,
     state: CallState,
     pub(crate) target: Option<ActorIncarnation>,
     cleanup_started: bool,
@@ -73,7 +78,11 @@ impl HewActorCall {
         unsafe {
             let (request, reply) = match &mut self.route {
                 CallRoute::Local(local) => {
-                    crate::reply_channel::withdraw_native_request(local.channel);
+                    if !matches!(self.state, CallState::Taken)
+                        || self.kind.completion_policy().is_some()
+                    {
+                        local.request.withdraw();
+                    }
                     let reply = crate::reply_channel::native::cancel_take_release(local.channel);
                     (hew_actor_ask_wait_take_request(local.admission), reply)
                 }
@@ -113,20 +122,22 @@ impl HewActorCall {
         #[cfg(not(target_arch = "wasm32"))]
         if let CallRoute::Imported { operation, .. } = &self.route {
             return match self.state {
-                CallState::Ready(status) => status,
+                CallState::Ready(outcome) => outcome.code(),
+                CallState::RemoteReady => 0,
                 CallState::Taken => -2,
                 CallState::Admitting | CallState::Waiting => {
                     // SAFETY: this call exclusively drives the imported operation.
                     let status = unsafe { crate::hew_node::hew_remote_call_poll(*operation) };
                     if status == 0 {
-                        self.state = CallState::Ready(0);
+                        self.state = CallState::RemoteReady;
                     }
                     status
                 }
             };
         }
         match self.state {
-            CallState::Ready(status) => return status,
+            CallState::Ready(outcome) => return outcome.code(),
+            CallState::RemoteReady => return 0,
             CallState::Taken => return -2,
             CallState::Admitting => {
                 let deadline = self.poll_deadline();
@@ -134,17 +145,41 @@ impl HewActorCall {
                     return deadline;
                 }
                 // SAFETY: this operation exclusively owns the admission.
-                let status = unsafe { hew_actor_ask_wait_poll(self.local().admission) };
-                if status == -1 {
-                    if self.reject {
-                        self.state = CallState::Ready(AskError::MailboxFull as i32);
-                        return AskError::MailboxFull as i32;
+                let result = unsafe { self.local().admission.as_mut() }
+                    .map_or(Err(AskError::SendFailed), |admission| unsafe {
+                        poll_request_admission(admission)
+                    });
+                use crate::mailbox::SendOutcome;
+                let discarded = match result {
+                    Ok(SendOutcome::Failed) => match self.kind {
+                        RequestKind::CallWait | RequestKind::SendWait => {
+                            return self.poll_deadline()
+                        }
+                        RequestKind::CallReject | RequestKind::SendReject => {
+                            self.state =
+                                CallState::Ready(RequestOutcome::Refused(AskError::MailboxFull));
+                            return AskError::MailboxFull as i32;
+                        }
+                        RequestKind::SendDropNewest => true,
+                    },
+                    Ok(
+                        SendOutcome::Enqueued | SendOutcome::Coalesced | SendOutcome::DroppedOld,
+                    ) => false,
+                    Ok(SendOutcome::Dropped) => true,
+                    other => {
+                        let error = match other {
+                            Err(error) => error,
+                            Ok(SendOutcome::Closed) => AskError::ActorStopped,
+                            Ok(SendOutcome::ShuttingDown) => AskError::LocalShutdown,
+                            _ => AskError::SendFailed,
+                        };
+                        self.state = CallState::Ready(RequestOutcome::Refused(error));
+                        return error as i32;
                     }
-                    return self.poll_deadline();
-                }
-                if status != 0 {
-                    self.state = CallState::Ready(status);
-                    return status;
+                };
+                if self.kind.completion_policy().is_none() {
+                    self.state = CallState::Ready(RequestOutcome::Submitted { discarded });
+                    return 0;
                 }
                 // SAFETY: admission transferred its request and sender reference.
                 unsafe { hew_actor_ask_wait_free(self.local().admission) };
@@ -158,27 +193,34 @@ impl HewActorCall {
         let channel = self.local().channel;
         let status = unsafe { hew_reply_channel_status_native(channel, self.expected_size) };
         if status != -1 {
-            self.state = CallState::Ready(status);
+            self.state = CallState::Ready(RequestOutcome::Completed(status));
             return status;
         }
         self.poll_deadline()
     }
 
     fn poll_deadline(&mut self) -> i32 {
-        let LocalCall { timer, channel, .. } = *self.local();
+        let unadmitted = matches!(self.state, CallState::Admitting);
+        let local = self.local();
+        let (timer, channel, deadline) = (local.timer, local.channel, local.request.deadline);
         if timer.is_null() {
             return -1;
         }
         // SAFETY: the operation uniquely owns its optional timer.
         let status = unsafe { hew_coro_sleep_status(timer) };
         // SAFETY: this operation retains the immutable channel metadata.
-        let expired = unsafe { crate::reply_channel::native_request_deadline(channel) }.expired();
+        let expired = deadline.expired();
         if status == 0 && !expired {
             return -1;
         }
         if status > 1 {
-            self.state = CallState::Ready(-2);
+            self.state = CallState::Ready(RequestOutcome::Completed(-2));
             return -2;
+        }
+        if channel.is_null() {
+            self.local().request.withdraw();
+            self.state = CallState::Ready(RequestOutcome::Refused(AskError::Timeout));
+            return AskError::Timeout as i32;
         }
         // SAFETY: expiry shares the reply publication lock, preserving a reply
         // that already won and withdrawing only an unclaimed request.
@@ -186,9 +228,68 @@ impl HewActorCall {
         // SAFETY: the operation still owns its receiver and exact reply layout.
         let result = unsafe { hew_reply_channel_status_native(channel, self.expected_size) };
         if result != -1 {
-            self.state = CallState::Ready(result);
+            self.state = CallState::Ready(if unadmitted {
+                RequestOutcome::refused(result)
+            } else {
+                RequestOutcome::Completed(result)
+            });
         }
         result
+    }
+
+    /// Move the queued request's timer to its inbound publication owner.
+    pub(crate) fn take_queued(&mut self) -> (Arc<RequestState>, *mut HewCoroSleep) {
+        assert!(matches!(self.state, CallState::Taken));
+        let local = self.local();
+        (
+            Arc::clone(&local.request),
+            std::mem::replace(&mut local.timer, ptr::null_mut()),
+        )
+    }
+
+    pub(crate) fn unaccepted(&self) -> bool {
+        matches!(self.state, CallState::Ready(RequestOutcome::Refused(_)))
+    }
+
+    /// Take a ready result without discarding its admission evidence.
+    /// # Safety
+    /// This operation is ready and unique; output holds the completion reply.
+    pub(crate) unsafe fn take_outcome(&mut self, output: *mut c_void) -> RequestOutcome {
+        let outcome = match self.state {
+            CallState::Ready(outcome) => {
+                if let RequestOutcome::Completed(0) = outcome {
+                    let CallRoute::Local(local) = &self.route else {
+                        unreachable!("a local ready reply has a local route");
+                    };
+                    // SAFETY: readiness leaves the exact reply owned by this call.
+                    let taken = unsafe {
+                        hew_reply_channel_poll_native(local.channel, self.expected_size, output)
+                    };
+                    debug_assert_eq!(taken, 0, "ready reply changes before its unique take");
+                }
+                outcome
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            CallState::RemoteReady => {
+                let CallRoute::Imported { operation, .. } = &self.route else {
+                    unreachable!("a remote ready reply has an imported route");
+                };
+                // SAFETY: this imported operation and output belong to the caller.
+                unsafe { crate::hew_node::take_imported_request(*operation, output) }
+            }
+            _ => return RequestOutcome::Completed(-2),
+        };
+        self.state = CallState::Taken;
+        outcome
+    }
+
+    unsafe fn detach_request(&mut self) -> *mut HewMsgEnvelope {
+        match &mut self.route {
+            // SAFETY: this operation exclusively owns the unaccepted request.
+            CallRoute::Local(local) => unsafe { hew_actor_ask_wait_take_request(local.admission) },
+            #[cfg(not(target_arch = "wasm32"))]
+            CallRoute::Imported { request, .. } => std::mem::replace(request, ptr::null_mut()),
+        }
     }
 
     fn local(&mut self) -> &mut LocalCall {
@@ -206,6 +307,9 @@ impl Drop for HewActorCall {
         // against dispatch before any sender reference can be released.
         unsafe {
             self.prepare_cleanup();
+            if let Some(target) = self.owned_target.take() {
+                crate::lifetime::local_handles::hew_actor_handle_release(target);
+            }
             match &self.route {
                 CallRoute::Local(local) => {
                     hew_reply_channel_cancel(local.channel);
@@ -261,7 +365,11 @@ pub unsafe extern "C" fn hew_actor_call_new(
             drop_reply,
             waker,
             deadline_ns,
-            policy,
+            if policy == 0 {
+                RequestKind::CallWait
+            } else {
+                RequestKind::CallReject
+            },
             payload_release,
             reply_release,
             *caller,
@@ -286,7 +394,7 @@ pub(crate) unsafe fn actor_call_new(
     drop_reply: Option<HewReplyDropFn>,
     waker: *const HewWaker,
     deadline_ns: i64,
-    policy: i32,
+    kind: RequestKind,
     payload_release: Option<HewValueReleaseStart>,
     reply_release: Option<HewValueReleaseStart>,
     caller: crate::actor_caller::HewCallerStamp,
@@ -328,7 +436,7 @@ pub(crate) unsafe fn actor_call_new(
             drop_reply,
             waker,
             deadline_ns,
-            policy,
+            kind,
             reply_release,
             caller,
             dispatch,
@@ -374,7 +482,11 @@ pub unsafe extern "C" fn hew_actor_call_resume(
             drop_reply,
             waker,
             deadline_ns,
-            policy,
+            if policy == 0 {
+                RequestKind::CallWait
+            } else {
+                RequestKind::CallReject
+            },
             reply_release,
             *caller,
             dispatch,
@@ -396,7 +508,7 @@ pub(crate) unsafe fn actor_call_resume(
     drop_reply: Option<HewReplyDropFn>,
     waker: *const HewWaker,
     deadline_ns: i64,
-    policy: i32,
+    kind: RequestKind,
     reply_release: Option<HewValueReleaseStart>,
     caller: crate::actor_caller::HewCallerStamp,
     dispatch: *const c_void,
@@ -420,6 +532,7 @@ pub(crate) unsafe fn actor_call_resume(
                 reply_size,
                 deadline_ns,
                 waker,
+                kind,
             )
         };
         let mut operation = Box::new(HewActorCall {
@@ -427,8 +540,9 @@ pub(crate) unsafe fn actor_call_resume(
                 operation: remote,
                 request: envelope,
             },
+            owned_target: None,
             expected_size: reply_size,
-            reject: policy != 0,
+            kind,
             state: CallState::Waiting,
             target: None,
             cleanup_started: false,
@@ -442,7 +556,11 @@ pub(crate) unsafe fn actor_call_resume(
     #[cfg(target_arch = "wasm32")]
     let _ = dispatch;
     // SAFETY: registration precedes any request publication.
-    let channel = unsafe { hew_reply_channel_new_native(waker, drop_reply, reply_release) };
+    let channel = if kind.completion_policy().is_some() {
+        unsafe { hew_reply_channel_new_native(waker, drop_reply, reply_release) }
+    } else {
+        ptr::null_mut()
+    };
     let deadline = crate::request_deadline::RequestDeadline::from_raw(deadline_ns);
     let timer = if deadline_ns >= 0 {
         // SAFETY: the descriptor remains live for construction and is retained.
@@ -450,24 +568,56 @@ pub(crate) unsafe fn actor_call_resume(
     } else {
         ptr::null_mut()
     };
-    // SAFETY: channel and request are still unpublished, and this call owns both.
+    #[cfg(not(target_arch = "wasm32"))]
+    let observe_queue = remote_admission.is_some() && channel.is_null();
+    #[cfg(target_arch = "wasm32")]
+    let observe_queue = false;
+    // SAFETY: metadata is installed once before either owner publishes it.
+    let request = unsafe {
+        if channel.is_null() {
+            let state = RequestState::new(
+                deadline,
+                #[cfg(not(target_arch = "wasm32"))]
+                remote_admission,
+            );
+            Arc::new(if observe_queue {
+                state.with_observer(crate::wake::OwnedWaker::retain(&*waker))
+            } else {
+                state
+            })
+        } else {
+            crate::reply_channel::configure_native_request(
+                channel,
+                deadline,
+                #[cfg(not(target_arch = "wasm32"))]
+                remote_admission,
+            );
+            crate::reply_channel::native_request_state(channel).expect("configured request")
+        }
+    };
+    // SAFETY: the operation transfers its envelope and retains this exact state.
     let admission = unsafe {
-        crate::reply_channel::configure_native_request(
-            channel,
-            deadline,
-            #[cfg(not(target_arch = "wasm32"))]
-            remote_admission,
-        );
-        ask_wait_resume(token, message, envelope, channel.cast(), waker, caller)
+        request_wait_resume(
+            token,
+            message,
+            envelope,
+            channel.cast(),
+            waker,
+            caller,
+            Some(Arc::clone(&request)),
+            kind.completion_policy().is_some(),
+        )
     };
     let mut operation = Box::new(HewActorCall {
         route: CallRoute::Local(LocalCall {
             admission,
             channel,
             timer,
+            request,
         }),
+        owned_target: None,
         expected_size: reply_size,
-        reject: policy != 0,
+        kind,
         state: CallState::Admitting,
         target: crate::actor_native::wait_graph::resolve_target(token),
         cleanup_started: false,
@@ -477,6 +627,95 @@ pub(crate) unsafe fn actor_call_resume(
     // SAFETY: the first attempt establishes admission in source evaluation order.
     unsafe { operation.poll() };
     Box::into_raw(operation)
+}
+
+/// Seal a mailbox message before transferring its fields and optional actor
+/// descriptor. A null result leaves those fields with the caller.
+/// # Safety
+/// The wrapper shallowly references the caller's uniquely owned message fields;
+/// all descriptors match the selected handler and remain live through this call.
+#[no_mangle]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "compiler-private typed submission ABI"
+)]
+pub unsafe extern "C" fn hew_actor_submit_new(
+    token: HewLocalPidId,
+    message: i32,
+    payload: *mut c_void,
+    size: usize,
+    drop_payload: HewMsgEnvelopeDropFn,
+    waker: *const HewWaker,
+    deadline_ns: i64,
+    kind: u8,
+    payload_release: Option<HewValueReleaseStart>,
+    caller: *const crate::actor_caller::HewCallerStamp,
+    dispatch: *const c_void,
+    owns_target: bool,
+) -> *mut HewActorCall {
+    let kind = match RequestKind::from_wire(kind) {
+        Some(
+            kind @ (RequestKind::SendWait | RequestKind::SendReject | RequestKind::SendDropNewest),
+        ) => kind,
+        _ => std::process::abort(),
+    };
+    // SAFETY: sealing only allocates the envelope; the fields still belong to
+    // the caller on failure and the shallow wrapper then has no ownership.
+    unsafe {
+        let envelope = hew_msg_envelope_new(payload, size, Some(drop_payload));
+        if envelope.is_null() {
+            crate::mem::buf_free(payload);
+            return ptr::null_mut();
+        }
+        (*envelope).release_start = payload_release;
+        let operation = actor_call_resume(
+            token,
+            message,
+            envelope,
+            0,
+            None,
+            waker,
+            deadline_ns,
+            kind,
+            None,
+            *caller,
+            dispatch,
+            #[cfg(not(target_arch = "wasm32"))]
+            None,
+        );
+        (*operation).owned_target = owns_target.then_some(token);
+        operation
+    }
+}
+
+/// Take admission evidence. Only definite refusal returns ownership to the
+/// original source message; uncertainty remains consumed by this operation.
+/// # Safety
+/// The call is ready and unique; both outputs are writable boolean slots.
+#[no_mangle]
+pub unsafe extern "C" fn hew_actor_submit_take(
+    operation: *mut HewActorCall,
+    refused: *mut bool,
+    discarded: *mut bool,
+) -> i32 {
+    // SAFETY: the caller owns the operation and its admission output slots.
+    unsafe {
+        let operation = &mut *operation;
+        let outcome = operation.take_outcome(ptr::null_mut());
+        *refused = matches!(outcome, RequestOutcome::Refused(_));
+        *discarded = matches!(outcome, RequestOutcome::Submitted { discarded: true });
+        if *refused {
+            let envelope = operation.detach_request();
+            assert!(
+                !envelope.is_null(),
+                "refused submission retains its original fields"
+            );
+            crate::mem::buf_free((*envelope).payload);
+            crate::cow_envelope::free_allocation(envelope);
+            operation.owned_target.take();
+        }
+        outcome.code()
+    }
 }
 
 /// Observe a call without taking its reply or rejected request.
@@ -493,7 +732,7 @@ pub unsafe extern "C" fn hew_actor_call_poll(operation: *mut HewActorCall) -> i3
 /// Reject call refused for a full mailbox or for runtime shutdown. A Wait call
 /// cannot reject, so cleanup releases its request instead.
 fn call_returns_request(reject: bool, status: i32) -> bool {
-    status == AskError::MailboxFull as i32 || (reject && status == AskError::LocalShutdown as i32)
+    reject && (status == AskError::MailboxFull as i32 || status == AskError::LocalShutdown as i32)
 }
 
 /// Transfer the selected reply, or the original request on a Reject refusal.
@@ -511,40 +750,14 @@ pub unsafe extern "C" fn hew_actor_call_take(
     // SAFETY: the selected caller owns the call and its result slots.
     unsafe {
         let operation = &mut *operation;
-        let CallState::Ready(status) = operation.state else {
-            return -2;
-        };
-        if status < 0 {
-            return status;
-        }
         *request = ptr::null_mut();
-        let status = match &mut operation.route {
-            CallRoute::Local(local) => {
-                if call_returns_request(operation.reject, status) {
-                    *request = hew_actor_ask_wait_take_request(local.admission);
-                } else if status == 0 {
-                    let taken = hew_reply_channel_poll_native(
-                        local.channel,
-                        operation.expected_size,
-                        output,
-                    );
-                    debug_assert_eq!(taken, 0, "ready reply changes before its unique take");
-                }
-                status
-            }
-            #[cfg(not(target_arch = "wasm32"))]
-            CallRoute::Imported {
-                operation: remote,
-                request: owned_request,
-            } => {
-                let status = crate::hew_node::hew_remote_call_take(*remote, output);
-                if call_returns_request(operation.reject, status) {
-                    *request = std::mem::replace(owned_request, ptr::null_mut());
-                }
-                status
-            }
-        };
-        operation.state = CallState::Taken;
+        let outcome = operation.take_outcome(output);
+        let status = outcome.code();
+        if matches!(outcome, RequestOutcome::Refused(_))
+            && call_returns_request(operation.kind == RequestKind::CallReject, status)
+        {
+            *request = operation.detach_request();
+        }
         status
     }
 }
@@ -599,10 +812,7 @@ mod tests {
     use super::*;
     use crate::reply_channel::hew_reply_channel_retain;
     use crate::wake::blocking::Readiness;
-    use std::sync::{
-        atomic::{AtomicUsize, Ordering},
-        Arc,
-    };
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     unsafe extern "C" fn drop_counted(payload: *mut c_void) {
         // SAFETY: this payload owns the one raw Arc transferred into its slot.
@@ -670,9 +880,11 @@ mod tests {
                         admission: ptr::null_mut(),
                         channel,
                         timer: ptr::null_mut(),
+                        request: crate::reply_channel::native_request_state(channel).unwrap(),
                     }),
+                    owned_target: None,
                     expected_size: size_of::<*const AtomicUsize>(),
-                    reject: false,
+                    kind: RequestKind::CallWait,
                     state: CallState::Waiting,
                     target: None,
                     cleanup_started: false,
@@ -743,14 +955,22 @@ mod tests {
         unsafe {
             let channel =
                 hew_reply_channel_new_native(waker.descriptor(), Some(drop_counted), None);
+            crate::reply_channel::configure_native_request(
+                channel,
+                crate::request_deadline::RequestDeadline::default(),
+                #[cfg(not(target_arch = "wasm32"))]
+                None,
+            );
             let operation = Box::into_raw(Box::new(HewActorCall {
                 route: CallRoute::Local(LocalCall {
                     admission: ptr::null_mut(),
                     channel,
                     timer: ptr::null_mut(),
+                    request: crate::reply_channel::native_request_state(channel).unwrap(),
                 }),
+                owned_target: None,
                 expected_size: size_of::<*const AtomicUsize>(),
-                reject: false,
+                kind: RequestKind::CallWait,
                 state: CallState::Waiting,
                 target: None,
                 cleanup_started: false,

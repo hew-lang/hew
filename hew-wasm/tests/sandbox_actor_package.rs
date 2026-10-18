@@ -548,7 +548,7 @@ actor Driver {
             _ => "wrong first outcome",
         });
         println(match inbox.work(2) {
-            .Err(failure) => match failure.reason {
+            .Err(ActorError.Rejected(failure)) => match failure.reason {
                 .Full => "full",
                 _ => "wrong reason",
             }

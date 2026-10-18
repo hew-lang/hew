@@ -104,6 +104,9 @@ export type RuntimeVariantRole =
   | "SendErrorVersionMismatch"
   | "SendErrorBackpressure"
   | "SendErrorDead"
+  | "SendErrorUnauthorized"
+  | "SendErrorInvalidMessage"
+  | "SendErrorTimedOut"
   | "SendErrorWriteTimedOut"
   | "DeliveryAccepted"
   | "DeliveryDiscarded"
@@ -586,6 +589,7 @@ export interface ActorProtocol {
 }
 
 export type ActorOperation =
+  | { op: "identity" }
   | {
       op:
         | "spawn"

@@ -273,26 +273,54 @@ fn last_process_error(default_message: string) -> ProcessError {
     }
 }
 
-fn collect_output(consume output: stream.Stream<bytes>) -> string {
-    var data = bytes.new();
-    for chunk in output {
-        data.append(chunk);
-    }
-    utf8.decode_lossy(data)
-}
-
 fn capture(consume child: Child) -> CommandOutput fails ProcessError {
     let stdout_stream = child.stdout()?;
     let stderr_stream = child.stderr()?;
     scope {
-        let stdout_task = fork collect_output(stdout_stream);
-        let stderr_task = fork collect_output(stderr_stream);
-        let stdout = await stdout_task;
-        let stderr = await stderr_task;
-        let status = child.wait() handle error {
-            return error ProcessError.LaunchFailed(to_string(error));
-        };
-        CommandOutput { status, stdout, stderr }
+        var stdout = bytes.new();
+        var stderr = bytes.new();
+        var stdout_open = true;
+        var stderr_open = true;
+        var prefer_stdout = true;
+        while stdout_open || stderr_open {
+            // Read whichever pipe is ready. Once one ends, do not select its
+            // ready EOF again while the other pipe still has data to drain.
+            let (from_stdout, next) = if stdout_open && stderr_open && prefer_stdout {
+                select {
+                    chunk from stdout_stream.recv() => (true, chunk),
+                    chunk from stderr_stream.recv() => (false, chunk),
+                }
+            } else if stdout_open && stderr_open {
+                select {
+                    chunk from stderr_stream.recv() => (false, chunk),
+                    chunk from stdout_stream.recv() => (true, chunk),
+                }
+            } else if stdout_open {
+                (true, stdout_stream.recv())
+            } else {
+                (false, stderr_stream.recv())
+            };
+            // Prefer the other pipe next when both remain continuously ready.
+            prefer_stdout = !from_stdout;
+            match next {
+                .Some(chunk) => {
+                    if from_stdout {
+                        stdout.append(chunk);
+                    } else {
+                        stderr.append(chunk);
+                    }
+                }
+                .None => {
+                    if from_stdout {
+                        stdout_open = false;
+                    } else {
+                        stderr_open = false;
+                    }
+                }
+            }
+        }
+        let status = child.wait()?;
+        CommandOutput { status, stdout: utf8.decode_lossy(stdout), stderr: utf8.decode_lossy(stderr) }
     } handle failure {
         match failure {
             .Fault { message } => return error ProcessError.LaunchFailed(message),

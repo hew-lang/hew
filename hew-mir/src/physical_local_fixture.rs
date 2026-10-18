@@ -11,7 +11,23 @@ pub fn source(text: &str) -> SemModule {
     assert!(checked.errors.is_empty(), "{:?}", checked.errors);
     let hir = lower_program_host_target(&parsed.program, &checked, &ResolutionCtx);
     assert!(hir.diagnostics.is_empty(), "{:?}", hir.diagnostics);
-    let lowered = lower_module_with_demand(&hir.module, &checked, SirLoweringDemand::EveryCallable);
+    let roots = hir
+        .module
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            hew_hir::HirItem::Function(function)
+                if function.type_params.is_empty()
+                    && hir.module.defs.module(function.declaration)
+                        == hir.module.defs.root_module() =>
+            {
+                Some(function.declaration)
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let lowered = lower_module_with_roots(&hir.module, &checked, &roots)
+        .expect("authored fixture declarations must lower");
     assert!(
         lowered
             .statuses

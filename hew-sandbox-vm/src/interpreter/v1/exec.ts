@@ -3436,11 +3436,16 @@ class ExecutorV1 {
     switch (operation.op) {
       case "identity": {
         const [left, right] = args;
-        if (left?.kind !== "actor" || right?.kind !== "actor")
-          throw new Error("actor identity requires two actor handles");
+        if (
+          (left?.kind !== "actor" && left?.kind !== "supervisor") ||
+          (right?.kind !== "actor" && right?.kind !== "supervisor")
+        )
+          throw new Error(
+            "actor identity requires actor or supervisor handles",
+          );
         this.completeShim(act, term, {
           kind: "bool",
-          value: left.id === right.id,
+          value: left.kind === right.kind && left.id === right.id,
         });
         return;
       }
@@ -3989,11 +3994,16 @@ class ExecutorV1 {
       case "await_restarted": {
         const target = args[0]!;
         const role = "id" in target ? this.roles.get(target.id) : undefined;
-        if (!role) throw new Error("restarted requires a supervised role");
-        if (this.rolePending(role)) {
+        if (!role) {
+          if (target.kind !== "actor" && target.kind !== "supervisor")
+            throw new Error("restarted requires an actor or supervisor handle");
+          this.completeShim(act, term, UNIT);
+          return;
+        }
+        if (this.roleRestartPending(role)) {
           this.running = false;
           const settled = () => {
-            if (this.rolePending(role)) {
+            if (this.roleRestartPending(role)) {
               role.waiting.push(settled);
               return;
             }
@@ -4757,6 +4767,22 @@ class ExecutorV1 {
     );
   }
 
+  private roleRestartPending(role: RoleSlot): boolean {
+    const parent = this.roles.get(role.ownerId);
+    if (parent && this.roleRestartPending(parent)) return true;
+    if (this.rolePending(role)) return true;
+    const value = this.roleValue(role) ?? role.latest;
+    if (value?.kind === "actor") {
+      const actor = this.actorFor(value);
+      return !actor.completed && (actor.closing || !actor.alive);
+    }
+    if (value?.kind === "supervisor") {
+      const owner = this.supervisorFor(value);
+      return !owner.completed && !owner.alive;
+    }
+    return false;
+  }
+
   private wakeRoles(): void {
     for (const role of this.roles.values()) {
       this.roleValue(role);
@@ -4946,8 +4972,14 @@ class ExecutorV1 {
         { kind: "record", typeId: "", fields: owner.config },
         null,
         (fault) => {
-          if (fault) this.faultDebts.add(++this.nextFaultDebt);
+          const debt = fault ? ++this.nextFaultDebt : undefined;
+          if (debt !== undefined) this.faultDebts.add(debt);
           owner.completed = true;
+          this.settleSupervisedEnd(
+            owner,
+            fault ? "Crashed" : owner.terminating ? "Terminated" : "Stopped",
+            debt === undefined ? [] : [debt],
+          );
           for (const wake of owner.closed.splice(0)) wake();
           this.wakeRoles();
         },
@@ -5080,6 +5112,9 @@ class ExecutorV1 {
                   : actor.terminating
                     ? "Terminated"
                     : "Stopped",
+                actor.closeFaultDebt === undefined
+                  ? []
+                  : [actor.closeFaultDebt],
               );
               for (const wake of actor.closed.splice(0)) wake();
             });
@@ -5092,10 +5127,11 @@ class ExecutorV1 {
   }
 
   private settleSupervisedEnd(
-    actor: ActorInstance,
+    subject: ActorInstance | SupervisorInstance,
     reason: "Stopped" | "Terminated" | "Crashed",
+    debts: number[],
   ): void {
-    const parent = actor.supervisor;
+    const parent = subject.supervisor;
     if (
       !parent ||
       !parent.owner.alive ||
@@ -5108,11 +5144,7 @@ class ExecutorV1 {
       policy === "permanent" ||
       (policy === "transient" && reason !== "Stopped")
     ) {
-      this.restartChild(
-        owner,
-        child,
-        actor.closeFaultDebt === undefined ? [] : [actor.closeFaultDebt],
-      );
+      this.restartChild(owner, child, debts);
     } else {
       owner.spent.add(child);
       this.wakeRoles();

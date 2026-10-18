@@ -182,27 +182,7 @@ pub struct HewLocation {
     pub reserved: u32,
 }
 
-/// C-compatible remote actor identity.
-///
-/// `RemotePid<T>` is a phantom-typed Hew value with the same carried runtime
-/// representation as [`HewLocation`].
-#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
-#[repr(C)]
-pub struct HewRemotePid {
-    /// Key-derived node identity.
-    pub node: HewNodeId,
-    /// Node-local monotonic actor slot.
-    pub slot: u64,
-    /// Durable node-session incarnation.
-    pub incarnation: u32,
-    /// Must be zero.
-    pub reserved: u32,
-}
-
-// C-ABI field and display accessors for `HewNodeId`, `HewLocation` and
-// `HewRemotePid`. Hew's `#[extern_symbol(...)]` builtins call these directly
-// (see `std/builtins.hew`'s `RemotePid<T>`, `Location` and `NodeId` impls),
-// so each symbol name below is load-bearing.
+// C-ABI accessors for the `NodeId` and `Location` builtins.
 
 /// Return the node identity carried by a location.
 ///
@@ -279,104 +259,6 @@ pub unsafe extern "C" fn hew_location_display(location: *const HewLocation) -> *
     ))
 }
 
-/// Return the complete carried actor location.
-///
-/// Fails closed to the zero location when `pid` is null.
-///
-/// # Safety
-///
-/// `pid` must point to a readable `HewRemotePid`.
-#[no_mangle]
-pub unsafe extern "C" fn hew_remote_pid_location(pid: *const HewRemotePid) -> HewLocation {
-    if pid.is_null() {
-        return HewLocation::default();
-    }
-    // SAFETY: caller guarantees `pid` is readable.
-    let pid = unsafe { *pid };
-    HewLocation {
-        node: pid.node,
-        slot: pid.slot,
-        incarnation: pid.incarnation,
-        reserved: pid.reserved,
-    }
-}
-
-/// Return the stable node identity carried by a remote pid.
-///
-/// Fails closed to the zero node identity when `pid` is null.
-///
-/// # Safety
-///
-/// `pid` must point to a readable `HewRemotePid`.
-#[no_mangle]
-pub unsafe extern "C" fn hew_remote_pid_node_id(pid: *const HewRemotePid) -> HewNodeId {
-    if pid.is_null() {
-        return HewNodeId::default();
-    }
-    // SAFETY: caller guarantees `pid` is readable.
-    let pid = unsafe { *pid };
-    pid.node
-}
-
-/// Return the node-local actor slot carried by a remote pid.
-///
-/// Fails closed to `0` when `pid` is null.
-///
-/// # Safety
-///
-/// `pid` must point to a readable `HewRemotePid`.
-#[no_mangle]
-pub unsafe extern "C" fn hew_remote_pid_slot(pid: *const HewRemotePid) -> u64 {
-    if pid.is_null() {
-        return 0;
-    }
-    // SAFETY: caller guarantees `pid` is readable.
-    let pid = unsafe { *pid };
-    pid.slot
-}
-
-/// Return the node-session incarnation carried by a remote pid.
-///
-/// Fails closed to `0` when `pid` is null.
-///
-/// # Safety
-///
-/// `pid` must point to a readable `HewRemotePid`.
-#[no_mangle]
-pub unsafe extern "C" fn hew_remote_pid_incarnation(pid: *const HewRemotePid) -> u32 {
-    if pid.is_null() {
-        return 0;
-    }
-    // SAFETY: caller guarantees `pid` is readable.
-    let pid = unsafe { *pid };
-    pid.incarnation
-}
-
-/// Format a remote pid as `<node-hex>/<slot>@<incarnation>`, returned as an
-/// owned managed string. Reproduces
-/// [`crate::hew_node::hew_location_format`]'s text exactly (`HewLocation` and
-/// `HewRemotePid` share the same carried layout and display shape).
-///
-/// Returns a null pointer when `pid` is null - null is the managed carrier's
-/// canonical empty string, matching the existing formatters' fail-closed
-/// behaviour on a null input.
-///
-/// # Safety
-///
-/// `pid` must point to a readable `HewRemotePid`.
-#[no_mangle]
-pub unsafe extern "C" fn hew_remote_pid_display(pid: *const HewRemotePid) -> *mut HewString {
-    if pid.is_null() {
-        return std::ptr::null_mut();
-    }
-    // SAFETY: caller guarantees `pid` is readable.
-    let pid = unsafe { *pid };
-    string_from_str(&format!(
-        "{:016x}{:016x}/{}@{}",
-        pid.node.hi, pid.node.lo, pid.slot, pid.incarnation
-    ))
-}
-
 /// Format a node identity as 32 lowercase hexadecimal digits, returned as an
 /// owned managed string. Reproduces [`crate::hew_node::hew_node_id_format`]'s
 /// text exactly.
@@ -449,18 +331,6 @@ impl From<Location> for HewLocation {
     }
 }
 
-impl From<Location> for HewRemotePid {
-    fn from(value: Location) -> Self {
-        let location = HewLocation::from(value);
-        Self {
-            node: location.node,
-            slot: location.slot,
-            incarnation: location.incarnation,
-            reserved: location.reserved,
-        }
-    }
-}
-
 impl TryFrom<HewLocation> for Location {
     type Error = InvalidLocation;
 
@@ -469,19 +339,6 @@ impl TryFrom<HewLocation> for Location {
             return Err(InvalidLocation::NonZeroReserved);
         }
         Self::new(value.node.into(), value.slot, value.incarnation)
-    }
-}
-
-impl TryFrom<HewRemotePid> for Location {
-    type Error = InvalidLocation;
-
-    fn try_from(value: HewRemotePid) -> Result<Self, Self::Error> {
-        Self::try_from(HewLocation {
-            node: value.node,
-            slot: value.slot,
-            incarnation: value.incarnation,
-            reserved: value.reserved,
-        })
     }
 }
 
@@ -1079,16 +936,6 @@ mod tests {
         }
     }
 
-    fn sample_remote_pid() -> HewRemotePid {
-        let location = sample_location();
-        HewRemotePid {
-            node: location.node,
-            slot: location.slot,
-            incarnation: location.incarnation,
-            reserved: location.reserved,
-        }
-    }
-
     fn owned_string_text(value: *mut HewString) -> String {
         assert!(!value.is_null());
         // SAFETY: the accessor under test returned a live owned managed
@@ -1133,61 +980,21 @@ mod tests {
     }
 
     #[test]
-    fn remote_pid_field_accessors_read_the_exact_fields() {
-        let pid = sample_remote_pid();
-        // SAFETY: `pid` is a live, readable `HewRemotePid` for this call.
-        let (location, node, slot, incarnation) = unsafe {
-            (
-                hew_remote_pid_location(&raw const pid),
-                hew_remote_pid_node_id(&raw const pid),
-                hew_remote_pid_slot(&raw const pid),
-                hew_remote_pid_incarnation(&raw const pid),
-            )
-        };
-        assert_eq!(location, sample_location());
-        assert_eq!(node, pid.node);
-        assert_eq!(slot, pid.slot);
-        assert_eq!(incarnation, pid.incarnation);
-    }
-
-    #[test]
-    fn remote_pid_field_accessors_fail_closed_on_null() {
-        // SAFETY: every accessor documents a null pointer as a fail-closed input.
-        let (location, node, slot, incarnation, display) = unsafe {
-            (
-                hew_remote_pid_location(std::ptr::null()),
-                hew_remote_pid_node_id(std::ptr::null()),
-                hew_remote_pid_slot(std::ptr::null()),
-                hew_remote_pid_incarnation(std::ptr::null()),
-                hew_remote_pid_display(std::ptr::null()),
-            )
-        };
-        assert_eq!(location, HewLocation::default());
-        assert_eq!(node, HewNodeId::default());
-        assert_eq!(slot, 0);
-        assert_eq!(incarnation, 0);
-        assert!(display.is_null());
-    }
-
-    #[test]
     fn display_accessors_match_the_existing_formatters_exactly() {
         let location = sample_location();
-        let pid = sample_remote_pid();
         let expected_node = "0123456789abcdeffedcba9876543210".to_string();
         let expected_location = "0123456789abcdeffedcba9876543210/7@3".to_string();
 
         // SAFETY: both carriers are live and readable; each display returns a
         // fresh owned string that `owned_string_text` releases.
-        let (node_text, location_text, pid_text) = unsafe {
+        let (node_text, location_text) = unsafe {
             (
                 hew_node_id_display(&raw const location.node),
                 hew_location_display(&raw const location),
-                hew_remote_pid_display(&raw const pid),
             )
         };
         assert_eq!(owned_string_text(node_text), expected_node);
         assert_eq!(owned_string_text(location_text), expected_location);
-        assert_eq!(owned_string_text(pid_text), expected_location);
 
         // Cross-check against the pre-existing `hew_node.rs` formatter this
         // display text is required to reproduce exactly.
@@ -1216,7 +1023,6 @@ mod tests {
         assert_eq!(std::mem::size_of::<NodeId>(), 16);
         assert_eq!(std::mem::size_of::<HewLocation>(), 32);
         assert_eq!(std::mem::align_of::<HewLocation>(), 8);
-        assert_eq!(std::mem::size_of::<HewRemotePid>(), 32);
         assert_eq!(std::mem::size_of::<Location>(), 32);
         assert_eq!(std::mem::offset_of!(HewLocation, node), 0);
         assert_eq!(std::mem::offset_of!(HewNodeId, hi), 0);

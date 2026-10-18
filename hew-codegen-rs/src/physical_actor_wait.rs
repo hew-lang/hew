@@ -26,7 +26,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             &[frame.state.into()],
             "observation.waker",
         )?;
-        let new = get_or_declare_external(
+        let new = get_or_declare_external_widened(
             self.llvm,
             "hew_native_actor_observe_new",
             ptr.fn_type(
@@ -37,6 +37,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 ],
                 false,
             ),
+            &[(1, Widen::Zero)],
         )?;
         let operation = call_value(
             &self.builder,
@@ -518,7 +519,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             &[frame.state.into()],
             "submission.waker",
         )?;
-        let new = get_or_declare_external(
+        let new = get_or_declare_external_widened(
             self.llvm,
             "hew_actor_submit_new",
             ptr.fn_type(
@@ -538,6 +539,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 ],
                 false,
             ),
+            &[(7, Widen::Zero)],
         )?;
         use hew_runtime::envelope::RequestKind;
         use hew_types::actor_delivery::SendPolicy;

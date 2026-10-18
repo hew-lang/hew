@@ -334,7 +334,7 @@ fn run_two_process_ask_server_helper(
 
 struct TwoProcessAskClient {
     node: TestNode,
-    remote_pid: HewRemotePid,
+    remote_pid: HewLocation,
     _real_sched: RealSchedulerGuard,
 }
 

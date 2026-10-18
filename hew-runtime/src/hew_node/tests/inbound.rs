@@ -783,6 +783,10 @@ fn service_revocation_refuses_an_already_queued_dispatch_claim() {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one admission scenario follows authority through queued dispatch"
+)]
 fn mailbox_admission_precedes_dispatch_and_preserves_queued_authority() {
     unsafe extern "C" fn drop_unit(_payload: *mut c_void) {}
     let _guard = crate::runtime_test_guard();

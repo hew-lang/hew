@@ -1250,7 +1250,11 @@ pub(crate) fn verify_terminator(
                     || descriptor.handlers.iter().any(|handler| handler.codec.is_none())
                     || (*export && arguments.get(1) != Some(&descriptor.handle_ty))
                     || !matches!(result_ty, ResolvedTy::Named { args, .. }
-                        if matches!(args.first(), Some(ResolvedTy::Named { args, .. }) if args.as_slice() == [descriptor.handle_ty.clone()]))
+                        if if *export {
+                            matches!(args.first(), Some(ResolvedTy::Named { args, .. }) if args.as_slice() == [descriptor.handle_ty.clone()])
+                        } else {
+                            args.first() == Some(&descriptor.handle_ty)
+                        })
             }) || !operation.row().contract.expect("service contract").matches_signature(&module.defs, &arguments, &slot(*result)?.ty) {
                 return Err(PhysicalError::new("service acquisition differs from its admitted interface"));
             }

@@ -667,7 +667,7 @@ fn test_node_unregister() {
     // SAFETY: node is a valid pointer; name is a valid C string literal.
     unsafe {
         assert_eq!(hew_node_register(node, name.as_ptr(), 999), 0);
-        let mut found = HewRemotePid::default();
+        let mut found = HewLocation::default();
         assert_eq!(
             hew_node_lookup_location(node, name.as_ptr(), &raw mut found),
             0
@@ -724,7 +724,7 @@ fn register_same_name_repoints_future_lookup() {
             "registering the same location is idempotent"
         );
         assert_eq!(hew_node_register(node, name.as_ptr(), 7002), 0);
-        let mut found = HewRemotePid::default();
+        let mut found = HewLocation::default();
         assert_eq!(
             hew_node_lookup_location(node, name.as_ptr(), &raw mut found),
             0
@@ -756,7 +756,7 @@ fn lookup_location_writes_output_only_on_success() {
     // SAFETY: test owns this stopped node.
     unsafe { install_test_auth(node, 52) };
     let missing = c"missing_exact_location";
-    let sentinel = HewRemotePid::from(test_location(99, 777));
+    let sentinel = HewLocation::from(test_location(99, 777));
     let mut found = sentinel;
 
     // SAFETY: node, name, and output pointers are valid.
@@ -785,7 +785,7 @@ fn unregister_keeps_issued_location_live_until_actor_death() {
         assert!(!actor.is_null());
         let name = c"issued_location_lifetime";
         assert_eq!(hew_node_register(node, name.as_ptr(), (*actor).id), 0);
-        let mut target = HewRemotePid::default();
+        let mut target = HewLocation::default();
         assert_eq!(
             hew_node_lookup_location(node, name.as_ptr(), &raw mut target),
             0
@@ -878,7 +878,7 @@ fn remote_lookup_via_registry_gossip() {
         assert!(crate::registry::hew_registry_lookup(remote_name.as_ptr()).is_null());
 
         // Node lookup should find it via remote_names.
-        let mut found = HewRemotePid::default();
+        let mut found = HewLocation::default();
         assert_eq!(
             hew_node_lookup_location(node.as_ptr(), remote_name.as_ptr(), &raw mut found,),
             0

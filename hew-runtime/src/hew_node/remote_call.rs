@@ -7,7 +7,7 @@ use super::{
 };
 use crate::connection;
 use crate::envelope::encode_envelope_frame_from_raw_parts;
-use crate::node_identity::{HewRemotePid, Location};
+use crate::node_identity::{HewLocation, Location};
 use crate::request_deadline::RequestDeadline;
 use crate::routing;
 use crate::set_last_error;
@@ -483,7 +483,7 @@ fn withdraw_remote(route: &RemoteCallRoute) {
 /// - `waker` must be a live descriptor.
 #[no_mangle]
 pub unsafe extern "C" fn hew_remote_call_new(
-    target: *const HewRemotePid,
+    target: *const HewLocation,
     dispatch: *const c_void,
     msg_type: i32,
     request: *mut c_void,
@@ -515,7 +515,7 @@ pub unsafe extern "C" fn hew_remote_call_new(
     reason = "the existing owned remote operation ABI"
 )]
 pub(super) unsafe fn new_call(
-    target: *const HewRemotePid,
+    target: *const HewLocation,
     grant: Option<u64>,
     dispatch: *const c_void,
     msg_type: i32,

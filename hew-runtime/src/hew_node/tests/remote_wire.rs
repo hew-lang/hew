@@ -806,7 +806,7 @@ fn two_node_inbound_ask_to_never_spawned_actor_reports_dead() {
             .expect("authorized test node has a session"),
     )
     .expect("bogus location must still be well-formed");
-    let target = HewRemotePid::from(location);
+    let target = HewLocation::from(location);
 
     // SAFETY: this is a remote void ask; null payload/size are valid.
     let (_, status) = unsafe {

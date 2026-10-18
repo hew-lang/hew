@@ -190,9 +190,8 @@ pub(crate) unsafe fn configure_native_request(
 /// The optional channel is retained throughout this call.
 pub(crate) unsafe fn withdraw_native_request(channel: *mut HewReplyChannel) {
     // SAFETY: the caller retains the optional reply owner during this borrow.
-    if let Some(state) =
-        unsafe { channel.as_ref() }.and_then(|channel| channel.native_request.as_ref())
-    {
+    let channel = unsafe { channel.as_ref() };
+    if let Some(state) = channel.and_then(|channel| channel.native_request.as_ref()) {
         state.withdraw();
     }
 }

@@ -109,7 +109,7 @@ impl Checker {
             self.report_error(
                 TypeErrorKind::InvalidOperation,
                 &target.1,
-                "a delivery view requires a local actor reference".to_string(),
+                format!("a delivery view requires an actor value, found `{target_ty}`"),
             );
             return Ty::Error;
         }

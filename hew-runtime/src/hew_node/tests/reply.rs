@@ -24,7 +24,7 @@ fn remote_ask_without_active_node_returns_null_for_nonvoid_reply() {
     assert_ne!(remote_node_id, 0);
     assert_ne!(remote_node_id, local_node_id);
 
-    let remote_pid = HewRemotePid::from(test_location(remote_node_id, 1));
+    let remote_pid = HewLocation::from(test_location(remote_node_id, 1));
     // SAFETY: null data with size 0 is valid; the remote path should fail
     // immediately because no active node is installed.
     let (_, status) = unsafe {
@@ -768,7 +768,7 @@ fn remote_call_setup_expiry_and_cancel_do_not_wait_for_a_blocked_sender() {
                 let (readiness, waker) = crate::wake::blocking::Readiness::new();
                 let key = ConnectionKey::new(manager as *const connection::HewConnMgr, conn_id);
                 let call = if action == "setup" {
-                    let target = HewRemotePid::from(target);
+                    let target = HewLocation::from(target);
                     // SAFETY: empty request, registered codec and live waker.
                     unsafe {
                         hew_remote_call_new(

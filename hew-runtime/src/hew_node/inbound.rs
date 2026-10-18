@@ -294,6 +294,10 @@ unsafe fn deliver_inbound_send(
     clippy::needless_pass_by_value,
     reason = "the retained reply operation owns the shutdown flag clone"
 )]
+#[expect(
+    clippy::too_many_lines,
+    reason = "keeps target, authority, codec and admission validation in request order"
+)]
 pub(super) fn handle_inbound_ask(
     target_actor_id: u64,
     identity: &str,
@@ -352,11 +356,8 @@ pub(super) fn handle_inbound_ask(
         reject(AskError::Timeout);
         return;
     }
-    // A dead target (never spawned, or already freed) has no dispatch pointer
-    // tracked at all: that is an ActorStopped fact (folds to the public
-    // `ActorError.Dead`, matching the local ask route, D526), never a decode
-    // problem. Only once a live actor's dispatch is resolved does a missing
-    // codec registration for `msg_type` become a genuine DecodeFailure.
+    // Resolve target lifetime before validating its codec: a dead actor is
+    // a lifecycle failure, while a missing codec is a decode failure.
     let target = inbound_target(target_actor_id);
     let Some((target, token, dispatch)) = target else {
         reject(if grant == 0 {

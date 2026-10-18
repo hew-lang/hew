@@ -1560,11 +1560,6 @@ non-declarable = [
   "hew_remote_call_new",
   "hew_remote_call_poll",
   "hew_remote_call_take",
-  "hew_remote_pid_display",
-  "hew_remote_pid_incarnation",
-  "hew_remote_pid_location",
-  "hew_remote_pid_node_id",
-  "hew_remote_pid_slot",
   "hew_read_slot_cancel",
   "hew_read_slot_cancel_cleanup",
   "hew_read_slot_free",
@@ -2350,15 +2345,6 @@ release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
 result-retention = "transferred"
 
-[[ownership.contracts]]
-symbol = "hew_remote_pid_display"
-result = "fresh"
-params = ["borrow"]
-release-symbol = "hew_string_drop"
-discharge-depth = "shallow"
-result-retention = "transferred"
-
-# hew-runtime/src/vec.rs:814-835 returns a header-retained string reference.
 [[ownership.contracts]]
 symbol = "hew_vec_get_str"
 result = "retained"

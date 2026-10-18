@@ -73,7 +73,7 @@ pub unsafe extern "C" fn hew_actor_send_wait_new(
         token,
         message,
         envelope,
-        waker: waker,
+        waker,
     }))
 }
 
@@ -321,7 +321,7 @@ pub(crate) unsafe fn request_wait_resume(
         message,
         envelope,
         channel,
-        waker: waker,
+        waker,
     }))
 }
 

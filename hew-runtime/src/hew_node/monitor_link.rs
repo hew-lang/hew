@@ -1559,6 +1559,32 @@ unsafe fn start_imported_observation(
         }
         Ok(())
     });
+    if result == Err(AskError::ConnectionDropped) {
+        // The imported owner and recipient session were validated before route
+        // selection failed. Report lost reachability without publishing setup.
+        let rt = crate::runtime::rt_current();
+        if let Some(ref_id) = rt.monitors.next_observation_id() {
+            operation.ref_id = ref_id;
+            if operation.kind == 1 {
+                link_unreachable(
+                    rt,
+                    None,
+                    operation.actor_id,
+                    imported.identity(),
+                    operation.policy,
+                );
+            } else {
+                rt.monitors.enqueue_lost(crate::monitor::MonitorDown {
+                    completion: operation.completion.clone(),
+                    monitor_id: ref_id,
+                    watcher_actor_id: operation.actor_id,
+                    target: imported.identity(),
+                });
+            }
+            operation.status = Some(0);
+            return;
+        }
+    }
     if let Err(error) = result {
         operation.status = Some(-if error == AskError::WorkerAtCapacity {
             crate::internal::types::HEW_TRAP_HEAP_EXCEEDED

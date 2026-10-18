@@ -242,6 +242,58 @@ impl PendingCall {
         }
     }
 
+    fn take_submission(&mut self, operation: *mut HewActorCall) -> bool {
+        // SAFETY: ready admission is exclusively owned; mailbox sends have no reply payload.
+        let outcome = unsafe { (*operation).take_outcome(ptr::null_mut()) };
+        match outcome {
+            crate::request_state::RequestOutcome::Submitted { discarded } => {
+                let queued = if discarded {
+                    PendingState::Done
+                } else {
+                    // SAFETY: the taken local admission transfers its timer once.
+                    let (request, timer) = unsafe { (*operation).take_queued() };
+                    PendingState::Queued { request, timer }
+                };
+                self.state = queued;
+                send_reply_envelope(
+                    self.source_node,
+                    self.request_id,
+                    self.publication,
+                    &[u8::from(discarded)],
+                    self.manager.0,
+                    self.shutdown.as_ref(),
+                );
+                return discarded;
+            }
+            crate::request_state::RequestOutcome::Refused(reason) => {
+                send_refusal_reply(
+                    self.source_node,
+                    self.request_id,
+                    self.publication,
+                    reason,
+                    self.manager.0,
+                    self.shutdown.as_ref(),
+                );
+            }
+            crate::request_state::RequestOutcome::Completed(code) => {
+                let reason = AskError::ALL
+                    .iter()
+                    .copied()
+                    .find(|error| *error as i32 == code)
+                    .unwrap_or(AskError::SendFailed);
+                send_rejection_reply(
+                    self.source_node,
+                    self.request_id,
+                    self.publication,
+                    reason,
+                    self.manager.0,
+                    self.shutdown.as_ref(),
+                );
+            }
+        }
+        true
+    }
+
     fn poll(&mut self, waker: &HewWaker) -> bool {
         if self.shutdown.load(Ordering::Acquire) {
             return true;
@@ -282,55 +334,7 @@ impl PendingCall {
             return false;
         }
         if self.kind.completion_policy().is_none() {
-            // SAFETY: ready admission is exclusively owned; mailbox sends have no reply payload.
-            let outcome = unsafe { (*operation).take_outcome(ptr::null_mut()) };
-            match outcome {
-                crate::request_state::RequestOutcome::Submitted { discarded } => {
-                    let queued = if discarded {
-                        PendingState::Done
-                    } else {
-                        // SAFETY: the taken local admission transfers its timer once.
-                        let (request, timer) = unsafe { (*operation).take_queued() };
-                        PendingState::Queued { request, timer }
-                    };
-                    self.state = queued;
-                    send_reply_envelope(
-                        self.source_node,
-                        self.request_id,
-                        self.publication,
-                        &[u8::from(discarded)],
-                        self.manager.0,
-                        self.shutdown.as_ref(),
-                    );
-                    return discarded;
-                }
-                crate::request_state::RequestOutcome::Refused(reason) => {
-                    send_refusal_reply(
-                        self.source_node,
-                        self.request_id,
-                        self.publication,
-                        reason,
-                        self.manager.0,
-                        self.shutdown.as_ref(),
-                    );
-                }
-                crate::request_state::RequestOutcome::Completed(code) => {
-                    let reason = AskError::ALL
-                        .iter()
-                        .copied()
-                        .find(|error| *error as i32 == code)
-                        .unwrap_or(AskError::SendFailed);
-                    send_rejection_reply(
-                        self.source_node,
-                        self.request_id,
-                        self.publication,
-                        reason,
-                        self.manager.0,
-                        self.shutdown.as_ref(),
-                    );
-                }
-            }
-            return true;
+            return self.take_submission(operation);
         }
         // ask_take owns and frees the active call; disarm this state's destructor.
         if let PendingState::Active(active) = &mut self.state {

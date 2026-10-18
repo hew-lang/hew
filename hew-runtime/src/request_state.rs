@@ -185,6 +185,7 @@ pub(crate) unsafe fn claim_message(
         if channel.is_null() {
             state.withdraw();
         } else {
+            // SAFETY: the caller retains the reply channel throughout expiry.
             // Preserve reply-versus-expiry ordering under the existing reply lock.
             unsafe { crate::reply_channel::native::expire_native_request(channel) };
         }

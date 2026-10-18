@@ -20,7 +20,7 @@ use std::thread::{self, JoinHandle};
 
 use crate::cluster::{self, ClusterConfig, HewCluster};
 use crate::connection::{self, HewConnMgr};
-use crate::node_identity::{HewLocation, HewRemotePid, Location};
+use crate::node_identity::{HewLocation, Location};
 use crate::peer_binding::{PeerAuthSnapshot, TransportSelection as PeerTransport};
 use crate::routing::{self, HewRoutingTable};
 use crate::transport::{self, HewTransport, HewTransportOps};
@@ -2027,7 +2027,7 @@ pub unsafe extern "C" fn hew_node_unregister(node: *mut HewNode, name: *const c_
 pub unsafe extern "C" fn hew_node_lookup_location(
     node: *mut HewNode,
     name: *const c_char,
-    out: *mut HewRemotePid,
+    out: *mut HewLocation,
 ) -> c_int {
     cabi_guard!(node.is_null() || name.is_null() || out.is_null(), -1);
     // SAFETY: caller guarantees node pointer validity.
@@ -2046,7 +2046,7 @@ pub unsafe extern "C" fn hew_node_lookup_location(
         return -1;
     };
     // SAFETY: caller guarantees `out` is writable.
-    unsafe { out.write(HewRemotePid::from(location)) };
+    unsafe { out.write(HewLocation::from(location)) };
     0
 }
 
@@ -2060,14 +2060,14 @@ pub unsafe extern "C" fn hew_node_lookup_location(
 /// # Safety
 ///
 /// - `node` must be valid.
-/// - `target` must point to a valid `HewRemotePid`.
+/// - `target` must point to a valid `HewLocation`.
 /// - `payload` must be the member's wrapper, valid for `payload_len` bytes, or
 ///   null when len is 0. Its fields transfer to this call.
 /// - `dispatch` is an opaque codec key, never dereferenced.
 #[no_mangle]
 pub unsafe extern "C" fn hew_node_send_location(
     node: *mut HewNode,
-    target: *const HewRemotePid,
+    target: *const HewLocation,
     dispatch: *const c_void,
     msg_type: i32,
     payload: *const u8,
@@ -2338,7 +2338,7 @@ fn local_request_matches(caller: *const c_void, target: *const c_void, msg_type:
 )]
 unsafe fn send_location(
     node: *mut HewNode,
-    target: *const HewRemotePid,
+    target: *const HewLocation,
     dispatch: *const c_void,
     msg_type: i32,
     payload: *const u8,
@@ -2523,7 +2523,7 @@ unsafe fn send_location(
 /// `target` and `payload` must satisfy [`hew_node_send_location`].
 #[no_mangle]
 pub unsafe extern "C" fn hew_node_api_send_location(
-    target: *const HewRemotePid,
+    target: *const HewLocation,
     dispatch: *const c_void,
     msg_type: i32,
     payload: *const u8,

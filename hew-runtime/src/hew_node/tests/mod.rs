@@ -43,7 +43,7 @@ fn test_location(route_slot: u16, actor_slot: u64) -> Location {
     Location::new(test_node_id(route_slot), actor_slot, 1).unwrap()
 }
 
-fn remote_pid_for_node(node: &TestNode, actor_id: u64) -> HewRemotePid {
+fn remote_pid_for_node(node: &TestNode, actor_id: u64) -> HewLocation {
     // SAFETY: `TestNode` owns a live, non-null node pointer for this test.
     let node = unsafe { node.as_ptr().as_ref() }.expect("test node must be live");
     assert_eq!(crate::pid::hew_pid_node(actor_id), node.route_slot);
@@ -57,11 +57,11 @@ fn remote_pid_for_node(node: &TestNode, actor_id: u64) -> HewRemotePid {
             .expect("authorized test node must have a session"),
     )
     .expect("test actor must produce a valid location");
-    HewRemotePid::from(location)
+    HewLocation::from(location)
 }
 
 unsafe fn lookup_exact(node: *mut HewNode, name: *const c_char) -> Option<Location> {
-    let mut found = HewRemotePid::default();
+    let mut found = HewLocation::default();
     // SAFETY: caller guarantees node/name validity and `found` is writable.
     if unsafe { hew_node_lookup_location(node, name, &raw mut found) } == 0 {
         Location::try_from(found).ok()
@@ -303,7 +303,7 @@ fn inbound_test_request_codec(
 /// Drive one coroutine remote call to its outcome on this thread: the
 /// taken reply bytes and the `AskError` tag.
 unsafe fn ask_for_test(
-    target: *const HewRemotePid,
+    target: *const HewLocation,
     dispatch: *const c_void,
     msg_type: i32,
     data: *mut c_void,
@@ -818,14 +818,14 @@ fn wait_for_remote_lookup(
     name: *const c_char,
     expected_node_id: crate::node_identity::NodeId,
     timeout: Duration,
-) -> Option<HewRemotePid> {
+) -> Option<HewLocation> {
     let deadline = Instant::now() + timeout;
     loop {
         // SAFETY: node/name are valid for this bounded wait.
         let location = unsafe { lookup_exact(node, name) };
         if let Some(location) = location {
             if location.node() == expected_node_id {
-                return Some(HewRemotePid::from(location));
+                return Some(HewLocation::from(location));
             }
         }
         if Instant::now() >= deadline {

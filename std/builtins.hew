@@ -74,11 +74,15 @@ pub type SourceLocation {
     column: i64;
 }
 
+/// Authenticated distributed node transports. Ordinary QUIC sockets use std.net.quic.
 pub enum NodeTransport {
     Tcp;
     QuicMesh;
 }
 
+/// Configuration supplied once to Node.start.
+/// Set key to a non-empty identity-file path; NodeConfig.at leaves it empty.
+/// Keep that file across restarts so the node identity and peer pins remain stable.
 pub type NodeConfig {
     bind: string;
     transport: NodeTransport;
@@ -120,11 +124,10 @@ impl NodeConfig {
 /// Does NOT coerce implicitly to a local actor handle — a remote actor is a
 /// distinct class with its own physical representation.
 ///
-/// The intended remote call contract uses the same completion calls and
+/// The remote call contract uses the same completion calls and
 /// mailbox submission views as local actors, with typed transport failures.
-/// Native transport lowering exists, but final-compiler distributed lifecycle
-/// acceptance remains incomplete. These declarations alone do not establish
-/// end-to-end native or sandbox support.
+/// Remote calls require an authenticated native node and compatible wire types.
+/// The browser sandbox does not provide distributed node transport.
 pub type RemotePid<T> {
 }
 

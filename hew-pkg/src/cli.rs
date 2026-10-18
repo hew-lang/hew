@@ -2026,7 +2026,11 @@ fn cmd_publish(
             }
         }
     }
-    for input in checked.inputs.iter().filter(|input| input.sha256.is_some()) {
+    for input in checked
+        .inputs
+        .iter()
+        .filter(|input| input.sha256.is_some() && input.dependency_root.is_none())
+    {
         if let Ok(relative) = input.path.strip_prefix(&root) {
             if !pack_result.files.iter().any(|file| file == relative) {
                 eprintln!("hew publish: E_PUBLISH_MISSING_INPUT: compilation input `{}` is excluded from the package", relative.display());

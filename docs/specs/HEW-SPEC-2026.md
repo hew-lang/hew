@@ -18,7 +18,7 @@ runtime.
 Hew tracks **two version axes** that move independently:
 
 - **Compiler version** is SemVer on the binary (`hew --version` → `hew
-  0.6.0`). During the 0.6 series, patch releases may add compatible language
+  0.6.1`). During the 0.6 series, patch releases may add compatible language
   and standard-library features as well as correctness and performance fixes.
   Packages using an addition declare the minimum compiler version through
   `hew` in `hew.toml`. The major release is the v1.0 stability event.

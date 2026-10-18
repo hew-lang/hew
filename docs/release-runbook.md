@@ -220,10 +220,17 @@ git commit -m "chore(release): prepare ${release_tag}"
 ## Phase 3 — Push release branch (release gate and release dry run)
 
 ```bash
+set -euo pipefail
 release_tag="$(scripts/release-identity.sh)"
+test "$(git status --porcelain)" = ""
+release_sha="$(git rev-parse HEAD)"
 git checkout -b "release/${release_tag}"
 git push origin "release/${release_tag}"
+printf 'Record candidate %s: %s\n' "$release_tag" "$release_sha"
 ```
+
+Record the full `release_sha` with the qualification evidence before merging.
+If the candidate changes, record its new SHA and qualify that candidate again.
 
 This triggers two workflows. `.github/workflows/release.yml` runs the
 complete release DAG as a dry run (every archive, package, image, npm tarball
@@ -240,11 +247,37 @@ release identity and `make release-checks`, then runs:
 | Windows x86_64                  | hew-cli, hew-lsp, hew-observe, hew-lib               | Rust workspace + C-ABI + executable release-library consumer |
 | FreeBSD x86_64                  | hew-cli, hew-lsp, hew-observe, hew-lib               | Rust workspace + C-ABI + executable release-library consumer |
 
-**Wait for both workflows to go green, including `gate-sanitizers`.**
-The sanitizer job executes ASan directly, so a missing, skipped, or red run
-fails the release gate without a separate evidence parser.
-Rust workspace jobs use `make test-strict`; their green result means an
-all-pass result. Report known failures separately from passing tests.
+Require successful results for every release-gate platform and
+`gate-sanitizers`, plus a successful `release.yml` dry run, on the recorded
+`release_sha`. The sanitizer job must execute ASan successfully. Rust workspace
+jobs use `make test-strict`; their green result means an all-pass result.
+Report known failures separately from passing tests.
+
+If Windows or Intel macOS needs a retry after a workflow correction, use the
+updated gate with the original candidate's full commit SHA:
+
+```bash
+gh workflow run release-gate.yml --ref main \
+  -f source_sha="$release_sha" \
+  -f platforms=windows-intel-macos
+```
+
+This runs candidate validation, identity and dependency checks, then Windows
+and Intel macOS. A green partial run supplies only those platform results.
+For each contributing run, record its URL and the qualification summary's
+source SHA, workflow SHA and platform selection. Require every source SHA to
+match the recorded `release_sha`, and review workflow corrections for changes
+to the required checks. Combine successful Windows and Intel results with
+successful jobs for all remaining platforms and sanitizers from the full gate.
+Missing, skipped, cancelled or failed required jobs still need successful
+evidence for that same candidate. Evidence from another source SHA cannot be
+reused; any candidate change requires full qualification and a new release
+dry run.
+
+The workflow's native job checks and run metadata identify the dispatched
+workflow revision. Candidate-bound JUnit checks and the qualification summary
+identify the tested source. Leaving both inputs at their defaults runs the full
+gate on the workflow commit.
 
 ## Release dependencies and notices
 
@@ -380,14 +413,18 @@ from `main` and `git describe` resolves for later commits. Main can continue
 receiving changes while the candidate is qualified; the published source stays
 the exact source that passed the release gate and dry run.
 
-Derive the release identity from the checked-out, qualified candidate, then
-confirm its release PR has merged:
+Restore `release_sha` from the recorded, fully qualified candidate if using a
+new shell, then check out that commit. Run these guards from its clean checkout
+after the merge; they use only `main`, so the release branch may be deleted:
 
 ```bash
-release_tag="$(scripts/release-identity.sh)"
-release_sha="$(git rev-parse "origin/release/${release_tag}")"
+set -euo pipefail
+: "${release_sha:?Set release_sha to the recorded fully qualified candidate SHA}"
+[[ "$release_sha" =~ ^[0-9a-f]{40}$ ]]
 test "$(git status --porcelain)" = ""
 test "$(git rev-parse HEAD)" = "$release_sha"
+release_tag="$(scripts/release-identity.sh)"
+git fetch origin main
 git merge-base --is-ancestor "$release_sha" origin/main
 ```
 
@@ -414,8 +451,9 @@ git merge-base --is-ancestor "$release_sha" origin/main
    "Downstream repositories").
 6. Rebuild Android from the tagged candidate and verify its artifact.
 
-Do not tag until `release-gate.yml` and the `release.yml` dry run are green on
-the release branch. In particular, `gate-sanitizers` must have executed ASan
+Do not tag until the recorded candidate has complete successful release-gate
+evidence (including any same-candidate platform resumes) and a successful
+`release.yml` dry run. In particular, `gate-sanitizers` must have executed ASan
 successfully. Review the latest completed nightly run for its recorded revision
 and scope. Current workflows do not execute TSan or Miri; before tagging,
 record the coverage and release-acceptance decision for that missing evidence

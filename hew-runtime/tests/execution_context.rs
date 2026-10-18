@@ -4,14 +4,44 @@
     reason = "FFI diagnostics property suite exercises raw C ABI reader functions"
 )]
 
-use std::ffi::CStr;
+use std::ffi::{c_int, CStr};
 use std::ptr;
+use std::sync::{Mutex, MutexGuard};
 
 use hew_runtime::execution_context::{
     current_context, set_current_context, HewExecutionContext, EXECUTION_CONTEXT_NOT_INSTALLED,
 };
 use hew_runtime::{hew_clear_error, hew_last_error};
 use proptest::prelude::*;
+
+// Both tests invoke the tracing cases, whose enable flag is process-wide.
+static TRACING_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+struct TracingEnabledGuard {
+    previous: c_int,
+    _lock: MutexGuard<'static, ()>,
+}
+
+impl TracingEnabledGuard {
+    fn enable() -> Self {
+        let lock = TRACING_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let previous = hew_runtime::tracing::hew_trace_is_enabled();
+        hew_runtime::tracing::hew_trace_enable(1);
+        Self {
+            previous,
+            _lock: lock,
+        }
+    }
+}
+
+impl Drop for TracingEnabledGuard {
+    fn drop(&mut self) {
+        // Restore before releasing the lock, including when an assertion panics.
+        hew_runtime::tracing::hew_trace_enable(self.previous);
+    }
+}
 
 struct ContextResetGuard {
     previous: *mut HewExecutionContext,
@@ -116,21 +146,18 @@ fn run_ctx_null_reader_case(case: u8) {
             assert_context_not_installed_error();
         }
         9 => {
-            hew_runtime::tracing::hew_trace_enable(1);
+            let _tracing = TracingEnabledGuard::enable();
             hew_runtime::tracing::hew_trace_begin(11, 12);
-            hew_runtime::tracing::hew_trace_enable(0);
             assert_context_not_installed_error();
         }
         10 => {
-            hew_runtime::tracing::hew_trace_enable(1);
+            let _tracing = TracingEnabledGuard::enable();
             hew_runtime::tracing::hew_trace_end(11, 12);
-            hew_runtime::tracing::hew_trace_enable(0);
             assert_context_not_installed_error();
         }
         11 => {
-            hew_runtime::tracing::hew_trace_enable(1);
+            let _tracing = TracingEnabledGuard::enable();
             hew_runtime::tracing::hew_trace_lifecycle(11, hew_runtime::tracing::SPAN_STOP);
-            hew_runtime::tracing::hew_trace_enable(0);
             assert_context_not_installed_error();
         }
         _ => unreachable!("case generator is bounded"),

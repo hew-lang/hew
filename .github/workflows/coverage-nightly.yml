@@ -1,12 +1,29 @@
-name: Coverage nightly
+name: Coverage
 
-# Nightly Rust and runtime coverage through the project's Make targets.
+# Measure trusted main revisions after source, corpus, or build changes.
 
 on:
-  schedule:
-    # Run daily at 07:00 UTC (offset from nightly-sanitizers at 06:00 to avoid
-    # both heavy LLVM-install jobs contending for the same runner pool start).
-    - cron: "0 7 * * *"
+  push:
+    branches: [main]
+    paths:
+      - "hew-*/**"
+      - "std/**"
+      - "xtask/**"
+      - "tests/**"
+      - "examples/**"
+      - "docs/**"
+      - "scripts/**"
+      - "tools/**"
+      - "protocol/**"
+      - "Cargo.*"
+      - "Makefile"
+      - "*.toml"
+      - "*.md"
+      - ".cargo/**"
+      - ".config/**"
+      - ".github/actions/**"
+      - ".github/scripts/**"
+      - ".github/workflows/coverage-nightly.yml"
   workflow_dispatch:
 
 permissions:
@@ -28,11 +45,18 @@ jobs:
   # it separate from cargo-llvm-cov: their covmaps are not merge-compatible,
   # and fail if any curated program fails to build, run, or emit profile data.
   runtime-e2e-coverage:
+    if: >-
+      github.repository == 'hew-lang/hew' &&
+      (github.ref == 'refs/heads/main' ||
+       (github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/heads/release/')))
     name: Runtime E2E coverage
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
 
       - uses: ./.github/actions/setup-rust-build
         with:
@@ -79,6 +103,10 @@ jobs:
   # Rust workspace coverage, separate from compiled-program runtime coverage.
   # ─────────────────────────────────────────────────────────────────────────
   coverage:
+    if: >-
+      github.repository == 'hew-lang/hew' &&
+      (github.ref == 'refs/heads/main' ||
+       (github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/heads/release/')))
     name: Code coverage
     runs-on: ubuntu-24.04
     timeout-minutes: 60
@@ -95,6 +123,9 @@ jobs:
       CARGO_LLVM_COV_BUILD_DIR: ${{ github.workspace }}/target/llvm-cov-target
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
 
       - name: Set up Python 3.12
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0

@@ -22,6 +22,7 @@
 #     triplicating the Node + LLVM build across release-gate platforms.
 
 name: Pre-Release Cross-Platform Gate
+run-name: "Qualify ${{ inputs.source_sha || github.sha }} (${{ inputs.platforms || 'all' }})"
 
 on:
   push:
@@ -29,6 +30,16 @@ on:
       - "release/**"
       - "release-*"
   workflow_dispatch:
+    inputs:
+      source_sha:
+        description: "Full source commit SHA to qualify; defaults to the workflow commit."
+        type: string
+        default: ""
+      platforms:
+        description: "Run the full gate or resume Windows and Intel macOS qualification."
+        type: choice
+        options: [all, windows-intel-macos]
+        default: all
 
 # A push to a branch makes any run still going for that same ref obsolete:
 # its verdict can no longer gate anything, because a newer commit exists.
@@ -62,15 +73,60 @@ jobs:
     name: Release Gate — Identity and dependencies
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    outputs:
+      source_sha: ${{ steps.qualification.outputs.source_sha }}
+      platforms: ${{ steps.qualification.outputs.platforms }}
     steps:
+      - name: Resolve qualification inputs
+        id: qualification
+        shell: bash
+        env:
+          REQUESTED_SOURCE_SHA: ${{ inputs.source_sha }}
+          REQUESTED_PLATFORMS: ${{ inputs.platforms }}
+        run: |
+          set -euo pipefail
+          source_sha="${REQUESTED_SOURCE_SHA:-${GITHUB_SHA}}"
+          platforms="${REQUESTED_PLATFORMS:-all}"
+          if [[ ! "${source_sha}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::source_sha must be a full lowercase commit SHA"
+            exit 1
+          fi
+          case "${platforms}" in
+            all|windows-intel-macos) ;;
+            *) echo "::error::unsupported qualification platforms: ${platforms}"; exit 1 ;;
+          esac
+          printf 'source_sha=%s\nplatforms=%s\n' "${source_sha}" "${platforms}" >> "$GITHUB_OUTPUT"
+
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          ref: ${{ steps.qualification.outputs.source_sha }}
 
       - name: Check release identity
         shell: bash
         env:
           BRANCH: ${{ github.ref_name }}
+          SOURCE_SHA: ${{ steps.qualification.outputs.source_sha }}
+          WORKFLOW_SHA: ${{ github.workflow_sha }}
+          PLATFORMS: ${{ steps.qualification.outputs.platforms }}
         run: |
           set -euo pipefail
+          if [[ "$(git rev-parse HEAD)" != "${SOURCE_SHA}" ]]; then
+            echo "::error::checkout does not match the requested source_sha"
+            exit 1
+          fi
+          {
+            echo '## Release qualification'
+            echo
+            echo '| Identity | Value |'
+            echo '| --- | --- |'
+            printf '| Tested source commit | %s |\n' "${SOURCE_SHA}"
+            printf '| Workflow commit | %s |\n' "${WORKFLOW_SHA}"
+            printf '| Platform selection | %s |\n' "${PLATFORMS}"
+            if [[ "${PLATFORMS}" == windows-intel-macos ]]; then
+              echo
+              echo 'Partial qualification: combine these results with successful full-gate jobs for this exact source commit, including sanitizers.'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
           tag="$(scripts/release-identity.sh)"
           # A release/vX.Y.Z branch must carry the version it is named for.
           if [[ "${BRANCH}" == release/v* && "${BRANCH}" != "release/${tag}" ]]; then
@@ -87,11 +143,15 @@ jobs:
   # Sanitizers — executed ASan hard gate. No current TSan or Miri CI jobs.
   # ─────────────────────────────────────────────────────────────────────────
   gate-sanitizers:
+    needs: gate-release-checks
+    if: needs.gate-release-checks.outputs.platforms != 'windows-intel-macos'
     name: Release Gate — Sanitizers
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          ref: ${{ needs.gate-release-checks.outputs.source_sha }}
 
       - name: Set up Python 3.12
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
@@ -140,6 +200,8 @@ jobs:
   # Linux x86_64 — full build + codegen E2E + WASM (matches ci.yml)
   # ─────────────────────────────────────────────────────────────────────────
   gate-linux:
+    needs: gate-release-checks
+    if: needs.gate-release-checks.outputs.platforms != 'windows-intel-macos'
     name: Release Gate — Linux x86_64
     runs-on: ubuntu-24.04
     # The passed surrounding work measured 2,053 s (~34 min), while the final
@@ -149,6 +211,8 @@ jobs:
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          ref: ${{ needs.gate-release-checks.outputs.source_sha }}
 
       - name: Set up Python 3.12
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
@@ -284,6 +348,7 @@ jobs:
         if: always()
         uses: mikepenz/action-junit-report@3a81627bfac62268172037048872e8ebd4207e6d # v6.4.1
         with:
+          commit: ${{ needs.gate-release-checks.outputs.source_sha }}
           report_paths: "{target/nextest/ci/junit.xml,target/nextest/ci-cabi/junit.xml,target/hew-test-reports/hew-suite-ratchet.xml}"
           check_name: Release Gate Test Results (Linux x86_64)
           fail_on_failure: true
@@ -294,6 +359,8 @@ jobs:
   # Linux aarch64 — full Rust build + workspace tests + WASM
   # ─────────────────────────────────────────────────────────────────────────
   gate-linux-aarch64:
+    needs: gate-release-checks
+    if: needs.gate-release-checks.outputs.platforms != 'windows-intel-macos'
     name: Release Gate — Linux aarch64
     runs-on: ubuntu-24.04-arm
     # Workspace tests plus native core acceptance take about 44 minutes on
@@ -301,6 +368,8 @@ jobs:
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          ref: ${{ needs.gate-release-checks.outputs.source_sha }}
 
       - name: Set up Python 3.12
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
@@ -401,6 +470,7 @@ jobs:
         if: always()
         uses: mikepenz/action-junit-report@3a81627bfac62268172037048872e8ebd4207e6d # v6.4.1
         with:
+          commit: ${{ needs.gate-release-checks.outputs.source_sha }}
           report_paths: "{target/nextest/ci/junit.xml,target/nextest/ci-cabi/junit.xml}"
           check_name: Release Gate Test Results (Linux aarch64)
           fail_on_failure: true
@@ -411,24 +481,22 @@ jobs:
   # macOS arm64 — full Rust build + workspace tests
   # ─────────────────────────────────────────────────────────────────────────
   gate-macos:
+    needs: gate-release-checks
     name: Release Gate — macOS ${{ matrix.arch }}
     strategy:
       fail-fast: false
       matrix:
-        include:
-          # macos-15 for the same reason as ci.yml's macOS job: macos-14's
-          # lldb predates `DW_TAG_variant_part` support.
-          - os: macos-15
-            arch: aarch64
-          - os: macos-15-intel
-            arch: x86_64
-    runs-on: ${{ matrix.os }}
-    # Three x86_64 runs reached 60m, 60m, and 90m with workspace tests still
-    # unfinished. Keep a finite 180-minute ceiling to obtain a completed
-    # duration from this slower runner before choosing a tighter budget.
-    timeout-minutes: 180
+        # macos-14's lldb predates DW_TAG_variant_part support.
+        arch: ${{ fromJSON(needs.gate-release-checks.outputs.platforms == 'windows-intel-macos' && '["x86_64"]' || '["aarch64", "x86_64"]') }}
+    runs-on: ${{ matrix.arch == 'x86_64' && 'macos-15-intel' || 'macos-15' }}
+    # The Intel cold build and workspace tests took 93 minutes, then native
+    # acceptance reached the three-hour job limit. Allow the remaining corpus
+    # to finish while preserving the ARM runner's existing limit.
+    timeout-minutes: ${{ matrix.arch == 'x86_64' && 240 || 180 }}
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          ref: ${{ needs.gate-release-checks.outputs.source_sha }}
 
       - name: Set up Python 3.12
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
@@ -516,6 +584,7 @@ jobs:
         if: always()
         uses: mikepenz/action-junit-report@3a81627bfac62268172037048872e8ebd4207e6d # v6.4.1
         with:
+          commit: ${{ needs.gate-release-checks.outputs.source_sha }}
           report_paths: "{target/nextest/ci/junit.xml,target/nextest/ci-cabi/junit.xml}"
           check_name: Release Gate Test Results (macOS ${{ matrix.arch }})
           fail_on_failure: true
@@ -526,9 +595,10 @@ jobs:
   # Windows x86_64 — Rust workspace tests
   # ─────────────────────────────────────────────────────────────────────────
   gate-windows:
+    needs: gate-release-checks
     name: Release Gate — Windows x86_64
     runs-on: windows-2022
-    timeout-minutes: 120
+    timeout-minutes: 240
     env:
       # aws-lc-sys (rustls under hew-runtime, jsonwebtoken under hew-lib) wants
       # NASM on windows-msvc; its documented CI escape consumes the crate's
@@ -536,6 +606,8 @@ jobs:
       AWS_LC_SYS_PREBUILT_NASM: "1"
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          ref: ${{ needs.gate-release-checks.outputs.source_sha }}
 
       - name: Set up Python 3.12
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
@@ -619,6 +691,7 @@ jobs:
         if: always()
         uses: mikepenz/action-junit-report@3a81627bfac62268172037048872e8ebd4207e6d # v6.4.1
         with:
+          commit: ${{ needs.gate-release-checks.outputs.source_sha }}
           report_paths: "{target/nextest/ci/junit.xml,target/nextest/ci-cabi/junit.xml}"
           check_name: Release Gate Test Results (Windows x86_64)
           fail_on_failure: true
@@ -629,6 +702,8 @@ jobs:
   # FreeBSD x86_64 — full build + workspace tests
   # ─────────────────────────────────────────────────────────────────────────
   gate-freebsd-x86_64:
+    needs: gate-release-checks
+    if: needs.gate-release-checks.outputs.platforms != 'windows-intel-macos'
     name: Release Gate — FreeBSD x86_64
     runs-on: ubuntu-24.04
     # This separate QEMU-backed job runs the grown Hew-suite ratchet after its
@@ -638,6 +713,8 @@ jobs:
     timeout-minutes: 180
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          ref: ${{ needs.gate-release-checks.outputs.source_sha }}
 
       - name: Build and test on FreeBSD
         uses: vmactions/freebsd-vm@c46abacb49f09938ca4e1702d15d836285d694cc # v1.5.9
@@ -757,6 +834,7 @@ jobs:
         if: always()
         uses: mikepenz/action-junit-report@3a81627bfac62268172037048872e8ebd4207e6d # v6.4.1
         with:
+          commit: ${{ needs.gate-release-checks.outputs.source_sha }}
           report_paths: "ci-reports/*.xml"
           check_name: Release Gate Test Results (FreeBSD x86_64)
           fail_on_failure: true
@@ -796,6 +874,8 @@ jobs:
   # budget available rather than leaving it idle during the emulated build.
   # ─────────────────────────────────────────────────────────────────────────
   gate-freebsd-aarch64:
+    needs: gate-release-checks
+    if: needs.gate-release-checks.outputs.platforms != 'windows-intel-macos'
     name: Release Gate — FreeBSD aarch64
     runs-on: ubuntu-24.04
     # This is an emulated QEMU leg; 300 minutes matches release.yml's
@@ -804,6 +884,8 @@ jobs:
     timeout-minutes: 300
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          ref: ${{ needs.gate-release-checks.outputs.source_sha }}
 
       - name: Build and test on FreeBSD aarch64
         uses: vmactions/freebsd-vm@c46abacb49f09938ca4e1702d15d836285d694cc # v1.5.9

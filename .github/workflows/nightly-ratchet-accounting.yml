@@ -2,8 +2,9 @@ name: Nightly ratchet accounting
 
 on:
   schedule:
-    # Offset from the sanitizer and coverage nightlies so the heavyweight
-    # compiler build does not contend with their runner provisioning.
+    # Daily ledger accounting remains independent of push-triggered checks.
+    # Run every suite and each platform's native nextest selection even when
+    # no relevant source changed; keep offset from the sanitizer nightly.
     - cron: "0 8 * * *"
   workflow_dispatch:
 

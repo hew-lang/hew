@@ -72,7 +72,7 @@ const keywordGroups = {
   'keyword.control.hew': [...new Set([
     ...kw.control_flow,
     // Actor keywords that serve as control flow.
-    'select', 'race', 'after', 'from', 'await', 'await_restart', 'scope',
+    'select', 'race', 'after', 'from', 'await', 'scope',
   ])],
 
   // `mut` is deliberately excluded from kw.declarations here even though

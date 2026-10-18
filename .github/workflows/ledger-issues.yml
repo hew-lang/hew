@@ -1,0 +1,45 @@
+name: Expected-failure issue references
+
+on:
+  issues:
+    types: [opened, edited, closed, reopened, deleted, transferred]
+  push:
+    branches: [main]
+    paths:
+      - "tests/expected-failures.tsv"
+      - "xtask/**"
+      - "Cargo.*"
+      - "rust-toolchain.toml"
+      - "Makefile"
+      - ".cargo/**"
+      - ".github/actions/setup-rust-build/**"
+      - ".github/workflows/ledger-issues.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: read
+
+jobs:
+  ledger-issues:
+    # Issue reports read trusted main code; issue text is never executed.
+    # An edited body alone cannot change the state/title references we report.
+    if: >-
+      github.repository == 'hew-lang/hew' && github.ref == 'refs/heads/main' &&
+      (github.event_name != 'issues' || github.event.action != 'edited' ||
+       github.event.changes.title != null)
+    name: Expected-failure issue references
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: ./.github/actions/setup-rust-build
+        with:
+          cache-shared-key: nightly-ledger-issues
+      - name: Report closed and uncited ratchet issues
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: make ledger-issues

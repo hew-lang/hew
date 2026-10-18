@@ -1,6 +1,8 @@
 # Hew Language Guide
 
-A guide to the native language surface. Examples describe the current contracts;
+A guide to the native language surface. The current release is
+[v0.6.1](releases/v0.6.1.md); later source changes are listed in
+[Unreleased](releases/UNRELEASED.md). Examples describe the current contracts;
 implementation gaps are identified where relevant. This document is not a record
 of execution on every target. See the [language specification](specs/HEW-SPEC-2026.md)
 for the full contract.
@@ -5039,23 +5041,28 @@ it never becomes the peer's identity and may differ on every node.
 Starting a node is one call, and it returns `Result<(), NodeError>`, so a
 refused start stops the program instead of printing and carrying on:
 
-```hew,ignore
-var config = NodeConfig.at("0.0.0.0:9000");
-config.transport = "quic-mesh";
-config.key = "node.key";
-config.peers = ["3059301306072a8648ce3d020106082a8648ce3d030107"];
-println(f"pin this credential on peers: {Node.identity_key()}");
-
-match Node.start(config) {
-    .Ok(_) => println("node up"),
-    .Err(e) => println(f"node refused: {e}"),
+```hew,no_run
+fn main() {
+    var config = NodeConfig.at("127.0.0.1:9000");
+    config.transport = NodeTransport.Tcp;
+    config.key = "node.key";
+    Node.start(config).expect("node starts");
+    println(f"pin this credential on peers: {Node.identity_key()}");
+    Node.shutdown();
 }
 ```
 
+Set `config.peers` to the full credentials exchanged out of band before
+starting communicating nodes. Use `NodeTransport.QuicMesh` for mutually
+authenticated QUIC mesh. The legacy `HEW_TRANSPORT=quic` selector is still
+recognized in v0.6.1, but cannot satisfy authenticated node startup; its removal
+is an unreleased change. `std.net.quic` is a separate socket API.
+
 `Node.set_transport`, `Node.load_keys`, and `Node.allow_peer` are gone: each
-carried one fact that is now a `NodeConfig` field. The shipped compiler still
-has the older call sequence and an untyped `Node.start(addr)`
-(hew-lang/hew#3256).
+carried one fact that is now a `NodeConfig` field. Set the non-empty key path
+before calling `Node.start`: `NodeConfig.at` alone does not configure an
+identity. Keep an existing key private and retain it across upgrades rather
+than regenerating it.
 
 On TCP, the pinned credential is the peer's 32-byte Noise public key. On
 quic-mesh, it is the peer certificate's canonical SPKI. An unbound or mismatched

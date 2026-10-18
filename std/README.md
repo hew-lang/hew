@@ -69,7 +69,7 @@ cloneable elements. Iterator adapters consume the iterator they wrap.
 
 ## Quick wayfinding
 
-- **CLI, files, and OS** — [`std.io`](io.hew), [`std.fs`](fs.hew), [`std.path`](path.hew), [`std.os`](os.hew), [`std.process`](process.hew)
+- **CLI, files, and OS** — [`std.cli`](cli.hew), [`std.io`](io.hew), [`std.fs`](fs.hew), [`std.path`](path.hew), [`std.os`](os.hew), [`std.process`](process.hew)
 - **Collections and scans** — [`std.vec`](vec.hew), [`std.arena`](arena.hew), [`std.deque`](deque.hew), [`std.iter`](iter.hew), [`std.sort`](sort/sort.hew)
 - **Streams and coordination** — [`std.stream`](stream.hew), [`std.semaphore`](semaphore.hew), [`std.concurrency.lifecycle`](concurrency/lifecycle.hew)
 - **Data formats and wire protocols** — [`std.encoding.json`](encoding/json/json.hew), [`std.encoding.yaml`](encoding/yaml/yaml.hew), [`std.encoding.toml`](encoding/toml/toml.hew), [`std.encoding.csv`](encoding/csv/csv.hew), [`std.encoding.xml`](encoding/xml/xml.hew)
@@ -114,6 +114,22 @@ fn main() {
 }
 ```
 
+## Command-line applications
+
+[`std.cli`](cli.hew) parses supplied `Vec<string>` arguments without reading
+process state. A command schema defines flags, typed integer or choice options,
+child commands and help. `Command.parse` returns `Outcome.Help` or parsed
+command levels in a `Result`; it never prints or exits.
+
+Pass arguments after the executable name. Options before a child command belong
+to the parent; subsequent options belong to the child. Single-value options
+reject duplicates; declare `.repeated()` to retain values in input order.
+A leaf command's `.positionals("FILE")` accepts a positional tail, and `--`
+preserves every subsequent argument literally, including leading dashes.
+
+See [`cli_argparse.hew`](../examples/cli_argparse.hew) for an application using
+`std.os.args()`, generated help, subcommands and error handling.
+
 ## Shipped module index
 
 Every shipped module under `std/` should appear here.
@@ -134,6 +150,7 @@ Every shipped module under `std/` should appear here.
 
 | Module                      | Import           | Use for                                               |
 | --------------------------- | ---------------- | ----------------------------------------------------- |
+| [`cli`](cli.hew)            | `std.cli`        | Flags, typed options, subcommands and generated help  |
 | [`io`](io.hew)              | `std.io`         | stdin, stdout, and stderr helpers                     |
 | [`scanner`](io/scanner.hew) | `std.io.scanner` | Line and word scanning over strings, stdin, and files |
 | [`fs`](fs.hew)              | `std.fs`         | File system operations and atomic writes              |

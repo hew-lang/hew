@@ -1,0 +1,11 @@
+[[case]]
+id = "cli-commands"
+intent = "A pure Hew command schema parses supplied arguments, preserves command scopes and positional tails, generates help, and refuses invalid values and ambiguous or repeated scalar options."
+source = "cases/cli-commands.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "deploy: jobs=4 mode=safe includes=lib,generated\ntail: 雪|-report|empty\nnegative integers and Unicode values\ninvalid values, missing values and duplicate options refused\nsubcommand help\nambiguous schema refused\n"
+stderr = ""
+exit = 0

@@ -1,0 +1,78 @@
+import std.cli;
+
+fn application() -> cli.Command {
+    var app = cli.command("harbour", "Manage a release");
+    app.argument(cli.flag("verbose", .Some("v"), "Show progress"));
+    var deploy = cli.command("deploy", "Deploy selected files");
+    deploy.argument(cli.integer("jobs", .Some("j"), "COUNT", "Worker count"));
+    deploy.argument(cli.choice("mode", .None, "MODE", "Deployment mode", ["safe", "fast"]));
+    deploy.argument(cli.option("include", .Some("I"), "PATH", "Include a directory").repeated());
+    deploy.argument(cli.option("label", .None, "TEXT", "Release label"));
+    deploy.positionals("FILE");
+    app.subcommand(deploy);
+    app
+}
+
+fn parsed(app: cli.Command, args: Vec<string>) -> cli.Matches {
+    match app.parse(args) {
+        .Ok(.Parsed(matches)) => matches,
+        .Ok(.Help(_)) => panic("expected arguments"),
+        .Err(error) => panic(f"{error}"),
+    }
+}
+
+fn rejected(app: cli.Command, args: Vec<string>, expected: string) {
+    match app.parse(args) {
+        .Err(error) => assert(f"{error}" == expected),
+        .Ok(_) => panic("invalid arguments accepted"),
+    }
+}
+
+fn main() {
+    let app = application();
+    let supplied = ["-vv", "deploy", "--jobs=4", "--mode", "safe", "-Ilib", "--include=generated", "--label=", "--", "雪", "-report", ""];
+    let matches = parsed(app, supplied);
+    assert(supplied.len() == 12);
+    assert(matches.root().flag("verbose"));
+    let deploy = matches.selected();
+    assert(deploy.name == "deploy");
+    assert(deploy.integer("jobs") == .Some(4));
+    assert(deploy.value("mode") == .Some("safe"));
+    assert(deploy.value("label") == .Some(""));
+    assert(deploy.values("include") == ["lib", "generated"]);
+    assert(deploy.positionals == ["雪", "-report", ""]);
+    println("deploy: jobs=4 mode=safe includes=lib,generated");
+    println("tail: 雪|-report|empty");
+    let negative = parsed(app, ["deploy", "-j-2", "-I雪"]);
+    assert(negative.selected().integer("jobs") == .Some(-2));
+    assert(negative.selected().values("include") == ["雪"]);
+    assert(parsed(app, ["deploy", "--jobs", "-3"]).selected().integer("jobs") == .Some(-3));
+    println("negative integers and Unicode values");
+    rejected(app, ["deploy", "--jobs", "many"], "invalid value `many` for `--jobs`: expected an integer");
+    rejected(app, ["deploy", "-j1", "--jobs=2"], "option `--jobs` may only be supplied once");
+    rejected(app, ["deploy", "--jobs", "--mode", "safe"], "option `--jobs` needs a value");
+    rejected(app, ["deploy", "--mode=unsafe"], "invalid value `unsafe` for `--mode`: expected one of safe, fast");
+    rejected(app, ["deploy", "--jo=2"], "unknown option `--jo=2`");
+    rejected(app, ["deploy", "--verbose"], "unknown option `--verbose`");
+    rejected(app, ["unknown"], "unknown command `unknown` for `harbour`");
+    rejected(app, Vec.new(), "a command is required for `harbour`");
+    println("invalid values, missing values and duplicate options refused");
+    match app.parse(["deploy", "--help"]) {
+        .Ok(.Help(help)) => {
+            assert(help.contains("Usage: harbour deploy [OPTIONS] [FILE...]"));
+            assert(help.contains("-j, --jobs <COUNT>"));
+            assert(help.contains("--include <PATH>..."));
+            assert(help.contains("Show this help"));
+        }
+        .Ok(_) => panic("help parsed as application arguments"),
+        .Err(error) => panic(f"{error}"),
+    }
+    println("subcommand help");
+    var ambiguous = cli.command("ambiguous", "Invalid declaration");
+    ambiguous.argument(cli.flag("first", .Some("x"), "First"));
+    ambiguous.argument(cli.flag("second", .Some("x"), "Second"));
+    match ambiguous.parse(["-x"]) {
+        .Err(.InvalidDefinition(_)) => println("ambiguous schema refused"),
+        _ => panic("ambiguous option accepted"),
+    }
+}

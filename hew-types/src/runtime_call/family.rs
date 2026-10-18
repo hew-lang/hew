@@ -1139,7 +1139,6 @@ impl RuntimeCallFamily {
     /// runtime family. Catalogue endpoint identity is established before this
     /// call; arbitrary source names never reach it.
     #[must_use]
-    #[expect(clippy::too_many_lines, reason = "exact source catalogue endpoints")]
     pub fn from_catalog_endpoint(endpoint: &str) -> Option<Self> {
         match endpoint {
             "hew_node_id_display" => Some(Self::NodeIdDisplay),

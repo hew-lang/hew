@@ -2489,10 +2489,7 @@ impl Checker {
         self.env.pop_scope();
     }
 
-    /// Validate `#[every(duration)]` attributes on a receive fn.
-    pub(super) fn validate_every_attribute(&mut self, rf: &ReceiveFnDecl) {
-        let every_attrs: Vec<_> = rf.attributes.iter().filter(|a| a.name == "every").collect();
-
+    fn validate_receive_attributes(&mut self, rf: &ReceiveFnDecl) {
         for attr in &rf.attributes {
             let message = if attr.name == "wire" && !attr.args.is_empty() {
                 Some("#[wire] on a receive fn takes no arguments".to_string())
@@ -2512,6 +2509,12 @@ impl Checker {
                 ));
             }
         }
+    }
+
+    /// Validate `#[every(duration)]` attributes on a receive fn.
+    pub(super) fn validate_every_attribute(&mut self, rf: &ReceiveFnDecl) {
+        self.validate_receive_attributes(rf);
+        let every_attrs: Vec<_> = rf.attributes.iter().filter(|a| a.name == "every").collect();
         if every_attrs.is_empty() {
             return;
         }

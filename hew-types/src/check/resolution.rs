@@ -1159,6 +1159,27 @@ impl Checker {
                 );
             }
         }
+        if let Some(required) = trait_id
+            .and_then(|id| self.trait_info(id))
+            .map(|info| info.type_params.len())
+            .filter(|required| args.len() != *required)
+        {
+            let message = format!(
+                "`dyn {}` requires {required} positional type argument(s); received {}",
+                bound.path,
+                args.len(),
+            );
+            // Signature registration and use can resolve one annotation
+            // repeatedly. Keep one diagnostic per source annotation.
+            if !self.errors.iter().any(|error| {
+                error.kind == TypeErrorKind::ArityMismatch
+                    && error.span == *span
+                    && error.source_module == self.current_module
+                    && error.message == message
+            }) {
+                self.report_error(TypeErrorKind::ArityMismatch, span, message);
+            }
+        }
         if let Some(trait_id) = trait_id {
             let mut associated_type_names: Vec<_> = self
                 .trait_closure(trait_id)

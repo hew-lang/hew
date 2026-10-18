@@ -5282,3 +5282,53 @@ fn a_user_display_impl_satisfies_the_bound() {
         accepted.errors
     );
 }
+
+#[test]
+fn trait_object_positional_arguments_match_the_declared_binders() {
+    for (bound, arity) in [
+        ("Lookup<Output = i32>", Some((1, 0))),
+        ("Lookup<i64, string, Output = i32>", Some((1, 2))),
+        ("ReadOnly<i64, Output = i32>", Some((0, 1))),
+        ("Lookup<i64, Output = i32>", None),
+        ("ReadOnly<Output = i32>", None),
+    ] {
+        let source = format!(
+            r"
+            trait Lookup<Key> {{
+                type Output;
+                fn at(self, key: Key) -> Self.Output;
+            }}
+            trait ReadOnly {{
+                type Output = i32;
+                fn get(self) -> Self.Output;
+            }}
+            fn accept(value: dyn {bound}) {{}}
+        "
+        );
+        let output = check_source(&source);
+        if let Some((required, supplied)) = arity {
+            assert_eq!(output.errors.len(), 1, "{bound}: {:?}", output.errors);
+            let error = &output.errors[0];
+            assert_eq!(error.kind, TypeErrorKind::ArityMismatch);
+            assert!(
+                error
+                    .message
+                    .contains(&format!("requires {required} positional type argument")),
+                "{:?}",
+                output.errors
+            );
+            assert!(
+                error.message.contains(&format!("received {supplied}")),
+                "{:?}",
+                output.errors
+            );
+            assert!(
+                source[error.span.clone()].contains(&format!("dyn {bound}")),
+                "{:?}",
+                error.span
+            );
+        } else {
+            assert!(output.errors.is_empty(), "{bound}: {:?}", output.errors);
+        }
+    }
+}

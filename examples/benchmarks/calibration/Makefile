@@ -8,7 +8,7 @@ PYTHON ?= python3
 CARGO_BUILD_JOBS ?= 1
 PRIMITIVE_SOURCE ?= primitives
 
-.PHONY: build primitives concurrency run smoke compile-scaling check primitives-hew-o0 primitives-hew primitives-rust primitives-rust-checked primitives-go primitives-c concurrency-hew-o0 concurrency-hew concurrency-go concurrency-tokio concurrency-beam
+.PHONY: build primitives concurrency run smoke compile-scaling check primitives-hew-o0 primitives-hew primitives-rust primitives-rust-checked primitives-go primitives-c concurrency-hew-o0 concurrency-hew concurrency-profile concurrency-go concurrency-tokio concurrency-beam
 
 build: primitives concurrency
 
@@ -47,6 +47,11 @@ concurrency-hew-o0:
 concurrency-hew:
 	mkdir -p "$(OUT)"
 	"$(HEW)" build concurrency.hew --release -o "$(OUT)/concurrency-hew"
+
+# Preserve symbols for allocation and call-stack attribution at the same O2 level.
+concurrency-profile:
+	mkdir -p "$(OUT)"
+	"$(HEW)" build concurrency.hew --debug --opt-level 2 -o "$(OUT)/concurrency-profile"
 
 concurrency-go:
 	mkdir -p "$(OUT)"

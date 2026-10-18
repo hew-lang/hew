@@ -3004,6 +3004,88 @@ mod tests {
         }
     }
 
+    #[test]
+    fn native_capacity_wait_follows_a_replaced_supervised_role() {
+        use crate::mailbox::native::{
+            hew_actor_send_wait_free, hew_actor_send_wait_new, hew_actor_send_wait_poll,
+        };
+        use crate::wake::blocking::Readiness;
+        unsafe extern "C" fn drop_empty(_payload: *mut c_void) {}
+        let _rt = crate::runtime_test_guard();
+        let _scheduler = crate::scheduler::NoWorkerSchedulerForTest::install();
+        let (ready, waker) = Readiness::new();
+        // SAFETY: the worker-less fixture owns the supervisor and both incarnations.
+        unsafe {
+            let (sup, old_child, _self_actor) = make_supervisor_with_block_mailbox_child();
+            let role = hew_supervisor_native_role_owner((*sup).local_pid_id, 0, false);
+            let old_mailbox = (*old_child).mailbox.cast::<mailbox::HewMailbox>();
+            assert_eq!(
+                mailbox::hew_mailbox_send(old_mailbox, 1, ptr::null_mut(), 0),
+                0
+            );
+            let caller = crate::actor_caller::local_sender();
+            let wait = hew_actor_send_wait_new(
+                role,
+                7,
+                ptr::null_mut(),
+                0,
+                drop_empty,
+                waker.descriptor(),
+                None,
+                1,
+                &raw const caller,
+            );
+            assert_eq!(
+                hew_actor_send_wait_poll(wait),
+                crate::actor_native::HewSubmitStatus::Pending as i32
+            );
+            assert!(!ready.take_ready());
+            mailbox::mailbox_close(old_mailbox);
+            assert!(
+                ready.take_ready(),
+                "retiring the old mailbox wakes its waiter"
+            );
+
+            let replacement = restart_child_from_spec(sup, 0);
+            assert!(!replacement.is_null());
+            actor::hew_actor_stop(old_child);
+            assert_eq!(actor::hew_actor_free(old_child), 0);
+            let replacement_mailbox = (*replacement).mailbox.cast::<mailbox::HewMailbox>();
+            assert_eq!(
+                mailbox::hew_mailbox_send(replacement_mailbox, 2, ptr::null_mut(), 0),
+                0
+            );
+            assert_eq!(
+                hew_actor_send_wait_poll(wait),
+                crate::actor_native::HewSubmitStatus::Pending as i32
+            );
+            assert!(!ready.take_ready());
+            let filler = mailbox::hew_mailbox_try_recv(replacement_mailbox);
+            assert!(!filler.is_null());
+            mailbox::hew_msg_node_free(filler);
+            assert!(
+                ready.take_ready(),
+                "the same role waiter must subscribe to its new mailbox"
+            );
+            assert_eq!(
+                hew_actor_send_wait_poll(wait),
+                crate::actor_native::HewSubmitStatus::Accepted as i32
+            );
+            let request = mailbox::hew_mailbox_try_recv(replacement_mailbox);
+            assert!(!request.is_null());
+            assert_eq!((*request).msg_type, 7);
+            mailbox::hew_msg_node_free(request);
+            hew_actor_send_wait_free(wait);
+            assert!(scheduler::discard_queued_actor_for_test(replacement));
+            (*replacement)
+                .actor_state
+                .store(HewActorState::Idle as i32, Ordering::Release);
+            hew_supervisor_stop(sup);
+        }
+        drop(waker);
+        assert_eq!(Arc::strong_count(&ready), 1);
+    }
+
     /// LOCK-ORDER INVARIANT: the role-ask enqueue — including a Block-policy
     /// capacity WAIT — never runs under `roster`. Holding the lock
     /// across the wait closes a cycle: the submitter waits for the child to

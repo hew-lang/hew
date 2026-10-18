@@ -468,6 +468,63 @@ unsafe fn spawn(
 }
 
 #[test]
+fn completed_task_observations_poll_without_rescheduling_their_caller() {
+    let _runtime = TaskRuntime::new();
+    let (readiness, waker) = Readiness::new();
+    let (started, receive) = mpsc::channel();
+    let gate = Arc::new((Mutex::new(false), Condvar::new()));
+    let drops = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    // SAFETY: the initial wait consumes the source handle; additional observations
+    // retain it independently, and the scope stays live through their release.
+    unsafe {
+        let scope = hew_checked_scope_new(ptr::null_mut());
+        let task = spawn(
+            scope,
+            started,
+            Arc::clone(&gate),
+            drops,
+            ResultValue::Scalar(42),
+        );
+        receive.recv().unwrap();
+        let pending = hew_checked_task_wait_new(task, waker.descriptor());
+        release(&gate);
+        readiness.wait();
+        assert_eq!(hew_checked_task_wait_status(pending), READY);
+
+        let selection = hew_checked_task_select_new(waker.descriptor());
+        hew_checked_task_select_add_task(selection, task);
+        assert!(!readiness.take_ready());
+        assert_eq!(hew_checked_task_select_poll(selection), 0);
+        hew_checked_task_select_free(selection);
+
+        retain(task);
+        let completed = hew_checked_task_wait_new(task, waker.descriptor());
+        assert!(!readiness.take_ready());
+        assert_eq!(hew_checked_task_wait_status(completed), READY);
+        let drain = hew_checked_scope_wait_new(scope, waker.descriptor(), ptr::null());
+        assert!(!readiness.take_ready());
+        let mut value = 0_i64;
+        let mut fault = ptr::null_mut();
+        assert_eq!(
+            hew_checked_task_wait_take(
+                completed,
+                (&raw mut value).cast(),
+                &raw mut fault,
+                ptr::null_mut()
+            ),
+            READY
+        );
+        assert_eq!(value, 42);
+        assert!(fault.is_null());
+        assert_eq!(hew_checked_scope_wait_status(drain), READY);
+        hew_checked_task_wait_free(completed);
+        hew_checked_task_wait_free(pending);
+        hew_checked_scope_wait_free(drain);
+        hew_checked_scope_close(scope);
+    }
+}
+
+#[test]
 fn pending_scope_drain_preserves_completed_child_faults() {
     let _runtime = TaskRuntime::new();
     let (readiness, waker) = Readiness::new();

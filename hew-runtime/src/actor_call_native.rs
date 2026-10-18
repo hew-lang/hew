@@ -96,7 +96,7 @@ impl HewActorCall {
                 }
             };
             let request = crate::cow_envelope::release_cursor(request);
-            let cursor = HewReleaseCursor::join(vec![self.rejected_payload, request, reply]);
+            let cursor = HewReleaseCursor::join([self.rejected_payload, request, reply]);
             self.rejected_payload = ptr::null_mut();
             if !cursor.is_null() {
                 self.cleanup = Some(ReleaseDriver::new(cursor));

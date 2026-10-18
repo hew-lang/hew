@@ -429,7 +429,9 @@ impl HewReleaseCursor {
     }
 
     /// Join freshly created cursors in consuming source order.
-    pub(crate) unsafe fn join(cursors: Vec<*mut Self>) -> *mut Self {
+    pub(crate) unsafe fn join(
+        cursors: impl IntoIterator<Item = *mut Self, IntoIter: DoubleEndedIterator>,
+    ) -> *mut Self {
         let mut pending = Vec::new();
         for cursor in cursors.into_iter().rev() {
             if !cursor.is_null() {

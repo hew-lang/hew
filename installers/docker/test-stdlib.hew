@@ -5,6 +5,8 @@ import std.fs;
 
 import std.net.url;
 
+import std.os;
+
 fn main() {
     // ── string.split / string.join ───────────────────────────────────────
     let parts = "a,b,c".split(",");
@@ -18,17 +20,17 @@ fn main() {
     println("string.lines: ok");
 
     // ── fs.mkdir_all / fs.is_dir / fs.list_dir ───────────────────────────
-    let dir = "/tmp/hew_smoke_test";
+    let dir = os.temp_dir() + f"/hew_smoke_test_{os.pid()}";
     fs.mkdir_all(dir).expect("mkdir_all succeeds");
     assert(fs.is_dir(dir));
-    let entries = fs.list_dir("/tmp").expect("list_dir succeeds");
+    let entries = fs.list_dir(os.temp_dir()).expect("list_dir succeeds");
     assert(!entries.is_empty());
     println("fs.mkdir_all/is_dir/list_dir: ok");
 
     // ── url.encode / url.decode ───────────────────────────────────────────
     let encoded = url.encode("hello world");
     assert(encoded == "hello%20world");
-    let decoded = url.decode("hello%20world");
+    let decoded = url.decode("hello%20world").expect("valid URL escape");
     assert(decoded == "hello world");
     println("url.encode/decode: ok");
 

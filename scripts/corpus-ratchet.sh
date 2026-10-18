@@ -843,6 +843,9 @@ run_hew_corpus() {
             # These fixtures import the in-tree packages used by their owning
             # execution gate; keep the corpus check in that same context.
             check_args=(--pkg-path "$REPO_ROOT/tests/pkg-import/pkgs")
+        elif [[ "$f" == tests/host/copy_component.hew ]]; then
+            # Match the package context used by tests/host/run.py.
+            check_args=(--pkg-path "$REPO_ROOT/tests/core-acceptance/fixtures/construction-capabilities")
         fi
         check_log="$("$HEW_BIN" check "${check_args[@]}" "$REPO_ROOT/$f" 2>&1)" || status=$?
         if ((status != 0)); then

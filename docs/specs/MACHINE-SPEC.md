@@ -209,19 +209,31 @@ states are not part of this surface.
 
 `std.machine.watch` adds explicit observation around an independent machine
 copy. The machine evaluator stays synchronous; an observed owner's `step`
-uses ordinary actor service suspension.
+uses ordinary actor service suspension. This example uses the threaded scheduler;
+the documentation runner checks its compilation without deterministic execution.
 
-```hew
+```hew,no_run
 import std.machine.watch;
 
-let (owner, feed) = watch.observe(initial, capacity: 8, subscribers: 2)
-    .expect("observe");
-var live = owner;
-let updates = feed.subscribe().expect("subscribe");
-let snapshot = updates.initial();
-let report = live.step(event);
-let notice = updates.recv().expect("history retained").expect("notice");
-live.close();
+machine Counter {
+    events { Add { value: i64; } }
+    state Ready { value: i64; }
+    on Add: Ready => Ready { value: state.value + event.value }
+    default { state }
+}
+
+fn main() {
+    let initial: Counter = .Ready { value: 0 };
+    let (owner, feed) = watch.observe(initial, capacity: 8, subscribers: 2)
+        .expect("observe");
+    var live = owner;
+    let updates = feed.subscribe().expect("subscribe");
+    assert(updates.initial().revision == 0);
+    let _ = live.step(.Add { value: 4 });
+    let notice = updates.recv().expect("history retained").expect("notice");
+    assert(notice.revision == 1);
+    live.close();
+}
 ```
 
 `Owner<M.Event, M.Step>` exclusively holds writable identity. Moving it transfers ownership;

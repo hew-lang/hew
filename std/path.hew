@@ -22,8 +22,6 @@
 //! }
 //! ```
 
-import std.string;
-
 /// The result of a glob expansion.
 ///
 /// Created by `path.glob(pattern)`. Glob results close automatically at scope

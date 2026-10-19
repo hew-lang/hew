@@ -2844,8 +2844,37 @@ impl Checker {
             .map_or(program, |normalized| &normalized.program);
         self.validate_macro_templates(program);
         self.check_dependency_bodies(program);
+        self.check_embedded_builtin_trait_impl_bodies();
         self.check_root_bodies(program);
         self.finish_program(program, normalized_program.as_ref())
+    }
+
+    /// Bring compiler-owned builtin trait bodies into the same effect graph as
+    /// the program that instantiates them. Their declarations are registered
+    /// from this source during preparation; checking the selected bodies here
+    /// lets generic calls use their actual effects instead of an unknown body.
+    fn check_embedded_builtin_trait_impl_bodies(&mut self) {
+        if self.checking_embedded_builtins {
+            return;
+        }
+        const SOURCE: &str = include_str!("../../../std/builtins.hew");
+        let parsed = hew_parser::parse(SOURCE);
+        assert!(parsed.errors.is_empty(), "embedded builtins must parse");
+        let saved_module = self.current_module.replace("std.builtins".to_string());
+        let saved_index = std::mem::replace(&mut self.current_module_idx, u32::MAX);
+        let saved_stdlib = std::mem::replace(&mut self.is_stdlib_source, true);
+        for (ordinal, (item, span)) in parsed.program.items.iter().enumerate() {
+            if let Item::Impl(implementation) = item {
+                if implementation.trait_bound.is_some() {
+                    self.current_item_ordinal = ordinal;
+                    self.check_impl(implementation, span);
+                }
+            }
+        }
+        self.current_item_ordinal = 0;
+        self.is_stdlib_source = saved_stdlib;
+        self.current_module_idx = saved_index;
+        self.current_module = saved_module;
     }
 
     /// Deep-copy a sealed dependency-only checkpoint. Callers never copy a

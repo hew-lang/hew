@@ -80,12 +80,11 @@ impl Checker {
                 method,
             } => {
                 use super::super::dispatch_table::MethodOwner;
-                let receiver = self
+                let receiver_ty = self
                     .subst
                     .resolve(call.receiver.as_ref()?)
                     .substitute_type_params_parallel(actuals);
-                let receiver = crate::ResolvedTy::from_ty(&receiver).ok()?;
-                let instance = receiver.impl_receiver_instance(&self.defs)?;
+                let receiver = crate::ResolvedTy::from_ty(&receiver_ty).ok()?;
                 let trait_args: Vec<_> = self
                     .effect_trait_args(site)?
                     .iter()
@@ -95,6 +94,41 @@ impl Checker {
                             .substitute_type_params_parallel(actuals)
                     })
                     .collect();
+                let instantiate = |declaration| {
+                    let binders = self.impl_method_binders.get(&declaration)?;
+                    let arguments = binders.implementation_arguments(
+                        &self.defs,
+                        declaration,
+                        &receiver,
+                        &trait_args,
+                    )?;
+                    let mut applied = self.call_cleanup_substitutions(
+                        declaration,
+                        site,
+                        call.receiver.as_ref(),
+                        actuals,
+                    );
+                    applied.extend(
+                        binders
+                            .impl_params
+                            .iter()
+                            .copied()
+                            .zip(arguments.iter().map(crate::ResolvedTy::to_ty)),
+                    );
+                    Some((declaration, applied))
+                };
+                // Builtin receivers have no nominal dispatch instance. Use
+                // the checker's selected trait-slot identity for the exact
+                // receiver, then verify its impl binders as for nominals.
+                if Self::canonical_primitive_or_builtin_key(&receiver_ty).is_some() {
+                    let declaration = self.trait_impl_method_declaration(
+                        &receiver_ty,
+                        *declaring_trait,
+                        self.defs.name(*method).as_str(),
+                    )?;
+                    return instantiate(declaration);
+                }
+                let instance = receiver.impl_receiver_instance(&self.defs)?;
                 let mut candidates = self
                     .dispatch
                     .candidates(instance.nominal, Some(&instance), self.defs.name(*method))
@@ -111,27 +145,7 @@ impl Checker {
                         if !admitted {
                             return None;
                         }
-                        let binders = self.impl_method_binders.get(&declaration)?;
-                        let arguments = binders.implementation_arguments(
-                            &self.defs,
-                            declaration,
-                            &receiver,
-                            &trait_args,
-                        )?;
-                        let mut applied = self.call_cleanup_substitutions(
-                            declaration,
-                            site,
-                            call.receiver.as_ref(),
-                            actuals,
-                        );
-                        applied.extend(
-                            binders
-                                .impl_params
-                                .iter()
-                                .copied()
-                                .zip(arguments.iter().map(crate::ResolvedTy::to_ty)),
-                        );
-                        Some((declaration, applied))
+                        instantiate(declaration)
                     });
                 let selected = candidates.next()?;
                 candidates.next().is_none().then_some(selected)

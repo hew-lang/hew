@@ -391,16 +391,16 @@ impl Checker {
         // The endpoint is an ABI spelling, not a declaration identity.  In
         // particular an imported receiver may be written through an alias at
         // the call site, while the source impl was registered under its full
-        // owner path.  Carry the ID allocated at that registration boundary;
-        // do not manufacture one from the call-site signature key.
+        // owner path. Carry the declaration selected with the signature;
+        // a shared receiver/method key may name a different trait method.
         let target = crate::stdlib_catalog_identity::compiler_synthetic_identity_endpoint(
             &extern_identity.endpoint,
         )
         .map_or_else(
             || {
-                self.impl_method_declaration_ids
-                    .get(&extern_identity.signature_key)
-                    .copied()
+                sig.impl_method
+                    .as_ref()
+                    .map(|method| method.declaration)
                     .map_or_else(
                         || CallTarget::Unsupported {
                             reason: format!(
@@ -633,7 +633,15 @@ impl Checker {
         span: &Span,
         receiver_ty: &Ty,
     ) -> Option<Ty> {
-        let sig = self.lookup_named_method_sig(receiver_type_name, type_args, method)?;
+        let sig = match self.select_method(receiver_ty, method) {
+            crate::check::dispatch_table::MethodSelection::Unique(_, declaration) => {
+                self.selected_method_sig(receiver_ty, declaration)?
+            }
+            crate::check::dispatch_table::MethodSelection::Missing => {
+                self.lookup_named_method_sig(receiver_type_name, type_args, method)?
+            }
+            crate::check::dispatch_table::MethodSelection::Ambiguous(_) => return None,
+        };
         sig.extern_symbol.as_ref()?;
         let method_key = format!("{receiver_type_name}::{method}");
         let applied_sig = self.apply_instantiated_call_signature_with_assoc(

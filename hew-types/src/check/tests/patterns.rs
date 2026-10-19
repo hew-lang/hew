@@ -10,14 +10,42 @@ fn root_arm_resolution_at<'a>(
     source: &str,
     pattern: &str,
 ) -> &'a ArmResolution {
-    let start = source
-        .rfind(pattern)
-        .unwrap_or_else(|| panic!("root pattern {pattern:?} is absent from source"));
-    let key = SpanKey {
-        start,
-        end: start + pattern.len(),
-        module_idx: 0,
+    let parsed = hew_parser::parse(source);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:#?}",
+        parsed.errors
+    );
+    let main = parsed
+        .program
+        .items
+        .iter()
+        .find_map(|(item, _)| match item {
+            hew_parser::ast::Item::Function(function) if function.name.name.as_str() == "main" => {
+                Some(function)
+            }
+            _ => None,
+        })
+        .expect("root main function");
+    let Some((hew_parser::ast::Expr::Match { arms, .. }, _)) = main.body.trailing_expr.as_deref()
+    else {
+        panic!("root main must end in the match under test");
     };
+    let matches = arms
+        .iter()
+        .filter(|arm| {
+            source
+                .get(arm.pattern.1.clone())
+                .is_some_and(|written| written.trim_end() == pattern)
+        })
+        .collect::<Vec<_>>();
+    let [arm] = matches.as_slice() else {
+        panic!(
+            "expected one root match arm for {pattern:?}, found {}",
+            matches.len()
+        );
+    };
+    let key = SpanKey::from(&arm.pattern.1);
     output
         .pattern_resolutions
         .get(&key)

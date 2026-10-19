@@ -40,8 +40,8 @@ fn main() {
     keys.insert(tree, 10);
     keys.insert(copy, 20);
     assert(keys.len() == 1);
-    assert(keys.get(tree) == Some(20));
-    assert(keys.get(other) == None);
+    assert(keys.get(tree) == Option.Some(20));
+    assert(keys.get(other) == Option.None);
     var unique: HashSet<Node> = HashSet.new();
     assert(unique.insert(tree));
     assert(!unique.insert(copy));

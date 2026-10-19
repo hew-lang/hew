@@ -46,3 +46,7 @@ is now refused with `E_EMPTY_KEY_BRACES`, as an empty `spawn` key list is;
 A quoted import can be aliased: `import "codecs/huffman.hew" as huffman;` binds
 the file as the module `huffman` without publishing its items unqualified, so
 two files that each publish `encode` can be used side by side.
+
+Records and enums that recurse through a `Vec` now support structural
+equality when their members support it, including `Vec.contains`. Eligible
+recursive records also work as `HashMap` keys and `HashSet` elements.

@@ -1235,6 +1235,59 @@ fn ok_coerced_tails_keep_the_written_callable_contract() {
 
 const DYN_TICKER: &str = "trait Ticker {\n    fn tick(self) -> i64;\n}\n\ntype Clock {\n    n: i64;\n}\n\nimpl Ticker for Clock {\n    fn tick(self) -> i64 {\n        self.n\n    }\n}\n\nfn run(t: dyn Ticker) {\n    defer {\n        println(t.tick());\n    }\n    println(t.tick());\n}\n\nfn main() {\n    run(Clock { n: 1 });\n}\n";
 
+const DYN_GENERIC_CLEANUP: &str = r"
+trait Finish { fn finish(consume self); }
+type Parcel<T> { value: T; }
+impl<T> Finish for Parcel<T> {
+    fn finish(consume self) {
+        let Parcel { value } = self;
+        discard(value);
+    }
+}
+fn discard<T>(consume value: T) {}
+fn erase<U>(consume value: Parcel<U>) -> dyn Finish { value }
+#[resource]
+type Ticket {}
+impl Ticket { fn close(consume self) { sleep(1ms); } }
+";
+
+#[test]
+fn pure_dyn_filler_does_not_erase_generic_cleanup_effect() {
+    let source = format!(
+        "{DYN_GENERIC_CLEANUP}\nfn main() {{ let value = erase(Parcel {{ value: 7 }}); value.finish(); }}"
+    );
+    let output = check_source(&source);
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+    assert!(
+        output
+            .suspension_effects
+            .bodies
+            .iter()
+            .any(|(body, effect)| {
+                matches!(body, crate::check::effects::EffectBody::Declaration(id)
+            if output.defs.path(*id) == "Parcel::<impl Finish for Parcel<T>>::finish")
+                    && *effect == SuspensionEffect::MaySuspend
+            }),
+        "a pure concrete filler must not overwrite the generic body's effect"
+    );
+}
+
+#[test]
+fn dyn_filler_keeps_suspending_cleanup_in_a_generic_erasure() {
+    for calls in [
+        "let plain = erase(Parcel { value: 7 }); let slow = erase(Parcel { value: Ticket {} });",
+        "let slow = erase(Parcel { value: Ticket {} }); let plain = erase(Parcel { value: 7 });",
+    ] {
+        let source = format!("{DYN_GENERIC_CLEANUP}\nfn main() {{ {calls} }}");
+        let output = check_source(&source);
+        assert_eq!(output.errors.len(), 1, "{:?}", output.errors);
+        let error = &output.errors[0];
+        assert!(error.message.contains("E_DYN_SLOT_SUSPENDS"), "{error:?}");
+        let rejected = &source[error.span.clone()];
+        assert!(rejected.contains("Ticket {}"), "{rejected}: {error:?}");
+    }
+}
+
 #[test]
 fn dyn_slot_effect_follows_the_trait_method_declaration() {
     // A plain trait method is a written boundary that never suspends, so a

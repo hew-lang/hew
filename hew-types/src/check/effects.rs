@@ -151,7 +151,11 @@ enum ObligationSlot {
     Callable(String),
     /// A trait-object slot whose trait method is not `fn[suspends]` (A421):
     /// the trait method and the trait object, as the user wrote them.
-    Dyn { method: String, target: String },
+    Dyn {
+        method: String,
+        target: String,
+        receiver: Ty,
+    },
 }
 
 #[derive(Debug, Clone, Default)]
@@ -559,6 +563,7 @@ impl Checker {
         &mut self,
         traits: &[crate::ty::TraitObjectBound],
         fillers: &[(crate::DefId, crate::DefId)],
+        receiver: &Ty,
         span: &Span,
     ) {
         let Some(layout) = self.trait_object_layouts.get(traits) else {
@@ -584,6 +589,7 @@ impl Checker {
                     slot: ObligationSlot::Dyn {
                         method: self.defs.display(method).to_string(),
                         target: target.clone(),
+                        receiver: receiver.clone(),
                     },
                     source_module: self.current_module.clone(),
                 });
@@ -966,6 +972,36 @@ impl Checker {
         result
     }
 
+    /// Instantiate impl-owned cleanup parameters from the selected receiver.
+    /// Both ordinary calls and trait-object fillers use this same binding.
+    fn receiver_cleanup_substitutions(
+        &self,
+        declaration: crate::DefId,
+        receiver: &Ty,
+        enclosing: &HashMap<crate::ParamHead, Ty>,
+    ) -> HashMap<crate::ParamHead, Ty> {
+        let Some(method) = self
+            .fn_sigs
+            .get(&declaration)
+            .and_then(|signature| signature.impl_method.as_ref())
+        else {
+            return HashMap::new();
+        };
+        let Ty::Named { args, .. } = self
+            .subst
+            .resolve(receiver)
+            .substitute_type_params_parallel(enclosing)
+        else {
+            return HashMap::new();
+        };
+        crate::method_resolution::impl_receiver_substitution(
+            &method.receiver_parameters,
+            &method.receiver_args,
+            &args,
+        )
+        .unwrap_or_default()
+    }
+
     fn call_cleanup_substitutions(
         &self,
         declaration: crate::DefId,
@@ -976,23 +1012,9 @@ impl Checker {
         let Some(signature) = self.fn_sigs.get(&declaration) else {
             return HashMap::new();
         };
-        let mut substitutions = HashMap::new();
-        if let (Some(method), Some(receiver)) = (&signature.impl_method, receiver) {
-            if let Ty::Named { args, .. } = self
-                .subst
-                .resolve(receiver)
-                .substitute_type_params_parallel(enclosing)
-            {
-                substitutions.extend(
-                    crate::method_resolution::impl_receiver_substitution(
-                        &method.receiver_parameters,
-                        &method.receiver_args,
-                        &args,
-                    )
-                    .unwrap_or_default(),
-                );
-            }
-        }
+        let mut substitutions = receiver.map_or_else(HashMap::new, |receiver| {
+            self.receiver_cleanup_substitutions(declaration, receiver, enclosing)
+        });
         let parameters: Vec<_> = signature
             .type_params
             .iter()
@@ -1181,9 +1203,13 @@ impl Checker {
                 continue;
             }
             if failures.is_empty() {
-                output
-                    .bodies
-                    .insert(obligation.body.clone(), SuspensionEffect::Never);
+                // A pure concrete dyn filler does not establish purity for
+                // every instantiation of its generic impl method.
+                if matches!(obligation.slot, ObligationSlot::Callable(_)) {
+                    output
+                        .bodies
+                        .insert(obligation.body.clone(), SuspensionEffect::Never);
+                }
                 continue;
             }
             let witness = failures
@@ -1198,7 +1224,7 @@ impl Checker {
                 ObligationSlot::Callable(slot) => format!(
                     "{subject} suspends via `{witness}`; `{slot}` never suspends, write `fn[suspends]`"
                 ),
-                ObligationSlot::Dyn { method, target } => format!(
+                ObligationSlot::Dyn { method, target, .. } => format!(
                     "E_DYN_SLOT_SUSPENDS: {subject} suspends via `{witness}`, so it cannot fill \
                      `{method}` in `{target}`; that trait method never suspends unless it is \
                      declared `fn[suspends]`"

@@ -1,6 +1,6 @@
 //! Checker-to-HIR type flow for hash-collection iteration.
 //!
-//! Hash collections use declared IntoIterator impls, preserving the real
+//! Hash collections use declared `IntoIterator` impls, preserving the real
 //! receiver type for binding, field and tuple places.
 
 use hew_hir::{HirExpr, HirExprKind, HirFn, HirItem, HirStmtKind};

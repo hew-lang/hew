@@ -1792,9 +1792,6 @@ impl Checker {
         }
     }
 
-    /// Look up a method on the primitive/builtin-generic impl table.
-    ///
-    /// Select one applicable trait, retaining explicit prelude overrides.
     #[expect(
         clippy::type_complexity,
         reason = "returns the selected declaration and signature or ambiguous implementation owners"
@@ -1804,13 +1801,31 @@ impl Checker {
         receiver_ty: &Ty,
         method: &str,
     ) -> Result<Option<(crate::DefId, FnSig)>, Vec<(crate::DefId, crate::DefId)>> {
+        self.select_primitive_trait_method(receiver_ty, method, None)
+    }
+
+    /// Look up a method on the primitive/builtin-generic impl table.
+    ///
+    /// Select one applicable trait, retaining explicit prelude overrides.
+    #[expect(
+        clippy::type_complexity,
+        reason = "returns the selected declaration and signature or ambiguous implementation owners"
+    )]
+    pub(in crate::check) fn select_primitive_trait_method(
+        &mut self,
+        receiver_ty: &Ty,
+        method: &str,
+        required_trait: Option<crate::DefId>,
+    ) -> Result<Option<(crate::DefId, FnSig)>, Vec<(crate::DefId, crate::DefId)>> {
         let Some(canonical) = Self::canonical_primitive_or_builtin_key(receiver_ty) else {
             return Ok(None);
         };
         let mut candidates: Vec<(crate::DefId, super::super::types::PrimitiveTraitMethod)> = self
             .primitive_trait_impls
             .iter()
-            .filter(|((rx_key, _), _)| rx_key == &canonical)
+            .filter(|((rx_key, trait_id), _)| {
+                rx_key == &canonical && required_trait.is_none_or(|required| *trait_id == required)
+            })
             .flat_map(|((_, trait_id), methods)| {
                 methods
                     .get(method)

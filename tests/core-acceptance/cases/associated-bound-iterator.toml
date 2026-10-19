@@ -1,8 +1,8 @@
 [[case]]
 id = "associated-bound-iterator"
-intent = "Generic associated bounds expose cursor methods and preserve tuple item equality for built-in and authored collections."
+intent = "Generic associated bounds drive explicit cursors and for loops for built-in and authored collections, preserving item equality, inherited bounds and owned early-exit cleanup."
 source = "cases/associated-bound-iterator.hew"
-suites = ["acceptance"]
+suites = ["acceptance", "safety"]
 timeout_seconds = 15
 
 [case.expected]

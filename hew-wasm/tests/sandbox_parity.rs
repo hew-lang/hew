@@ -693,6 +693,28 @@ fn generic_sort_and_reverse_match_native() {
 
 #[cfg(unix)]
 #[test]
+fn checked_for_loops_match_native() {
+    set_test_hewpath();
+    ensure_native_toolchain();
+    ensure_parity_runner_built();
+    assert_case(
+        &ParityCase {
+            test_name: "checked_for_loops",
+            source_rel: "tests/core-acceptance/cases/associated-bound-iterator.hew",
+        },
+        "",
+    );
+    assert_case(
+        &ParityCase {
+            test_name: "generic_index_protocol",
+            source_rel: "tests/core-acceptance/cases/generic-index-protocol.hew",
+        },
+        "",
+    );
+}
+
+#[cfg(unix)]
+#[test]
 fn hashset_iteration_matches_native() {
     set_test_hewpath();
     ensure_native_toolchain();

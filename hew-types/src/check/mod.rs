@@ -101,14 +101,14 @@ use self::types::{
 pub use self::types::{
     ActorMethodKind, ActorStateGuard, AllocationClass, ArmResolution, AssignTargetKind,
     AssignTargetShape, BinderTraitCall, CallableArgumentFlow, CallableCandidate,
-    CallableDispatchActual, CallableFieldFlow, CheckedSelectSource, Checker, ChildKind, ChildSlot,
-    ClosureCaptureFact, ClosureEscapeFact, ClosureEscapeKind, ClosureEscapeRule, Codec,
-    CodecDirection, CodecFormat, DynCoercion, DynMethodCall, EntryCallableInstance,
-    EntryDisplayTarget, EntryExitAction, EntryExitPlan, EntryIntegerType, ErrorConversion,
-    ExecutionContextReader, ExternMethodCallIdentity, ExternMethodSignature, FnSig, FnSigView,
-    FromImpl, ImplMethodProvenance, ImportedImplBodyFact, IndirectCallCandidates,
-    MachineMethodKind, MathGenericOp, MethodCallReceiverKind, MethodCallRewrite,
-    OpaqueResourceCandidateGraph, OpaqueResourceLifecycleCandidate,
+    CallableDispatchActual, CallableFieldFlow, CheckedForLoop, CheckedForMethod,
+    CheckedSelectSource, Checker, ChildKind, ChildSlot, ClosureCaptureFact, ClosureEscapeFact,
+    ClosureEscapeKind, ClosureEscapeRule, Codec, CodecDirection, CodecFormat, DynCoercion,
+    DynMethodCall, EntryCallableInstance, EntryDisplayTarget, EntryExitAction, EntryExitPlan,
+    EntryIntegerType, ErrorConversion, ExecutionContextReader, ExternMethodCallIdentity,
+    ExternMethodSignature, FnSig, FnSigView, FromImpl, ImplMethodProvenance, ImportedImplBodyFact,
+    IndirectCallCandidates, MachineMethodKind, MathGenericOp, MethodCallReceiverKind,
+    MethodCallRewrite, OpaqueResourceCandidateGraph, OpaqueResourceLifecycleCandidate,
     OpaqueResourceLifecycleConflict, OpaqueResourceLifecycleConflictKind, ParamBounds, PatternKind,
     PatternPlan, PayloadBinding, PayloadLiteralPattern, PayloadVariantPattern, PlanField, PlanSub,
     PoolAccessor, PoolAccessorKind, RaceOperandKind, RcIntrinsicOp, ReceiverObligation,
@@ -2910,6 +2910,7 @@ impl Checker {
             actor_deferred_fields: self.actor_deferred_fields.clone(),
             checking_actor_init: self.checking_actor_init.clone(),
             borrowed_element_for_loops: self.borrowed_element_for_loops.clone(),
+            for_loop_plans: self.for_loop_plans.clone(),
             borrowed_element_index_reads: self.borrowed_element_index_reads.clone(),
             owning_take_vec_cursors: self.owning_take_vec_cursors.clone(),
             borrowed_element_option_reads: self.borrowed_element_option_reads.clone(),
@@ -3971,6 +3972,31 @@ impl Checker {
         let resolutions = self.scopes.take_resolutions();
         let shorthand_field_labels = self.scopes.take_shorthand_labels();
         let contexts = self.scopes.contexts().clone();
+        let for_loop_plans = self
+            .for_loop_plans
+            .iter()
+            .map(|(key, plan)| {
+                let finalize_call = |call: &CheckedForMethod| {
+                    let mut call = call.clone();
+                    call.return_type = self.finalize_type_for_handoff(&call.return_type);
+                    call.trait_args = call
+                        .trait_args
+                        .iter()
+                        .map(|ty| self.finalize_type_for_handoff(ty))
+                        .collect();
+                    call
+                };
+                (
+                    key.clone(),
+                    CheckedForLoop {
+                        into_iter: plan.into_iter.as_ref().map(finalize_call),
+                        next: finalize_call(&plan.next),
+                        cursor_type: self.finalize_type_for_handoff(&plan.cursor_type),
+                        item_type: self.finalize_type_for_handoff(&plan.item_type),
+                    },
+                )
+            })
+            .collect();
         let mut output = TypeCheckOutput {
             input_references: std::mem::take(&mut self.input_references),
             inputs: self
@@ -4001,6 +4027,7 @@ impl Checker {
             actor_deferred_field_decls: std::mem::take(&mut self.actor_deferred_field_decls),
             first_stores: std::mem::take(&mut self.first_stores),
             borrowed_element_for_loops: std::mem::take(&mut self.borrowed_element_for_loops),
+            for_loop_plans,
             borrowed_element_index_reads: std::mem::take(&mut self.borrowed_element_index_reads),
             owning_take_vec_cursors: std::mem::take(&mut self.owning_take_vec_cursors),
             borrowed_element_option_reads: std::mem::take(&mut self.borrowed_element_option_reads),

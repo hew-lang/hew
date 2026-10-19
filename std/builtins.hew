@@ -557,7 +557,7 @@ impl<T> Vec<T> {
     #[extern_symbol(hew_vec_len)]
     fn len(self) -> i64 {}
     #[extern_symbol("hew_vec_get_{T}")]
-    fn get(self, index: i64) -> Option<T> {}
+    fn get(self, index: i64) -> Option<T> { self.get(index) }
     #[extern_symbol("hew_vec_set_{T}")]
     fn set(self, index: i64, value: T) {}
     #[extern_symbol("hew_vec_remove_at_{T}")]
@@ -601,10 +601,8 @@ impl<T> Vec<T> {
 /// when their type supports cloning; consuming the vector does not promise
 /// clone-free iteration.
 ///
-/// Lives in `std/builtins.hew` rather than `std/vec.hew` so it registers
-/// alongside the Vec `Index` impl through `register_builtins_hew_impls` (the
-/// per-stdlib-module receiver-impl harness only handles a fixed set of
-/// receivers; auto-registration on builtin nominals belongs in builtins).
+/// Lives in `std/builtins.hew` with the built-in collection protocols.
+/// Checked method calls select the authored iterator bodies for emission.
 pub type VecIter<T> {
     vec: Vec<T>;
     front: i64;
@@ -819,9 +817,9 @@ pub trait Index<Idx> {
     fn at(self, index: Idx) -> Self.Output;
 }
 
-impl<T> Index<i64> for Vec<T> {
+impl<T: Clone> Index<i64> for Vec<T> {
     type Output = T;
-    fn get(self, index: i64) -> Option<T> {}
+    fn get(self, index: i64) -> Option<T> { self.get(index) }
     fn at(self, index: i64) -> T {
         self[index]
     }
@@ -841,10 +839,10 @@ impl Index<i64> for string {
     }
 }
 
-impl<K, V> Index<K> for HashMap<K, V> {
+impl<K: Hash + Eq, V: Clone> Index<K> for HashMap<K, V> {
     type Output = V;
-    fn get(self, index: K) -> Option<V> {}
-    fn at(self, index: K) -> V {}
+    fn get(self, index: K) -> Option<V> { self.get(index) }
+    fn at(self, index: K) -> V { self[index] }
 }
 
 // ---------------------------------------------------------------------------

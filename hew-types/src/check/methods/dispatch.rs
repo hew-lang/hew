@@ -2939,22 +2939,15 @@ impl Checker {
         ))
     }
 
-    /// Apply the trait method `declaring.method` with `Self = self_ty` to a
-    /// call's arguments over `bounds`, the trait at each argument list the
-    /// receiver provides: `F: From<Low> + From<Io>` bounds, or the `From`
-    /// impls of a concrete target. One bound supplies its arguments; several
-    /// leave the trait's parameters as holes the call's arguments fill, and
-    /// the filled holes choose the bound. Returns the applied signature and
-    /// the index of the chosen bound, or `None` once the choice is reported.
-    pub(super) fn apply_call_over_bounds(
-        &mut self,
+    /// Instantiate the declaring trait's receiver and arguments before either
+    /// an explicit call or an implicit loop call applies its signature.
+    pub(in crate::check) fn instantiate_bound_method_signature(
+        &self,
         self_ty: Ty,
-        (subject, noun): (&str, &str),
-        (declaring, mut sig, bounds): (crate::DefId, FnSig, &[TraitRef]),
-        (method, callee): (&str, &str),
-        args: &[CallArg],
-        span: &Span,
-    ) -> Option<(AppliedCallSignature, usize)> {
+        declaring: crate::DefId,
+        mut sig: FnSig,
+        bounds: &[TraitRef],
+    ) -> (FnSig, Vec<crate::ParamHead>, Vec<Ty>) {
         // `Self` is the receiver; a bound's own arguments fill its trait's
         // parameters (`from(value: Source)` under `F: From<Low>`).
         let mut substitution: HashMap<crate::ParamHead, Ty> =
@@ -2982,6 +2975,27 @@ impl Checker {
         sig.return_type = sig
             .return_type
             .substitute_type_params_parallel(&substitution);
+        (sig, trait_params, holes)
+    }
+
+    /// Apply the trait method `declaring.method` with `Self = self_ty` to a
+    /// call's arguments over `bounds`, the trait at each argument list the
+    /// receiver provides: `F: From<Low> + From<Io>` bounds, or the `From`
+    /// impls of a concrete target. One bound supplies its arguments; several
+    /// leave the trait's parameters as holes the call's arguments fill, and
+    /// the filled holes choose the bound. Returns the applied signature and
+    /// the index of the chosen bound, or `None` once the choice is reported.
+    pub(super) fn apply_call_over_bounds(
+        &mut self,
+        self_ty: Ty,
+        (subject, noun): (&str, &str),
+        (declaring, sig, bounds): (crate::DefId, FnSig, &[TraitRef]),
+        (method, callee): (&str, &str),
+        args: &[CallArg],
+        span: &Span,
+    ) -> Option<(AppliedCallSignature, usize)> {
+        let (sig, trait_params, holes) =
+            self.instantiate_bound_method_signature(self_ty, declaring, sig, bounds);
         let applied = self.apply_instantiated_call_signature_with_assoc(
             &sig,
             None,

@@ -75,3 +75,6 @@ mod scope_recovery;
 
 #[path = "lowering_core/checked_await.rs"]
 mod checked_await;
+
+#[path = "lowering_core/checked_for_loops.rs"]
+mod checked_for_loops;

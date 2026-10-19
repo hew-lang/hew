@@ -278,6 +278,28 @@ pub enum EntryExitAction {
     },
 }
 
+/// A checked, argument-free receiver call made implicitly by a `for` loop.
+/// Its identity is independent of source method-call spans.
+#[derive(Debug, Clone)]
+pub struct CheckedForMethod {
+    pub target: crate::check::dispatch::CallTarget,
+    pub receiver_parameter: Option<crate::ParamHead>,
+    pub trait_args: Vec<Ty>,
+    pub requires_mutable_receiver: bool,
+    pub consumes_receiver: bool,
+    pub receiver_update: ReceiverUpdate,
+    pub return_type: Ty,
+}
+
+/// The ordinary trait calls a checked iterable requires.
+#[derive(Debug, Clone)]
+pub struct CheckedForLoop {
+    pub into_iter: Option<CheckedForMethod>,
+    pub next: CheckedForMethod,
+    pub cursor_type: Ty,
+    pub item_type: Ty,
+}
+
 /// Typed process-entry exit plan keyed by the selected source declaration.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EntryExitPlan {
@@ -476,6 +498,7 @@ pub struct TypeCheckOutput {
     /// The checker decides borrow versus clone once, here; no lowering stage
     /// re-derives it from the element's facts.
     pub borrowed_element_for_loops: HashSet<SpanKey>,
+    pub for_loop_plans: HashMap<SpanKey, CheckedForLoop>,
     /// Spans of `xs[i]` reads over a `Vec<T>` whose element has no clone, so
     /// the read is a loan of the slot the vector still owns (D432).
     pub borrowed_element_index_reads: HashSet<SpanKey>,
@@ -3306,6 +3329,7 @@ pub struct Checker {
     pub(super) checking_actor_init: bool,
     /// See [`TypeCheckOutput::borrowed_element_for_loops`].
     pub(super) borrowed_element_for_loops: HashSet<SpanKey>,
+    pub(super) for_loop_plans: HashMap<SpanKey, CheckedForLoop>,
     /// See [`TypeCheckOutput::borrowed_element_index_reads`].
     pub(super) borrowed_element_index_reads: HashSet<SpanKey>,
     /// See [`TypeCheckOutput::owning_take_vec_cursors`].
@@ -4406,6 +4430,7 @@ impl Checker {
             actor_deferred_fields: HashMap::new(),
             checking_actor_init: false,
             borrowed_element_for_loops: HashSet::new(),
+            for_loop_plans: HashMap::new(),
             borrowed_element_index_reads: HashSet::new(),
             owning_take_vec_cursors: HashSet::new(),
             borrowed_element_option_reads: HashSet::new(),

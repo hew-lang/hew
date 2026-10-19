@@ -381,17 +381,8 @@ impl LowerCtx {
             if pub_only && !method.visibility.is_pub() {
                 continue;
             }
-            let legacy_symbol = crate::node::HirImplBlock::method_symbol(
-                &symbol_self_name,
-                method.name.name.as_str(),
-            );
-            let declaration = if self.lowering_injected_items {
-                self.impl_method_declaration_ids
-                    .get(&legacy_symbol)
-                    .copied()
-            } else {
-                self.source_declaration(&method.fn_span, hew_types::DeclarationKind::ImplMethod, 0)
-            };
+            let declaration =
+                self.source_declaration(&method.fn_span, hew_types::DeclarationKind::ImplMethod, 0);
             let Some(declaration) = declaration else {
                 continue;
             };

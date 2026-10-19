@@ -628,6 +628,122 @@ pub(super) fn render_type_expr(ty: &TypeExpr) -> String {
     }
 }
 
+/// Executable method availability follows checked declaration demands. A
+/// static trait slot retains every matching receiver candidate until SIR
+/// substitutes its receiver; a direct call names only its selected body.
+#[derive(Default)]
+pub(super) struct BuiltinMethodDemands {
+    direct: HashSet<hew_types::DefId>,
+    slots: HashSet<(hew_types::DefId, hew_types::DefId)>,
+}
+
+impl BuiltinMethodDemands {
+    fn add(&mut self, target: &hew_types::CallTarget) {
+        match target {
+            hew_types::CallTarget::ImplMethod(declaration) => {
+                self.direct.insert(*declaration);
+            }
+            hew_types::CallTarget::StaticTraitMethod {
+                declaring_trait,
+                method,
+            } => {
+                self.slots.insert((*declaring_trait, *method));
+            }
+            _ => {}
+        }
+    }
+
+    pub(super) fn selects(&self, signature: &hew_types::check::FnSig) -> bool {
+        signature.impl_method.as_ref().is_some_and(|method| {
+            self.direct.contains(&method.declaration)
+                || method
+                    .trait_method
+                    .is_some_and(|slot| self.slots.contains(&slot))
+        })
+    }
+
+    fn add_output(&mut self, output: &TypeCheckOutput, owner: Option<hew_types::DefId>) {
+        let mut bodies = HashSet::new();
+        if let Some(owner) = owner {
+            let mut pending = vec![hew_types::ty::EffectBody::Declaration(owner)];
+            while let Some(body) = pending.pop() {
+                if !bodies.insert(body.clone()) {
+                    continue;
+                }
+                pending.extend(
+                    output
+                        .suspension_effects
+                        .constructed_bodies
+                        .get(&body)
+                        .into_iter()
+                        .flatten()
+                        .cloned(),
+                );
+            }
+        }
+        let admits = |key: &SpanKey| {
+            owner.is_none()
+                || output
+                    .suspension_effects
+                    .call_owners
+                    .get(key)
+                    .is_some_and(|body| bodies.contains(body))
+        };
+        for (key, target) in &output.direct_call_targets {
+            if admits(key) {
+                self.add(target);
+            }
+        }
+        for (key, rewrite) in &output.method_call_rewrites {
+            if !admits(key) {
+                continue;
+            }
+            match rewrite {
+                hew_types::MethodCallRewrite::RewriteToFunction { target, .. }
+                | hew_types::MethodCallRewrite::RewriteModuleQualifiedToFunction {
+                    target, ..
+                }
+                | hew_types::MethodCallRewrite::StaticTraitDispatch { target, .. } => {
+                    self.add(target);
+                }
+                _ => {}
+            }
+        }
+        for (key, plan) in &output.for_loop_plans {
+            if !admits(key) {
+                continue;
+            }
+            for call in plan.into_iter.iter().chain(std::iter::once(&plan.next)) {
+                self.add(&call.target);
+            }
+        }
+    }
+
+    pub(super) fn for_program(source: &TypeCheckOutput, builtins: &TypeCheckOutput) -> Self {
+        let mut demands = Self::default();
+        demands.add_output(source, None);
+        let mut expanded = HashSet::new();
+        loop {
+            let pending: Vec<_> = builtins
+                .fn_sigs
+                .iter()
+                .filter(|(declaration, signature)| {
+                    !expanded.contains(*declaration) && demands.selects(signature)
+                })
+                .map(|(declaration, _)| *declaration)
+                .collect();
+            if pending.is_empty() {
+                break;
+            }
+            for declaration in pending {
+                expanded.insert(declaration);
+                demands.add_output(builtins, Some(declaration));
+            }
+        }
+        demands
+    }
+}
+
 pub(super) fn builtin_callable_impl_program() -> Option<Program> {
     let parsed = hew_parser::parse(BUILTINS_HEW_SOURCE);
     debug_assert!(
@@ -655,35 +771,6 @@ pub(super) fn builtin_callable_impl_program() -> Option<Program> {
         module_doc: None,
         module_graph: None,
     })
-}
-
-pub(super) fn is_builtin_iterator_impl(item: &Item) -> bool {
-    let Item::Impl(impl_decl) = item else {
-        return false;
-    };
-    let Some(trait_name) = impl_decl
-        .trait_bound
-        .as_ref()
-        .map(|bound| bound.path.to_string())
-    // TRANSITION(P1): deleted by A1 commit 2
-    else {
-        return false;
-    };
-    let TypeExpr::Named {
-        path: named_path, ..
-    } = &impl_decl.target_type.0
-    else {
-        return false;
-    };
-    let name = &named_path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
-    matches!(
-        (trait_name.as_str(), name.as_str()),
-        (
-            "Iterator",
-            "VecIter" | "StringIter" | "HashMapIter" | "Generator"
-        ) | ("DoubleEndedIterator", "VecIter" | "StringIter")
-            | ("IntoIterator", "Vec" | "string" | "HashMap" | "HashSet")
-    )
 }
 
 /// Linker/metadata owner for one compiler-injected builtin impl target.
@@ -718,9 +805,7 @@ pub(super) fn is_builtin_source_body_impl(item: &Item) -> bool {
 }
 
 pub(super) fn is_builtin_receiver_impl(item: &Item) -> bool {
-    is_builtin_iterator_impl(item)
-        || is_builtin_source_body_impl(item)
-        || is_builtin_request_owner_impl(item)
+    is_builtin_source_body_impl(item) || is_builtin_request_owner_impl(item)
 }
 
 pub(super) fn is_builtin_request_owner_impl(item: &Item) -> bool {

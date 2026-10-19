@@ -4,7 +4,7 @@ use hew_hir::{lower_program_host_target, ResolutionCtx};
 use hew_sir::{BindingTarget, OwnKind, SirLoweringStatus};
 use hew_types::{module_registry::ModuleRegistry, Checker};
 
-fn assert_local_source(source: &str) {
+fn lower_verified_source(source: &str) -> hew_sir::LoweredModule {
     let parsed = hew_parser::parse(source);
     assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
     let checked = Checker::new(ModuleRegistry::new(vec![])).check_program(&parsed.program);
@@ -26,6 +26,11 @@ fn assert_local_source(source: &str) {
         "{diagnostics:?}\n{}",
         hew_sir::dump_sir(&lowered.module)
     );
+    lowered
+}
+
+fn assert_local_source(source: &str) {
+    let lowered = lower_verified_source(source);
     for function in &lowered.module.functions {
         for binding in &function.bindings {
             if let BindingTarget::Value(value) = binding.target {
@@ -76,4 +81,15 @@ fn callback_body_faults_preserve_caller_and_capture_cleanup() {
     assert_local_source(include_str!(
         "../../tests/core-acceptance/cases/local-callback-loop-body-fault.hew"
     ));
+}
+
+#[test]
+fn checked_for_loops_preserve_cursor_updates_and_cleanup() {
+    let lowered = lower_verified_source(include_str!(
+        "../../tests/core-acceptance/cases/associated-bound-iterator.hew"
+    ));
+    for function in &lowered.module.functions {
+        hew_sir::place_lifetimes(&lowered.module, function)
+            .expect("cursor updates and owned loop exits require checked cleanup");
+    }
 }

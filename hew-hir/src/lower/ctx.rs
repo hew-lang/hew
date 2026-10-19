@@ -3,10 +3,6 @@
 use super::*;
 
 impl LowerCtx {
-    pub(super) fn signatures(&self) -> hew_types::check::FnSigView<'_> {
-        hew_types::check::FnSigView::new(&self.fn_sigs, &self.fn_sig_keys, &self.builtin_fn_sigs)
-    }
-
     #[allow(
         clippy::too_many_lines,
         reason = "initializes the complete checker-to-HIR typed context atomically"
@@ -39,8 +35,6 @@ impl LowerCtx {
             // identity comes only from `tc_output.defs`; HIR must never
             // manufacture a second canonical-string namespace here.
             fn_sigs: tc_output.fn_sigs.clone(),
-            fn_sig_keys: tc_output.fn_sig_keys.clone(),
-            builtin_fn_sigs: tc_output.builtin_fn_sigs.clone(),
             direct_call_targets: tc_output.direct_call_targets.clone(),
             impl_method_declaration_ids: tc_output.impl_method_declaration_ids.clone(),
             imported_impl_body_facts: tc_output.imported_impl_body_facts.clone(),
@@ -110,6 +104,7 @@ impl LowerCtx {
             actor_deferred_field_decls: tc_output.actor_deferred_field_decls.clone(),
             first_stores: tc_output.first_stores.clone(),
             borrowed_element_for_loops: tc_output.borrowed_element_for_loops.clone(),
+            for_loop_plans: tc_output.for_loop_plans.clone(),
             borrowed_element_index_reads: tc_output.borrowed_element_index_reads.clone(),
             owning_take_vec_cursors: tc_output.owning_take_vec_cursors.clone(),
             borrowed_element_option_reads: tc_output.borrowed_element_option_reads.clone(),
@@ -256,6 +251,8 @@ impl LowerCtx {
         f: impl FnOnce(&mut Self) -> T,
     ) -> T {
         let saved_root = self.replace_root_declaration_module(tc_output.defs.root_module());
+        let saved_for_loops =
+            std::mem::replace(&mut self.for_loop_plans, tc_output.for_loop_plans.clone());
         let saved_direct_calls = std::mem::replace(
             &mut self.direct_call_targets,
             tc_output.direct_call_targets.clone(),
@@ -378,6 +375,7 @@ impl LowerCtx {
             self.fork_call_inputs,
             self.checked_call_effects,
         ) = saved;
+        self.for_loop_plans = saved_for_loops;
         self.direct_call_targets = saved_direct_calls;
         self.resolutions = saved_resolutions;
         self.numeric_operand_coercions = saved_numeric_coercions;

@@ -272,6 +272,100 @@ impl Checker {
         );
     }
 
+    /// Select an implicit receiver call through the same bound/impl selectors
+    /// ordinary method calls use, without manufacturing an AST call site.
+    fn checked_for_method(
+        &mut self,
+        receiver: &Ty,
+        required_trait: crate::DefId,
+        method: &str,
+    ) -> Option<super::types::CheckedForMethod> {
+        let receiver = self.normalize_for_use(receiver);
+        let (signature, target, parameter, trait_args) =
+            if let Some(parameter) = self.register_projection_bound_subject(&receiver) {
+                let (bounds, hits) = self.bound_receiver_method_candidates(
+                    parameter,
+                    &receiver,
+                    method,
+                    Some(required_trait),
+                );
+                let [(declaring, signature)] = hits.as_slice() else {
+                    return None;
+                };
+                let selected: Vec<_> = bounds
+                    .into_iter()
+                    .filter(|bound| bound.trait_id == *declaring)
+                    .collect();
+                let [bound] = selected.as_slice() else {
+                    return None;
+                };
+                let (signature, _, _) = self.instantiate_bound_method_signature(
+                    receiver.clone(),
+                    *declaring,
+                    signature.clone(),
+                    &selected,
+                );
+                let (declaring_trait, method) = self.trait_method_ids_of(*declaring, method)?;
+                (
+                    signature,
+                    crate::CallTarget::StaticTraitMethod {
+                        declaring_trait,
+                        method,
+                    },
+                    Some(parameter),
+                    bound.args.clone(),
+                )
+            } else if Self::canonical_primitive_or_builtin_key(&receiver).is_some() {
+                let (declaring, signature) = self
+                    .select_primitive_trait_method(&receiver, method, Some(required_trait))
+                    .ok()??;
+                if declaring != required_trait {
+                    return None;
+                }
+                let declaration = signature.impl_method.as_ref()?.declaration;
+                (
+                    signature,
+                    crate::CallTarget::ImplMethod(declaration),
+                    None,
+                    Vec::new(),
+                )
+            } else {
+                let (head, instance) = self.dispatch_receiver(&receiver)?;
+                let super::dispatch_table::MethodSelection::Unique(_, declaration) =
+                    self.dispatch.select_trait(
+                        head,
+                        instance.as_ref(),
+                        required_trait,
+                        crate::Symbol::intern(method),
+                    )
+                else {
+                    return None;
+                };
+                (
+                    self.selected_method_sig(&receiver, declaration)?,
+                    crate::CallTarget::ImplMethod(declaration),
+                    None,
+                    Vec::new(),
+                )
+            };
+        if !signature.params.is_empty() || !signature.type_params.is_empty() {
+            return None;
+        }
+        let return_type = self.project_assoc_types(&signature.return_type);
+        let return_type = self
+            .register_projection_bound_subject(&return_type)
+            .map_or(return_type, Ty::param);
+        Some(super::types::CheckedForMethod {
+            target,
+            receiver_parameter: parameter,
+            trait_args,
+            requires_mutable_receiver: signature.requires_mutable_receiver,
+            consumes_receiver: signature.consumes_receiver,
+            receiver_update: signature.receiver_update,
+            return_type,
+        })
+    }
+
     fn iterator_trait_item_ty(&mut self, iter_ty: &Ty, span: &Span) -> Option<Ty> {
         let resolved = self.subst.resolve(iter_ty);
         let iterator = self.lang_trait(crate::LangItem::Iterator)?;
@@ -298,29 +392,44 @@ impl Checker {
             }
         }
 
-        if let Some(into_iterator) = self
-            .lang_trait(crate::LangItem::IntoIterator)
-            .filter(|into_iterator| self.type_satisfies_trait(&resolved, *into_iterator))
-        {
+        let into_iterator = self.lang_trait(crate::LangItem::IntoIterator)?;
+        let into_iter = if self.type_satisfies_trait(&resolved, into_iterator) {
             self.defer_inferred_receiver_bound(&resolved, into_iterator, span);
-            let item_projection = Ty::AssocType {
-                base: Box::new(resolved),
-                trait_name: self.defs.path(into_iterator).into(),
-                assoc_name: "Item".into(),
-            };
-            return Some(self.project_assoc_types(&item_projection));
-        }
-
-        if !self.type_satisfies_trait(&resolved, iterator) {
+            Some(self.checked_for_method(&resolved, into_iterator, "into_iter")?)
+        } else {
+            None
+        };
+        let cursor_type = into_iter
+            .as_ref()
+            .map_or_else(|| resolved.clone(), |call| call.return_type.clone());
+        if !self.type_satisfies_trait(&cursor_type, iterator) {
             return None;
         }
-
-        let item_projection = Ty::AssocType {
-            base: Box::new(resolved),
-            trait_name: self.defs.path(iterator).into(),
-            assoc_name: "Item".into(),
+        let next = self.checked_for_method(&cursor_type, iterator, "next")?;
+        if !next.requires_mutable_receiver {
+            return None;
+        }
+        let Ty::Named {
+            head: crate::TypeHead::Builtin(BuiltinType::Option),
+            args,
+        } = &next.return_type
+        else {
+            return None;
         };
-        Some(self.project_assoc_types(&item_projection))
+        let [item_type] = args.as_slice() else {
+            return None;
+        };
+        let item_type = item_type.clone();
+        self.for_loop_plans.insert(
+            SpanKey::in_module(span, self.current_module_idx),
+            super::types::CheckedForLoop {
+                into_iter,
+                next,
+                cursor_type,
+                item_type: item_type.clone(),
+            },
+        );
+        Some(item_type)
     }
 
     /// Reassigning a `var` whose type was inferred from a closure literal

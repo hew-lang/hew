@@ -38,115 +38,6 @@ pub(super) struct RangeAdapterChain<'a> {
 }
 
 impl LowerCtx {
-    pub(super) fn resolved_option_elem_ty(ty: &ResolvedTy) -> Option<ResolvedTy> {
-        let ResolvedTy::Named {
-            args,
-            head: hew_types::TypeHead::Builtin(BuiltinType::Option),
-            ..
-        } = ty
-        else {
-            return None;
-        };
-        if args.len() == 1 {
-            Some(args[0].clone())
-        } else {
-            None
-        }
-    }
-
-    pub(super) fn direct_method_return_ty(
-        &mut self,
-        callee: &str,
-        receiver_args: &[ResolvedTy],
-        span: &Span,
-        context: &str,
-    ) -> Option<ResolvedTy> {
-        let Some(sig) = self.signatures().get(callee).cloned() else {
-            self.unsupported(
-                span.clone(),
-                format!("{context} requires lowered method symbol `{callee}`"),
-                "iterator-runtime-dispatch",
-            );
-            return None;
-        };
-        let Ok(mut ret_ty) = ResolvedTy::from_ty(&sig.return_type) else {
-            self.unsupported(
-                span.clone(),
-                format!("{context} method `{callee}` has a non-boundary return type"),
-                "iterator-runtime-dispatch",
-            );
-            return None;
-        };
-        if receiver_args.len() != sig.type_params.len() {
-            self.unsupported(
-                span.clone(),
-                format!(
-                    "{context} method `{callee}` has {} type parameter(s), but the receiver supplies {} type argument(s)",
-                    sig.type_params.len(),
-                    receiver_args.len()
-                ),
-                "iterator-runtime-dispatch",
-            );
-            return None;
-        }
-        if !sig.type_params.is_empty() {
-            ret_ty = substitute_type_params(&ret_ty, &sig.type_params, receiver_args);
-        }
-        Some(ret_ty)
-    }
-
-    pub(super) fn generic_iterator_next_shape(
-        &mut self,
-        iter_ty: &ResolvedTy,
-        span: &Span,
-    ) -> Option<ResolvedTy> {
-        let ResolvedTy::Named { head, args, .. } = iter_ty else {
-            return None;
-        };
-        let name = injected_builtin_impl_symbol_owner(head.registry_key());
-        let callee = crate::node::HirImplBlock::method_symbol(name, "next");
-        let sig = self.signatures().get(&callee).cloned()?;
-        if !sig.requires_mutable_receiver {
-            self.unsupported(
-                span.clone(),
-                format!("generic for-in requires iterator method `{callee}` to take `var self`"),
-                "iterator-runtime-dispatch",
-            );
-            return None;
-        }
-        let ret_ty = self.direct_method_return_ty(&callee, args, span, "generic for-in next")?;
-        let Some(elem_ty) = Self::resolved_option_elem_ty(&ret_ty) else {
-            self.unsupported(
-                span.clone(),
-                format!(
-                    "generic for-in requires iterator method `{callee}` to return `Option<T>`, got `{ret_ty}`"
-                ),
-                "iterator-runtime-dispatch",
-            );
-            return None;
-        };
-        Some(elem_ty)
-    }
-
-    pub(super) fn for_iter_next_call_for_ty(
-        &mut self,
-        iter_ty: &ResolvedTy,
-        span: &Span,
-    ) -> Option<(ResolvedTy, ForIterNextCall)> {
-        if let ResolvedTy::Named {
-            args,
-            head: hew_types::TypeHead::Builtin(BuiltinType::VecIter),
-            ..
-        } = iter_ty
-        {
-            if args.len() == 1 {
-                return Some((args[0].clone(), ForIterNextCall::BuiltinVecIter));
-            }
-        }
-        self.generic_iterator_next_shape(iter_ty, span)
-            .map(|elem_ty| (elem_ty, ForIterNextCall::VarSelf))
-    }
-
     pub(super) fn make_direct_method_call(
         &mut self,
         callee_name: String,
@@ -201,28 +92,100 @@ impl LowerCtx {
         }
     }
 
-    pub(super) fn generic_into_iter_init(
+    /// Lower the checker's selected implicit call without replaying lookup or
+    /// attaching a synthetic call to an authored expression span.
+    fn lower_checked_for_call(
         &mut self,
-        iterable: HirExpr,
+        call: &hew_types::CheckedForMethod,
+        mut receiver: HirExpr,
         span: &Span,
-    ) -> Option<(HirExpr, ResolvedTy, ResolvedTy, ForIterNextCall)> {
-        let ResolvedTy::Named { head, args, .. } = &iterable.ty else {
-            return None;
+    ) -> Option<HirExpr> {
+        let ret_ty = ResolvedTy::from_ty(&call.return_type).ok()?;
+        receiver.intent = if call.requires_mutable_receiver || call.consumes_receiver {
+            IntentKind::Consume
+        } else {
+            IntentKind::Read
         };
-        let name = injected_builtin_impl_symbol_owner(head.registry_key());
-        let callee = crate::node::HirImplBlock::method_symbol(name, "into_iter");
-        if !self.signatures().contains(&callee) {
-            return None;
+        let receiver_ty = receiver.ty.clone();
+        let trait_args = call
+            .trait_args
+            .iter()
+            .map(ResolvedTy::from_ty)
+            .collect::<Result<Vec<_>, _>>()
+            .ok()?;
+        let kind = if let Some(receiver_type_param) = call.receiver_parameter {
+            if call.requires_mutable_receiver {
+                HirExprKind::VarSelfMethodCall {
+                    receiver_update: call.receiver_update,
+                    receiver: Box::new(receiver),
+                    call_target: call.target.clone(),
+                    target: HirVarSelfMethodTarget::StaticTrait {
+                        receiver_type_param,
+                        trait_args,
+                    },
+                    args: Vec::new(),
+                    evaluation_order: Vec::new(),
+                    ret_ty: ret_ty.clone(),
+                    receiver_ty: receiver_ty.clone(),
+                }
+            } else {
+                self.make_static_trait_dispatch_call(
+                    crate::StaticTraitSelf::Receiver(Box::new(receiver)),
+                    trait_args,
+                    call.target.clone(),
+                    receiver_type_param,
+                    LoweredCallArgs {
+                        args: Vec::new(),
+                        evaluation_order: Vec::new(),
+                    },
+                    ret_ty.clone(),
+                    span,
+                )
+            }
+        } else {
+            let hew_types::CallTarget::ImplMethod(declaration) = call.target else {
+                return None;
+            };
+            let symbol = self.registered_impl_method_symbol(declaration)?;
+            if call.requires_mutable_receiver {
+                HirExprKind::VarSelfMethodCall {
+                    receiver_update: call.receiver_update,
+                    receiver: Box::new(receiver),
+                    call_target: call.target.clone(),
+                    target: HirVarSelfMethodTarget::Direct,
+                    args: Vec::new(),
+                    evaluation_order: Vec::new(),
+                    ret_ty: ret_ty.clone(),
+                    receiver_ty: receiver_ty.clone(),
+                }
+            } else {
+                let mut direct =
+                    self.make_direct_method_call(symbol.clone(), receiver, &ret_ty, span.clone());
+                if let HirExprKind::Call { target, .. } = &mut direct.kind {
+                    *target = call.target.clone();
+                }
+                self.record_method_call_type_args(
+                    &symbol,
+                    &call.target,
+                    &receiver_ty,
+                    span,
+                    direct.site,
+                );
+                return Some(direct);
+            }
+        };
+        let result = self.make_expr(kind, ret_ty, IntentKind::Read, span.clone());
+        if let hew_types::CallTarget::ImplMethod(declaration) = call.target {
+            let symbol = self.registered_impl_method_symbol(declaration)?;
+            self.record_method_call_type_args(
+                &symbol,
+                &call.target,
+                &receiver_ty,
+                span,
+                result.site,
+            );
         }
-        let receiver_ty = iterable.ty.clone();
-        let ret_ty =
-            self.direct_method_return_ty(&callee, args, span, "generic for-in into_iter")?;
-        let (elem_ty, next_call) = self.for_iter_next_call_for_ty(&ret_ty, span)?;
-        let call = self.make_direct_method_call(callee.clone(), iterable, &ret_ty, span.clone());
-        if let HirExprKind::Call { target, .. } = &call.kind {
-            self.record_method_call_type_args(&callee, target, &receiver_ty, span, call.site);
-        }
-        Some((call, ret_ty, elem_ty, next_call))
+        Some(result)
     }
 
     pub(super) fn make_option_ctor(
@@ -908,8 +871,7 @@ impl LowerCtx {
 
     #[expect(
         clippy::too_many_lines,
-        clippy::if_not_else,
-        reason = "the desugar keeps diagnostic recovery before the executable iterator branch"
+        reason = "the desugar preserves the specialized collection, stream and checked trait paths"
     )]
     pub(super) fn lower_for_iter_desugar(
         &mut self,
@@ -1086,24 +1048,30 @@ impl LowerCtx {
                 )
             }
             other => {
-                // Resolve the ordinary IntoIterator receiver call, or drain
-                // a plain Iterator binding through next().
-                lowered_iterable.intent = IntentKind::Consume;
-                if let Some(shape) =
-                    self.generic_into_iter_init(lowered_iterable.clone(), &iterable.1)
-                {
+                let plan = self.for_loop_plans.get(&self.mk_key(&iterable.1)).cloned();
+                let shape = plan.and_then(|plan| {
+                    let cursor_ty = ResolvedTy::from_ty(&plan.cursor_type).ok()?;
+                    let elem_ty = ResolvedTy::from_ty(&plan.item_type).ok()?;
+                    let init = if let Some(call) = plan.into_iter {
+                        self.lower_checked_for_call(&call, lowered_iterable.clone(), &iterable.1)?
+                    } else {
+                        lowered_iterable.clone()
+                    };
+                    Some((
+                        init,
+                        cursor_ty,
+                        elem_ty,
+                        ForIterNextCall::Checked(Box::new(plan.next)),
+                    ))
+                });
+                if let Some(shape) = shape {
                     shape
-                } else if let Some(elem_ty) = self.generic_iterator_next_shape(&other, &iterable.1)
-                {
-                    (lowered_iterable, other, elem_ty, ForIterNextCall::VarSelf)
                 } else {
                     self.unsupported(
-                    iterable.1.clone(),
-                    format!(
-                        "for-in over non-Range iterable `{other}`; the Rust MIR pipeline currently supports Vec<T>, VecIter<T>, and concrete Iterator/IntoIterator impls"
-                    ),
-                    "iterator-runtime-dispatch",
-                );
+                        iterable.1.clone(),
+                        format!("for-in iterable `{other}` has no checked iterator call plan"),
+                        "iterator-runtime-dispatch",
+                    );
                     self.push_scope();
                     let _ = self.lower_block(body, &ResolvedTy::Unit);
                     self.pop_scope();
@@ -1135,74 +1103,25 @@ impl LowerCtx {
                 );
                 self.make_expr(next_kind, next_ty, IntentKind::Read, iterable.1.clone())
             }
-            ForIterNextCall::VarSelf => {
-                let option_ty = Self::resolved_option_ty(elem_ty.clone());
-
-                let target_label = match &iter_ty {
-                    ResolvedTy::Named { head, .. } => {
-                        let name = injected_builtin_impl_symbol_owner(head.registry_key());
-                        crate::node::HirImplBlock::method_symbol(name, "next")
-                    }
-                    _ => String::new(),
-                };
-                let call_target = self.registered_symbol_target(&target_label);
-                if !self.ensure_executable_target(&call_target, &target_label, &iterable.1) {
-                    self.make_expr(
-                        HirExprKind::Unsupported(
-                            "synthetic iterator var-self call has no checker target".to_string(),
-                        ),
-                        option_ty,
-                        IntentKind::Read,
-                        iterable.1.clone(),
-                    )
-                } else {
-                    let lowered_receiver = self.make_binding_ref(
-                        iter_name.clone(),
-                        iter_binding.id,
-                        iter_ty.clone(),
-                        IntentKind::Consume,
-                        iterable.1.clone(),
-                    );
-                    let receiver_ty = iter_ty.clone();
-                    let next = self.make_expr(
-                        HirExprKind::VarSelfMethodCall {
-                            receiver_update: hew_types::ReceiverUpdate::Replace,
-                            receiver: Box::new(lowered_receiver),
-                            call_target,
-                            target: HirVarSelfMethodTarget::Direct,
-                            args: Vec::new(),
-                            evaluation_order: Vec::new(),
-                            ret_ty: option_ty.clone(),
-                            receiver_ty,
-                        },
-                        option_ty,
-                        IntentKind::Read,
-                        iterable.1.clone(),
-                    );
-                    // Key the instantiation on the CALL's site, not the
-                    // receiver's: SIR resolves a var-self direct call from the
-                    // call expression's own site (`hew-sir/src/lower_var_self.rs`),
-                    // so a generic iterator's `next` is otherwise reported as
-                    // missing its checker-resolved type arguments.
-                    if let HirExprKind::VarSelfMethodCall { call_target, .. } = &next.kind {
-                        self.record_method_call_type_args(
-                            &target_label,
-                            call_target,
-                            &iter_ty,
-                            &iterable.1,
-                            next.site,
-                        );
-                    }
-                    // This call root is compiler-generated and therefore has
-                    // no authored checker span. Keep its fact in the disjoint
-                    // generated-site domain. The closed builtin cursors clone
-                    // or move an independently owned element into the returned
-                    // Option; user/static iterators remain provisional until
-                    // the declaration-keyed verifier resolves their return
-                    // summary.
-
-                    next
-                }
+            ForIterNextCall::Checked(call) => {
+                let receiver = self.make_binding_ref(
+                    iter_name.clone(),
+                    iter_binding.id,
+                    iter_ty.clone(),
+                    IntentKind::Consume,
+                    iterable.1.clone(),
+                );
+                self.lower_checked_for_call(&call, receiver, &iterable.1)
+                    .unwrap_or_else(|| {
+                        self.make_expr(
+                            HirExprKind::Unsupported(
+                                "checked iterator call is not representable".into(),
+                            ),
+                            Self::resolved_option_ty(elem_ty.clone()),
+                            IntentKind::Read,
+                            iterable.1.clone(),
+                        )
+                    })
             }
             ForIterNextCall::StreamRecv => {
                 // Borrow the stream binding (Read) and emit the layout-witness

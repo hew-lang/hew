@@ -1,0 +1,11 @@
+[[case]]
+id = "generic-index-protocol"
+intent = "Abstract Index get and at select real owned forwarding bodies for vectors and maps, preserve missing-value Option semantics and leave source collections live."
+source = "cases/generic-index-protocol.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = ""
+stderr = ""
+exit = 0

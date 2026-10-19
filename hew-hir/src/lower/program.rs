@@ -108,6 +108,7 @@ pub fn lower_program(
                     // Embedded checking appends declaration rows. Every fact
                     // consumed below must index that same extended table.
                     Arc::make_mut(&mut ctx.defs).include_embedded(&output.defs);
+                    ctx.impl_method_symbol_collisions = impl_method_symbol_collisions(&ctx.defs);
                     (Some(program), Some(output))
                 }
                 Err(diagnostic) => {
@@ -1562,26 +1563,9 @@ pub fn lower_program(
         .values()
         .map(|declaration| declaration.declaration)
         .collect();
-    let source_selected_impl_methods: HashSet<_> = ctx
-        .direct_call_targets
-        .values()
-        .chain(
-            ctx.method_call_rewrites
-                .values()
-                .filter_map(|rewrite| match rewrite {
-                    hew_types::MethodCallRewrite::RewriteToFunction { target, .. }
-                    | hew_types::MethodCallRewrite::RewriteModuleQualifiedToFunction {
-                        target,
-                        ..
-                    } => Some(target),
-                    _ => None,
-                }),
-        )
-        .filter_map(|target| match target {
-            hew_types::CallTarget::ImplMethod(declaration) => Some(*declaration),
-            _ => None,
-        })
-        .collect();
+    let builtin_method_demands = builtin_callable_impl_output
+        .as_ref()
+        .map(|builtins| BuiltinMethodDemands::for_program(type_check_output, builtins));
     // Register executable std builtins.hew impl methods only after all user
     // item IDs have been preallocated. This makes builtin bodies visible to
     // source-body lowering without perturbing stable user `ItemId`s. Ordinary
@@ -1592,109 +1576,104 @@ pub fn lower_program(
         &builtin_callable_impl_output,
     ) {
         ctx.with_typecheck_facts(output, |ctx| {
-        for (item, _) in &program.items {
-            if let Item::ExternBlock(block) = item {
-                for function in &block.functions {
-                    ctx.register_extern_fn_entry(function);
-                    let path = format!("std.builtins.{}", function.name);
-                    if let Some(declaration) = ctx.defs.lookup_path(&path).filter(|declaration| {
-                        ctx.defs.kind(*declaration) == hew_types::DeclarationKind::ExternFunction
-                    }) {
-                        if let Some(entry) =
-                            ctx.fn_registry.get(function.name.name.as_str()).cloned()
+            // Embedded checking excludes extern blocks from declaration ordinals.
+            let mut checked_item_ordinal = 0;
+            for (item, _) in &program.items {
+                ctx.current_item_ordinal = checked_item_ordinal;
+                if !matches!(item, Item::ExternBlock(_)) {
+                    checked_item_ordinal += 1;
+                }
+                if let Item::ExternBlock(block) = item {
+                    for function in &block.functions {
+                        ctx.register_extern_fn_entry(function);
+                        let path = format!("std.builtins.{}", function.name);
+                        if let Some(declaration) =
+                            ctx.defs.lookup_path(&path).filter(|declaration| {
+                                ctx.defs.kind(*declaration)
+                                    == hew_types::DeclarationKind::ExternFunction
+                            })
                         {
-                            ctx.source_fn_entries
-                                .insert(declaration, (function.name.to_string(), entry));
+                            if let Some(entry) =
+                                ctx.fn_registry.get(function.name.name.as_str()).cloned()
+                            {
+                                ctx.source_fn_entries
+                                    .insert(declaration, (function.name.to_string(), entry));
+                            }
                         }
                     }
                 }
-            }
-            if let Item::Impl(impl_decl) = item {
-                if !is_builtin_callable_impl(item) {
-                    continue;
-                }
-                if let TypeExpr::Named {
-                    path: named_path, ..
-                } = &impl_decl.target_type.0
-                {
-                    let name = &named_path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
-                    let receiver_specific = is_builtin_receiver_impl(item);
-                    let symbol_owner = if receiver_specific {
-                        injected_builtin_impl_symbol_owner(name).to_string()
-                    } else {
-                        imported_impl_symbol_self_name("std.builtins", name)
-                    };
-                    let impl_type_params = impl_type_parameters(ctx, impl_decl);
-                    for method in &impl_decl.methods {
-                        let emitted_symbol = crate::node::HirImplBlock::method_symbol(
-                            &symbol_owner,
-                            method.name.name.as_str(),
-                        );
-                        let source_symbol = crate::node::HirImplBlock::method_symbol(
-                            name,
-                            method.name.name.as_str(),
-                        );
-                        let declaration = ctx
-                            .impl_method_declaration_ids
-                            .get(&emitted_symbol)
-                            .or_else(|| ctx.impl_method_declaration_ids.get(&source_symbol))
-                            .copied()
-                            .or_else(|| {
-                                builtin_callable_impl_output.as_ref().and_then(|output| {
+                if let Item::Impl(impl_decl) = item {
+                    if !is_builtin_callable_impl(item) {
+                        continue;
+                    }
+                    if let TypeExpr::Named {
+                        path: named_path, ..
+                    } = &impl_decl.target_type.0
+                    {
+                        let name = &named_path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
+                        let receiver_specific = is_builtin_receiver_impl(item);
+                        let symbol_owner = if receiver_specific {
+                            injected_builtin_impl_symbol_owner(name).to_string()
+                        } else {
+                            imported_impl_symbol_self_name("std.builtins", name)
+                        };
+                        let impl_type_params = impl_type_parameters(ctx, impl_decl);
+                        for method in &impl_decl.methods {
+                            let declaration = ctx.source_declaration(
+                                &method.fn_span,
+                                hew_types::DeclarationKind::ImplMethod,
+                                0,
+                            );
+                            let Some(declaration) = declaration else {
+                                continue;
+                            };
+                            let emitted_symbol = ctx.emitted_impl_method_symbol(
+                                declaration,
+                                &symbol_owner,
+                                method.name.name.as_str(),
+                            );
+                            let selected_by_checker =
+                                builtin_method_demands.as_ref().is_some_and(|demands| {
                                     output
-                                        .impl_method_declaration_ids
-                                        .get(&emitted_symbol)
-                                        .or_else(|| {
-                                            output.impl_method_declaration_ids.get(&source_symbol)
-                                        })
-                                        .copied()
-                                })
-                            });
-                        let selected_by_checker = declaration.as_ref().is_some_and(|declaration| {
-                            source_selected_impl_methods.contains(declaration) || ctx.direct_call_targets.values().any(|target| {
-                                matches!(target, hew_types::CallTarget::ImplMethod(selected) if selected == declaration)
-                            }) || ctx.method_call_rewrites.values().any(|rewrite| match rewrite {
-                                hew_types::MethodCallRewrite::RewriteToFunction { target, .. }
-                                | hew_types::MethodCallRewrite::RewriteModuleQualifiedToFunction {
-                                    target,
-                                    ..
-                                } => matches!(target, hew_types::CallTarget::ImplMethod(selected) if selected == declaration),
-                                _ => false,
-                            })
-                        });
-                        if (!receiver_specific && !selected_by_checker)
-                            || ctx.fn_registry.contains_key(&emitted_symbol)
-                        {
-                            continue;
-                        }
-                        ctx.register_impl_method_fn_entry(&symbol_owner, method, &impl_type_params);
-                        // Establish the declaration-keyed body plan for the
-                        // injected builtin impl NOW, before any user body is
-                        // lowered in the third pass. The body itself is emitted
-                        // later in the fourth pass (`lower_impl_block` under
-                        // `lowering_injected_items`), but a direct method call
-                        // such as `x.fmt()` inside a user body resolves its
-                        // callee through `registered_impl_method_symbol` at
-                        // third-pass time — before that emission. Without the
-                        // plan entry the projection is absent and the call fails
-                        // closed (`CallableUnsupportedInMir`), even though the
-                        // identical value renders fine through the f-string
-                        // Display path, which never consults this projection.
-                        // `plan_imported_impl_bodies` covers user/imported
-                        // bodies; the compiler-injected builtins live in a
-                        // separate program, so they must be planned here.
-                        if let Some(declaration) = declaration {
+                                        .fn_sigs
+                                        .get(&declaration)
+                                        .is_some_and(|sig| demands.selects(sig))
+                                });
+                            if (!receiver_specific && !selected_by_checker)
+                                || ctx.fn_registry.contains_key(&emitted_symbol)
+                            {
+                                continue;
+                            }
+                            ctx.register_impl_method_fn_entry(
+                                &symbol_owner,
+                                method,
+                                &impl_type_params,
+                            );
+                            // Establish the declaration-keyed body plan for the
+                            // injected builtin impl NOW, before any user body is
+                            // lowered in the third pass. The body itself is emitted
+                            // later in the fourth pass (`lower_impl_block` under
+                            // `lowering_injected_items`), but a direct method call
+                            // such as `x.fmt()` inside a user body resolves its
+                            // callee through `registered_impl_method_symbol` at
+                            // third-pass time — before that emission. Without the
+                            // plan entry the projection is absent and the call fails
+                            // closed (`CallableUnsupportedInMir`), even though the
+                            // identical value renders fine through the f-string
+                            // Display path, which never consults this projection.
+                            // `plan_imported_impl_bodies` covers user/imported
+                            // bodies; the compiler-injected builtins live in a
+                            // separate program, so they must be planned here.
                             ctx.impl_body_plan.compiler_selected.insert(declaration);
                             ctx.impl_body_plan
                                 .symbols
                                 .entry(declaration)
                                 .or_insert_with(|| emitted_symbol.clone());
+                            builtin_callable_impl_method_symbols.insert(emitted_symbol);
                         }
-                        builtin_callable_impl_method_symbols.insert(emitted_symbol);
                     }
                 }
             }
-        }
         });
     }
 
@@ -2511,7 +2490,13 @@ pub fn lower_program(
             let saved_none = ctx
                 .machine_ctor_registry
                 .insert("None".to_string(), ("Option".to_string(), 1));
+            // Embedded checking excludes extern blocks from declaration ordinals.
+            let mut checked_item_ordinal = 0;
             for (item, span) in &program.items {
+                ctx.current_item_ordinal = checked_item_ordinal;
+                if !matches!(item, Item::ExternBlock(_)) {
+                    checked_item_ordinal += 1;
+                }
                 if let Item::ExternBlock(block) = item {
                     for function in &block.functions {
                         let owner = format!("std.builtins.{}", function.name);
@@ -2568,72 +2553,23 @@ pub fn lower_program(
                         let skipped_methods: HashSet<hew_types::DefId> = impl_decl
                             .methods
                             .iter()
-                            .filter(|method| {
-                                !builtin_callable_impl_method_symbols.contains(
-                                    &crate::node::HirImplBlock::method_symbol(
-                                        &symbol_owner,
-                                        method.name.name.as_str(),
-                                    ),
-                                )
-                            })
                             .filter_map(|method| {
-                                let symbol = crate::node::HirImplBlock::method_symbol(
-                                    name,
-                                    method.name.name.as_str(),
-                                );
-                                ctx.impl_method_declaration_ids
-                                    .get(&symbol)
-                                    .or_else(|| output.impl_method_declaration_ids.get(&symbol))
-                                    .copied()
-                            })
-                            .collect();
-                        if impl_decl.methods.iter().all(|method| {
-                            !builtin_callable_impl_method_symbols.contains(
-                                &crate::node::HirImplBlock::method_symbol(
+                                let declaration = ctx.source_declaration(
+                                    &method.fn_span,
+                                    hew_types::DeclarationKind::ImplMethod,
+                                    0,
+                                )?;
+                                let symbol = ctx.emitted_impl_method_symbol(
+                                    declaration,
                                     &symbol_owner,
                                     method.name.name.as_str(),
-                                ),
-                            )
-                        }) {
+                                );
+                                (!builtin_callable_impl_method_symbols.contains(&symbol))
+                                    .then_some(declaration)
+                            })
+                            .collect();
+                        if skipped_methods.len() == impl_decl.methods.len() {
                             continue;
-                        }
-                        // The checker output for the isolated builtins source
-                        // keys impl declarations by its source symbol
-                        // (`HashMapIter::next`). The emitted synthetic cursor
-                        // body uses the canonical owner-qualified linker symbol
-                        // so it cannot collide with a root user same-leaf impl.
-                        // Alias the exact checker declaration onto that linker
-                        // projection only inside this injected-source scope.
-                        for method in &impl_decl.methods {
-                            let source_symbol = crate::node::HirImplBlock::method_symbol(
-                                name,
-                                method.name.name.as_str(),
-                            );
-                            let emitted_symbol = crate::node::HirImplBlock::method_symbol(
-                                &symbol_owner,
-                                method.name.name.as_str(),
-                            );
-                            if !builtin_callable_impl_method_symbols.contains(&emitted_symbol) {
-                                continue;
-                            }
-                            if let Some(declaration) = ctx
-                                .impl_method_declaration_ids
-                                .get(&emitted_symbol)
-                                .or_else(|| ctx.impl_method_declaration_ids.get(&source_symbol))
-                                .copied()
-                                .or_else(|| {
-                                    output
-                                        .impl_method_declaration_ids
-                                        .get(&emitted_symbol)
-                                        .or_else(|| {
-                                            output.impl_method_declaration_ids.get(&source_symbol)
-                                        })
-                                        .copied()
-                                })
-                            {
-                                ctx.impl_method_declaration_ids
-                                    .insert(emitted_symbol, declaration);
-                            }
                         }
                         if receiver_specific {
                             ctx.lower_impl_block(impl_decl, span.clone(), &mut items, false, None);

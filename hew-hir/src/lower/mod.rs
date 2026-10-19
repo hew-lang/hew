@@ -199,8 +199,8 @@ fn literal_to_hir(lit: &Literal) -> (HirLiteral, ResolvedTy) {
 #[derive(Debug, Clone)]
 enum ForIterNextCall {
     BuiltinVecIter,
-    /// A concrete iterator's own `next(var self)` impl method.
-    VarSelf,
+    /// A checker-selected ordinary iterator call.
+    Checked(Box<hew_types::CheckedForMethod>),
     /// `for x in stream` over `Stream<T>` — each iteration borrows the
     /// stream binding and emits the layout-witness runtime recv call
     /// (`hew_stream_next_layout`), reusing MIR's existing
@@ -831,8 +831,6 @@ struct LowerCtx {
     /// Checker-owned function and method signatures used for iterator dispatch
     /// and concrete call instantiation.
     fn_sigs: HashMap<hew_types::DefId, hew_types::FnSig>,
-    fn_sig_keys: HashMap<String, hew_types::DefId>,
-    builtin_fn_sigs: HashMap<hew_parser::ast::Symbol, hew_types::FnSig>,
     /// Checker-selected targets for ordinary calls, keyed by the call span.
     /// Missing facts lower as an explicit unsupported target; HIR never
     /// guesses from the callee spelling.
@@ -1057,6 +1055,7 @@ struct LowerCtx {
     first_stores: HashSet<SpanKey>,
     /// Iterable spans of `for` loops the checker admitted in borrow mode (D432).
     borrowed_element_for_loops: HashSet<SpanKey>,
+    for_loop_plans: HashMap<SpanKey, hew_types::CheckedForLoop>,
     /// `xs[i]` spans the checker admitted as a borrowed element read (D432).
     borrowed_element_index_reads: HashSet<SpanKey>,
     /// `get` sites whose element has no semantic clone: `Some` carries a loan

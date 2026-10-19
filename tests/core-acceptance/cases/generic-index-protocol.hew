@@ -1,0 +1,36 @@
+// Generic Index calls return independently owned values. Direct collection
+// loans keep their existing concrete access paths.
+fn lookup<I: Index<i64>>(input: I, key: i64) -> Option<I.Output> { input.get(key) }
+fn at<I: Index<i64>>(input: I, key: i64) -> I.Output { input[key] }
+
+#[resource]
+type Token { id: i64; }
+impl Token { fn close(consume self) {} }
+
+fn concrete_loans() {
+    let tokens = [Token { id: 11 }];
+    assert(tokens[0].id == 11);
+    var entries: HashMap<i64, Token> = HashMap.new();
+    entries.insert(7, Token { id: 22 });
+    let id = match entries.get(7) { .Some(token) => token.id, .None => 0 };
+    assert(id == 22);
+}
+
+fn main() {
+    concrete_loans();
+    let values = ["first", "second"];
+    assert(lookup(values, 0).expect("present vector slot") == "first");
+    assert(lookup(values, 2).is_none());
+    assert(at(values, 1) == "second");
+    assert(values.len() == 2);
+
+    var entries: HashMap<i64, string> = HashMap.new();
+    entries.insert(7, "seven");
+    let kept = lookup(entries, 7).expect("present map key");
+    entries.clear();
+    assert(kept == "seven");
+    assert(lookup(entries, 7).is_none());
+    entries.insert(8, "eight");
+    assert(at(entries, 8) == "eight");
+    assert(entries.len() == 1);
+}

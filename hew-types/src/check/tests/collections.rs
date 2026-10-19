@@ -4122,3 +4122,30 @@ fn main() {{
         }
     }
 }
+
+#[test]
+fn generic_index_owned_results_require_cloneable_collection_elements() {
+    for (container, value) in [
+        ("Vec<Token>", "[Token { id: 1 }]"),
+        ("HashMap<i64, Token>", "HashMap.new()"),
+    ] {
+        let source = format!(
+            r"
+#[resource]
+type Token {{ id: i64; }}
+impl Token {{ fn close(consume self) {{}} }}
+fn demand<I: Index<i64>>(input: I) {{ let _ = input; }}
+fn main() {{ let values: {container} = {value}; demand(values); }}
+"
+        );
+        let output = check_source_with_stdlib(&source);
+        assert!(
+            output
+                .errors
+                .iter()
+                .any(|error| error.message.contains("Index") || error.message.contains("Clone")),
+            "{:?}",
+            output.errors
+        );
+    }
+}

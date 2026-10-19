@@ -8,6 +8,14 @@ use hew_hir::{lower_program, HirDiagnosticKind, HirItem, ResolutionCtx};
 use hew_types::{module_registry::ModuleRegistry, Checker};
 
 fn lower(source: &str) -> hew_hir::LowerOutput {
+    lower_impl(source, true)
+}
+
+fn lower_rejected_shape(source: &str) -> hew_hir::LowerOutput {
+    lower_impl(source, false)
+}
+
+fn lower_impl(source: &str, check_types: bool) -> hew_hir::LowerOutput {
     let parsed = hew_parser::parse(source);
     assert!(
         parsed.errors.is_empty(),
@@ -16,10 +24,13 @@ fn lower(source: &str) -> hew_hir::LowerOutput {
     );
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     let tc_output = checker.check_program(&parsed.program);
-    // Type errors are not asserted here — some fixtures intentionally exercise
-    // checker fall-through paths. Per-test asserts cover the actually-relevant
-    // diagnostics in each scenario.
-    let _ = &tc_output;
+    if check_types {
+        assert!(
+            tc_output.errors.is_empty(),
+            "type errors: {:?}",
+            tc_output.errors
+        );
+    }
     lower_program(
         &parsed.program,
         &tc_output,
@@ -57,7 +68,7 @@ fn iterator_impl_on_user_nominal_lowers_method_and_metadata() {
 impl<T> Iterator for VecIter<T> {
     type Item = T;
 
-    fn next(self) -> Option<T> {
+    fn next(var self) -> Option<T> {
         .None
     }
 }
@@ -173,22 +184,21 @@ impl Counter {
 }
 
 #[test]
-fn index_impl_still_lowers_unchanged() {
-    // Regression guard: the pre-V0b `impl Index for ...` lowering precedent
-    // continues to emit a `<Self>::at` HirItem::Function. V0b unifies the
-    // arm; this test asserts the unification did not regress the Index case
-    // that other fixtures (vec_index_lowering, index_trait_lowering) rely on
-    // implicitly for the rewrite-table consumer.
+fn index_impl_lowers_method_and_metadata() {
     let output = lower(
         r"type Grid {
     bias: i32;
 }
 
-impl Index for Grid {
+impl Index<i32> for Grid {
     type Output = i32;
 
-    fn at(self, key: i32) -> i32 {
-        self.bias + key
+    fn get(self, index: i32) -> Option<i32> {
+        .Some(self.bias + index)
+    }
+
+    fn at(self, index: i32) -> i32 {
+        self.bias + index
     }
 }
 ",
@@ -200,7 +210,7 @@ impl Index for Grid {
         .items
         .iter()
         .any(|item| matches!(item, HirItem::Function(f) if f.name == "Grid::at"));
-    assert!(has_at, "Grid::at must still be emitted post-V0b");
+    assert!(has_at, "the checked Grid::at method must be emitted");
 }
 
 #[test]
@@ -217,7 +227,7 @@ pub type Wrap<T> {
 }
 
 impl<T> Wrap<T> where T: Eq {
-    fn first(self) -> Wrap<T> {
+    fn first(consume self) -> Wrap<T> {
         self
     }
 }
@@ -266,7 +276,7 @@ pub type Wrap<T> {
 }
 
 impl<T> Wrap<T> where T: Eq + Ord {
-    fn first(self) -> Wrap<T> {
+    fn first(consume self) -> Wrap<T> {
         self
     }
 }
@@ -370,7 +380,7 @@ fn impl_block_blanket_impl_emits_fail_closed_shape_diagnostic() {
     // surface as a precise `ImplBlockShapeNotLowered { shape: "blanket impl
     // ..." }` rather than fall through to the generic `top-level-item`
     // catch-all.
-    let output = lower(
+    let output = lower_rejected_shape(
         r"
         pub trait Eq {
             fn eq(self, b: Self) -> bool;
@@ -409,7 +419,7 @@ fn impl_block_non_nominal_target_emits_fail_closed_shape_diagnostic() {
     // diagnostic must surface as `ImplBlockShapeNotLowered { shape: "impl on
     // non-nominal target" }` rather than fall through to the generic
     // `top-level-item` catch-all.
-    let output = lower(
+    let output = lower_rejected_shape(
         r"
         pub trait Show {
             fn show(self) -> bool;
@@ -450,7 +460,7 @@ fn impl_block_inherent_on_builtin_nominal_emits_fail_closed_shape_diagnostic() {
     //
     // Trait impls on builtins (`impl MyTrait for Vec<T>`) are deliberately
     // not covered by this guard — orphan-rule policing is a separate concern.
-    let output = lower(
+    let output = lower_rejected_shape(
         r"
         impl<T> Vec<T> {
             fn user_method(self) -> i32 {
@@ -486,7 +496,7 @@ fn declarative_ffi_inherent_impl_on_builtin_nominal_is_skipped_without_diagnosti
     // already-consumed metadata: no `ImplBlockShapeNotLowered` rejection, and
     // no `<SelfType>::<method>` functions emitted from the panic-stub bodies
     // (call sites dispatch through checker-recorded extern-symbol rewrites).
-    let output = lower(
+    let output = lower_rejected_shape(
         r#"
         impl<T> Option<T> {
             #[extern_symbol(hew_test_option_is_some)]
@@ -532,7 +542,7 @@ fn mixed_ffi_and_real_body_inherent_impl_on_builtin_nominal_stays_fail_closed() 
     // A builtin-nominal inherent impl containing ANY method without
     // `#[extern_symbol]` is not declarative FFI — it is a user-authored
     // inherent impl and keeps the fail-closed rejection.
-    let output = lower(
+    let output = lower_rejected_shape(
         r#"
         impl<T> Option<T> {
             #[extern_symbol(hew_test_option_is_some)]

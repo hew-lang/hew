@@ -3,5 +3,5 @@ import "codecs/rle.hew";
 
 fn main() {
     println(codec.encode("x") + " " + encode("y") + " " + rle.encode("z"));
-    println(codec.NAME == NAME);
+    println(codec.NAME == NAME && rle.NAME == NAME);
 }

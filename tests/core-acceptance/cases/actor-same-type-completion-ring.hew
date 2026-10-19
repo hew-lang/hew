@@ -1,0 +1,26 @@
+// Two actors of one type completion-call each other through fields set at run
+// time. The checker cannot see this ring of instances; the runtime's
+// wait-cycle detection fails the call instead of deadlocking.
+actor Stage {
+    var next: Option<Stage> = .None;
+
+    receive fn link(stage: Stage) {
+        next = .Some(stage);
+    }
+
+    receive fn process(token: i64) -> i64 {
+        match next {
+            .Some(stage) => stage.process(token).expect("next stage is running"),
+            .None => token,
+        }
+    }
+}
+
+fn main() {
+    let a = spawn Stage;
+    let b = spawn Stage;
+    a.link(b).expect("link a");
+    b.link(a).expect("link b");
+    println(f"{a.process(1):?}");
+    println("done");
+}

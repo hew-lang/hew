@@ -1,0 +1,10 @@
+[[case]]
+id = "actor-same-type-completion-chain"
+intent = "A completion call to another actor of the caller's own type through a field is not refused as a static ring; a chain of such actors runs to its end."
+source = "cases/actor-same-type-completion-chain.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "30\n"
+exit = 0

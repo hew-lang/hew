@@ -427,6 +427,24 @@ fn a_completion_call_chain_without_a_cycle_is_accepted() {
     assert!(output.errors.is_empty(), "{:?}", output.errors);
 }
 
+/// A completion call to another actor of the caller's own type is not a
+/// static ring: a chain of `Stage`s reaches a different instance each time and
+/// ends where `next` is empty. Only the runtime can see a ring of instances.
+#[test]
+fn a_same_type_completion_chain_through_a_field_is_accepted() {
+    let output = check_source(
+        "actor Stage {\n    let factor: i64;\n    let next: Option<Stage>;\n    receive fn process(v: i64) -> i64 {\n        let out = v * factor;\n        match next {\n            .Some(stage) => stage.process(out).expect(\"next stage\"),\n            .None => out,\n        }\n    }\n}\n\nfn main() {\n    let last = spawn Stage { factor: 3, next: .None };\n    let first = spawn Stage { factor: 2, next: .Some(last) };\n    println(first.process(5).expect(\"first stage\"));\n}\n",
+    );
+    assert!(
+        !output
+            .errors
+            .iter()
+            .any(|error| error.message.contains("completion calls form a cycle")),
+        "{:?}",
+        output.errors
+    );
+}
+
 #[test]
 fn self_completion_is_refused_inside_receive_and_private_method_bodies() {
     for body in [

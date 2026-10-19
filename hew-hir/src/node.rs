@@ -17,6 +17,9 @@ use crate::IntentKind;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct HirModule {
+    /// Authored origins of generated spans, shared with checker diagnostics.
+    /// HIR node spans and checked-site identities retain their semantic keys.
+    pub source_origins: Arc<hew_types::check::SourceSpanOrigins>,
     /// Original checker identities for lowered source expressions.
     pub checked_sites: HashMap<SiteId, hew_types::SpanKey>,
     /// Checker-selected read/replacement contracts for indexed writable paths.

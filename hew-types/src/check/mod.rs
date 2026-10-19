@@ -68,7 +68,7 @@ pub use self::lints::{directive_suppresses, LintId, LintLevel, LintLevels, LintS
 mod machine_effects;
 mod machine_hierarchy;
 mod machine_normalize;
-pub use machine_normalize::NormalizedProgram;
+pub use machine_normalize::{NormalizedProgram, SourceSpanOrigins};
 mod methods;
 mod nominal_identity;
 pub use self::methods::collection_dispatch_registry_for_tests;
@@ -2833,7 +2833,7 @@ impl Checker {
                 }
                 self.collect_function_signatures(
                     &normalized.program,
-                    Some(&normalized.implied_displays),
+                    Some(&normalized.source_origins.implied_displays),
                 );
                 Some(normalized)
             }
@@ -4222,7 +4222,11 @@ impl Checker {
         let mut projected: HashMap<SpanKey, Ty> = HashMap::new();
         let mut ambiguous: HashSet<SpanKey> = HashSet::new();
         for (key, ty) in expr_types.iter() {
-            let Some(source) = normalized.source_spans.get(&(key.start..key.end)) else {
+            let Some(source) = normalized
+                .source_origins
+                .source_spans
+                .get(&(key.start..key.end))
+            else {
                 continue;
             };
             let source_key = SpanKey::in_module(source, key.module_idx);

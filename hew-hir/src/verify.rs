@@ -34,6 +34,11 @@ pub struct HirScopeExtent {
 pub fn collect_site_spans(module: &HirModule) -> HashMap<SiteId, HirSiteSource> {
     let mut verifier = Verifier::default();
     verifier.module(module);
+    for source in verifier.site_spans.values_mut() {
+        if let Some(origin) = module.source_origins.source_span(&source.span) {
+            source.span = origin.clone();
+        }
+    }
     verifier.site_spans
 }
 
@@ -49,6 +54,11 @@ pub fn collect_site_spans(module: &HirModule) -> HashMap<SiteId, HirSiteSource> 
 pub fn collect_scope_extents(module: &HirModule) -> HashMap<ScopeId, HirScopeExtent> {
     let mut verifier = Verifier::default();
     verifier.module(module);
+    for extent in verifier.scope_extents.values_mut() {
+        if let Some(origin) = module.source_origins.source_span(&extent.span) {
+            extent.span = origin.clone();
+        }
+    }
     verifier.scope_extents
 }
 
@@ -1321,6 +1331,7 @@ mod tests {
 
     fn module(items: Vec<HirItem>) -> HirModule {
         HirModule {
+            source_origins: Arc::default(),
             checked_sites: HashMap::new(),
             indexed_place_operations: HashMap::new(),
             entry_exit_plan: None,

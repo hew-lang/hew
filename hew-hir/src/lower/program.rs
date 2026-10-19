@@ -2707,6 +2707,12 @@ pub fn lower_program(
     );
 
     let module = HirModule {
+        source_origins: type_check_output
+            .normalized_program
+            .as_ref()
+            .map_or_else(Arc::default, |normalized| {
+                Arc::clone(&normalized.source_origins)
+            }),
         checked_sites: ctx.checked_sites,
         indexed_place_operations: ctx.indexed_place_operations,
         items,

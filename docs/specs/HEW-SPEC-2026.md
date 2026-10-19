@@ -5119,7 +5119,7 @@ companion types:
 
 | Generated item        | Behaviour                                                            |
 | --------------------- | -------------------------------------------------------------------- |
-| `NameEvent`           | Typed input variants from `events`                                   |
+| `Name.Event`          | Typed input variants from `events`                                   |
 | `NameOutput`          | Separate typed output variants from `emits`                          |
 | `NameStepDisposition` | `Taken` for an explicit rule; `Ignored` for the default fallback     |
 | `NameStep`            | Must-use report: `outputs: Vec<NameOutput>` and `disposition`        |

@@ -50,10 +50,15 @@ pub(super) fn compile_test(
     let companion = test.companion.as_deref().map(Path::new);
     // The test file's own package, wherever `hew test` was run from.
     let source_dir = source_path.parent().unwrap_or(Path::new("."));
-    let project_dir = source_dir
-        .ancestors()
-        .find(|dir| dir.join("hew.toml").is_file())
-        .unwrap_or(source_dir);
+    let project_dir = test.doc.as_ref().map_or_else(
+        || {
+            source_dir
+                .ancestors()
+                .find(|dir| dir.join("hew.toml").is_file())
+                .unwrap_or(source_dir)
+        },
+        |doc| doc.project_dir.as_path(),
+    );
     let output = hew_wasm::sandbox::compile_tests_to_sandbox_bytecode(
         &source,
         source_path,

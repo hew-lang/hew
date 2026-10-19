@@ -42,6 +42,7 @@ pub struct DocTest {
     pub identity: String,
     pub selector: String,
     pub origin: String,
+    pub project_dir: std::path::PathBuf,
     pub expected_stdout: Option<String>,
     pub no_run: bool,
     pub parse_error: Option<String>,

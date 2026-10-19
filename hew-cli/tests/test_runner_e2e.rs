@@ -111,6 +111,53 @@ fn doc_no_run_compiles_host_operations_without_running_them() {
 }
 
 #[test]
+fn doc_fence_imports_its_package_outside_the_working_directory() {
+    require_codegen();
+    let dir = support::tempdir();
+    write_file(
+        dir.path(),
+        "greet/hew.toml",
+        "[package]\nname = \"acme.greet\"\nversion = \"0.1.0\"\nedition = \"2026\"\n",
+    );
+    write_file(
+        dir.path(),
+        "greet/greet.hew",
+        "//! ```hew\n\
+         //! import acme.greet;\n\
+         //! fn main() {\n\
+         //!     println(greet.hello(\"Hew\"));\n\
+         //! }\n\
+         //! // Output:\n\
+         //! // hello, Hew\n\
+         //! ```\n\
+         pub fn hello(name: string) -> string { f\"hello, {name}\" }\n",
+    );
+    for engine in ["native", "vm"] {
+        let output = run_hew_in(
+            dir.path(),
+            &[
+                "test",
+                "--doc",
+                "greet/greet.hew",
+                "--engine",
+                engine,
+                "--format",
+                "json",
+            ],
+        );
+        assert!(
+            output.status.success(),
+            "{engine}: stdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let events = String::from_utf8_lossy(&output.stdout);
+        assert!(events.contains("\"passed\":1"), "{engine}: {events}");
+        assert!(events.contains("hello, Hew\\n"), "{engine}: {events}");
+    }
+}
+
+#[test]
 fn doc_fence_selects_generated_entry_after_existing_test() {
     require_codegen();
     let dir = support::tempdir();

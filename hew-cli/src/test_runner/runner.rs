@@ -788,6 +788,7 @@ fn compile_test(
         .target
         .executable_path(emit_dir.path(), binary_name);
     let compile_options = crate::compile::CompileOptions {
+        project_dir: test.doc.as_ref().map(|doc| doc.project_dir.clone()),
         opt_level: options.benchmark.then_some(hew_codegen_rs::OptLevel::O2),
         coverage_map: options
             .coverage

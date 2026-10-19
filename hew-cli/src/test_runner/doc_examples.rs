@@ -35,6 +35,14 @@ pub fn prepare(paths: &[String]) -> Result<PreparedDocTests, String> {
 
     let mut tests = Vec::new();
     for file in files {
+        let origin = file
+            .canonicalize()
+            .map_err(|error| format!("resolve {}: {error}", file.display()))?;
+        let source_dir = origin.parent().unwrap_or(&root);
+        let project_dir = source_dir
+            .ancestors()
+            .find(|dir| dir.join("hew.toml").is_file())
+            .unwrap_or(source_dir);
         let source = std::fs::read_to_string(&file)
             .map_err(|error| format!("read {}: {error}", file.display()))?;
         let fences = extract_fences(&source, file.extension().is_some_and(|ext| ext == "hew"));
@@ -75,6 +83,7 @@ pub fn prepare(paths: &[String]) -> Result<PreparedDocTests, String> {
                 identity,
                 selector,
                 origin: file.display().to_string(),
+                project_dir: project_dir.to_path_buf(),
                 expected_stdout: fence.expected_stdout,
                 no_run: fence.no_run,
                 parse_error,

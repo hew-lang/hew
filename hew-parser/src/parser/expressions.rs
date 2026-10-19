@@ -396,6 +396,16 @@ impl Parser<'_> {
             if statement_block && !matches!(self.peek(), Some(Token::Identifier("handle"))) {
                 break;
             }
+            // Parenthesized and negative patterns can also begin the next arm
+            // after a block body. Stop only when the candidate is followed by
+            // the arm arrow, so ordinary calls and subtraction still parse as
+            // continuations of the block expression.
+            if block_arm_body
+                && Self::is_block_expr(&lhs.0)
+                && self.match_arm_pattern_followed_by_arrow()
+            {
+                break;
+            }
             if self.record_init_suffix_allowed(&lhs.0) {
                 lhs = self.parse_record_init_postfix(lhs)?;
                 continue;
@@ -403,20 +413,6 @@ impl Parser<'_> {
 
             // Try postfix first (highest precedence)
             match self.peek() {
-                // A block-opened match-arm body ends at its closing `}`. A `.`
-                // followed by an identifier there is the next arm's pattern
-                // (`.Ok(v) => …`), which is the only spelling of a contextual
-                // variant pattern — the same `Dot`+identifier pair
-                // `is_match_arm_pattern_start` already reads as an arm start.
-                // Reading it as member access on the block would swallow the
-                // pattern and report "expected pattern, found `=>`".
-                Some(Token::Dot)
-                    if block_arm_body
-                        && Self::is_block_expr(&lhs.0)
-                        && matches!(self.peek_at(self.pos + 1), Some(Token::Identifier(_))) =>
-                {
-                    break;
-                }
                 Some(Token::Dot) => {
                     lhs = self.parse_dot_postfix(lhs)?;
                     continue;

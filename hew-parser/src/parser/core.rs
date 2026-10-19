@@ -1040,6 +1040,30 @@ impl<'src> Parser<'src> {
         }
     }
 
+    /// Whether tokens at the cursor form a match-arm pattern followed by its
+    /// arrow. This disambiguates a pattern after a block-bodied arm from a
+    /// postfix or infix continuation of that block (`(...)` or `-value`).
+    pub(crate) fn match_arm_pattern_followed_by_arrow(&self) -> bool {
+        let mut cursor = self.pos;
+        let mut depth = 0usize;
+        while let Some(token) = self.peek_at(cursor) {
+            match token {
+                Token::FatArrow if depth == 0 => return true,
+                Token::LeftParen | Token::LeftBracket | Token::LeftBrace => depth += 1,
+                Token::RightParen | Token::RightBracket | Token::RightBrace => {
+                    if depth == 0 {
+                        return false;
+                    }
+                    depth -= 1;
+                }
+                Token::Comma if depth == 0 => return false,
+                _ => {}
+            }
+            cursor += 1;
+        }
+        false
+    }
+
     /// Recover after a malformed match arm by consuming the bad arm, then
     /// stopping before the closing `}` or the next arm's pattern.
     pub(crate) fn skip_to_match_arm_boundary(&mut self) {

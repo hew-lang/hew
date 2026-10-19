@@ -1279,16 +1279,29 @@ impl<'a> Formatter<'a> {
         match item {
             Item::Macro(_) | Item::MacroCall(_) => {
                 self.write_indent();
-                self.write(
-                    self.source
-                        .get(span_start..span_end)
-                        .unwrap_or_default()
-                        .trim_end(),
-                );
+                let token_end = self
+                    .tokens
+                    .iter()
+                    .take_while(|(_, span)| span.start < span_end)
+                    .filter(|(token, _)| {
+                        !matches!(
+                            token,
+                            hew_lexer::Token::DocComment(_) | hew_lexer::Token::InnerDocComment(_)
+                        )
+                    })
+                    .last()
+                    .map_or(span_start, |(_, span)| span.end);
+                if let Some(source) = self.source.get(span_start..token_end) {
+                    // Macro syntax is retained verbatim, including comments
+                    // inside its token trees. Keep the item boundary at its
+                    // final token so a comment before the following item stays
+                    // available to the normal comment flusher.
+                    self.output.push_str(source);
+                }
                 self.newline();
-                self.prev_source_pos = span_end;
+                self.prev_source_pos = token_end;
                 while self.next_comment < self.comments.len()
-                    && self.comments[self.next_comment].span.start < span_end
+                    && self.comments[self.next_comment].span.start < token_end
                 {
                     self.next_comment += 1;
                 }
@@ -4914,12 +4927,21 @@ impl<'a> Formatter<'a> {
             } => {
                 self.write("emit ");
                 self.write_ident(*event_name);
-                if fields.is_empty() {
-                    self.write(" {}");
-                } else {
-                    self.write(" { ");
-                    self.write_field_inits(fields, field_labels);
-                    self.write(" }");
+                let has_payload_braces = self.source.is_empty()
+                    || self
+                        .tokens
+                        .get(self.token_at_or_after(self.prev_source_pos))
+                        .is_some_and(|(token, _)| matches!(token, hew_lexer::Token::LeftBrace));
+                if !fields.is_empty() || has_payload_braces {
+                    if fields.is_empty() {
+                        // Preserve the source's compact unit-event spelling:
+                        // `emit Ready;` and `emit Ready {};` are both supported.
+                        self.write(" {}");
+                    } else {
+                        self.write(" { ");
+                        self.write_field_inits(fields, field_labels);
+                        self.write(" }");
+                    }
                 }
             }
             Expr::GenBlock { body } => {
@@ -5775,6 +5797,55 @@ mod tests {
         let src = "fn main() -> i32 {\n    0\n}\n";
         let formatted = roundtrip(src);
         assert_eq!(formatted, src);
+    }
+
+    #[test]
+    fn unit_machine_emit_preserves_optional_braces() {
+        for (source, spelling) in [
+            (
+                "machine M { events { Go; } emits { Ready; } state Idle; on Go: Idle => Idle { emit Ready; Idle } }\n",
+                "emit Ready;",
+            ),
+            (
+                "machine M { events { Go; } emits { Ready; } state Idle; on Go: Idle => Idle { emit Ready {}; Idle } }\n",
+                "emit Ready {};",
+            ),
+        ] {
+            let parsed = parse(source);
+            assert!(parsed.errors.is_empty(), "errors: {:?}", parsed.errors);
+            let formatted = format_checked(source, &parsed.program)
+                .expect("unit emit spelling should format faithfully");
+            assert!(formatted.contains(spelling), "formatted:\n{formatted}");
+            let reparsed = parse(&formatted);
+            assert!(reparsed.errors.is_empty(), "errors: {:?}\n{formatted}", reparsed.errors);
+            assert_eq!(format_source(&formatted, &reparsed.program), formatted);
+        }
+    }
+
+    #[test]
+    fn comments_after_macro_items_stay_before_the_next_item() {
+        for (source, expected) in [
+            (
+                "macro twice { ($value:expr) => expr { $value + $value } }\n\n// Entry point.\nfn main() { println(twice!(2)); }\n",
+                "// Entry point.\nfn main",
+            ),
+            (
+                "macro twice { ($value:expr) => expr { $value + $value } }\n\n// Second macro.\nmacro thrice { ($value:expr) => expr { $value + $value + $value } }\n",
+                "// Second macro.\nmacro thrice",
+            ),
+            (
+                "macro twice { ($value:expr) => expr { $value + $value } }\n\n/// Doc comment.\nfn main() { println(twice!(2)); }\n",
+                "/// Doc comment.\nfn main",
+            ),
+        ] {
+            let parsed = parse(source);
+            assert!(parsed.errors.is_empty(), "errors: {:?}", parsed.errors);
+            let formatted = format_source(source, &parsed.program);
+            assert!(formatted.contains(expected), "comment was absorbed or moved:\n{formatted}");
+            let reparsed = parse(&formatted);
+            assert!(reparsed.errors.is_empty(), "errors: {:?}\n{formatted}", reparsed.errors);
+            assert_eq!(format_source(&formatted, &reparsed.program), formatted);
+        }
     }
 
     #[test]

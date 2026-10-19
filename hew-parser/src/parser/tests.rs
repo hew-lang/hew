@@ -923,6 +923,25 @@ fn block_expression_inside_a_match_arm_keeps_dot_postfix() {
 }
 
 #[test]
+fn block_match_arm_stops_before_tuple_and_negative_patterns() {
+    let source = "fn main() { match value { 0 => { println(0); } (1, _) => { println(1); } -1 => { println(-1); } _ => {} } }";
+    let result = parse(source);
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+    let Item::Function(function) = &result.program.items[0].0 else {
+        panic!("expected function item");
+    };
+    let Some((Expr::Match { arms, .. }, _)) = function.body.trailing_expr.as_deref() else {
+        panic!("expected trailing match expression");
+    };
+    assert_eq!(arms.len(), 4);
+    assert!(matches!(&arms[1].pattern.0, Pattern::Tuple(_)));
+    assert!(matches!(
+        &arms[2].pattern.0,
+        Pattern::Literal(Literal::Integer { value: -1, .. })
+    ));
+}
+
+#[test]
 fn parse_match_bad_arm_pattern_recovers_to_later_arms() {
     let source = "fn main() { match n { fn => 0, 1 => 1, _ => 2 } }";
     let result = parse(source);

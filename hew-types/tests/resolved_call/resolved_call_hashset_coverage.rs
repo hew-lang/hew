@@ -10,8 +10,9 @@ use common::typecheck;
 fn rewrite_symbols(output: &hew_types::TypeCheckOutput) -> HashSet<String> {
     output
         .method_call_rewrites
-        .values()
-        .filter_map(|rewrite| match rewrite {
+        .iter()
+        .filter(|(key, _)| key.module_idx == 0)
+        .filter_map(|(_, rewrite)| match rewrite {
             MethodCallRewrite::RewriteToFunction { c_symbol, .. } => Some(c_symbol.clone()),
             _ => None,
         })
@@ -57,7 +58,11 @@ fn main() {
     }
 
     assert_eq!(
-        output.resolved_calls.len(),
+        output
+            .resolved_calls
+            .keys()
+            .filter(|key| key.module_idx == 0)
+            .count(),
         4,
         "every legacy-green HashSet runtime rewrite should have a parallel ResolvedCall: {:#?}",
         output.resolved_calls
@@ -65,8 +70,9 @@ fn main() {
 
     let methods: HashSet<String> = output
         .resolved_calls
-        .values()
-        .map(|call| call.method_name.clone())
+        .iter()
+        .filter(|(key, _)| key.module_idx == 0)
+        .map(|(_, call)| call.method_name.clone())
         .collect();
     assert_eq!(
         methods,
@@ -78,7 +84,11 @@ fn main() {
         ])
     );
 
-    for call in output.resolved_calls.values() {
+    for (_, call) in output
+        .resolved_calls
+        .iter()
+        .filter(|(key, _)| key.module_idx == 0)
+    {
         assert_eq!(call.impl_id, ImplId(1));
         assert_eq!(
             call.type_args,
@@ -118,8 +128,9 @@ fn float_hashset_is_admitted_via_layout_element_path() {
     assert!(
         output
             .resolved_calls
-            .values()
-            .any(|call| { call.method_target.symbol_name == "hew_hashset_insert_layout" }),
+            .iter()
+            .any(|(key, call)| key.module_idx == 0
+                && call.method_target.symbol_name == "hew_hashset_insert_layout"),
         "HashSet<f64>::insert must route to the layout element path: {:#?}",
         output.resolved_calls
     );

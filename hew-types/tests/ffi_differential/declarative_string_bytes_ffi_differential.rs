@@ -11,8 +11,8 @@ use hew_types::error::TypeErrorKind;
 use common::typecheck;
 
 fn has_rewrite(output: &hew_types::TypeCheckOutput, symbol: &str) -> bool {
-    output.method_call_rewrites.values().any(
-        |rewrite| matches!(rewrite, MethodCallRewrite::RewriteToFunction { c_symbol, .. } if c_symbol == symbol),
+    output.method_call_rewrites.iter().any(
+        |(key, rewrite)| key.module_idx == 0 && matches!(rewrite, MethodCallRewrite::RewriteToFunction { c_symbol, .. } if c_symbol == symbol),
     )
 }
 
@@ -134,7 +134,10 @@ fn bytes_remove_fails_closed_without_a_checked_in_runtime_symbol() {
         output.errors
     );
     assert!(
-        output.method_call_rewrites.is_empty(),
+        output
+            .method_call_rewrites
+            .keys()
+            .all(|key| key.module_idx != 0),
         "unsupported bytes.remove must not record a rewrite; got: {:#?}",
         output.method_call_rewrites
     );

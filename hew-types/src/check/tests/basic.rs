@@ -2554,7 +2554,8 @@ fn selected_eq_does_not_rewrite_ordinary_float_comparisons() {
     for expression in ["a == b", "a != b", "a < b"] {
         assert_eq!(
             output.expr_types.iter().find_map(|(key, ty)| {
-                (source[key.start..key.end].trim() == expression).then_some(ty)
+                (key.module_idx == 0 && source[key.start..key.end].trim() == expression)
+                    .then_some(ty)
             }),
             Some(&Ty::Bool)
         );

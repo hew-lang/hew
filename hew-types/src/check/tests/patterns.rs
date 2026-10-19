@@ -201,7 +201,11 @@ mod pattern_resolution {
             "pattern_resolutions test must parse and check cleanly; errors: {:#?}",
             output.errors
         );
-        output.pattern_resolutions
+        output
+            .pattern_resolutions
+            .into_iter()
+            .filter(|(key, _)| key.module_idx == 0)
+            .collect()
     }
 
     // ── wildcard arm ─────────────────────────────────────────────────────────

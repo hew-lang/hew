@@ -9,6 +9,12 @@ syntax and semantics, and the [language guide](docs/hew-language-guide.md)
 for examples. The release-labelled entries below preserve migration history;
 old spellings and ABI layouts in them are not current programming guidance.
 
+## Unit machine outputs in v0.6.2
+
+A machine output without fields is emitted by its name alone: `emit Ready;`.
+`emit Ready {}` is refused with `E_EMPTY_KEY_BRACES`; run `hew fmt --migrate`
+to rewrite it.
+
 ## Keyed construction in v0.6.0
 
 `spawn`, supervisor children and machine transition heads take their keys in

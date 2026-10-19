@@ -26,3 +26,13 @@ A transition head binding now names the payload fields for the whole rule, so
 `on Add { n }: Idle => Acc when n > 0 { sum: n }` reads `n` in its guard. A head
 name that neither the guard nor the body reads is reported once, at the head,
 with a fix that removes it.
+
+An f-string interpolation that continues past its expression is now an error
+instead of silently dropping the rest. `f"{x:<8}"`, `f"{f:.2}"` and
+`f"{x garbage}"` previously printed the bare value; only `{value}` and
+`{value:?}` are accepted.
+
+A machine output without fields is emitted by its name alone, `emit Ready;`.
+`hew fmt` no longer refuses files that use that spelling, and `emit Ready {}`
+is now refused with `E_EMPTY_KEY_BRACES`, as an empty `spawn` key list is;
+`hew fmt --migrate` rewrites it.

@@ -54,14 +54,14 @@ machine TcpHandshake {
 
         // Passive open: peer sends SYN; the `(remote_port)` head binding names the
         // event payload so the body reads it directly.
-        emit AckReceive {};
+        emit AckReceive;
         SynReceived { remote_port: remote_port }
     }
     on AckReceive: SynReceived => Established { remote_port: state.remote_port }
     on FinReceive: Established => CloseWait {
 
         // Peer initiates close while established.
-        emit AckReceive {};
+        emit AckReceive;
         CloseWait
     }
     on AckReceive: CloseWait => Closed;

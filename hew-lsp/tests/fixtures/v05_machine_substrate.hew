@@ -27,7 +27,7 @@ machine Lifecycle<T: Resource> {
     state Active { handle: T; }
 
     on Start: Idle => Active {
-        emit Started {};
+        emit Started;
         Active { handle: event.handle }
     }
     on Stop: Active => Idle;

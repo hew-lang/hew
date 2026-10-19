@@ -1458,17 +1458,15 @@ fn parse_interpolated_string_contains_expr_part() {
 
 #[test]
 fn interpolation_rejects_unconsumed_input_at_its_source_span() {
-    for expression in ["x garbage", "x; y", "x )", "x 7 8", "1e21", "x:04"] {
+    for (expression, expected_tail) in [("x 7 8", "7 8"), ("x:04", ":04")] {
         let source = format!("fn main() {{ let s = f\"é [{expression}]\"; }}");
         let result = parse(&source);
-        let diagnostic = result
-            .errors
-            .iter()
-            .find(|error| error.message.contains("trailing input in f-string"))
-            .unwrap_or_else(|| panic!("{expression}: {:?}", result.errors));
-        let trailing = &source[diagnostic.span.clone()];
-        assert!(!trailing.is_empty(), "{expression}: {diagnostic:?}");
-        assert!(expression.contains(trailing), "{expression}: {trailing}");
+        assert_eq!(result.errors.len(), 1, "{expression}: {:?}", result.errors);
+        assert_eq!(
+            &source[result.errors[0].span.clone()],
+            expected_tail,
+            "the complete tail must retain its byte offset after a Unicode prefix"
+        );
     }
     let result = parse(r#"fn main() { let s = f"{1.0e21} {value:?} {call(1 + 2)}"; }"#);
     assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
@@ -1544,6 +1542,70 @@ fn parse_interpolated_string_empty_expr_reports_error() {
         !result.errors.is_empty(),
         "expected parse errors for malformed interpolation"
     );
+}
+
+fn interpolation_errors(source: &str) -> Vec<(String, String)> {
+    parse(source)
+        .errors
+        .into_iter()
+        .map(|error| (error.message, source[error.span].to_string()))
+        .collect()
+}
+
+#[test]
+fn parse_interpolated_string_refuses_format_specifiers_other_than_debug() {
+    for (spec, expected) in [
+        ("x:<8", ":<8"),
+        ("x:08", ":08"),
+        ("f:.2", ":.2"),
+        ("x:x", ":x"),
+        ("x :<8", ":<8"),
+    ] {
+        let source = format!(r#"fn main() {{ let s = f"[{{{spec}}}]"; }}"#);
+        assert_eq!(
+            interpolation_errors(&source),
+            [(
+                "f-string interpolation accepts only the `:?` format specifier".to_string(),
+                expected.to_string()
+            )],
+            "{spec}"
+        );
+    }
+}
+
+#[test]
+fn parse_interpolated_string_refuses_tokens_after_the_expression() {
+    for (inner, message, tail) in [
+        ("x garbage", "unexpected identifier `garbage`", "garbage"),
+        ("x; y", "unexpected `;`", "; y"),
+        ("x )", "unexpected `)`", ")"),
+        ("1e21", "unexpected identifier `e21`", "e21"),
+    ] {
+        let source = format!(r#"fn main() {{ let s = f"[{{{inner}}}]"; }}"#);
+        assert_eq!(
+            interpolation_errors(&source),
+            [(
+                format!("{message} after the interpolated expression"),
+                tail.to_string()
+            )],
+            "{inner}"
+        );
+    }
+}
+
+#[test]
+fn parse_interpolated_string_keeps_colons_inside_the_expression() {
+    for inner in [
+        " x ",
+        "x :?",
+        "xs.iter().map(|k: i64| k + 1).count()",
+        "Point { x: 1, y: 2 }:?",
+        r#"label("a:b")"#,
+        r#"if x > 1 { "a" } else { "b" }"#,
+    ] {
+        let source = format!(r#"fn main() {{ let s = f"[{{{inner}}}]"; }}"#);
+        assert_eq!(interpolation_errors(&source), [], "{inner}");
+    }
 }
 
 #[test]
@@ -3011,7 +3073,7 @@ enum Command {
     assert_eq!(decl.name, Ident::new("Command"));
     let wire = decl.wire.as_ref().expect("expected wire metadata on enum");
     assert!(wire.field_meta.is_empty(), "enum variants have no @N tags");
-    assert!(wire.reserved_numbers.is_empty());
+    assert!(wire.reserved.is_empty());
     assert_eq!(decl.body.len(), 3);
     for item in &decl.body {
         match item {
@@ -3270,7 +3332,7 @@ pub enum Command {
         .as_ref()
         .expect("expected wire metadata on pub enum");
     assert!(wire.field_meta.is_empty());
-    assert!(wire.reserved_numbers.is_empty());
+    assert!(wire.reserved.is_empty());
     assert_eq!(decl.body.len(), 2);
     for item in &decl.body {
         match item {

@@ -84,6 +84,14 @@ fn empty_spawn_braces_are_refused() {
 }
 
 #[test]
+fn empty_emit_braces_are_refused() {
+    let source = "machine M {\n    events {\n        Go;\n    }\n    emits {\n        Rule;\n    }\n    state Idle;\n    on Go: Idle => Idle {\n        emit Rule {};\n        Idle\n    }\n}\n";
+    let (_, code, hint) = single_error(source);
+    assert_eq!(code, "E_EMPTY_KEY_BRACES");
+    assert_eq!(hint, "write `emit Rule`");
+}
+
+#[test]
 fn spawn_base_is_refused() {
     let (_, code, _) = single_error(&main_with("    let p = spawn Pair { ..a };\n"));
     assert_eq!(code, "E_SPAWN_BASE");

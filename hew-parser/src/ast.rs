@@ -1506,13 +1506,23 @@ pub enum TypeDeclKind {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WireMetadata {
     pub field_meta: Vec<WireFieldMeta>,
-    pub reserved_numbers: Vec<u32>,
+    /// `reserved @N, @M;` clauses in source order.
+    pub reserved: Vec<WireReserved>,
     /// Schema version from `#[wire(version = N)]`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub version: Option<u32>,
     /// Minimum version that can decode this schema, from `#[wire(min_version = N)]`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub min_version: Option<u32>,
+}
+
+/// One `reserved @N, @M;` clause of a wire type body. The span places the
+/// clause among the fields so the formatter reprints it where it was written.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WireReserved {
+    pub numbers: Vec<u32>,
+    #[serde(default)]
+    pub span: Span,
 }
 
 /// Per-field wire protocol metadata (auto-assigned or explicit field numbers, modifiers).

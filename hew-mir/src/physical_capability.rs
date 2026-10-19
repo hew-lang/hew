@@ -13,6 +13,8 @@ pub enum PhysicalValueMethod {
     Scalar,
     /// A node identity carrier's fixed-width words, with no padding.
     Identity,
+    /// An actor reference's handle identity, the same test `is` performs.
+    ActorIdentity,
     String,
     Bytes,
     Aggregate(PhysicalAggregateId),
@@ -97,6 +99,7 @@ fn derived_method(
         _ if ids.sets.contains_key(ty) => PhysicalValueMethod::Set(ids.sets[ty]),
         _ if is_scalar(ty) => PhysicalValueMethod::Scalar,
         _ if hew_sir::is_identity_carrier(ty) => PhysicalValueMethod::Identity,
+        _ if hew_sir::is_actor_reference(ty) => PhysicalValueMethod::ActorIdentity,
         _ => {
             return Err(PhysicalError::new(
                 "selected capability has no concrete value recipe",
@@ -168,6 +171,7 @@ fn derived_components<'a>(
     match method {
         PhysicalValueMethod::Scalar if is_scalar(ty) => Ok(vec![]),
         PhysicalValueMethod::Identity if hew_sir::is_identity_carrier(ty) => Ok(vec![]),
+        PhysicalValueMethod::ActorIdentity if hew_sir::is_actor_reference(ty) => Ok(vec![]),
         PhysicalValueMethod::String if *ty == ResolvedTy::String => Ok(vec![]),
         PhysicalValueMethod::Bytes if *ty == ResolvedTy::Bytes => Ok(vec![]),
         PhysicalValueMethod::Aggregate(id) => {

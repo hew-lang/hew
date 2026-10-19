@@ -40,7 +40,9 @@ pub use callable::{
     verify_generator_coercion, CallableSpecializationId, CallableTargets, ClosureId,
     ClosureInstanceKey, SemCaptureField, SemClosure, SemClosureEntry,
 };
-pub use capability::{derived_capability_components, is_identity_carrier, SemValueMethodPlan};
+pub use capability::{
+    derived_capability_components, is_actor_reference, is_identity_carrier, SemValueMethodPlan,
+};
 pub use coverage::{CoverageCounter, CoveragePlan};
 pub use debug::{SemDebugFacts, SemDebugScope};
 pub use dump::{dump_lowering, dump_sir};

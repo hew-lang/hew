@@ -1458,8 +1458,15 @@ fn parse_interpolated_string_contains_expr_part() {
 
 #[test]
 fn interpolation_rejects_unconsumed_input_at_its_source_span() {
-    for (expression, expected_tail) in [("x 7 8", "7 8"), ("x:04", ":04")] {
-        let source = format!("fn main() {{ let s = f\"é [{expression}]\"; }}");
+    for (expression, expected_tail) in [
+        ("x garbage", "garbage"),
+        ("x; y", "; y"),
+        ("x )", ")"),
+        ("x 7 8", "7 8"),
+        ("1e21", "e21"),
+        ("x:04", ":04"),
+    ] {
+        let source = format!("fn main() {{ let s = f\"é {{{expression}}}\"; }}");
         let result = parse(&source);
         assert_eq!(result.errors.len(), 1, "{expression}: {:?}", result.errors);
         assert_eq!(
